@@ -99,19 +99,28 @@ class TestOpenHandsConfig:
         assert "$HOME/.agents/skills" in cfg.skill_paths
         assert "$WORKSPACE/.agents/skills" in cfg.skill_paths
 
-    def test_openhands_install_cmd_forces_github_main(self):
+    def test_openhands_install_cmd_pins_stable_pypi_release(self):
         cfg = AGENTS["openhands"]
         assert (
-            "apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates git"
+            "apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates"
             in cfg.install_cmd
         )
         assert (
             "uv tool install --force --refresh "
-            "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
-            "openhands --python 3.12" in cfg.install_cmd
+            "--overrides /tmp/oh-sdk-overrides.txt "
+            "openhands==1.16.0 --python 3.12" in cfg.install_cmd
         )
-        assert "command -v git" in cfg.install_cmd
+        assert "OpenHands/OpenHands-CLI.git@main" not in cfg.install_cmd
         assert "install.openhands.dev/install.sh" not in cfg.install_cmd
+
+    def test_openhands_install_cmd_overrides_buggy_sdk_pin(self):
+        """Guards PR #644 against Opus timeouts from OpenHands SDK 1.21.0."""
+        cfg = AGENTS["openhands"]
+
+        assert "openhands-sdk==1.22.1" in cfg.install_cmd
+        assert "openhands-tools==1.22.1" in cfg.install_cmd
+        assert "openhands-sdk>=1.22.0" not in cfg.install_cmd
+        assert "--overrides /tmp/oh-sdk-overrides.txt" in cfg.install_cmd
 
     def test_openhands_install_cmd_does_not_deploy_bedrock_shim(self):
         """Guards the LiteLLM runtime refactor: Bedrock patches live with LiteLLM."""
