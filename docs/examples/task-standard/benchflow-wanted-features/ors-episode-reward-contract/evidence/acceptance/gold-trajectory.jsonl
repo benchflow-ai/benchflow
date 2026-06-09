@@ -1,0 +1,4 @@
+{"type":"system","message":"Dogfood reference trajectory for ors-episode-reward-contract acceptance evidence."}
+{"type":"agent_action","message":"Added verifier-scoped ORS episode strategy parsing and declared input validation."}
+{"type":"agent_action","message":"Normalized ORS reward events into reward.json and reward-details.json while failing closed on malformed evidence."}
+{"type":"verifier_result","reward":1.0,"status":"passed","items":{"ors_strategy":1.0,"reward_events":1.0}}

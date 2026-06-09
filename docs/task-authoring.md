@@ -1,32 +1,170 @@
 # Authoring tasks
 A BenchFlow task packages an instruction, a sandboxed environment, and a verifier into a directory that BenchFlow runs and scores automatically.
 
+> Authoring writes one `task.md` that selects a mode on each of the three planes — see [the task standard](./task-standard.md) and [Concepts: the three planes](./concepts.md#the-three-planes).
+
 ---
 
 ## Directory layout
 
 > [!NOTE]
-> BenchFlow will provide first-party support for Kaggle, Verifiers, and OpenReward Standard.
+> Planned support: BenchFlow aims to add first-party support for Kaggle,
+> Verifiers, and OpenReward Standard. These are not current task-runtime
+> capabilities unless documented by a specific adapter or runtime capability.
 
-You can create [Harbor-format tasks](https://www.harborframework.com/docs/tasks) in BenchFlow with a `task.toml` config file, separate `instruction.md`, sandbox assets under `environment/`, verifier files under `tests/`, and an optional `solution/` oracle.
+For new BenchFlow-native task authoring, prefer the experimental unified
+`task.md` entrypoint. It keeps Harbor-compatible task config in YAML
+frontmatter and puts the agent-facing prompt, role prompts, scene prompts, and
+simulated-user persona in the markdown body.
+
+The broader draft standard for `task.md`, including `oracle/` and `verifier/`
+native naming, compatibility export rules, assets, evidence, teams, nudges, and
+the parsed-vs-runtime-supported capability matrix, lives in
+[BenchFlow Task Package Standard](./task-standard.md). Adapter authors should
+also read [task.md adapter capabilities](./task-md-adapter-capabilities.md),
+which explains when Harbor export is lossless, wrapper-only, or fail-closed.
 
 ```
 my-task/
-├── task.toml              # timeouts, resources, metadata
-├── instruction.md         # what the agent must do
+├── task.md                # config + prompt + optional roles/scenes/user
 ├── environment/
 │   └── Dockerfile         # sandbox image
-├── tests/
-│   └── test.sh            # verifier entry point
-└── solution/              # optional — reference/oracle solution
+├── verifier/
+│   ├── verifier.md        # optional verifier strategy entrypoint
+│   └── test.sh            # minimum script verifier strategy
+└── oracle/                # optional — reference/oracle solution
     └── solve.sh
 ```
 
-`tests/` may also include `test_outputs.py` (pytest module called by `test.sh`).
+`verifier/` may also include `test_outputs.py` (pytest module called by
+`test.sh`), Reward Kit runners, rubrics, judge prompts, and other verifier-only
+fixtures. Harbor/Pier-style split tasks may use `tests/` and `solution/`;
+BenchFlow keeps those names as compatibility inputs and export targets.
+
+Use `bench tasks export <task-dir> <output-dir> --target harbor|pier` to write
+the compatibility split layout with an explicit
+`compatibility/export-report.json` loss report. Use `--report-only` to inspect
+losses without writing files. Use this export when a native package needs to
+run in a Harbor hosted environment; keep the native package as the source of
+truth when the report records lossy or wrapper-only semantics.
+
+---
+
+## task.md (experimental native format)
+
+```md
+---
+schema_version: "1.3"
+
+# Metadata is YAML, not TOML, in this file.
+metadata:
+  author_name: alice
+  difficulty: easy
+agent:
+  timeout_sec: 300
+verifier:
+  timeout_sec: 120
+environment:
+  network_mode: no-network
+  cpus: 1
+  memory_mb: 2048
+  storage_mb: 10240
+  env:
+    OPENAI_API_KEY: ${OPENAI_API_KEY}
+agents:
+  roles:
+    solver:
+      agent: codex
+scenes:
+  - name: solve
+    roles: [solver]
+---
+
+## prompt
+
+Create the requested files in `/app`.
+
+## role:solver
+
+You are responsible for the implementation.
+
+## scene:solve
+
+Solve the task end to end.
+```
+
+Frontmatter accepts the same modeled task config fields as Harbor-style
+`task.toml`, including `task`, `metadata`, `agent`, `verifier`, `environment`,
+`oracle` (legacy alias: `solution`), `source`, `artifacts`, `steps`, and
+`multi_step_reward_strategy`.
+Unknown config keys fail validation; arbitrary labels belong under `metadata`.
+BenchFlow-only document keys are `agents`, `scenes`, `user`, and the reserved
+extension namespace `benchflow`. Fields under `benchflow:` are parsed as raw
+document metadata today; the current runtime does not execute every proposed
+extension yet.
+
+Schema parity is ahead of runtime parity for some newer Harbor features. Fields
+such as `steps`, separate verifier environments, `environment.os`, TPU specs,
+healthchecks, workdir, artifact declarations, and network allowlists parse
+today, but not all of those semantics are fully executed by the current
+rollout runtime.
+
+### Minimal authoring presets
+
+Authors can start with a tiny human-authored document and expand it into the
+canonical contract:
+
+```md
+---
+profile: [code-change, acceptance-live]   # authoring preset; see note below
+name: benchflow-wanted/runtime-capability-gate
+image: ubuntu:24.04
+verifier: verifier/
+oracle: oracle/
+---
+
+Implement fail-closed runtime capability validation.
+```
+
+These are **presets** — authoring sugar that `normalize` expands and then
+discards. They are distinct from runtime-real `*-profile` shared config
+(`environment-profile` / `agent-profile` / `verifier-profile`), which multiple
+tasks in a benchmark reference and which survives into the runtime. See
+[Presets And Profiles](./task-standard.md#presets-and-profiles). The key is
+currently spelled `profile:`; it becomes `preset:` (with `profile:` kept as a
+deprecated alias) in M0.
+
+`bench tasks normalize <task-dir>` prints the expanded `task.md`; pass
+`--write` to replace `task.md` in place or `--output <path>` to inspect the
+generated contract beside the source. The normalizer removes authoring-only
+keys (`profile`, `name`, `image`, string `verifier`, string `oracle`), expands
+known presets, keeps explicit canonical fields over preset defaults, and then
+validates the expanded form through the same `TaskDocument`/`TaskConfig` path
+used by `bench tasks check`.
+
+Available presets:
+
+| Preset | Adds |
+|---|---|
+| `code-change` | no-network code-task defaults, `/repo` workdir, verifier/root timeout defaults, append prompt composition |
+| `harbor-compatible` | Harbor compatibility metadata and conservative environment defaults |
+| `reward-kit` | verifier package metadata for Reward Kit-style verifier implementations |
+| `acceptance-live` | conventional live-acceptance workspace, calibration, and oracle/reference cases |
+| `multi-agent` | architect / implementer / reviewer roles and sequential scenes |
+| `leaderboard-local` | local leaderboard suitability requirement for live acceptance reports |
+
+When `acceptance-live` or `leaderboard-local` is applied, the normalizer also
+discovers conventional files under `evidence/acceptance/` and pins them into
+`benchflow.evidence` with SHA-256 hashes. This keeps evidence reports generated
+by real dogfood runs out of the handwritten frontmatter while preserving the
+canonical validation contract.
 
 ---
 
 ## task.toml
+
+BenchFlow still supports [Harbor-format tasks](https://www.harborframework.com/docs/tasks)
+with a `task.toml` config file and separate `instruction.md`.
 
 ```toml
 version = "1.0"
@@ -106,13 +244,14 @@ with `[verifier].service`:
 
 ```toml
 [verifier]
-service = "target"     # run tests/test.sh inside the `target` container
+service = "target"     # run verifier/test.sh inside the `target` container
 ```
 
-With this set, BenchFlow uploads the task's `tests/` directory into the
+With this set, BenchFlow uploads the task's `verifier/` directory into the
 **target** container, runs `test.sh` there, and copies the resulting
-`reward.txt` / `reward.json` back to the host. `service` defaults to `"main"`
-(the agent container), so existing single-container tasks are unaffected.
+`reward.txt` / `reward.json` back to the host. Legacy `tests/` directories use
+the same path. `service` defaults to `"main"` (the agent container), so
+existing single-container tasks are unaffected.
 
 `[verifier].service` is the declarative, task-schema way to do cross-container
 verification; the `env.exec_in_service(...)` Python API above is the
@@ -164,17 +303,47 @@ result = await bf.run(config)
 
 ---
 
-## Verifier contract (tests/test.sh)
+## Verifier contract
 
-After the agent finishes, the BenchFlow runtime copies `tests/` to `/tests/` and runs `/tests/test.sh`. The working directory is the Dockerfile's `WORKDIR` (typically `/app/` in the example Dockerfile below).
+After the agent finishes, the BenchFlow runtime copies `verifier/` to
+`/verifier/`. Native packages with no `verifier/verifier.md` run
+`/verifier/test.sh`; packages with `verifier/verifier.md` run its selected
+strategy. Legacy `tests/` tasks are still copied to `/tests/` and run from
+there. The hardened pytest environment uses `/verifier` as the native
+`--confcutdir` and `/tests` as the split-layout compatibility `--confcutdir`.
+The working directory is the Dockerfile's `WORKDIR` (typically `/app/` in the
+example Dockerfile below).
 
-**Your script must write a single float (0.0–1.0) to `/logs/verifier/reward.txt`.** After writing the reward, exit `0`; a nonzero `test.sh` exit is treated as verifier infrastructure failure, not a scored task failure.
+Native verifier packages may add `verifier/verifier.md`. When present,
+`Verifier.verify()` uses its selected strategy: `script` runs the declared
+command relative to `/verifier/`, and `llm-judge` runs the built-in deliverables
+judge with verifier-local rubric, model, input directory, and context/context
+file overrides. `agent-judge` runs a verifier-scoped judge role over declared
+inputs and writes normal reward artifacts. `reward-kit` runs a safe relative
+package runner, by convention `<root>/reward.py`, and reuses the same reward
+artifact contract. `ors-episode` consumes declared ORS reward evidence and
+normalizes reward responses or reward-event streams into normal BenchFlow reward
+artifacts. Full OpenReward hosted environment import/export and session driving
+remain target work.
+
+**Your verifier must write a reward artifact.** Script verifiers should write a
+single float (0.0-1.0) to `/logs/verifier/reward.txt`; all strategies may write
+fresh `reward.json` and `reward-details.json`. Current runtime treats a
+nonzero verifier exit with no fresh reward file as infrastructure failure; if a
+fresh reward file exists, BenchFlow accepts the reward.
+
+If `reward.json` contains `metrics` but no scalar `reward`,
+`verifier/verifier.md` may declare `outputs.aggregate_policy` with
+`field: reward` and `method: mean`, `weighted_mean`, or `weighted_sum`; the
+runtime computes and persists the canonical `reward` before returning results.
 
 | Path | Contents |
 |---|---|
 | `/app/` | Agent's working directory |
-| `/tests/` | Your `tests/` directory |
-| `/solution/` | `solution/` (oracle runs only) |
+| `/verifier/` | Your native `verifier/` directory |
+| `/oracle/` | Native `oracle/` files (oracle runs only) |
+| `/tests/` | Legacy `tests/` directory |
+| `/solution/` | Legacy `solution/` files |
 | `/logs/verifier/` | Write `reward.txt` (and optionally `ctrf.json`) here |
 
 ### Pure bash verifier
@@ -198,7 +367,7 @@ source $HOME/.local/bin/env
 uvx \
   --with pytest==8.4.1 \
   --with pytest-json-ctrf==0.3.5 \
-  pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+  pytest --ctrf /logs/verifier/ctrf.json /verifier/test_outputs.py -rA
 
 if [ $? -eq 0 ]; then echo 1; else echo 0; fi > /logs/verifier/reward.txt
 ```
@@ -209,13 +378,13 @@ if [ $? -eq 0 ]; then echo 1; else echo 0; fi > /logs/verifier/reward.txt
 python3 -c "print($PASSED / $TOTAL)" > /logs/verifier/reward.txt
 ```
 
-**Security:** don't let the agent write to `/logs/verifier/reward.txt` or modify `/tests/test.sh`. For tasks running arbitrary code, use `allow_internet = false` and verify output files only. For LLM agent runs, BenchFlow preserves the network path needed for model APIs and agent startup, then disables supported agent web browsing/fetch tools through agent config or launch controls. Oracle runs still use the environment's network policy directly.
+**Security:** don't let the agent write to `/logs/verifier/reward.txt` or modify `/verifier/test.sh`. For tasks running arbitrary code, use `allow_internet = false` and verify output files only. For LLM agent runs, BenchFlow preserves the network path needed for model APIs and agent startup, then disables supported agent web browsing/fetch tools through agent config or launch controls. Oracle runs still use the environment's network policy directly.
 
 ---
 
-## solution/ (optional)
+## oracle/ (optional)
 
-Include when you want to verify the task is solvable or provide a reference implementation. When BenchFlow runs with `-a oracle`, it copies `solution/` to `/solution/` and runs `solution/solve.sh` instead of an ACP agent.
+Include when you want to verify the task is solvable or provide a reference implementation. When BenchFlow runs with `-a oracle`, it copies `oracle/` to `/oracle/` and runs `oracle/solve.sh` instead of an ACP agent. Legacy `solution/solve.sh` remains supported.
 
 `solve.sh` has the same filesystem access as the agent — write only to `/app/`, not to `/logs/verifier/`.
 
@@ -231,16 +400,35 @@ echo "Hello, world!" > /app/hello.txt
 ```bash
 # Scaffold a new task from scratch
 bench tasks init my-task
-bench tasks init my-task --no-pytest --no-solution
+bench tasks init my-task --no-pytest --no-oracle
+bench tasks init my-split-task --format legacy
+
+# Mirror an existing split task into task.md
+bench tasks migrate tasks/my-split-task/
+bench tasks migrate tasks/my-split-task/ --remove-legacy
+
+# Expand a minimal task.md into the canonical contract
+bench tasks normalize tasks/my-task/
+bench tasks normalize tasks/my-task/ --write
 
 # Generate tasks from agent traces (personal benchmark curation)
 bench tasks generate --from-local                          # from local Claude Code sessions
 bench tasks generate --from-file session.jsonl --dry-run    # from a JSONL trace file
 bench tasks generate --from-hf opentraces-test --limit 50   # from a HuggingFace dataset
+bench tasks generate --from-local --task-format legacy      # Harbor/Pier split layout
 bench tasks list-sources                                    # list known HF trace datasets
 
-# Validate structure
+# Validate schema, structure, runtime support, and native publication shape
+bench tasks check tasks/my-task/ --level schema
 bench tasks check tasks/my-task/
+bench tasks check tasks/my-task/ --sandbox docker
+bench tasks check tasks/my-task/ --level runtime-capability --sandbox docker
+bench tasks check tasks/my-task/ --level publication-grade
+bench tasks check tasks/my-task/ --level publication-grade --sandbox docker
+bench tasks check tasks/my-task/ --level acceptance
+bench tasks check tasks/my-task/ --level acceptance-live --sandbox docker
+bench tasks check tasks/my-task/ --level acceptance-live --sandbox docker \
+  --report-output /tmp/benchflow-live-report.json
 
 # Confirm oracle gets reward = 1.0
 bench eval create --tasks-dir tasks/my-task/ --agent oracle --sandbox docker
@@ -257,13 +445,112 @@ bench eval create \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
+`bench tasks init` defaults to native `task.md` packages. It creates
+`task.md`, `environment/Dockerfile`, `verifier/test.sh`, `verifier/verifier.md`,
+`verifier/rubrics/`, and `oracle/solve.sh` unless `--no-oracle` is used. The
+scaffold deliberately contains `[REPLACE: ...]` markers across the prompt,
+verifier logic, verifier rubric, and oracle so `bench tasks check` stays red
+until the package has real benchmark semantics.
+
 Task-local skills are mounted through the selected agent's native skill paths.
 See [Architecture: skill loading](./architecture.md#skill-loading) for the
 canonical loading semantics and nudge modes.
 
-`bench tasks generate` converts agent traces (Claude Code sessions, opentraces records, or HuggingFace datasets) into task directories with `task.toml`, `instruction.md`, and a file-existence `test.sh`. Use `--dry-run` to preview traces before generating. See [CLI reference](./reference/cli.md#bench-tasks-generate) for all flags.
+`bench tasks migrate` mirrors a split `task.toml` + `instruction.md` pair into
+`task.md`, verifies that the parsed config and prompt round-trip, and keeps the
+split files unless `--remove-legacy` is provided. With `--remove-legacy`, the
+migration also promotes `tests/` to `verifier/` and `solution/` to `oracle/`
+when the native directories are not already present. Unknown keys from
+Harbor/Pier forks remain rejected by native `TaskConfig`, but migration
+preserves them under `benchflow.compat.extra` so a later split export can
+restore them to `task.toml`.
 
-`bench tasks check` validates that `task.toml`, `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist, and that `[agent].timeout_sec` is set. Exits with code 1 on failure (CI-friendly).
+`bench tasks generate` converts agent traces (Claude Code sessions, opentraces records, or HuggingFace datasets) into native `task.md` directories with script verifier/oracle strategies by default. Use `--task-format legacy` for the Harbor/Pier split layout and `--dry-run` to preview traces before generating. See [CLI reference](./reference/cli.md#bench-tasks-generate) for all flags.
+
+`bench tasks check` validates either `task.md` or the split `task.toml` +
+`instruction.md` pair, plus `environment/Dockerfile` and non-empty `verifier/`
+or compatibility `tests/`. `--level schema` checks only the authoring entrypoint
+and prompt parse, which is useful for schema-only `task.md` fixtures that are not
+runnable task packages. `--sandbox <backend>` adds the sandbox-specific runtime
+capability gate; `--level runtime-capability --sandbox <backend>` names that
+same gate explicitly. `--level publication-grade` checks the native package
+contract for registry-ready authoring: `task.md`, native `oracle/`, native
+`verifier/verifier.md`, rubric files, selected verifier strategy artifacts, and
+an explicit `reward_json` output contract. For pre-publication review, combine
+the gates with `--level publication-grade --sandbox <backend>` so unsupported
+runtime semantics fail before the package is treated as ready.
+`--level acceptance` adds static evidence checks for oracle proof, verifier
+stability, review status, calibration boundary cases, and local artifact
+hashes. Its verifier evidence must include a JSON stability report with
+concrete rerun records, its calibration evidence must include a JSON report
+with no-op, known-bad, partial, and reference cases, and every primary evidence
+file must be listed with a SHA-256 pin. It exits with code 1 on failure
+(CI-friendly). Acceptance is still a static gate. `--level acceptance-live`
+requires `--sandbox <backend>` and runs declared
+`benchflow.evidence.acceptance_live.cases` through the selected sandbox plus
+BenchFlow verifier boundary. It can also generate live calibration cases from
+the static `calibration.report` when those report cases declare executable
+sandbox perturbation commands. When a checked-in example declares a
+package-local report, routine dogfood should pass `--no-report-write` to
+validate without touching the package, or `--report-output <path>` to write
+fresh evidence to a host path outside the package; refreshing the checked-in
+report is the default (no flag). The first supported workspace source is `current-worktree`,
+uploaded to a declared sandbox target such as `/repo`:
+
+```yaml
+benchflow:
+  evidence:
+    acceptance_live:
+      report: evidence/acceptance/live-report.json
+      workspace:
+        source: current-worktree
+        target: /repo
+      calibration:
+        from: calibration.report
+        reruns: 1
+        flake_rate_max: 0.0
+      leaderboard:
+        required: true
+        max_flake_rate: 0.0
+      cases:
+        - name: live-oracle-rerun
+          type: oracle
+          reruns: 1
+          expect:
+            reward_min: 0.99
+            flake_rate_max: 0.0
+        - name: live-reference-verifier
+          type: reference
+          reruns: 1
+          expect:
+            reward_min: 0.99
+            flake_rate_max: 0.0
+```
+
+`type: oracle` requires an executable native `oracle/solve.sh` or legacy
+`solution/solve.sh`; markdown-only oracle notes are not treated as runnable
+proof. If `report` is declared, the live run writes a package-local JSON report
+and `.sha256` sidecar by default — use this to **refresh** checked-in evidence.
+For **routine dogfood** that must not dirty the worktree, pass `--no-report-write`
+(validate only, no artifacts written) or `--report-output <path>` (write the
+report and sidecar to a host path instead). Per-run report records include secret-safe
+`verifier_error_category`, `diagnostic_code`, and `artifact_hint` fields; verifier
+dependency-install diagnostics point to `verifier/test-stdout.txt` instead of
+embedding raw resolver output. Report writing is explicit so ordinary live checks
+do not silently mutate a task package. This first live level proves fresh
+oracle/verifier execution and can enforce explicit `flake_rate_max` thresholds
+over repeated fresh sandbox reruns. Generated calibration cases are derived
+from the static report: `no-op` and `known-bad` become `reward_max`
+expectations, `partial` becomes a `reward_range`, and `reference` becomes
+`reward_equals`. Larger repeated flake campaigns, model/submission metadata,
+hosted leaderboard publication, and leaderboard export remain target work.
+If `leaderboard.required: true` is declared, the live report also records a
+local `leaderboard_suitability` verdict. The first suitability slice requires
+live runs, all runs passing, an observed flake rate no higher than
+`leaderboard.max_flake_rate`, an oracle proof, a reference proof, and generated
+calibration coverage for no-op, known-bad, partial, and reference cases. This
+is a local publication-readiness check, not yet a hosted leaderboard campaign
+or submission export.
 
 ---
 
@@ -300,7 +587,7 @@ RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
 ```
 
 ```python
-# tests/test_outputs.py
+# verifier/test_outputs.py
 import importlib.util
 from pathlib import Path
 
@@ -319,7 +606,7 @@ def test_number():  assert _load()(7) == "7"
 ```
 
 ```bash
-# solution/solve.sh
+# oracle/solve.sh
 cat > /app/fizzbuzz.py << 'EOF'
 def fizzbuzz(n: int) -> str:
     if n % 15 == 0: return "FizzBuzz"

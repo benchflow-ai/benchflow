@@ -6,9 +6,7 @@ All links point to real, publicly accessible URLs.
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
 # Named personas
-# ---------------------------------------------------------------------------
 PERSONAS = {
     "sarah": {"name": "Sarah Chen", "email": "sarah.chen@acmecorp.com", "role": "manager"},
     "marcus": {"name": "Marcus Johnson", "email": "marcus.johnson@acmecorp.com", "role": "coworker"},
@@ -27,11 +25,9 @@ PERSONAS = {
 USER_EMAIL = "me@example.com"
 USER_NAME = "Alex Thompson"
 
-# ---------------------------------------------------------------------------
 # Multi-message work threads
-# ---------------------------------------------------------------------------
 THREADS: list[dict] = [
-    # --- Thread 1: Q1 Sprint Planning ---
+    # Thread 1: Q1 Sprint Planning
     {
         "subject": "Q1 Sprint Planning - Backend Team",
         "labels": ["INBOX"],
@@ -107,7 +103,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 2: PR Review ---
+    # Thread 2: PR Review
     {
         "subject": "RE: Code review needed - FastAPI auth middleware refactor PR #342",
         "labels": ["INBOX"],
@@ -170,7 +166,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 3: Production incident ---
+    # Thread 3: Production incident
     {
         "subject": "[INCIDENT] Elevated error rates on checkout API",
         "labels": ["INBOX", "IMPORTANT"],
@@ -227,7 +223,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 4: 1:1 follow-up ---
+    # Thread 4: 1:1 follow-up
     {
         "subject": "1:1 Follow-up - Career growth discussion",
         "labels": ["INBOX"],
@@ -273,7 +269,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 5: Vendor integration ---
+    # Thread 5: Vendor integration
     {
         "subject": "RE: Acme Corp - Twilio SendGrid API Integration Timeline",
         "labels": ["INBOX"],
@@ -319,7 +315,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 6: Team lunch planning ---
+    # Thread 6: Team lunch planning
     {
         "subject": "Team lunch Friday - suggestions?",
         "labels": ["INBOX"],
@@ -369,7 +365,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 7: Database migration discussion ---
+    # Thread 7: Database migration discussion
     {
         "subject": "PostgreSQL 16 upgrade plan",
         "labels": ["INBOX"],
@@ -417,7 +413,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 8: Onboarding new hire ---
+    # Thread 8: Onboarding new hire
     {
         "subject": "Onboarding buddy for new hire - Rachel Foster",
         "labels": ["INBOX"],
@@ -469,7 +465,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 9: Architecture decision ---
+    # Thread 9: Architecture decision
     {
         "subject": "RFC: Event-driven architecture for notifications",
         "labels": ["INBOX"],
@@ -517,7 +513,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 10: CI/CD pipeline issue ---
+    # Thread 10: CI/CD pipeline issue
     {
         "subject": "CI build times have doubled - investigation needed",
         "labels": ["INBOX"],
@@ -566,7 +562,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 11: Standup async ---
+    # Thread 11: Standup async
     {
         "subject": "Async standup - Feb 26",
         "labels": ["INBOX"],
@@ -616,7 +612,7 @@ THREADS: list[dict] = [
             },
         ],
     },
-    # --- Thread 12: Security review ---
+    # Thread 12: Security review
     {
         "subject": "Security review findings - Q4 audit",
         "labels": ["INBOX", "IMPORTANT"],
@@ -671,11 +667,9 @@ THREADS: list[dict] = [
     },
 ]
 
-# ---------------------------------------------------------------------------
 # Standalone notification emails (with HTML bodies)
-# ---------------------------------------------------------------------------
 NOTIFICATIONS: list[dict] = [
-    # --- GitHub: real open-source repos ---
+    # GitHub: real open-source repos
     {
         "sender_name": "GitHub",
         "sender_email": "notifications@github.com",
@@ -746,7 +740,7 @@ NOTIFICATIONS: list[dict] = [
             '3. Observe linear growth of ~150MB/hour</div></div></div>'
         ),
     },
-    # --- Amazon: real products ---
+    # Amazon: real products
     {
         "sender_name": "Amazon",
         "sender_email": "shipment-tracking@amazon.com",
@@ -817,7 +811,7 @@ NOTIFICATIONS: list[dict] = [
             'View or manage order</a></div></div>'
         ),
     },
-    # --- Slack ---
+    # Slack
     {
         "sender_name": "Slack",
         "sender_email": "notification@slack.com",
@@ -854,7 +848,7 @@ NOTIFICATIONS: list[dict] = [
             'Reply in Slack</a></div></div>'
         ),
     },
-    # --- Google Calendar ---
+    # Google Calendar
     {
         "sender_name": "Google Calendar",
         "sender_email": "calendar-notification@google.com",
@@ -893,7 +887,7 @@ NOTIFICATIONS: list[dict] = [
             '</div></div></div>'
         ),
     },
-    # --- LinkedIn ---
+    # LinkedIn
     {
         "sender_name": "LinkedIn",
         "sender_email": "notifications-noreply@linkedin.com",
@@ -945,7 +939,7 @@ NOTIFICATIONS: list[dict] = [
             'See all viewers</a></div></div></div>'
         ),
     },
-    # --- Uber ---
+    # Uber
     {
         "sender_name": "Uber Receipts",
         "sender_email": "uber.us@uber.com",
@@ -984,7 +978,7 @@ NOTIFICATIONS: list[dict] = [
             '<a href="https://riders.uber.com/trips" style="display:inline-block;padding:8px 24px;background:#000;color:#fff;border-radius:8px;text-decoration:none;font-size:14px">View trip</a></div></div></div>'
         ),
     },
-    # --- Google Security ---
+    # Google Security
     {
         "sender_name": "Google",
         "sender_email": "no-reply@accounts.google.com",
@@ -1019,7 +1013,7 @@ NOTIFICATIONS: list[dict] = [
             'Review activity</a></div>'
         ),
     },
-    # --- Jira ---
+    # Jira
     {
         "sender_name": "Jira",
         "sender_email": "jira@acmecorp.atlassian.net",
@@ -1064,9 +1058,7 @@ NOTIFICATIONS: list[dict] = [
     },
 ]
 
-# ---------------------------------------------------------------------------
 # Personal emails
-# ---------------------------------------------------------------------------
 PERSONAL_EMAILS: list[dict] = [
     {
         "sender": "mike",
@@ -1117,9 +1109,7 @@ PERSONAL_EMAILS: list[dict] = [
     },
 ]
 
-# ---------------------------------------------------------------------------
 # Promotional emails
-# ---------------------------------------------------------------------------
 PROMO_EMAILS: list[dict] = [
     {
         "sender_name": "O'Reilly Media",
@@ -1188,9 +1178,7 @@ PROMO_EMAILS: list[dict] = [
     },
 ]
 
-# ---------------------------------------------------------------------------
 # Sent emails (not part of any thread above)
-# ---------------------------------------------------------------------------
 SENT_EMAILS: list[dict] = [
     {
         "to": "mike.chen@gmail.com",
@@ -1240,9 +1228,7 @@ SENT_EMAILS: list[dict] = [
     },
 ]
 
-# ---------------------------------------------------------------------------
 # Draft
-# ---------------------------------------------------------------------------
 DRAFT_EMAIL: dict = {
     "to": "backend-team@acmecorp.com",
     "subject": "RFC: API Rate Limiting Implementation",

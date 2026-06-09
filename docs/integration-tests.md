@@ -171,7 +171,14 @@ rewards come from `verifier_result.rewards.reward` and ATIF trajectories from
 ACP trajectories from `trajectory/acp_trajectory.jsonl`. It fails on missing
 tasks, malformed artifacts, missing trajectories, unseen task outcomes, per-task
 reward movement outside the Harbor observed range, and aggregate
-outcome/reward-rate drift over the configured thresholds.
+outcome/reward-rate drift over the configured thresholds. BenchFlow artifacts
+must also prove native SkillsBench provenance: `result.json.source` must point
+at `benchflow-ai/skillsbench` under `tasks/`, include a `task.md` file hash for
+the compared task, and match the rollout `config.json` skill metadata. The
+default parity lane compares the Harbor `noskills` baseline, so it expects
+`skill_mode=no-skill` and `skill_source=none`; use the
+`--skillsbench-harbor-expected-*` flags only when comparing a deliberately
+different pinned source or skill lane.
 
 To refresh the Harbor pin, fetch the baseline repository, inspect the candidate
 run root, run the parity checker against known BenchFlow evidence, and update

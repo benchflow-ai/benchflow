@@ -1,0 +1,30 @@
+{
+  "task": "benchflow-wanted/verifier-package-reward-contract",
+  "kind": "calibration-report",
+  "cases": [
+    {
+      "name": "plain-test-script-only",
+      "type": "no-op",
+      "reward": 0.0,
+      "summary": "Verifier packages are ignored and only test.sh is treated as meaningful."
+    },
+    {
+      "name": "unisolated-agent-judge",
+      "type": "known-bad",
+      "reward": 0.2,
+      "summary": "Agent judge roles are visible to solver prompts or lack verifier-only isolation."
+    },
+    {
+      "name": "strategy-selection-without-artifacts",
+      "type": "partial",
+      "reward": 0.6,
+      "summary": "Strategies parse, but reward.json, aggregate policy, and reward-details preservation are incomplete."
+    },
+    {
+      "name": "gold-verifier-package",
+      "type": "reference",
+      "reward": 1.0,
+      "summary": "Verifier package strategies, reward artifacts, aggregate policy, and judge isolation are all complete."
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "task": "benchflow-wanted/runtime-capability-gate",
+  "kind": "reference-result",
+  "expected_reward": 1.0,
+  "checks": {
+    "runtime_view": 1.0,
+    "fail_closed": 1.0,
+    "compatibility": 1.0,
+    "maintainability": 1.0
+  },
+  "status": "passed"
+}

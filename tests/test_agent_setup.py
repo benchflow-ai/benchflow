@@ -637,9 +637,7 @@ async def test_install_agent_writes_command_stdout_and_stderr_on_failure(
     assert log_text.startswith("$ ")
     assert (
         "uv tool install --force --refresh "
-        "--overrides /tmp/oh-sdk-overrides.txt "
-        "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@"
-        "3ca17446c5d9c1e35e054803478a3501ec251ecf' "
+        "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
         "openhands --python 3.12" in log_text
     )
     assert "=== stderr ===" in log_text

@@ -4,13 +4,32 @@
 
 ### Added
 
-- **`benchflow continue <run-folder>`** — resume a previous, unfinished
-  (timed-out) `openhands` run to completion. A standalone tool (it does not
-  touch the normal run path) that reconstructs the run's exact workspace and
-  agent memory from the recorded `llm_trajectory.jsonl` via record-replay,
-  then continues with the live model — no injected prompt — and writes a new
-  HF-compatible folder with `continued_from` provenance. See
-  [`docs/continue-runs.md`](docs/continue-runs.md).
+- **Task acceptance-live report output** — `bench tasks check --level
+  acceptance-live` now accepts `--report-output <path>` so fresh live dogfood
+  reports can be written outside checked-in task packages; live run records now
+  include secret-safe verifier diagnostic category/code/hint fields.
+- **Wanted-feature acceptance evidence** — all six task-standard wanted-feature
+  dogfood packages now include pinned static acceptance evidence.
+- **Native task authoring scaffold** — `bench tasks init` now scaffolds
+  `verifier/verifier.md` plus `verifier/rubrics/` for new `task.md` benchmarks,
+  and task checks reject unreplaced verifier-package placeholders.
+- **Publication-grade skill-eval tasks** — native `benchflow.skill_eval`
+  generated tasks now include `oracle/`, `verifier/verifier.md`,
+  `verifier/rubrics/`, and `reward.json` output contracts.
+- **First-party task.md fixture dogfood** — demo, hello-world, and ACP smoke
+  fixtures now carry native `task.md` entrypoints beside legacy aliases, with
+  structural and eval-discovery regressions.
+- **Publication-grade real SkillsBench examples** — checked-in SkillsBench
+  task.md examples now use native `verifier/` and `oracle/` packages with
+  verifier contracts, rubrics, reward JSON output, eval-discovery coverage, and
+  Harbor split export regressions.
+- **Shared benchmark task-format helpers** — adapted benchmark converters now
+  share task output-format validation and native/legacy layout naming, with
+  helper regressions and direct converter CLI coverage.
+- **Publication-grade ClawsBench service task** — the stateful Gmail
+  `archive-amazon-shipping` task now uses native `task.md`, `verifier/`, and
+  `oracle/` packaging with structured reward artifacts, eval-discovery checks,
+  and split-layout export coverage.
 
 ### Changed
 

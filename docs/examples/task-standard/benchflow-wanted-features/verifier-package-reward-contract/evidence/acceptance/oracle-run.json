@@ -1,0 +1,13 @@
+{
+  "task": "benchflow-wanted/verifier-package-reward-contract",
+  "kind": "oracle-proof",
+  "oracle": "oracle/solve.md",
+  "expected_reward": 1.0,
+  "required_reward": 1.0,
+  "evidence": [
+    "verifier/verifier.md parses strategies, outputs, rubric dimensions, and verifier-scoped judge roles.",
+    "Script, LLM judge, Reward Kit, and agent-judge strategies are selected explicitly.",
+    "reward.json is authoritative and reward-details.json preserves rich verifier evidence."
+  ],
+  "status": "passed"
+}

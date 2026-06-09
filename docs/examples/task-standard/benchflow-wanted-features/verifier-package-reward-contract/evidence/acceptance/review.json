@@ -1,0 +1,11 @@
+{
+  "task": "benchflow-wanted/verifier-package-reward-contract",
+  "kind": "acceptance-review",
+  "anti_cheat": "passed",
+  "instruction_alignment": "passed",
+  "notes": [
+    "The package verifies first-class verifier strategy selection instead of treating verifier.md as decorative metadata.",
+    "The calibration set includes missing package behavior, judge isolation failure, partial artifacts, and a reference implementation.",
+    "Reward artifacts and aggregate policy are explicit acceptance evidence."
+  ]
+}

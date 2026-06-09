@@ -1,0 +1,29 @@
+[judge]
+model = "claude-sonnet-4-6"
+
+[scoring]
+method = "mean"
+
+[[criteria]]
+id = "verifier_document"
+title = "Verifier document contract"
+match_criteria = "The implementation parses verifier/verifier.md into named strategies, output contracts, rubrics, and verifier-scoped roles."
+weight = 0.30
+
+[[criteria]]
+id = "reward_contract"
+title = "Reward artifact contract"
+match_criteria = "The implementation preserves reward.json, scalar reward.txt compatibility, and reward-details.json without accepting stale or conflicting outputs."
+weight = 0.35
+
+[[criteria]]
+id = "judge_isolation"
+title = "Verifier judge isolation"
+match_criteria = "The implementation keeps judge behavior in verifier scope and does not expose verifier-only prompts or hidden fixtures to the solver."
+weight = 0.20
+
+[[criteria]]
+id = "compatibility"
+title = "Compatibility strategy"
+match_criteria = "Existing verifier/test.sh and split-layout tests/test.sh tasks continue to run while unsupported advanced strategies fail closed."
+weight = 0.15

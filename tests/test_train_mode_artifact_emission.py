@@ -84,7 +84,7 @@ def _assert_no_trainer_secret_leak(text: str) -> None:
     assert residual == [], f"live Gemini key shapes survived: {residual}"
 
 
-# ── unit-level helpers ────────────────────────────────────────────────
+# unit-level helpers
 
 
 def test_acp_events_to_messages_prepends_prompts_and_keeps_order():
@@ -131,7 +131,7 @@ def test_reward_map_to_verify_result_handles_none():
     assert vr.error == "verifier crashed"
 
 
-# ── rollout-level write ───────────────────────────────────────────────
+# rollout-level write
 
 
 def test_write_rollout_verifiers_jsonl_emits_canonical_path(tmp_path):
@@ -213,7 +213,7 @@ def test_write_rollout_verifiers_jsonl_redacts_trajectory_secrets(tmp_path):
     json.loads(text)
 
 
-# ── job-level aggregation ─────────────────────────────────────────────
+# job-level aggregation
 
 
 def test_write_job_verifiers_jsonl_aggregates_all_rollouts(tmp_path):
@@ -288,7 +288,7 @@ def test_write_job_verifiers_jsonl_redacts_aggregated_records(tmp_path):
     json.loads(text)
 
 
-# ── end-to-end: _build_rollout_result wires the seam ─────────────────
+# end-to-end: _build_rollout_result wires the seam
 
 
 def test_build_rollout_result_emits_trainer_artifact(tmp_path):

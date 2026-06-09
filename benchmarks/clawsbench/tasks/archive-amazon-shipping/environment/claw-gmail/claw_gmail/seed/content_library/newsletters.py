@@ -15,9 +15,7 @@ Distribution:
 from __future__ import annotations
 
 NEWSLETTERS: list[dict] = [
-    # -----------------------------------------------------------------------
     # CATEGORY_PROMOTIONS  (~20)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "Stripe",
         "sender_email": "updates@e.stripe.com",
@@ -551,9 +549,7 @@ NEWSLETTERS: list[dict] = [
         "age_range": (1, 7),
     },
 
-    # -----------------------------------------------------------------------
     # CATEGORY_UPDATES  (~15)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "Turing Post",
         "sender_email": "turingpost@mail.beehiiv.com",
@@ -985,9 +981,7 @@ NEWSLETTERS: list[dict] = [
         "age_range": (1, 7),
     },
 
-    # -----------------------------------------------------------------------
     # CATEGORY_SOCIAL  (~5)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "Jessica Wu",
         "sender_email": "jessica.wu@techrecruit.io",

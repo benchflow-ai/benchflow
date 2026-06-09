@@ -19,6 +19,11 @@ Paper: https://arxiv.org/abs/2604.09408
 python benchmarks/hilbench/benchflow.py \
     --output-dir benchmarks/hilbench/tasks
 
+# Generate native task.md packages
+python benchmarks/hilbench/benchflow.py \
+    --output-dir benchmarks/hilbench/tasks-task-md \
+    --task-format task-md
+
 # Generate a subset
 python benchmarks/hilbench/benchflow.py \
     --output-dir benchmarks/hilbench/tasks \
@@ -33,8 +38,17 @@ python benchmarks/hilbench/benchflow.py \
 python benchmarks/hilbench/parity_test.py \
     --tasks-dir benchmarks/hilbench/tasks
 
+# Run native task.md structural parity tests
+python benchmarks/hilbench/parity_test.py \
+    --tasks-dir benchmarks/hilbench/tasks-task-md \
+    --task-format task-md
+
 # Run via BenchFlow (requires a config YAML)
 python benchmarks/hilbench/run_hilbench.py path/to/config.yaml
+
+# Run from native task.md conversions
+python benchmarks/hilbench/run_hilbench.py path/to/config.yaml \
+    --task-format task-md
 ```
 
 ## Dataset
@@ -71,15 +85,39 @@ The tasks are loaded from HuggingFace: [`ScaleAI/hil-bench`](https://huggingface
 |---|---|
 | `task_id` | `task.toml` name field `hilbench/<sanitized-id>` |
 | `problem` | `instruction.md` |
-| `repo_or_db_download_link` (Docker image tarball) | `environment/Dockerfile` (uses pre-built image as `BASE_IMAGE`) |
+| `repo_or_db_download_link` (Docker image tarball) | `environment/Dockerfile` (uses predictable `hilbench-base:<task_id>` tag) |
 | `test_patch` + `tests_to_pass` | `tests/test_patch.diff` + `tests/verify.py` |
-| `ground_truth_answer` (gold patch) | Not used for verification (could be oracle) |
+| `ground_truth_answer` (gold patch) | `solution/solve.patch` + `solution/solve.sh` |
+
+With `--task-format task-md`, each generated task directory uses the native
+package layout:
+
+```text
+<sanitized-task-id>/
+├── task.md
+├── environment/
+│   └── Dockerfile
+├── verifier/
+│   ├── test.sh
+│   ├── verify.py
+│   ├── test_patch.diff
+│   ├── tests_to_pass.json
+│   ├── task_metadata.json
+│   ├── verifier.md
+│   └── rubrics/verifier.md
+└── oracle/
+    ├── solve.sh
+    └── solve.patch
+```
+
+Legacy output remains the default for compatibility and uses `task.toml`,
+`instruction.md`, `tests/`, and `solution/`.
 
 ### Evaluation pipeline
 
 | Step | HILBench | BenchFlow |
 |---|---|---|
-| **Environment** | Docker image loaded from HF bucket tarball | Dockerfile uses pre-built image via `BASE_IMAGE` build arg |
+| **Environment** | Docker image loaded from HF bucket tarball | Dockerfile uses pre-tagged `hilbench-base:<task_id>` image |
 | **Agent submission** | Agent modifies code in the repo | Agent works in `/workspace/` |
 | **Test execution** | Apply test_patch, run tests_to_pass | Same — verify.py applies patch, runs pytest per test |
 | **Scoring** | Count tests_to_pass that pass | Same — reward = passed / total |
@@ -116,6 +154,9 @@ to that name before the task image is built.  The HILBench base images keep
 the repository under `/app` and expose `/testbed` as a symlink, so generated
 Dockerfiles also map `/workspace` to the repository path expected by BenchFlow
 instructions and verifiers.
+
+For native task.md runs, the runner keeps converted tasks and jobs in
+format-specific locations so native runs do not resume legacy results.
 
 ## Notes
 

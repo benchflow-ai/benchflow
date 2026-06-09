@@ -17,12 +17,14 @@ Scoring is **per-criterion proportional**: reward = (criteria passed) / (total c
 
 - Auto-discovers all 1,251 tasks from the `tasks/` directory
 - Mounts each task's `documents/` data room into the container at `/app/documents/`
-- Verifier: Gemini-based LLM judge, one call per rubric criterion, proportional scoring
+- Verifier: Claude-based LLM judge, one call per rubric criterion, proportional scoring
 - Docker base image pinned by digest for reproducibility
 - Task selection: `--limit`, `--task-ids`, `--split parity` / `--split xlsx` / `--split <practice-area>`
 - Harvey LAB harness ported as BenchFlow ACP agent (`harvey-lab-harness`) for true parity
 
 ## Generated Task Structure
+
+Legacy split output is emitted only on request with `--task-format legacy`:
 
 ```
 corporate-ma-review-data-room-red-flag-review/
@@ -30,14 +32,36 @@ corporate-ma-review-data-room-red-flag-review/
 ├── instruction.md                      # agent instructions (from upstream task.json)
 ├── environment/
 │   ├── Dockerfile                      # digest-pinned python:3.13-slim + doc toolchain
-│   └── documents/                      # synthetic data room (copied per-task)
+│   ├── documents/                      # synthetic data room (copied per-task)
+│   └── rubric.json                     # per-criterion rubric from upstream task.json
 └── tests/
     ├── test.sh                         # runs evaluate.py, writes reward to /logs/verifier/
-    ├── evaluate.py                     # Gemini-based LLM judge
-    └── rubric.json                     # per-criterion rubric from upstream task.json
+    └── evaluate.py                     # Claude-based LLM judge
 ```
 
-No `solution/` directory: Harvey LAB ships no gold deliverables.
+Native `task.md` output is the default:
+
+```text
+corporate-ma-review-data-room-red-flag-review/
+├── task.md
+├── environment/
+│   ├── Dockerfile
+│   └── documents/
+├── verifier/
+│   ├── test.sh
+│   ├── evaluate.py
+│   ├── verifier.md
+│   └── rubrics/
+│       ├── rubric.json
+│       ├── verifier.md
+│       └── context.md
+└── oracle/
+    └── README.md
+```
+
+No `solution/` or `oracle/solve.sh` is generated: Harvey LAB ships no gold
+deliverables. Native packages record that explicitly in `oracle/README.md`,
+while the verifier package keeps the rubric outside the agent-visible image.
 
 ## Usage
 
@@ -48,6 +72,10 @@ cd benchmarks/harvey-lab
 
 # All 1,251 tasks (default: --split main)
 python benchflow.py --output-dir /tmp/harvey-lab-tasks --harvey-root /path/to/harvey-labs
+
+# Legacy split packages (task.toml + tests/ + solution/)
+python benchflow.py --output-dir /tmp/harvey-lab-legacy --harvey-root /path/to/harvey-labs \
+    --task-format legacy
 
 # Parity slice (first 50 tasks alphabetically)
 python benchflow.py --output-dir /tmp/parity --harvey-root /path/to/harvey-labs --split parity
@@ -92,6 +120,9 @@ python -c "import asyncio; from benchflow.evaluation import Evaluation; asyncio.
 ```bash
 # Structural parity (full — all 1,251 tasks)
 python benchmarks/harvey-lab/parity_test.py --mode full
+
+# Native task.md structural parity
+python benchmarks/harvey-lab/parity_test.py --mode subset --task-format task-md
 
 # Prompt-level side-by-side (requires Gemini API key)
 GEMINI_API_KEY=... python benchmarks/harvey-lab/parity_test.py --mode side-by-side
@@ -166,8 +197,10 @@ replaced with hyphens, collapsed.
 #### Agent timeout
 Scales with criteria count: `max(1800, criteria_count * 30)` seconds.
 
-#### No `solution/` folder
-Harvey LAB ships no gold deliverables. No oracle solutions generated.
+#### No static oracle
+Harvey LAB ships no gold deliverables. Legacy output has no `solution/`
+folder. Native output uses `oracle/README.md` as evidence that the
+human-authored rubric, not a static answer file, is the benchmark ground truth.
 
 #### Harvey LAB harness agent
 Ported as `harvey-lab-harness` (alias: `harvey-lab`) in BenchFlow's agent registry.

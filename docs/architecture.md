@@ -1,5 +1,7 @@
 # BenchFlow — Architecture
 
+> The runtime that executes the three planes — see [Concepts: the three planes](./concepts.md#the-three-planes).
+
 *The whole architecture, as one coherent picture — every concept we need, no build-order tiering. Release scoping and milestones are tracked separately (Linear). This document is derived from the sources that count — Han Lee's writing and conversation, our project notes, and the agentic-RL literature — not from the current doc or the current code, both of which are snapshots that follow this, not the other way round.*
 
 ---
@@ -45,6 +47,18 @@ This architecture rests on three sources, kept honest against each other.
 
 ## The conceptual model — the planes
 
+The task standard's spine is **three orthogonal planes** — **Environment** (how the world is built, reset, secured) × **Interaction** (who acts, in what loop) × **Verifier** (what surface is scored, how) — and a task pins one mode per plane in `task.md` ([Concepts: the three planes](./concepts.md#the-three-planes)). This architecture is the runtime that *executes* that selection: a `Rollout` ties one mode from each plane into a single scored run.
+
+The codebase carries each conceptual plane in a named subsystem:
+
+| Conceptual plane (`task.md`) | The runtime that executes it | Where it lives in `src/benchflow/` |
+|---|---|---|
+| **Environment** — build / reset / secure the world | the `Environment` contract + `ManifestEnvironment`, running on a `Sandbox` substrate | `environment/`, `sandbox/` |
+| **Interaction** — who acts, in what loop | the `Agent` + `Session` contracts (ACP), `Scene`/`Role`/`Turn`, the pluggable User model | `agents/`, `acp/`, `scenes.py`, `contracts/user.py` |
+| **Verifier** — what's scored, how | the `Reward` / `RewardFunc` / `Rubric` contracts | `rewards/` |
+
+Under the hood the runtime decomposes the Interaction plane into **two swappable provider seams** — *who runs* (Sandbox) and *who acts* (Agent) — so the implementation exposes **four swappable, managed-or-BYO planes**: Sandbox, Agent, Environment, Reward. The three-plane spine is the *authoring* surface; the four provider planes are how the kernel keeps them independently swappable.
+
 ```
         bench CLI · bf.run() · the environment manifest
                           │
@@ -56,19 +70,20 @@ This architecture rests on three sources, kept honest against each other.
            ▼          ▼           ▼          ▼
        Sandbox      Agent     Environment   Reward
        (where)     (who)      (the world)  (how scored)
+       └─ Interaction ─┘     Environment   Verifier
 ```
 
-The kernel is **three subsystems** — Rollout lifecycle, reward, trajectory — importing only `contracts/` (four `Protocol`s). Concrete providers (Docker, ACP, `ManifestEnvironment`, `RewardFunc`s) join via a registry. The four planes map onto Han's **E**:
+The kernel is **three subsystems** — Rollout lifecycle, reward, trajectory — importing only `contracts/` (the four `Protocol` groups: `Sandbox`, `Agent`/`Session`, `Environment`, `Reward`). Concrete providers (Docker, ACP, `ManifestEnvironment`, `RewardFunc`s) join via a registry. The four planes map onto Han's **E**:
 
-| Han's component | BenchFlow | Plane |
-|---|---|---|
-| **T** — Tasks | Task / `task.toml` | kernel concept |
-| **H** — Harness | the agent + the kernel scaffolding around it | **Agent plane** |
-| **V** — Verifier | `RewardFunc` / `Rubric` / verifier | **Reward plane** |
-| **S** — State | the stateful world | **Environment plane** |
-| **C** — Config | `RolloutConfig` | kernel concept |
+| Han's component | BenchFlow | Provider plane | Spine plane |
+|---|---|---|---|
+| **T** — Tasks | Task package: native `task.md` + `oracle/` + `verifier/` (legacy `instruction.md` / `task.toml` / `solution/` / `tests/` still load) | kernel concept | — |
+| **H** — Harness | the agent + the kernel scaffolding around it | **Agent plane** | **Interaction** |
+| **V** — Verifier | `RewardFunc` / `Rubric` / verifier | **Reward plane** | **Verifier** |
+| **S** — State | the stateful world | **Environment plane** | **Environment** |
+| **C** — Config | `RolloutConfig` | kernel concept | — |
 
-T and C are kernel concepts (the inputs); H, V, S are the planes that *do* the work; Sandbox is the substrate all three run on. Four planes, one kernel, two kernel-level inputs — that is the whole conceptual surface.
+T and C are kernel concepts (the inputs); H, V, S are the planes that *do* the work; Sandbox is the substrate all three run on. Four provider planes, one kernel, two kernel-level inputs — that is the whole conceptual surface. The right-hand column shows the same decomposition as the task standard's three-plane spine: Agent (H) is the **Interaction** plane, Reward (V) is the **Verifier** plane, Environment (S) is the **Environment** plane.
 
 ## The execution model — tree-native
 
@@ -109,9 +124,11 @@ A Rollout is checkpointable because three snapshot layers compose — container 
 
 ## The four planes
 
-**Sandbox — where it runs.** Compute substrate. Built-in: `Local` (raw Linux) + `Docker`. Optional: `Daytona`, `Modal`, `Firecracker`, K8s. BYO via the `Sandbox` protocol. Hardening (`lockdown`) is a capability flag. Framework-guaranteed readiness gate + teardown. An environment is declared once and runs on any provider.
+The four provider planes below are how the kernel keeps the three-plane spine swappable: **Sandbox + Agent** carry the **Interaction** plane, **Environment** carries the **Environment** plane, **Reward** carries the **Verifier** plane.
 
-**Agent — who acts.** The agent under test (eval) or the policy under training — Han's harness, "not intelligent." Protocol: **ACP** (the official `agent-client-protocol`). BYO via `--agent-import-path`. The registry stores agent *declarations* as data, not install code in the kernel. A trainer-served policy endpoint (OpenAI-compatible, hot-swappable) is one agent provider type. The plane's real surface is the `Session` (below) — not just `connect`.
+**Sandbox — where it runs (Interaction substrate).** Compute substrate. Built-in: `Local` (raw Linux) + `Docker`. Optional: `Daytona`, `Modal`, `Firecracker`, K8s. BYO via the `Sandbox` protocol. Hardening (`lockdown`) is a capability flag. Framework-guaranteed readiness gate + teardown. An environment is declared once and runs on any provider.
+
+**Agent — who acts (Interaction plane).** The agent under test (eval) or the policy under training — Han's harness, "not intelligent." Protocol: **ACP** (the official `agent-client-protocol`); the `acpx/` provider prefix routes through ACPX for persistent sessions and crash recovery. BYO via `--agent-import-path`. The registry stores agent *declarations* as data, not install code in the kernel. A trainer-served policy endpoint (OpenAI-compatible, hot-swappable) is one agent provider type. The plane's real surface is the `Session` (below) — not just `connect`.
 
 ### Skill loading
 
@@ -134,9 +151,9 @@ discovery. Use `name` to tell the agent which skills are mounted, `description`
 to include each mounted skill's description, or `full` to include the full
 `SKILL.md` body. Omit the variable to keep BenchFlow's runtime default off.
 
-**Environment — the world (Han's S).** The stateful world the agent acts in. Owns the world's lifecycle: `provision / readiness / query / snapshot / restore / reset / teardown`. See "The Environment plane & the manifest."
+**Environment — the world (Han's S; Environment plane).** The stateful world the agent acts in. Owns the world's lifecycle: `provision / readiness / query / snapshot / restore / reset / teardown`. See "The Environment plane & the manifest."
 
-**Reward — how it's scored (Han's V).** `RewardFunc` / `Rubric` / verifier. `V: (task, completion, info) → [0,1]`, generalised to a graded, multi-space, multi-granularity signal over the trajectory tree. See "Evaluation."
+**Reward — how it's scored (Han's V; Verifier plane).** `RewardFunc` / `Rubric` / verifier. `V: (task, completion, info) → [0,1]`, generalised to a graded, multi-space, multi-granularity signal over the trajectory tree. See "Evaluation."
 
 ## The four contracts
 
@@ -211,7 +228,7 @@ hidden_from_agent = ["expectations.json", "tasks/*/fixtures"]
 
 ## Evaluation — the five spaces
 
-eval = monitoring = reward. The same scoring runs at train time, at eval time, and in production — only the context differs. A reward signal is read from the trajectory across **five spaces** (Han):
+This is the **Verifier plane** at runtime: what surface is scored, and how. eval = monitoring = reward — the same scoring runs at train time, at eval time, and in production; only the context differs. A reward signal is read from the trajectory across **five spaces** (Han):
 
 | Space | What it checks |
 |---|---|
@@ -225,7 +242,7 @@ Every reward record is tagged **`(space, granularity, value)`**. Granularity is 
 
 ## The interaction model — ACP
 
-Human interaction is modelled through ACP's role split: **BenchFlow is the ACP Client; the "user" is a pluggable User Model inside the Client role.** Two channels carry everything:
+This is the **Interaction plane** at runtime: who acts, and in what loop. Human interaction is modelled through ACP's role split: **BenchFlow is the ACP Client; the "user" is a pluggable User Model inside the Client role.** Two channels carry everything:
 - `session/prompt` (Client → Agent) — the task instruction and every **nudge** (user-initiated follow-up).
 - `request_permission` / `ask_user` (Agent → Client, with enumerated options) — agent-initiated, surfaced through `Session.on_ask_user`.
 
@@ -241,13 +258,13 @@ The manifest is BenchFlow's native format; **adapters translate every other form
 
 ## How a Task flows through the architecture
 
-A **Task** (Han's T) is the problem spec — `task.toml` + instruction + the environment package + the verifier. It is a kernel concept, and it is what wires the planes together for one run:
+A **Task** (Han's T) is the problem spec: native `task.md` for config/prompt/roles/scenes, the `environment/` package, an `oracle/` reference (legacy alias `solution/`), and the `verifier/` package (legacy alias `tests/`); `task.toml` / `instruction.md` still load for compatibility. It is a kernel concept, and it is what selects one mode per plane and wires them together for one run:
 
 ```
-Task ─┬─→ selects the Environment package + manifest  ───→ Environment plane provisions S
-      ├─→ carries the instruction / prompt            ───→ Agent plane (H) receives it
-      ├─→ names the verifier + hidden fixtures         ───→ Reward plane (V) scores
-      └─→ carries config (turn limits, budgets)        ───→ RolloutConfig (C)
+Task ─┬─→ selects the environment/ package + manifest  ──→ Environment plane provisions S
+      ├─→ carries the instruction / prompt + scenes    ──→ Interaction plane (Agent, H) acts
+      ├─→ names the verifier/ + hidden fixtures         ──→ Verifier plane (Reward, V) scores
+      └─→ carries config (turn limits, budgets)         ──→ RolloutConfig (C)
                                    │
                                    ▼
               one Rollout (a tree) runs in a Sandbox

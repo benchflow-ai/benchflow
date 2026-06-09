@@ -17,8 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._utils.scoring import classify_result
+from benchflow._utils.source_provenance import source_issues, source_matches_parent
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL, SKILL_SOURCE_NONE
 
 DEFAULT_HARBOR_BASELINE_REF = "2d86fe82f6a06f7c7b3a22a3ae90d554d0e9655c"
+DEFAULT_BENCHFLOW_SOURCE_REPO = "benchflow-ai/skillsbench"
+DEFAULT_BENCHFLOW_SOURCE_PATH_PREFIX = "tasks"
+DEFAULT_BENCHFLOW_TASK_ENTRYPOINT = "task.md"
 PIN_FILE = ".benchflow-harbor-baseline-ref"
 BENCHFLOW_REQUIRED = {"task_name", "rewards", "error", "verifier_error"}
 HARBOR_REQUIRED = {"task_name", "config", "agent_info", "verifier_result"}
@@ -42,8 +47,11 @@ class NormalizedResult:
     outcome: str
     agent: str | None
     model: str | None
+    skill_mode: str | None
+    skill_source: str | None
     environment: str | None
     trajectory: NormalizedTrajectory | None
+    source_provenance: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +59,16 @@ class ResultSet:
     source: str
     results: list[NormalizedResult]
     issues: list[str]
+
+
+@dataclass(frozen=True)
+class BenchflowProvenancePolicy:
+    source_repo: str
+    source_path_prefix: str
+    task_entrypoint: str
+    expected_skill_mode: str
+    expected_skill_source: str
+    expected_source_sha: str | None
 
 
 def _load_json(path: Path) -> Any:
@@ -140,13 +158,157 @@ def _path_may_match_task(path: Path, tasks: set[str]) -> bool:
     return any(task == path_task or task.startswith(path_task) for task in tasks)
 
 
-def _normalize_benchflow_result(path: Path, data: dict[str, Any]) -> NormalizedResult:
+def _source_path_task_segment(source_path: str, task_entrypoint: str) -> str:
+    parts = Path(source_path.strip("/")).parts
+    if not parts:
+        return ""
+    if parts[-1] == task_entrypoint and len(parts) >= 2:
+        return parts[-2]
+    return parts[-1]
+
+
+def _benchflow_source_policy_issues(
+    path: Path,
+    *,
+    task_name: str,
+    source: object,
+    policy: BenchflowProvenancePolicy,
+) -> list[str]:
+    label = f"benchflow: {path}"
+    issues = source_issues(source, label, require_file_hashes=True)
+    if not isinstance(source, dict):
+        return issues
+
+    repo = source.get("repo")
+    if repo != policy.source_repo:
+        issues.append(
+            f"{label}: source.repo {repo!r} does not match "
+            f"expected {policy.source_repo!r}"
+        )
+
+    if policy.expected_source_sha is not None:
+        resolved_sha = source.get("resolved_sha")
+        if resolved_sha != policy.expected_source_sha:
+            issues.append(
+                f"{label}: source.resolved_sha {resolved_sha!r} does not match "
+                f"expected {policy.expected_source_sha!r}"
+            )
+
+    source_path = source.get("path")
+    if not isinstance(source_path, str) or not source_path.strip("/"):
+        issues.append(f"{label}: source.path must be a non-empty task path")
+    else:
+        normalized_path = source_path.strip("/")
+        path_prefix = policy.source_path_prefix.strip("/")
+        if path_prefix and not (
+            normalized_path == path_prefix
+            or normalized_path.startswith(f"{path_prefix}/")
+        ):
+            issues.append(
+                f"{label}: source.path {source_path!r} is not under "
+                f"expected prefix {path_prefix!r}"
+            )
+        path_task = _source_path_task_segment(
+            normalized_path,
+            policy.task_entrypoint,
+        )
+        if path_task != task_name:
+            issues.append(
+                f"{label}: source.path task segment {path_task!r} does not "
+                f"match task_name {task_name!r}"
+            )
+
+    file_hashes = source.get("file_hashes")
+    if (
+        isinstance(file_hashes, dict)
+        and policy.task_entrypoint
+        and policy.task_entrypoint not in file_hashes
+    ):
+        issues.append(
+            f"{label}: source.file_hashes must include native {policy.task_entrypoint}"
+        )
+    return issues
+
+
+def _benchflow_config_policy_issues(
+    path: Path,
+    *,
+    data: dict[str, Any],
+    source: object,
+    policy: BenchflowProvenancePolicy,
+) -> list[str]:
+    config_path = path.parent / "config.json"
+    label = f"benchflow: {path}"
+    try:
+        config = _load_json(config_path)
+    except OSError as exc:
+        return [f"{label}: missing rollout config.json: {exc}"]
+    except json.JSONDecodeError as exc:
+        return [f"{label}: malformed rollout config.json: {exc}"]
+    if not isinstance(config, dict):
+        return [f"{label}: rollout config.json must be a JSON object"]
+
+    issues: list[str] = []
+    for field, expected in (
+        ("skill_mode", policy.expected_skill_mode),
+        ("skill_source", policy.expected_skill_source),
+    ):
+        result_value = _string(data.get(field))
+        config_value = _string(config.get(field))
+        if result_value != expected:
+            issues.append(
+                f"{label}: {field} {result_value!r} does not match "
+                f"expected {expected!r}"
+            )
+        if config_value != result_value:
+            issues.append(
+                f"{label}: config.{field} {config_value!r} does not match "
+                f"result {field} {result_value!r}"
+            )
+
+    config_source = config.get("source")
+    if config_source is not None:
+        if not isinstance(config_source, dict):
+            issues.append(f"{label}: config.source must be an object when present")
+        elif not isinstance(source, dict) or not source_matches_parent(
+            source,
+            config_source,
+        ):
+            issues.append(
+                f"{label}: config.source does not cover result source provenance"
+            )
+    return issues
+
+
+def _normalize_benchflow_result(
+    path: Path,
+    data: dict[str, Any],
+    *,
+    policy: BenchflowProvenancePolicy,
+) -> NormalizedResult:
     missing = BENCHFLOW_REQUIRED - set(data)
     if missing:
         raise ValueError(f"missing BenchFlow field(s): {sorted(missing)}")
     task_name = _string(data.get("task_name"))
     if task_name is None:
         raise ValueError("BenchFlow task_name must be a non-empty string")
+    source = data.get("source")
+    policy_issues = [
+        *_benchflow_source_policy_issues(
+            path,
+            task_name=task_name,
+            source=source,
+            policy=policy,
+        ),
+        *_benchflow_config_policy_issues(
+            path,
+            data=data,
+            source=source,
+            policy=policy,
+        ),
+    ]
+    if policy_issues:
+        raise ValueError("; ".join(policy_issues))
     rewards = data.get("rewards")
     reward = _number(rewards.get("reward")) if isinstance(rewards, dict) else None
     error = _string(data.get("error"))
@@ -163,8 +325,11 @@ def _normalize_benchflow_result(path: Path, data: dict[str, Any]) -> NormalizedR
         ),
         agent=_string(data.get("agent")),
         model=_string(data.get("model")),
+        skill_mode=_string(data.get("skill_mode")),
+        skill_source=_string(data.get("skill_source")),
         environment=None,
         trajectory=_load_trajectory(path),
+        source_provenance=source if isinstance(source, dict) else None,
     )
 
 
@@ -218,6 +383,8 @@ def _normalize_harbor_result(path: Path, data: dict[str, Any]) -> NormalizedResu
         ),
         agent=_harbor_agent_name(agent_info, config_agent),
         model=_harbor_model_name(agent_info, config_agent),
+        skill_mode=None,
+        skill_source=None,
         environment=(
             _string(config_env.get("type")) if isinstance(config_env, dict) else None
         ),
@@ -225,12 +392,13 @@ def _normalize_harbor_result(path: Path, data: dict[str, Any]) -> NormalizedResu
     )
 
 
-def load_result_set(root: Path, *, source: str, tasks: set[str] | None) -> ResultSet:
-    normalizer = (
-        _normalize_benchflow_result
-        if source == "benchflow"
-        else _normalize_harbor_result
-    )
+def load_result_set(
+    root: Path,
+    *,
+    source: str,
+    tasks: set[str] | None,
+    benchflow_policy: BenchflowProvenancePolicy | None = None,
+) -> ResultSet:
     results: list[NormalizedResult] = []
     issues: list[str] = []
     for path in _find_result_files(root):
@@ -240,7 +408,16 @@ def load_result_set(root: Path, *, source: str, tasks: set[str] | None) -> Resul
             data = _load_json(path)
             if not isinstance(data, dict):
                 raise ValueError("result.json is not a JSON object")
-            result = normalizer(path, data)
+            if source == "benchflow":
+                if benchflow_policy is None:
+                    raise ValueError("BenchFlow provenance policy is required")
+                result = _normalize_benchflow_result(
+                    path,
+                    data,
+                    policy=benchflow_policy,
+                )
+            else:
+                result = _normalize_harbor_result(path, data)
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             issues.append(f"{source}: {path}: {exc}")
             continue
@@ -455,6 +632,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Allowed per-task reward movement outside Harbor observed range.",
     )
+    parser.add_argument(
+        "--expected-benchflow-source-repo",
+        default=DEFAULT_BENCHFLOW_SOURCE_REPO,
+        help="Expected BenchFlow task source repo.",
+    )
+    parser.add_argument(
+        "--expected-benchflow-source-path-prefix",
+        default=DEFAULT_BENCHFLOW_SOURCE_PATH_PREFIX,
+        help="Expected prefix for BenchFlow source.path values.",
+    )
+    parser.add_argument(
+        "--expected-benchflow-task-entrypoint",
+        default=DEFAULT_BENCHFLOW_TASK_ENTRYPOINT,
+        help="Native task entrypoint required in BenchFlow source.file_hashes.",
+    )
+    parser.add_argument(
+        "--expected-benchflow-source-sha",
+        help="Optional exact BenchFlow source.resolved_sha expected for all results.",
+    )
+    parser.add_argument(
+        "--expected-skill-mode",
+        default=SKILL_MODE_NO_SKILL,
+        help="Expected canonical BenchFlow skill_mode.",
+    )
+    parser.add_argument(
+        "--expected-skill-source",
+        default=SKILL_SOURCE_NONE,
+        help="Expected canonical BenchFlow skill_source.",
+    )
     return parser
 
 
@@ -465,7 +671,20 @@ def main(argv: list[str] | None = None) -> int:
     harbor_root = args.harbor_baseline_root.resolve()
 
     pin_issues = _baseline_pin_issues(harbor_root, args.harbor_baseline_ref)
-    benchflow = load_result_set(benchflow_root, source="benchflow", tasks=tasks)
+    benchflow_policy = BenchflowProvenancePolicy(
+        source_repo=args.expected_benchflow_source_repo,
+        source_path_prefix=args.expected_benchflow_source_path_prefix,
+        task_entrypoint=args.expected_benchflow_task_entrypoint,
+        expected_skill_mode=args.expected_skill_mode,
+        expected_skill_source=args.expected_skill_source,
+        expected_source_sha=args.expected_benchflow_source_sha,
+    )
+    benchflow = load_result_set(
+        benchflow_root,
+        source="benchflow",
+        tasks=tasks,
+        benchflow_policy=benchflow_policy,
+    )
     effective_tasks = tasks or {result.task_name for result in benchflow.results}
     harbor = load_result_set(harbor_root, source="harbor", tasks=effective_tasks)
     issues = [
@@ -486,6 +705,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"BenchFlow root: {benchflow_root}")
     print(f"Harbor baseline root: {harbor_root}")
     print(f"Harbor baseline ref: {args.harbor_baseline_ref}")
+    print(
+        "Expected BenchFlow source: "
+        f"{benchflow_policy.source_repo}/{benchflow_policy.source_path_prefix} "
+        f"entrypoint={benchflow_policy.task_entrypoint} "
+        f"sha={benchflow_policy.expected_source_sha or '(any)'}"
+    )
+    print(
+        "Expected BenchFlow skills: "
+        f"mode={benchflow_policy.expected_skill_mode} "
+        f"source={benchflow_policy.expected_skill_source}"
+    )
     print(
         f"Tasks: {', '.join(sorted(effective_tasks)) if effective_tasks else '(none)'}"
     )

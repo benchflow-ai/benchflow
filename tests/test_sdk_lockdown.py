@@ -13,9 +13,7 @@ from benchflow.sandbox.lockdown import (
 from benchflow.sdk import SDK
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL, resolve_task_skill_policy
 
-# ---------------------------------------------------------------------------
 # _validate_locked_path
-# ---------------------------------------------------------------------------
 
 
 class TestValidateLockedPath:
@@ -24,7 +22,9 @@ class TestValidateLockedPath:
     @pytest.mark.parametrize(
         "p",
         [
+            "/oracle",
             "/solution",
+            "/verifier",
             "/tests",
             "/logs/verifier",
             "/app-foo",
@@ -67,9 +67,7 @@ class TestValidateLockedPath:
             _validate_locked_path(bad)
 
 
-# ---------------------------------------------------------------------------
 # _resolve_locked_paths
-# ---------------------------------------------------------------------------
 
 
 class TestResolveLockedPaths:
@@ -77,15 +75,15 @@ class TestResolveLockedPaths:
 
     def test_defaults_with_sandbox_user(self):
         result = _resolve_locked_paths("agent", None)
-        assert result == ["/solution", "/tests"]
+        assert result == ["/oracle", "/solution", "/verifier", "/tests"]
 
     def test_union_with_caller_paths(self):
         result = _resolve_locked_paths("agent", ["/data"])
-        assert result == ["/solution", "/tests", "/data"]
+        assert result == ["/oracle", "/solution", "/verifier", "/tests", "/data"]
 
     def test_dedup_preserves_order(self):
         result = _resolve_locked_paths("agent", ["/solution", "/data"])
-        assert result == ["/solution", "/tests", "/data"]
+        assert result == ["/oracle", "/solution", "/verifier", "/tests", "/data"]
 
     def test_explicit_opt_out(self):
         result = _resolve_locked_paths("agent", [])
@@ -99,9 +97,7 @@ class TestResolveLockedPaths:
             _resolve_locked_paths(None, ["/solution"])
 
 
-# ---------------------------------------------------------------------------
 # lockdown_paths
-# ---------------------------------------------------------------------------
 
 
 class TestLockdownPaths:
@@ -144,9 +140,7 @@ class TestLockdownPaths:
         mock_env.exec.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
 # EvaluationConfig YAML parsing
-# ---------------------------------------------------------------------------
 
 
 class TestJobConfigYAML:
@@ -209,9 +203,7 @@ class TestJobConfigYAML:
         assert job._config.sandbox_user == "agent"
 
 
-# ---------------------------------------------------------------------------
 # _write_config records locked paths
-# ---------------------------------------------------------------------------
 
 
 class TestWriteConfigRecordsPaths:
@@ -243,9 +235,7 @@ class TestWriteConfigRecordsPaths:
         assert config["sandbox_locked_paths"] == ["/solution", "/tests"]
 
 
-# ---------------------------------------------------------------------------
 # Privilege dropping command construction
-# ---------------------------------------------------------------------------
 
 
 class TestPrivDropCommand:

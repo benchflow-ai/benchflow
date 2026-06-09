@@ -26,13 +26,33 @@ import logging
 import re
 import shutil
 import stat
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
+from typing import Any
+
+import yaml
+
+_REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+_repo_src_path = str(_REPO_SRC)
+if _repo_src_path in sys.path:
+    sys.path.remove(_repo_src_path)
+sys.path.insert(0, _repo_src_path)
+
+from benchflow.task.document import render_task_md  # noqa: E402
+from benchflow.task.output_format import (  # noqa: E402
+    TASK_OUTPUT_FORMATS,
+    TaskOutputFormat,
+    ensure_existing_task_output_format,
+    oracle_dir_name,
+    validate_task_output_format,
+    verifier_dir_name,
+)
 
 logger = logging.getLogger(__name__)
 
-# ── Timeout presets by repo (larger repos get more time) ─────────────
+# Timeout presets by repo (larger repos get more time)
 
 _REPO_TIMEOUTS: dict[str, tuple[int, int]] = {
     # (agent_timeout, verifier_timeout)
@@ -42,6 +62,8 @@ _REPO_TIMEOUTS: dict[str, tuple[int, int]] = {
     "flipt-io/flipt": (3600, 300),
 }
 _DEFAULT_TIMEOUT = (3600, 300)
+TASK_FORMATS = TASK_OUTPUT_FORMATS
+TaskFormat = TaskOutputFormat
 
 
 @dataclass
@@ -64,6 +86,11 @@ def _sanitize_name(raw: str) -> str:
     name = raw.lower().strip()
     name = re.sub(r"[^a-z0-9]+", "-", name)
     return name.strip("-")
+
+
+def _difficulty_for_task(task: HILBenchTask) -> str:
+    n_tests = len(task.tests_to_pass)
+    return "easy" if n_tests <= 3 else ("hard" if n_tests > 10 else "medium")
 
 
 def load_tasks_from_hf(
@@ -101,8 +128,7 @@ def _render_task_toml(task: HILBenchTask) -> str:
         task.repo_name, _DEFAULT_TIMEOUT
     )
     name = f"hilbench/{_sanitize_name(task.task_id)}"
-    n_tests = len(task.tests_to_pass)
-    difficulty = "easy" if n_tests <= 3 else ("hard" if n_tests > 10 else "medium")
+    difficulty = _difficulty_for_task(task)
     return f"""\
 version = "1.0"
 
@@ -126,6 +152,61 @@ cpus = 2
 memory_mb = 4096
 storage_mb = 20480
 """
+
+
+def _render_task_md(task: HILBenchTask) -> str:
+    agent_timeout, verifier_timeout = _REPO_TIMEOUTS.get(
+        task.repo_name, _DEFAULT_TIMEOUT
+    )
+    sanitized_id = _sanitize_name(task.task_id)
+    instruction = _render_instruction(task).strip()
+    frontmatter: dict[str, Any] = {
+        "schema_version": "1.3",
+        "task": {
+            "name": f"hilbench/{sanitized_id}",
+        },
+        "metadata": {
+            "author_name": "Scale AI",
+            "difficulty": _difficulty_for_task(task),
+            "category": "swe",
+            "tags": ["hilbench", "swe", _sanitize_name(task.repo_name)],
+        },
+        "agent": {
+            "timeout_sec": agent_timeout,
+        },
+        "verifier": {
+            "timeout_sec": verifier_timeout,
+        },
+        "environment": {
+            "cpus": 2,
+            "memory_mb": 4096,
+            "storage_mb": 20480,
+        },
+        "benchflow": {
+            "document_version": "0.3",
+            "source": {
+                "benchmark": "HILBench",
+                "task_id": task.task_id,
+                "task_type": task.task_type,
+                "repo_name": task.repo_name,
+                "download_link": task.download_link,
+                "uid": task.uid,
+            },
+            "verifier": {
+                "spec": "verifier/verifier.md",
+                "rubric": "verifier/rubrics/verifier.md",
+                "entrypoint": "verifier/test.sh",
+                "implementation": {
+                    "type": "test-script",
+                    "outputs": {
+                        "reward_json": "/logs/verifier/reward.json",
+                        "reward_details": "/logs/verifier/reward-details.json",
+                    },
+                },
+            },
+        },
+    }
+    return render_task_md(frontmatter, instruction)
 
 
 def _render_instruction(task: HILBenchTask) -> str:
@@ -195,19 +276,145 @@ def _render_test_sh(task: HILBenchTask) -> str:
     return Template("""\
 #!/bin/bash
 # Verifier for HILBench SWE task: $task_id
-set -o pipefail
+set -euo pipefail
 
-exec > >(tee /logs/verifier/verifier.log) 2>&1
+verifier_log="${BENCHFLOW_VERIFIER_LOG:-/logs/verifier/verifier.log}"
+mkdir -p "$(dirname "$verifier_log")"
+exec > >(tee "$verifier_log") 2>&1
 
-python3 /tests/verify.py \\
+VERIFIER_DIR="${BENCHFLOW_VERIFIER_DIR:-/verifier}"
+LEGACY_TESTS_DIR="${BENCHFLOW_LEGACY_TESTS_DIR:-/tests}"
+if [ ! -f "$VERIFIER_DIR/verify.py" ] && [ -f "$LEGACY_TESTS_DIR/verify.py" ]; then
+    VERIFIER_DIR="$LEGACY_TESTS_DIR"
+fi
+
+workspace="${BENCHFLOW_WORKSPACE:-/workspace}"
+reward_file="${BENCHFLOW_REWARD_TEXT:-/logs/verifier/reward.txt}"
+reward_json="${BENCHFLOW_REWARD_JSON:-/logs/verifier/reward.json}"
+details_json="${BENCHFLOW_REWARD_DETAILS_JSON:-/logs/verifier/reward-details.json}"
+mkdir -p "$(dirname "$reward_file")" "$(dirname "$reward_json")" "$(dirname "$details_json")"
+
+python3 "$VERIFIER_DIR/verify.py" \\
     --task-id "$task_id" \\
-    --workspace /workspace \\
-    --tests-to-pass-file /tests/tests_to_pass.json \\
-    --reward-file /logs/verifier/reward.txt
+    --workspace "$workspace" \\
+    --test-patch "$VERIFIER_DIR/test_patch.diff" \\
+    --tests-to-pass-file "$VERIFIER_DIR/tests_to_pass.json" \\
+    --reward-file "$reward_file"
+
+python3 - "$reward_file" "$reward_json" "$details_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+reward_path = Path(sys.argv[1])
+reward_json_path = Path(sys.argv[2])
+details_json_path = Path(sys.argv[3])
+reward = float(reward_path.read_text().strip())
+reward_json_path.write_text(
+    json.dumps({"reward": reward}, indent=2) + "\\n"
+)
+details_json_path.write_text(
+    json.dumps(
+        {
+            "reward": reward,
+            "partial_credit_reward": reward,
+            "source": "hilbench-fail-to-pass-tests",
+        },
+        indent=2,
+    )
+    + "\\n"
+)
+PY
 """).safe_substitute(task_id=task.task_id)
 
 
-# ── verify.py (copied into every task's tests/) ──────────────────────
+def _render_verifier_md(task: HILBenchTask) -> str:
+    frontmatter: dict[str, Any] = {
+        "document_version": "0.3",
+        "verifier": {
+            "name": f"hilbench-{_sanitize_name(task.task_id)}-verifier",
+            "default_strategy": "deterministic",
+            "strategies": {
+                "deterministic": {
+                    "type": "script",
+                    "command": "./test.sh",
+                },
+            },
+            "rubric": {
+                "combine": "weighted_sum",
+                "dimensions": {
+                    "patch_applies": {
+                        "weight": 0.25,
+                        "source": "deterministic",
+                    },
+                    "fail_to_pass_tests": {
+                        "weight": 0.75,
+                        "source": "deterministic",
+                    },
+                },
+            },
+            "outputs": {
+                "reward_text": "/logs/verifier/reward.txt",
+                "reward_json": "/logs/verifier/reward.json",
+                "details_json": "/logs/verifier/reward-details.json",
+            },
+        },
+    }
+    rendered_frontmatter = yaml.safe_dump(frontmatter, sort_keys=False)
+    return (
+        f"---\n{rendered_frontmatter}---\n\n## role:reviewer\n\n"
+        "The deterministic verifier applies the HILBench test patch, runs the "
+        "declared FAIL_TO_PASS pytest targets, and awards partial credit from "
+        "the fraction of tests that pass.\n"
+    )
+
+
+def _render_verifier_rubric(task: HILBenchTask) -> str:
+    tests = "\n".join(f"- `{test}`" for test in task.tests_to_pass) or "- none"
+    return f"""\
+# HILBench SWE Rubric
+
+Task: `hilbench/{_sanitize_name(task.task_id)}`
+
+- Patch applies: the HILBench test patch must apply cleanly to `/workspace`.
+- FAIL_TO_PASS tests: reward is the fraction of declared tests that pass.
+
+Tests to pass:
+
+{tests}
+"""
+
+
+def _gold_patch(task: HILBenchTask) -> str:
+    patch = task.ground_truth_answer.strip()
+    if not patch:
+        raise ValueError(
+            f"HILBench task {task.task_id} is missing ground_truth_answer; "
+            "cannot emit oracle solution"
+        )
+    return f"{patch}\n"
+
+
+def _render_solve_sh(task: HILBenchTask) -> str:
+    return Template("""\
+#!/bin/bash
+# Oracle solution for HILBench SWE task: $task_id
+set -euo pipefail
+
+workspace="${BENCHFLOW_WORKSPACE:-/workspace}"
+oracle_dir="${BENCHFLOW_ORACLE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+patch_file="${BENCHFLOW_ORACLE_PATCH:-$oracle_dir/solve.patch}"
+
+cd "$workspace"
+if ! git apply --verbose "$patch_file"; then
+    git apply --3way "$patch_file"
+fi
+""").safe_substitute(task_id=task.task_id)
+
+
+# verify.py (copied into every task's verifier package)
 
 VERIFY_PY = '''\
 """HILBench SWE verifier for BenchFlow.
@@ -287,6 +494,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--workspace", required=True, type=Path)
+    parser.add_argument("--test-patch", required=True, type=Path)
     parser.add_argument("--tests-to-pass-file", required=True, type=Path)
     parser.add_argument("--reward-file", required=True, type=Path)
     args = parser.parse_args()
@@ -298,8 +506,7 @@ def main() -> None:
 
     # Step 1: Apply test patch
     print("=== Step 1: Applying test patch ===")
-    patch_file = Path("/tests/test_patch.diff")
-    if not _apply_patch(args.workspace, patch_file):
+    if not _apply_patch(args.workspace, args.test_patch):
         reward_file.write_text("0")
         sys.exit(0)
 
@@ -319,32 +526,49 @@ if __name__ == "__main__":
 
 
 def generate_task(
-    task: HILBenchTask, output_dir: Path, *, overwrite: bool = False
+    task: HILBenchTask,
+    output_dir: Path,
+    *,
+    overwrite: bool = False,
+    task_format: TaskFormat = "task-md",
 ) -> Path:
     """Generate a single BenchFlow task directory for one HILBench instance."""
+    task_format = validate_task_output_format(task_format)
     sanitized_id = _sanitize_name(task.task_id)
     task_dir = output_dir / sanitized_id
     if task_dir.exists():
         if not overwrite:
+            ensure_existing_task_output_format(task_dir, task_format)
             logger.debug("Skipping existing task %s", task.task_id)
             return task_dir
         shutil.rmtree(task_dir)
 
     task_dir.mkdir(parents=True)
 
-    # task.toml
-    (task_dir / "task.toml").write_text(_render_task_toml(task))
+    if task_format == "task-md":
+        (task_dir / "task.md").write_text(_render_task_md(task))
+    else:
+        # task.toml
+        (task_dir / "task.toml").write_text(_render_task_toml(task))
 
-    # instruction.md
-    (task_dir / "instruction.md").write_text(_render_instruction(task))
+        # instruction.md
+        (task_dir / "instruction.md").write_text(_render_instruction(task))
 
     # environment/Dockerfile
     env_dir = task_dir / "environment"
     env_dir.mkdir()
     (env_dir / "Dockerfile").write_text(_render_dockerfile(task))
 
-    # tests/
-    tests_dir = task_dir / "tests"
+    # oracle/ for native task.md, solution/ for legacy Harbor/Pier layout.
+    oracle_dir = task_dir / oracle_dir_name(task_format)
+    oracle_dir.mkdir()
+    solve_sh = oracle_dir / "solve.sh"
+    solve_sh.write_text(_render_solve_sh(task))
+    solve_sh.chmod(0o755)
+    (oracle_dir / "solve.patch").write_text(_gold_patch(task))
+
+    # verifier/ for native task.md, tests/ for legacy Harbor/Pier layout.
+    tests_dir = task_dir / verifier_dir_name(task_format)
     tests_dir.mkdir()
 
     test_sh = tests_dir / "test.sh"
@@ -352,6 +576,11 @@ def generate_task(
     test_sh.chmod(test_sh.stat().st_mode | stat.S_IEXEC)
 
     (tests_dir / "verify.py").write_text(VERIFY_PY)
+    if task_format == "task-md":
+        (tests_dir / "verifier.md").write_text(_render_verifier_md(task))
+        rubrics_dir = tests_dir / "rubrics"
+        rubrics_dir.mkdir()
+        (rubrics_dir / "verifier.md").write_text(_render_verifier_rubric(task))
 
     # Save tests_to_pass as a separate JSON file (avoids shell quoting issues)
     (tests_dir / "tests_to_pass.json").write_text(
@@ -385,8 +614,10 @@ def generate_all(
     overwrite: bool = False,
     limit: int | None = None,
     task_ids: list[str] | None = None,
+    task_format: TaskFormat = "task-md",
 ) -> list[Path]:
     """Generate BenchFlow task directories for HILBench SWE tasks."""
+    task_format = validate_task_output_format(task_format)
     tasks = load_tasks_from_hf(task_type="swe")
 
     if task_ids:
@@ -399,7 +630,12 @@ def generate_all(
     output_dir.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
     for task in tasks:
-        path = generate_task(task, output_dir, overwrite=overwrite)
+        path = generate_task(
+            task,
+            output_dir,
+            overwrite=overwrite,
+            task_format=task_format,
+        )
         generated.append(path)
         logger.info("Generated %s", task.task_id)
 
@@ -434,6 +670,12 @@ def main() -> None:
         default=None,
         help="Comma-separated list of specific task IDs to generate",
     )
+    parser.add_argument(
+        "--task-format",
+        choices=TASK_FORMATS,
+        default="task-md",
+        help="Output layout: legacy task.toml/instruction.md or native task.md",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -446,6 +688,7 @@ def main() -> None:
         overwrite=args.overwrite,
         limit=args.limit,
         task_ids=task_id_list,
+        task_format=args.task_format,
     )
     print(f"Generated {len(generated)} task directories in {args.output_dir}")
 

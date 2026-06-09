@@ -3,14 +3,35 @@ The mental model for benchflow. Read once, then refer back from the how-tos.
 
 ---
 
+## The three planes
+
+Every BenchFlow eval is one selection from each of three orthogonal **planes**.
+Pin this down once and the rest of the docs fall into place:
+
+| Plane | The question it answers | Modes / choices | Guide |
+|---|---|---|---|
+| **Environment** | How is the world built, reset, and secured? | container · service-catalog · hosted · aux-VM; network policy; hardening | [Environment plane](./environment-plane.md), [Sandbox hardening](./sandbox-hardening.md) |
+| **Interaction** | Who acts, and in what loop? | single-shot · multi-round · simulated-user · multi-agent-sequential · arena | [Use cases](./use-cases.md), [Progressive disclosure](./progressive-disclosure.md) |
+| **Verifier** | What surface is scored, and how? | workspace-test · trajectory · rubric / LLM-judge · agent-judge · leaderboard | [LLM-as-judge](./llm-judge.md), [Skill eval](./skill-eval.md) |
+
+A task declares its choices on each plane in one `task.md` — see [the task
+standard](./task-standard.md) for the full contract. Everything below (Rollout,
+Scene, Role, User, Verifier) is the machinery that executes those choices. The
+five primitives map onto the planes: **Environment** is the Environment plane;
+**Agent / Scene / Role / User** drive the Interaction plane; **Verifier** is the
+Verifier plane; **Rollout** ties one selection from each plane into a single
+scored run.
+
+---
+
 ## The five primitives
 
 | Primitive | What it is |
 |-----------|------------|
-| **Task** | A directory on disk: `instruction.md` for the agent + `tests/` for the verifier + (optional) `solution/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Authored once, evaluated many times. |
+| **Task** | A directory on disk: `task.md` for config, prompt, roles, scenes, and simulated-user notes + `verifier/` for scoring + optional `oracle/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Legacy `instruction.md`, `task.toml`, `tests/`, and `solution/` tasks still load. Authored once, evaluated many times. |
 | **Agent** | A registered ACP-speaking program (Claude Code, Gemini CLI, OpenCode, etc.). Identified by name (`"gemini"`, `"opencode"`) plus an optional model ID. Use the `acpx/` prefix (e.g. `acpx/gemini`) to route through [ACPX](https://acpx.sh/), a headless ACP client with persistent sessions and crash recovery. |
 | **Environment** | The sandbox where the agent runs and the verifier checks the result. Docker locally, Daytona for cloud, Modal for serverless/GPU. Abstracted behind the `Sandbox` protocol — bring your own sandbox backend. |
-| **Verifier** | The test runner that scores the rollout. By default `pytest /tests/...` against the workspace the agent left behind. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier with a `rubric.toml`. Outputs `rewards: {reward: float}`. |
+| **Verifier** | The test runner that scores the rollout. Native tasks mount `verifier/` at `/verifier/`; legacy tasks mount `tests/` at `/tests/`. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier with a `rubric.toml`. Outputs `rewards: {reward: float}`. |
 | **Rollout** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Rollouts. |
 
 ---
@@ -96,13 +117,18 @@ A User is a `BaseUser` subclass (or `FunctionUser` wrapping a function) with two
 
 Between rounds, BenchFlow executes `soft_verify()` (verifier without the destructive parts of full hardening), gives the user the round's `RoundResult` (trajectory, rewards, verifier output, tool count), and lets the user decide round N+1's prompt.
 
+Document-declared `task.md` users are a bounded runtime on top of this
+abstraction: deterministic and model-linear private-fact users can run across a
+linear sequence of single-role scenes. Multi-role team handoff remains a scene
+orchestration problem, not generic `User` callback behavior.
+
 Use `BaseUser` when the loop logic is rule-based (compress instruction → show test failures as hints → stop on pass). See [`progressive-disclosure.md`](./progressive-disclosure.md) for the full guide.
 
 ---
 
 ## Verifier, sandbox, hardening
 
-Once the agent stops, the verifier runs. By default that's `pytest -c /dev/null --confcutdir=/tests --rootdir=/app -p no:cacheprovider /tests/test.sh` (or whatever the task's `tests/test.sh` does), against the workspace the agent left behind.
+Once the agent stops, the verifier runs against the workspace the agent left behind. Native tasks mount `verifier/` at `/verifier` and may run `verifier/test.sh` by default or select `script`, `llm-judge`, `reward-kit`, or scoped `agent-judge` strategies via `verifier/verifier.md`; legacy tasks run `/tests/test.sh` from `tests/`.
 
 Between agent and verifier, benchflow **hardens** the sandbox to prevent the agent from gaming the score:
 - Kill any lingering agent processes
@@ -150,10 +176,10 @@ Trajectories are written to `<evaluations_dir>/<evaluation_name>/<rollout_name>/
 
 ## Where to go next
 
-- [Getting started](./getting-started.md) — install, run your first eval.
-- [Task authoring](./task-authoring.md) — write a task with `task.toml` + `tests/` + `solution/`.
-- [LLM-as-judge](./llm-judge.md) — use an LLM to score subjective tasks with `rubric.toml`.
-- [Progressive disclosure](./progressive-disclosure.md) — the User abstraction; SWE-bench Pro case study.
-- [Use cases](./use-cases.md) — multi-agent patterns (coder/reviewer, simulated user, BYOS, stateful environments).
-- [CLI reference](./reference/cli.md), [Python API reference](./reference/python-api.md).
-- [Skill evaluation](./skill-eval.md) — when the artifact is a skill, not a workspace.
+By plane:
+
+- **The standard** — [Task standard](./task-standard.md) (the full contract), [Task authoring](./task-authoring.md) (write a `task.md` with `verifier/` and optional `oracle/`).
+- **Environment plane** — [Environment plane](./environment-plane.md) (how the world is built/reset), [Sandbox hardening](./sandbox-hardening.md) (the anti-reward-hacking security model).
+- **Interaction plane** — [Use cases](./use-cases.md) (multi-agent: coder/reviewer, simulated user, BYOS, stateful envs), [Progressive disclosure](./progressive-disclosure.md) (multi-round single-agent; SWE-bench Pro case study).
+- **Verifier plane** — [LLM-as-judge](./llm-judge.md) (score subjective tasks with `rubric.toml`), [Skill eval](./skill-eval.md) (when the artifact is a skill, not a workspace).
+- **Operate** — [Getting started](./getting-started.md), [Running benchmarks](./running-benchmarks.md), [CLI reference](./reference/cli.md), [Python API reference](./reference/python-api.md).

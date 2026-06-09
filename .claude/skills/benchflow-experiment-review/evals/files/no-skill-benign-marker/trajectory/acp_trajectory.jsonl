@@ -1,0 +1,2 @@
+{"phase":"agent","type":"tool_call","tool":"read","args":{"path":"/home/agent/workspace/input.txt"}}
+{"phase":"verifier","type":"score","reward":0.0}

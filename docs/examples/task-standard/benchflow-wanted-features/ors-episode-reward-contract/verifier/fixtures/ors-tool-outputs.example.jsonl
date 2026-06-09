@@ -1,0 +1,2 @@
+{"tool":"tool-call-check","reward":0.25,"step":1,"tool_call_id":"ors-call-1","timestamp":"2026-06-05T00:00:00Z"}
+{"tool":"ors-terminal","reward":{"reward":0.88},"step":2,"finished":true,"tool_call_id":"ors-call-2","timestamp":"2026-06-05T00:01:00Z"}

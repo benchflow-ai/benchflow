@@ -1,0 +1,30 @@
+{
+  "task": "benchflow-wanted/prompt-user-semantics",
+  "kind": "calibration-report",
+  "cases": [
+    {
+      "name": "flat-prompt-only",
+      "type": "no-op",
+      "reward": 0.0,
+      "summary": "Scene, role, user, and turn prompts are ignored."
+    },
+    {
+      "name": "private-fact-leak",
+      "type": "known-bad",
+      "reward": 0.2,
+      "summary": "Private simulated-user facts are exposed to solver prompts before user disclosure."
+    },
+    {
+      "name": "prompt-composition-without-handoff",
+      "type": "partial",
+      "reward": 0.6,
+      "summary": "Prompt composition works, but user loop and team handoff metadata remain unsupported."
+    },
+    {
+      "name": "gold-user-semantics",
+      "type": "reference",
+      "reward": 1.0,
+      "summary": "Prompt composition, linear simulated-user semantics, and sequential team handoff evidence are complete."
+    }
+  ]
+}

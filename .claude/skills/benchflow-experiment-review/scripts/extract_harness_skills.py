@@ -290,6 +290,124 @@ def task_skill_loading_fields(
     }
 
 
+def skill_name_variants(name: str) -> set[str]:
+    normalized = normalize_skill_name(name)
+    return {
+        name.strip().lower(),
+        normalized,
+        normalized.replace("-", "_"),
+        normalized.replace("-", " "),
+    }
+
+
+def _contains_skill_variant(text: str, variants: set[str]) -> bool:
+    lowered = text.lower()
+    return any(variant and variant in lowered for variant in variants)
+
+
+def _skill_path_evidence(event: dict[str, Any], variants: set[str]) -> list[str]:
+    evidence: list[str] = []
+    path_markers = (".agents/skills", ".codex/skills", "/skills/", "skill.md")
+    for text in iter_strings(event):
+        lowered = text.lower()
+        if not any(marker in lowered for marker in path_markers):
+            continue
+        if _contains_skill_variant(lowered, variants):
+            evidence.append(text)
+    return evidence
+
+
+def _skill_invocation_evidence(event: dict[str, Any], variants: set[str]) -> list[str]:
+    evidence: list[str] = []
+    invocation_markers = {"activate_skill", "invoke_skill", "skill"}
+    invocation_keys = {"action", "function", "kind", "name", "tool", "tool_name", "type"}
+    argument_keys = {"args", "arguments", "input", "parameters"}
+
+    for item in walk_dicts(event):
+        marker_values = [
+            value
+            for key, value in item.items()
+            if key in invocation_keys and isinstance(value, str)
+        ]
+        if not any(value.lower() in invocation_markers for value in marker_values):
+            continue
+
+        argument_texts = [
+            textify(value)
+            for key, value in item.items()
+            if key in argument_keys
+        ]
+        if not argument_texts:
+            argument_texts = [textify(item)]
+        if any(_contains_skill_variant(text, variants) for text in argument_texts):
+            evidence.append(textify(item))
+    return evidence
+
+
+def _no_skill_event_evidence(
+    event: dict[str, Any],
+    variants: set[str],
+) -> tuple[str, list[str]] | None:
+    path_hits = _skill_path_evidence(event, variants)
+    if path_hits:
+        return "task skill path", path_hits
+
+    invocation_hits = _skill_invocation_evidence(event, variants)
+    if invocation_hits:
+        return "task skill invocation", invocation_hits
+
+    return None
+
+
+def no_skill_leakage_fields(
+    events: list[dict[str, Any]],
+    task_skill_context: dict[str, Any],
+) -> dict[str, Any]:
+    mode = task_skill_context.get("task_skill_mode", "unknown")
+    expected = task_skill_context.get("expected_task_skills", [])
+    if mode != "without_skills" or not expected:
+        return {
+            "no_skill_leakage_detected": False,
+            "no_skill_leakage_evidence": [],
+        }
+
+    evidence: list[str] = []
+    variants_by_skill = {
+        skill: skill_name_variants(skill)
+        for skill in expected
+        if isinstance(skill, str) and skill.strip()
+    }
+
+    for idx, event in enumerate(events):
+        for skill, variants in variants_by_skill.items():
+            event_evidence = _no_skill_event_evidence(event, variants)
+            if event_evidence is None:
+                continue
+            evidence_type, hits = event_evidence
+            evidence.append(
+                f"line {idx}: expected task skill {skill!r} appeared in "
+                f"{evidence_type}: {hits[0][:200]}"
+            )
+            break
+
+    return {
+        "no_skill_leakage_detected": bool(evidence),
+        "no_skill_leakage_evidence": evidence[:20],
+    }
+
+
+def apply_no_skill_leakage_audit(
+    result: dict[str, Any],
+    events: list[dict[str, Any]],
+    task_skill_context: dict[str, Any],
+) -> dict[str, Any]:
+    leakage = no_skill_leakage_fields(events, task_skill_context)
+    result.update(leakage)
+    if leakage["no_skill_leakage_detected"]:
+        result["manual_review_required"] = True
+    return result
+
+
 def request_bodies(events: list[dict[str, Any]]) -> list[tuple[int, str, dict[str, Any]]]:
     bodies: list[tuple[int, str, dict[str, Any]]] = []
     for idx, event in enumerate(events):
@@ -655,25 +773,34 @@ def main() -> None:
         args.task_path,
     )
     events = read_jsonl(args.trajectory, limit=limit)
+    audit_events = list(events)
+    fallback = sibling_acp_path(args.trajectory)
+    fallback_events: list[dict[str, Any]] = []
+    if fallback is not None:
+        checked_files.append(str(fallback))
+        fallback_events = read_jsonl(fallback, limit=limit)
+        audit_events.extend(fallback_events)
+
     extracted = extract_from_events(args.trajectory, events, checked_files, task_skill_context)
 
-    if extracted is None:
-        fallback = sibling_acp_path(args.trajectory)
-        if fallback is not None:
-            checked_files.append(str(fallback))
-            acp_events = read_jsonl(fallback, limit=limit)
-            extracted = extract_from_events(
-                fallback,
-                acp_events,
-                checked_files,
-                task_skill_context,
-            )
+    if extracted is None and fallback is not None:
+        extracted = extract_from_events(
+            fallback,
+            fallback_events,
+            checked_files,
+            task_skill_context,
+        )
+
+    result = (
+        extracted
+        if extracted is not None
+        else unknown_result(args.trajectory, checked_files, task_skill_context)
+    )
+    result = apply_no_skill_leakage_audit(result, audit_events, task_skill_context)
 
     print(
         json.dumps(
-            extracted
-            if extracted is not None
-            else unknown_result(args.trajectory, checked_files, task_skill_context),
+            result,
             indent=2,
             ensure_ascii=False,
         )

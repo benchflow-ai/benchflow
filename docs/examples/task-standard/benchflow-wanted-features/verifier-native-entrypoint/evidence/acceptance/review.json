@@ -1,0 +1,11 @@
+{
+  "task": "benchflow-wanted/verifier-native-entrypoint",
+  "kind": "acceptance-review",
+  "anti_cheat": "passed",
+  "instruction_alignment": "passed",
+  "notes": [
+    "The task rewards native verifier entrypoint behavior, not just a compatibility test.sh shim.",
+    "Negative calibration covers missing selected strategy files and malformed verifier documents.",
+    "Legacy split-layout compatibility remains an explicit invariant."
+  ]
+}

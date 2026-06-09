@@ -295,9 +295,7 @@ def _latest_timestamp(items: list[str | None]) -> str | None:
     return max(stamped) if stamped else None
 
 
-# --------------------------------------------------------------------------
 # Live source 1 — test results
-# --------------------------------------------------------------------------
 def run_suite() -> None:
     print("running the test suite (this takes ~70s) ...", flush=True)
     subprocess.run(
@@ -377,9 +375,7 @@ def collect_tests() -> dict:
     }
 
 
-# --------------------------------------------------------------------------
 # Live source 2 — the jobs tree (jobs/ → groups → runs → tasks → artifacts)
-# --------------------------------------------------------------------------
 def _read_json(p: Path) -> dict:
     try:
         return json.loads(p.read_text())
@@ -1002,9 +998,7 @@ def collect_jobs() -> dict:
     }
 
 
-# --------------------------------------------------------------------------
 # Live source 3 — the experiments timeline (the experiments/ + labs/ folders)
-# --------------------------------------------------------------------------
 # (keyword, type, label, blurb) — the first rule whose keyword appears in a
 # filename claims it. `reviewer` precedes `ablation` (reviewer_ablation.py).
 EXP_RULES = [
@@ -1160,9 +1154,7 @@ def collect_experiments() -> list[dict]:
     return out
 
 
-# --------------------------------------------------------------------------
 # Authored — concept map
-# --------------------------------------------------------------------------
 CONCEPT_MAP = {
     "entry": "bench CLI · bf.run() · environment manifest",
     "kernel": {
@@ -1297,9 +1289,7 @@ CONCEPT_MAP = {
 }
 
 
-# --------------------------------------------------------------------------
 # Authored — agent advisories (the 4x-review punch list), cross-linked
-# --------------------------------------------------------------------------
 ADVISORIES = {
     "source": "4x subagent review of the v0.5 capability fix pass, plus follow-up verification on codex/v05-integration-followup",
     "items": [
@@ -1602,7 +1592,6 @@ def build_data() -> dict:
     }
 
 
-# --------------------------------------------------------------------------
 def main() -> int:
     if "--run-tests" in sys.argv:
         run_suite()

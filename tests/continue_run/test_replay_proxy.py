@@ -16,7 +16,7 @@ from benchflow.continue_run.replay_proxy import (
 
 from ._helpers import completion, exchange
 
-# ── ReplayRouter ──────────────────────────────────────────────────────────
+# ReplayRouter
 
 
 def test_serves_recorded_responses_in_order_then_live():
@@ -80,7 +80,7 @@ def test_recorded_failure_passed_through():
     assert result.body["error"]["message"] == "boom"
 
 
-# ── SSE reconstruction ────────────────────────────────────────────────────
+# SSE reconstruction
 
 
 def test_completion_to_sse_content_and_tools():
@@ -114,7 +114,7 @@ def test_completion_to_sse_content_and_tools():
     assert chunks[-1]["usage"]["total_tokens"] == 2
 
 
-# ── HTTP proxy end-to-end (real server, httpx client) ─────────────────────
+# HTTP proxy end-to-end (real server, httpx client)
 
 
 @pytest.fixture()

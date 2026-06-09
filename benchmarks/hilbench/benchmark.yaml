@@ -12,7 +12,7 @@ dataset: https://huggingface.co/datasets/ScaleAI/hil-bench
 author: Scale AI
 converted_by: BenchFlow
 
-# ── Tasks ────────────────────────────────────────────────────────────
+# Tasks
 tasks:
   count: 100
   task_types: [swe]
@@ -23,25 +23,28 @@ tasks:
     - navidrome/navidrome (16 tasks)
     - flipt-io/flipt (15 tasks)
 
-# ── Conversion ───────────────────────────────────────────────────────
+# Conversion
 conversion:
-  script: benchflow.py
+  script: benchflow.py  # CLI: --output-dir, --limit, --overwrite, --task-ids, --task-format
   source_format: HuggingFace dataset (ScaleAI/hil-bench)
-  has_oracle_solutions: false
+  default_task_format: task-md
+  task_formats: [legacy, task-md]
+  has_oracle_solutions: true
   oracle_notes: >
-    The dataset includes ground_truth_answer (gold patches) but oracle
-    solutions are not generated as solve.sh scripts in this initial
-    conversion.
+    The dataset includes ground_truth_answer gold patches. The converter keeps
+    legacy and native outputs format-specific: solution/solve.sh applies
+    solution/solve.patch in legacy packages, while oracle/solve.sh applies
+    oracle/solve.patch in native task.md packages.
   docker_image_pinned: false  # uses repo-specific docker image tarballs from HuggingFace
 
-# ── Verification ─────────────────────────────────────────────────────
+# Verification
 verification:
   method: deterministic_unit_tests
   reward: partial_credit      # passed_tests / total_tests
   aggregation: per-test       # each test scored individually
   test_source: "HuggingFace dataset (ScaleAI/hil-bench) — test_patch field"
 
-# ── Environment ──────────────────────────────────────────────────────
+# Environment
 environment:
   base_images: "ubuntu:22.04 (repo loaded from HF image tarballs)"
   platform: linux/amd64
@@ -49,9 +52,14 @@ environment:
   memory_mb: 4096
   storage_mb: 20480
 
-# ── Parity ───────────────────────────────────────────────────────────
+# Parity
 parity:
   structural:
     description: "All generated task directories have required files and valid metadata"
     tasks_tested: 100
     passed: 100
+    checks:
+      - required files present for legacy or task.md layouts
+      - task.toml/task.md has valid structure and hilbench/ prefix
+      - test_patch.diff and tests_to_pass.json are verifier-local
+      - native task.md output includes verifier/verifier.md and oracle/solve.sh

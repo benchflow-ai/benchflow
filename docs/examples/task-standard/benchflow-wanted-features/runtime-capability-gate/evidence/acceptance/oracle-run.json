@@ -1,0 +1,13 @@
+{
+  "task": "benchflow-wanted/runtime-capability-gate",
+  "kind": "oracle-proof",
+  "oracle": "oracle/solve.md",
+  "expected_reward": 1.0,
+  "required_reward": 1.0,
+  "evidence": [
+    "TaskPackage remains the executable package boundary.",
+    "TaskRuntimeView exposes selected prompt, verifier, oracle, and source hash state.",
+    "Unsupported parsed runtime features fail closed before sandbox creation."
+  ],
+  "status": "passed"
+}

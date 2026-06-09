@@ -1,0 +1,30 @@
+{
+  "task": "benchflow-wanted/compat-export-loss-reports",
+  "kind": "calibration-report",
+  "cases": [
+    {
+      "name": "no-exporter",
+      "type": "no-op",
+      "reward": 0.0,
+      "summary": "No native-to-split exporter is implemented."
+    },
+    {
+      "name": "silent-losses",
+      "type": "known-bad",
+      "reward": 0.2,
+      "summary": "Unsupported native concepts are dropped without a degraded-export report."
+    },
+    {
+      "name": "split-export-without-roundtrip",
+      "type": "partial",
+      "reward": 0.6,
+      "summary": "Split layout files are emitted, but conformance and foreign-key preservation are incomplete."
+    },
+    {
+      "name": "gold-export-loss-report",
+      "type": "reference",
+      "reward": 1.0,
+      "summary": "Exporter emits split files, loss reports, and round-trip conformance evidence."
+    }
+  ]
+}

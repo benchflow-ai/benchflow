@@ -11,7 +11,6 @@ url: https://github.com/harveyai/harvey-labs
 author: Harvey AI
 converted_by: BenchFlow
 
-# ── Tasks ────────────────────────────────────────────────────────────
 tasks:
   count: 1251
   categories: 24            # practice areas
@@ -21,22 +20,26 @@ tasks:
     parity: 50              # first 50 alphabetically
     xlsx: 25                # first 25 with .xlsx deliverables
 
-# ── Conversion ───────────────────────────────────────────────────────
 # How raw benchmark data is converted to BenchFlow task format.
 conversion:
-  script: benchflow.py      # CLI: --output-dir, --limit, --overwrite, --task-ids, --split
+  script: benchflow.py      # CLI: --output-dir, --limit, --overwrite, --task-ids, --split, --task-format
   source_format: task.json   # original benchmark format
+  default_task_format: task-md
+  task_formats: [legacy, task-md]
   has_oracle_solutions: false
+  oracle_notes: >
+    Harvey LAB has no static gold deliverables. Native task.md output records
+    this in oracle/README.md and treats the human-authored per-criterion rubric
+    as dynamic verifier evidence.
   docker_image_pinned: true  # Dockerfile uses digest-pinned base image
 
-# ── Verification ─────────────────────────────────────────────────────
 verification:
   method: llm-as-judge
-  judge_model: gemini-3.1-flash-lite-preview
+  judge_model: claude-sonnet-4-6
   reward: proportional       # passed_criteria / total_criteria
   aggregation: per-criterion # each criterion judged individually
+  native_verifier_package: true
 
-# ── Parity ───────────────────────────────────────────────────────────
 # Results from validating that the conversion preserves benchmark semantics.
 parity:
   prompt_level:

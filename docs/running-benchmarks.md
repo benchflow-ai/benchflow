@@ -1,13 +1,17 @@
 # Running Adapted Benchmarks
 
-How to run benchmarks that have been converted into Harbor-format tasks for BenchFlow.
+How to run benchmarks that have been adapted into BenchFlow task packages,
+including native `task.md` packages and legacy Harbor-compatible exports.
 
 BenchFlow ships with adapted benchmarks under `benchmarks/<name>/`. Each benchmark
 includes a converter, parity tests, metadata, and one or more YAML job configs.
 This guide covers how to run them — from a single task to a full evaluation sweep.
 
 > [!NOTE]
-> BenchFlow is providing first-party support for PrimeIntellect Verifiers and OpenReward Standard.
+> PrimeIntellect / Verifiers hosted environments run today via
+> `bench eval create --source-env` (see [CLI reference](./reference/cli.md#bench-eval-create)).
+> Fuller OpenReward Standard import/export and Kaggle support are planned, not
+> yet current task-runtime capabilities — see [the task standard](./task-standard.md).
 
 > **Working inside the benchflow repo?** Use `uv run bench` instead of `bench`
 > to run the CLI from your local editable install.
@@ -20,6 +24,9 @@ This guide covers how to run them — from a single task to a full evaluation sw
 |-----------|-------|--------------|--------|
 | [Harvey LAB](https://github.com/harveyai/harvey-labs) | 1,251 | LLM-as-judge (per-criterion) | `benchmarks/harvey-lab/` |
 | [ProgramBench](https://programbench.com) | 201 | Deterministic unit tests | `benchmarks/programbench/` |
+| [HILBench](https://github.com/scale-ai/hil-bench) | 100 | Deterministic unit tests | `benchmarks/hilbench/` |
+| [OpaqueToolsBench](https://github.com/shallinan1/OpaqueToolsBench) | 150 | Deterministic tool-call script | `benchmarks/opaquetoolsbench/` |
+| [ContinualLearningBench](https://github.com/pgasawa/continual-learning-bench) | 3 | Sequential reward script | `benchmarks/continuallearningbench/` |
 | [SkillsBench](https://github.com/benchflow-ai/skillsbench) | 94+ | Unit tests | `--source-repo benchflow-ai/skillsbench --source-path tasks` |
 
 Each adapted benchmark includes:
@@ -223,10 +230,32 @@ python -m benchmarks.programbench.main \
     --task-ids abishekvashok__cmatrix.5c082c6
 ```
 
+The generator defaults to the legacy Harbor-compatible split layout for
+published dataset compatibility. For native BenchFlow task packages, request
+`task.md` output explicitly:
+
+```bash
+python -m benchmarks.programbench.main \
+    --programbench-dir ~/programbench \
+    --output-dir benchmarks/programbench/tasks-task-md \
+    --task-format task-md
+```
+
 ### Run all tasks
 
 ```bash
 bench eval create --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
+```
+
+The convenience runner downloads/converts ProgramBench metadata into `.cache/`
+before running. Use `--prepare-only` when you only want to refresh converted
+task directories:
+
+```bash
+python benchmarks/programbench/run_programbench.py \
+  benchmarks/programbench/programbench-gemini-flash-lite.yaml \
+  --task-format task-md \
+  --prepare-only
 ```
 
 ### Run a single task (after generation)
@@ -422,6 +451,11 @@ python3 .claude/skills/benchflow-experiment-review/scripts/extract_harness_skill
   "$(find $J -name llm_trajectory.jsonl | head -1)" --task-skill <task-skill-name>
 ```
 
+The extractor reports both startup catalog recovery (`task_skills_loading`) and
+no-skill leakage evidence (`no_skill_leakage_detected`). A no-skill run with
+`no_skill_leakage_detected: true` is unhealthy even when the startup catalog is
+empty, because the sibling ACP trajectory shows task-specific skill access.
+
 Notes:
 - `--usage-tracking required` records provider-reported token usage into each trajectory.
 - `--agent-idle-timeout none` disables the idle watchdog (the task wall-clock still applies).
@@ -469,9 +503,14 @@ for the full manifest schema, both onboarded benchmarks, and the
 
 ## Running foreign benchmarks (inbound adapters)
 
-BenchFlow runs benchmarks authored in other formats without converting them
-first. An **inbound adapter** translates a foreign task directory into
-BenchFlow-native shape; the rollout then runs natively. Two adapters ship:
+BenchFlow can run benchmarks authored in other formats through inbound
+adapters. For quick execution, an **inbound adapter** can translate a foreign
+task directory into BenchFlow-native shape in memory; the rollout then runs
+natively. For publishing, dogfood, or dataset standardization, converters should
+materialize native `task.md` packages first and treat Harbor/Pier split layout
+as an explicit export target.
+
+Two inbound adapters ship:
 
 | Source format | Signature file | Adapter |
 |---------------|----------------|---------|
@@ -480,11 +519,29 @@ BenchFlow-native shape; the rollout then runs natively. Two adapters ship:
 
 `benchflow.adapters.inbound.detect_adapter()` sniffs a task directory and
 picks the adapter whose format it matches (`task.toml` is checked first, so a
-directory carrying both is treated as Harbor — the native superset). Each
+directory carrying both is treated as Harbor for inbound compatibility). Each
 adapter is a pure `Path -> InboundTask` translation: it reads a directory and
 returns an in-memory native task, building no sandboxes and running nothing.
 Terminal-Bench tasks are backward-compatible this way — old terminal-style
 tasks keep running on BenchFlow unchanged.
+
+For new BenchFlow-native task authoring, prefer the experimental unified
+`task.md` entrypoint (see [the task standard](./task-standard.md) and
+[Authoring tasks](./task-authoring.md)). Its YAML frontmatter carries the same
+task config surface as Harbor-style `task.toml`, while the markdown body carries
+prompts, roles, scenes, and simulated-user context.
+
+The canonical adapter flow is:
+
+```text
+foreign benchmark format
+  -> native task.md package
+  -> optional Harbor/Pier/Terminal-Bench export
+  -> optional hosted execution backend
+```
+
+See [task.md adapter capabilities](./task-md-adapter-capabilities.md) for the
+lossless, wrapper-only, and fail-closed cases.
 
 ---
 
@@ -633,6 +690,9 @@ All fields from [CLI reference](./reference/cli.md#yaml-config-format) apply:
 ## Adding a new benchmark
 
 See the [Benchmark Conversion Guide](../benchmarks/CONVERT.md) for the 9-step
-process to convert a new benchmark into Harbor-format tasks for BenchFlow. Harvey LAB
-(`benchmarks/harvey-lab/`) and ProgramBench (`benchmarks/programbench/`) are
-reference implementations.
+process to convert a new benchmark into native `task.md` packages with optional
+legacy exports for compatibility. Harvey LAB (`benchmarks/harvey-lab/`) and
+ProgramBench (`benchmarks/programbench/`) are reference implementations.
+Use [task.md adapter capabilities](./task-md-adapter-capabilities.md) to decide
+whether a target Harbor export is lossless, wrapper-only, or unsupported for the
+benchmark's native semantics.

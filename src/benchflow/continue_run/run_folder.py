@@ -51,7 +51,7 @@ class RunFolder:
     prompts: list[str]
     exchanges: list[LLMExchange]
 
-    # ── derived task identity (from config.json) ──────────────────────────
+    # derived task identity (from config.json)
     @property
     def task_path(self) -> str:
         return str(self.config.get("task_path") or "")

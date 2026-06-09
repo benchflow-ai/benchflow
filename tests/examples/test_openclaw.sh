@@ -37,8 +37,6 @@ JOBS_DIR="jobs/test-openclaw"
 PROJECT="${GOOGLE_CLOUD_PROJECT:-skillsbench}"
 REASONING="${REASONING:-high}"  # none, low, medium, high
 
-# ── Helpers ──
-
 show_failure() {
   local dir="$1"
   local latest
@@ -59,7 +57,7 @@ show_failure() {
   fi
 }
 
-# ── Model definitions ──
+# Model definitions
 # key=label, value=model string + extra args
 declare -A MODELS
 MODELS=(
@@ -77,7 +75,7 @@ EXTRA_ARGS=(
   [gpt54]="--agent-env OPENAI_REASONING_EFFORT=$REASONING"
 )
 
-# ── Pre-flight checks ──
+# Pre-flight checks
 
 if [ "$ENV" = "daytona" ]; then
   if [ -z "${DAYTONA_API_KEY:-}" ]; then
@@ -123,7 +121,7 @@ check_env() {
   return 0
 }
 
-# ── Determine which models to test ──
+# Determine which models to test
 
 if [ $# -gt 0 ]; then
   SELECTED=("$@")
@@ -178,7 +176,7 @@ for label in "${SELECTED[@]}"; do
   echo ""
 done
 
-# ── Summary ──
+# Summary
 
 TOTAL=$((PASS + FAIL + SKIP))
 echo "=== Summary ==="

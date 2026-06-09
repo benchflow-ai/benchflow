@@ -1,9 +1,14 @@
 # The Environment plane
 
+> Part of the **Environment plane** — see [Concepts: the three planes](./concepts.md#the-three-planes).
+
 The **Environment plane** is the stateful world the agent acts in — Han's
-"S" in `E = {T, H, V, S, C}`. It is one of BenchFlow's four swappable planes
-(Sandbox, Agent, Environment, Reward). See [`architecture.md`](./architecture.md),
-"The Environment plane & the manifest".
+"S" in `E = {T, H, V, S, C}`. It answers the spine's first question — *how is
+the world built, reset, and secured?* — and pairs with the **Interaction** and
+**Verifier** planes to define one eval. (At the architecture level it is also
+one of BenchFlow's four swappable planes — Sandbox, Agent, Environment, Reward.)
+See [`architecture.md`](./architecture.md), "The Environment plane & the
+manifest".
 
 A benchmark author never subclasses the framework. They write one file — an
 **`environment.toml` manifest** — and the default adapter (`ManifestEnvironment`)
@@ -160,8 +165,11 @@ reaches them on `localhost`. During a rollout:
 3. `Rollout.cleanup()` tears the environment down.
 
 Run one task or a task directory against an environment manifest with
-`bench eval create --tasks-dir ...`. `--environment-manifest` applies the
-Environment-plane manifest to every rollout in the Job pipeline.
+`bench eval create --tasks-dir ...`. Each task is authored as a `task.md`
+package (see [task authoring](./task-authoring.md)); the manifest is the
+benchmark-wide Environment-plane seam shared across those tasks, not a per-task
+file. `--environment-manifest` applies the manifest to every rollout in the
+batch.
 
 ```bash
 # one task

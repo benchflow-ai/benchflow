@@ -8,14 +8,10 @@ Persona: Founder at BenchFlow (developer tools startup).
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
 # NOTIFICATIONS — list of template dicts
-# ---------------------------------------------------------------------------
 
 NOTIFICATIONS: list[dict] = [
-    # -----------------------------------------------------------------------
     # LUMA  (~15 templates)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "Luma",
         "sender_email": "support@luma.com",
@@ -299,9 +295,7 @@ NOTIFICATIONS: list[dict] = [
         "is_read_probability": 0.85,
         "age_range": (1, 10),
     },
-    # -----------------------------------------------------------------------
     # GITHUB  (~8 templates)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "GitHub",
         "sender_email": "notifications@github.com",
@@ -489,9 +483,7 @@ NOTIFICATIONS: list[dict] = [
         "is_read_probability": 0.95,
         "age_range": (0, 7),
     },
-    # -----------------------------------------------------------------------
     # CAL.COM / OTTER.AI  (~6 templates)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "Cal.com",
         "sender_email": "hello@cal.com",
@@ -626,9 +618,7 @@ NOTIFICATIONS: list[dict] = [
         "is_read_probability": 0.65,
         "age_range": (0, 5),
     },
-    # -----------------------------------------------------------------------
     # FINANCIAL — BREX, MERCURY  (~5 templates)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "Brex",
         "sender_email": "noreply@brex.com",
@@ -764,9 +754,7 @@ NOTIFICATIONS: list[dict] = [
         "is_read_probability": 0.85,
         "age_range": (1, 10),
     },
-    # -----------------------------------------------------------------------
     # SAAS LIFECYCLE  (~5 templates)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "HubSpot",
         "sender_email": "noreply@notifications.hubspot.com",
@@ -887,9 +875,7 @@ NOTIFICATIONS: list[dict] = [
         "is_read_probability": 0.35,
         "age_range": (1, 7),
     },
-    # -----------------------------------------------------------------------
     # LINKEDIN  (~5 templates)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "LinkedIn",
         "sender_email": "notifications-noreply@linkedin.com",
@@ -1000,9 +986,7 @@ NOTIFICATIONS: list[dict] = [
         "is_read_probability": 0.25,
         "age_range": (0, 7),
     },
-    # -----------------------------------------------------------------------
     # GOOGLE DOCS / CALENDAR  (~5 templates)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "Marco Rossi (via Google Docs)",
         "sender_email": "comments-noreply@docs.google.com",
@@ -1114,9 +1098,7 @@ NOTIFICATIONS: list[dict] = [
         "is_read_probability": 0.8,
         "age_range": (0, 10),
     },
-    # -----------------------------------------------------------------------
     # DEVOPS — VERCEL, PAGERDUTY, SENTRY, AWS  (~5 templates)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "Vercel",
         "sender_email": "notifications@vercel.com",
@@ -1257,9 +1239,7 @@ NOTIFICATIONS: list[dict] = [
         "is_read_probability": 0.75,
         "age_range": (0, 5),
     },
-    # -----------------------------------------------------------------------
     # SLACK  (~3 templates)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "Slack",
         "sender_email": "notification@slack.com",
@@ -1326,9 +1306,7 @@ NOTIFICATIONS: list[dict] = [
         "is_read_probability": 0.4,
         "age_range": (0, 5),
     },
-    # -----------------------------------------------------------------------
     # MISC  (~3 templates)
-    # -----------------------------------------------------------------------
     {
         "sender_name": "Stripe",
         "sender_email": "notifications@stripe.com",

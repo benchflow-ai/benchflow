@@ -1,0 +1,11 @@
+{
+  "task": "benchflow-wanted/prompt-user-semantics",
+  "kind": "acceptance-review",
+  "anti_cheat": "passed",
+  "instruction_alignment": "passed",
+  "notes": [
+    "The evidence distinguishes supported linear user loops from future branch execution.",
+    "Private simulated-user facts are treated as verifier/user state, not solver-visible prompt text.",
+    "The calibration cases include missing, leaking, partial, and reference implementations."
+  ]
+}

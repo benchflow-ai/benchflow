@@ -1,0 +1,13 @@
+{
+  "task": "benchflow-wanted/prompt-user-semantics",
+  "kind": "oracle-proof",
+  "oracle": "oracle/solve.md",
+  "expected_reward": 1.0,
+  "required_reward": 1.0,
+  "evidence": [
+    "Prompt composition preserves base, role, scene, and turn order.",
+    "Document-declared simulated user loops compile only for supported linear semantics.",
+    "Sequential handoffs record metadata without leaking hidden trajectories or private facts."
+  ],
+  "status": "passed"
+}

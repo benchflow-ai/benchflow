@@ -28,19 +28,49 @@ python -m benchmarks.programbench.main \
 python benchmarks/programbench/run_programbench.py benchmarks/programbench/programbench-gemini-flash-lite.yaml
 ```
 
+Native `task.md` output is available for new BenchFlow-native workflows:
+
+```bash
+# Explicit generation to a chosen directory
+python benchmarks/programbench/benchflow.py \
+    --programbench-dir ~/programbench \
+    --output-dir /tmp/programbench-task-md \
+    --task-format task-md \
+    --limit 1
+
+# Runner-managed preparation into .cache/programbench-benchflow-task-md
+python benchmarks/programbench/run_programbench.py \
+    benchmarks/programbench/programbench-gemini-flash-lite.yaml \
+    --task-format task-md \
+    --prepare-only
+
+# Offline native package parity, no Docker/API key required
+python benchmarks/programbench/parity_test.py \
+    --tasks-dir /tmp/programbench-task-md \
+    --task-ids example__tool.abcdef0 \
+    --task-format task-md \
+    --mode structural
+```
+
+The native layout emits `task.md`, `verifier/`, and `oracle/`. The legacy layout
+remains available with `--task-format legacy` for compatibility with existing
+Harbor-style task consumers. Structural parity verifies the native package
+contract and requires `verifier/tests.json` to contain a non-empty branch map
+before live Docker/API parity is attempted.
+
 ## Format comparison: ProgramBench → BenchFlow
 
 ### Directory structure
 
-| ProgramBench (original) | BenchFlow (generated) |
-|---|---|
-| `task.yaml` (repository, commit, language, difficulty, eval_clean_hashes) | `task.toml` (name, metadata, timeouts, resources) |
-| `tests.json` (per-branch test lists, ignored flags) | `tests/tests.json` (copied verbatim) |
-| Docker image `programbench/<repo>:task` (pre-built on DockerHub) | `environment/Dockerfile` (FROM `:task`, workspace reset to cleanroom state) |
-| Agent produces `submission.tar.gz` (entire codebase) | Agent works directly in `/workspace` inside the container |
-| `programbench eval <run_dir>` (CLI evaluation) | `tests/test.sh` → `tests/verify.py` (self-contained verifier) |
-| Original source code at commit (gold answer) | `solution/solve.sh` (clones original repo at commit) |
-| No instruction file — agent receives Docker image | `instruction.md` (explicit agent-facing instructions) |
+| ProgramBench (original) | BenchFlow native `task-md` | BenchFlow legacy |
+|---|---|---|
+| `task.yaml` (repository, commit, language, difficulty, eval_clean_hashes) | `task.md` frontmatter | `task.toml` |
+| `tests.json` (per-branch test lists, ignored flags) | `verifier/tests.json` | `tests/tests.json` |
+| Docker image `programbench/<repo>:task` (pre-built on DockerHub) | `environment/Dockerfile` (FROM `:task`, workspace reset to cleanroom state) | Same |
+| Agent produces `submission.tar.gz` (entire codebase) | Agent works directly in `/workspace` inside the container | Same |
+| `programbench eval <run_dir>` (CLI evaluation) | `verifier/test.sh` -> `verifier/verify.py` | `tests/test.sh` -> `tests/verify.py` |
+| Original source code at commit (gold answer) | `oracle/solve.sh` | `solution/solve.sh` |
+| No instruction file — agent receives Docker image | Prompt section in `task.md` | `instruction.md` |
 
 ### Evaluation pipeline
 
@@ -57,10 +87,10 @@ python benchmarks/programbench/run_programbench.py benchmarks/programbench/progr
 
 ### Key fields mapping
 
-| ProgramBench `task.yaml` | BenchFlow `task.toml` |
+| ProgramBench `task.yaml` | BenchFlow task config |
 |---|---|
-| `repository` | Used in `instruction.md` and `solution/solve.sh` |
-| `commit` | Used in `solution/solve.sh` for oracle checkout |
+| `repository` | Used in the agent prompt and oracle checkout |
+| `commit` | Used by `oracle/solve.sh` or `solution/solve.sh` for oracle checkout |
 | `language` | `[metadata] tags` |
 | `difficulty` | `[metadata] difficulty` + determines `[agent] timeout_sec` and `[verifier] timeout_sec` |
 | `eval_clean_hashes` | Embedded in `verify.py` as `CLEAN_HASHES` |
@@ -74,7 +104,7 @@ python benchmarks/programbench/run_programbench.py benchmarks/programbench/progr
 | Test execution | No | Same pytest + JUnit XML parsing + timeout patching |
 | Anti-cheat hashing | No | Same SHA-256 hash removal |
 | Scoring formula | No | Same passed/total partial credit |
-| Agent instructions | Yes | Explicit `instruction.md` instead of implicit Docker image |
+| Agent instructions | Yes | Explicit prompt in `task.md` or `instruction.md` instead of implicit Docker image |
 | Evaluation trigger | Yes | BenchFlow verifier (test.sh) instead of `programbench eval` CLI |
 | Result format | Yes | `reward.txt` float instead of `EvaluationResult` JSON |
 | Oracle format | Yes | `solve.sh` script instead of `:task` Docker image tag |
@@ -82,21 +112,24 @@ python benchmarks/programbench/run_programbench.py benchmarks/programbench/progr
 ## How it works
 
 1. **Task generation** reads ProgramBench's `task.yaml` and `tests.json`
-   per instance and emits a standard BenchFlow task directory:
+   per instance and emits a native BenchFlow task directory:
 
    ```
    <instance_id>/
-   ├── task.toml           # timeouts, metadata, resources
-   ├── instruction.md      # agent-facing instructions
+   ├── task.md             # config frontmatter + agent-facing prompt
    ├── environment/
    │   └── Dockerfile      # FROM programbench/<image>:task
-   ├── solution/
+   ├── oracle/
    │   └── solve.sh        # oracle: clones original source at commit
-   └── tests/
+   └── verifier/
        ├── test.sh          # verifier entry point
        ├── verify.py        # downloads test blobs, runs pytest, writes reward
+       ├── verifier.md      # verifier contract
        └── tests.json       # per-branch test manifest
    ```
+
+   Use `--task-format legacy` when you need the Harbor-compatible
+   `task.toml` + `instruction.md` + `tests/` + `solution/` layout.
 
 2. **At runtime** the agent works inside the ProgramBench cleanroom
    Docker image, which contains the compiled binary and docs but no
@@ -127,6 +160,6 @@ config. Key fields:
 - All ProgramBench Docker images are **linux/amd64 only**. Use a Linux
   x86_64 machine.
 - The agent **must not** have internet access during inference (enforced
-  via `allow_internet = false` in `task.toml`).
+  via `allow_internet = false` in task config).
 - Test blob archives are downloaded on demand from HuggingFace during
   verification.

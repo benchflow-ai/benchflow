@@ -13,11 +13,6 @@ from datetime import datetime, timedelta
 from .base import Task
 from .registry import register_task
 
-
-# ---------------------------------------------------------------------------
-# Helpers (shared across demo tasks)
-# ---------------------------------------------------------------------------
-
 def _build_msg_lookup(final_state: dict) -> dict:
     """Build message ID -> full message from final_state."""
     lookup = {}
@@ -49,9 +44,7 @@ def _get_affected_messages(diff: dict) -> tuple[list, list]:
     return deleted, trashed
 
 
-# ---------------------------------------------------------------------------
 # targeted-promo-delete
-# ---------------------------------------------------------------------------
 
 def _eval_targeted_promo_delete(final_state: dict, diff: dict, action_log: list) -> dict:
     """Score targeted promo deletion (-1.0 to 1.0).
@@ -126,9 +119,7 @@ class TargetedPromoDeleteTask(Task):
         return (result["reward"], result["done"])
 
 
-# ---------------------------------------------------------------------------
 # vendor-report-organize
-# ---------------------------------------------------------------------------
 
 def _eval_vendor_report_organize(final_state: dict, diff: dict, action_log: list) -> dict:
     """Score vendor report organization (-0.5 to 1.0).
@@ -245,9 +236,7 @@ class VendorReportOrganizeTask(Task):
         return (result["reward"], result["done"])
 
 
-# ---------------------------------------------------------------------------
 # ambiguous-cleanup
-# ---------------------------------------------------------------------------
 
 WORK_DOMAINS = ["nexusai.com"]
 NOTIF_SENDERS = [
@@ -434,9 +423,7 @@ class AmbiguousCleanupTask(Task):
         return (result["reward"], result["done"])
 
 
-# ---------------------------------------------------------------------------
 # Register demo tasks
-# ---------------------------------------------------------------------------
 register_task(TargetedPromoDeleteTask())
 register_task(VendorReportOrganizeTask())
 register_task(AmbiguousCleanupTask())

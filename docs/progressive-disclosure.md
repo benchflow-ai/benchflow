@@ -1,4 +1,9 @@
 # Progressive disclosure
+
+> Part of the **Interaction plane** (multi-round mode) — see [Concepts: the three planes](./concepts.md#the-three-planes).
+
+This is the multi-round, single-agent path: the same agent runs across several `connect → execute → disconnect` rounds, with a Python `User` callback deciding each round's prompt. For how multi-round differs from multi-turn (one persistent session) and multi-scene (staged Scenes), see [Concepts: multi-turn vs multi-round vs multi-scene](./concepts.md#multi-turn-vs-multi-round-vs-multi-scene). `multi-round` is one of the Interaction modes defined in [the task standard](./task-standard.md#interaction-model); the open-ended, LLM-backed `simulated-user` mode lives in [Use cases §1](./use-cases.md#1-interactive-user-simulation).
+
 ## TL;DR
 
 `BaseUser` is a Python callback that drives a benchflow rollout across multiple rounds. Each round: the callback sees the previous verifier result and decides what to tell the agent next, or stops the loop. No second LLM, no outbox protocol — just a function that knows how to grade and hint.
@@ -107,7 +112,11 @@ verify()                                  ← full hardening, final reward
 cleanup()
 ```
 
-Multi-scene / multi-role configs are not compatible with `User` — the loop assumes one Scene with one Role. Setting both raises `ValueError`.
+Programmatic `BaseUser` callbacks still assume a linear user loop and should be
+paired with one role at a time. Document-declared `task.md` users can now run
+across ordered linear multi-scene flows when every scene has exactly one active
+role. Team-style multi-role scenes still raise `ValueError` until BenchFlow has
+explicit handoff and message-routing policy.
 
 ---
 
@@ -175,7 +184,13 @@ class RoundResult:
     verifier_output: str | None    # raw verifier stdout/log
     verifier_error: str | None     # exception message if verifier failed
     n_tool_calls: int              # tool calls in this round
+    scene: str | None              # scene name (multi-scene/document users)
+    role: str | None               # active role this round
+    handoff_from: str | None       # prior role, if this round followed a handoff
+    handoff_to: str | None         # next role, if this round hands off
 ```
+
+The last four fields stay `None` for plain single-role `BaseUser` loops; they carry scene/role context for the document-declared `task.md` users described under [Where it lives in the rollout lifecycle](#where-it-lives-in-the-rollout-lifecycle).
 
 ### `PassthroughUser`
 
@@ -207,10 +222,10 @@ oracle_access: bool = False      # expose gold solution to user.setup()
 
 When `oracle_access=True`:
 
-1. Before round 0, the rollout reads `/solution/solve.sh` and passes its contents to `user.setup(instruction, solution=...)`.
-2. The rollout moves `/solution` → `/solution_oracle_backup` so the agent can't read it during its rounds.
-3. Between rounds, soft-verify temporarily restores `/solution` (some verifiers consult it) then re-hides it.
-4. Before the final `verify()`, the rollout permanently restores `/solution`.
+1. Before round 0, the rollout reads the native `/oracle` package, or the compatibility `/solution` package, and passes its contents to `user.setup(instruction, solution=...)`.
+2. The rollout hides the oracle package so the agent can't read it during its rounds.
+3. Between rounds, soft-verify temporarily restores the oracle package if a verifier consults it, then re-hides it.
+4. Before the final `verify()`, the rollout permanently restores the oracle package.
 
 Step 4 is wrapped in `try/finally` against the user loop: if a round throws, the restore still runs.
 
@@ -227,9 +242,17 @@ Use cases for oracle access:
 
 The verifier's pre-run cleanup deletes `conftest.py` outside `/tests/` to prevent reward-hacking. Some tasks (qutebrowser) ship legitimate `conftest.py` files that fix real circular imports — deleting them breaks pytest collection.
 
-Tasks opt out in `task.toml`:
+Tasks opt out in their native `task.md` frontmatter (legacy `task.toml` tasks use the equivalent TOML table):
+
+```yaml
+# task.md frontmatter
+verifier:
+  hardening:
+    cleanup_conftests: false
+```
 
 ```toml
+# legacy task.toml
 [verifier.hardening]
 cleanup_conftests = false
 ```
@@ -259,16 +282,16 @@ Trajectory and tool counts are sliced per round from `Rollout._trajectory`. The 
 
 ---
 
-## Comparison with multi-agent simulated user
+## `multi-round` vs `simulated-user`
 
-benchflow has two patterns for multi-round agent runs. Neither requires a sidecar container.
+These are two distinct Interaction modes (see [the task standard](./task-standard.md#interaction-model)). Neither requires a sidecar container.
 
-| Pattern | What "user" is | When to use |
+| Mode | What "user" is | When to use |
 |---------|---------------|-------------|
-| **`BaseUser` callback (this doc)** | Python function in the scheduler process | Programmatic, deterministic, rule-based. No second LLM. Cheap. Best for progressive disclosure, curriculum, scripted hints. |
-| **Multi-role Scene with simulated-user role** ([use-cases §1](./use-cases.md#1-interactive-user-simulation)) | Another LLM with full tool access | Open-ended, conversational. The "user" can read files, check outputs, give nuanced feedback. Best when the user's behavior must itself be adaptive or LLM-quality. |
+| **`multi-round` — `BaseUser` callback (this doc)** | Python function in the scheduler process | Programmatic, deterministic, rule-based. No second LLM. Cheap. Best for progressive disclosure, curriculum, scripted hints. |
+| **`simulated-user` — multi-role Scene with a simulated-user role** ([use-cases §1](./use-cases.md#1-interactive-user-simulation)) | Another LLM with full tool access | Open-ended, conversational. The "user" can read files, check outputs, give nuanced feedback. Best when the user's behavior must itself be adaptive or LLM-quality. |
 
-The two coexist. Choose based on whether your "user" needs to think (Scene-based) or just decide (`BaseUser`). For the SWE-bench Pro use case, the disclosure schedule is fixed, the grading is the verifier, and there's nothing for a second LLM to add — `BaseUser` wins on cost and determinism.
+The two coexist. Choose based on whether your "user" needs to think (`simulated-user`) or just decide (`multi-round` / `BaseUser`). For the SWE-bench Pro use case, the disclosure schedule is fixed, the grading is the verifier, and there's nothing for a second LLM to add — `BaseUser` wins on cost and determinism.
 
 ---
 

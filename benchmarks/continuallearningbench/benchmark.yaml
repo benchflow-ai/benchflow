@@ -19,10 +19,13 @@ tasks:
 conversion:
   script: benchflow.py
   source_format: "Python task classes with ContinualLearningTask interface"
+  default_task_format: task-md
+  task_formats: [legacy, task-md]
   has_oracle_solutions: false
   oracle_notes: >
-    ContinualLearningBench tasks have oracle solutions for some tasks (e.g., poker optimal
-    strategy) but they are computed dynamically, not stored as static files.
+    ContinualLearningBench has no static file-level oracle. Native task.md
+    output records oracle evidence in oracle/README.md and uses the original
+    sequential environment plus reward function as dynamic ground truth.
 
 verification:
   method: script
@@ -42,5 +45,8 @@ parity:
     tasks_tested: 3
     passed: 3
   eval_pipeline:
+    tasks_tested: 3
+    passed: 3
+  native_task_md:
     tasks_tested: 3
     passed: 3

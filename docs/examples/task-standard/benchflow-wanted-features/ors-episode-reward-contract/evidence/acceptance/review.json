@@ -1,0 +1,11 @@
+{
+  "task": "benchflow-wanted/ors-episode-reward-contract",
+  "kind": "acceptance-review",
+  "anti_cheat": "passed",
+  "instruction_alignment": "passed",
+  "notes": [
+    "ORS reward evidence remains verifier-scoped and must be declared.",
+    "The calibration set distinguishes missing strategy, malformed evidence, partial terminal reward, and full event preservation.",
+    "The package does not introduce root task syntax for ORS episodes."
+  ]
+}

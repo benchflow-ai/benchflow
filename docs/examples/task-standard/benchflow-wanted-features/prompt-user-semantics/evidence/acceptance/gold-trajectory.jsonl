@@ -1,0 +1,4 @@
+{"type":"system","message":"Dogfood reference trajectory for prompt-user-semantics acceptance evidence."}
+{"type":"agent_action","message":"Implemented deterministic prompt composition across base, role, scene, and turn prompts."}
+{"type":"agent_action","message":"Compiled supported document-declared user loops and sequential team handoffs while preserving private-fact boundaries."}
+{"type":"verifier_result","reward":1.0,"status":"passed","items":{"composition":1.0,"user_loop":1.0,"handoff":1.0}}

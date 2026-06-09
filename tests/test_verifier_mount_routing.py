@@ -53,9 +53,7 @@ def _make_task(tmp_path: Path, *, verifier_subdir: str) -> Path:
     return task_dir
 
 
-# ---------------------------------------------------------------------------
 # verifier source dir -> mount target
-# ---------------------------------------------------------------------------
 
 
 def test_native_verifier_dir_mounts_to_slash_verifier(tmp_path):
@@ -102,9 +100,7 @@ def test_native_verifier_dir_takes_precedence_over_legacy_tests(tmp_path):
     assert target == "/verifier"
 
 
-# ---------------------------------------------------------------------------
 # oracle / solution dir -> mount target (reachable through the same interface)
-# ---------------------------------------------------------------------------
 
 
 def test_native_oracle_dir_mounts_to_slash_oracle(tmp_path):

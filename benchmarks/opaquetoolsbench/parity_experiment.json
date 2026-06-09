@@ -30,19 +30,19 @@
   "checks": [
     {
       "name": "required_files_present",
-      "description": "task.toml, instruction.md, Dockerfile, test.sh, evaluate.py, ground_truth.json all exist and are non-empty",
+      "description": "Legacy or task.md layout files exist and are non-empty",
       "passed": 150,
       "failed": 0
     },
     {
       "name": "task_toml_valid",
-      "description": "task.toml contains opaquetoolsbench/ prefix, [agent], [verifier], timeout_sec",
+      "description": "task.toml/task.md contains opaquetoolsbench/ prefix and verifier/agent timeout metadata",
       "passed": 150,
       "failed": 0
     },
     {
       "name": "instruction_md_valid",
-      "description": "instruction.md contains ## Query, ## Available Functions, and output path reference",
+      "description": "Prompt contains ## Query, ## Available Functions, and output path reference",
       "passed": 150,
       "failed": 0
     },

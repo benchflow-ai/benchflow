@@ -1,0 +1,13 @@
+{
+  "task": "benchflow-wanted/verifier-native-entrypoint",
+  "kind": "oracle-proof",
+  "oracle": "oracle/solve.md",
+  "expected_reward": 1.0,
+  "required_reward": 1.0,
+  "evidence": [
+    "TaskPaths accepts selected native verifier strategies without requiring verifier/test.sh.",
+    "Reward Kit runners and criteria files are checked before launch.",
+    "Legacy tests/test.sh and native verifier/test.sh compatibility remain supported."
+  ],
+  "status": "passed"
+}

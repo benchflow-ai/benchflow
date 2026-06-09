@@ -1,0 +1,98 @@
+{
+  "benchflow_version": "0.5.3.dev0",
+  "case_summaries": [
+    {
+      "case": "live-reference-verifier",
+      "failed_runs": 0,
+      "flake_rate": 0.0,
+      "flake_rate_max": 0.0,
+      "max_reward": 1.0,
+      "min_reward": 1.0,
+      "passed_runs": 1,
+      "source": "declared",
+      "status": "passed",
+      "total_runs": 1,
+      "type": "reference"
+    }
+  ],
+  "cases": [
+    {
+      "command": null,
+      "expect": {
+        "flake_rate_max": 0.0,
+        "reward_equals": null,
+        "reward_max": null,
+        "reward_min": 0.99,
+        "reward_range": null
+      },
+      "name": "live-reference-verifier",
+      "reruns": 1,
+      "source": "declared",
+      "type": "reference"
+    }
+  ],
+  "generated_at": "2026-06-07T22:58:35.567666+00:00",
+  "kind": "acceptance-live-report",
+  "leaderboard_suitability": {
+    "checks": {
+      "all_runs_passed": true,
+      "flake_rate_within_limit": true,
+      "has_generated_calibration_coverage": false,
+      "has_live_runs": true,
+      "has_oracle_proof": false,
+      "has_reference_proof": true
+    },
+    "issues": [
+      "requires a passed oracle live case",
+      "missing generated calibration live case types: known-bad, no-op, partial, reference"
+    ],
+    "max_flake_rate": 0.0,
+    "observed_generated_calibration_types": [],
+    "required": false,
+    "required_generated_calibration_types": [
+      "known-bad",
+      "no-op",
+      "partial",
+      "reference"
+    ],
+    "status": "insufficient"
+  },
+  "runs": [
+    {
+      "artifact_hint": null,
+      "case": "live-reference-verifier",
+      "diagnostic_code": null,
+      "error": null,
+      "expectation_issues": [],
+      "reward": 1.0,
+      "run_index": 1,
+      "sha256": "49bf469af8eca83b46f221501b31ef08de9c670152746279a7f297571111187b",
+      "source": "declared",
+      "status": "passed",
+      "type": "reference",
+      "verifier_error_category": null
+    }
+  ],
+  "sandbox": "docker",
+  "schema_version": "1.0",
+  "spec_sha256": "696603ab3de3d27a55eded0aff40e406cac2f7048b45e66119504480c0cba170",
+  "summary": {
+    "failed_runs": 0,
+    "flake_rate": 0.0,
+    "max_reward": 1.0,
+    "min_reward": 1.0,
+    "passed_runs": 1,
+    "total_runs": 1
+  },
+  "task": {
+    "oracle_sha256": null,
+    "path": "verifier-package-reward-contract",
+    "task_md_sha256": "554ab69e85626bddb258cbd168c165882966b40b7889e1cb5f9ab966a37816b9",
+    "verifier_sha256": "43721c21a7bc4a5b15ec51559188a9f953853623b87ece978f13880cbb74ab82"
+  },
+  "workspace": {
+    "source": "current-worktree",
+    "staged_tree_sha256": "461c3a0b0ee6d7876a2b239a7430f4b86374f3afcdfdb3fbf4ce93c2eefbaced",
+    "target": "/repo"
+  }
+}

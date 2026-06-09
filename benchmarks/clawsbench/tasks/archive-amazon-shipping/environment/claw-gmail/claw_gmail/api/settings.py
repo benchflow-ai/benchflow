@@ -52,9 +52,7 @@ from .schemas import (
 router = APIRouter()
 
 
-# ============================================================
 # Filters
-# ============================================================
 
 def _filter_to_schema(f: Filter) -> FilterSchema:
     criteria = FilterCriteria.model_construct(
@@ -153,9 +151,7 @@ def delete_filter(
     return {}
 
 
-# ============================================================
 # SendAs
-# ============================================================
 
 def _send_as_to_schema(sa: SendAs) -> dict:
     """Build sendAs response dict.
@@ -290,9 +286,7 @@ def verify_send_as(
     return {}
 
 
-# ============================================================
 # ForwardingAddresses
-# ============================================================
 
 @router.get("/users/{userId}/settings/forwardingAddresses")
 def list_forwarding_addresses(
@@ -367,9 +361,7 @@ def delete_forwarding_address(
     return {}
 
 
-# ============================================================
 # Delegates
-# ============================================================
 
 @router.get("/users/{userId}/settings/delegates")
 def list_delegates(
@@ -444,9 +436,7 @@ def delete_delegate(
     return {}
 
 
-# ============================================================
 # Vacation Settings
-# ============================================================
 
 def _get_or_create_vacation(db: Session, user_id: str) -> VacationSettings:
     vs = db.query(VacationSettings).filter(VacationSettings.user_id == user_id).first()
@@ -523,9 +513,7 @@ def update_vacation(
     return _vacation_to_schema(vs)
 
 
-# ============================================================
 # Auto-Forwarding
-# ============================================================
 
 def _get_or_create_auto_forwarding(db: Session, user_id: str) -> AutoForwarding:
     af = db.query(AutoForwarding).filter(AutoForwarding.user_id == user_id).first()
@@ -576,9 +564,7 @@ def update_auto_forwarding(
     )
 
 
-# ============================================================
 # IMAP Settings (stub — not needed for agent use cases)
-# ============================================================
 
 # In-memory per-user stores; no DB table needed for these simple settings.
 _imap_settings: dict[str, dict] = {}
@@ -619,9 +605,7 @@ def update_imap(
     return ImapSettingsSchema(**cur)
 
 
-# ============================================================
 # POP Settings (stub — not needed for agent use cases)
-# ============================================================
 
 @router.get("/users/{userId}/settings/pop", response_model=PopSettingsSchema)
 def get_pop(
@@ -649,9 +633,7 @@ def update_pop(
     return PopSettingsSchema(**cur)
 
 
-# ============================================================
 # Language Settings (stub — not needed for agent use cases)
-# ============================================================
 
 @router.get("/users/{userId}/settings/language", response_model=LanguageSettingsSchema)
 def get_language(
@@ -677,9 +659,7 @@ def update_language(
     return LanguageSettingsSchema(**cur)
 
 
-# ============================================================
 # Watch / Stop (no-ops)
-# ============================================================
 
 @router.post("/users/{userId}/watch", response_model=WatchResponse)
 def watch(

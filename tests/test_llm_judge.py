@@ -23,9 +23,7 @@ from benchflow.rewards.llm import (
 from benchflow.rewards.protocol import RewardFunc
 from benchflow.rewards.rubric_config import ScoringConfig
 
-# ---------------------------------------------------------------------------
 # Verdict parsing
-# ---------------------------------------------------------------------------
 
 
 class TestParseVerdict:
@@ -49,9 +47,7 @@ class TestParseVerdict:
             parse_verdict("no json here at all")
 
 
-# ---------------------------------------------------------------------------
 # call_judge: provider routing and fallback
-# ---------------------------------------------------------------------------
 
 
 class TestCallJudgeProviderFallback:
@@ -276,9 +272,7 @@ class TestCallJudgeEnvThreading:
         assert set(observed) == {"A", "B"}
 
 
-# ---------------------------------------------------------------------------
 # _call_anthropic: content block handling
-# ---------------------------------------------------------------------------
 
 
 class _FakeTextBlock:
@@ -331,9 +325,7 @@ class TestCallAnthropicContent:
         assert result == "hello"
 
 
-# ---------------------------------------------------------------------------
 # _call_google: text-part handling
-# ---------------------------------------------------------------------------
 
 
 class _FakeGoogleResponse:
@@ -374,9 +366,7 @@ class TestCallGoogleContent:
         assert result == "the verdict"
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: legacy mode
-# ---------------------------------------------------------------------------
 
 
 class TestLLMJudgeLegacy:
@@ -398,9 +388,7 @@ class TestLLMJudgeLegacy:
         assert score == 0.0
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: protocol conformance
-# ---------------------------------------------------------------------------
 
 
 class TestProtocol:
@@ -412,9 +400,7 @@ class TestProtocol:
         assert isinstance(func, RewardFunc)
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: rubric mode (mocked LLM)
-# ---------------------------------------------------------------------------
 
 _MOCK_PASS_RESPONSE = '```json\n{"verdict": "pass", "reasoning": "good"}\n```'
 _MOCK_FAIL_RESPONSE = '```json\n{"verdict": "fail", "reasoning": "bad"}\n```'
@@ -599,9 +585,7 @@ max = 100
         assert score == pytest.approx(0.7)
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: inline criteria
-# ---------------------------------------------------------------------------
 
 
 class TestLLMJudgeInlineCriteria:
@@ -642,9 +626,7 @@ class TestLLMJudgeInlineCriteria:
         assert func.events[0].source == "criterion:criterion-1"
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: auto-discovery
-# ---------------------------------------------------------------------------
 
 
 class TestLLMJudgeAutoDiscovery:
@@ -667,9 +649,7 @@ description = "Works?"
         assert score == pytest.approx(1.0)
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: error handling
-# ---------------------------------------------------------------------------
 
 
 class TestLLMJudgeErrors:
@@ -709,9 +689,7 @@ class TestLLMJudgeErrors:
             await func.score(tmp_path)
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: evaluation details output
-# ---------------------------------------------------------------------------
 
 
 class TestEvaluationDetails:
@@ -738,9 +716,7 @@ class TestEvaluationDetails:
         assert len(details["results"]) == 2
 
 
-# ---------------------------------------------------------------------------
 # Dense reward events
-# ---------------------------------------------------------------------------
 
 
 class TestDenseRewardEvents:
@@ -793,9 +769,7 @@ class TestDenseRewardEvents:
         assert len(func.events) == 1  # Not accumulated
 
 
-# ---------------------------------------------------------------------------
 # Aggregation helpers (unit tests)
-# ---------------------------------------------------------------------------
 
 
 class TestAggregation:

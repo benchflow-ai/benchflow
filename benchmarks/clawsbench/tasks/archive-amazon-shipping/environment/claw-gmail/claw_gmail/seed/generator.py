@@ -114,7 +114,7 @@ def seed_default_scenario(db: Session, fake: Faker, user: User, personas: list[d
     user_email = user.email_address
     now = datetime.utcnow()
 
-    # --- Multi-message work threads ---
+    # Multi-message work threads
     for thread_idx, thread_data in enumerate(CONTENT_THREADS):
         thread_id = _make_id()
         msgs = thread_data["messages"]
@@ -159,7 +159,7 @@ def seed_default_scenario(db: Session, fake: Faker, user: User, personas: list[d
             for lid in label_ids:
                 db.add(MessageLabel(message_id=msg_id, label_id=lid))
 
-    # --- Standalone notification emails ---
+    # Standalone notification emails
     for notif_idx, notif in enumerate(NOTIFICATIONS):
         thread_id = _make_id()
         msg_id = _make_id()
@@ -186,7 +186,7 @@ def seed_default_scenario(db: Session, fake: Faker, user: User, personas: list[d
         for lid in notif.get("labels", ["INBOX"]):
             db.add(MessageLabel(message_id=msg_id, label_id=lid))
 
-    # --- Personal emails ---
+    # Personal emails
     for personal in PERSONAL_EMAILS:
         thread_id = _make_id()
         msg_id = _make_id()
@@ -214,7 +214,7 @@ def seed_default_scenario(db: Session, fake: Faker, user: User, personas: list[d
         for lid in personal.get("labels", ["INBOX"]):
             db.add(MessageLabel(message_id=msg_id, label_id=lid))
 
-    # --- Promotional emails ---
+    # Promotional emails
     for promo in PROMO_EMAILS:
         thread_id = _make_id()
         msg_id = _make_id()
@@ -239,7 +239,7 @@ def seed_default_scenario(db: Session, fake: Faker, user: User, personas: list[d
         for lid in promo.get("labels", ["CATEGORY_PROMOTIONS"]):
             db.add(MessageLabel(message_id=msg_id, label_id=lid))
 
-    # --- Sent emails (standalone, not part of threads above) ---
+    # Sent emails (standalone, not part of threads above)
     for sent in SENT_EMAILS:
         thread_id = _make_id()
         msg_id = _make_id()
@@ -263,7 +263,7 @@ def seed_default_scenario(db: Session, fake: Faker, user: User, personas: list[d
         db.add(msg)
         db.add(MessageLabel(message_id=msg_id, label_id="SENT"))
 
-    # --- Draft ---
+    # Draft
     draft_id = _make_id()
     draft_msg_id = _make_id()
     draft_thread_id = _make_id()

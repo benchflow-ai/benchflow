@@ -13,7 +13,7 @@ repo: https://github.com/facebookresearch/programbench
 author: Meta FAIR
 converted_by: BenchFlow
 
-# ── Tasks ────────────────────────────────────────────────────────────
+# Tasks
 tasks:
   count: 201
   languages: [C, Rust, Go, C++, Java, Haskell, Bash]
@@ -23,21 +23,24 @@ tasks:
     parity-pipeline: 10     # pipeline parity validation set
     parity-agent: 5         # agent parity validation set
 
-# ── Conversion ───────────────────────────────────────────────────────
+# Conversion
 # How raw benchmark data is converted to BenchFlow task format.
 conversion:
-  script: benchflow.py       # CLI: --output-dir, --programbench-dir, --limit, --overwrite, --task-ids
+  script: benchflow.py       # CLI: --output-dir, --programbench-dir, --limit, --overwrite, --task-ids, --task-format
   generator: main.py         # python -m benchmarks.programbench.main --output-dir ...
   source_format: task.yaml + Docker images
+  default_task_format: task-md
+  task_formats: [legacy, task-md]
   has_oracle_solutions: true
   oracle_notes: >
     The oracle is the original source code at the specified commit. The task
     asks agents to reconstruct a program from its compiled binary — the gold
-    answer is the upstream repo source. solve.sh clones the original repo and
-    runs compile.sh.
+    answer is the upstream repo source. The converter emits solution/solve.sh
+    for legacy output and oracle/solve.sh for native task.md output. solve.sh
+    clones the original repo and runs compile.sh.
   docker_image_pinned: false  # uses upstream programbench/<repo>:task images
 
-# ── Verification ─────────────────────────────────────────────────────
+# Verification
 verification:
   method: deterministic_unit_tests
   reward: partial_credit      # passed_tests / total_tests
@@ -45,7 +48,7 @@ verification:
   test_source: "HuggingFace (programbench/ProgramBench-Tests)"
   anti_cheat: true            # pre-built binaries removed before compile
 
-# ── Environment ──────────────────────────────────────────────────────
+# Environment
 environment:
   base_images: "programbench/<repo>:task"
   platform: linux/amd64
@@ -54,7 +57,7 @@ environment:
   memory_mb: 4096
   storage_mb: 20480
 
-# ── Parity ───────────────────────────────────────────────────────────
+# Parity
 # Results from validating that the conversion preserves benchmark semantics.
 parity:
   pipeline:

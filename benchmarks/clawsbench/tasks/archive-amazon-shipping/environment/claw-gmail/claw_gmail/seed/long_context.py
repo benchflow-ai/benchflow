@@ -48,9 +48,7 @@ def _make_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
-# ---------------------------------------------------------------------------
 # Needle emails — specific emails that tasks reference for evaluation
-# ---------------------------------------------------------------------------
 
 NEEDLES = {
     "flight_confirmation": {
@@ -243,9 +241,7 @@ BUDGET_THREAD = {
 }
 
 
-# ---------------------------------------------------------------------------
 # Parameterization pools for notification template placeholders
-# ---------------------------------------------------------------------------
 
 _PERSON_NAMES = [
     "Sarah Kim", "Marcus Rivera", "Priya Sharma", "James Liu",
@@ -275,12 +271,10 @@ _EVENT_NAMES = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # HTML template mapping: sender email domain → (template_name, static_params)
 # When inserting an email whose sender domain matches, the HTML template is
 # loaded and filled with both these static params and dynamic ones from the
 # email's subject/body.
-# ---------------------------------------------------------------------------
 
 _HTML_TEMPLATE_MAP: dict[str, tuple[str, dict[str, str]]] = {
     # Notifications
@@ -517,9 +511,7 @@ def _parameterize(template: dict, rng: random.Random) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
 # Flattened work pool: thread messages extracted as standalone templates
-# ---------------------------------------------------------------------------
 
 def _build_work_pool() -> list[dict]:
     """Build a combined pool of standalone work email templates.
@@ -547,9 +539,7 @@ def _build_work_pool() -> list[dict]:
 _WORK_POOL = _build_work_pool()  # 15 singles + 54 thread msgs = 69
 
 
-# ---------------------------------------------------------------------------
 # Insertion helpers
-# ---------------------------------------------------------------------------
 
 def _insert_single(
     db: Session,
@@ -740,11 +730,6 @@ def _fill_from_pool(
         idx += 1
     return inserted
 
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-
 def seed_long_context_scenario(
     db: Session,
     fake: Faker,
@@ -760,7 +745,7 @@ def seed_long_context_scenario(
     user_email = user.email_address
     now = datetime.utcnow()
 
-    # --- Phase 1: Insert fixed-position emails ---
+    # Phase 1: Insert fixed-position emails
 
     # Standalone needle emails
     for needle_key, needle in NEEDLES.items():
@@ -833,7 +818,7 @@ def seed_long_context_scenario(
     fixed_count = len(NEEDLES) + len(budget_msgs) + len(AMBIGUOUS_EMAILS)
     remaining = target_count - fixed_count
 
-    # --- Phase 2: Fill from content library by category ---
+    # Phase 2: Fill from content library by category
 
     n_notif = int(remaining * 0.35)
     n_newsletter = int(remaining * 0.20)

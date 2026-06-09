@@ -1,0 +1,33 @@
+{
+  "task": "benchflow-wanted/runtime-capability-gate",
+  "kind": "calibration-report",
+  "cases": [
+    {
+      "name": "empty-runtime-boundary",
+      "type": "no-op",
+      "reward": 0.0,
+      "command": "rm -rf src tests",
+      "summary": "No TaskPackage or TaskRuntimeView boundary is added."
+    },
+    {
+      "name": "silent-unsupported-field",
+      "type": "known-bad",
+      "reward": 0.2,
+      "command": "find src/benchflow/task tests -type f ! -name runtime_view.py -delete",
+      "summary": "Unsupported parsed runtime semantics are accepted without a fail-closed runtime capability issue."
+    },
+    {
+      "name": "runtime-view-without-alias-drift",
+      "type": "partial",
+      "reward": 0.6,
+      "command": "rm -f src/benchflow/task/package.py src/benchflow/task/acceptance_live.py",
+      "summary": "TaskRuntimeView exists, but native/compatibility alias drift is not detected."
+    },
+    {
+      "name": "gold-runtime-boundary",
+      "type": "reference",
+      "reward": 1.0,
+      "summary": "TaskPackage owns selected runtime view, runtime support issues, and compatibility alias drift checks."
+    }
+  ]
+}

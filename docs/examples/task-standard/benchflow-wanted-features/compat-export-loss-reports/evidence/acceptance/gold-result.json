@@ -1,0 +1,12 @@
+{
+  "task": "benchflow-wanted/compat-export-loss-reports",
+  "kind": "reference-result",
+  "expected_reward": 1.0,
+  "checks": {
+    "native_to_split_export": 1.0,
+    "loss_report": 1.0,
+    "roundtrip_conformance": 1.0,
+    "foreign_key_preservation": 1.0
+  },
+  "status": "passed"
+}

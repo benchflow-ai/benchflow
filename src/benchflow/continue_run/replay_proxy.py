@@ -157,7 +157,7 @@ class ReplayDivergenceError(RuntimeError):
     """Raised (only in ``strict_divergence`` mode) when replay leaves the rails."""
 
 
-# ── SSE reconstruction ────────────────────────────────────────────────────
+# SSE reconstruction
 #
 # The recorded/live body is a *final* ChatCompletion. When the agent asked for
 # ``stream: true`` we must re-emit it as ``chat.completion.chunk`` SSE events so
@@ -240,7 +240,7 @@ def completion_to_sse(body: dict[str, Any]) -> list[str]:
     return payloads
 
 
-# ── HTTP layer ────────────────────────────────────────────────────────────
+# HTTP layer
 
 
 @dataclass

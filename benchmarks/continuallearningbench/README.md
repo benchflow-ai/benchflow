@@ -32,6 +32,15 @@ python benchmarks/continuallearningbench/benchflow.py \
     --output-dir /tmp/continuallearningbench-tasks
 ```
 
+Native `task.md` output is available with the same source data:
+
+```bash
+python benchmarks/continuallearningbench/benchflow.py \
+    --continuallearningbench-dir /path/to/continual-learning-bench \
+    --output-dir /tmp/continuallearningbench-tasks-task-md \
+    --task-format task-md
+```
+
 ### Run parity tests
 
 ```bash
@@ -43,6 +52,12 @@ python benchmarks/continuallearningbench/parity_test.py --output-dir /tmp/contin
 
 # Both
 python benchmarks/continuallearningbench/parity_test.py --output-dir /tmp/continuallearningbench-tasks --mode all
+
+# Native task.md output
+python benchmarks/continuallearningbench/parity_test.py \
+    --output-dir /tmp/continuallearningbench-tasks-task-md \
+    --mode all \
+    --task-format task-md
 ```
 
 ### Quick start (clone + generate + test)
@@ -62,13 +77,40 @@ python benchmarks/continuallearningbench/run_continuallearningbench.py
 | `--limit N` | Cap number of tasks |
 | `--overwrite` | Regenerate existing tasks |
 | `--task-ids IDS` | Comma-separated: `exploitable_poker,database_exploration,cohort_studies` |
+| `--task-format FORMAT` | `legacy` for split layout or `task-md` for native packages |
 
 ### parity_test.py
 
 | Flag | Description |
 |------|-------------|
 | `--output-dir DIR` | Directory with generated tasks (required) |
-| `--mode MODE` | `structural`, `eval`, or `all` |
+| `--mode MODE` | `structural`, `eval`, `live`, `e2e`, or `all` |
+| `--task-format FORMAT` | Validate `legacy` or native `task-md` layout |
+
+## task.md Layout
+
+Native output writes each task as:
+
+```text
+continuallearningbench-<task>/
+├── task.md
+├── environment/
+│   ├── Dockerfile
+│   ├── run_task.py
+│   └── schedule.json
+├── verifier/
+│   ├── test.sh
+│   ├── evaluate.py
+│   ├── verifier.md
+│   └── rubrics/verifier.md
+└── oracle/
+    └── README.md
+```
+
+There is no static `oracle/solve.sh` because the benchmark's ground truth is the
+original sequential environment and reward function. `oracle/README.md`
+records that evidence, and the verifier reads `/opt/results.json` produced by
+the ContinualLearningBench driver.
 
 ## Differences from Other Adapters
 

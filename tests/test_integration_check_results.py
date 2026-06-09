@@ -11,6 +11,7 @@ import pytest
 
 from benchflow._utils import benchmark_repos as task_download
 from benchflow._utils.benchmark_repos import task_file_hashes
+from benchflow._utils.source_provenance import source_issues
 from tests.integration import check_results as result_checker
 from tests.integration.check_results import check_agent
 
@@ -150,6 +151,7 @@ def _write_config(
     *,
     agent: str = "agentA",
     model: str = "test-model",
+    concurrency: object = 64,
     idle_timeout: object = 600,
     skills_dir: object = "/tmp/skills",
     include_task_skills: bool = False,
@@ -160,7 +162,7 @@ def _write_config(
         "agent": agent,
         "model": model,
         "environment": "daytona",
-        "concurrency": 64,
+        "concurrency": concurrency,
         "agent_idle_timeout_sec": idle_timeout,
         "skills_dir": skills_dir,
         "include_task_skills": include_task_skills,
@@ -353,7 +355,14 @@ def test_check_results_flags_openhands_legacy_skill_invocation_mismatch(
     )
 
 
-def _write_skill_summary(agent_dir: Path, *, agent: str, total: int) -> None:
+def _write_skill_summary(
+    agent_dir: Path,
+    *,
+    agent: str,
+    total: int,
+    task_name: str = "task-a",
+    source: dict | None = None,
+) -> None:
     (agent_dir / "summary.json").write_text(
         json.dumps(
             {
@@ -370,7 +379,7 @@ def _write_skill_summary(agent_dir: Path, *, agent: str, total: int) -> None:
                 "score": "100.0%",
                 "total_skill_invocations": total,
                 "avg_skill_invocations": float(total),
-                "source": _source(),
+                "source": source or _source(task_name),
             }
         )
     )
@@ -453,15 +462,22 @@ def test_check_results_allows_skill_invocation_when_skills_provisioned(
 
 
 def _write_skill_trial(
-    tmp_path: Path, *, skill_mode: str, n_skill_invocations: int = 1
+    tmp_path: Path,
+    *,
+    skill_mode: str,
+    n_skill_invocations: int = 1,
+    task_name: str = "task-a",
+    include_task_skills: bool = False,
+    source: dict | None = None,
 ) -> Path:
+    source_payload = source or _source(task_name)
     agent_dir = tmp_path / "agentA"
-    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / task_name
     run_dir.mkdir(parents=True)
     (run_dir / "result.json").write_text(
         json.dumps(
             {
-                "task_name": "task-a",
+                "task_name": task_name,
                 "agent": "agentA",
                 "model": "test-model",
                 "rewards": {"reward": 1.0},
@@ -469,7 +485,7 @@ def _write_skill_trial(
                 "verifier_error": None,
                 "n_skill_invocations": n_skill_invocations,
                 "agent_result": {"n_skill_invocations": n_skill_invocations},
-                "source": _source(),
+                "source": source_payload,
             }
         )
     )
@@ -482,10 +498,67 @@ def _write_skill_trial(
     (traj_dir / "acp_trajectory.jsonl").write_text(traj)
     # Canonical skill_mode field with no legacy skills_dir/include_task_skills.
     _write_config(
-        run_dir, skills_dir=None, include_task_skills=False, skill_mode=skill_mode
+        run_dir,
+        source_payload,
+        skills_dir=None,
+        include_task_skills=include_task_skills,
+        skill_mode=skill_mode,
     )
-    _write_skill_summary(agent_dir, agent="agentA", total=n_skill_invocations)
+    _write_skill_summary(
+        agent_dir,
+        agent="agentA",
+        total=n_skill_invocations,
+        task_name=task_name,
+        source=source_payload,
+    )
     return agent_dir
+
+
+def _build_native_skillsbench_source_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo_root = tmp_path / "source-repo"
+    task = repo_root / "tasks" / "weighted-gdp-calc"
+    shutil.copytree(
+        Path("docs/examples/task-md/real-skillsbench/weighted-gdp-calc"),
+        task,
+    )
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/acme/benchmarks.git"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=repo_root, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=BenchFlow Test",
+            "-c",
+            "user.email=benchflow-test@example.com",
+            "commit",
+            "-m",
+            "seed native skillsbench task",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    )
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    sha = completed.stdout.strip()
+    result_checker.REMOTE_REACHABILITY[("acme/benchmarks", sha, "main")] = True
+    return repo_root, sha
 
 
 def test_check_results_skill_mode_no_skill_flags_invocation(tmp_path: Path) -> None:
@@ -510,6 +583,82 @@ def test_check_results_skill_mode_with_skill_allows_invocation(
     assert not any(
         "config provisions no skills" in issue for issue in findings["issues"]
     )
+
+
+def test_check_results_accepts_native_skillsbench_no_skill_empty_trajectory(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1's SkillsBench no-skill metadata health path."""
+    repo_root, sha = _build_native_skillsbench_source_repo(tmp_path)
+    source = _source_from_repo(repo_root, sha, "weighted-gdp-calc")
+    agent_dir = _write_skill_trial(
+        tmp_path,
+        skill_mode="no-skill",
+        n_skill_invocations=0,
+        task_name="weighted-gdp-calc",
+        source=source,
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is True
+    assert not any(
+        "config provisions no skills" in issue for issue in findings["issues"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("skill_mode", "include_task_skills", "should_flag"),
+    [
+        ("no-skill", False, True),
+        ("with-skill", True, False),
+    ],
+)
+def test_check_results_flags_native_skillsbench_no_skill_skill_file_access(
+    tmp_path: Path,
+    skill_mode: str,
+    include_task_skills: bool,
+    should_flag: bool,
+) -> None:
+    """Guards PR #1's no-skill audit for ordinary SKILL.md file access."""
+    repo_root, sha = _build_native_skillsbench_source_repo(tmp_path)
+    source = _source_from_repo(repo_root, sha, "weighted-gdp-calc")
+    agent_dir = _write_skill_trial(
+        tmp_path,
+        skill_mode=skill_mode,
+        n_skill_invocations=0,
+        task_name="weighted-gdp-calc",
+        include_task_skills=include_task_skills,
+        source=source,
+    )
+    run_dir = next(agent_dir.rglob("result.json")).parent
+    (run_dir / "trajectory" / "acp_trajectory.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "tool_call",
+                "kind": "read",
+                "args": {
+                    "path": "/home/agent/.codex/skills/xlsx/SKILL.md",
+                },
+            }
+        )
+        + "\n"
+    )
+
+    findings = check_agent(agent_dir)
+
+    if should_flag:
+        assert findings["ok"] is False
+        assert any(
+            "no-skill trial must not access task skill files" in issue
+            for issue in findings["issues"]
+        )
+    else:
+        assert findings["ok"] is True
+        assert not any(
+            "no-skill trial must not access task skill files" in issue
+            for issue in findings["issues"]
+        )
 
 
 def test_check_results_requires_source_provenance(tmp_path: Path) -> None:
@@ -626,7 +775,7 @@ def test_check_results_rejects_bad_file_hash_digest(tmp_path: Path) -> None:
     assert any("invalid source.file_hashes" in issue for issue in findings["issues"])
 
 
-def test_check_results_requires_task_toml_source_hash(tmp_path: Path) -> None:
+def test_check_results_requires_task_source_hash(tmp_path: Path) -> None:
     """Guards v0.5-integration@cb8759e against incomplete task hash evidence."""
     bad_source = _source()
     bad_source["file_hashes"] = {"instruction.md": "sha256:" + "0" * 64}
@@ -655,7 +804,22 @@ def test_check_results_requires_task_toml_source_hash(tmp_path: Path) -> None:
     findings = check_agent(agent_dir)
 
     assert findings["ok"] is False
-    assert any("task.toml" in issue for issue in findings["issues"])
+    assert any("task.toml or task.md" in issue for issue in findings["issues"])
+
+
+def test_check_results_accepts_task_md_source_hash() -> None:
+    """Guards commit 67378ddd's 2026-06-04 task.md provenance acceptance."""
+    good_source = _source()
+    good_source["file_hashes"] = {"task.md": "sha256:" + "0" * 64}
+
+    issues = source_issues(
+        good_source,
+        "result.json",
+        require_file_hashes=True,
+        require_clean=True,
+    )
+
+    assert not any("task.toml or task.md" in issue for issue in issues)
 
 
 def test_check_results_recomputes_source_hashes_when_local_path_exists(
@@ -1478,6 +1642,139 @@ def test_check_results_cli_requires_expected_identity_for_artifact_root(
     assert completed.returncode == 1
     assert (
         "direct artifact-root audits require expected identity args" in completed.stdout
+    )
+
+
+def _write_worker_sharded_artifact_root(
+    tmp_path: Path,
+    *,
+    config_concurrency: int = 10,
+    summary_model: str | None = None,
+    summary_environment: str | None = None,
+) -> Path:
+    rollout_root = tmp_path / "skillsbench-gemini-c100"
+    run_dir = (
+        rollout_root
+        / "worker-shards"
+        / "shard-000"
+        / "jobs"
+        / "2026-06-07__16-51-03"
+        / "task-a__abc"
+    )
+    run_dir.mkdir(parents=True)
+    source = _source()
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "gemini",
+                "model": "gemini-3.1-flash-lite-preview",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": 0,
+                "agent_result": {"n_skill_invocations": 0},
+                "source": source,
+            }
+        )
+    )
+    (run_dir / "trajectory").mkdir()
+    (run_dir / "trajectory" / "acp_trajectory.jsonl").write_text(
+        json.dumps({"type": "assistant_message", "text": "done"}) + "\n"
+    )
+    _write_config(
+        run_dir,
+        source,
+        agent="gemini",
+        model="gemini-3.1-flash-lite-preview",
+        concurrency=config_concurrency,
+        skills_dir=None,
+        include_task_skills=False,
+        skill_mode="no-skill",
+    )
+    summary_source = {
+        **source,
+        "path": "tasks",
+        "local_path": str(SOURCE_REPO_ROOT / "tasks"),
+        "file_hashes": {},
+    }
+    summary = {
+        "job_name": "worker-sharded",
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "errored": 0,
+        "verifier_errored": 0,
+        "score": 1.0,
+        "concurrency": 100,
+        "worker_count": 10,
+        "worker_concurrency": 10,
+        "source": summary_source,
+        "total_skill_invocations": 0,
+        "avg_skill_invocations": 0.0,
+    }
+    if summary_model is not None:
+        summary["model"] = summary_model
+    if summary_environment is not None:
+        summary["environment"] = summary_environment
+    (rollout_root / "summary.json").write_text(json.dumps(summary))
+    return rollout_root
+
+
+def test_check_results_accepts_worker_sharded_artifact_root_identity(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1's c100 SkillsBench worker-sharded result audit path."""
+    rollout_root = _write_worker_sharded_artifact_root(tmp_path)
+
+    previous = dict(result_checker.EXPECTED)
+    try:
+        result_checker.EXPECTED.clear()
+        result_checker.EXPECTED.update(
+            {
+                "agent": "gemini",
+                "model": "gemini-3.1-flash-lite-preview",
+                "environment": "daytona",
+                "concurrency": "100",
+            }
+        )
+        findings = check_agent(rollout_root)
+    finally:
+        result_checker.EXPECTED.clear()
+        result_checker.EXPECTED.update(previous)
+
+    assert findings["ok"] is True, findings["issues"]
+
+
+def test_check_results_checks_worker_shard_local_concurrency(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1's c100 audit against unaudited worker-local concurrency."""
+    rollout_root = _write_worker_sharded_artifact_root(
+        tmp_path,
+        config_concurrency=9,
+    )
+
+    previous = dict(result_checker.EXPECTED)
+    try:
+        result_checker.EXPECTED.clear()
+        result_checker.EXPECTED.update(
+            {
+                "agent": "gemini",
+                "model": "gemini-3.1-flash-lite-preview",
+                "environment": "daytona",
+                "concurrency": "100",
+            }
+        )
+        findings = check_agent(rollout_root)
+    finally:
+        result_checker.EXPECTED.clear()
+        result_checker.EXPECTED.update(previous)
+
+    assert findings["ok"] is False
+    assert any(
+        "config.json concurrency 9 does not match expected 10" in issue
+        for issue in findings["issues"]
     )
 
 

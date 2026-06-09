@@ -53,6 +53,13 @@ python benchmarks/opaquetoolsbench/benchflow.py \
     --opaquetoolsbench-dir /tmp/OpaqueToolsBench \
     --output-dir /tmp/opaquetoolsbench-tasks \
     --limit 10
+
+# Or generate native task.md packages
+python benchmarks/opaquetoolsbench/benchflow.py \
+    --opaquetoolsbench-dir /tmp/OpaqueToolsBench \
+    --output-dir /tmp/opaquetoolsbench-task-md \
+    --task-format task-md \
+    --limit 10
 ```
 
 ### 2. Validate Structure
@@ -60,6 +67,10 @@ python benchmarks/opaquetoolsbench/benchflow.py \
 ```bash
 python benchmarks/opaquetoolsbench/parity_test.py \
     --tasks-dir /tmp/opaquetoolsbench-tasks
+
+python benchmarks/opaquetoolsbench/parity_test.py \
+    --tasks-dir /tmp/opaquetoolsbench-task-md \
+    --task-format task-md
 ```
 
 ### 3. Run Benchmark
@@ -70,11 +81,15 @@ python benchmarks/opaquetoolsbench/run_opaquetoolsbench.py
 # Or pass an explicit config
 python benchmarks/opaquetoolsbench/run_opaquetoolsbench.py \
     benchmarks/opaquetoolsbench/opaquetoolsbench-gemini-flash-lite.yaml
+
+# Run from native task.md conversions
+python benchmarks/opaquetoolsbench/run_opaquetoolsbench.py \
+    --task-format task-md
 ```
 
 ## Generated Task Structure
 
-Each task directory contains:
+By default each generated task directory uses the legacy BenchFlow split layout:
 
 ```
 <task-id>/
@@ -86,6 +101,24 @@ Each task directory contains:
     ├── test.sh                # Runs evaluate.py, writes reward
     ├── evaluate.py            # AST-based function-call comparison
     └── ground_truth.json      # Expected function call(s)
+```
+
+With `--task-format task-md`, each generated task directory uses the native
+authoring layout:
+
+```
+<task-id>/
+├── task.md                    # Unified task config and prompt
+├── environment/
+│   └── Dockerfile             # Python 3.13 slim environment
+├── verifier/
+│   ├── verifier.md            # Verifier package contract
+│   ├── rubrics/verifier.md    # Deterministic scoring rubric
+│   ├── test.sh                # Runs evaluate.py, writes reward artifacts
+│   ├── evaluate.py            # AST-based function-call comparison
+│   └── ground_truth.json      # Expected function call(s)
+└── oracle/
+    └── solve.sh               # Writes the ground-truth response JSON
 ```
 
 ## Agent Response Format
@@ -115,3 +148,4 @@ The agent must write a JSON array of function-call objects to
 | `--limit N`              | Cap number of tasks to generate            |
 | `--overwrite`            | Regenerate existing task directories       |
 | `--task-ids ID1,ID2,...` | Comma-separated list of specific task IDs  |
+| `--task-format FORMAT`   | `legacy` or `task-md` output layout        |

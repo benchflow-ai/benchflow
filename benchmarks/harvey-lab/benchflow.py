@@ -2,12 +2,16 @@
 
 Translates Harvey LAB tasks into BenchFlow task format. Each Harvey LAB
 task contains instructions, documents, and rubric criteria graded by an
-LLM judge. This converter maps those to BenchFlow's task.toml /
-instruction.md / environment / tests structure.
+LLM judge. This converter maps those to either legacy task.toml /
+instruction.md / environment / tests structure, or native task.md packages.
 
 Usage:
-    # Generate all tasks
+    # Generate all tasks (native task.md packages by default)
     python benchmarks/harvey-lab/benchflow.py --output-dir /tmp/harvey-lab-tasks
+
+    # Generate legacy split packages (task.toml / instruction.md / tests/)
+    python benchmarks/harvey-lab/benchflow.py --output-dir /tmp/harvey-lab-legacy \
+        --task-format legacy
 
     # Generate a subset
     python benchmarks/harvey-lab/benchflow.py --output-dir /tmp/harvey-lab-tasks --limit 10
@@ -25,6 +29,24 @@ import shutil
 import sys
 import textwrap
 from pathlib import Path
+from typing import Any
+
+import yaml
+
+_REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+_repo_src_path = str(_REPO_SRC)
+if _repo_src_path in sys.path:
+    sys.path.remove(_repo_src_path)
+sys.path.insert(0, _repo_src_path)
+
+from benchflow.task.document import render_task_md  # noqa: E402
+from benchflow.task.output_format import (  # noqa: E402
+    TASK_OUTPUT_FORMATS,
+    TaskOutputFormat,
+    ensure_existing_task_output_format,
+    validate_task_output_format,
+    verifier_dir_name,
+)
 
 # Harvey LAB repo root — resolved relative to this script's location.
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -33,6 +55,8 @@ _DEFAULT_HARVEY_ROOT = _SCRIPT_DIR.parent.parent.parent / "harvey-labs"
 # Difficulty heuristic thresholds (by criteria count).
 _EASY_THRESHOLD = 35
 _HARD_THRESHOLD = 80
+TASK_FORMATS = TASK_OUTPUT_FORMATS
+TaskFormat = TaskOutputFormat
 
 
 def _sanitize_name(raw: str) -> str:
@@ -52,6 +76,22 @@ def _infer_difficulty(criteria_count: int) -> str:
     return "medium"
 
 
+def _task_timeouts(criteria_count: int) -> tuple[int, int]:
+    agent_timeout = max(1800, criteria_count * 30)
+    verifier_timeout = max(300, criteria_count * 15)
+    return agent_timeout, verifier_timeout
+
+
+def _criteria_with_files_aliases(criteria: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for criterion in criteria:
+        item = dict(criterion)
+        if "files" not in item and isinstance(item.get("deliverables"), list):
+            item["files"] = list(item["deliverables"])
+        normalized.append(item)
+    return normalized
+
+
 def _build_task_toml(
     task_name: str,
     work_type: str,
@@ -60,10 +100,7 @@ def _build_task_toml(
 ) -> str:
     """Generate task.toml content for a single task."""
     difficulty = _infer_difficulty(criteria_count)
-    # Longer timeout for tasks with more criteria (more deliverables).
-    agent_timeout = max(1800, criteria_count * 30)
-    # LLM judge can be slow with many criteria.
-    verifier_timeout = max(300, criteria_count * 15)
+    agent_timeout, verifier_timeout = _task_timeouts(criteria_count)
 
     tag_list = ", ".join(f'"{t}"' for t in tags)
 
@@ -97,10 +134,87 @@ def _build_task_toml(
     """)
 
 
+def _build_task_md(
+    task_name: str,
+    title: str,
+    instructions: str,
+    deliverables: dict[str, str] | list[str],
+    work_type: str,
+    tags: list[str],
+    criteria_count: int,
+    task_id: str,
+) -> str:
+    """Generate native task.md content for a single task."""
+    difficulty = _infer_difficulty(criteria_count)
+    agent_timeout, verifier_timeout = _task_timeouts(criteria_count)
+    instruction = _build_instruction_md(
+        title,
+        instructions,
+        deliverables,
+        work_type,
+    ).strip()
+    frontmatter: dict[str, Any] = {
+        "schema_version": "1.3",
+        "task": {
+            "name": task_name,
+        },
+        "metadata": {
+            "author_name": "Harvey AI",
+            "author_email": "labs@harvey.ai",
+            "difficulty": difficulty,
+            "category": f"legal-{work_type}",
+            "tags": tags,
+        },
+        "agent": {
+            "timeout_sec": agent_timeout,
+        },
+        "verifier": {
+            "timeout_sec": verifier_timeout,
+            "env": {
+                "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
+            },
+        },
+        "environment": {
+            "build_timeout_sec": 600,
+            "cpus": 1,
+            "memory_mb": 4096,
+            "storage_mb": 20480,
+        },
+        "benchflow": {
+            "document_version": "0.3",
+            "source": {
+                "benchmark": "Harvey LAB",
+                "task_id": task_id,
+                "work_type": work_type,
+                "criteria_count": criteria_count,
+            },
+            "oracle": {
+                "evidence": "oracle/README.md",
+                "static_solution": False,
+            },
+            "verifier": {
+                "spec": "verifier/verifier.md",
+                "rubric": "verifier/rubrics/rubric.json",
+                "entrypoint": "verifier/test.sh",
+                "judge_model": "claude-sonnet-4-6",
+                "implementation": {
+                    "type": "script",
+                    "judge": "llm-as-judge",
+                    "outputs": {
+                        "reward_json": "/logs/verifier/reward.json",
+                        "reward_details": "/logs/verifier/reward-details.json",
+                    },
+                },
+            },
+        },
+    }
+    return render_task_md(frontmatter, instruction)
+
+
 def _build_instruction_md(
     title: str,
     instructions: str,
-    deliverables: dict[str, str],
+    deliverables: dict[str, str] | list[str],
     work_type: str,
 ) -> str:
     """Generate instruction.md for the agent."""
@@ -132,12 +246,18 @@ def _build_instruction_md(
     return "\n".join(lines)
 
 
-def _build_dockerfile(task_id: str) -> str:
+def _build_dockerfile(task_id: str, *, include_rubric: bool = True) -> str:
     """Generate a Dockerfile that sets up the evaluation environment.
 
     Uses a digest-pinned Python base image for reproducibility.
     """
-    return textwrap.dedent("""\
+    rubric_copy = ""
+    if include_rubric:
+        rubric_copy = (
+            "\n# Copy rubric for the verifier\nCOPY rubric.json /app/rubric.json\n"
+        )
+
+    return textwrap.dedent(f"""\
         # Pinned by digest for reproducibility.
         FROM python:3.13-slim@sha256:dc1546eefcbe8caaa1f004f16ab76b204b5e1dbd58ff81b899f21cd40541232f
 
@@ -159,9 +279,7 @@ def _build_dockerfile(task_id: str) -> str:
 
         # Copy task documents
         COPY documents/ /app/documents/
-
-        # Copy rubric for the verifier
-        COPY rubric.json /app/rubric.json
+        {rubric_copy}
 
         # Create output directory (matches Harvey LAB's /workspace/output)
         RUN mkdir -p /app/output /logs/verifier /logs/agent /logs/artifacts
@@ -172,22 +290,65 @@ def _build_test_sh() -> str:
     """Generate test.sh — the verifier entry point."""
     return textwrap.dedent("""\
         #!/bin/bash
-        set -e
+        set -euo pipefail
 
-        # Run the LLM-as-judge evaluator
-        # Check /app/output first (Harvey LAB convention), fall back to /app
-        if [ -d /app/output ] && [ "$(ls -A /app/output 2>/dev/null)" ]; then
+        verifier_log="${BENCHFLOW_VERIFIER_LOG:-/logs/verifier/verifier.log}"
+        mkdir -p "$(dirname "$verifier_log")"
+        exec > >(tee "$verifier_log") 2>&1
+
+        VERIFIER_DIR="${BENCHFLOW_VERIFIER_DIR:-/verifier}"
+        LEGACY_TESTS_DIR="${BENCHFLOW_LEGACY_TESTS_DIR:-/tests}"
+        if [ ! -f "$VERIFIER_DIR/evaluate.py" ] && [ -f "$LEGACY_TESTS_DIR/evaluate.py" ]; then
+            VERIFIER_DIR="$LEGACY_TESTS_DIR"
+        fi
+
+        if [ -n "${BENCHFLOW_RUBRIC_JSON:-}" ]; then
+            rubric_file="$BENCHFLOW_RUBRIC_JSON"
+        elif [ -f "$VERIFIER_DIR/rubrics/rubric.json" ]; then
+            rubric_file="$VERIFIER_DIR/rubrics/rubric.json"
+        else
+            rubric_file=/app/rubric.json
+        fi
+        reward_file="${BENCHFLOW_REWARD_TEXT:-/logs/verifier/reward.txt}"
+        reward_json="${BENCHFLOW_REWARD_JSON:-/logs/verifier/reward.json}"
+        details_json="${BENCHFLOW_REWARD_DETAILS_JSON:-/logs/verifier/reward-details.json}"
+        mkdir -p "$(dirname "$reward_file")" "$(dirname "$reward_json")" "$(dirname "$details_json")"
+
+        if [ -n "${BENCHFLOW_OUTPUT_DIR:-}" ]; then
+            OUTPUT_DIR="$BENCHFLOW_OUTPUT_DIR"
+        elif [ -d /app/output ] && [ "$(ls -A /app/output 2>/dev/null)" ]; then
             OUTPUT_DIR=/app/output
         else
             OUTPUT_DIR=/app
         fi
 
-        python3 /tests/evaluate.py \\
-            --rubric /app/rubric.json \\
+        python3 "$VERIFIER_DIR/evaluate.py" \\
+            --rubric "$rubric_file" \\
             --output-dir "$OUTPUT_DIR" \\
-            --reward-file /logs/verifier/reward.txt
+            --reward-file "$reward_file"
 
-        exit 0
+        python3 - "$reward_file" "$reward_json" "$details_json" <<'PY'
+        from __future__ import annotations
+
+        import json
+        import sys
+        from pathlib import Path
+
+        reward_path = Path(sys.argv[1])
+        reward_json_path = Path(sys.argv[2])
+        details_json_path = Path(sys.argv[3])
+        reward = float(reward_path.read_text().strip())
+        reward_json_path.write_text(json.dumps({"reward": reward}, indent=2) + "\\n")
+
+        evaluation_details = reward_path.parent / "evaluation_details.json"
+        if evaluation_details.exists():
+            details = json.loads(evaluation_details.read_text())
+        else:
+            details = {"source": "harvey-lab-llm-judge"}
+        details.setdefault("reward", reward)
+        details.setdefault("score", reward)
+        details_json_path.write_text(json.dumps(details, indent=2) + "\\n")
+        PY
     """)
 
 
@@ -212,12 +373,6 @@ def _build_evaluate_py() -> str:
         import time
         from pathlib import Path
 
-        import pdfplumber
-        from openpyxl import load_workbook
-
-
-        # ── File reading ──────────────────────────────────────────────────
-
         def read_file_as_text(path: Path) -> str:
             """Read a file and return its content as plain text."""
             suffix = path.suffix.lower()
@@ -232,6 +387,8 @@ def _build_evaluate_py() -> str:
                         return f"(pandoc error: {result.stderr[:200]})"
                     return result.stdout
                 if suffix == ".xlsx":
+                    from openpyxl import load_workbook
+
                     wb = load_workbook(str(path), data_only=True)
                     parts = []
                     for sheet_name in wb.sheetnames:
@@ -248,6 +405,8 @@ def _build_evaluate_py() -> str:
                     result = md.convert(str(path))
                     return result.text_content
                 if suffix == ".pdf":
+                    import pdfplumber
+
                     parts = []
                     with pdfplumber.open(path) as pdf:
                         for page in pdf.pages:
@@ -259,8 +418,6 @@ def _build_evaluate_py() -> str:
             except Exception as e:
                 return f"(error reading {path.name}: {e})"
 
-
-        # ── Judge ─────────────────────────────────────────────────────────
 
         VERDICT_PROMPT = string.Template("""You are evaluating a legal AI agent\'s work product against a specific quality criterion.
 
@@ -398,8 +555,6 @@ def _build_evaluate_py() -> str:
                 }
 
 
-        # ── Main ──────────────────────────────────────────────────────────
-
         def find_deliverables(output_dir: Path) -> dict[str, str]:
             """Find and read all deliverable files in the output directory."""
             texts = {}
@@ -464,6 +619,7 @@ def _build_evaluate_py() -> str:
             # Write detailed results alongside reward
             details_path = reward_file.parent / "evaluation_details.json"
             details_path.write_text(json.dumps({
+                "reward": reward,
                 "score": reward,
                 "n_passed": n_passed,
                 "n_total": n_total,
@@ -474,6 +630,93 @@ def _build_evaluate_py() -> str:
         if __name__ == "__main__":
             main()
     ''')
+
+
+def _build_verifier_md(task_name: str, title: str, criteria_count: int) -> str:
+    frontmatter: dict[str, Any] = {
+        "document_version": "0.3",
+        "verifier": {
+            "name": f"{_sanitize_name(task_name)}-verifier",
+            "default_strategy": "deterministic",
+            "strategies": {
+                "deterministic": {
+                    "type": "script",
+                    "command": "./test.sh",
+                },
+                "llm_judge": {
+                    "type": "llm-judge",
+                    "model": "claude-sonnet-4-6",
+                    "rubric": "rubrics/rubric.json",
+                    "input_dir": "/app/output",
+                    "context_file": "rubrics/context.md",
+                },
+            },
+            "rubric": {
+                "combine": "mean",
+                "dimensions": {
+                    "criteria_pass_rate": {
+                        "weight": 1.0,
+                        "source": "deterministic",
+                    },
+                },
+            },
+            "outputs": {
+                "reward_text": "/logs/verifier/reward.txt",
+                "reward_json": "/logs/verifier/reward.json",
+                "details_json": "/logs/verifier/reward-details.json",
+                "aggregate_policy": {
+                    "field": "reward",
+                    "method": "mean",
+                },
+            },
+        },
+    }
+    rendered_frontmatter = yaml.safe_dump(frontmatter, sort_keys=False)
+    return (
+        f"---\n{rendered_frontmatter}---\n\n## role:reviewer\n\n"
+        f"Evaluate `{title}` with Harvey LAB's per-criterion legal rubric. "
+        f"The task has {criteria_count} pass/fail criteria; reward is the "
+        "fraction of criteria that the Claude judge marks as passing.\n"
+    )
+
+
+def _build_verifier_rubric_md(task_name: str, criteria_count: int) -> str:
+    return f"""\
+# Harvey LAB Verifier Rubric
+
+Task: `{task_name}`
+
+The machine-readable Harvey LAB criteria live in `rubrics/rubric.json`.
+
+- Each criterion is judged independently as pass or fail.
+- The verifier reads deliverables from `/app/output` and falls back to `/app`.
+- Reward is `passed_criteria / {criteria_count}` when criteria are present.
+"""
+
+
+def _build_context_md(title: str, work_type: str) -> str:
+    return f"""\
+# Harvey LAB Judge Context
+
+Title: {title}
+Work type: {work_type}
+
+Judge only the declared deliverables against the Harvey LAB rubric criteria.
+Do not give credit for missing output files or unsupported assertions.
+"""
+
+
+def _build_oracle_readme(task_id: str, criteria_count: int) -> str:
+    return f"""\
+# Oracle Evidence
+
+Harvey LAB task `{task_id}` does not ship static gold deliverables. The
+benchmark's ground truth is its human-authored rubric: {criteria_count}
+pass/fail criteria judged against the agent's legal work product.
+
+The verifier package stores those criteria in `verifier/rubrics/rubric.json`
+and computes reward as the fraction of criteria marked passing by the LLM judge.
+"""
 
 
 def _discover_tasks(harvey_root: Path) -> list[dict]:
@@ -511,8 +754,10 @@ def generate_task(
     task_info: dict,
     output_dir: Path,
     overwrite: bool = False,
+    task_format: TaskFormat = "task-md",
 ) -> Path | None:
     """Generate a single BenchFlow task directory from a Harvey LAB task."""
+    task_format = validate_task_output_format(task_format)
     task_id = task_info["task_id"]
     config = task_info["config"]
     docs_dir = task_info["docs_dir"]
@@ -525,6 +770,7 @@ def generate_task(
         if overwrite:
             shutil.rmtree(task_dir)
         else:
+            ensure_existing_task_output_format(task_dir, task_format)
             return task_dir
 
     task_dir.mkdir(parents=True)
@@ -543,31 +789,47 @@ def generate_task(
         if instr_path.exists():
             instructions = instr_path.read_text(encoding="utf-8")
 
-    # 1. task.toml
-    (task_dir / "task.toml").write_text(
-        _build_task_toml(task_name, work_type, tags, len(criteria))
-    )
+    if task_format == "task-md":
+        (task_dir / "task.md").write_text(
+            _build_task_md(
+                task_name,
+                title,
+                instructions,
+                deliverables,
+                work_type,
+                tags,
+                len(criteria),
+                task_id,
+            )
+        )
+        oracle_dir = task_dir / "oracle"
+        oracle_dir.mkdir()
+        (oracle_dir / "README.md").write_text(
+            _build_oracle_readme(task_id, len(criteria))
+        )
+    else:
+        (task_dir / "task.toml").write_text(
+            _build_task_toml(task_name, work_type, tags, len(criteria))
+        )
+        (task_dir / "instruction.md").write_text(
+            _build_instruction_md(title, instructions, deliverables, work_type)
+        )
 
-    # 2. instruction.md
-    (task_dir / "instruction.md").write_text(
-        _build_instruction_md(title, instructions, deliverables, work_type)
-    )
-
-    # 3. environment/
     env_dir = task_dir / "environment"
     env_dir.mkdir()
-    (env_dir / "Dockerfile").write_text(_build_dockerfile(task_id))
+    (env_dir / "Dockerfile").write_text(
+        _build_dockerfile(task_id, include_rubric=task_format == "legacy")
+    )
 
     # Copy documents into environment for Docker COPY
     env_docs_dir = env_dir / "documents"
     shutil.copytree(docs_dir, env_docs_dir)
 
-    # Copy rubric.json (criteria + title) for the verifier
-    rubric = {"title": title, "criteria": criteria}
-    (env_dir / "rubric.json").write_text(json.dumps(rubric, indent=2))
+    rubric = {"title": title, "criteria": _criteria_with_files_aliases(criteria)}
+    if task_format == "legacy":
+        (env_dir / "rubric.json").write_text(json.dumps(rubric, indent=2))
 
-    # 4. tests/
-    tests_dir = task_dir / "tests"
+    tests_dir = task_dir / verifier_dir_name(task_format)
     tests_dir.mkdir()
     test_sh = tests_dir / "test.sh"
     test_sh.write_text(_build_test_sh())
@@ -576,7 +838,17 @@ def generate_task(
     evaluate_py = tests_dir / "evaluate.py"
     evaluate_py.write_text(_build_evaluate_py())
 
-    # 5. solution/ (not provided by Harvey LAB — tasks don't have oracle solutions)
+    if task_format == "task-md":
+        (tests_dir / "verifier.md").write_text(
+            _build_verifier_md(task_name, title, len(criteria))
+        )
+        rubrics_dir = tests_dir / "rubrics"
+        rubrics_dir.mkdir()
+        (rubrics_dir / "rubric.json").write_text(json.dumps(rubric, indent=2))
+        (rubrics_dir / "verifier.md").write_text(
+            _build_verifier_rubric_md(task_name, len(criteria))
+        )
+        (rubrics_dir / "context.md").write_text(_build_context_md(title, work_type))
 
     return task_dir
 
@@ -622,7 +894,14 @@ def main():
             "otherwise interpreted as a practice-area filter (e.g. 'corporate-ma')."
         ),
     )
+    parser.add_argument(
+        "--task-format",
+        choices=TASK_FORMATS,
+        default="task-md",
+        help="Output layout: legacy task.toml/instruction.md or native task.md.",
+    )
     args = parser.parse_args()
+    task_format = validate_task_output_format(args.task_format)
 
     harvey_root = Path(args.harvey_root)
     output_dir = Path(args.output_dir)
@@ -674,7 +953,12 @@ def main():
     errors = 0
     for task_info in all_tasks:
         try:
-            result = generate_task(task_info, output_dir, overwrite=args.overwrite)
+            result = generate_task(
+                task_info,
+                output_dir,
+                overwrite=args.overwrite,
+                task_format=task_format,
+            )
             if result:
                 generated += 1
         except Exception as e:

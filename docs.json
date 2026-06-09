@@ -11,20 +11,42 @@
         "group": "Start here",
         "pages": [
           "docs/getting-started",
-          "docs/concepts"
+          "docs/concepts",
+          "docs/running-benchmarks"
         ]
       },
       {
-        "group": "Guides",
+        "group": "The task standard",
         "pages": [
-          "docs/running-benchmarks",
-          "docs/continue-runs",
-          "docs/task-authoring",
-          "docs/use-cases",
-          "docs/progressive-disclosure",
-          "docs/skill-eval",
-          "docs/llm-judge",
+          "docs/task-standard",
+          "docs/task-authoring"
+        ]
+      },
+      {
+        "group": "Environment plane",
+        "pages": [
+          "docs/environment-plane",
           "docs/sandbox-hardening"
+        ]
+      },
+      {
+        "group": "Interaction plane",
+        "pages": [
+          "docs/use-cases",
+          "docs/progressive-disclosure"
+        ]
+      },
+      {
+        "group": "Verifier plane",
+        "pages": [
+          "docs/llm-judge",
+          "docs/skill-eval"
+        ]
+      },
+      {
+        "group": "Architecture",
+        "pages": [
+          "docs/architecture"
         ]
       },
       {

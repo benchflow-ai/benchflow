@@ -122,14 +122,11 @@ _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMoc
 
 
 def _is_task_dir(path: Path) -> bool:
-    # Discovery keys off a CHEAP marker, not full validation. Running
-    # check_task() here silently dropped misauthored task.md dirs from a run
-    # (a structurally-invalid task vanished from the summary), whereas a
-    # task.toml task was discovered on a bare .exists() check and failed
-    # loudly at run time. Treat any dir with either marker as a task so a
-    # misauthored task.md fails loudly during the run instead of disappearing
-    # (#651). Validation stays the job of check_task / run time.
-    return (path / "task.md").exists() or (path / "task.toml").exists()
+    if not (path / "task.md").exists():
+        return (path / "task.toml").exists()
+    from benchflow._utils.task_authoring import check_task
+
+    return check_task(path) == []
 
 
 class EmptyTaskSelectionError(ValueError):

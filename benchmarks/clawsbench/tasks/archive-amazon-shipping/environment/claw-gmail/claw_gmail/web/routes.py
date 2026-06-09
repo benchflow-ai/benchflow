@@ -706,7 +706,7 @@ def run_tests(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "dashboard.html", context=ctx)
 
 
-# ─── Task Viewer ───────────────────────────────────────────────────────────────
+# Task Viewer
 
 
 def _get_all_tasks() -> list[dict]:

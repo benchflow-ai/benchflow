@@ -19,14 +19,31 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from string import Template
+from typing import Any
 
 import yaml
+
+_REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+_repo_src_path = str(_REPO_SRC)
+if _repo_src_path in sys.path:
+    sys.path.remove(_repo_src_path)
+sys.path.insert(0, _repo_src_path)
+
+from benchflow.task.document import render_task_md  # noqa: E402
+from benchflow.task.output_format import (  # noqa: E402
+    TASK_OUTPUT_FORMATS,
+    TaskOutputFormat,
+    ensure_existing_task_output_format,
+    oracle_dir_name,
+    validate_task_output_format,
+    verifier_dir_name,
+)
 
 logger = logging.getLogger(__name__)
 
 DOCKER_ORG = "programbench"
 
-# ── Language display names ────────────────────────────────────────────
+# Language display names
 
 _LANG_DISPLAY: dict[str, str] = {
     "rs": "Rust",
@@ -38,7 +55,7 @@ _LANG_DISPLAY: dict[str, str] = {
     "bash": "Bash",
 }
 
-# ── Timeout presets by difficulty ─────────────────────────────────────
+# Timeout presets by difficulty
 
 _TIMEOUTS: dict[str, tuple[int, int]] = {
     # (agent_timeout, verifier_timeout)
@@ -47,6 +64,8 @@ _TIMEOUTS: dict[str, tuple[int, int]] = {
     "hard": (7200, 2400),
 }
 _DEFAULT_TIMEOUT = (5400, 1800)
+TASK_FORMATS = TASK_OUTPUT_FORMATS
+TaskFormat = TaskOutputFormat
 
 
 @dataclass
@@ -120,6 +139,59 @@ memory_mb = 4096
 storage_mb = 20480
 allow_internet = false
 """
+
+
+def _render_task_md(task: ProgramBenchTask) -> str:
+    agent_timeout, verifier_timeout = _TIMEOUTS.get(task.difficulty, _DEFAULT_TIMEOUT)
+    lang_display = _LANG_DISPLAY.get(task.language, task.language)
+    instruction = _render_instruction(task).strip()
+    frontmatter: dict[str, Any] = {
+        "schema_version": "1.3",
+        "task": {
+            "name": f"programbench/{task.instance_id}",
+        },
+        "metadata": {
+            "author_name": "ProgramBench (Meta FAIR)",
+            "difficulty": task.difficulty,
+            "category": "programming",
+            "tags": ["program-reconstruction", lang_display.lower()],
+        },
+        "agent": {
+            "timeout_sec": agent_timeout,
+        },
+        "verifier": {
+            "timeout_sec": verifier_timeout,
+        },
+        "environment": {
+            "cpus": 2,
+            "memory_mb": 4096,
+            "storage_mb": 20480,
+            "allow_internet": False,
+        },
+        "benchflow": {
+            "document_version": "0.3",
+            "source": {
+                "benchmark": "ProgramBench",
+                "repository": task.repository,
+                "commit": task.commit,
+                "language": task.language,
+                "instance_id": task.instance_id,
+            },
+            "verifier": {
+                "spec": "verifier/verifier.md",
+                "rubric": "verifier/rubrics/verifier.md",
+                "entrypoint": "verifier/test.sh",
+                "implementation": {
+                    "type": "test-script",
+                    "outputs": {
+                        "reward_json": "/logs/verifier/reward.json",
+                        "reward_details": "/logs/verifier/reward-details.json",
+                    },
+                },
+            },
+        },
+    }
+    return render_task_md(frontmatter, instruction)
 
 
 def _render_instruction(task: ProgramBenchTask) -> str:
@@ -207,19 +279,123 @@ def _render_test_sh(task: ProgramBenchTask) -> str:
 #!/bin/bash
 # Verifier for ProgramBench task: $instance_id
 # Compiles the agent's submission, downloads test blobs, runs behavioral tests.
-set -o pipefail
+set -euo pipefail
 
-exec > >(tee /logs/verifier/verifier.log) 2>&1
+verifier_log="${BENCHFLOW_VERIFIER_LOG:-/logs/verifier/verifier.log}"
+mkdir -p "$(dirname "$verifier_log")"
+exec > >(tee "$verifier_log") 2>&1
 
-python3 /tests/verify.py \\
+VERIFIER_DIR="${BENCHFLOW_VERIFIER_DIR:-/verifier}"
+LEGACY_TESTS_DIR="${BENCHFLOW_LEGACY_TESTS_DIR:-/tests}"
+if [ ! -f "$VERIFIER_DIR/verify.py" ] && [ -f "$LEGACY_TESTS_DIR/verify.py" ]; then
+    VERIFIER_DIR="$LEGACY_TESTS_DIR"
+fi
+
+workspace="${BENCHFLOW_WORKSPACE:-/workspace}"
+reward_file="${BENCHFLOW_REWARD_TEXT:-/logs/verifier/reward.txt}"
+reward_json="${BENCHFLOW_REWARD_JSON:-/logs/verifier/reward.json}"
+details_json="${BENCHFLOW_REWARD_DETAILS_JSON:-/logs/verifier/reward-details.json}"
+mkdir -p "$(dirname "$reward_file")" "$(dirname "$reward_json")" "$(dirname "$details_json")"
+
+python3 "$VERIFIER_DIR/verify.py" \\
     --instance-id "$instance_id" \\
-    --workspace /workspace \\
+    --workspace "$workspace" \\
     --clean-hashes '$clean_hashes' \\
-    --reward-file /logs/verifier/reward.txt
-""").substitute(instance_id=task.instance_id, clean_hashes=clean_hashes_json)
+    --tests-json "$VERIFIER_DIR/tests.json" \\
+    --reward-file "$reward_file"
+
+python3 - "$reward_file" "$reward_json" "$details_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+reward_path = Path(sys.argv[1])
+reward_json_path = Path(sys.argv[2])
+details_json_path = Path(sys.argv[3])
+reward = float(reward_path.read_text().strip())
+reward_json_path.write_text(
+    json.dumps({"reward": reward}, indent=2) + "\\n"
+)
+details_json_path.write_text(
+    json.dumps(
+        {
+            "reward": reward,
+            "partial_credit_reward": reward,
+            "source": "programbench-behavioral-tests",
+        },
+        indent=2,
+    )
+    + "\\n"
+)
+PY
+""").safe_substitute(instance_id=task.instance_id, clean_hashes=clean_hashes_json)
 
 
-# ── verify.py (copied into every task's tests/) ──────────────────────
+def _render_verifier_md(task: ProgramBenchTask) -> str:
+    frontmatter: dict[str, Any] = {
+        "document_version": "0.3",
+        "verifier": {
+            "name": f"programbench-{task.instance_id}-verifier",
+            "default_strategy": "deterministic",
+            "strategies": {
+                "deterministic": {
+                    "type": "script",
+                    "command": "./test.sh",
+                },
+            },
+            "rubric": {
+                "combine": "weighted_sum",
+                "dimensions": {
+                    "build_contract": {
+                        "weight": 0.20,
+                        "source": "deterministic",
+                    },
+                    "anti_cheat_cleanroom": {
+                        "weight": 0.20,
+                        "source": "deterministic",
+                    },
+                    "behavioral_tests": {
+                        "weight": 0.60,
+                        "source": "deterministic",
+                    },
+                },
+            },
+            "outputs": {
+                "reward_text": "/logs/verifier/reward.txt",
+                "reward_json": "/logs/verifier/reward.json",
+                "details_json": "/logs/verifier/reward-details.json",
+            },
+        },
+    }
+    rendered_frontmatter = yaml.safe_dump(frontmatter, sort_keys=False)
+    return (
+        f"---\n{rendered_frontmatter}---\n\n## role:reviewer\n\n"
+        "The deterministic verifier removes known cleanroom binary hashes, "
+        "runs the submitted build script, downloads ProgramBench test branches "
+        "from HuggingFace, and awards partial credit from behavioral tests.\n"
+    )
+
+
+def _render_verifier_rubric(task: ProgramBenchTask) -> str:
+    return f"""\
+# ProgramBench Rubric
+
+Task: `programbench/{task.instance_id}`
+
+- Build contract: the submission must provide `/workspace/compile.sh` and
+  produce `./executable`.
+- Anti-cheat cleanroom: files matching the original executable hashes are
+  removed before compilation.
+- Behavioral tests: the rebuilt executable is scored by the official
+  ProgramBench test branch archives.
+
+The bundled verifier reports partial credit as `passed_tests / total_tests`.
+"""
+
+
+# verify.py (copied into every task's verifier package)
 
 VERIFY_PY = '''\
 """ProgramBench verifier for BenchFlow.
@@ -389,16 +565,17 @@ def main() -> None:
     parser.add_argument("--instance-id", required=True)
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--clean-hashes", default="[]")
+    parser.add_argument("--tests-json", required=True, type=Path)
     parser.add_argument("--reward-file", required=True, type=Path)
     args = parser.parse_args()
 
     reward_file: Path = args.reward_file
     reward_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Load tests.json from the tests/ directory (copied by BenchFlow)
-    tests_json_path = Path("/tests/tests.json")
+    # Load tests.json from the selected verifier package directory.
+    tests_json_path = args.tests_json
     if not tests_json_path.exists():
-        print("ERROR: /tests/tests.json not found")
+        print(f"ERROR: {tests_json_path} not found")
         reward_file.write_text("0")
         sys.exit(0)
 
@@ -481,38 +658,47 @@ fi
 
 
 def generate_task(
-    task: ProgramBenchTask, output_dir: Path, *, overwrite: bool = False
+    task: ProgramBenchTask,
+    output_dir: Path,
+    *,
+    overwrite: bool = False,
+    task_format: TaskFormat = "task-md",
 ) -> Path:
     """Generate a single BenchFlow task directory for one ProgramBench instance."""
+    task_format = validate_task_output_format(task_format)
     task_dir = output_dir / task.instance_id
     if task_dir.exists():
         if not overwrite:
+            ensure_existing_task_output_format(task_dir, task_format)
             logger.debug("Skipping existing task %s", task.instance_id)
             return task_dir
         shutil.rmtree(task_dir)
 
     task_dir.mkdir(parents=True)
 
-    # task.toml
-    (task_dir / "task.toml").write_text(_render_task_toml(task))
+    if task_format == "task-md":
+        (task_dir / "task.md").write_text(_render_task_md(task))
+    else:
+        # task.toml
+        (task_dir / "task.toml").write_text(_render_task_toml(task))
 
-    # instruction.md
-    (task_dir / "instruction.md").write_text(_render_instruction(task))
+        # instruction.md
+        (task_dir / "instruction.md").write_text(_render_instruction(task))
 
     # environment/Dockerfile
     env_dir = task_dir / "environment"
     env_dir.mkdir()
     (env_dir / "Dockerfile").write_text(_render_dockerfile(task))
 
-    # solution/
-    sol_dir = task_dir / "solution"
+    # oracle/ for native task.md, solution/ for legacy Harbor/Pier layout.
+    sol_dir = task_dir / oracle_dir_name(task_format)
     sol_dir.mkdir()
     solve_sh = sol_dir / "solve.sh"
     solve_sh.write_text(_render_solve_sh(task))
     solve_sh.chmod(0o755)
 
-    # tests/
-    tests_dir = task_dir / "tests"
+    # verifier/ for native task.md, tests/ for legacy Harbor/Pier layout.
+    tests_dir = task_dir / verifier_dir_name(task_format)
     tests_dir.mkdir()
 
     test_sh = tests_dir / "test.sh"
@@ -520,6 +706,11 @@ def generate_task(
     test_sh.chmod(0o755)
 
     (tests_dir / "verify.py").write_text(VERIFY_PY)
+    if task_format == "task-md":
+        (tests_dir / "verifier.md").write_text(_render_verifier_md(task))
+        rubrics_dir = tests_dir / "rubrics"
+        rubrics_dir.mkdir()
+        (rubrics_dir / "verifier.md").write_text(_render_verifier_rubric(task))
 
     # Copy tests.json for the verifier
     if task.tests_json:
@@ -535,8 +726,10 @@ def generate_all(
     overwrite: bool = False,
     limit: int | None = None,
     task_ids: list[str] | None = None,
+    task_format: TaskFormat = "task-md",
 ) -> list[Path]:
     """Generate BenchFlow task directories for all ProgramBench tasks."""
+    task_format = validate_task_output_format(task_format)
     tasks = load_tasks(tasks_dir)
 
     if task_ids:
@@ -549,15 +742,17 @@ def generate_all(
     output_dir.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
     for task in tasks:
-        path = generate_task(task, output_dir, overwrite=overwrite)
+        path = generate_task(
+            task,
+            output_dir,
+            overwrite=overwrite,
+            task_format=task_format,
+        )
         generated.append(path)
         logger.info("Generated %s", task.instance_id)
 
     logger.info("Generated %d tasks in %s", len(generated), output_dir)
     return generated
-
-
-# ── CLI ──────────────────────────────────────────────────────────────
 
 
 def _resolve_tasks_dir(explicit: Path | None) -> Path:
@@ -632,6 +827,12 @@ def main() -> None:
         default=None,
         help="Only generate these instance IDs.",
     )
+    parser.add_argument(
+        "--task-format",
+        choices=TASK_FORMATS,
+        default="task-md",
+        help="Output layout: legacy task.toml/instruction.md or native task.md.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -647,6 +848,7 @@ def main() -> None:
         overwrite=args.overwrite,
         limit=args.limit,
         task_ids=args.task_ids,
+        task_format=args.task_format,
     )
     print(f"Generated {len(generated)} tasks in {args.output_dir}")
 

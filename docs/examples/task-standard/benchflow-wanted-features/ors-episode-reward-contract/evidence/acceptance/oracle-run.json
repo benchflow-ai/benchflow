@@ -1,0 +1,13 @@
+{
+  "task": "benchflow-wanted/ors-episode-reward-contract",
+  "kind": "oracle-proof",
+  "oracle": "oracle/solve.md",
+  "expected_reward": 1.0,
+  "required_reward": 1.0,
+  "evidence": [
+    "ORS episode reward support is declared under verifier/verifier.md, not task root syntax.",
+    "Reward event streams are normalized into BenchFlow reward envelopes.",
+    "Missing, malformed, or non-terminal ORS evidence is treated as a verifier error."
+  ],
+  "status": "passed"
+}

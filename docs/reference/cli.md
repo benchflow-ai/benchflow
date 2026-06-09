@@ -177,14 +177,118 @@ Scaffold a new benchmark task.
 ```bash
 bench tasks init my-new-task
 bench tasks init my-new-task --dir tasks/
+bench tasks init my-new-task --no-oracle
+bench tasks init my-legacy-task --format legacy
 ```
+
+The default format is native `task-md`. It scaffolds `task.md`,
+`environment/Dockerfile`, `verifier/test.sh`, `verifier/verifier.md`,
+`verifier/rubrics/`, and `oracle/solve.sh` unless `--no-oracle` is passed.
+Generated placeholders intentionally fail `bench tasks check` until replaced
+with real benchmark instructions, verifier logic, rubric text, and oracle proof.
 
 ### bench tasks check
 
-Validate a task directory (Dockerfile, instruction.md, tests/).
+Validate a task directory (`task.md` or legacy `task.toml` + `instruction.md`,
+Dockerfile, `verifier/` or legacy `tests/`).
 
 ```bash
+bench tasks check tasks/my-task --level schema
 bench tasks check tasks/my-task
+bench tasks check tasks/my-task --sandbox docker
+bench tasks check tasks/my-task --level runtime-capability --sandbox docker
+bench tasks check tasks/my-task --level publication-grade
+bench tasks check tasks/my-task --level publication-grade --sandbox docker
+bench tasks check tasks/my-task --level acceptance
+bench tasks check tasks/my-task --level acceptance-live --sandbox docker
+bench tasks check tasks/my-task --level acceptance-live --sandbox docker \
+  --report-output /tmp/benchflow-live-report.json
+```
+
+`--level schema` checks only the task authoring entrypoint and prompt parse,
+without requiring `environment/`, `verifier/`, or oracle assets. Use it for
+schema-only `task.md` fixtures, not runnable task packages. `--level structural`
+is the default. `--level runtime-capability` requires `--sandbox <backend>`
+because runtime support is backend-specific.
+`--level publication-grade` is a static native-package gate: it requires
+`task.md`, native `oracle/`, native `verifier/verifier.md`, rubric files, and
+selected verifier strategy artifacts with an explicit `reward_json` output
+contract. Add `--sandbox <backend>` to run the runtime-capability gate in the
+same publication check. Unknown sandbox names fail instead of becoming no-op
+runtime checks.
+`--level acceptance` additionally requires `benchflow.evidence`, including
+oracle proof, a verifier stability report with concrete rerun records, review
+status, a calibration report with concrete boundary cases, and local evidence
+artifacts with SHA-256 pins. It does not replace live oracle reruns or
+calibration jobs.
+`--level acceptance-live` runs the same static checks, requires
+`--sandbox <backend>`, and executes declared
+`benchflow.evidence.acceptance_live.cases` through the selected sandbox and
+BenchFlow verifier boundary. The first live slice supports fresh verifier cases
+and executable `oracle/solve.sh` reruns over
+`workspace.source: current-worktree`; when `acceptance_live.report` is
+declared, it also writes a package-local JSON report plus `.sha256` sidecar.
+Use `--report-output <path>` with `--level acceptance-live` to write that report
+to a host path instead; the override also satisfies
+the report requirement for `acceptance_live.leaderboard.required`. Failed
+verifier runs include secret-safe diagnostic fields such as
+`verifier_error_category`, `diagnostic_code`, and `artifact_hint`; dependency
+install failures point to `verifier/test-stdout.txt`.
+Repeated cases can declare `expect.flake_rate_max` to enforce observed flake
+rate across fresh sandbox reruns. `acceptance_live.calibration.from:
+calibration.report` generates live calibration cases from the static report when
+low/partial cases declare sandbox perturbation commands. If
+`acceptance_live.leaderboard.required: true` is declared, the generated report
+also includes a local `leaderboard_suitability` verdict. It requires live
+runs, all runs passing, a flake rate within
+`acceptance_live.leaderboard.max_flake_rate`, oracle/reference proof, and
+generated calibration coverage for no-op, known-bad, partial, and reference
+cases. Larger repeated flake campaigns, model/submission metadata, hosted
+leaderboard publication, and leaderboard export remain target work.
+
+### bench tasks normalize
+
+Expand a minimal human-authored `task.md` into the canonical task contract.
+
+```bash
+bench tasks normalize tasks/my-task
+bench tasks normalize tasks/my-task --output /tmp/my-task.normalized.md
+bench tasks normalize tasks/my-task --write
+```
+
+The normalizer expands known profiles such as `code-change`,
+`harbor-compatible`, `reward-kit`, `acceptance-live`, `multi-agent`, and
+`leaderboard-local`; converts shorthand `name`, `image`, string `verifier`, and
+string `oracle` fields into canonical frontmatter; preserves explicit canonical
+fields over profile defaults; and validates the generated form through the
+normal task document parser. For acceptance profiles it can also discover
+conventional `evidence/acceptance/` reports and add SHA-256 artifact pins.
+
+### bench tasks migrate
+
+Convert a legacy task directory into the unified `task.md` format.
+Foreign extension keys that are not native BenchFlow config are preserved under
+`benchflow.compat.extra` instead of being accepted as native root keys.
+With `--remove-legacy`, BenchFlow deletes `task.toml` and `instruction.md` and
+promotes legacy `tests/`/`solution/` aliases to native `verifier/`/`oracle/`
+directories when the native directories are not already present.
+
+```bash
+bench tasks migrate tasks/my-task
+bench tasks migrate tasks/my-task --remove-legacy
+```
+
+### bench tasks export
+
+Export a native `task.md` package to a Harbor/Pier-style split layout. The
+export writes `task.toml`, `instruction.md`, `environment/`, `solution/`,
+`tests/`, and `compatibility/export-report.json` with explicit native-only
+losses, alias collisions, source hashes, and restored foreign extension keys.
+
+```bash
+bench tasks export tasks/my-task /tmp/my-task-harbor --target harbor
+bench tasks export tasks/my-task /tmp/my-task-pier --target pier --overwrite
+bench tasks export tasks/my-task --target harbor --report-only
 ```
 
 ### bench tasks generate
@@ -195,6 +299,7 @@ Generate benchmark task directories from real agent traces.
 bench tasks generate --from-local --project my-repo --limit 5
 bench tasks generate --from-file session.jsonl --dry-run
 bench tasks generate --from-hf opentraces-test --limit 50
+bench tasks generate --from-local --task-format legacy
 ```
 
 | Flag | Default | Description |
@@ -212,6 +317,7 @@ bench tasks generate --from-hf opentraces-test --limit 50
 | `--min-steps` | `2` | Minimum steps per trace |
 | `--outcome` | — | Filter by outcome: success, failure, unknown |
 | `--author` | `benchflow-traces` | Author name for generated task metadata |
+| `--task-format` | `task-md` | Generated task package format: `task-md` or `legacy` |
 | `--dry-run` | `false` | Preview traces without generating tasks |
 
 ### bench tasks list-sources
@@ -343,20 +449,3 @@ scenes:
     turns:
       - role: solver
 ```
-
----
-
-## bench continue
-
-Resume a previous, unfinished (timed-out) `openhands` run to completion via
-record-replay. Standalone — it does not touch the normal run path. See
-[Continuing timed-out runs](../continue-runs.md) for the full guide.
-
-```bash
-bench continue path/to/original/run-folder --tasks-dir path/to/tasks
-```
-
-Key options: `--model` (override the live-continuation model; defaults to the
-original run's model), `--timeout`, `--output`, `--require-timeout`,
-`--strict-divergence`, and `--replay-only` (rebuild via replay and stop at the
-cut-point — no live model or API key needed).

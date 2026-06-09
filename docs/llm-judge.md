@@ -1,6 +1,8 @@
 # LLM-as-Judge Verifier
 Use an LLM to evaluate agent outputs against a rubric instead of deterministic tests.
 
+> Part of the **Verifier plane** (the `llm-judge` strategy) — see [Concepts: the three planes](./concepts.md#the-three-planes). For the full package contract, see [Task standard: Verifier Package](./task-standard.md#verifier-package).
+
 ---
 
 ## When to use LLM-as-judge
@@ -8,7 +10,7 @@ Use an LLM to evaluate agent outputs against a rubric instead of deterministic t
 Use LLM-as-judge when the task output is subjective, open-ended, or hard to verify with unit tests — legal analysis, code review quality, document drafting, research summaries. For tasks with a clear right answer (e.g. "write fizzbuzz"), stick with deterministic `test.sh` verifiers.
 
 BenchFlow's LLM judge supports:
-- **First-class `[verifier]` type** — `type = "llm-judge"` in `task.toml`, no `test.sh` needed
+- **First-class verifier strategy** — select `llm-judge` from a native `verifier/verifier.md` (or `type = "llm-judge"` in legacy `task.toml`), no `test.sh` needed
 - **Multi-criterion rubrics** with binary, likert, and numeric scoring
 - **Per-criterion weights** for non-uniform importance
 - **Dense reward events** emitted per criterion during evaluation
@@ -35,7 +37,7 @@ provider's SDK for the model you use, but the extra ships all three):
 uv sync --extra judge
 
 # or as an installed tool
-uv tool install --prerelease allow 'benchflow[judge]==0.5.2'
+uv tool install --prerelease allow 'benchflow[judge]==0.5.3'
 
 # or with pip
 pip install 'benchflow[judge]'
@@ -46,7 +48,45 @@ If no provider SDK is installed, the judge cannot run: the verifier raises a
 recording a reward of `0.0` — a missing dependency is an environment failure,
 not a score.
 
-### 1. Select the judge verifier in `task.toml`
+### 1. Select the `llm-judge` strategy in `verifier/verifier.md`
+
+Native `task.md` packages select the judge as a verifier strategy in the
+[Verifier Package](./task-standard.md#verifier-package) entry document,
+`verifier/verifier.md`:
+
+```yaml
+---
+verifier:
+  default_strategy: judge
+  strategies:
+    judge:
+      type: llm-judge
+      rubric: rubrics/rubric.toml  # relative to verifier/
+      model: claude-sonnet-4-6
+      input_dir: /app/output
+      context_file: rubrics/context.md
+---
+```
+
+The selected `llm-judge` strategy owns the rubric path, judge model, sandbox
+input directory, and either an inline `context` string or a verifier-local
+`context_file` (declare one, not both). The `rubric` path resolves **relative to
+`verifier/`**, so rubric files live inside the verifier package alongside
+`verifier.md` — `bench tasks init` scaffolds them under `verifier/rubrics/`.
+Omitted values fall back to `[verifier.judge]` in `task.toml` and then the task
+instruction. `agent-judge` strategies run verifier-scoped judge roles over
+declared inputs; `reward-kit` strategies execute a verifier package runner. All
+of them reuse the same reward artifact contract.
+
+That's the entire verifier. There is **no `verifier/test.sh`** to write — the
+`Verifier` downloads the agent's deliverables from `input_dir`, scores them
+against the rubric, and writes `reward.json` itself.
+
+#### Legacy `task.toml` form
+
+A legacy split-layout task (`task.toml` + `tests/`) selects the same engine with
+a `[verifier]` block. Here the rubric lives under `tests/` and `rubric_path` is
+relative to the task directory:
 
 ```toml
 [verifier]
@@ -63,13 +103,14 @@ input_dir = "/app"                   # sandbox dir holding agent deliverables
 ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY}"
 ```
 
-That's the entire verifier. There is **no `tests/test.sh`** to write — the
-`Verifier` downloads the agent's deliverables from `input_dir`, scores them
-against the rubric, and writes `reward.json` itself.
+Provider environment comes from `[verifier.env]` so judge credentials remain
+verifier-scoped in both forms.
 
 ### 2. Write a `rubric.toml`
 
-Place it where `rubric_path` points (by convention `tests/rubric.toml`):
+Place it where the strategy's `rubric` points. In a native package that is
+under `verifier/` (by convention `verifier/rubrics/rubric.toml`); in a legacy
+task it is where `rubric_path` points (by convention `tests/rubric.toml`):
 
 ```toml
 [[criterion]]
@@ -105,11 +146,15 @@ passed (or the configured aggregation), a partial float in `[0, 1]`.
 
 ---
 
-## `[verifier]` reference
+## `[verifier]` reference (legacy `task.toml`)
+
+These fields apply to the legacy `task.toml` form. Native packages declare the
+equivalent under `verifier.strategies.<name>` in `verifier/verifier.md` (see
+[step 1](#1-select-the-llm-judge-strategy-in-verifierverifiermd)).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `type` | string | `"test-script"` | `"test-script"` (run `tests/test.sh`) or `"llm-judge"` |
+| `type` | string | `"test-script"` | `"test-script"` (run `verifier/test.sh`, or legacy `tests/test.sh`) or `"llm-judge"` |
 | `timeout_sec` | float | `600` | Overall verifier timeout |
 | `env` | table | `{}` | Env vars for the verifier — judge API keys go here |
 
@@ -407,25 +452,39 @@ for c in rubric.criteria:
 
 ## Worked example — Harvey LAB legal task
 
-A legal document analysis task scored entirely by config — no `test.sh`:
+A legal document analysis task scored entirely by config — no `verifier/test.sh`.
+The verifier package lives under `verifier/`:
 
-```toml
-# task.toml
-[verifier]
-type = "llm-judge"
-timeout_sec = 600
-
-[verifier.judge]
-model = "claude-sonnet-4-6"
-rubric_path = "tests/rubric.toml"
-input_dir = "/app"
-
-[verifier.env]
-ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY}"
+```text
+verifier/
+|-- verifier.md
+`-- rubrics/
+    `-- rubric.toml
 ```
 
+```yaml
+# verifier/verifier.md
+---
+verifier:
+  name: harvey-lab-legal
+  default_strategy: judge
+  strategies:
+    judge:
+      type: llm-judge
+      rubric: rubrics/rubric.toml   # relative to verifier/
+      model: claude-sonnet-4-6
+      input_dir: /app
+  outputs:
+    reward_text: /logs/verifier/reward.txt
+    reward_json: /logs/verifier/reward.json
+---
+```
+
+Judge credentials stay verifier-scoped — set `ANTHROPIC_API_KEY` in the host
+environment / `.env` (or, in a legacy `task.toml`, under `[verifier.env]`).
+
 ```toml
-# tests/rubric.toml
+# verifier/rubrics/rubric.toml
 [judge]
 files = ["analysis.md"]
 
@@ -461,7 +520,8 @@ criterion, aggregates, and writes `reward.json` — no scripting required.
 
 ## Where to go next
 
-- [Concepts](./concepts.md) — the five primitives including Verifier
-- [Task authoring](./task-authoring.md) — `task.toml`, `tests/`, verifier contract
+- [Concepts: the three planes](./concepts.md#the-three-planes) — where the Verifier plane fits
+- [Task standard: Verifier Package](./task-standard.md#verifier-package) — the full `verifier/verifier.md` strategy and rubric contract
+- [Task authoring](./task-authoring.md) — `task.md`, `verifier/`, verifier contract
 - [Running benchmarks](./running-benchmarks.md) — Harvey LAB uses LLM-as-judge
 - [Python API reference](./reference/python-api.md) — `LLMJudgeRewardFunc` and friends

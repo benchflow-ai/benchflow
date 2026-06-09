@@ -1,0 +1,25 @@
+{
+  "task": "benchflow-wanted/verifier-package-reward-contract",
+  "kind": "verifier-stability-report",
+  "reruns": 3,
+  "flake_rate": 0.0,
+  "min_reward": 0.99,
+  "command": "uv run --extra dev python -m pytest tests/test_verifier_document.py tests/test_llm_judge.py tests/test_rubric_config.py tests/test_tasks.py -q",
+  "runs": [
+    {
+      "name": "verifier-package-rerun-1",
+      "status": "passed",
+      "reward": 1.0
+    },
+    {
+      "name": "verifier-package-rerun-2",
+      "status": "passed",
+      "reward": 1.0
+    },
+    {
+      "name": "verifier-package-rerun-3",
+      "status": "passed",
+      "reward": 1.0
+    }
+  ]
+}

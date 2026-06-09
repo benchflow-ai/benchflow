@@ -20,7 +20,7 @@ import io
 import json
 import os
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = "benchflow/skillsbench-leaderboard"
@@ -42,7 +42,7 @@ MODELS = {
 }
 HFMODE = {"with": "with-skills", "without": "no-skills"}
 
-# --- secret hygiene: nothing with a credential ever leaves for the public PR ---
+# secret hygiene: nothing with a credential ever leaves for the public PR
 # benchflow already scrubs config/result/trajectories, but the publisher guarantees
 # it too: drop secret-named keys, redact secret-shaped values, and ABORT a cell if
 # any secret pattern survives in any file about to be uploaded.
@@ -51,53 +51,11 @@ SECRET_VAL_RE = re.compile(
     r"(AQ\.[A-Za-z0-9._-]{8,}|AIza[A-Za-z0-9._-]{10,}|sk-api-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9-]{16,}|"
     r"ABSK[A-Za-z0-9+/=]{8,}|Bearer\s+[A-Za-z0-9._-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{20,})"
 )
-TOKEN_COUNTER_KEYS = {
-    "cache_creation_input_tokens",
-    "cache_read_input_tokens",
-    "cached_read_tokens",
-    "cached_tokens",
-    "cached_write_tokens",
-    "completion_tokens",
-    "input_tokens",
-    "max_tokens",
-    "n_cache_creation_tokens",
-    "n_cache_read_tokens",
-    "n_input_tokens",
-    "n_output_tokens",
-    "output_tokens",
-    "prompt_tokens",
-    "provider_total_tokens",
-    "thought_tokens",
-    "total_cached_tokens",
-    "total_completion_tokens",
-    "total_cost_usd",
-    "total_input_tokens",
-    "total_output_tokens",
-    "total_prompt_tokens",
-    "total_tokens",
-}
-
-
-def _is_token_counter(key: str, value) -> bool:
-    """Keep numeric usage telemetry while still redacting credential tokens."""
-    normalized = key.lower()
-    if normalized not in TOKEN_COUNTER_KEYS and not normalized.endswith("_tokens"):
-        return False
-    return value is None or (
-        isinstance(value, int | float) and not isinstance(value, bool)
-    )
 
 
 def _scrub(o):
     if isinstance(o, dict):
-        return {
-            k: (
-                _scrub(v)
-                if _is_token_counter(k, v) or not SECRET_NAME_RE.search(k)
-                else "[REDACTED]"
-            )
-            for k, v in o.items()
-        }
+        return {k: ("[REDACTED]" if SECRET_NAME_RE.search(k) else _scrub(v)) for k, v in o.items()}
     if isinstance(o, list):
         return [_scrub(x) for x in o]
     if isinstance(o, str):
@@ -107,8 +65,7 @@ def _scrub(o):
 
 def safe_bytes(path, is_config=False, mode="without"):
     """Return scrubbed bytes for upload; raise if any secret survives."""
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        raw = fh.read()
+    raw = open(path, encoding="utf-8", errors="replace").read()
     if str(path).endswith(".jsonl"):
         text = SECRET_VAL_RE.sub("[REDACTED]", raw)
     else:
@@ -126,11 +83,10 @@ def hf_token() -> str:
         return os.environ["HUGGING_FACE_TOKEN"]
     for p in (ENV_PATH, os.path.expanduser("~/keys.env"), os.path.expanduser("~/.env")):
         try:
-            with open(p) as fh:
-                for line in fh:
-                    m = re.match(r'^\s*(?:export\s+)?HUGGING_FACE_TOKEN\s*=\s*["\']?([^"\'\s]+)', line)
-                    if m:
-                        return m.group(1)
+            for line in open(p):
+                m = re.match(r'^\s*(?:export\s+)?HUGGING_FACE_TOKEN\s*=\s*["\']?([^"\'\s]+)', line)
+                if m:
+                    return m.group(1)
         except FileNotFoundError:
             continue
     raise SystemExit("no HUGGING_FACE_TOKEN (env, .env, or ~/keys.env)")
@@ -173,7 +129,7 @@ notes: |
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--ts", default=datetime.now(UTC).strftime("%Y-%m-%d__%H-%M-%S") + "-maxeffort")
+    ap.add_argument("--ts", default=datetime.now(timezone.utc).strftime("%Y-%m-%d__%H-%M-%S") + "-maxeffort")
     ap.add_argument("--src-commit", default=os.environ.get("SB_SRC_COMMIT", "unknown"))
     ap.add_argument("--runs-root", default=str(ROOT / "runs"),
                     help="dir holding <cell>/<task>__<tid>/ rollouts (use 'jobs' when running on the VM)")
@@ -181,7 +137,7 @@ def main() -> int:
     runs_root = Path(a.runs_root)
 
     os.environ.setdefault("HF_TOKEN", hf_token())
-    from huggingface_hub import CommitOperationAdd, HfApi
+    from huggingface_hub import HfApi, CommitOperationAdd
     api = HfApi(token=os.environ["HF_TOKEN"])
 
     # existing cells per group: {trial_id: cell_dir_path} for dedup AND path recovery, cached.
@@ -208,8 +164,7 @@ def main() -> int:
     groups_seen = {}
     skipped = 0
     for rf in review_files:
-        with open(rf) as fh:
-            rv = json.load(fh)
+        rv = json.load(open(rf))
         if rv.get("verdict") != "pass":
             continue
         cell = rv["cell_id"]
@@ -234,12 +189,11 @@ def main() -> int:
             # already in PR5 (e.g. pushed earlier from another machine) — record its path
             # so the dashboard shows the HF link; don't re-upload.
             published.append({"cell_id": cell, "hf_path": exist[tid], "tid": tid, "already": True,
-                              "updated_at": datetime.now(UTC).isoformat(timespec="seconds")})
+                              "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
             skipped += 1
             continue
         dest = f"{V11}/{group}/{a.ts}/{task}__{tid}"
-        with open(inner / "result.json") as fh:
-            rd = json.load(fh)
+        rd = json.load(open(inner / "result.json"))
         cell_ops = []
         try:
             for f in CANON:
@@ -260,7 +214,7 @@ def main() -> int:
         ops.extend(cell_ops)
         groups_seen.setdefault((model_key, mode), group)
         published.append({"cell_id": cell, "hf_path": dest, "tid": tid,
-                          "updated_at": datetime.now(UTC).isoformat(timespec="seconds")})
+                          "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
 
     # group metadata.yaml (once per group)
     for (model_key, mode), group in groups_seen.items():
@@ -275,8 +229,7 @@ def main() -> int:
     # Always (re)write publish records so the dashboard links every cell that IS in PR5.
     (ROOT / "published").mkdir(exist_ok=True)
     for p in published:
-        with open(ROOT / "published" / f"{p['cell_id']}.json", "w") as fh:
-            json.dump(p, fh, indent=2)
+        json.dump(p, open(ROOT / "published" / f"{p['cell_id']}.json", "w"), indent=2)
     if ops:
         CH = 400
         for i in range(0, len(ops), CH):

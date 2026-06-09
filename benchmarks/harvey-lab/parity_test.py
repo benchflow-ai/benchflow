@@ -20,6 +20,9 @@ Usage:
     # Full structural (all 1251 tasks)
     python benchmarks/harvey-lab/parity_test.py --mode full
 
+    # Native task.md structural parity
+    python benchmarks/harvey-lab/parity_test.py --mode subset --task-format task-md
+
     # Eval parity (BenchFlow pipeline end-to-end, LLM calls)
     python benchmarks/harvey-lab/parity_test.py --mode eval-parity \
         --anthropic-api-key sk-ant-...
@@ -45,7 +48,17 @@ from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _BENCHFLOW_ROOT = _SCRIPT_DIR.parent.parent
+_SRC_ROOT = _BENCHFLOW_ROOT / "src"
 _DEFAULT_HARVEY_ROOT = _BENCHFLOW_ROOT.parent / "harvey-labs"
+if str(_SCRIPT_DIR) in sys.path:
+    sys.path.remove(str(_SCRIPT_DIR))
+if str(_BENCHFLOW_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BENCHFLOW_ROOT))
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+from benchflow._utils.task_authoring import check_task  # noqa: E402
+from benchflow.task.document import TaskDocument, TaskDocumentParseError  # noqa: E402
 
 # Representative tasks from different practice areas for subset testing.
 SUBSET_TASK_IDS = [
@@ -64,6 +77,7 @@ def _run_converter(
     output_dir: Path,
     task_ids: list[str] | None = None,
     limit: int | None = None,
+    task_format: str = "legacy",
 ) -> None:
     """Run the benchflow.py converter to generate tasks."""
     cmd = [
@@ -74,6 +88,8 @@ def _run_converter(
         "--harvey-root",
         str(harvey_root),
         "--overwrite",
+        "--task-format",
+        task_format,
     ]
     if task_ids:
         cmd.extend(["--task-ids", ",".join(task_ids)])
@@ -93,13 +109,25 @@ def _sanitize_name(raw: str) -> str:
     return name.strip("-")
 
 
-# ── Structural Parity Checks ─────────────────────────────────────────
+def _verifier_dir(task_dir: Path, task_format: str) -> Path:
+    return task_dir / ("verifier" if task_format == "task-md" else "tests")
+
+
+def _evaluate_py_path(task_dir: Path, task_format: str) -> Path:
+    return _verifier_dir(task_dir, task_format) / "evaluate.py"
+
+
+def _rubric_path(task_dir: Path, task_format: str) -> Path:
+    if task_format == "task-md":
+        return task_dir / "verifier" / "rubrics" / "rubric.json"
+    return task_dir / "environment" / "rubric.json"
 
 
 def check_structural_parity(
     harvey_root: Path,
     output_dir: Path,
     task_ids: list[str],
+    task_format: str = "legacy",
 ) -> tuple[int, int, list[str]]:
     """Verify generated BenchFlow tasks have correct structure and metadata."""
     passed = 0
@@ -109,6 +137,7 @@ def check_structural_parity(
     for task_id in task_ids:
         task_name = _sanitize_name(task_id)
         task_dir = output_dir / task_name
+        verifier_dir = _verifier_dir(task_dir, task_format)
 
         # Load original Harvey LAB config
         original_path = harvey_root / "tasks" / Path(*task_id.split("/")) / "task.json"
@@ -121,38 +150,84 @@ def check_structural_parity(
             original = json.load(f)
 
         # Check required files exist
-        required_files = [
-            "task.toml",
-            "instruction.md",
-            "environment/Dockerfile",
-            "tests/test.sh",
-            "tests/evaluate.py",
-        ]
+        required_files = (
+            [
+                "task.md",
+                "environment/Dockerfile",
+                "environment/documents",
+                "verifier/test.sh",
+                "verifier/evaluate.py",
+                "verifier/verifier.md",
+                "verifier/rubrics/rubric.json",
+                "verifier/rubrics/verifier.md",
+                "oracle/README.md",
+            ]
+            if task_format == "task-md"
+            else [
+                "task.toml",
+                "instruction.md",
+                "environment/Dockerfile",
+                "environment/rubric.json",
+                "tests/test.sh",
+                "tests/evaluate.py",
+            ]
+        )
         missing = [f for f in required_files if not (task_dir / f).exists()]
         if missing:
             errors.append(f"{task_id}: missing files: {missing}")
             failed += 1
             continue
 
-        # Validate task.toml
-        with open(task_dir / "task.toml", "rb") as f:
-            toml_config = tomllib.load(f)
-
-        task_section = toml_config.get("task", {})
-        if not task_section.get("name"):
-            errors.append(f"{task_id}: task.toml missing task name")
+        validation_level = (
+            "publication-grade" if task_format == "task-md" else "structural"
+        )
+        task_issues = check_task(task_dir, validation_level=validation_level)
+        if task_issues:
+            errors.append(f"{task_id}: bench tasks check failed: {task_issues}")
             failed += 1
             continue
 
-        # Check metadata matches
-        metadata = toml_config.get("metadata", {})
-        if metadata.get("author_name") != "Harvey AI":
-            errors.append(f"{task_id}: author_name mismatch")
-            failed += 1
-            continue
+        if task_format == "task-md":
+            forbidden = ["task.toml", "instruction.md", "tests", "solution"]
+            existing_forbidden = [f for f in forbidden if (task_dir / f).exists()]
+            if existing_forbidden:
+                errors.append(
+                    f"{task_id}: native task.md output keeps split-layout files: "
+                    f"{existing_forbidden}"
+                )
+                failed += 1
+                continue
+            try:
+                document = TaskDocument.from_path(task_dir / "task.md")
+            except TaskDocumentParseError as exc:
+                errors.append(f"{task_id}: task.md parse error: {exc}")
+                failed += 1
+                continue
+            task_config = document.config.task
+            if task_config is None or not task_config.name.startswith("harvey-lab/"):
+                errors.append(f"{task_id}: task.md missing harvey-lab/ task name")
+                failed += 1
+                continue
+            instruction_text = document.instruction
+        else:
+            with open(task_dir / "task.toml", "rb") as f:
+                toml_config = tomllib.load(f)
+
+            task_section = toml_config.get("task", {})
+            if not task_section.get("name"):
+                errors.append(f"{task_id}: task.toml missing task name")
+                failed += 1
+                continue
+
+            metadata = toml_config.get("metadata", {})
+            if metadata.get("author_name") != "Harvey AI":
+                errors.append(f"{task_id}: author_name mismatch")
+                failed += 1
+                continue
+            instruction_text = (task_dir / "instruction.md").read_text()
 
         # Check criteria count in rubric.json matches original
-        rubric_path = task_dir / "environment" / "rubric.json"
+        rubric_path = _rubric_path(task_dir, task_format)
         if rubric_path.exists():
             rubric = json.loads(rubric_path.read_text())
             if len(rubric.get("criteria", [])) != len(original.get("criteria", [])):
@@ -177,18 +252,14 @@ def check_structural_parity(
                 failed += 1
                 continue
 
-        # Check instruction.md contains the original instructions
-        instr_text = (task_dir / "instruction.md").read_text()
         orig_instructions = original.get("instructions", "")
-        if orig_instructions and orig_instructions[:50] not in instr_text:
-            errors.append(
-                f"{task_id}: instruction.md doesn't contain original instructions"
-            )
+        if orig_instructions and orig_instructions[:50] not in instruction_text:
+            errors.append(f"{task_id}: prompt doesn't contain original instructions")
             failed += 1
             continue
 
         # Check test.sh is executable
-        test_sh = task_dir / "tests" / "test.sh"
+        test_sh = verifier_dir / "test.sh"
         if not os.access(test_sh, os.X_OK):
             errors.append(f"{task_id}: test.sh not executable")
             failed += 1
@@ -199,14 +270,12 @@ def check_structural_parity(
     return passed, failed, errors
 
 
-# ── Evaluation Parity ─────────────────────────────────────────────────
-
-
 def check_eval_parity(
     harvey_root: Path,
     output_dir: Path,
     task_ids: list[str],
     anthropic_api_key: str,
+    task_format: str = "legacy",
 ) -> tuple[int, int, list[str]]:
     """Run the BenchFlow evaluate.py pipeline end-to-end on synthetic output.
 
@@ -221,7 +290,7 @@ def check_eval_parity(
     for task_id in task_ids:
         task_name = _sanitize_name(task_id)
         task_dir = output_dir / task_name
-        rubric_path = task_dir / "environment" / "rubric.json"
+        rubric_path = _rubric_path(task_dir, task_format)
 
         if not rubric_path.exists():
             errors.append(f"{task_id}: no rubric.json found")
@@ -269,7 +338,7 @@ def check_eval_parity(
 
             # Run evaluate.py
             reward_file = tmp_path / "reward.txt"
-            evaluate_py = task_dir / "tests" / "evaluate.py"
+            evaluate_py = _evaluate_py_path(task_dir, task_format)
 
             print(f"\n{'=' * 60}")
             print(f"Eval parity: {task_id}")
@@ -328,8 +397,6 @@ def check_eval_parity(
 
     return passed, failed, errors
 
-
-# ── Side-by-Side Parity (Step 5) ─────────────────────────────────────
 
 # Original Harvey LAB prompt template (from evaluation/prompts/rubric_criterion.txt).
 # Uses string.Template to avoid crashes on legal text containing { or }.
@@ -576,9 +643,6 @@ def check_side_by_side_parity(
     return results, agreed, disagreed, errors
 
 
-# ── Main ──────────────────────────────────────────────────────────────
-
-
 def main():
     parser = argparse.ArgumentParser(description="Harvey LAB parity tests")
     parser.add_argument(
@@ -601,6 +665,12 @@ def main():
         "--anthropic-api-key",
         default=os.environ.get("ANTHROPIC_API_KEY", ""),
         help="Anthropic API key (for eval-parity mode)",
+    )
+    parser.add_argument(
+        "--task-format",
+        choices=("legacy", "task-md"),
+        default="legacy",
+        help="Generated task layout to validate",
     )
     args = parser.parse_args()
 
@@ -633,21 +703,36 @@ def main():
                 ]
 
             print(f"\n=== Subset Structural Parity ({len(valid_ids)} tasks) ===\n")
-            _run_converter(harvey_root, output_dir, task_ids=valid_ids)
+            _run_converter(
+                harvey_root,
+                output_dir,
+                task_ids=valid_ids,
+                task_format=args.task_format,
+            )
             passed, failed, errors = check_structural_parity(
-                harvey_root, output_dir, valid_ids
+                harvey_root,
+                output_dir,
+                valid_ids,
+                task_format=args.task_format,
             )
 
         elif args.mode == "full":
             print("\n=== Full Structural Parity (all tasks) ===\n")
-            _run_converter(harvey_root, output_dir)
+            _run_converter(
+                harvey_root,
+                output_dir,
+                task_format=args.task_format,
+            )
             all_tasks = sorted((harvey_root / "tasks").rglob("task.json"))
             all_ids = [
                 str(t.parent.relative_to(harvey_root / "tasks")).replace("\\", "/")
                 for t in all_tasks
             ]
             passed, failed, errors = check_structural_parity(
-                harvey_root, output_dir, all_ids
+                harvey_root,
+                output_dir,
+                all_ids,
+                task_format=args.task_format,
             )
 
         elif args.mode == "eval-parity":
@@ -672,9 +757,18 @@ def main():
                 ]
 
             print(f"\n=== Eval Parity ({len(eval_ids)} tasks) ===\n")
-            _run_converter(harvey_root, output_dir, task_ids=eval_ids)
+            _run_converter(
+                harvey_root,
+                output_dir,
+                task_ids=eval_ids,
+                task_format=args.task_format,
+            )
             passed, failed, errors = check_eval_parity(
-                harvey_root, output_dir, eval_ids, args.anthropic_api_key
+                harvey_root,
+                output_dir,
+                eval_ids,
+                args.anthropic_api_key,
+                task_format=args.task_format,
             )
 
         elif args.mode == "side-by-side":

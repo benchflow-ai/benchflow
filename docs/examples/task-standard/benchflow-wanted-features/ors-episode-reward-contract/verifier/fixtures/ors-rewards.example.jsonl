@@ -1,0 +1,2 @@
+{"type":"dense","reward":0.25,"source":"tool-call-check","step":1,"space":"action","granularity":"step"}
+{"type":"terminal","reward":0.88,"source":"ors-terminal","space":"output","granularity":"terminal","finished":true}

@@ -18,7 +18,7 @@ schema:
   lint: INTENDED CI lint (not yet shipped in this repo) — tasks/*/task.toml [metadata]
         would be checked to use controlled_* values; tags/skills are open
 
-# ── Tier 1: controlled vocabulary (closed sets) — from SkillsBench taxonomy.yaml ──
+# Tier 1: controlled vocabulary (closed sets) — from SkillsBench taxonomy.yaml
 controlled_categories:
   - software-engineering
   - cybersecurity
@@ -95,7 +95,7 @@ controlled_skill_types:
 controlled_difficulties: [easy, medium, hard]
 controlled_category_confidences: [high, medium, low]
 
-# ── Tier 2: network_class — the enrichment (replaces Harbor's binary allow_internet) ──
+# Tier 2: network_class — the enrichment (replaces Harbor's binary allow_internet)
 # SkillsBench ships only `[environment] allow_internet = true|false`. That binary is
 # over-permissive: of 55 `true` tasks, ZERO need open web search and 48 contact no
 # runtime host at all. This vocabulary splits it into three executable classes that
@@ -120,7 +120,7 @@ controlled_network_classes:
     maps_to: {network_mode: public, blocked_hosts: "<denylist>"}  # denylist = enrichment
     enrichment_gap: benchflow NetworkMode has no denylist today; public is allow-all.
 
-# ── Tier 3: advisory keyword + skill vocabulary (open, not lint-enforced) ──
+# Tier 3: advisory keyword + skill vocabulary (open, not lint-enforced)
 # 511 distinct open tags and 228 SKILL.md skills across 100 tasks. These are NOT a
 # closed set; they drive skill-matching. The high-frequency domain keywords below are
 # documented for discoverability only.

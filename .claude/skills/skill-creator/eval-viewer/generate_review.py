@@ -281,9 +281,7 @@ def generate_html(
     return template.replace("/*__EMBEDDED_DATA__*/", f"const EMBEDDED_DATA = {data_json};")
 
 
-# ---------------------------------------------------------------------------
 # HTTP server (stdlib only, zero dependencies)
-# ---------------------------------------------------------------------------
 
 def _kill_port(port: int) -> None:
     """Kill any process listening on the given port."""

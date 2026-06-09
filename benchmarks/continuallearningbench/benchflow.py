@@ -15,13 +15,34 @@ import json
 import logging
 import re
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
+from typing import Any
+
+import yaml
+
+_REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+_repo_src_path = str(_REPO_SRC)
+if _repo_src_path in sys.path:
+    sys.path.remove(_repo_src_path)
+sys.path.insert(0, _repo_src_path)
+
+from benchflow.task.document import render_task_md  # noqa: E402
+from benchflow.task.output_format import (  # noqa: E402
+    TASK_OUTPUT_FORMATS,
+    TaskOutputFormat,
+    ensure_existing_task_output_format,
+    validate_task_output_format,
+    verifier_dir_name,
+)
 
 logger = logging.getLogger(__name__)
+TASK_FORMATS = TASK_OUTPUT_FORMATS
+TaskFormat = TaskOutputFormat
 
-# ── Task definitions ─────────────────────────────────────────────────
+# Task definitions
 
 _CONTINUALLEARNINGBENCH_TASKS: dict[str, dict] = {
     "exploitable_poker": {
@@ -167,9 +188,6 @@ def load_tasks(
     return tasks
 
 
-# ── Renderers ────────────────────────────────────────────────────────
-
-
 def _render_task_toml(task: ContinualLearningBenchTaskInfo) -> str:
     sanitized = _sanitize_name(task.task_id)
     name = f"continuallearningbench/{sanitized}"
@@ -199,6 +217,64 @@ cpus = 2
 memory_mb = 4096
 storage_mb = 10240
 """
+
+
+def _render_task_md(task: ContinualLearningBenchTaskInfo) -> str:
+    sanitized = _sanitize_name(task.task_id)
+    instruction = _render_instruction(task).strip()
+    frontmatter: dict[str, Any] = {
+        "schema_version": "1.3",
+        "task": {
+            "name": f"continuallearningbench/{sanitized}",
+        },
+        "metadata": {
+            "author_name": "Parth Asawa et al.",
+            "author_email": "continuallearningbench@continual-learning-bench.com",
+            "difficulty": task.difficulty,
+            "category": task.category,
+            "tags": task.tags,
+        },
+        "agent": {
+            "timeout_sec": 3600.0,
+        },
+        "verifier": {
+            "timeout_sec": 300.0,
+        },
+        "environment": {
+            "build_timeout_sec": 600,
+            "cpus": 2,
+            "memory_mb": 4096,
+            "storage_mb": 10240,
+        },
+        "benchflow": {
+            "document_version": "0.3",
+            "source": {
+                "benchmark": "ContinualLearningBench",
+                "task_id": task.task_id,
+                "display_name": task.display_name,
+                "num_instances": task.num_instances,
+                "r_max": task.r_max,
+                "response_schema": task.response_schema,
+            },
+            "oracle": {
+                "evidence": "oracle/README.md",
+                "static_solution": False,
+            },
+            "verifier": {
+                "spec": "verifier/verifier.md",
+                "rubric": "verifier/rubrics/verifier.md",
+                "entrypoint": "verifier/test.sh",
+                "implementation": {
+                    "type": "test-script",
+                    "outputs": {
+                        "reward_json": "/logs/verifier/reward.json",
+                        "reward_details": "/logs/verifier/reward-details.json",
+                    },
+                },
+            },
+        },
+    }
+    return render_task_md(frontmatter, instruction)
 
 
 _INSTRUCTION_TEMPLATE = Template("""\
@@ -390,10 +466,10 @@ _EVALUATE_PY_TEMPLATE = Template("""\
 #!/usr/bin/env python3
 \"\"\"Evaluate ContinualLearningBench task results and write reward.\"\"\"
 import json
-import sys
+import os
 
-RESULTS_FILE = "/opt/results.json"
-REWARD_FILE = "/logs/verifier/reward.txt"
+RESULTS_FILE = os.environ.get("BENCHFLOW_RESULTS_JSON", "/opt/results.json")
+REWARD_FILE = os.environ.get("BENCHFLOW_REWARD_TEXT", "/logs/verifier/reward.txt")
 R_MAX = ${r_max}
 
 
@@ -419,9 +495,156 @@ if __name__ == "__main__":
 
 _TEST_SH = """\
 #!/bin/bash
-set -e
-python3 /tests/evaluate.py
+set -euo pipefail
+
+verifier_log="${BENCHFLOW_VERIFIER_LOG:-/logs/verifier/verifier.log}"
+mkdir -p "$(dirname "$verifier_log")"
+exec > >(tee "$verifier_log") 2>&1
+
+VERIFIER_DIR="${BENCHFLOW_VERIFIER_DIR:-/verifier}"
+LEGACY_TESTS_DIR="${BENCHFLOW_LEGACY_TESTS_DIR:-/tests}"
+if [ ! -f "$VERIFIER_DIR/evaluate.py" ] && [ -f "$LEGACY_TESTS_DIR/evaluate.py" ]; then
+    VERIFIER_DIR="$LEGACY_TESTS_DIR"
+fi
+
+reward_file="${BENCHFLOW_REWARD_TEXT:-/logs/verifier/reward.txt}"
+reward_json="${BENCHFLOW_REWARD_JSON:-/logs/verifier/reward.json}"
+details_json="${BENCHFLOW_REWARD_DETAILS_JSON:-/logs/verifier/reward-details.json}"
+mkdir -p "$(dirname "$reward_file")" "$(dirname "$reward_json")" "$(dirname "$details_json")"
+
+BENCHFLOW_REWARD_TEXT="$reward_file" python3 "$VERIFIER_DIR/evaluate.py"
+
+python3 - "$reward_file" "$reward_json" "$details_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+reward_path = Path(sys.argv[1])
+reward_json_path = Path(sys.argv[2])
+details_json_path = Path(sys.argv[3])
+reward = float(reward_path.read_text().strip())
+reward_json_path.write_text(
+    json.dumps({"reward": reward}, indent=2) + "\\n"
+)
+details_json_path.write_text(
+    json.dumps(
+        {
+            "reward": reward,
+            "source": "continuallearningbench-results-json",
+        },
+        indent=2,
+    )
+    + "\\n"
+)
+PY
 """
+
+
+def _render_verifier_md(task: ContinualLearningBenchTaskInfo) -> str:
+    frontmatter: dict[str, Any] = {
+        "document_version": "0.3",
+        "verifier": {
+            "name": f"continuallearningbench-{_sanitize_name(task.task_id)}-verifier",
+            "default_strategy": "deterministic",
+            "strategies": {
+                "deterministic": {
+                    "type": "script",
+                    "command": "./test.sh",
+                },
+            },
+            "rubric": {
+                "combine": "weighted_sum",
+                "dimensions": {
+                    "episode_score": {
+                        "weight": 0.70,
+                        "source": "deterministic",
+                    },
+                    "learning_gain": {
+                        "weight": 0.30,
+                        "source": "deterministic",
+                    },
+                },
+            },
+            "outputs": {
+                "reward_text": "/logs/verifier/reward.txt",
+                "reward_json": "/logs/verifier/reward.json",
+                "details_json": "/logs/verifier/reward-details.json",
+            },
+        },
+    }
+    rendered_frontmatter = yaml.safe_dump(frontmatter, sort_keys=False)
+    return (
+        f"---\n{rendered_frontmatter}---\n\n## role:reviewer\n\n"
+        "The deterministic verifier reads `/opt/results.json` produced by the "
+        "ContinualLearningBench episode driver and normalizes score by the "
+        "task-specific maximum reward.\n"
+    )
+
+
+def _render_verifier_rubric(task: ContinualLearningBenchTaskInfo) -> str:
+    return f"""\
+# ContinualLearningBench Rubric
+
+Task: `continuallearningbench/{_sanitize_name(task.task_id)}`
+
+- Episode score: `/opt/results.json` must contain the score produced by the
+  original ContinualLearningBench harness.
+- Learning gain: the task rewards improvement across ordered instances rather
+  than a single static answer.
+- Normalization: reward is clamped to `score / {task.r_max}`.
+"""
+
+
+def _render_oracle_readme(task: ContinualLearningBenchTaskInfo) -> str:
+    return f"""\
+# Oracle Evidence
+
+ContinualLearningBench task `{task.task_id}` does not have a static file-level
+oracle solution. The benchmark's ground truth is the original sequential
+environment and its reward function.
+
+Agents must interact with `/opt/run_task.py`, inspect feedback, and improve
+responses across `{task.num_instances}` ordered instances. The verifier reads
+`/opt/results.json` generated by that harness and normalizes the reported score
+against `r_max = {task.r_max}`.
+"""
+
+
+def _ensure_existing_generated_task_current(
+    task_dir: Path,
+    task_format: TaskFormat,
+) -> None:
+    """Reject stale same-format task dirs that old converters can still satisfy."""
+    verifier_dir = task_dir / verifier_dir_name(task_format)
+    evaluate_py = verifier_dir / "evaluate.py"
+    test_sh = verifier_dir / "test.sh"
+    missing: list[str] = []
+
+    if not evaluate_py.exists():
+        missing.append(f"{evaluate_py.relative_to(task_dir)}")
+    else:
+        evaluate_text = evaluate_py.read_text()
+        for marker in ("BENCHFLOW_RESULTS_JSON", "BENCHFLOW_REWARD_TEXT"):
+            if marker not in evaluate_text:
+                missing.append(f"{evaluate_py.relative_to(task_dir)}:{marker}")
+
+    if not test_sh.exists():
+        missing.append(f"{test_sh.relative_to(task_dir)}")
+    else:
+        test_text = test_sh.read_text()
+        for marker in ("BENCHFLOW_VERIFIER_DIR", "BENCHFLOW_REWARD_JSON"):
+            if marker not in test_text:
+                missing.append(f"{test_sh.relative_to(task_dir)}:{marker}")
+
+    if missing:
+        joined = ", ".join(missing)
+        raise ValueError(
+            f"{task_dir} already exists but was generated by an older "
+            "ContinualLearningBench converter "
+            f"({joined}); pass --overwrite or use a fresh output directory."
+        )
 
 
 def generate_task(
@@ -429,24 +652,34 @@ def generate_task(
     output_dir: Path,
     *,
     overwrite: bool = False,
+    task_format: TaskFormat = "task-md",
 ) -> Path:
     """Generate a single BenchFlow task directory for one ContinualLearningBench task."""
+    task_format = validate_task_output_format(task_format)
     sanitized = _sanitize_name(task.task_id)
     task_dir = output_dir / f"continuallearningbench-{sanitized}"
 
     if task_dir.exists():
         if not overwrite:
+            ensure_existing_task_output_format(task_dir, task_format)
+            _ensure_existing_generated_task_current(task_dir, task_format)
             logger.debug("Skipping existing task %s", task.task_id)
             return task_dir
         shutil.rmtree(task_dir)
 
     task_dir.mkdir(parents=True)
 
-    # task.toml
-    (task_dir / "task.toml").write_text(_render_task_toml(task))
+    if task_format == "task-md":
+        (task_dir / "task.md").write_text(_render_task_md(task))
+        oracle_dir = task_dir / "oracle"
+        oracle_dir.mkdir()
+        (oracle_dir / "README.md").write_text(_render_oracle_readme(task))
+    else:
+        # task.toml
+        (task_dir / "task.toml").write_text(_render_task_toml(task))
 
-    # instruction.md
-    (task_dir / "instruction.md").write_text(_render_instruction(task))
+        # instruction.md
+        (task_dir / "instruction.md").write_text(_render_instruction(task))
 
     # environment/
     env_dir = task_dir / "environment"
@@ -457,8 +690,8 @@ def generate_task(
         json.dumps(task.schedule_json, indent=2) if task.schedule_json else "{}"
     )
 
-    # tests/
-    tests_dir = task_dir / "tests"
+    # verifier/ for native task.md, tests/ for legacy Harbor/Pier layout.
+    tests_dir = task_dir / verifier_dir_name(task_format)
     tests_dir.mkdir()
     test_sh = tests_dir / "test.sh"
     test_sh.write_text(_TEST_SH)
@@ -466,6 +699,11 @@ def generate_task(
     (tests_dir / "evaluate.py").write_text(
         _EVALUATE_PY_TEMPLATE.safe_substitute(r_max=str(task.r_max))
     )
+    if task_format == "task-md":
+        (tests_dir / "verifier.md").write_text(_render_verifier_md(task))
+        rubrics_dir = tests_dir / "rubrics"
+        rubrics_dir.mkdir()
+        (rubrics_dir / "verifier.md").write_text(_render_verifier_rubric(task))
 
     return task_dir
 
@@ -477,8 +715,10 @@ def generate_all(
     overwrite: bool = False,
     limit: int | None = None,
     task_ids: list[str] | None = None,
+    task_format: TaskFormat = "task-md",
 ) -> list[Path]:
     """Generate BenchFlow task directories for all ContinualLearningBench tasks."""
+    task_format = validate_task_output_format(task_format)
     tasks = load_tasks(continuallearningbench_dir, task_ids=task_ids)
 
     if limit is not None:
@@ -487,7 +727,12 @@ def generate_all(
     output_dir.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
     for task in tasks:
-        path = generate_task(task, output_dir, overwrite=overwrite)
+        path = generate_task(
+            task,
+            output_dir,
+            overwrite=overwrite,
+            task_format=task_format,
+        )
         generated.append(path)
         logger.info("Generated %s -> %s", task.task_id, path.name)
 
@@ -528,6 +773,12 @@ def main() -> None:
         default=None,
         help="Comma-separated list of task IDs to generate",
     )
+    parser.add_argument(
+        "--task-format",
+        choices=TASK_FORMATS,
+        default="task-md",
+        help="Output layout: legacy task.toml/instruction.md or native task.md",
+    )
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -540,6 +791,7 @@ def main() -> None:
         overwrite=args.overwrite,
         limit=args.limit,
         task_ids=task_ids,
+        task_format=args.task_format,
     )
 
     print(f"\nGenerated {len(generated)} task(s) in {args.output_dir}")

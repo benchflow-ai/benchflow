@@ -1,0 +1,12 @@
+{
+  "task": "benchflow-wanted/verifier-package-reward-contract",
+  "kind": "reference-result",
+  "expected_reward": 1.0,
+  "checks": {
+    "verifier_document": 1.0,
+    "strategy_selection": 1.0,
+    "reward_artifacts": 1.0,
+    "judge_isolation": 1.0
+  },
+  "status": "passed"
+}

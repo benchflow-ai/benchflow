@@ -49,9 +49,7 @@ def _secret_outside(tmp_path: Path) -> Path:
     return secret
 
 
-# ---------------------------------------------------------------------------
 # #390 — rollout artifact ingestion
-# ---------------------------------------------------------------------------
 
 
 def test_task_artifacts_skips_symlink_in_artifacts_subdir(
@@ -109,9 +107,7 @@ def test_file_payload_refuses_symlink(tmp_path: Path, generate: ModuleType) -> N
     assert truncated is False
 
 
-# ---------------------------------------------------------------------------
 # #416 — experiments and labs ingestion
-# ---------------------------------------------------------------------------
 
 
 def test_collect_experiments_skips_symlinks_in_experiments_dir(

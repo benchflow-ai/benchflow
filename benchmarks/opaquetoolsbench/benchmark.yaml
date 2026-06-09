@@ -12,7 +12,7 @@ repo: https://github.com/shallinan1/OpaqueToolsBench
 author: "Hallinan et al."
 converted_by: BenchFlow
 
-# ── Tasks ────────────────────────────────────────────────────────────
+# Tasks
 tasks:
   count: 150
   categories:
@@ -24,22 +24,25 @@ tasks:
     executable_simple: 100
     executable_multiple_function: 50
 
-# ── Conversion ───────────────────────────────────────────────────────
+# Conversion
 # How raw benchmark data is converted to BenchFlow task format.
 conversion:
-  script: benchflow.py           # CLI: --opaquetoolsbench-dir, --output-dir, --limit, --overwrite, --task-ids
+  script: benchflow.py           # CLI: --opaquetoolsbench-dir, --output-dir, --limit, --overwrite, --task-ids, --task-format
   source_format: "JSON config files in tool_configs/"
+  default_task_format: task-md
+  task_formats: [legacy, task-md]
   has_oracle_solutions: true
   oracle_notes: >
     Ground truth is provided as Python function-call strings
     (e.g. "calc_binomial_probability(n=20, k=5, p=0.6)"). The
-    converter emits solution/solve.sh per task — it parses the
+    converter emits solution/solve.sh for legacy output and oracle/solve.sh
+    for native task.md output. It parses the
     ground-truth Python calls with ast and writes the equivalent
     JSON function-call array to /app/output/response.json,
     matching the agent's expected output format.
   docker_image_pinned: true      # python:3.13-slim pinned by digest
 
-# ── Verification ─────────────────────────────────────────────────────
+# Verification
 verification:
   method: deterministic_script
   reward: binary                 # 1.0 (all calls match) or 0.0
@@ -47,7 +50,7 @@ verification:
   test_source: "OpaqueToolsBench repo (tool_configs/*.json)"
   anti_cheat: false
 
-# ── Environment ──────────────────────────────────────────────────────
+# Environment
 environment:
   base_image: "python:3.13-slim"
   platform: linux/amd64
@@ -56,7 +59,7 @@ environment:
   memory_mb: 1024
   storage_mb: 2048
 
-# ── Parity ───────────────────────────────────────────────────────────
+# Parity
 # Results from validating that the conversion preserves benchmark semantics.
 parity:
   structural:
@@ -64,9 +67,9 @@ parity:
     tasks_tested: 150
     all_passed: true
     checks:
-      - required files present (task.toml, instruction.md, Dockerfile, test.sh, evaluate.py, ground_truth.json)
-      - task.toml has valid structure and opaquetoolsbench/ prefix
-      - instruction.md contains Query, Available Functions, and output path
+      - required files present for legacy or task.md layouts
+      - task.toml/task.md has valid structure and opaquetoolsbench/ prefix
+      - prompt contains Query, Available Functions, and output path
       - ground_truth.json is valid JSON with ground_truth key
       - test.sh has executable bit set
       - Dockerfile contains FROM directive and /logs/verifier directory

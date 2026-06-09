@@ -6,7 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
-# --- Profile ---
+# Profile
 class Profile(BaseModel):
     emailAddress: str
     messagesTotal: int = 0
@@ -14,7 +14,7 @@ class Profile(BaseModel):
     historyId: str = "1"
 
 
-# --- Labels ---
+# Labels
 class LabelColor(BaseModel):
     backgroundColor: str | None = None
     textColor: str | None = None
@@ -51,7 +51,7 @@ class LabelUpdateRequest(BaseModel):
     color: LabelColor | None = None
 
 
-# --- Messages ---
+# Messages
 class Header(BaseModel):
     name: str
     value: str
@@ -126,7 +126,7 @@ class MessageBatchDeleteRequest(BaseModel):
     ids: list[str]
 
 
-# --- Threads ---
+# Threads
 class ThreadSchema(BaseModel):
     id: str
     historyId: str | None = None
@@ -151,7 +151,7 @@ class ThreadModifyRequest(BaseModel):
     removeLabelIds: list[str] = Field(default_factory=list)
 
 
-# --- Drafts ---
+# Drafts
 class DraftMessage(BaseModel):
     raw: str
     threadId: str | None = None
@@ -177,7 +177,7 @@ class DraftListResponse(BaseModel):
     resultSizeEstimate: int = 0
 
 
-# --- History ---
+# History
 class HistoryMessageItem(BaseModel):
     id: str
     threadId: str
@@ -217,14 +217,14 @@ class HistoryListResponse(BaseModel):
     historyId: str = "1"
 
 
-# --- Attachments ---
+# Attachments
 class AttachmentSchema(BaseModel):
     attachmentId: str
     size: int = 0
     data: str | None = None
 
 
-# --- Filters ---
+# Filters
 class FilterCriteria(BaseModel):
     from_: str | None = Field(None, alias="from")
     to: str | None = None
@@ -253,7 +253,7 @@ class FilterListResponse(BaseModel):
     filter: list[FilterSchema] = Field(default_factory=list)
 
 
-# --- Settings: SendAs ---
+# Settings: SendAs
 class SendAsSchema(BaseModel):
     sendAsEmail: str
     displayName: str = ""
@@ -286,7 +286,7 @@ class SendAsUpdateRequest(BaseModel):
     isDefault: bool | None = None
 
 
-# --- Settings: ForwardingAddresses ---
+# Settings: ForwardingAddresses
 class ForwardingAddressSchema(BaseModel):
     forwardingEmail: str
     verificationStatus: str = "accepted"
@@ -300,7 +300,7 @@ class ForwardingAddressCreateRequest(BaseModel):
     forwardingEmail: str
 
 
-# --- Settings: Delegates ---
+# Settings: Delegates
 class DelegateSchema(BaseModel):
     delegateEmail: str
     verificationStatus: str = "accepted"
@@ -314,7 +314,7 @@ class DelegateCreateRequest(BaseModel):
     delegateEmail: str
 
 
-# --- Settings: Vacation ---
+# Settings: Vacation
 class VacationSettingsSchema(BaseModel):
     enableAutoReply: bool = False
     responseSubject: str = ""
@@ -337,7 +337,7 @@ class VacationUpdateRequest(BaseModel):
     endTime: str | None = None
 
 
-# --- Settings: AutoForwarding ---
+# Settings: AutoForwarding
 class AutoForwardingSchema(BaseModel):
     enabled: bool = False
     emailAddress: str = ""
@@ -350,7 +350,7 @@ class AutoForwardingUpdateRequest(BaseModel):
     disposition: str | None = None
 
 
-# --- Settings: IMAP ---
+# Settings: IMAP
 class ImapSettingsSchema(BaseModel):
     enabled: bool = False
     autoExpunge: bool = True
@@ -365,7 +365,7 @@ class ImapSettingsUpdateRequest(BaseModel):
     maxFolderSize: int | None = None
 
 
-# --- Settings: POP ---
+# Settings: POP
 class PopSettingsSchema(BaseModel):
     accessWindow: str = "disabled"
     disposition: str = "leaveInInbox"
@@ -376,7 +376,7 @@ class PopSettingsUpdateRequest(BaseModel):
     disposition: str | None = None
 
 
-# --- Settings: Language ---
+# Settings: Language
 class LanguageSettingsSchema(BaseModel):
     displayLanguage: str = "en"
 
@@ -385,13 +385,13 @@ class LanguageSettingsUpdateRequest(BaseModel):
     displayLanguage: str | None = None
 
 
-# --- Settings: Filters (create request) ---
+# Settings: Filters (create request)
 class FilterCreateRequest(BaseModel):
     criteria: FilterCriteria | None = None
     action: FilterAction | None = None
 
 
-# --- Watch/Stop ---
+# Watch/Stop
 class WatchRequest(BaseModel):
     topicName: str = ""
     labelIds: list[str] = Field(default_factory=list)
@@ -403,14 +403,14 @@ class WatchResponse(BaseModel):
     expiration: str = ""
 
 
-# --- Message Insert Request ---
+# Message Insert Request
 class MessageInsertRequest(BaseModel):
     raw: str
     labelIds: list[str] = Field(default_factory=list)
     threadId: str | None = None
 
 
-# --- Admin ---
+# Admin
 class AdminResetResponse(BaseModel):
     status: str = "ok"
     message: str = ""

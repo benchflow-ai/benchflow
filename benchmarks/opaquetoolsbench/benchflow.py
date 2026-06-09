@@ -32,23 +32,45 @@ import json
 import logging
 import re
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
+from typing import Any
+
+import yaml
+
+_REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+_repo_src_path = str(_REPO_SRC)
+if _repo_src_path in sys.path:
+    sys.path.remove(_repo_src_path)
+sys.path.insert(0, _repo_src_path)
+
+from benchflow.task.document import render_task_md  # noqa: E402
+from benchflow.task.output_format import (  # noqa: E402
+    TASK_OUTPUT_FORMATS,
+    TaskOutputFormat,
+    ensure_existing_task_output_format,
+    oracle_dir_name,
+    validate_task_output_format,
+    verifier_dir_name,
+)
 
 logger = logging.getLogger(__name__)
 
-# ── Categories we convert ────────────────────────────────────────────
+# Categories we convert
 
 BFCL_CATEGORIES = [
     "executable_simple",
     "executable_multiple_function",
 ]
 
-# ── Timeout presets ──────────────────────────────────────────────────
+# Timeout presets
 
 _AGENT_TIMEOUT = 600  # 10 min — single function-call tasks are fast
 _VERIFIER_TIMEOUT = 120  # 2 min — evaluation is lightweight
+TASK_FORMATS = TASK_OUTPUT_FORMATS
+TaskFormat = TaskOutputFormat
 
 
 def _sanitize_name(raw: str) -> str:
@@ -56,9 +78,6 @@ def _sanitize_name(raw: str) -> str:
     name = raw.lower().strip()
     name = re.sub(r"[^a-z0-9]+", "-", name)
     return name.strip("-")
-
-
-# ── Data classes ─────────────────────────────────────────────────────
 
 
 @dataclass
@@ -90,9 +109,6 @@ class BFCLTask:
     @property
     def n_ground_truth(self) -> int:
         return len(self.ground_truth)
-
-
-# ── Loader ───────────────────────────────────────────────────────────
 
 
 def load_tasks(opaquetoolsbench_dir: Path) -> list[BFCLTask]:
@@ -130,9 +146,6 @@ def load_tasks(opaquetoolsbench_dir: Path) -> list[BFCLTask]:
             )
 
     return tasks
-
-
-# ── Renderers ────────────────────────────────────────────────────────
 
 
 def _render_task_toml(task: BFCLTask) -> str:
@@ -231,6 +244,56 @@ def _render_instruction(task: BFCLTask) -> str:
     return "\n".join(lines)
 
 
+def _render_task_md(task: BFCLTask) -> str:
+    tag = _sanitize_name(task.category)
+    instruction = _render_instruction(task).strip()
+    frontmatter: dict[str, Any] = {
+        "schema_version": "1.3",
+        "task": {
+            "name": task.task_name,
+        },
+        "metadata": {
+            "author_name": "OpaqueToolsBench (Hallinan et al.)",
+            "difficulty": "easy",
+            "category": "function-calling",
+            "tags": ["function-calling", tag],
+        },
+        "agent": {
+            "timeout_sec": _AGENT_TIMEOUT,
+        },
+        "verifier": {
+            "timeout_sec": _VERIFIER_TIMEOUT,
+        },
+        "environment": {
+            "cpus": 1,
+            "memory_mb": 1024,
+            "storage_mb": 2048,
+            "allow_internet": False,
+        },
+        "benchflow": {
+            "document_version": "0.3",
+            "source": {
+                "benchmark": "OpaqueToolsBench",
+                "category": task.category,
+                "test_id": task.test_id,
+            },
+            "verifier": {
+                "spec": "verifier/verifier.md",
+                "rubric": "verifier/rubrics/verifier.md",
+                "entrypoint": "verifier/test.sh",
+                "implementation": {
+                    "type": "test-script",
+                    "outputs": {
+                        "reward_json": "/logs/verifier/reward.json",
+                        "reward_details": "/logs/verifier/reward-details.json",
+                    },
+                },
+            },
+        },
+    }
+    return render_task_md(frontmatter, instruction)
+
+
 def _render_dockerfile() -> str:
     """Generate Dockerfile for the evaluation environment.
 
@@ -245,7 +308,7 @@ FROM python:3.13-slim@sha256:dc1546eefcbe8caaa1f004f16ab76b204b5e1dbd58ff81b899f
 
 WORKDIR /app
 
-RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts /app/output
+RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts /app/output /verifier /tests
 """
 
 
@@ -253,14 +316,54 @@ def _render_test_sh(task: BFCLTask) -> str:
     return Template("""\
 #!/bin/bash
 # Verifier for OpaqueToolsBench BFCL task: $instance_id
-set -o pipefail
+set -euo pipefail
 
-exec > >(tee /logs/verifier/verifier.log) 2>&1
+verifier_log="${BENCHFLOW_VERIFIER_LOG:-/logs/verifier/verifier.log}"
+mkdir -p "$(dirname "$verifier_log")"
+exec > >(tee "$verifier_log") 2>&1
 
-python3 /tests/evaluate.py \\
-    --response /app/output/response.json \\
-    --ground-truth /tests/ground_truth.json \\
-    --reward-file /logs/verifier/reward.txt
+VERIFIER_DIR="${BENCHFLOW_VERIFIER_DIR:-/verifier}"
+LEGACY_TESTS_DIR="${BENCHFLOW_LEGACY_TESTS_DIR:-/tests}"
+if [ ! -f "$VERIFIER_DIR/evaluate.py" ] && [ -f "$LEGACY_TESTS_DIR/evaluate.py" ]; then
+    VERIFIER_DIR="$LEGACY_TESTS_DIR"
+fi
+
+response_path="${BENCHFLOW_RESPONSE_PATH:-/app/output/response.json}"
+reward_file="${BENCHFLOW_REWARD_TEXT:-/logs/verifier/reward.txt}"
+reward_json="${BENCHFLOW_REWARD_JSON:-/logs/verifier/reward.json}"
+details_json="${BENCHFLOW_REWARD_DETAILS_JSON:-/logs/verifier/reward-details.json}"
+mkdir -p "$(dirname "$reward_file")" "$(dirname "$reward_json")" "$(dirname "$details_json")"
+
+python3 "$VERIFIER_DIR/evaluate.py" \\
+    --response "$response_path" \\
+    --ground-truth "$VERIFIER_DIR/ground_truth.json" \\
+    --reward-file "$reward_file"
+
+python3 - "$reward_file" "$reward_json" "$details_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+reward_path = Path(sys.argv[1])
+reward_json_path = Path(sys.argv[2])
+details_json_path = Path(sys.argv[3])
+reward = float(reward_path.read_text().strip())
+reward_json_path.write_text(
+    json.dumps({"reward": reward}, indent=2) + "\\n"
+)
+details_json_path.write_text(
+    json.dumps(
+        {
+            "reward": reward,
+            "matched_all_ground_truth_calls": reward >= 1.0,
+        },
+        indent=2,
+    )
+    + "\\n"
+)
+PY
 """).safe_substitute(instance_id=task.instance_id)
 
 
@@ -309,7 +412,66 @@ PY
     )
 
 
-# ── evaluate.py (copied into every task's tests/) ───────────────────
+def _render_verifier_md(task: BFCLTask) -> str:
+    frontmatter: dict[str, Any] = {
+        "document_version": "0.3",
+        "verifier": {
+            "name": f"opaquetoolsbench-{task.instance_id}-verifier",
+            "default_strategy": "deterministic",
+            "strategies": {
+                "deterministic": {
+                    "type": "script",
+                    "command": "./test.sh",
+                },
+            },
+            "rubric": {
+                "combine": "weighted_sum",
+                "dimensions": {
+                    "function_name": {
+                        "weight": 0.35,
+                        "source": "deterministic",
+                    },
+                    "arguments": {
+                        "weight": 0.45,
+                        "source": "deterministic",
+                    },
+                    "call_count": {
+                        "weight": 0.20,
+                        "source": "deterministic",
+                    },
+                },
+            },
+            "outputs": {
+                "reward_text": "/logs/verifier/reward.txt",
+                "reward_json": "/logs/verifier/reward.json",
+                "details_json": "/logs/verifier/reward-details.json",
+            },
+        },
+    }
+    rendered_frontmatter = yaml.safe_dump(frontmatter, sort_keys=False)
+    return (
+        f"---\n{rendered_frontmatter}---\n\n## role:reviewer\n\n"
+        "The deterministic script compares the submitted function-call JSON "
+        "against the OpaqueToolsBench BFCL ground truth for this instance.\n"
+    )
+
+
+def _render_verifier_rubric(task: BFCLTask) -> str:
+    return f"""\
+# OpaqueToolsBench BFCL Rubric
+
+Task: `{task.task_name}`
+
+- Function name: every required function call must use the expected function.
+- Arguments: every ground-truth argument must be present and value-equivalent.
+- Call count: all expected calls must be matched without reusing a response.
+
+The bundled verifier awards `1.0` only when all ground-truth calls match, and
+`0.0` otherwise.
+"""
+
+
+# evaluate.py (copied into every task's tests/)
 
 EVALUATE_PY = '''\
 """OpaqueToolsBench BFCL verifier for BenchFlow.
@@ -494,33 +656,41 @@ if __name__ == "__main__":
 '''
 
 
-# ── Task generation ─────────────────────────────────────────────────
-
-
-def generate_task(task: BFCLTask, output_dir: Path, *, overwrite: bool = False) -> Path:
+def generate_task(
+    task: BFCLTask,
+    output_dir: Path,
+    *,
+    overwrite: bool = False,
+    task_format: TaskFormat = "task-md",
+) -> Path:
     """Generate a single BenchFlow task directory for one BFCL test item."""
+    task_format = validate_task_output_format(task_format)
     task_dir = output_dir / task.instance_id
     if task_dir.exists():
         if not overwrite:
+            ensure_existing_task_output_format(task_dir, task_format)
             logger.debug("Skipping existing task %s", task.instance_id)
             return task_dir
         shutil.rmtree(task_dir)
 
     task_dir.mkdir(parents=True)
 
-    # task.toml
-    (task_dir / "task.toml").write_text(_render_task_toml(task))
+    if task_format == "task-md":
+        (task_dir / "task.md").write_text(_render_task_md(task))
+    else:
+        # task.toml
+        (task_dir / "task.toml").write_text(_render_task_toml(task))
 
-    # instruction.md
-    (task_dir / "instruction.md").write_text(_render_instruction(task))
+        # instruction.md
+        (task_dir / "instruction.md").write_text(_render_instruction(task))
 
     # environment/Dockerfile
     env_dir = task_dir / "environment"
     env_dir.mkdir()
     (env_dir / "Dockerfile").write_text(_render_dockerfile())
 
-    # tests/
-    tests_dir = task_dir / "tests"
+    # verifier/ for native task.md, tests/ for legacy Harbor/Pier layout.
+    tests_dir = task_dir / verifier_dir_name(task_format)
     tests_dir.mkdir()
 
     test_sh = tests_dir / "test.sh"
@@ -528,6 +698,11 @@ def generate_task(task: BFCLTask, output_dir: Path, *, overwrite: bool = False) 
     test_sh.chmod(0o755)
 
     (tests_dir / "evaluate.py").write_text(EVALUATE_PY)
+    if task_format == "task-md":
+        (tests_dir / "verifier.md").write_text(_render_verifier_md(task))
+        rubrics_dir = tests_dir / "rubrics"
+        rubrics_dir.mkdir()
+        (rubrics_dir / "verifier.md").write_text(_render_verifier_rubric(task))
 
     # Ground truth JSON
     gt_data = {
@@ -538,8 +713,8 @@ def generate_task(task: BFCLTask, output_dir: Path, *, overwrite: bool = False) 
         gt_data["execution_result"] = task.execution_result
     (tests_dir / "ground_truth.json").write_text(json.dumps(gt_data, indent=2))
 
-    # solution/
-    solution_dir = task_dir / "solution"
+    # oracle/ for native task.md, solution/ for legacy Harbor/Pier layout.
+    solution_dir = task_dir / oracle_dir_name(task_format)
     solution_dir.mkdir()
     solve_sh = solution_dir / "solve.sh"
     solve_sh.write_text(_render_solution_sh(task))
@@ -555,8 +730,10 @@ def generate_all(
     overwrite: bool = False,
     limit: int | None = None,
     task_ids: list[str] | None = None,
+    task_format: TaskFormat = "task-md",
 ) -> list[Path]:
     """Generate BenchFlow task directories for all BFCL tasks."""
+    task_format = validate_task_output_format(task_format)
     tasks = load_tasks(opaquetoolsbench_dir)
 
     if task_ids:
@@ -569,15 +746,17 @@ def generate_all(
     output_dir.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
     for task in tasks:
-        path = generate_task(task, output_dir, overwrite=overwrite)
+        path = generate_task(
+            task,
+            output_dir,
+            overwrite=overwrite,
+            task_format=task_format,
+        )
         generated.append(path)
         logger.info("Generated %s", task.instance_id)
 
     logger.info("Generated %d tasks in %s", len(generated), output_dir)
     return generated
-
-
-# ── CLI ──────────────────────────────────────────────────────────────
 
 
 def main() -> None:
@@ -613,6 +792,12 @@ def main() -> None:
         default=None,
         help="Comma-separated list of specific task IDs to generate",
     )
+    parser.add_argument(
+        "--task-format",
+        choices=TASK_FORMATS,
+        default="task-md",
+        help="Output layout: legacy task.toml/instruction.md or native task.md",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -626,6 +811,7 @@ def main() -> None:
         overwrite=args.overwrite,
         limit=args.limit,
         task_ids=tid_list,
+        task_format=args.task_format,
     )
     print(f"Generated {len(generated)} tasks in {args.output_dir}")
 

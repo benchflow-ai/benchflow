@@ -1,0 +1,15 @@
+{
+  "id": "optimize-quadratic-to-nlogn",
+  "question": "The following function finds all pairs in a list that sum to a target value. It works but is O(n\u00b2). Optimize it to O(n) or O(n log n) while maintaining the same output format (sorted list of pairs, each pair sorted).\n\n```python\ndef find_pairs(nums: list[int], target: int) -> list[tuple[int, int]]:\n    result = []\n    for i in range(len(nums)):\n        for j in range(i + 1, len(nums)):\n            if nums[i] + nums[j] == target:\n                pair = tuple(sorted([nums[i], nums[j]]))\n                if pair not in result:\n                    result.append(pair)\n    return sorted(result)\n```\n\nYour optimized version must produce identical output for all inputs. Include a brief explanation of the complexity improvement.",
+  "ground_truth": "Hash-set based O(n) solution using a seen set. For each number, check if (target - number) is in the seen set. Handles duplicates correctly by using sorted pairs in a result set.",
+  "expected_behavior": [
+    "The agent produced an O(n) or O(n log n) solution",
+    "The optimized function produces identical output to the original",
+    "The agent explained the complexity improvement",
+    "The agent handled duplicate pairs correctly",
+    "The agent wrote tests verifying equivalence with the original"
+  ],
+  "expected_skill": "code-specialist",
+  "expected_script": "",
+  "environment": {}
+}

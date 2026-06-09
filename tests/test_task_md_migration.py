@@ -26,6 +26,7 @@ def _make_legacy_task(tmp_path: Path) -> Path:
     """
     task_dir = tmp_path / "task"
     shutil.copytree(_LEGACY_FIXTURE, task_dir)
+    (task_dir / "task.md").unlink(missing_ok=True)  # split-format input for migration
     return task_dir
 
 

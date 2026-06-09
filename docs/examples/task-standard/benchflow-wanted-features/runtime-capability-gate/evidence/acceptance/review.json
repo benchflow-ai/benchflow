@@ -1,0 +1,11 @@
+{
+  "task": "benchflow-wanted/runtime-capability-gate",
+  "kind": "acceptance-review",
+  "anti_cheat": "passed",
+  "instruction_alignment": "passed",
+  "notes": [
+    "The task asks for real BenchFlow runtime boundary behavior, not a toy fixture.",
+    "Acceptance evidence is stored under the package and uses relative artifact paths.",
+    "No raw API keys or provider credentials are embedded in this evidence."
+  ]
+}

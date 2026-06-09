@@ -43,9 +43,7 @@ def _write_text(rollout_paths, value) -> None:
     rollout_paths.reward_text_path.write_text(str(value))
 
 
-# ---------------------------------------------------------------------------
 # reward.json alone parses (it is the primary source)
-# ---------------------------------------------------------------------------
 
 
 def test_reward_json_only_parses(tmp_path):
@@ -70,9 +68,7 @@ def test_reward_json_only_with_metrics_parses(tmp_path):
     assert rewards["metrics"] == {"tests_passed": 1.0, "lint_ok": 1.0}
 
 
-# ---------------------------------------------------------------------------
 # reward.txt alone parses
-# ---------------------------------------------------------------------------
 
 
 def test_reward_text_only_parses(tmp_path):
@@ -85,9 +81,7 @@ def test_reward_text_only_parses(tmp_path):
     assert rewards == {"reward": 0.5}
 
 
-# ---------------------------------------------------------------------------
 # both present and AGREE -> ok
-# ---------------------------------------------------------------------------
 
 
 def test_reward_json_and_text_agree_ok(tmp_path):
@@ -109,9 +103,7 @@ def test_reward_json_and_text_agree_within_float_tolerance_ok(tmp_path):
     assert rewards["reward"] == 0.25
 
 
-# ---------------------------------------------------------------------------
 # both present and DISAGREE beyond tolerance -> raises
-# ---------------------------------------------------------------------------
 
 
 def test_reward_json_and_text_disagree_raises(tmp_path):

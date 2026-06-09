@@ -10,12 +10,10 @@ real names.
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
 # Multi-message work threads (~15)
-# ---------------------------------------------------------------------------
 
 WORK_THREADS: list[dict] = [
-    # ---- 1. Partnership discussion with Arena AI ----
+    # 1. Partnership discussion with Arena AI
     {
         "subject": "Arena <> Nexus AI — Partnership Exploration",
         "messages": [
@@ -108,7 +106,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (3, 7),
     },
-    # ---- 2. Meeting scheduling with Handshake CEO ----
+    # 2. Meeting scheduling with Handshake CEO
     {
         "subject": "Scheduling: Garrett / Alex intro call",
         "messages": [
@@ -170,7 +168,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (1, 4),
     },
-    # ---- 3. AWS account alignment — account manager transition ----
+    # 3. AWS account alignment — account manager transition
     {
         "subject": "Nexus AI AWS Account — New Account Manager Introduction",
         "messages": [
@@ -242,7 +240,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (5, 12),
     },
-    # ---- 4. YC partner monthly check-in ----
+    # 4. YC partner monthly check-in
     {
         "subject": "Nexus AI — February Check-in",
         "messages": [
@@ -316,7 +314,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (2, 6),
     },
-    # ---- 5. Internal: Infrastructure cost review (long thread) ----
+    # 5. Internal: Infrastructure cost review (long thread)
     {
         "subject": "RE: February Infrastructure Cost Review",
         "messages": [
@@ -450,7 +448,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (3, 8),
     },
-    # ---- 6. Internal: Sprint planning for next release ----
+    # 6. Internal: Sprint planning for next release
     {
         "subject": "Sprint 14 Planning — v2.5 Release Scope",
         "messages": [
@@ -549,7 +547,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (1, 5),
     },
-    # ---- 7. Internal: Hiring discussion — senior ML engineer ----
+    # 7. Internal: Hiring discussion — senior ML engineer
     {
         "subject": "RE: Senior ML Engineer Candidate — Raj Patel (Final Round)",
         "messages": [
@@ -637,7 +635,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (4, 10),
     },
-    # ---- 8. Internal: Customer bug report escalation ----
+    # 8. Internal: Customer bug report escalation
     {
         "subject": "[ESCALATION] Stripe — SDK Timeout in Production",
         "messages": [
@@ -714,7 +712,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (0, 3),
     },
-    # ---- 9. Internal: Security audit findings ----
+    # 9. Internal: Security audit findings
     {
         "subject": "SOC 2 Type II Audit — Findings and Remediation Plan",
         "messages": [
@@ -789,7 +787,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (2, 7),
     },
-    # ---- 10. Internal: Product roadmap Q2 planning ----
+    # 10. Internal: Product roadmap Q2 planning
     {
         "subject": "Q2 2026 Product Roadmap — Draft for Review",
         "messages": [
@@ -867,7 +865,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (1, 5),
     },
-    # ---- 11. Internal: On-call rotation and incident retrospective ----
+    # 11. Internal: On-call rotation and incident retrospective
     {
         "subject": "RE: On-call Rotation Update + Feb 27 Incident Retro",
         "messages": [
@@ -930,7 +928,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (1, 4),
     },
-    # ---- 12. Internal: Demo day prep ----
+    # 12. Internal: Demo day prep
     {
         "subject": "YC Demo Day Prep — Pitch Deck Review",
         "messages": [
@@ -1006,7 +1004,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (1, 6),
     },
-    # ---- 13. Internal: Fundraising update to team ----
+    # 13. Internal: Fundraising update to team
     {
         "subject": "Fundraising Update — Confidential",
         "messages": [
@@ -1084,7 +1082,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (2, 8),
     },
-    # ---- 14. Internal: Office/remote policy discussion ----
+    # 14. Internal: Office/remote policy discussion
     {
         "subject": "RE: Hybrid Work Policy — March Update",
         "messages": [
@@ -1161,7 +1159,7 @@ WORK_THREADS: list[dict] = [
         ],
         "age_range": (1, 5),
     },
-    # ---- 15. Internal: Tech debt prioritization ----
+    # 15. Internal: Tech debt prioritization
     {
         "subject": "Tech Debt Inventory — What's Actually Hurting Us",
         "messages": [
@@ -1243,12 +1241,10 @@ WORK_THREADS: list[dict] = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # Single-message work emails (~15)
-# ---------------------------------------------------------------------------
 
 WORK_SINGLES: list[dict] = [
-    # ---- 1. Customer success win notification ----
+    # 1. Customer success win notification
     {
         "sender_name": "Priya Sharma",
         "sender_email": "priya@nexusai.com",
@@ -1274,7 +1270,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 0.9,
         "age_range": (2, 8),
     },
-    # ---- 2. Board meeting scheduling ----
+    # 2. Board meeting scheduling
     {
         "sender_name": "Alex Chen",
         "sender_email": "alex@nexusai.com",
@@ -1304,7 +1300,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 1.0,
         "age_range": (3, 10),
     },
-    # ---- 3. Engineering all-hands recap ----
+    # 3. Engineering all-hands recap
     {
         "sender_name": "Sarah Kim",
         "sender_email": "sarah@nexusai.com",
@@ -1338,7 +1334,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 0.8,
         "age_range": (1, 5),
     },
-    # ---- 4. Investor intro email ----
+    # 4. Investor intro email
     {
         "sender_name": "Ralph Torres",
         "sender_email": "ralph@ycombinator.com",
@@ -1364,7 +1360,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 1.0,
         "age_range": (0, 3),
     },
-    # ---- 5. AWS promotional email (tricky — categorized as promotions) ----
+    # 5. AWS promotional email (tricky — categorized as promotions)
     {
         "sender_name": "Layla Firoz",
         "sender_email": "laylafir@amazon.com",
@@ -1392,7 +1388,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 0.6,
         "age_range": (5, 15),
     },
-    # ---- 6. Customer feature request ----
+    # 6. Customer feature request
     {
         "sender_name": "Priya Sharma",
         "sender_email": "priya@nexusai.com",
@@ -1419,7 +1415,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 0.95,
         "age_range": (1, 5),
     },
-    # ---- 7. Domain renewal / ops ----
+    # 7. Domain renewal / ops
     {
         "sender_name": "David Park",
         "sender_email": "david@nexusai.com",
@@ -1445,7 +1441,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 0.85,
         "age_range": (1, 5),
     },
-    # ---- 8. Weekly metrics email ----
+    # 8. Weekly metrics email
     {
         "sender_name": "Lisa Wang",
         "sender_email": "lisa@nexusai.com",
@@ -1476,7 +1472,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 1.0,
         "age_range": (0, 3),
     },
-    # ---- 9. External partnership follow-up ----
+    # 9. External partnership follow-up
     {
         "sender_name": "Garrett Lord",
         "sender_email": "garrett@joinhandshake.com",
@@ -1502,7 +1498,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 1.0,
         "age_range": (0, 3),
     },
-    # ---- 10. Internal — design review request ----
+    # 10. Internal — design review request
     {
         "sender_name": "Emily Ortiz",
         "sender_email": "emily@nexusai.com",
@@ -1531,7 +1527,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 0.85,
         "age_range": (1, 5),
     },
-    # ---- 11. Sent: Response to investor ----
+    # 11. Sent: Response to investor
     {
         "sender_name": "Alex Chen",
         "sender_email": "alex@nexusai.com",
@@ -1561,7 +1557,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 1.0,
         "age_range": (0, 2),
     },
-    # ---- 12. PagerDuty escalation ----
+    # 12. PagerDuty escalation
     {
         "sender_name": "David Park",
         "sender_email": "david@nexusai.com",
@@ -1587,7 +1583,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 0.9,
         "age_range": (0, 3),
     },
-    # ---- 13. Sent: Vendor contract response ----
+    # 13. Sent: Vendor contract response
     {
         "sender_name": "Alex Chen",
         "sender_email": "alex@nexusai.com",
@@ -1615,7 +1611,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 1.0,
         "age_range": (3, 8),
     },
-    # ---- 14. Internal: Team event planning ----
+    # 14. Internal: Team event planning
     {
         "sender_name": "Lisa Wang",
         "sender_email": "lisa@nexusai.com",
@@ -1641,7 +1637,7 @@ WORK_SINGLES: list[dict] = [
         "is_read_probability": 0.95,
         "age_range": (0, 4),
     },
-    # ---- 15. Sent: Responding to YC batch-mate ----
+    # 15. Sent: Responding to YC batch-mate
     {
         "sender_name": "Alex Chen",
         "sender_email": "alex@nexusai.com",

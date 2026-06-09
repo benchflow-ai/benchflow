@@ -1,11 +1,17 @@
 # Use cases
+> Part of the **Interaction plane** — see [Concepts: the three planes](./concepts.md#the-three-planes).
+
 BenchFlow's Scene-based lifecycle enables evaluation patterns that go far beyond single-turn "prompt and score." This document covers the key use cases for multi-turn, multi-agent, and stateful environment evaluation.
 
 The patterns below are all variants of one primitive: **Scenes with Roles and Turns**, all running in a single shared sandbox via ACP. No sidecar containers, no Docker Compose networking — every role lives in the same workspace and talks through ACP.
 
+Each pattern below maps onto one of the Interaction plane's modes — `single-shot`, `multi-round`, `simulated-user`, or `multi-agent-sequential` — all executable today. Multi-agent here is **sequential hand-off in one shared sandbox** (one role acts at a time; there is no runtime message scheduler), not concurrent agents. The fully concurrent `arena-concurrent` mode (live A2A peers scored *during* the interaction) is declared in the standard but runtime-deferred — see [the task standard](./task-standard.md#interaction-model).
+
 ---
 
 ## 1. Interactive User Simulation
+
+> Interaction mode: `simulated-user` — a model-backed user persona drives the turns. Executable today as a linear sequence (one active role per scene).
 
 A "user" role provides instructions iteratively; the agent responds. The user has oracle access to the solution and reveals information gradually, simulating realistic human-agent interaction.
 
@@ -32,21 +38,21 @@ scenes:
     turns:
       - role: user
         prompt: |
-          You are simulating a user who needs help with the task in /app/instruction.md.
-          You have access to the solution in /solution/solve.sh.
+          You are simulating a user who needs help with the task described in the agent's prompt.
+          You have oracle access in /oracle/solve.sh (legacy tasks expose it as /solution/solve.sh).
           Give the assistant a high-level description of what you want. Do NOT reveal implementation details yet.
           Write your guidance to /app/user-guidance.md.
       - role: assistant
       - role: user
         prompt: |
-          Read the assistant's work in /app/. Compare against /solution/solve.sh.
+          Read the assistant's work in /app/. Compare against /oracle/solve.sh (legacy tasks expose it as /solution/solve.sh).
           If incomplete, provide a targeted hint (one specific detail from the solution).
           Update /app/user-guidance.md with the targeted hint.
       - role: assistant
         prompt: "The user provided additional guidance. Read it and continue working."
       - role: user
         prompt: |
-          Final check. Read /app/ and compare to /solution/. If correct, write
+          Final check. Read /app/ and compare to /oracle/. If correct, write
           LGTM to /app/user-guidance.md.
           If not, give one final hint.
       - role: assistant
@@ -68,9 +74,9 @@ config = RolloutConfig(
                   Role("assistant", "claude-agent-acp", "claude-sonnet-4-6"),
               ],
               turns=[
-                  Turn("user", "You are simulating a user. Read /app/instruction.md..."),
-                  Turn("assistant"),  # None = use instruction.md
-                  Turn("user", "Check the assistant's work against /solution/..."),
+                  Turn("user", "You are simulating a user. Read the task prompt..."),
+                  Turn("assistant"),  # None prompt = task prompt (instruction.md)
+                  Turn("user", "Check the assistant's work against /oracle/..."),
                   Turn("assistant", "The user provided additional guidance..."),
               ]),
     ],
@@ -86,13 +92,15 @@ result = await bf.run(config)
 - The user agent is a real LLM with full tool access — it can read files, check outputs, and give nuanced feedback, not just templated responses.
 - Same task folder works for single-turn (baseline) and interactive (with user) via different YAML configs.
 
-### Lighter-weight alternative: `BaseUser` callback
+### Lighter-weight alternative: `BaseUser` callback (`multi-round`)
 
-When you don't need a second LLM and your "user" logic is rule-based or oracle-guided (e.g. compress instruction → show test failures as hints → stop on pass), use a `BaseUser` Python callback instead of a multi-role Scene. See [progressive-disclosure.md](./progressive-disclosure.md). Built for the SWE-bench Pro progressive-disclosure use case.
+When you don't need a second LLM and your "user" logic is rule-based or oracle-guided (e.g. compress instruction → show test failures as hints → stop on pass), use a `BaseUser` Python callback instead of a multi-role Scene. This is the `multi-round` interaction mode: one agent, multiple `connect → execute → disconnect` cycles, with a Python callback deciding each round's prompt from verifier feedback. See [progressive-disclosure.md](./progressive-disclosure.md). Built for the SWE-bench Pro progressive-disclosure use case.
 
 ---
 
 ## 2. Code Review Loop (followup-bench)
+
+> Interaction mode: `multi-agent-sequential` — coder and reviewer hand off in one shared sandbox, one role at a time. Executable today.
 
 A coder agent solves the task, then an independent reviewer agent critiques the solution. The coder revises based on the feedback. The reviewer never has write access to `/app/` -- it can only read and provide feedback.
 
@@ -177,6 +185,8 @@ Treat reviewer lift as an empirical question for the target benchmark. It is mos
 
 ## 3. Skill Generation (BYOS -- Bring Your Own Skill)
 
+> Interaction: two sequential scenes (multi-scene rollout) in one shared sandbox. Each scene is single-role; the hand-off is the persisted filesystem, not a live peer. Executable today.
+
 An agent generates a task-specific skill before solving. This is a two-scene rollout: `prep` (unscored) and `solve` (scored). Both scenes share the sandbox, so the generated skill persists.
 
 ### YAML
@@ -224,7 +234,7 @@ config = RolloutConfig(
               turns=[Turn("gen", "Analyze the task and write a skill to /app/generated-skill.md")]),
         Scene(name="solve",
               roles=[Role("solver", "gemini", "gemini-3.1-flash-lite-preview")],
-              turns=[Turn("solver")]),  # None prompt = use instruction.md
+              turns=[Turn("solver")]),  # None prompt = task prompt (instruction.md)
     ],
     environment="daytona",
 )
@@ -234,7 +244,7 @@ result = await bf.run(config)
 ### How scenes work here
 
 1. **Scene 1 (`skill-gen`)**: The `gen` agent reads the task instruction, analyzes it, and writes a skill file. This scene is unscored -- its output is an artifact that persists in the sandbox filesystem.
-2. **Scene 2 (`solve`)**: A fresh agent session starts (no context from scene 1). The `solver` agent gets the standard `instruction.md` prompt and also sees `/app/generated-skill.md` on disk. The verifier scores only the final `/app/` state.
+2. **Scene 2 (`solve`)**: A fresh agent session starts (no context from scene 1). The `solver` agent gets the standard task prompt (from `task.md`, surfaced at `/app/instruction.md`) and also sees `/app/generated-skill.md` on disk. The verifier scores only the final `/app/` state.
 
 The key insight: `disconnect()` between scenes kills the agent process, so there is no context bleed. The only communication is through the shared filesystem.
 
@@ -245,6 +255,8 @@ From the SkillsBench paper: self-generated skills with generic prompts yield app
 ---
 
 ## 4. Multi-turn Conversation
+
+> Interaction mode: `single-shot` with a fixed prompt sequence — one role, one persistent ACP session, predetermined follow-ups (no user persona, no role switch). Executable today.
 
 The same agent receives multiple prompts in sequence, maintaining full conversation context between turns. This is the simplest multi-turn pattern -- no role switching, just sequential prompts to a persistent ACP session.
 
@@ -283,7 +295,7 @@ config = RolloutConfig(
         Scene(name="iterative-solve",
               roles=[Role("solver", "gemini", "gemini-3.1-flash-lite-preview")],
               turns=[
-                  Turn("solver"),  # instruction.md
+                  Turn("solver"),  # None prompt = task prompt (instruction.md)
                   Turn("solver", "Review your solution. Run tests. Fix issues."),
                   Turn("solver", "Final check: verify every requirement is met."),
               ]),
@@ -308,6 +320,8 @@ No simulated user is required — the "user" in this pattern is the benchmark fr
 ---
 
 ## 5. Cross-model Review
+
+> Interaction mode: `multi-agent-sequential` — same as the review loop, but each role binds a different model. Roles still hand off sequentially in one shared sandbox. Executable today.
 
 Different models fill different roles in the same scene. A cheap model codes, an expensive model reviews. Role-level model configuration makes this trivial.
 
@@ -383,6 +397,8 @@ Each variant is just a different YAML file -- same task folder, same verifier, d
 
 ## 6. Stateful Service Tasks
 
+> Interaction mode: `single-shot` (one agent, one prompt) over an **Environment-plane** service catalog. The interesting axis here is the environment, not the interaction loop — see [Environment plane](./environment-plane.md). Executable today.
+
 Tasks that require agents to interact with live services -- Gmail, Calendar, Docs, Drive, Slack. Services run as sidecar processes in the sandbox, exposing REST APIs on localhost. The agent interacts with real HTTP endpoints, not mocked tool calls.
 
 ### Python
@@ -429,16 +445,16 @@ Each service:
 
 ```
 tasks/schedule-meeting-from-email/
-├── task.toml
-├── instruction.md          # "Read the email from Alice, create a calendar event..."
+├── task.md                 # config + prompt: "Read the email from Alice, create a calendar event..."
 ├── environment/
 │   ├── Dockerfile          # FROM benchflow/claws-base (has all claw-* binaries)
 │   ├── gmail.db            # Pre-seeded: email from Alice with meeting request
 │   └── gcal.db             # Pre-seeded: existing calendar entries
-├── solution/
+├── oracle/
 │   └── solve.sh            # Oracle: curl commands to Gmail + GCal APIs
-└── tests/
+└── verifier/
     └── test.sh             # Verify: check gcal.db has the new event
 ```
 
+Legacy split-layout tasks (`task.toml` + `instruction.md` + `solution/` + `tests/`) still load — `oracle/` and `verifier/` are the native names; `solution/` and `tests/` are the legacy aliases.
 

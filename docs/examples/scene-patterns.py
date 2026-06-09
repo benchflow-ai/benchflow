@@ -19,7 +19,7 @@ Run:
 
 import os
 
-# ── The contract (constructed here, no external files) ──────────────
+# The contract (constructed here, no external files)
 
 CONTRACT = """
 SOFTWARE LICENSE AGREEMENT
@@ -56,10 +56,6 @@ Between: CloudStack Inc. ("Vendor") and [Client] ("Licensee")
 8. GOVERNING LAW
    State of Delaware.
 """
-
-# ── Helpers ─────────────────────────────────────────────────────────
-
-
 def llm(prompt, model="gemini-3.1-flash-lite"):
     """Call Gemini and return text. Handles rate limits gracefully."""
     try:
@@ -90,7 +86,7 @@ def show_config(yaml_str):
     print("  └─────────────────────────────────────────────────────┘")
 
 
-# ── Pattern 1: Single Agent Baseline ────────────────────────────────
+# Pattern 1: Single Agent Baseline
 
 
 def pattern_1():
@@ -119,7 +115,7 @@ def pattern_1():
     return result
 
 
-# ── Pattern 2: Single-Agent Multi-Turn (Self-Review) ────────────────
+# Pattern 2: Single-Agent Multi-Turn (Self-Review)
 
 
 def pattern_2(first_review):
@@ -159,7 +155,7 @@ def pattern_2(first_review):
     return result
 
 
-# ── Pattern 3: Multi-Round (Legal + Commercial Specialists) ─────────
+# Pattern 3: Multi-Round (Legal + Commercial Specialists)
 
 
 def pattern_3():
@@ -216,7 +212,7 @@ def pattern_3():
     print("  but not insight.")
 
 
-# ── Pattern 4: Interactive Client Consultation ──────────────────────
+# Pattern 4: Interactive Client Consultation
 
 
 def pattern_4():
@@ -280,9 +276,6 @@ def pattern_4():
     print()
     print("When to use: tasks where user context changes the answer.")
     print("When NOT to use: well-specified tasks with clear success criteria.")
-
-
-# ── Main ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("BenchFlow Scene Patterns — Contract Review Tutorial")

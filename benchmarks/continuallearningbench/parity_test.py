@@ -33,6 +33,19 @@ import sys
 import tempfile
 from pathlib import Path
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SRC_ROOT = _REPO_ROOT / "src"
+if str(_SCRIPT_DIR) in sys.path:
+    sys.path.remove(str(_SCRIPT_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+from benchflow._utils.task_authoring import check_task  # noqa: E402
+from benchflow.task.document import TaskDocument, TaskDocumentParseError  # noqa: E402
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
@@ -50,6 +63,14 @@ _R_MAX = {
 }
 
 
+def _verifier_dir(task_dir: Path, task_format: str) -> Path:
+    return task_dir / ("verifier" if task_format == "task-md" else "tests")
+
+
+def _evaluate_py_path(task_dir: Path, task_format: str) -> Path:
+    return _verifier_dir(task_dir, task_format) / "evaluate.py"
+
+
 def _task_names_to_check(output_dir: Path) -> list[str]:
     """Return known ContinualLearningBench task dirs present in this generated output."""
     return [
@@ -57,14 +78,52 @@ def _task_names_to_check(output_dir: Path) -> list[str]:
     ]
 
 
-def _check_structural(task_dir: Path) -> list[str]:
+def _check_structural(task_dir: Path, *, task_format: str = "legacy") -> list[str]:
     """Check structural parity for a single task directory. Returns list of errors."""
     errors: list[str] = []
     name = task_dir.name
+    verifier_dir = _verifier_dir(task_dir, task_format)
 
-    # task.toml
+    validation_level = "publication-grade" if task_format == "task-md" else "structural"
+    errors.extend(
+        f"{name}: bench tasks check: {issue}"
+        for issue in check_task(task_dir, validation_level=validation_level)
+    )
+
     task_toml = task_dir / "task.toml"
-    if not task_toml.exists():
+    task_md = task_dir / "task.md"
+    if task_format == "task-md":
+        if not task_md.exists():
+            errors.append(f"{name}: missing task.md")
+        else:
+            try:
+                document = TaskDocument.from_path(task_md)
+            except TaskDocumentParseError as exc:
+                errors.append(f"{name}: task.md parse error: {exc}")
+            else:
+                task_name = (
+                    document.config.task.name
+                    if document.config.task is not None
+                    else ""
+                )
+                if not task_name.startswith("continuallearningbench/"):
+                    errors.append(
+                        f"{name}: task.md missing continuallearningbench/ prefix in name"
+                    )
+                if "/opt/run_task.py" not in document.instruction:
+                    errors.append(f"{name}: task.md prompt missing driver path")
+        if any(
+            (task_dir / rel).exists()
+            for rel in ("task.toml", "instruction.md", "tests", "solution")
+        ):
+            errors.append(f"{name}: native task.md output keeps split-layout files")
+        if not (task_dir / "oracle" / "README.md").exists():
+            errors.append(f"{name}: missing oracle/README.md")
+        if not (verifier_dir / "verifier.md").exists():
+            errors.append(f"{name}: missing verifier/verifier.md")
+        if not (verifier_dir / "rubrics" / "verifier.md").exists():
+            errors.append(f"{name}: missing verifier/rubrics/verifier.md")
+    elif not task_toml.exists():
         errors.append(f"{name}: missing task.toml")
     else:
         content = task_toml.read_text()
@@ -83,11 +142,10 @@ def _check_structural(task_dir: Path) -> list[str]:
         if "[environment]" not in content:
             errors.append(f"{name}: task.toml missing [environment] section")
 
-    # instruction.md
     instruction = task_dir / "instruction.md"
-    if not instruction.exists():
+    if task_format == "legacy" and not instruction.exists():
         errors.append(f"{name}: missing instruction.md")
-    elif instruction.stat().st_size == 0:
+    elif task_format == "legacy" and instruction.stat().st_size == 0:
         errors.append(f"{name}: instruction.md is empty")
 
     # environment/Dockerfile
@@ -113,24 +171,24 @@ def _check_structural(task_dir: Path) -> list[str]:
     if not schedule.exists():
         errors.append(f"{name}: missing environment/schedule.json")
 
-    # tests/test.sh
-    test_sh = task_dir / "tests" / "test.sh"
+    # tests/test.sh or verifier/test.sh
+    test_sh = verifier_dir / "test.sh"
     if not test_sh.exists():
-        errors.append(f"{name}: missing tests/test.sh")
+        errors.append(f"{name}: missing {test_sh.relative_to(task_dir)}")
     else:
         mode = test_sh.stat().st_mode
         if not (mode & stat.S_IXUSR):
-            errors.append(f"{name}: tests/test.sh is not executable")
+            errors.append(f"{name}: {test_sh.relative_to(task_dir)} is not executable")
 
-    # tests/evaluate.py
-    evaluate = task_dir / "tests" / "evaluate.py"
+    # tests/evaluate.py or verifier/evaluate.py
+    evaluate = verifier_dir / "evaluate.py"
     if not evaluate.exists():
-        errors.append(f"{name}: missing tests/evaluate.py")
+        errors.append(f"{name}: missing {evaluate.relative_to(task_dir)}")
 
     return errors
 
 
-def run_structural_parity(output_dir: Path) -> dict:
+def run_structural_parity(output_dir: Path, *, task_format: str = "legacy") -> dict:
     """Run structural parity checks on all generated task directories."""
     results = {"tasks_tested": 0, "passed": 0, "errors": []}
     task_names = _task_names_to_check(output_dir)
@@ -142,7 +200,7 @@ def run_structural_parity(output_dir: Path) -> dict:
 
     for task_name in task_names:
         task_dir = output_dir / task_name
-        errors = _check_structural(task_dir)
+        errors = _check_structural(task_dir, task_format=task_format)
         results["tasks_tested"] += 1
         if not errors:
             results["passed"] += 1
@@ -156,22 +214,18 @@ def run_structural_parity(output_dir: Path) -> dict:
 
 
 def _run_evaluate_py(evaluate_py: Path, results_file: Path, reward_file: Path) -> float:
-    """Run the actual generated evaluate.py with patched file paths."""
-    content = evaluate_py.read_text()
-    content = content.replace(
-        'RESULTS_FILE = "/opt/results.json"',
-        f'RESULTS_FILE = "{results_file}"',
-    )
-    content = content.replace(
-        'REWARD_FILE = "/logs/verifier/reward.txt"',
-        f'REWARD_FILE = "{reward_file}"',
-    )
+    """Run the actual generated evaluate.py with explicit verifier env paths."""
+    env = {
+        **os.environ.copy(),
+        "BENCHFLOW_RESULTS_JSON": str(results_file),
+        "BENCHFLOW_REWARD_TEXT": str(reward_file),
+    }
     result = subprocess.run(
-        [sys.executable, "-c", content],
+        [sys.executable, str(evaluate_py)],
         capture_output=True,
         text=True,
         timeout=30,
-        env=os.environ.copy(),
+        env=env,
     )
     if result.returncode != 0:
         log.error("evaluate.py failed: %s", result.stderr)
@@ -183,7 +237,7 @@ def _run_evaluate_py(evaluate_py: Path, results_file: Path, reward_file: Path) -
         return -1.0
 
 
-def run_eval_parity(output_dir: Path) -> dict:
+def run_eval_parity(output_dir: Path, *, task_format: str = "legacy") -> dict:
     """Run eval parity: test evaluate.py with synthetic results."""
     results = {"tasks_tested": 0, "passed": 0, "tests": []}
 
@@ -192,7 +246,7 @@ def run_eval_parity(output_dir: Path) -> dict:
         if not task_dir.exists():
             continue
 
-        evaluate_py = task_dir / "tests" / "evaluate.py"
+        evaluate_py = _evaluate_py_path(task_dir, task_format)
         if not evaluate_py.exists():
             continue
 
@@ -289,7 +343,7 @@ def run_eval_parity(output_dir: Path) -> dict:
     return results
 
 
-# ── Live parity ──────────────────────────────────────────────────────
+# Live parity
 # Run the real ContinualLearningBench task with deterministic responses, capture the
 # original TaskResult.score, then feed that score through BenchFlow's
 # generated evaluate.py and verify the normalized reward matches.
@@ -416,6 +470,8 @@ def run_live_parity(
     output_dir: Path,
     continuallearningbench_dir: Path,
     python_bin: str | None = None,
+    *,
+    task_format: str = "legacy",
 ) -> dict:
     """Run live parity: real ContinualLearningBench task vs BenchFlow evaluate.py.
 
@@ -439,7 +495,7 @@ def run_live_parity(
 
     for bf_name, cl_name in bf_to_cl.items():
         task_dir = output_dir / bf_name
-        evaluate_py = task_dir / "tests" / "evaluate.py"
+        evaluate_py = _evaluate_py_path(task_dir, task_format)
         if not task_dir.exists() or not evaluate_py.exists():
             log.warning("Skipping %s: task dir or evaluate.py missing", bf_name)
             continue
@@ -554,7 +610,7 @@ def run_live_parity(
     return results
 
 
-# ── End-to-end parity ────────────────────────────────────────────────
+# End-to-end parity
 # Harvey LAB-standard: run the SAME agent responses through BOTH the
 # original ContinualLearningBench Python API AND BenchFlow's generated run_task.py,
 # then compare resulting scores.  Finally run evaluate.py and verify
@@ -780,6 +836,8 @@ def run_e2e_parity(
     output_dir: Path,
     continuallearningbench_dir: Path,
     python_bin: str | None = None,
+    *,
+    task_format: str = "legacy",
 ) -> dict:
     """End-to-end parity: same agent responses through original vs BenchFlow.
 
@@ -803,7 +861,7 @@ def run_e2e_parity(
 
     for bf_name, (cl_name, n_instances) in bf_to_cl.items():
         task_dir = output_dir / bf_name
-        evaluate_py = task_dir / "tests" / "evaluate.py"
+        evaluate_py = _evaluate_py_path(task_dir, task_format)
         if not task_dir.exists() or not evaluate_py.exists():
             log.warning("Skipping %s: task dir or evaluate.py missing", bf_name)
             continue
@@ -986,13 +1044,22 @@ def main() -> None:
         default=None,
         help="Python binary for ContinualLearningBench (default: <continuallearningbench-dir>/.venv/bin/python)",
     )
+    parser.add_argument(
+        "--task-format",
+        choices=("legacy", "task-md"),
+        default="legacy",
+        help="Generated task layout to validate",
+    )
     args = parser.parse_args()
 
     all_passed = True
 
     if args.mode in ("structural", "all"):
         print("\n=== Structural Parity ===")
-        structural = run_structural_parity(args.output_dir)
+        structural = run_structural_parity(
+            args.output_dir,
+            task_format=args.task_format,
+        )
         print(f"  Tested: {structural['tasks_tested']}, Passed: {structural['passed']}")
         if structural["errors"]:
             all_passed = False
@@ -1001,7 +1068,10 @@ def main() -> None:
 
     if args.mode in ("eval", "all"):
         print("\n=== Eval Parity ===")
-        eval_results = run_eval_parity(args.output_dir)
+        eval_results = run_eval_parity(
+            args.output_dir,
+            task_format=args.task_format,
+        )
         print(
             f"  Tested: {eval_results['tasks_tested']}, Passed: {eval_results['passed']}"
         )
@@ -1020,7 +1090,10 @@ def main() -> None:
         else:
             print("\n=== Live Parity ===")
             live_results = run_live_parity(
-                args.output_dir, args.continuallearningbench_dir, args.python_bin
+                args.output_dir,
+                args.continuallearningbench_dir,
+                args.python_bin,
+                task_format=args.task_format,
             )
             print(
                 f"  Tested: {live_results['tasks_tested']}, "
@@ -1047,7 +1120,10 @@ def main() -> None:
         else:
             print("\n=== End-to-End Parity (Harvey LAB-standard) ===")
             e2e_results = run_e2e_parity(
-                args.output_dir, args.continuallearningbench_dir, args.python_bin
+                args.output_dir,
+                args.continuallearningbench_dir,
+                args.python_bin,
+                task_format=args.task_format,
             )
             print(
                 f"  Tested: {e2e_results['tasks_tested']}, "

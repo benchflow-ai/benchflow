@@ -24,7 +24,7 @@ app = FastAPI(
 )
 
 
-# --- Gmail-style error responses ---
+# Gmail-style error responses
 _HTTP_STATUS_MAP = {
     400: ("INVALID_ARGUMENT", "badRequest"),
     401: ("UNAUTHENTICATED", "unauthorized"),
@@ -101,7 +101,7 @@ app.add_middleware(
 )
 
 
-# --- Action logging middleware ---
+# Action logging middleware
 class ActionLogMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Skip logging for admin/static/docs endpoints
@@ -142,7 +142,7 @@ class ActionLogMiddleware(BaseHTTPMiddleware):
 app.add_middleware(ActionLogMiddleware)
 
 
-# --- Gmail API routes ---
+# Gmail API routes
 GMAIL_PREFIX = "/gmail/v1"
 
 app.include_router(web_router, tags=["web"])
@@ -154,7 +154,7 @@ app.include_router(history.router, prefix=GMAIL_PREFIX, tags=["history"])
 app.include_router(settings.router, prefix=GMAIL_PREFIX, tags=["settings"])
 
 
-# --- Profile ---
+# Profile
 from claw_gmail.models import get_session_factory, User, Message, Thread
 from .deps import get_db, resolve_user_id
 from .schemas import Profile
@@ -179,7 +179,7 @@ def get_profile(
     )
 
 
-# --- Attachments ---
+# Attachments
 from claw_gmail.models import Attachment
 from .schemas import AttachmentSchema
 
@@ -206,7 +206,7 @@ def get_attachment(
     return AttachmentSchema(attachmentId=att.id, size=att.size, data=att.data)
 
 
-# --- Admin endpoints ---
+# Admin endpoints
 @app.post("/_admin/reset", tags=["admin"])
 def admin_reset():
     """Reset to initial seed state."""
@@ -441,7 +441,7 @@ def admin_skill_detail(skill_name: str):
     }
 
 
-# --- Health check ---
+# Health check
 @app.get("/health")
 def health():
     return {"status": "ok"}

@@ -1,0 +1,25 @@
+{
+  "task": "benchflow-wanted/compat-export-loss-reports",
+  "kind": "verifier-stability-report",
+  "reruns": 3,
+  "flake_rate": 0.0,
+  "min_reward": 0.99,
+  "command": "uv run --extra dev python -m pytest tests/test_task_export.py tests/test_tasks.py -q",
+  "runs": [
+    {
+      "name": "export-rerun-1",
+      "status": "passed",
+      "reward": 1.0
+    },
+    {
+      "name": "export-rerun-2",
+      "status": "passed",
+      "reward": 1.0
+    },
+    {
+      "name": "export-rerun-3",
+      "status": "passed",
+      "reward": 1.0
+    }
+  ]
+}

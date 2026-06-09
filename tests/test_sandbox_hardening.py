@@ -7,12 +7,13 @@ Covers three tiers of reward-forge mitigations:
 """
 
 import json
+import logging
 import shlex
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ── Shared helpers ────────────────────────────────────────────────────────────
+# Shared helpers
 
 _ALL_BUILD_FILES = (
     "setup.py",
@@ -61,6 +62,9 @@ def _make_task(user=None):
     # pytest_plugins is a guaranteed list[str] field on VerifierConfig.
     task.config.verifier.pytest_plugins = []
     task.task_dir = None
+    # Default to a legacy split layout so --confcutdir resolves to /tests; native
+    # task.md packages set this True to bound conftest walk-up at /verifier.
+    task.paths.uses_native_verifier_dir = False
     return task
 
 
@@ -100,7 +104,7 @@ def _restore_side_effect(manifest: dict[str, bool]) -> list:
     ]
 
 
-# ── TestHardenSequence ────────────────────────────────────────────────────────
+# TestHardenSequence
 
 
 class TestHardenSequence:
@@ -152,6 +156,7 @@ class TestHardenSequence:
         assert any(c == "mkdir -p /app" for c in cmds)
         cleanup_cmd = next(c for c in cmds if "conftest.py" in c)
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
+        assert "-not -path '/verifier/*'" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
         injected = task.config.verifier.env
         assert "--rootdir=/testbed" in injected["PYTEST_ADDOPTS"]
@@ -193,7 +198,7 @@ class TestHardenSequence:
         assert injected["PYTHONPATH"] == ""  # non-overridden defaults kept
 
 
-# ── TestVerifierDirWipe ───────────────────────────────────────────────────────
+# TestVerifierDirWipe
 
 
 class TestVerifierDirWipe:
@@ -363,7 +368,7 @@ class TestVerifierDirWipe:
         assert "WS=/app" in reclaim.args[0]
 
 
-# ── TestBuildConfigSnapshot ───────────────────────────────────────────────────
+# TestBuildConfigSnapshot
 
 
 class TestBuildConfigSnapshot:
@@ -643,7 +648,7 @@ class TestBuildConfigSnapshot:
         assert any("chmod 700" in c and ".benchflow_build_snapshot" in c for c in calls)
 
 
-# ── TestVerifierUserHarden ────────────────────────────────────────────────────
+# TestVerifierUserHarden
 
 
 class TestVerifierUserHarden:
@@ -706,7 +711,7 @@ class TestVerifierUserHarden:
         assert any("conftest.py" in c for c in calls)
 
 
-# ── TestVerifierEnv ───────────────────────────────────────────────────────────
+# TestVerifierEnv
 
 
 class TestVerifierEnv:
@@ -815,6 +820,39 @@ class TestVerifierEnv:
 
         assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
             workspace=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_pythonless_image_hardening_fallbacks_are_quiet(self, caplog):
+        """Guards commit 67378ddd's 2026-06-04 task.md warning cleanup."""
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        def side_effect(cmd, **kwargs):
+            text = str(cmd)
+            if text == "printenv PATH":
+                return MagicMock(
+                    stdout="/usr/local/bin:/usr/bin:/bin\n",
+                    stderr="",
+                    exit_code=0,
+                )
+            if "python3 -c" in text:
+                return MagicMock(
+                    stdout="",
+                    stderr="/bin/sh: python3: not found",
+                    exit_code=127,
+                )
+            return MagicMock(stdout="", stderr="", exit_code=0)
+
+        env = _make_env(side_effect=side_effect)
+        task = _make_task()
+
+        caplog.set_level(logging.WARNING)
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+
+        messages = [record.message for record in caplog.records]
+        assert not any("task.toml fallback" in message for message in messages)
+        assert not any(
+            "trusted verifier PATH extras" in message for message in messages
         )
 
     @pytest.mark.asyncio
@@ -1045,6 +1083,24 @@ class TestVerifierEnv:
         assert "--confcutdir=/tests" in task.config.verifier.env["PYTEST_ADDOPTS"]
 
     @pytest.mark.asyncio
+    async def test_pytest_addopts_confcutdir_tracks_native_verifier_dir(self):
+        """Native task.md packages bound conftest walk-up at /verifier, not /tests.
+
+        The hardened base hardcodes --confcutdir=/tests, which does not exist in
+        native packages and makes pytest exit before any test runs.
+        """
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        task.paths.uses_native_verifier_dir = True
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/root")
+
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "--confcutdir=/verifier" in addopts
+        assert "--confcutdir=/tests" not in addopts
+
+    @pytest.mark.asyncio
     async def test_pytest_addopts_not_overridable_by_task_env(self):
         """A task that sets PYTEST_ADDOPTS in verifier.env must not win.
 
@@ -1103,6 +1159,29 @@ class TestVerifierEnv:
         assert task.config.verifier.env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
 
     @pytest.mark.asyncio
+    async def test_native_ctrf_plugin_inferred_from_verifier_script(self, tmp_path):
+        """Guards PR #9's native verifier/test.sh CTRF plugin inference fix."""
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        verifier_dir = tmp_path / "verifier"
+        verifier_dir.mkdir()
+        (verifier_dir / "test.sh").write_text(
+            "uvx --with pytest-json-ctrf pytest "
+            "--ctrf /logs/verifier/ctrf.json /verifier/test_outputs.py\n"
+        )
+
+        env = _make_env()
+        task = _make_task()
+        task.task_dir = tmp_path
+        task.paths.uses_native_verifier_dir = True
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "-p ctrf" in addopts
+        assert "--confcutdir=/verifier" in addopts
+        assert "--confcutdir=/tests" not in addopts
+
+    @pytest.mark.asyncio
     async def test_ctrf_plugin_inference_ignores_comments(self, tmp_path):
         """Commented --ctrf text does not opt a task into the plugin."""
         from benchflow.sandbox.lockdown import harden_before_verify
@@ -1118,6 +1197,20 @@ class TestVerifierEnv:
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "-p ctrf" not in addopts
+
+    @pytest.mark.asyncio
+    async def test_native_verifier_confcutdir_tracks_verifier_mount(self):
+        """Guards PR #9's native verifier lockdown path regression."""
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        task.paths.uses_native_verifier_dir = True
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "--confcutdir=/verifier" in addopts
+        assert "--confcutdir=/tests" not in addopts
 
     @pytest.mark.asyncio
     async def test_rootdir_follows_workspace(self):
@@ -1431,7 +1524,7 @@ class TestVerifierEnv:
 
 
 class TestHardeningOptOuts:
-    """Per-task [verifier.hardening] opt-outs from task.toml."""
+    """Per-task [verifier.hardening] opt-outs from task config."""
 
     def test_defaults_when_no_task_dir(self):
         from benchflow.sandbox.lockdown import (
@@ -1457,6 +1550,51 @@ class TestHardeningOptOuts:
             "[verifier.hardening]\ncleanup_conftests = false\n"
         )
         cfg = _read_hardening_config(tmp_path)
+        assert cfg["cleanup_conftests"] is False
+
+    def test_opt_out_cleanup_conftests_from_task_md(self, tmp_path):
+        """Guards commit 67378ddd's 2026-06-04 task.md hardening config."""
+        from benchflow.sandbox.lockdown import _read_hardening_config
+
+        (tmp_path / "task.md").write_text(
+            """---
+version: "1.0"
+verifier:
+  hardening:
+    cleanup_conftests: false
+---
+## prompt
+
+Solve it.
+"""
+        )
+
+        cfg = _read_hardening_config(tmp_path)
+
+        assert cfg["cleanup_conftests"] is False
+
+    def test_task_md_hardening_wins_when_legacy_pair_present(self, tmp_path):
+        """Guards commit 67378ddd's 2026-06-04 task.md mixed-format drift."""
+        from benchflow.sandbox.lockdown import _read_hardening_config
+
+        (tmp_path / "task.toml").write_text(
+            "[verifier.hardening]\ncleanup_conftests = true\n"
+        )
+        (tmp_path / "task.md").write_text(
+            """---
+version: "1.0"
+verifier:
+  hardening:
+    cleanup_conftests: false
+---
+## prompt
+
+Use task.md as the canonical task entrypoint.
+"""
+        )
+
+        cfg = _read_hardening_config(tmp_path)
+
         assert cfg["cleanup_conftests"] is False
 
     def test_unknown_key_logged_not_applied(self, tmp_path, caplog):

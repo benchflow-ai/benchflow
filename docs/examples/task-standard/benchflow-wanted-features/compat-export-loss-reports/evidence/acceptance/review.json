@@ -1,0 +1,11 @@
+{
+  "task": "benchflow-wanted/compat-export-loss-reports",
+  "kind": "acceptance-review",
+  "anti_cheat": "passed",
+  "instruction_alignment": "passed",
+  "notes": [
+    "The verifier requires explicit degraded-export reports instead of accepting silent field loss.",
+    "The oracle evidence is tied to native-to-split behavior and round-trip conformance.",
+    "No provider credentials, hidden benchmark answers, or external service state are embedded."
+  ]
+}

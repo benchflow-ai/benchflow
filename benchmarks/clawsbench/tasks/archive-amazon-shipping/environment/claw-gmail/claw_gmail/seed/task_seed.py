@@ -222,7 +222,7 @@ def seed_task_scenario(
         needles = getattr(mod, "NEEDLES", [])
     needle_threads = getattr(mod, "NEEDLE_THREADS", [])
 
-    # --- Phase 1: Fixed-position emails ---
+    # Phase 1: Fixed-position emails
 
     fixed_count = 0
 
@@ -239,7 +239,7 @@ def seed_task_scenario(
             _insert_single(db, user, template, now, rng)
         fixed_count += len(AMBIGUOUS_EMAILS)
 
-    # --- Phase 2: Fill from content library ---
+    # Phase 2: Fill from content library
 
     target_count = fill_config.get("target_count", 3000)
     remaining = target_count - fixed_count
@@ -306,7 +306,7 @@ def seed_task_scenario(
         db.add(MessageLabel(message_id=draft_msg_id, label_id="DRAFT"))
         db.add(Draft(id=draft_id, user_id=user.id, message_id=draft_msg_id))
 
-    # --- Write needle manifest ---
+    # Write needle manifest
     if manifest_entries:
         return _write_manifest(task_dir_name, seed_val, manifest_entries, db_path)
     return None

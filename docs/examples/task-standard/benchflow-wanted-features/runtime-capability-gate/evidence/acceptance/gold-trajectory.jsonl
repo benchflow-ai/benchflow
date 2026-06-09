@@ -1,0 +1,4 @@
+{"type":"system","message":"Dogfood reference trajectory for runtime-capability-gate acceptance evidence."}
+{"type":"agent_action","message":"Implemented TaskPackage/TaskRuntimeView as the selected executable package boundary."}
+{"type":"agent_action","message":"Added sandbox-aware runtime capability validation that fails closed for parsed unsupported fields."}
+{"type":"verifier_result","reward":1.0,"status":"passed","items":{"runtime_view":1.0,"fail_closed":1.0}}

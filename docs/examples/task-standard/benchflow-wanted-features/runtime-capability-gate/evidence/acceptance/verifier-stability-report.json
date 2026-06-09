@@ -1,0 +1,35 @@
+{
+  "task": "benchflow-wanted/runtime-capability-gate",
+  "kind": "verifier-stability-report",
+  "reruns": 5,
+  "flake_rate": 0.0,
+  "min_reward": 0.99,
+  "command": "uv run python -m pytest tests/test_task_package.py tests/test_runtime_capabilities.py tests/test_task_document.py tests/test_task_config.py tests/test_tasks.py -q",
+  "runs": [
+    {
+      "name": "oracle-rerun-1",
+      "status": "passed",
+      "reward": 1.0
+    },
+    {
+      "name": "oracle-rerun-2",
+      "status": "passed",
+      "reward": 1.0
+    },
+    {
+      "name": "oracle-rerun-3",
+      "status": "passed",
+      "reward": 1.0
+    },
+    {
+      "name": "oracle-rerun-4",
+      "status": "passed",
+      "reward": 1.0
+    },
+    {
+      "name": "oracle-rerun-5",
+      "status": "passed",
+      "reward": 1.0
+    }
+  ]
+}

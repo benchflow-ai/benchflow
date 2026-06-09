@@ -1,6 +1,8 @@
 # Skill evals
 Test whether your agent skill actually helps agents perform better.
 
+> Part of the **Verifier plane** — see [Concepts: the three planes](./concepts.md#the-three-planes). Skill eval is the verifier path for when the evaluated artifact is a **skill**, not a workspace: it generates ephemeral tasks, runs an agent with and without the skill, and scores the lift.
+
 ## Install
 
 ```bash
@@ -10,13 +12,21 @@ uv tool install --prerelease allow 'benchflow==0.5.2'
 ## Overview
 
 `bench skills eval` takes a skill directory with an `evals/evals.json`
-file, generates benchmark tasks from it, runs them with and without the
-skill installed, and reports the "lift" — how much the skill improves
+file, generates ephemeral native [`task.md`](./task-standard.md) packages
+from it (with native `oracle/` + `verifier/`), runs them with and without
+the skill installed, and reports the "lift" — how much the skill improves
 agent performance.
 
-Current v0.5 release evidence is tracked in
-[`docs/v05-integration-evidence.md`](./v05-integration-evidence.md). Historical
-skill-eval dogfood notes from the v0.4 refactor remain archived in
+This is the **standalone-skill** path: the skill is the artifact under test
+and BenchFlow authors the tasks for you. It is distinct from
+[`bench eval create --skill-mode with-skill`](./reference/cli.md#bench-eval-create),
+which mounts a skill onto *existing* benchmark tasks you already have. The
+`bench skills eval` command takes no `--skill-mode`/`--skills-dir` flags —
+skill mounting is automatic, driven by the generated task's `skills_dir`.
+
+Release evidence is archived under
+[`docs/reports/v05-integration-evidence.md`](./reports/v05-integration-evidence.md).
+Historical skill-eval dogfood notes from the v0.4 refactor remain archived in
 [`docs/reports/2026-05-19-skill-eval-v04.md`](./reports/2026-05-19-skill-eval-v04.md).
 
 ## Quick start
@@ -132,7 +142,8 @@ written into generated task files.
 
 The `oracle` agent is useful for generic task and sandbox smoke tests, but it is
 not a replacement for skill evaluation. Skill-eval tasks are generated from
-questions and rubrics and do not include `solution/solve.sh`, so oracle runs
+questions and rubrics and ship only an `oracle/README.md` (no native
+`oracle/solve.sh`, legacy alias `solution/solve.sh`), so oracle runs
 will error instead of measuring skill lift.
 
 ### Existing task-embedded skills
@@ -144,9 +155,13 @@ directly with `bench skills eval`, add a sibling `evals/evals.json` inside that
 skill directory or copy the skill into a standalone skill directory with the
 same `evals/` contract.
 
-The repo includes a real standalone example at
-[`skills/citation-management/`](../skills/citation-management/), adapted
-from the SkillsBench `citation-check` task:
+The repo ships a real standalone example at
+[`skills/citation-management/`](../skills/citation-management/), adapted from
+the `citation-check` task in [SkillsBench](https://github.com/benchflow-ai/skillsbench)
+(source-repo `benchflow-ai/skillsbench`). Its `evals/evals.json` carries three
+cases drawn from the real citation-check bibliography: detecting hallucinated
+BibTeX entries, repairing a malformed entry from its authoritative DOI, and
+catching a real-but-crossed DOI attached to the wrong title. Run it with:
 
 ```bash
 bench skills eval skills/citation-management \
@@ -156,6 +171,23 @@ bench skills eval skills/citation-management \
   --jobs-dir jobs/skill-eval-citation-management \
   --concurrency 1
 ```
+
+To instead run the *full* SkillsBench task suite against an agent — mounting a
+shared skills directory onto those existing tasks rather than generating tasks
+from a skill — use `bench eval create` with the SkillsBench source-repo:
+
+```bash
+bench eval create \
+  --source-repo benchflow-ai/skillsbench \
+  --source-path tasks \
+  --agent gemini \
+  --model gemini-3.1-flash-lite-preview \
+  --sandbox daytona \
+  --skill-mode with-skill
+```
+
+See [`bench eval create`](./reference/cli.md#bench-eval-create) for the
+`--skill-mode` / `--skills-dir` flags that path accepts.
 
 ## Multi-agent comparison
 
@@ -200,9 +232,10 @@ my-skill/evals/
 
 The Dockerfile is used instead of the default `python:3.12-slim` base.
 For with-skill runs, BenchFlow appends a `COPY skills/ <skill_mount_dir>/`
-step so the generated task exposes the skill at the neutral path declared in
-`task.toml`. During rollout setup, BenchFlow links that neutral path into the
-selected agent's configured discovery paths.
+step so the generated task exposes the skill at the neutral path recorded in
+the generated `task.md` frontmatter (`environment.skills_dir`). During rollout
+setup, BenchFlow links that neutral path into the selected agent's configured
+discovery paths.
 
 ## GEPA integration
 

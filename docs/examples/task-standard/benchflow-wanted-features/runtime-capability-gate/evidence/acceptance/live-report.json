@@ -1,0 +1,290 @@
+{
+  "benchflow_version": "0.5.0.dev0",
+  "case_summaries": [
+    {
+      "case": "live-oracle-rerun",
+      "failed_runs": 0,
+      "flake_rate": 0.0,
+      "flake_rate_max": 0.0,
+      "max_reward": 1.0,
+      "min_reward": 1.0,
+      "passed_runs": 1,
+      "source": "declared",
+      "status": "passed",
+      "total_runs": 1,
+      "type": "oracle"
+    },
+    {
+      "case": "live-reference-verifier",
+      "failed_runs": 0,
+      "flake_rate": 0.0,
+      "flake_rate_max": 0.0,
+      "max_reward": 1.0,
+      "min_reward": 1.0,
+      "passed_runs": 1,
+      "source": "declared",
+      "status": "passed",
+      "total_runs": 1,
+      "type": "reference"
+    },
+    {
+      "case": "empty-runtime-boundary",
+      "failed_runs": 0,
+      "flake_rate": 0.0,
+      "flake_rate_max": 0.0,
+      "max_reward": 0.0,
+      "min_reward": 0.0,
+      "passed_runs": 1,
+      "source": "calibration-report",
+      "status": "passed",
+      "total_runs": 1,
+      "type": "no-op"
+    },
+    {
+      "case": "silent-unsupported-field",
+      "failed_runs": 0,
+      "flake_rate": 0.0,
+      "flake_rate_max": 0.0,
+      "max_reward": 0.2,
+      "min_reward": 0.2,
+      "passed_runs": 1,
+      "source": "calibration-report",
+      "status": "passed",
+      "total_runs": 1,
+      "type": "known-bad"
+    },
+    {
+      "case": "runtime-view-without-alias-drift",
+      "failed_runs": 0,
+      "flake_rate": 0.0,
+      "flake_rate_max": 0.0,
+      "max_reward": 0.6,
+      "min_reward": 0.6,
+      "passed_runs": 1,
+      "source": "calibration-report",
+      "status": "passed",
+      "total_runs": 1,
+      "type": "partial"
+    },
+    {
+      "case": "gold-runtime-boundary",
+      "failed_runs": 0,
+      "flake_rate": 0.0,
+      "flake_rate_max": 0.0,
+      "max_reward": 1.0,
+      "min_reward": 1.0,
+      "passed_runs": 1,
+      "source": "calibration-report",
+      "status": "passed",
+      "total_runs": 1,
+      "type": "reference"
+    }
+  ],
+  "cases": [
+    {
+      "command": null,
+      "expect": {
+        "flake_rate_max": 0.0,
+        "reward_equals": null,
+        "reward_max": null,
+        "reward_min": 0.99,
+        "reward_range": null
+      },
+      "name": "live-oracle-rerun",
+      "reruns": 1,
+      "source": "declared",
+      "type": "oracle"
+    },
+    {
+      "command": null,
+      "expect": {
+        "flake_rate_max": 0.0,
+        "reward_equals": null,
+        "reward_max": null,
+        "reward_min": 0.99,
+        "reward_range": null
+      },
+      "name": "live-reference-verifier",
+      "reruns": 1,
+      "source": "declared",
+      "type": "reference"
+    },
+    {
+      "command": "rm -rf src tests",
+      "expect": {
+        "flake_rate_max": 0.0,
+        "reward_equals": null,
+        "reward_max": 0.0,
+        "reward_min": null,
+        "reward_range": null
+      },
+      "name": "empty-runtime-boundary",
+      "reruns": 1,
+      "source": "calibration-report",
+      "type": "no-op"
+    },
+    {
+      "command": "find src/benchflow/task tests -type f ! -name runtime_view.py -delete",
+      "expect": {
+        "flake_rate_max": 0.0,
+        "reward_equals": null,
+        "reward_max": 0.2,
+        "reward_min": null,
+        "reward_range": null
+      },
+      "name": "silent-unsupported-field",
+      "reruns": 1,
+      "source": "calibration-report",
+      "type": "known-bad"
+    },
+    {
+      "command": "rm -f src/benchflow/task/package.py src/benchflow/task/acceptance_live.py",
+      "expect": {
+        "flake_rate_max": 0.0,
+        "reward_equals": null,
+        "reward_max": null,
+        "reward_min": null,
+        "reward_range": [
+          0.4,
+          0.8
+        ]
+      },
+      "name": "runtime-view-without-alias-drift",
+      "reruns": 1,
+      "source": "calibration-report",
+      "type": "partial"
+    },
+    {
+      "command": null,
+      "expect": {
+        "flake_rate_max": 0.0,
+        "reward_equals": 1.0,
+        "reward_max": null,
+        "reward_min": null,
+        "reward_range": null
+      },
+      "name": "gold-runtime-boundary",
+      "reruns": 1,
+      "source": "calibration-report",
+      "type": "reference"
+    }
+  ],
+  "generated_at": "2026-06-06T14:56:11.298090+00:00",
+  "kind": "acceptance-live-report",
+  "leaderboard_suitability": {
+    "checks": {
+      "all_runs_passed": true,
+      "flake_rate_within_limit": true,
+      "has_generated_calibration_coverage": true,
+      "has_live_runs": true,
+      "has_oracle_proof": true,
+      "has_reference_proof": true
+    },
+    "issues": [],
+    "max_flake_rate": 0.0,
+    "observed_generated_calibration_types": [
+      "known-bad",
+      "no-op",
+      "partial",
+      "reference"
+    ],
+    "required": true,
+    "required_generated_calibration_types": [
+      "known-bad",
+      "no-op",
+      "partial",
+      "reference"
+    ],
+    "status": "suitable"
+  },
+  "runs": [
+    {
+      "case": "live-oracle-rerun",
+      "error": null,
+      "expectation_issues": [],
+      "reward": 1.0,
+      "run_index": 1,
+      "sha256": "4506db4e6f34a71a31fc081d7900284affd542301c096e92d4b394f28457dee8",
+      "source": "declared",
+      "status": "passed",
+      "type": "oracle"
+    },
+    {
+      "case": "live-reference-verifier",
+      "error": null,
+      "expectation_issues": [],
+      "reward": 1.0,
+      "run_index": 1,
+      "sha256": "e48fb33883bed270213947f9dbd744f31b8eec9a595ba96d9d36d2ae59a58607",
+      "source": "declared",
+      "status": "passed",
+      "type": "reference"
+    },
+    {
+      "case": "empty-runtime-boundary",
+      "error": null,
+      "expectation_issues": [],
+      "reward": 0.0,
+      "run_index": 1,
+      "sha256": "319e017342d59be8f9b760505f4559ad046a0c1dd04898c0f3f20a20cdca1339",
+      "source": "calibration-report",
+      "status": "passed",
+      "type": "no-op"
+    },
+    {
+      "case": "silent-unsupported-field",
+      "error": null,
+      "expectation_issues": [],
+      "reward": 0.2,
+      "run_index": 1,
+      "sha256": "857ef11395ef489be16d19bf5c4802b547d4fac44f1cd2c46ea3627ac4f0e8fc",
+      "source": "calibration-report",
+      "status": "passed",
+      "type": "known-bad"
+    },
+    {
+      "case": "runtime-view-without-alias-drift",
+      "error": null,
+      "expectation_issues": [],
+      "reward": 0.6,
+      "run_index": 1,
+      "sha256": "58142dd980cd3fa5ca0473fe4d4c6fa640c63b0a43dec78c715aab521ebd3b43",
+      "source": "calibration-report",
+      "status": "passed",
+      "type": "partial"
+    },
+    {
+      "case": "gold-runtime-boundary",
+      "error": null,
+      "expectation_issues": [],
+      "reward": 1.0,
+      "run_index": 1,
+      "sha256": "1a3513e4ab02114b2e7562b40b04eba3de274d636316d75ca0861fe597ca230e",
+      "source": "calibration-report",
+      "status": "passed",
+      "type": "reference"
+    }
+  ],
+  "sandbox": "docker",
+  "schema_version": "1.0",
+  "spec_sha256": "cd11ba68911d9e1c261dafafd8ea1b8e11a3cf79210cacd4e0a1d82971e533d6",
+  "summary": {
+    "failed_runs": 0,
+    "flake_rate": 0.0,
+    "max_reward": 1.0,
+    "min_reward": 0.0,
+    "passed_runs": 6,
+    "total_runs": 6
+  },
+  "task": {
+    "oracle_sha256": "6050b349df8ffe225714c0403f1e1fae5f8d6a8259ea5225375ec6502c9111eb",
+    "path": "runtime-capability-gate",
+    "task_md_sha256": "27056c03edbc8cfd84379ecd7c1344e1097f99a19b02c77b344caaf427d4922b",
+    "verifier_sha256": "fd4867c1c122d3f5587d584f04532b56d1f08acd57c3564d721a7c46b6adfc51"
+  },
+  "workspace": {
+    "source": "current-worktree",
+    "staged_tree_sha256": "6cd1a019b1a705bdb710198013b52bc39cafc6904ac8a0ecd94877012df2eb93",
+    "target": "/repo"
+  }
+}

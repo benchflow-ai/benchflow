@@ -1,0 +1,12 @@
+{
+  "task": "benchflow-wanted/prompt-user-semantics",
+  "kind": "reference-result",
+  "expected_reward": 1.0,
+  "checks": {
+    "prompt_composition": 1.0,
+    "simulated_user_loop": 1.0,
+    "team_handoff": 1.0,
+    "privacy_boundary": 1.0
+  },
+  "status": "passed"
+}

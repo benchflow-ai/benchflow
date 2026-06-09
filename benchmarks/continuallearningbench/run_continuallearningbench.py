@@ -11,6 +11,12 @@ from pathlib import Path
 CONTINUALLEARNINGBENCH_REPO = "https://github.com/pgasawa/continual-learning-bench"
 
 
+def _default_output_dir(task_format: str) -> Path:
+    if task_format == "task-md":
+        return Path("/tmp/continuallearningbench-tasks-task-md")
+    return Path("/tmp/continuallearningbench-tasks")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Prepare ContinualLearningBench BenchFlow tasks."
@@ -24,7 +30,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("/tmp/continuallearningbench-tasks"),
+        default=None,
         help="Where to write generated BenchFlow task directories.",
     )
     parser.add_argument(
@@ -44,6 +50,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Comma-separated ContinualLearningBench task ids to generate.",
     )
+    parser.add_argument(
+        "--task-format",
+        choices=("legacy", "task-md"),
+        default="legacy",
+        help="Generated task layout.",
+    )
     return parser.parse_args()
 
 
@@ -62,7 +74,7 @@ def main() -> None:
             check=True,
         )
 
-    output_dir: Path = args.output_dir
+    output_dir: Path = args.output_dir or _default_output_dir(args.task_format)
     print(f"Generating BenchFlow tasks in {output_dir}...")
     cmd = [
         sys.executable,
@@ -78,12 +90,14 @@ def main() -> None:
         cmd.append("--overwrite")
     if args.task_ids:
         cmd.extend(["--task-ids", args.task_ids])
+    cmd.extend(["--task-format", args.task_format])
     subprocess.run(cmd, check=True)
 
     print(f"\nTasks generated in {output_dir}")
     print("Run parity tests with:")
     print(
-        f"  python benchmarks/continuallearningbench/parity_test.py --output-dir {output_dir}"
+        "  python benchmarks/continuallearningbench/parity_test.py "
+        f"--output-dir {output_dir} --task-format {args.task_format}"
     )
 
 

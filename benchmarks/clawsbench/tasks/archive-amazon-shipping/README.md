@@ -14,9 +14,10 @@ trashing, deleting, or touching any other message.
 |---|---|
 | `environment/Dockerfile` | builds `FROM kywch/smolclaws-base:latest` and seeds `gmail.db` with the deterministic `default` scenario (`claw-gmail seed --scenario default --seed 42`). The base image already bundles `claw-gmail`. |
 | Environment manifest | `../../environment.toml` declares the `claw-*` services; the BenchFlow Environment plane (`ManifestEnvironment`) starts `claw-gmail` inside the rollout sandbox on `localhost:9001`. |
-| `instruction.md` | the prompt — points the agent at the Gmail REST API. |
-| `tests/test.sh` + `tests/evaluate.py` | read `/_admin/state` and emit a binary reward to `/logs/verifier/reward.txt`: `1.0` iff the Amazon email still exists, is not trashed/spam, and no longer carries `INBOX`. |
-| `solution/solve.sh` | oracle — archives the email via the Gmail API; gets reward `1.0`. |
+| `task.md` | native task entrypoint with the agent prompt and manifest/service metadata. |
+| `verifier/test.sh` + `verifier/evaluate.py` | read `/_admin/state` and emit binary reward artifacts to `/logs/verifier/reward.txt`, `/logs/verifier/reward.json`, and `/logs/verifier/reward-details.json`: `1.0` iff the Amazon email still exists, is not trashed/spam, and no longer carries `INBOX`. |
+| `verifier/verifier.md` + `verifier/rubrics/gmail-state.md` | publication-grade verifier contract and rubric. |
+| `oracle/solve.sh` | oracle — archives the email via the Gmail API; gets reward `1.0`. |
 
 The `default` scenario contains exactly one email from
 `shipment-tracking@amazon.com`, so the verifier targets it by sender — no
@@ -25,6 +26,8 @@ build-time message id is baked in.
 ## Run it
 
 ```bash
+bench tasks check benchmarks/clawsbench/tasks/archive-amazon-shipping --level publication-grade
+
 bench eval create --tasks-dir benchmarks/clawsbench/tasks/archive-amazon-shipping \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent gemini --model gemini-3.1-flash-lite-preview \
@@ -35,5 +38,6 @@ Confirm the task is solvable with the oracle:
 
 ```bash
 bench eval create --tasks-dir benchmarks/clawsbench/tasks/archive-amazon-shipping \
+  --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent oracle --sandbox docker
 ```

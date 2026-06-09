@@ -41,9 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger("coder-reviewer-demo")
 
 
-# ---------------------------------------------------------------------------
 # Scene definitions
-# ---------------------------------------------------------------------------
 
 
 def baseline_config(task_path: Path, env: str, agent: str, model: str) -> RolloutConfig:
@@ -99,9 +97,7 @@ def coder_reviewer_config(
     )
 
 
-# ---------------------------------------------------------------------------
 # Runner
-# ---------------------------------------------------------------------------
 
 
 async def run_comparison(

@@ -1,0 +1,19 @@
+version = "0.1"
+
+[[criteria]]
+id = "task_paths_entrypoint"
+description = "TaskPaths.has_verifier_entrypoint and TaskPaths.is_valid follow selected verifier/verifier.md strategies rather than requiring verifier/test.sh."
+weight = 0.55
+
+[[criteria]]
+id = "regression_tests"
+description = "Regression tests cover a selected Reward Kit strategy with no test.sh and the missing runner failure mode."
+weight = 0.30
+
+[[criteria]]
+id = "no_test_sh_dogfood"
+description = "The verifier-native-entrypoint dogfood task passes task checks without a verifier/test.sh file."
+weight = 0.15
+
+[scoring]
+method = "weighted_mean"

@@ -145,7 +145,6 @@ VERSIONS: list[tuple[str, list[str]]] = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # venv setup (mirrors labs/benchjack-sandbox-hardening/run_comparison.py)
 
 
@@ -171,7 +170,6 @@ def _create_venv(venv_dir: Path, spec: list[str]) -> None:
     subprocess.check_call([str(venv_dir / "bin" / "pip"), "install", *spec])
 
 
-# ---------------------------------------------------------------------------
 # cell preparation: copy real task → cell dir → overwrite solve.sh
 
 
@@ -227,7 +225,6 @@ def _prepare_cell(cell: Cell) -> None:
             task_toml.write_text(new_text)
 
 
-# ---------------------------------------------------------------------------
 # trial execution
 
 
@@ -284,7 +281,6 @@ def _run_cell_in_venv(
     return payload
 
 
-# ---------------------------------------------------------------------------
 # table rendering
 
 
@@ -318,7 +314,6 @@ def _print_table(results: dict[str, dict[str, dict]]) -> None:
     print()
 
 
-# ---------------------------------------------------------------------------
 # sweep: enumerate every task in each corpus
 
 
@@ -631,7 +626,6 @@ def _print_sweep_rollup(results: dict[str, dict[str, dict]]) -> None:
     print()
 
 
-# ---------------------------------------------------------------------------
 # main
 
 

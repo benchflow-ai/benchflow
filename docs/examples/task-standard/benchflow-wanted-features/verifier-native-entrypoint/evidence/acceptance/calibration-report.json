@@ -1,0 +1,30 @@
+{
+  "task": "benchflow-wanted/verifier-native-entrypoint",
+  "kind": "calibration-report",
+  "cases": [
+    {
+      "name": "legacy-test-only",
+      "type": "no-op",
+      "reward": 0.0,
+      "summary": "Native verifier documents still require a legacy verifier/test.sh entrypoint."
+    },
+    {
+      "name": "missing-runner-accepted",
+      "type": "known-bad",
+      "reward": 0.2,
+      "summary": "A selected Reward Kit strategy is considered valid even when its runner is missing."
+    },
+    {
+      "name": "strategy-valid-without-runtime-checks",
+      "type": "partial",
+      "reward": 0.6,
+      "summary": "Native strategy selection works, but malformed documents and missing files do not fail closed."
+    },
+    {
+      "name": "gold-native-entrypoint",
+      "type": "reference",
+      "reward": 1.0,
+      "summary": "Native selected strategies, Reward Kit runners, and compatibility aliases validate correctly."
+    }
+  ]
+}

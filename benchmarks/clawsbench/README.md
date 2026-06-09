@@ -22,9 +22,13 @@ for the hard-coded `SERVICES` dict in `benchflow/sandbox/services.py`.
 
 ```bash
 bench eval create --tasks-dir benchmarks/clawsbench/tasks/<task> \
-  --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 ```
+
+Native `task.md` ClawsBench packages declare their manifest in
+`benchflow.environment.manifest`, so BenchFlow loads `environment.toml`
+automatically at rollout time. Pass `--environment-manifest` only when running a
+legacy task package or intentionally overriding the task-declared manifest.
 
 ## Not yet implemented
 
