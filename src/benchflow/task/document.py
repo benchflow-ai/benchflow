@@ -271,7 +271,7 @@ def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
         data = {("oracle" if key == "solution" else key): value for key, value in data.items()}
     rendered_frontmatter = yaml.safe_dump(data, sort_keys=False)
     body = _escape_reserved_section_headings(instruction.strip())
-    return f"---\n{rendered_frontmatter}---\n\n## prompt\n\n{body}\n"
+    return f"---\n{rendered_frontmatter}---\n\n{body}\n"
 
 
 def render_task_md_from_legacy(task_dir: str | Path) -> str:
@@ -747,7 +747,7 @@ def _extract_prompt_sections(body: str) -> _PromptSections:
     matches = list(_SECTION_RE.finditer(body))
     if not matches:
         return _PromptSections(
-            instruction=body.strip(),
+            instruction=_unescape_reserved_section_headings(body.strip()),
             role_prompts={},
             scene_prompts={},
             user_persona=None,

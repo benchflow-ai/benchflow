@@ -9,6 +9,16 @@ split `task.toml`) frontmatter. It is the reference target for the
 grounded in `src/benchflow/task/config.py` (the Pydantic models) and
 `src/benchflow/task/verifier.py` / `verifier_document.py` (the verifier).
 
+## Document body
+
+A `task.md` is YAML frontmatter delimited by `---`, immediately followed by the
+agent instruction as the Markdown body. No heading precedes the instruction: the
+text after the closing `---` *is* the prompt. For multi-turn tasks an optional
+`## role:<name>` / `## scene:<name>` / `## user-persona` section may follow the
+instruction; a literal `## prompt` / `## role:` line inside the instruction is
+escaped on write and restored on read, so it round-trips verbatim. A legacy
+`## prompt` heading is still accepted on read for backward compatibility.
+
 ## Root keys
 
 A task's frontmatter is a closed set of root keys, modeled by `TaskConfig` in

@@ -1610,7 +1610,6 @@ scenes:
 ---
 # {name}
 
-## prompt
 
 [REPLACE: describe the goal, constraints, and expected outputs.
 Be specific - list files to produce, commands to run, or behaviours to verify.]
