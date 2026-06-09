@@ -10,7 +10,7 @@ from benchflow.agents.registry import (
     get_sandbox_home_dirs,
 )
 
-# ── Agent config entries ──
+# Agent config entries
 
 
 class TestAgentSubscriptionAuth:
@@ -48,7 +48,7 @@ class TestAgentSubscriptionAuth:
 # into the consolidated tripwire in test_registry_invariants.py.
 
 
-# ── get_sandbox_home_dirs includes subscription auth dirs ──
+# get_sandbox_home_dirs includes subscription auth dirs
 
 
 class TestSandboxHomeDirsSubscription:
@@ -65,7 +65,7 @@ class TestSandboxHomeDirsSubscription:
         assert ".gemini" in dirs
 
 
-# ── _resolve_agent_env subscription fallback ──
+# _resolve_agent_env subscription fallback
 
 
 def _patch_expanduser(monkeypatch, tmp_path):

@@ -41,6 +41,10 @@ VERIFIER_DEP_INSTALL = "verifier_dep_install"
 # performs case-insensitive matching.
 VERIFIER_DEP_INSTALL_MARKERS: tuple[str, ...] = (
     "dependency install failed",
+    "failed to download `",
+    "failed to fetch:",
+    "error sending request for url",
+    "failed to lookup address information",
     "no solution found",
     "could not find a version",
     "resolution impossible",

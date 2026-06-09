@@ -19,9 +19,7 @@ import pytest
 from benchflow.learner_skills import capture_skills, materialize_skills
 from benchflow.learner_store import LearnerState
 
-# ---------------------------------------------------------------------------
 # capture_skills — symlink-skip
-# ---------------------------------------------------------------------------
 
 
 def test_capture_skips_symlinked_pack(tmp_path: Path, caplog) -> None:
@@ -66,9 +64,7 @@ def test_capture_skips_symlinked_skill_md(tmp_path: Path, caplog) -> None:
     assert any("symlink" in r.message.lower() for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # materialize_skills — segment validation
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

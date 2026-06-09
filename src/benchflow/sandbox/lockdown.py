@@ -27,9 +27,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ── Path lockdown defaults and validation ─────────────────────────────────────
+# Path lockdown defaults and validation
 
-_DEFAULT_LOCKED = ["/solution", "/tests"]
+_DEFAULT_LOCKED = ["/oracle", "/solution", "/verifier", "/tests"]
 _SAFE_PATH_RE = re.compile(r"^/[a-zA-Z0-9_./*?\-]+(/[a-zA-Z0-9_./*?\-]+)*$")
 
 
@@ -62,7 +62,7 @@ def _resolve_locked_paths(
     """Resolve effective locked paths.
 
     - sandbox_user=None → [] (no lockdown)
-    - sandbox_user set, paths=None → defaults (/solution, /tests)
+    - sandbox_user set, paths=None → defaults (/oracle, /solution, /verifier, /tests)
     - sandbox_user set, paths=[] → [] (explicit opt-out)
     - sandbox_user set, paths=[...] → union of defaults + caller paths
     """
@@ -77,7 +77,7 @@ def _resolve_locked_paths(
     return list(dict.fromkeys(_DEFAULT_LOCKED + sandbox_locked_paths))
 
 
-# ── Sandbox user + privilege drop ─────────────────────────────────────────────
+# Sandbox user + privilege drop
 
 
 def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
@@ -165,7 +165,7 @@ async def lockdown_paths(env, paths: list[str]) -> None:
     await env.exec(cmd, timeout_sec=30)
 
 
-# ── Build-config snapshot / restore (Tier 2) ─────────────────────────────────
+# Build-config snapshot / restore (Tier 2)
 
 # Files snapshotted before agent runs and restored before verification.
 # Covers common build backends to prevent setup.py / pyproject.toml hijacks.
@@ -294,7 +294,7 @@ async def _refresh_verifier_workspace(env, workspace: str) -> None:
         await env.exec(cmd, user="root")
 
 
-# ── Verifier hardening ────────────────────────────────────────────────────────
+# Verifier hardening
 
 # Trusted env vars for verifier execution — override any agent pollution.
 # Intentionally omitted (negative guard in test_verify.py explains why):
@@ -312,7 +312,7 @@ VERIFIER_ENV: dict[str, str] = {
     # Block pytest11 entry-point plugins. An agent can modify a pre-installed
     # package's plugin source to forge a reward; -c /dev/null does not block
     # entry-point registration. Tasks that need specific plugins declare them
-    # in task.toml [verifier] pytest_plugins = [...].
+    # in task config [verifier] pytest_plugins = [...].
     "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
     # Redirect .pyc cache reads/writes to a non-existent directory so
@@ -349,9 +349,15 @@ _SAFE_VERIFIER_PATH_PARTS = tuple(_SAFE_VERIFIER_PATH.split(":"))
 _RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
 
 _DEFAULT_ROOTDIR = "/app"
+_LEGACY_VERIFIER_CONFCUTDIR = "/tests"
 
 
-def _build_pytest_addopts(workspace: str | None = None, plugin_flags: str = "") -> str:
+def _build_pytest_addopts(
+    workspace: str | None = None,
+    plugin_flags: str = "",
+    *,
+    verifier_confcutdir: str = _LEGACY_VERIFIER_CONFCUTDIR,
+) -> str:
     """Build PYTEST_ADDOPTS with a dynamic --rootdir based on the workspace.
 
     Without an explicit --rootdir, -c /dev/null causes pytest to fall back to
@@ -359,10 +365,27 @@ def _build_pytest_addopts(workspace: str | None = None, plugin_flags: str = "") 
     The rootdir must point to a directory that actually exists in the container.
     """
     rootdir = workspace or _DEFAULT_ROOTDIR
-    addopts = f"{VERIFIER_ENV['PYTEST_ADDOPTS']} --rootdir={shlex.quote(rootdir)}"
+    base_addopts = VERIFIER_ENV["PYTEST_ADDOPTS"].replace(
+        f"--confcutdir={_LEGACY_VERIFIER_CONFCUTDIR}",
+        f"--confcutdir={shlex.quote(verifier_confcutdir)}",
+    )
+    addopts = f"{base_addopts} --rootdir={shlex.quote(rootdir)}"
     if plugin_flags:
         addopts += f" {plugin_flags}"
     return addopts
+
+
+def _uses_native_verifier_dir(task: "Task") -> bool:
+    paths = getattr(task, "paths", None)
+    return getattr(paths, "uses_native_verifier_dir", False) is True
+
+
+def _verifier_confcutdir(task: "Task") -> str:
+    from benchflow.task.paths import SandboxPaths
+
+    if _uses_native_verifier_dir(task):
+        return str(SandboxPaths.verifier_code_dir)
+    return str(SandboxPaths.tests_dir)
 
 
 # Container-side script to enumerate pre-installed pytest11 entry points.
@@ -490,7 +513,7 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
 
     Runs a container-side script that enumerates pytest11 entry points and
     filters to only those whose dist-info is in a root-owned directory.
-    Falls back to task.toml pytest_plugins declarations if discovery fails.
+    Falls back to task verifier pytest_plugins declarations if discovery fails.
     Replaces the previous hand-curated whitelist mechanism.
     """
     plugins: list[str] = []
@@ -509,16 +532,27 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
         )
         if result.stderr:
             logger.debug(f"Plugin discovery stderr: {result.stderr.strip()}")
-        discovered = _json.loads(result.stdout or "[]")
-        if isinstance(discovered, list):
-            for p in discovered:
-                if isinstance(p, str):
-                    add_plugin(p)
-        logger.info(f"Discovered {len(plugins)} pytest plugins from container")
+        if _exec_return_code(result) != 0:
+            logger.debug(
+                "Pytest plugin discovery unavailable; using task verifier "
+                "plugin declarations.%s",
+                _exec_failure_detail(result),
+            )
+        else:
+            discovered = _json.loads(result.stdout or "[]")
+            if isinstance(discovered, list):
+                for p in discovered:
+                    if isinstance(p, str):
+                        add_plugin(p)
+            logger.info(f"Discovered {len(plugins)} pytest plugins from container")
     except Exception as e:
-        logger.warning(f"Pytest plugin discovery failed, using task.toml fallback: {e}")
+        logger.debug(
+            "Pytest plugin discovery failed; using task verifier plugin "
+            "declarations: %s",
+            e,
+        )
 
-    # Merge task.toml [verifier] pytest_plugins declarations as fallback.
+    # Merge task [verifier] pytest_plugins declarations as fallback.
     # pytest_plugins is a guaranteed list[str] field on VerifierConfig.
     for name in task.config.verifier.pytest_plugins:
         add_plugin(name)
@@ -538,7 +572,8 @@ def _infer_pytest_plugins_from_test_script(task: "Task") -> list[str]:
     task_dir = getattr(task, "task_dir", None)
     if not task_dir:
         return []
-    test_sh = Path(task_dir) / "tests" / "test.sh"
+    verifier_dir = "verifier" if _uses_native_verifier_dir(task) else "tests"
+    test_sh = Path(task_dir) / verifier_dir / "test.sh"
     try:
         text = test_sh.read_text()
     except OSError:
@@ -601,14 +636,23 @@ async def _trusted_verifier_path(
         raw_path, _blocked_verifier_path_prefixes(sandbox_user, workspace)
     )
     result = await env.exec(cmd, user="root", timeout_sec=10)
-    try:
-        extras = _json.loads(result.stdout or "[]")
-    except _json.JSONDecodeError:
-        logger.warning("Could not parse trusted verifier PATH extras; using safe PATH")
+    if _exec_return_code(result) != 0:
+        logger.debug(
+            "Trusted verifier PATH extras unavailable; using safe PATH.%s",
+            _exec_failure_detail(result),
+        )
         extras = []
-    if not isinstance(extras, list):
-        logger.warning("Invalid trusted verifier PATH extras; using safe PATH")
-        extras = []
+    else:
+        try:
+            extras = _json.loads(result.stdout or "[]")
+        except _json.JSONDecodeError:
+            logger.warning(
+                "Could not parse trusted verifier PATH extras; using safe PATH"
+            )
+            extras = []
+        if not isinstance(extras, list):
+            logger.warning("Invalid trusted verifier PATH extras; using safe PATH")
+            extras = []
     return _merge_trusted_verifier_path([e for e in extras if isinstance(e, str)])
 
 
@@ -729,7 +773,7 @@ async def cleanup_verifier_python_hooks(
     return await _checked_exec(env, _build_cleanup_cmd(hardening), label, **kwargs)
 
 
-# Per-task hardening opt-outs. Tasks declare these in task.toml under
+# Per-task hardening opt-outs. Tasks declare these in task config under
 # [verifier.hardening] when their legitimate test setup conflicts with the
 # default cleanup (e.g. qutebrowser ships a real conftest.py that the cleanup
 # would otherwise delete, breaking pytest collection).
@@ -744,28 +788,39 @@ HARDENING_DEFAULTS: dict[str, bool] = {
 
 
 def _read_hardening_config(task_dir: "Path | str | None") -> dict[str, bool]:
-    """Read [verifier.hardening] section from task.toml. Returns merged defaults."""
+    """Read [verifier.hardening] from task.toml or task.md frontmatter."""
     import tomllib
     from pathlib import Path as _Path
 
     result = dict(HARDENING_DEFAULTS)
     if task_dir is None:
         return result
-    toml_path = _Path(task_dir) / "task.toml"
-    if not toml_path.exists():
-        return result
-    try:
-        with open(toml_path, "rb") as f:
-            data = tomllib.load(f)
-    except Exception as e:
-        logger.warning(f"task.toml parse error in {task_dir}: {e}")
+    root = _Path(task_dir)
+    toml_path = root / "task.toml"
+    document_path = root / "task.md"
+    if document_path.exists():
+        try:
+            from benchflow.task.document import TaskDocument
+
+            data = TaskDocument.from_path(document_path).frontmatter
+        except Exception as e:
+            logger.warning(f"task.md parse error in {task_dir}: {e}")
+            return result
+    elif toml_path.exists():
+        try:
+            with open(toml_path, "rb") as f:
+                data = tomllib.load(f)
+        except Exception as e:
+            logger.warning(f"task.toml parse error in {task_dir}: {e}")
+            return result
+    else:
         return result
     overrides = data.get("verifier", {}).get("hardening", {})
     for k, v in overrides.items():
         if k in result and isinstance(v, bool):
             result[k] = v
         else:
-            logger.warning(f"task.toml [verifier.hardening] unknown/invalid: {k}={v!r}")
+            logger.warning(f"task [verifier.hardening] unknown/invalid: {k}={v!r}")
     return result
 
 
@@ -785,7 +840,9 @@ def _build_cleanup_cmd(hardening: dict[str, bool] | None = None) -> str:
     parts: list[str] = []
     if h.get("cleanup_conftests", True):
         parts.append(
-            "find / -name conftest.py -not -path '/tests/*' -delete 2>/dev/null"
+            "find / -name conftest.py "
+            "-not -path '/verifier/*' -not -path '/tests/*' "
+            "-delete 2>/dev/null"
         )
     parts.append("find /tmp /var/tmp -name '*.py' -delete 2>/dev/null")
     parts.append(
@@ -817,7 +874,7 @@ async def harden_before_verify(
     workspace: str | None = None,
     # Default false because SkillsBench/TB2-style answers often are workspace
     # edits. Going forward, enforce true only via an explicit task/benchmark
-    # contract, e.g. task.toml [verifier] restore_workspace = true after an
+    # contract, e.g. task config [verifier] restore_workspace = true after an
     # oracle/diff audit proves the answer is not stored in the workspace.
     restore_workspace: bool = False,
 ) -> None:
@@ -982,7 +1039,11 @@ async def harden_before_verify(
     verifier_env["DJANGO_SETTINGS_MODULE"] = ""
     verifier_env["CELERY_CONFIG_MODULE"] = ""
     # Auto-discover pytest plugins from root-owned system packages and
-    # task.toml declarations. Appends -p flags to the hardened base.
+    # task config declarations. Appends -p flags to the hardened base.
     flags = await _discover_pytest_plugin_flags(env, task)
-    verifier_env["PYTEST_ADDOPTS"] = _build_pytest_addopts(workspace, flags)
+    verifier_env["PYTEST_ADDOPTS"] = _build_pytest_addopts(
+        workspace,
+        flags,
+        verifier_confcutdir=_verifier_confcutdir(task),
+    )
     task.config.verifier.env = verifier_env

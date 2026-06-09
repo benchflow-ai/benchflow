@@ -6,7 +6,7 @@ datasets and convert them into runnable BenchFlow tasks.
 Submodules:
 
 * ``parsers`` — read Claude Code JSONL and opentraces formats
-* ``task_gen`` — convert parsed traces into task.toml + instruction.md
+* ``task_gen`` — convert parsed traces into native task.md packages
 * ``huggingface`` — download trace datasets from HuggingFace Hub
 """
 

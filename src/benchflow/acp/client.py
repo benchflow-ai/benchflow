@@ -252,7 +252,7 @@ class ACPClient:
             }
             await self._transport.send(response)
 
-    # --- Public API ---
+    # Public API
 
     async def connect(self) -> None:
         """Start the transport."""

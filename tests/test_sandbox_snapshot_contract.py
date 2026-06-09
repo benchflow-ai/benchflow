@@ -26,7 +26,7 @@ from benchflow.sandbox.protocol import (
     SandboxSnapshotNotSupported,
 )
 
-# ── 1. Protocol surface ──────────────────────────────────────────────────
+# 1. Protocol surface
 
 
 class TestSandboxProtocolHasSnapshot:
@@ -55,7 +55,7 @@ class TestSandboxProtocolHasSnapshot:
             img.ref = "y"  # type: ignore[misc]
 
 
-# ── 2. Capability declarations on concrete backends ──────────────────────
+# 2. Capability declarations on concrete backends
 
 
 class TestDockerSnapshotCapability:
@@ -130,7 +130,7 @@ class TestModalSnapshotCapability:
         assert result is False
 
 
-# ── 3. Default fails closed with SandboxSnapshotNotSupported ─────────────
+# 3. Default fails closed with SandboxSnapshotNotSupported
 
 
 class _UnsupportedSandbox:
@@ -166,7 +166,7 @@ async def test_base_sandbox_default_restore_raises_unsupported():
         await BaseSandbox.restore(_Dummy(), img)  # type: ignore[arg-type]
 
 
-# ── 4. Branch fails closed on unsupported providers ──────────────────────
+# 4. Branch fails closed on unsupported providers
 
 
 class _FakeRolloutEnv:
@@ -233,7 +233,7 @@ async def test_branch_does_not_require_sandbox_snapshot_by_default():
     assert value == pytest.approx(0.5)
 
 
-# ── 5. Workspace helper is scope-renamed, alias preserved ─────────────────
+# 5. Workspace helper is scope-renamed, alias preserved
 
 
 class TestWorkspaceHelperScoped:

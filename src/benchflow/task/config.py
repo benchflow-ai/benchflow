@@ -12,21 +12,103 @@ from __future__ import annotations
 import re
 import tomllib
 import warnings
+from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 ORG_NAME_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+_NETWORK_HOST_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_ENV_VAR_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
-class Author(BaseModel):
+class TaskConfigModel(BaseModel):
+    """Base model for task schema sections.
+
+    Harbor-compatible config keys should be modeled explicitly. Unknown keys
+    are rejected so ``task.md`` and ``task.toml`` do not silently become a
+    lossy subset of the upstream task schema.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class NetworkMode(StrEnum):
+    """Network access policy for task execution."""
+
+    NO_NETWORK = "no-network"
+    PUBLIC = "public"
+    ALLOWLIST = "allowlist"
+
+
+class TaskOS(StrEnum):
+    """Target operating system for a task container."""
+
+    LINUX = "linux"
+    WINDOWS = "windows"
+
+
+class VerifierEnvironmentMode(StrEnum):
+    """Whether the verifier runs in the agent environment or a separate one."""
+
+    SHARED = "shared"
+    SEPARATE = "separate"
+
+
+class MultiStepRewardStrategy(StrEnum):
+    """Strategy for deriving one rollout reward from step-level rewards."""
+
+    MEAN = "mean"
+    FINAL = "final"
+
+
+def _validate_allowed_hosts(hosts: list[str] | None) -> list[str] | None:
+    if hosts is None:
+        return None
+    normalized: list[str] = []
+    for raw_host in hosts:
+        host = raw_host.strip().lower().rstrip(".")
+        if not host:
+            raise ValueError("allowed_hosts entries must be non-empty hostnames")
+        if "://" in host or "/" in host or ":" in host:
+            raise ValueError(
+                "allowed_hosts entries must be hostnames, not URLs, ports, or paths"
+            )
+        labels = host.split(".")
+        if not all(_NETWORK_HOST_LABEL_PATTERN.match(label) for label in labels):
+            raise ValueError(
+                "allowed_hosts entries must be valid hostnames containing only "
+                "letters, digits, hyphens, and dots"
+            )
+        normalized.append(host)
+    return normalized
+
+
+def _validate_network_policy_fields(
+    network_mode: NetworkMode | None,
+    allowed_hosts: list[str] | None,
+) -> None:
+    if network_mode == NetworkMode.ALLOWLIST and not allowed_hosts:
+        raise ValueError("allowed_hosts must be non-empty for network_mode='allowlist'")
+    if network_mode != NetworkMode.ALLOWLIST and allowed_hosts:
+        raise ValueError("allowed_hosts is only valid for network_mode='allowlist'")
+
+
+class Author(TaskConfigModel):
     """Author information for a task package."""
 
     name: str = Field(..., description="Author name")
     email: str | None = Field(default=None, description="Author email address")
 
 
-class PackageInfo(BaseModel):
+class PackageInfo(TaskConfigModel):
     """Package metadata from the [task] section of task.toml."""
 
     name: str = Field(
@@ -65,14 +147,22 @@ class PackageInfo(BaseModel):
         return self.name.split("/")[1]
 
 
-class MCPServerConfig(BaseModel):
+MCPTransport = Literal["stdio", "sse", "streamable-http"]
+
+
+class MCPServerConfig(TaskConfigModel):
     """Configuration for an MCP server available to the agent."""
 
     name: str
-    transport: str = "sse"
+    transport: MCPTransport = "sse"
     url: str | None = None
     command: str | None = None
     args: list[str] = Field(default_factory=list)
+
+    @field_validator("transport", mode="before")
+    @classmethod
+    def normalize_transport(cls, value: Any) -> Any:
+        return "streamable-http" if value == "http" else value
 
     @model_validator(mode="after")
     def validate_transport_fields(self) -> MCPServerConfig:
@@ -83,7 +173,7 @@ class MCPServerConfig(BaseModel):
         return self
 
 
-class JudgeVerifierConfig(BaseModel):
+class JudgeVerifierConfig(TaskConfigModel):
     """The ``[verifier.judge]`` section — config for the LLM-as-judge verifier.
 
     Used only when ``[verifier].type == "llm-judge"``.
@@ -118,7 +208,7 @@ class JudgeVerifierConfig(BaseModel):
     )
 
 
-class MemoryVerifierConfig(BaseModel):
+class MemoryVerifierConfig(TaskConfigModel):
     """The ``[verifier.memory]`` section — hidden Memory-space fixtures."""
 
     expected_skills: list[str] | None = Field(
@@ -130,7 +220,13 @@ class MemoryVerifierConfig(BaseModel):
     )
 
 
-class VerifierConfig(BaseModel):
+class VerifierHardeningConfig(TaskConfigModel):
+    """The ``[verifier.hardening]`` section for per-task opt-outs."""
+
+    cleanup_conftests: bool = True
+
+
+class VerifierConfig(TaskConfigModel):
     """Verifier ($V$) configuration — maps completion → reward.
 
     ``type`` selects the verification method:
@@ -150,6 +246,25 @@ class VerifierConfig(BaseModel):
     user: str | int | None = Field(
         default=None,
         description="Username or UID to run the verifier as.",
+    )
+    network_mode: NetworkMode | None = Field(
+        default=None,
+        description="Optional verifier-specific network policy override.",
+    )
+    allowed_hosts: list[str] | None = Field(
+        default=None,
+        description="Hostnames reachable when network_mode='allowlist'.",
+    )
+    environment_mode: VerifierEnvironmentMode | None = Field(
+        default=None,
+        description=(
+            "Whether the verifier runs in the agent environment ('shared') "
+            "or a dedicated verifier environment ('separate')."
+        ),
+    )
+    environment: SandboxConfig | None = Field(
+        default=None,
+        description="Optional separate verifier environment configuration.",
     )
     service: str = Field(
         default="main",
@@ -172,6 +287,10 @@ class VerifierConfig(BaseModel):
         default_factory=MemoryVerifierConfig,
         description="Memory-space scoring fixtures.",
     )
+    hardening: VerifierHardeningConfig = Field(
+        default_factory=VerifierHardeningConfig,
+        description="Per-task verifier hardening opt-outs.",
+    )
     pytest_plugins: list[str] = Field(
         default_factory=list,
         description=(
@@ -182,8 +301,26 @@ class VerifierConfig(BaseModel):
         ),
     )
 
+    @field_validator("allowed_hosts")
+    @classmethod
+    def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
+        return _validate_allowed_hosts(hosts)
 
-class AgentConfig(BaseModel):
+    @model_validator(mode="after")
+    def validate_verifier_environment(self) -> VerifierConfig:
+        _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
+        if (
+            self.environment_mode == VerifierEnvironmentMode.SHARED
+            and self.environment is not None
+        ):
+            raise ValueError(
+                "[verifier].environment_mode='shared' is incompatible with "
+                "[verifier.environment]"
+            )
+        return self
+
+
+class AgentConfig(TaskConfigModel):
     """Agent harness ($H$) configuration."""
 
     timeout_sec: float | None = None
@@ -191,16 +328,85 @@ class AgentConfig(BaseModel):
         default=None,
         description="Username or UID to run the agent as.",
     )
+    network_mode: NetworkMode | None = Field(
+        default=None,
+        description="Optional agent-specific network policy override.",
+    )
+    allowed_hosts: list[str] | None = Field(
+        default=None,
+        description="Hostnames reachable when network_mode='allowlist'.",
+    )
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
+        return _validate_allowed_hosts(hosts)
+
+    @model_validator(mode="after")
+    def validate_network_policy(self) -> AgentConfig:
+        _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
+        return self
 
 
-class SandboxConfig(BaseModel):
+class HealthcheckConfig(TaskConfigModel):
+    """Healthcheck configuration mirroring Docker HEALTHCHECK options."""
+
+    command: str
+    interval_sec: float = 5.0
+    timeout_sec: float = 30.0
+    start_period_sec: float = 0.0
+    start_interval_sec: float = 5.0
+    retries: int = 3
+
+
+class TpuSpec(TaskConfigModel):
+    """Specification for a TPU slice attached to an environment."""
+
+    type: str = Field(min_length=1)
+    topology: str
+
+    @field_validator("topology")
+    @classmethod
+    def validate_topology(cls, value: str) -> str:
+        topology = value.strip()
+        if not re.match(r"^[1-9]\d*(x[1-9]\d*)+$", topology):
+            raise ValueError(
+                f"Invalid TPU topology {value!r}; expected e.g. '2x4' or '2x2x1'"
+            )
+        return topology
+
+    @property
+    def chip_count(self) -> int:
+        product = 1
+        for axis in self.topology.split("x"):
+            product *= int(axis)
+        return product
+
+
+class SandboxConfig(TaskConfigModel):
     """Sandbox configuration — the isolated execution environment.
 
     Replaces Harbor's EnvironmentConfig with RL-aligned naming.
     """
 
+    network_mode: NetworkMode = Field(
+        default=NetworkMode.PUBLIC,
+        description="Network access policy for this environment.",
+    )
+    allowed_hosts: list[str] | None = Field(
+        default=None,
+        description="Hostnames reachable when network_mode='allowlist'.",
+    )
     build_timeout_sec: float = 600.0
-    docker_image: str | None = None
+    docker_image: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("docker_image", "image"),
+        description="Prebuilt image name; legacy SkillsBench tasks may use image.",
+    )
+    os: TaskOS = Field(
+        default=TaskOS.LINUX,
+        description="Target operating system for the task container.",
+    )
     cpus: int = 1
     memory_mb: int = 2048
     storage_mb: int = 10240
@@ -209,22 +415,38 @@ class SandboxConfig(BaseModel):
         default=None,
         description="List of acceptable GPU types (e.g., ['H100', 'A100', 'T4']).",
     )
-    allow_internet: bool = Field(
-        default=True,
-        description="Whether to allow internet access in the sandbox.",
-    )
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     env: dict[str, str] = Field(
         default_factory=dict,
         description="Environment variables resolved from host at runtime. "
         "Supports ${VAR} and ${VAR:-default} template syntax.",
     )
+    tpu: TpuSpec | None = Field(
+        default=None,
+        description="Optional TPU accelerator request.",
+    )
     skills_dir: str | None = Field(
         default=None,
         description="Path to skills directory in the sandbox.",
     )
+    healthcheck: HealthcheckConfig | None = Field(
+        default=None,
+        description="Healthcheck to run after environment start.",
+    )
+    workdir: str | None = Field(
+        default=None,
+        description="Default working directory for command execution.",
+    )
+    bugswarm_image_tag: str | None = Field(
+        default=None,
+        description="BugSwarm image tag used by build-repair benchmark tasks.",
+    )
 
     # Deprecated fields
+    allow_internet: bool = Field(
+        default=True,
+        description="Deprecated compatibility field; use network_mode instead.",
+    )
     memory: str | None = Field(
         default=None,
         deprecated="Use 'memory_mb' instead.",
@@ -250,32 +472,105 @@ class SandboxConfig(BaseModel):
                 f"Invalid size format: {size_str}. Expected format like '1G', '512M', etc."
             )
 
+    @field_validator("allowed_hosts")
+    @classmethod
+    def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
+        return _validate_allowed_hosts(hosts)
+
+    @field_validator("os", mode="before")
+    @classmethod
+    def normalize_os(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.lower()
+        return value
+
     @model_validator(mode="after")
-    def handle_deprecated_fields(self) -> SandboxConfig:
-        if self.memory is not None:
+    def handle_deprecated_fields_and_network_policy(self) -> SandboxConfig:
+        _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
+        memory = self.__dict__.get("memory")
+        storage = self.__dict__.get("storage")
+        if memory is not None:
             warnings.warn(
                 "The 'memory' field is deprecated. Use 'memory_mb' instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            self.memory_mb = self._parse_size_to_mb(self.memory)
+            self.memory_mb = self._parse_size_to_mb(memory)
             self.memory = None
-        if self.storage is not None:
+        if storage is not None:
             warnings.warn(
                 "The 'storage' field is deprecated. Use 'storage_mb' instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            self.storage_mb = self._parse_size_to_mb(self.storage)
+            self.storage_mb = self._parse_size_to_mb(storage)
             self.storage = None
+        if self.allow_internet is False:
+            self.network_mode = NetworkMode.NO_NETWORK
+        if self.network_mode == NetworkMode.NO_NETWORK:
+            self.allow_internet = False
         return self
 
 
-class SolutionConfig(BaseModel):
+class SolutionConfig(TaskConfigModel):
     env: dict[str, str] = Field(default_factory=dict)
+    timeout_sec: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_inline_env(cls, data: Any) -> Any:
+        """Accept legacy ``[solution] FOO = "..."`` env shorthands.
+
+        Some SkillsBench task.toml files predate the stricter ``[solution.env]``
+        shape and place provider tokens directly under ``[solution]``. Treat
+        env-var-shaped string keys as env entries while keeping arbitrary
+        unknown solution keys forbidden.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        env_raw = data.get("env")
+        if env_raw is not None and not isinstance(env_raw, dict):
+            return data
+
+        known_keys = {"env", "timeout_sec"}
+        env = dict(env_raw or {})
+        normalized: dict[str, Any] = {}
+        for key, value in data.items():
+            if key in known_keys:
+                normalized[key] = value
+            elif isinstance(value, str) and _ENV_VAR_NAME_PATTERN.match(key):
+                existing = env.get(key)
+                if existing is not None and existing != value:
+                    raise ValueError(f"Conflicting values for solution env var {key!r}")
+                env[key] = value
+            else:
+                normalized[key] = value
+
+        normalized["env"] = env
+        return normalized
 
 
-class TaskConfig(BaseModel):
+class ArtifactConfig(TaskConfigModel):
+    """Artifact path copied out of a task environment after verification."""
+
+    source: str
+    destination: str | None = None
+    exclude: list[str] = Field(default_factory=list)
+
+
+class StepConfig(TaskConfigModel):
+    """Harbor-style multi-step task configuration."""
+
+    name: str
+    agent: AgentConfig = Field(default_factory=AgentConfig)
+    verifier: VerifierConfig = Field(default_factory=VerifierConfig)
+    min_reward: float | dict[str, float] | None = Field(default=None)
+    healthcheck: HealthcheckConfig | None = None
+    artifacts: list[str | ArtifactConfig] = Field(default_factory=list)
+
+
+class TaskConfig(TaskConfigModel):
     """Full task.toml configuration — the task specification ($T$).
 
     Maps task.toml sections to BenchFlow's RL-aligned models.
@@ -283,7 +578,7 @@ class TaskConfig(BaseModel):
     for internal use, maintaining file-level backward compatibility.
     """
 
-    schema_version: str = "1.1"
+    schema_version: str = "1.3"
     task: PackageInfo | None = Field(
         default=None,
         description="Package information from the [task] section.",
@@ -296,16 +591,37 @@ class TaskConfig(BaseModel):
         default_factory=SandboxConfig,
         alias="environment",
     )
-    solution: SolutionConfig = Field(default_factory=SolutionConfig)
+    solution: SolutionConfig = Field(
+        default_factory=SolutionConfig,
+        serialization_alias="oracle",
+        validation_alias=AliasChoices("oracle", "solution"),
+    )
     source: str | None = None
+    reward: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Legacy task-level reward expression metadata.",
+    )
+    multi_step_reward_strategy: MultiStepRewardStrategy | None = Field(
+        default=None,
+        description="How to derive one rollout reward from per-step verifier results.",
+    )
+    steps: list[StepConfig] | None = None
+    artifacts: list[str | ArtifactConfig] = Field(default_factory=list)
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @model_validator(mode="before")
     @classmethod
     def handle_version_rename(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "version" in data:
-            data.setdefault("schema_version", data.pop("version"))
+        if isinstance(data, dict):
+            if "oracle" in data and "solution" in data:
+                raise ValueError(
+                    "Task config cannot contain both 'oracle' and legacy "
+                    "'solution'; use 'oracle' for native tasks or 'solution' "
+                    "only when importing legacy Harbor/Pier tasks."
+                )
+            if "version" in data:
+                data.setdefault("schema_version", data.pop("version"))
         return data
 
     @classmethod

@@ -564,7 +564,7 @@ class DockerSandbox(BaseSandbox):
             check=True,
         )
 
-    # ── Container snapshot/restore (Branch substrate) ────────────────────
+    # Container snapshot/restore (Branch substrate)
     #
     # ``docker commit`` captures the ``main`` container's filesystem into a
     # local image; restore re-creates ``main`` from that image. Snapshots

@@ -1,0 +1,1035 @@
+"""Unified ``task.md`` authoring document support.
+
+The runtime still consumes the stable ``TaskConfig`` and instruction string.
+This module owns the document-shaped authoring layer so ``task/config.py`` does
+not become the home for prompt, role, scene, and simulated-user syntax.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import tomllib
+from copy import deepcopy
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
+from typing import Any, cast
+
+import yaml
+
+from benchflow._types import Role, Scene, Turn
+from benchflow.task.config import TaskConfig
+from benchflow.task.imports import import_task_config_toml
+
+TASK_DOCUMENT_FILENAME = "task.md"
+
+_DOCUMENT_ONLY_FRONTMATTER_KEYS = {"agents", "benchflow", "scenes", "user"}
+_AUTHORING_ONLY_FRONTMATTER_KEYS = {
+    "image",
+    "name",
+    "profile",
+    "profiles",
+}
+_PROFILE_KEYS = ("profile", "profiles")
+_SECTION_RE = re.compile(
+    r"^##\s+(prompt|role:[A-Za-z0-9_.-]+|scene:[A-Za-z0-9_.-]+|user-persona)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+_TASK_AUTHORING_PROFILES: dict[str, dict[str, Any]] = {
+    "code-change": {
+        "schema_version": "1.3",
+        "metadata": {
+            "category": "code-change",
+        },
+        "agent": {
+            "timeout_sec": 7200,
+            "network_mode": "no-network",
+        },
+        "verifier": {
+            "timeout_sec": 1200,
+            "user": "root",
+        },
+        "environment": {
+            "docker_image": "ubuntu:24.04",
+            "network_mode": "no-network",
+            "cpus": 4,
+            "memory_mb": 8192,
+            "storage_mb": 10240,
+            "workdir": "/repo",
+        },
+        "benchflow": {
+            "document_version": "0.3",
+            "prompt": {
+                "composition": "append",
+                "order": ["base", "role", "scene", "turn"],
+            },
+        },
+    },
+    "harbor-compatible": {
+        "schema_version": "1.3",
+        "metadata": {
+            "category": "harbor-compatible",
+        },
+        "environment": {
+            "cpus": 1,
+            "memory_mb": 2048,
+        },
+        "benchflow": {
+            "compatibility": {
+                "harbor": {
+                    "export": "supported",
+                },
+            },
+        },
+    },
+    "reward-kit": {
+        "benchflow": {
+            "verifier": {
+                "spec": "verifier/verifier.md",
+                "rubric": "verifier/rubrics/verifier.md",
+                "entrypoint": "verifier/reward_kit/reward.py",
+                "implementation": {
+                    "type": "reward-kit",
+                },
+            },
+        },
+    },
+    "acceptance-live": {
+        "benchflow": {
+            "evidence": {
+                "acceptance_live": {
+                    "workspace": {
+                        "source": "current-worktree",
+                        "target": "/repo",
+                    },
+                    "calibration": {
+                        "from": "calibration.report",
+                        "reruns": 1,
+                        "flake_rate_max": 0.0,
+                    },
+                    "cases": [
+                        {
+                            "name": "live-oracle-rerun",
+                            "type": "oracle",
+                            "reruns": 1,
+                            "expect": {
+                                "reward_min": 0.99,
+                                "flake_rate_max": 0.0,
+                            },
+                        },
+                        {
+                            "name": "live-reference-verifier",
+                            "type": "reference",
+                            "reruns": 1,
+                            "expect": {
+                                "reward_min": 0.99,
+                                "flake_rate_max": 0.0,
+                            },
+                        },
+                    ],
+                },
+            },
+        },
+    },
+    "multi-agent": {
+        "agents": {
+            "roles": {
+                "architect": {
+                    "agent": "codex-acp",
+                    "model": "gpt-5.5",
+                    "reasoning_effort": "xhigh",
+                    "capabilities": ["code-edit", "tests"],
+                },
+                "implementer": {
+                    "agent": "codex-acp",
+                    "model": "gpt-5.5",
+                    "reasoning_effort": "xhigh",
+                    "capabilities": ["code-edit", "tests"],
+                },
+                "reviewer": {
+                    "agent": "claude-agent-acp",
+                    "model": "claude-sonnet-4-6",
+                    "capabilities": ["review"],
+                },
+            },
+        },
+        "scenes": [
+            {"name": "design", "turns": [{"role": "architect"}]},
+            {"name": "implement", "turns": [{"role": "implementer"}]},
+            {"name": "review", "turns": [{"role": "reviewer"}]},
+        ],
+    },
+    "leaderboard-local": {
+        "benchflow": {
+            "evidence": {
+                "acceptance_live": {
+                    "leaderboard": {
+                        "required": True,
+                        "max_flake_rate": 0.0,
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+class TaskDocumentParseError(ValueError):
+    """Raised when a ``task.md`` document cannot be parsed."""
+
+
+@dataclass(frozen=True)
+class TaskDocument:
+    """Parsed ``task.md`` document.
+
+    Frontmatter carries the existing task configuration plus document-only
+    blocks for roles, scenes, and simulated users. The markdown body carries
+    prompts. ``instruction`` is the prompt text that should be exposed through
+    the existing ``/instruction.md`` runtime contract.
+    """
+
+    frontmatter: dict[str, Any]
+    body: str
+    instruction: str
+    config: TaskConfig
+    roles: dict[str, Role]
+    scenes: list[Scene]
+    role_prompts: dict[str, str]
+    scene_prompts: dict[str, str]
+    user: dict[str, Any]
+    user_persona: str | None
+    benchflow: dict[str, Any]
+    path: Path | None = None
+
+    @classmethod
+    def from_path(cls, path: str | Path) -> TaskDocument:
+        doc_path = Path(path)
+        return cls.from_text(doc_path.read_text(), path=doc_path)
+
+    @classmethod
+    def from_text(cls, text: str, *, path: str | Path | None = None) -> TaskDocument:
+        frontmatter, body = _split_frontmatter(text)
+        doc_path = Path(path) if path is not None else None
+        frontmatter = normalize_task_document_frontmatter(
+            frontmatter,
+            task_dir=doc_path.parent if doc_path is not None else None,
+        )
+        prompt_sections = _extract_prompt_sections(body)
+        config = _config_from_frontmatter(frontmatter)
+        roles = _parse_roles(frontmatter)
+        scenes = _parse_scenes(
+            frontmatter,
+            roles=roles,
+            instruction=prompt_sections.instruction,
+            role_prompts=prompt_sections.role_prompts,
+            scene_prompts=prompt_sections.scene_prompts,
+        )
+        user = _mapping(frontmatter.get("user"), "user", default={})
+        benchflow = _mapping(frontmatter.get("benchflow"), "benchflow", default={})
+        return cls(
+            frontmatter=frontmatter,
+            body=body,
+            instruction=prompt_sections.instruction,
+            config=config,
+            roles=roles,
+            scenes=scenes,
+            role_prompts=prompt_sections.role_prompts,
+            scene_prompts=prompt_sections.scene_prompts,
+            user=user,
+            user_persona=prompt_sections.user_persona,
+            benchflow=benchflow,
+            path=doc_path,
+        )
+
+
+@dataclass(frozen=True)
+class _PromptSections:
+    instruction: str
+    role_prompts: dict[str, str]
+    scene_prompts: dict[str, str]
+    user_persona: str | None
+
+
+def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
+    """Render canonical ``task.md`` text from frontmatter plus a prompt body.
+
+    ``frontmatter`` may be a parsed config mapping or raw ``task.toml`` text.
+    A legacy ``solution`` block is emitted as the native ``oracle`` block when no
+    ``oracle`` block is present; declaring both is rejected. Reserved section
+    headings embedded in ``instruction`` are escaped so they round-trip as prompt
+    text instead of fracturing the document into extra sections.
+    """
+
+    data = (
+        tomllib.loads(frontmatter)
+        if isinstance(frontmatter, str)
+        else deepcopy(frontmatter)
+    )
+    if "solution" in data:
+        if "oracle" in data:
+            raise ValueError(
+                "task config declares both 'oracle' and 'solution'; keep only 'oracle'"
+            )
+        data = {
+            ("oracle" if key == "solution" else key): value
+            for key, value in data.items()
+        }
+    rendered_frontmatter = yaml.safe_dump(data, sort_keys=False)
+    body = _escape_reserved_section_headings(instruction.strip())
+    return f"---\n{rendered_frontmatter}---\n\n## prompt\n\n{body}\n"
+
+
+def render_task_md_from_legacy(task_dir: str | Path) -> str:
+    """Render a legacy ``task.toml`` + ``instruction.md`` task as ``task.md``."""
+
+    root = Path(task_dir)
+    config_path = root / "task.toml"
+    instruction_path = root / "instruction.md"
+    imported = import_task_config_toml(config_path.read_text(), source="legacy")
+    frontmatter_data = tomllib.loads(imported.config.model_dump_toml())
+    if imported.report.extra:
+        frontmatter_data["benchflow"] = {
+            "compat": {
+                "source": imported.report.source,
+                "extra_paths": list(imported.report.extra_paths),
+                "extra": imported.report.extra,
+            }
+        }
+    return render_task_md(frontmatter_data, instruction_path.read_text())
+
+
+def render_normalized_task_md(text: str, *, path: str | Path | None = None) -> str:
+    """Render a human-authored ``task.md`` as a canonical normalized document."""
+
+    frontmatter, body = _split_frontmatter(text)
+    doc_path = Path(path) if path is not None else None
+    normalized = normalize_task_document_frontmatter(
+        frontmatter,
+        task_dir=doc_path.parent if doc_path is not None else None,
+    )
+    _config_from_frontmatter(normalized)
+    _parse_roles(normalized)
+    rendered_frontmatter = yaml.safe_dump(normalized, sort_keys=False)
+    rendered_body = body.strip()
+    suffix = f"\n\n{rendered_body}\n" if rendered_body else "\n"
+    return f"---\n{rendered_frontmatter}---{suffix}"
+
+
+def normalize_task_document_frontmatter(
+    frontmatter: dict[str, Any],
+    *,
+    task_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Expand authoring shorthands and profiles into canonical frontmatter."""
+
+    raw = deepcopy(frontmatter)
+    profiles = _parse_authoring_profiles(raw)
+    profile_defaults: dict[str, Any] = {}
+    for profile in profiles:
+        profile_defaults = _deep_merge(
+            profile_defaults,
+            deepcopy(_TASK_AUTHORING_PROFILES[profile]),
+        )
+
+    shorthand_name = raw.pop("name", None)
+    shorthand_image = raw.pop("image", None)
+    verifier_path = _pop_path_shorthand(raw, "verifier")
+    oracle_path = _pop_path_shorthand(raw, "oracle")
+    for key in _PROFILE_KEYS:
+        raw.pop(key, None)
+
+    normalized = _deep_merge(profile_defaults, raw)
+    _apply_name_shorthand(
+        normalized,
+        shorthand_name,
+        canonical_was_explicit=_has_nested(raw, ("task", "name")),
+    )
+    _apply_image_shorthand(
+        normalized,
+        shorthand_image,
+        canonical_was_explicit=_has_nested(raw, ("environment", "docker_image")),
+    )
+    _apply_path_shorthand(normalized, "verifier", verifier_path)
+    _apply_path_shorthand(normalized, "oracle", oracle_path)
+    _record_applied_profiles(normalized, profiles)
+    if task_dir is not None:
+        _apply_conventional_evidence(normalized, task_dir=task_dir, profiles=profiles)
+    return normalized
+
+
+def _parse_authoring_profiles(frontmatter: dict[str, Any]) -> list[str]:
+    profiles: list[str] = []
+    for key in _PROFILE_KEYS:
+        raw_value = frontmatter.get(key)
+        if raw_value is None:
+            continue
+        values = raw_value if isinstance(raw_value, list) else [raw_value]
+        for value in values:
+            if not isinstance(value, str) or not value.strip():
+                raise TaskDocumentParseError(f"{key} entries must be profile names")
+            profile = value.strip()
+            if profile not in _TASK_AUTHORING_PROFILES:
+                known = ", ".join(sorted(_TASK_AUTHORING_PROFILES))
+                raise TaskDocumentParseError(
+                    f"unknown task.md profile {profile!r}; known profiles: {known}"
+                )
+            if profile not in profiles:
+                profiles.append(profile)
+    return profiles
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _merge_missing(base: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in defaults.items():
+        if key not in merged:
+            merged[key] = deepcopy(value)
+        elif isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _merge_missing(merged[key], value)
+    return merged
+
+
+def _has_nested(mapping: dict[str, Any], path: tuple[str, ...]) -> bool:
+    current: Any = mapping
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return False
+        current = current[key]
+    return True
+
+
+def _ensure_mapping(parent: dict[str, Any], key: str) -> dict[str, Any]:
+    value = parent.get(key)
+    if value is None:
+        child: dict[str, Any] = {}
+        parent[key] = child
+        return child
+    if not isinstance(value, dict):
+        raise TaskDocumentParseError(f"{key} must be a mapping after normalization")
+    return value
+
+
+def _apply_name_shorthand(
+    normalized: dict[str, Any],
+    value: Any,
+    *,
+    canonical_was_explicit: bool,
+) -> None:
+    if value is None or canonical_was_explicit:
+        return
+    if not isinstance(value, str) or not value.strip():
+        raise TaskDocumentParseError("name must be a non-empty string")
+    task = _ensure_mapping(normalized, "task")
+    name = value.strip()
+    task["name"] = name if "/" in name else f"benchflow/{name}"
+
+
+def _apply_image_shorthand(
+    normalized: dict[str, Any],
+    value: Any,
+    *,
+    canonical_was_explicit: bool,
+) -> None:
+    if value is None or canonical_was_explicit:
+        return
+    if not isinstance(value, str) or not value.strip():
+        raise TaskDocumentParseError("image must be a non-empty string")
+    environment = _ensure_mapping(normalized, "environment")
+    environment["docker_image"] = value.strip()
+
+
+def _pop_path_shorthand(frontmatter: dict[str, Any], key: str) -> str | None:
+    value = frontmatter.get(key)
+    if value is None or isinstance(value, dict):
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise TaskDocumentParseError(f"{key} must be a mapping or non-empty path")
+    frontmatter.pop(key)
+    return value.strip()
+
+
+def _apply_path_shorthand(
+    normalized: dict[str, Any],
+    key: str,
+    path: str | None,
+) -> None:
+    if path is None:
+        return
+    safe_path = _safe_relative_posix_path(path, source=key)
+    benchflow = _ensure_mapping(normalized, "benchflow")
+    if key == "verifier":
+        verifier = _ensure_mapping(benchflow, "verifier")
+        base = safe_path.rstrip("/")
+        verifier.setdefault("path", base + "/")
+        verifier.setdefault("spec", f"{base}/verifier.md")
+        verifier.setdefault("entrypoint", f"{base}/test.sh")
+    else:
+        oracle = _ensure_mapping(benchflow, "oracle")
+        oracle.setdefault("path", safe_path.rstrip("/") + "/")
+
+
+def _safe_relative_posix_path(value: str, *, source: str) -> str:
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise TaskDocumentParseError(f"{source} path must be safe and relative")
+    return path.as_posix()
+
+
+def _record_applied_profiles(
+    normalized: dict[str, Any],
+    profiles: list[str],
+) -> None:
+    if not profiles:
+        return
+    benchflow = _ensure_mapping(normalized, "benchflow")
+    authoring = _ensure_mapping(benchflow, "authoring")
+    authoring.setdefault("profiles", profiles)
+    authoring.setdefault("normalized", True)
+
+
+def _apply_conventional_evidence(
+    normalized: dict[str, Any],
+    *,
+    task_dir: Path,
+    profiles: list[str],
+) -> None:
+    if not {"acceptance-live", "leaderboard-local"}.intersection(profiles):
+        return
+    discovered = _discover_conventional_evidence(task_dir)
+    if not discovered:
+        return
+    benchflow = _ensure_mapping(normalized, "benchflow")
+    existing = _mapping(benchflow.get("evidence"), "benchflow.evidence", default={})
+    benchflow["evidence"] = _merge_missing(existing, discovered)
+
+
+def _discover_conventional_evidence(task_dir: Path) -> dict[str, Any]:
+    root = task_dir / "evidence" / "acceptance"
+    if not root.is_dir():
+        return {}
+
+    evidence: dict[str, Any] = {}
+    artifact_paths: set[str] = set()
+    trajectory_paths: set[str] = set()
+
+    oracle = _read_json(root / "oracle-run.json")
+    if isinstance(oracle, dict):
+        oracle_map = cast(dict[str, Any], oracle)
+        required_reward = _first_number(
+            oracle_map.get("required_reward"),
+            oracle_map.get("expected_reward"),
+            oracle_map.get("reward"),
+        )
+        evidence["oracle_runs"] = {
+            "required_reward": required_reward if required_reward is not None else 1.0,
+            "artifact": "evidence/acceptance/oracle-run.json",
+        }
+        artifact_paths.add("evidence/acceptance/oracle-run.json")
+
+    verifier = _read_json(root / "verifier-stability-report.json")
+    if isinstance(verifier, dict):
+        verifier_map = cast(dict[str, Any], verifier)
+        evidence["verifier"] = {
+            "reruns": verifier_map.get("reruns", 3),
+            "flake_rate": verifier_map.get("flake_rate", 0.0),
+            "report": "evidence/acceptance/verifier-stability-report.json",
+        }
+        artifact_paths.add("evidence/acceptance/verifier-stability-report.json")
+
+    review = _read_json(root / "review.json")
+    if isinstance(review, dict):
+        review_map = cast(dict[str, Any], review)
+        review_evidence = {
+            "anti_cheat": review_map.get("anti_cheat", "passed"),
+            "instruction_alignment": review_map.get("instruction_alignment", "passed"),
+            "artifact": "evidence/acceptance/review.json",
+        }
+        if isinstance(review_map.get("reviewer"), str):
+            review_evidence["reviewer"] = review_map["reviewer"]
+        evidence["review"] = review_evidence
+        artifact_paths.add("evidence/acceptance/review.json")
+
+    calibration = _read_json(root / "calibration-report.json")
+    if isinstance(calibration, dict):
+        calibration_map = cast(dict[str, Any], calibration)
+        calibration_evidence = _calibration_evidence_from_report(
+            calibration_map,
+            root=root,
+        )
+        if calibration_evidence:
+            evidence["calibration"] = calibration_evidence
+            artifact_paths.add("evidence/acceptance/calibration-report.json")
+            gold_artifact = calibration_evidence.get("human_or_reference_examples", [])
+            for example in gold_artifact:
+                if isinstance(example, dict) and isinstance(
+                    example.get("artifact"), str
+                ):
+                    artifact_paths.add(example["artifact"])
+
+    live_report = root / "live-report.json"
+    if live_report.is_file():
+        acceptance_live = _acceptance_live_evidence_from_report(live_report)
+        if acceptance_live:
+            evidence["acceptance_live"] = acceptance_live
+            artifact_paths.add("evidence/acceptance/live-report.json")
+
+    gold_trajectory = root / "gold-trajectory.jsonl"
+    if gold_trajectory.is_file():
+        trajectory_paths.add("evidence/acceptance/gold-trajectory.jsonl")
+
+    artifacts = _pin_existing_files(task_dir, artifact_paths)
+    trajectories = _pin_existing_files(task_dir, trajectory_paths)
+    if artifacts:
+        evidence["artifacts"] = artifacts
+    if trajectories:
+        evidence["trajectories"] = trajectories
+    return evidence
+
+
+def _calibration_evidence_from_report(
+    report: dict[str, Any],
+    *,
+    root: Path,
+) -> dict[str, Any]:
+    raw_cases = report.get("cases")
+    if not isinstance(raw_cases, list):
+        return {}
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for raw_case in raw_cases:
+        if not isinstance(raw_case, dict):
+            continue
+        case_type = raw_case.get("type")
+        if isinstance(case_type, str):
+            by_type.setdefault(case_type, []).append(raw_case)
+
+    no_op = _max_case_reward(by_type.get("no-op", []))
+    known_bad = _max_case_reward(by_type.get("known-bad", []))
+    partial_rewards = [
+        reward
+        for case in by_type.get("partial", [])
+        if (reward := _first_number(case.get("reward"))) is not None
+    ]
+    reference_examples = []
+    gold_result = root / "gold-result.json"
+    for case in by_type.get("reference", []):
+        reward = _first_number(case.get("reward"))
+        if reward is None:
+            continue
+        example = {
+            "name": str(case.get("name") or "reference"),
+            "expected_reward": reward,
+        }
+        if gold_result.is_file():
+            example["artifact"] = "evidence/acceptance/gold-result.json"
+        reference_examples.append(example)
+
+    if no_op is None or known_bad is None or not partial_rewards:
+        return {}
+    return {
+        "no_op_reward_max": no_op,
+        "known_bad_reward_max": known_bad,
+        "partial_solution_range": [min(partial_rewards), max(partial_rewards)],
+        "report": "evidence/acceptance/calibration-report.json",
+        "human_or_reference_examples": reference_examples,
+    }
+
+
+def _acceptance_live_evidence_from_report(path: Path) -> dict[str, Any]:
+    report = _read_json(path)
+    evidence: dict[str, Any] = {
+        "report": "evidence/acceptance/live-report.json",
+        "workspace": {
+            "source": "current-worktree",
+            "target": "/repo",
+        },
+        "calibration": {
+            "from": "calibration.report",
+            "reruns": 1,
+            "flake_rate_max": 0.0,
+        },
+    }
+    if not isinstance(report, dict):
+        return evidence
+    report_map = cast(dict[str, Any], report)
+
+    cases = []
+    raw_cases = report_map.get("cases", [])
+    if not isinstance(raw_cases, list):
+        raw_cases = []
+    for raw_case in raw_cases:
+        if not isinstance(raw_case, dict) or raw_case.get("source") != "declared":
+            continue
+        case_map = cast(dict[str, Any], raw_case)
+        case = {
+            "name": case_map.get("name"),
+            "type": case_map.get("type"),
+            "reruns": case_map.get("reruns", 1),
+            "expect": case_map.get("expect", {}),
+        }
+        if isinstance(case["name"], str) and isinstance(case["type"], str):
+            cases.append(case)
+    if cases:
+        evidence["cases"] = cases
+    leaderboard = report_map.get("leaderboard_suitability")
+    if isinstance(leaderboard, dict):
+        evidence["leaderboard"] = {
+            "required": True,
+            "max_flake_rate": 0.0,
+        }
+    return evidence
+
+
+def _pin_existing_files(task_dir: Path, paths: set[str]) -> list[dict[str, str]]:
+    pinned = []
+    for rel in sorted(paths):
+        path = task_dir / rel
+        if path.is_file():
+            pinned.append(
+                {"path": rel, "sha256": sha256(path.read_bytes()).hexdigest()}
+            )
+    return pinned
+
+
+def _read_json(path: Path) -> object | None:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _first_number(*values: object) -> float | None:
+    for value in values:
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
+def _max_case_reward(cases: list[dict[str, Any]]) -> float | None:
+    rewards = [
+        reward
+        for case in cases
+        if (reward := _first_number(case.get("reward"))) is not None
+    ]
+    return max(rewards) if rewards else None
+
+
+def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    normalized = text.replace("\r\n", "\n")
+    lines = normalized.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        raise TaskDocumentParseError("task.md must start with YAML frontmatter")
+
+    closing_index: int | None = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            closing_index = index
+            break
+    if closing_index is None:
+        raise TaskDocumentParseError("task.md frontmatter is missing closing ---")
+
+    frontmatter_text = "".join(lines[1:closing_index])
+    body = "".join(lines[closing_index + 1 :]).lstrip("\n")
+    loaded = yaml.safe_load(frontmatter_text) if frontmatter_text.strip() else {}
+    if loaded is None:
+        loaded = {}
+    if not isinstance(loaded, dict):
+        raise TaskDocumentParseError("task.md frontmatter must be a mapping")
+    return loaded, body
+
+
+def _extract_prompt_sections(body: str) -> _PromptSections:
+    matches = list(_SECTION_RE.finditer(body))
+    if not matches:
+        return _PromptSections(
+            instruction=body.strip(),
+            role_prompts={},
+            scene_prompts={},
+            user_persona=None,
+        )
+
+    preamble = body[: matches[0].start()].strip()
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        key = _normalize_section_key(match.group(1).strip())
+        if key in sections:
+            raise TaskDocumentParseError(f"task.md has duplicate section ## {key}")
+        next_start = (
+            matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        )
+        sections[key] = body[match.end() : next_start].strip()
+
+    instruction = _unescape_reserved_section_headings(
+        sections.get("prompt", preamble).strip()
+    )
+    role_prompts = {
+        key.removeprefix("role:"): _unescape_reserved_section_headings(value)
+        for key, value in sections.items()
+        if key.startswith("role:")
+    }
+    scene_prompts = {
+        key.removeprefix("scene:"): _unescape_reserved_section_headings(value)
+        for key, value in sections.items()
+        if key.startswith("scene:")
+    }
+    user_persona = (
+        _unescape_reserved_section_headings(sections["user-persona"])
+        if "user-persona" in sections
+        else None
+    )
+    return _PromptSections(
+        instruction=instruction,
+        role_prompts=role_prompts,
+        scene_prompts=scene_prompts,
+        user_persona=user_persona,
+    )
+
+
+def _normalize_section_key(raw_key: str) -> str:
+    prefix, separator, suffix = raw_key.partition(":")
+    if separator:
+        return f"{prefix.lower()}:{suffix}"
+    return prefix.lower()
+
+
+def _escape_reserved_section_headings(text: str) -> str:
+    """Escape native task.md section headings embedded in legacy prompts."""
+
+    return _SECTION_RE.sub(lambda match: "\\" + match.group(0), text)
+
+
+def _unescape_reserved_section_headings(text: str) -> str:
+    """Restore escaped native section headings in parsed section content."""
+
+    return re.sub(
+        r"^\\(##\s+(?:prompt|role:[A-Za-z0-9_.-]+|scene:[A-Za-z0-9_.-]+|user-persona)\s*)$",
+        r"\1",
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+
+
+def _config_from_frontmatter(frontmatter: dict[str, Any]) -> TaskConfig:
+    config_data = {
+        key: value
+        for key, value in frontmatter.items()
+        if key not in _DOCUMENT_ONLY_FRONTMATTER_KEYS
+    }
+    return TaskConfig.model_validate(config_data)
+
+
+def _parse_roles(frontmatter: dict[str, Any]) -> dict[str, Role]:
+    agents = _mapping(frontmatter.get("agents"), "agents", default={})
+    raw_roles = _mapping(agents.get("roles"), "agents.roles", default={})
+    roles: dict[str, Role] = {}
+    for name, raw_role in raw_roles.items():
+        if not isinstance(name, str):
+            raise TaskDocumentParseError("agents.roles keys must be role names")
+        role_data = _mapping(raw_role, f"agents.roles.{name}", default={})
+        agent = role_data.get("agent")
+        if not isinstance(agent, str) or not agent:
+            raise TaskDocumentParseError(f"agents.roles.{name}.agent is required")
+        roles[name] = Role(
+            name=name,
+            agent=agent,
+            model=_optional_str(role_data.get("model")),
+            reasoning_effort=_optional_str(role_data.get("reasoning_effort")),
+            env=_string_dict(role_data.get("env")),
+            timeout_sec=_optional_int(role_data.get("timeout_sec")),
+            idle_timeout_sec=_optional_int(role_data.get("idle_timeout_sec")),
+            skills_dir=_optional_str(role_data.get("skills_dir")),
+            capabilities=_string_list(role_data.get("capabilities")),
+        )
+    return roles
+
+
+def _parse_scenes(
+    frontmatter: dict[str, Any],
+    *,
+    roles: dict[str, Role],
+    instruction: str,
+    role_prompts: dict[str, str],
+    scene_prompts: dict[str, str],
+) -> list[Scene]:
+    raw_scenes = frontmatter.get("scenes")
+    if raw_scenes is None:
+        return []
+    if not isinstance(raw_scenes, list):
+        raise TaskDocumentParseError("scenes must be a list")
+
+    scenes: list[Scene] = []
+    for index, raw_scene in enumerate(raw_scenes):
+        scene_data = _mapping(raw_scene, f"scenes[{index}]", default={})
+        name = _optional_str(scene_data.get("name")) or f"scene-{index}"
+        scene_role_names = _scene_role_names(scene_data, roles)
+        scene_roles = [
+            _lookup_role(roles, role_name, f"scenes[{index}].roles")
+            for role_name in scene_role_names
+        ]
+        turns = _parse_turns(
+            scene_data.get("turns"),
+            scene_name=name,
+            roles=roles,
+            scene_role_names=scene_role_names,
+            role_prompts=role_prompts,
+            scene_prompts=scene_prompts,
+        )
+        if not turns and scene_roles:
+            turns = [
+                Turn(
+                    role=role.name,
+                    prompt=scene_prompts.get(name)
+                    or role_prompts.get(role.name)
+                    or instruction,
+                )
+                for role in scene_roles
+            ]
+        scenes.append(
+            Scene(
+                name=name,
+                roles=scene_roles,
+                turns=turns,
+                skills_dir=_optional_str(scene_data.get("skills_dir")),
+            )
+        )
+    return scenes
+
+
+def _scene_role_names(scene_data: dict[str, Any], roles: dict[str, Role]) -> list[str]:
+    raw_names = scene_data.get("roles")
+    if raw_names is None:
+        raw_turns = scene_data.get("turns")
+        if isinstance(raw_turns, list):
+            names: list[str] = []
+            for raw_turn in raw_turns:
+                role_name = (
+                    raw_turn
+                    if isinstance(raw_turn, str)
+                    else _mapping(raw_turn, "turn", default={}).get("role")
+                )
+                if isinstance(role_name, str) and role_name not in names:
+                    names.append(role_name)
+            if names:
+                return names
+        return list(roles)
+    if not isinstance(raw_names, list) or not all(
+        isinstance(name, str) for name in raw_names
+    ):
+        raise TaskDocumentParseError("scene roles must be a list of role names")
+    return [name for name in raw_names if isinstance(name, str)]
+
+
+def _parse_turns(
+    raw_turns: Any,
+    *,
+    scene_name: str,
+    roles: dict[str, Role],
+    scene_role_names: list[str],
+    role_prompts: dict[str, str],
+    scene_prompts: dict[str, str],
+) -> list[Turn]:
+    if raw_turns is None:
+        return []
+    if not isinstance(raw_turns, list):
+        raise TaskDocumentParseError("scene turns must be a list")
+
+    turns: list[Turn] = []
+    for index, raw_turn in enumerate(raw_turns):
+        if isinstance(raw_turn, str):
+            role_name = raw_turn
+            prompt = None
+        else:
+            turn_data = _mapping(raw_turn, f"turns[{index}]", default={})
+            role_name = turn_data.get("role")
+            if not isinstance(role_name, str):
+                raise TaskDocumentParseError(f"turns[{index}].role is required")
+            prompt = _optional_str(turn_data.get("prompt"))
+        _lookup_role(roles, role_name, f"turns[{index}].role")
+        if role_name not in scene_role_names:
+            raise TaskDocumentParseError(
+                f"turns[{index}] references role {role_name!r} outside the scene"
+            )
+        turns.append(
+            Turn(
+                role=role_name,
+                prompt=prompt
+                or scene_prompts.get(scene_name)
+                or role_prompts.get(role_name),
+            )
+        )
+    return turns
+
+
+def _lookup_role(roles: dict[str, Role], name: str, source: str) -> Role:
+    role = roles.get(name)
+    if role is None:
+        raise TaskDocumentParseError(f"{source} references unknown role {name!r}")
+    return role
+
+
+def _mapping(
+    value: Any, source: str, *, default: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    if value is None:
+        return {} if default is None else dict(default)
+    if not isinstance(value, dict):
+        raise TaskDocumentParseError(f"{source} must be a mapping")
+    return value
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TaskDocumentParseError(
+            f"Expected string value, got {type(value).__name__}"
+        )
+    return value
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise TaskDocumentParseError("Expected integer value, got bool")
+    if not isinstance(value, int):
+        raise TaskDocumentParseError(
+            f"Expected integer value, got {type(value).__name__}"
+        )
+    return value
+
+
+def _string_dict(value: Any) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TaskDocumentParseError("Expected mapping of strings")
+    return {str(key): str(item) for key, item in value.items()}
+
+
+def _string_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TaskDocumentParseError("Expected list of strings")
+    return [item for item in value if isinstance(item, str)]
+
+
+__all__ = [
+    "TASK_DOCUMENT_FILENAME",
+    "TaskDocument",
+    "TaskDocumentParseError",
+    "normalize_task_document_frontmatter",
+    "render_normalized_task_md",
+    "render_task_md_from_legacy",
+]
