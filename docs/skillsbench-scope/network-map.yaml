@@ -1,0 +1,783 @@
+# SkillsBench network-mode + glossary map — generated, do not hand-edit.
+# Modes: disabled (offline; agent LLM egress still allowed) | api (allowlist, no web search)
+#        | enabled-blacklist (full internet minus denylist; SkillsBench source default only).
+# allowed_hosts are the concrete endpoints the reference solution contacts at runtime.
+tasks:
+  3d-scan-calc:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [mesh-analysis]
+    glossary_keywords: [binary-parsing, algorithm, 3d-geometry, stl, calculation, extraction, file-format-knowledge, mathematical-method, mesh-analysis]
+  ada-bathroom-plan-repair:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [ada-plan-view-accessibility, architectural-dxf-extraction, geometric-layout-repair]
+    glossary_keywords: [cad, dxf, accessibility, geometry, ada, spatial-reasoning, repair, extraction, domain-procedure, file-format-knowledge, ada-plan-view-accessibility, architectural-dxf-extraction]
+  adaptive-cruise-control:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [csv-processing, pid-controller, simulation-metrics, vehicle-dynamics, yaml-config]
+    glossary_keywords: [python, pid-control, simulation, vehicle-dynamics, automotive, control-theory, implementation, domain-procedure, mathematical-method, csv-processing, pid-controller, simulation-metrics]
+  azure-bgp-oscillation-route-leak:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [azure-bgp]
+    glossary_keywords: [bgp, oscillation, azure, network, detection, analysis, domain-procedure, azure-bgp]
+  bike-rebalance:
+    group: tasks
+    category: mathematics-or-formal-reasoning
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [geospatial-routing-data, logistics-rules-to-optimization, routing-subtour-elimination, scip-opt]
+    glossary_keywords: [bike-sharing, vehicle-routing, inventory-rebalancing, mixed-integer-program, optimization, planning, mathematical-method, domain-procedure, geospatial-routing-data, logistics-rules-to-optimization, routing-subtour-elimination, scip-opt]
+  citation-check:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: true
+    network_mode: api
+    api_subtype: data-api
+    allowed_hosts:
+      - api.crossref.org
+      - api.semanticscholar.org
+      - api.datacite.org
+      - eutils.ncbi.nlm.nih.gov
+      - export.arxiv.org
+      - doi.org
+    skills: [citation-management]
+    glossary_keywords: [citation, bibtex, academic, verification, api, crossref, semantic-scholar, search, domain-procedure, tool-workflow, citation-management]
+  civ6-adjacency-optimizer:
+    group: tasks
+    category: mathematics-or-formal-reasoning
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [civ6lib, hex-grid-spatial, map-optimization-strategy, sqlite-map-parser]
+    glossary_keywords: [optimization, constraint-satisfaction, game-mechanics, spatial understanding, civ6, planning, mathematical-method, domain-procedure, civ6lib, hex-grid-spatial, map-optimization-strategy, sqlite-map-parser]
+  court-form-filling:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [pdf]
+    glossary_keywords: [pdf, form-filling, legal, document-automation, extraction, generation, domain-procedure, file-format-knowledge]
+  crystallographic-wyckoff-position-analysis:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [pymatgen, sympy]
+    glossary_keywords: [crystallography, pymatgen, sympy, wyckoff_positions, symmetry_analysis, analysis, calculation, library-api-usage, domain-procedure]
+  dapt-intrusion-detection:
+    group: tasks
+    category: cybersecurity
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [pcap-analysis, threat-detection]
+    glossary_keywords: [security, network, pcap, intrusion-detection, analysis, detection, calculation, domain-procedure, library-api-usage, pcap-analysis, threat-detection]
+  data-to-d3:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [d3-visualization]
+    glossary_keywords: [d3.js, data-visualization, interactive-charts, implementation, generation, library-api-usage, tool-workflow, d3-visualization]
+  debug-trl-grpo:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [grpo, rl-post-training, trl]
+    glossary_keywords: [post-training, trl, debugging, reasoning-model, grpo, repair, debugging-heuristic, library-api-usage, rl-post-training]
+  dialogue-parser:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [dialogue-graph]
+    glossary_keywords: [game development, parsing, implementation, transformation, file-format-knowledge, library-api-usage, dialogue-graph]
+  drone-planning-control:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [attitude-controller-planner, flight-plan-parser, motor-model-dynamics, plot-quadrotor, position-controller-trajectory-planner, stepinfo-3d]
+    glossary_keywords: [planning, control, robotics, simulation, dynamics, implementation, optimization, domain-procedure, mathematical-method, attitude-controller-planner, flight-plan-parser, motor-model-dynamics]
+  dynamic-object-aware-egomotion:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [dyn-object-masks, egomotion-estimation, output-validation, sampling-and-indexing]
+    glossary_keywords: [video, egomotion, spatial-reasoning, analysis, detection, classification, library-api-usage, domain-procedure, dyn-object-masks, egomotion-estimation, output-validation, sampling-and-indexing]
+  earthquake-phase-association:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [gamma-phase-associator, obspy-data-api, seisbench-model-api, seismic-picker-selection]
+    glossary_keywords: [science, earth-science, seismology, ai4science, detection, analysis, library-api-usage, domain-procedure, gamma-phase-associator, obspy-data-api, seisbench-model-api, seismic-picker-selection]
+  earthquake-plate-calculation:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [geospatial-analysis]
+    glossary_keywords: [geophysics, spatial-analysis, gis, plate-tectonics, calculation, analysis, library-api-usage, domain-procedure, geospatial-analysis]
+  econ-detrending-correlation:
+    group: tasks
+    category: finance-economics
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [timeseries-detrending]
+    glossary_keywords: [economics, statistics, data-analysis, python, pandas, hp-filter, timeseries, calculation, analysis, mathematical-method, domain-procedure, timeseries-detrending]
+  edit-pdf:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [pdf-editing, text-parser]
+    glossary_keywords: [pdf, document-editing, form-filling, natural-language, transformation, formatting, file-format-knowledge, tool-workflow, pdf-editing, text-parser]
+  energy-ac-optimal-power-flow:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [ac-branch-pi-model, casadi-ipopt-nlp, power-flow-data]
+    glossary_keywords: [energy, system-operation, ac-optimal-power-flow, non-convex-optimization, optimization, verification, domain-procedure, mathematical-method, ac-branch-pi-model, casadi-ipopt-nlp, power-flow-data]
+  energy-market-pricing:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [dc-power-flow, economic-dispatch, locational-marginal-prices, power-flow-data]
+    glossary_keywords: [energy, market-pricing, optimization, duality, counterfactual-analysis, analysis, domain-procedure, mathematical-method, dc-power-flow, economic-dispatch, locational-marginal-prices, power-flow-data]
+  energy-unit-commitment:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [milp-solver-workflow, unit-commitment-data-modeling, unit-commitment-operating-rules]
+    glossary_keywords: [energy, unit-commitment, mixed-integer-optimization, day-ahead-scheduling, power-system-operations, optimization, planning, domain-procedure, mathematical-method, milp-solver-workflow, unit-commitment-data-modeling, unit-commitment-operating-rules]
+  enterprise-information-search:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [enterprise-artifact-search]
+    glossary_keywords: [information-retrieval, question-answering, heterogeneous-data, search, extraction, tool-workflow, domain-procedure, enterprise-artifact-search]
+  exam-block-sequencing:
+    group: tasks
+    category: mathematics-or-formal-reasoning
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [mip-solver-and-solution-audit, ordered-window-sequencing-mip]
+    glossary_keywords: [scheduling, optimization, integer-programming, timetabling, education, planning, mathematical-method, tool-workflow, mip-solver-and-solution-audit, ordered-window-sequencing-mip]
+  exceltable-in-ppt:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [pptx, xlsx]
+    glossary_keywords: [excel, pptx, table-update, transformation, extraction, file-format-knowledge, library-api-usage, xlsx]
+  exoplanet-detection-period:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [box-least-squares, exoplanet-workflows, light-curve-preprocessing, lomb-scargle-periodogram, transit-least-squares]
+    glossary_keywords: [science, astronomy, planetary-science, timeseries, data-analysis, python, detection, analysis, domain-procedure, mathematical-method, box-least-squares, exoplanet-workflows]
+  financial-modeling-qa:
+    group: tasks
+    category: finance-economics
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [pdf, xlsx]
+    glossary_keywords: [data analysis, pdf parsing, financial knowledge, analysis, extraction, domain-procedure, file-format-knowledge, pdf, xlsx]
+  fix-build-agentops:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [analyze-ci, temporal-python-testing, testing-python, uv-package-manager]
+    glossary_keywords: [python, agentops, agentops-ai/agentops, software, build, compilation, ci, github actions, debugging, repair, debugging-heuristic, tool-workflow]
+  fix-build-google-auto:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [maven-build-lifecycle, maven-dependency-management, maven-plugin-configuration]
+    glossary_keywords: [java, maven, google/auto, software, build, compilation, ci, travis, debugging, repair, debugging-heuristic, tool-workflow]
+  fix-druid-loophole-cve:
+    group: tasks
+    category: cybersecurity
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [jackson-security, senior-java]
+    glossary_keywords: [java, security, apache druid, vulnerability fix, repair, domain-procedure, debugging-heuristic, jackson-security, senior-java]
+  fix-erlang-ssh-cve:
+    group: tasks
+    category: cybersecurity
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [erlang-concurrency, erlang-distribution, erlang-otp-behaviors, find-bugs, senior-security, ssh-penetration-testing]
+    glossary_keywords: [erlang, security, repair, debugging, domain-procedure, debugging-heuristic, erlang-concurrency, erlang-distribution, erlang-otp-behaviors, find-bugs, senior-security, ssh-penetration-testing]
+  fix-visual-stability:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [browser-testing, react-best-practices, web-interface-guidelines]
+    glossary_keywords: [react, nextjs, cls, flickering, visual-stability, repair, debugging, debugging-heuristic, library-api-usage, browser-testing, react-best-practices, web-interface-guidelines]
+  flink-query:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [pdf, senior-data-engineer]
+    glossary_keywords: [flink, java, data engineer, implementation, analysis, library-api-usage, domain-procedure, pdf, senior-data-engineer]
+  flood-risk-analysis:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [flood-detection, nws-flood-thresholds, usgs-data-download]
+    glossary_keywords: [hydrology, geospatial, csv, json, flood-monitoring, analysis, detection, domain-procedure, data-cleaning-procedure, flood-detection, nws-flood-thresholds, usgs-data-download]
+  glm-lake-mendota:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [glm-basics, glm-calibration, glm-output]
+    glossary_keywords: [hydrology, lake-modeling, parameter-calibration, simulation, calculation, domain-procedure, tool-workflow, glm-basics, glm-calibration, glm-output]
+  gravitational-wave-detection:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [conditioning, matched-filtering]
+    glossary_keywords: [science, astronomy, physics, gravitational-waves, signal-processing, python, pycbc, detection, analysis, domain-procedure, library-api-usage, conditioning]
+  grid-dispatch-operator:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [dc-power-flow, economic-dispatch, power-flow-data]
+    glossary_keywords: [energy, large-scale-energy-market-clearing, optimization, power-flow, dc-opf, calculation, domain-procedure, mathematical-method, dc-power-flow, economic-dispatch, power-flow-data]
+  hvac-control:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [excitation-signal-design, first-order-model-fitting, imc-tuning-rules, safety-interlocks, scipy-curve-fit]
+    glossary_keywords: [hvac, control-theory, system-identification, pid, python, thermal-modeling, implementation, simulation, domain-procedure, mathematical-method, excitation-signal-design, first-order-model-fitting]
+  invoice-fraud-detection:
+    group: tasks
+    category: finance-economics
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [fuzzy-match, pdf, xlsx]
+    glossary_keywords: [pdf, excel, fraud-detection, fuzzy-matching, finance, detection, verification, domain-procedure, data-cleaning-procedure, fuzzy-match, xlsx]
+  jax-computing-basics:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [jax-skills]
+    glossary_keywords: [jax-language, numerical-computing, implementation, calculation, library-api-usage, mathematical-method, jax-skills]
+  jpg-ocr-stat:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [image-ocr, openai-vision, pdf, video-frame-extraction, xlsx]
+    glossary_keywords: [image ocr, data statistics, extraction, transformation, library-api-usage, tool-workflow, image-ocr, openai-vision, pdf, video-frame-extraction, xlsx]
+  lab-unit-harmonization:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [lab-unit-harmonization]
+    glossary_keywords: [bioinformatics, clinical, unit-conversion, data-harmonization, chronic-kidney-disease, transformation, data-cleaning-procedure, domain-procedure, lab-unit-harmonization]
+  lake-warming-attribution:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [contribution-analysis, meteorology-driver-classification, pca-decomposition, trend-analysis]
+    glossary_keywords: [hydrology, trend-analysis, contribution-analysis, analysis, calculation, mathematical-method, domain-procedure, meteorology-driver-classification, pca-decomposition]
+  latex-formula-extraction:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [marker, pdf]
+    glossary_keywords: [pdf, latex, latex-extraction, extraction, repair, file-format-knowledge, domain-procedure, marker]
+  lean4-proof:
+    group: tasks
+    category: mathematics-or-formal-reasoning
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [lean4-memories, lean4-theorem-proving]
+    glossary_keywords: [formal method, lean4, verification, implementation, mathematical-method, domain-procedure, lean4-memories, lean4-theorem-proving]
+  llm-prefix-cache-replay:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [cache-policy-comparison, prefix-cache-replay]
+    glossary_keywords: [llm-serving, kv-cache, trace-replay, prefix-cache, s3fifo, performance, implementation, simulation, domain-procedure, evaluation-protocol, cache-policy-comparison, prefix-cache-replay]
+  manufacturing-codebook-normalization:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [manufacturing-failure-reason-codebook-normalization]
+    glossary_keywords: [test failure reason codebook, defect reason standardization, testing remarks analysis, classification, transformation, domain-procedure, data-cleaning-procedure, manufacturing-failure-reason-codebook-normalization]
+  manufacturing-equipment-maintenance:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [reflow-machine-maintenance-guidance, reflow-profile-compliance-toolkit]
+    glossary_keywords: [question and answer, reflow machine maintenance, data analysis, reasoning, analysis, calculation, domain-procedure, evaluation-protocol, reflow-machine-maintenance-guidance, reflow-profile-compliance-toolkit]
+  manufacturing-fjsp-optimization:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [fjsp-baseline-repair-with-downtime-and-policy]
+    glossary_keywords: [optimization, manufacturing, flexible job shop planning, planning, mathematical-method, domain-procedure, fjsp-baseline-repair-with-downtime-and-policy]
+  mario-coin-counting:
+    group: tasks
+    category: media-content-production
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [ffmpeg-keyframe-extraction, image-editing, object-counter]
+    glossary_keywords: [video-processing, image-processing, computer-vision, detection, transformation, library-api-usage, tool-workflow, ffmpeg-keyframe-extraction, image-editing, object-counter]
+  mars-clouds-clustering:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [custom-distance-metrics, parallel-processing, pareto-optimization]
+    glossary_keywords: [science, astronomy, planetary-science, clustering, optimization, parallelization, python, classification, mathematical-method, library-api-usage, custom-distance-metrics, parallel-processing]
+  multilingual-video-dubbing:
+    group: tasks
+    category: media-content-production
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [ffmpeg-audio-processing, ffmpeg-format-conversion, ffmpeg-media-info, ffmpeg-video-editing, ffmpeg-video-filters, text-to-speech]
+    glossary_keywords: [video dubbing, speech, text-to-speech, alignment, generation, transformation, tool-workflow, library-api-usage, ffmpeg-audio-processing, ffmpeg-format-conversion, ffmpeg-media-info, ffmpeg-video-editing]
+  offer-letter-generator:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [docx]
+    glossary_keywords: [docx, word, template, office, mail-merge, generation, formatting, file-format-knowledge, library-api-usage]
+  organize-messy-files:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [docx, file-organizer, pdf, planning-with-files, pptx]
+    glossary_keywords: [file-management, pdf, classification, file-format-knowledge, tool-workflow, docx, file-organizer, planning-with-files, pptx]
+  paper-anonymizer:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [academic-pdf-redaction, pdf]
+    glossary_keywords: [pdf, redaction, anonymization, blind-review, transformation, detection, file-format-knowledge, domain-procedure, academic-pdf-redaction]
+  parallel-tfidf-search:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [memory-optimization, python-parallelization, workload-balancing]
+    glossary_keywords: [parallel, implementation, optimization, library-api-usage, mathematical-method, memory-optimization, python-parallelization, workload-balancing]
+  paratransit-routing:
+    group: tasks
+    category: mathematics-or-formal-reasoning
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [ortools-pickup-delivery-routing, ortools-routing-modeling]
+    glossary_keywords: [paratransit, dial-a-ride, routing, operations-research, schedule-audit, optimization, planning, mathematical-method, library-api-usage, ortools-pickup-delivery-routing, ortools-routing-modeling]
+  pddl-airport-planning:
+    group: tasks
+    category: mathematics-or-formal-reasoning
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [pddl-skills]
+    glossary_keywords: [dsl, planning, domain-procedure, library-api-usage, pddl-skills]
+  pddl-tpp-planning:
+    group: tasks
+    category: mathematics-or-formal-reasoning
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [pddl-skills]
+    glossary_keywords: [dsl, planning, generation, domain-procedure, file-format-knowledge, pddl-skills]
+  pdf-excel-diff:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [pdf, xlsx]
+    glossary_keywords: [pdf, excel, data-extraction, diff, table-parsing, office, extraction, analysis, file-format-knowledge, data-cleaning-procedure, xlsx]
+  powerlifting-coef-calc:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [powerlifting, senior-data-scientist, xlsx]
+    glossary_keywords: [excel, sports, excel-index-match, statistics, excel-formula, calculation, transformation, mathematical-method, tool-workflow, powerlifting, senior-data-scientist, xlsx]
+  pptx-reference-formatting:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [pptx]
+    glossary_keywords: [pptx, ppt, slides, formatting, transformation, library-api-usage, file-format-knowledge]
+  protein-expression-analysis:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [xlsx]
+    glossary_keywords: [xlsx, proteomics, excel, data-analysis, statistics, bioinformatics, analysis, calculation, domain-procedure, mathematical-method]
+  python-scala-translation:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [python-scala-collections, python-scala-functional, python-scala-idioms, python-scala-libraries, python-scala-oop, python-scala-syntax-mapping]
+    glossary_keywords: [translation, scala, python, transformation, implementation, library-api-usage, domain-procedure, python-scala-collections, python-scala-functional, python-scala-idioms, python-scala-libraries, python-scala-oop]
+  quantum-numerical-simulation:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [qutip]
+    glossary_keywords: [quantum, quantum-simulation, simulation, calculation, domain-procedure, library-api-usage, qutip]
+  r2r-mpc-control:
+    group: tasks
+    category: industrial-physical-systems
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [finite-horizon-lqr, integral-action-design, mpc-horizon-tuning, state-space-linearization]
+    glossary_keywords: [mpc, manufacturing, tension-control, lqr, python, state-space, r2r, implementation, simulation, domain-procedure, mathematical-method, finite-horizon-lqr]
+  radar-vital-signs:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [radar-signal-processing, radar-vital-signs, vital-sign-extraction]
+    glossary_keywords: [radar, signal-processing, biomedical, vital-signs, python, extraction, calculation, domain-procedure, mathematical-method, radar-signal-processing, radar-vital-signs, vital-sign-extraction]
+  react-performance-debugging:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [browser-testing, react-best-practices]
+    glossary_keywords: [react, nextjs, performance, debugging, bundle-optimization, optimization, debugging-heuristic, library-api-usage, browser-testing, react-best-practices]
+  reserves-at-risk-calc:
+    group: tasks
+    category: finance-economics
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [xlsx]
+    glossary_keywords: [excel, finance, macrofinance, office, calculation, analysis, domain-procedure, mathematical-method, xlsx]
+  sales-pivot-analysis:
+    group: tasks
+    category: office-white-collar
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [pdf, xlsx]
+    glossary_keywords: [excel, pivot-tables, pdf, aggregation, data-integration, analysis, transformation, tool-workflow, domain-procedure, xlsx]
+  sec-financial-report:
+    group: tasks
+    category: finance-economics
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [13f-analyzer, fuzzy-name-search]
+    glossary_keywords: [data processing, financial analysis, search, analysis, domain-procedure, tool-workflow, 13f-analyzer, fuzzy-name-search]
+  seismic-phase-picking:
+    group: tasks
+    category: natural-science
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [obspy-data-api, obspy-datacenter-client, seisbench-model-api, seismic-picker-selection]
+    glossary_keywords: [science, earth-science, seismology, ai4science, detection, classification, domain-procedure, library-api-usage, obspy-data-api, obspy-datacenter-client, seisbench-model-api, seismic-picker-selection]
+  setup-fuzzing-py:
+    group: tasks
+    category: cybersecurity
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [discover-important-function, fuzzing-python, setup-env]
+    glossary_keywords: [security, build, vulnerability, continuous-integration, python, implementation, verification, tool-workflow, evaluation-protocol, discover-important-function, fuzzing-python, setup-env]
+  shock-analysis-demand:
+    group: tasks
+    category: finance-economics
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [xlsx]
+    glossary_keywords: [excel, finance, macrofinance, office, calculation, analysis, domain-procedure, mathematical-method, xlsx]
+  shock-analysis-supply:
+    group: tasks
+    category: finance-economics
+    declared_allow_internet: true
+    network_mode: api
+    api_subtype: data-api
+    allowed_hosts:
+      - data.ecb.europa.eu
+    skills: [xlsx]
+    glossary_keywords: [excel, finance, macrofinance, office, production-function, calculation, analysis, domain-procedure, mathematical-method, xlsx]
+  simpo-code-reproduction:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [nlp-research-repo-package-installment, pdf]
+    glossary_keywords: [code-reproduction, nlp, paper-to-code, unit-tests, implementation, library-api-usage, mathematical-method, nlp-research-repo-package-installment, pdf]
+  software-dependency-audit:
+    group: tasks
+    category: cybersecurity
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [cvss-score-extraction, trivy-offline-vulnerability-scanning, vulnerability-csv-reporting]
+    glossary_keywords: [security, vulnerability-scanning, dependencies, detection, analysis, tool-workflow, domain-procedure, cvss-score-extraction, trivy-offline-vulnerability-scanning, vulnerability-csv-reporting]
+  spring-boot-jakarta-migration:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [hibernate-upgrade, jakarta-namespace, restclient-migration, spring-boot-migration, spring-security-6]
+    glossary_keywords: [migration, compilation, transformation, library-api-usage, domain-procedure, hibernate-upgrade, jakarta-namespace, restclient-migration, spring-boot-migration, spring-security-6]
+  suricata-custom-exfil:
+    group: tasks
+    category: cybersecurity
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [pcap-triage-tshark, suricata-offline-evejson, suricata-rules-basics]
+    glossary_keywords: [suricata, dpi, pcap, ids, rule-writing, detection, implementation, domain-procedure, tool-workflow, pcap-triage-tshark, suricata-offline-evejson, suricata-rules-basics]
+  syzkaller-ppdev-syzlang:
+    group: tasks
+    category: cybersecurity
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [syz-extract-constants, syzkaller-build-loop, syzlang-ioctl-basics]
+    glossary_keywords: [security, fuzzing, kernel, syzkaller, syzlang, implementation, domain-procedure, file-format-knowledge, syz-extract-constants, syzkaller-build-loop, syzlang-ioctl-basics]
+  threejs-structure-parser:
+    group: tasks
+    category: media-content-production
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [obj-exporter, threejs]
+    glossary_keywords: [threejs, json, 3d, 3d parts understanding, javascript, extraction, transformation, library-api-usage, file-format-knowledge, obj-exporter]
+  threejs-to-obj:
+    group: tasks
+    category: media-content-production
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [obj-exporter, threejs]
+    glossary_keywords: [threejs, obj, 3d, node, javascript, transformation, library-api-usage, file-format-knowledge, obj-exporter]
+  tictoc-unnecessary-abort-detection:
+    group: tasks
+    category: software-engineering
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [transaction-concurrency-control-foundations, transaction-protocol-reasoning, transaction-trace-analysis]
+    glossary_keywords: [concurrency-control, transactions, tictoc, trace-analysis, detection, analysis, domain-procedure, debugging-heuristic, transaction-concurrency-control-foundations, transaction-protocol-reasoning, transaction-trace-analysis]
+  travel-planning:
+    group: tasks
+    category: mathematics-or-formal-reasoning
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [search-accommodations, search-attractions, search-cities, search-driving-distance, search-flights, search-restaurants]
+    glossary_keywords: [travel, planning, constraints, search, tool-workflow, domain-procedure, search-accommodations, search-attractions, search-cities, search-driving-distance, search-flights, search-restaurants]
+  video-silence-remover:
+    group: tasks
+    category: media-content-production
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [audio-extractor, energy-calculator, pause-detector, report-generator, segment-combiner, silence-detector, video-processor]
+    glossary_keywords: [video, audio-analysis, ffmpeg, signal-processing, detection, transformation, tool-workflow, library-api-usage, audio-extractor, energy-calculator, pause-detector, report-generator]
+  weighted-gdp-calc:
+    group: tasks
+    category: finance-economics
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [xlsx]
+    glossary_keywords: [excel, finance, macrofinance, office, excel-index-match, statistics, calculation, domain-procedure, mathematical-method, xlsx]
+  xlsx-recover-data:
+    group: tasks
+    category: finance-economics
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [data-reconciliation, xlsx]
+    glossary_keywords: [excel, data-recovery, financial-analysis, cross-sheet-dependencies, analysis, calculation, data-cleaning-procedure, mathematical-method, data-reconciliation, xlsx]
+  cobol-gl-batch-reconcile:
+    group: tasks-extra
+    category: programming
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [comp3-packed-decimal, ebcdic-overpunch-decoding, gl-posting-codes, gnucobol-mainframe-batch, paired-reversal-cancellation, triangulated-fx-rates]
+    glossary_keywords: [cobol, mainframe, batch, gnucobol, finance, legacy, comp3-packed-decimal, ebcdic-overpunch-decoding, gl-posting-codes, gnucobol-mainframe-batch, paired-reversal-cancellation, triangulated-fx-rates]
+  diff-transformer_impl:
+    group: tasks-extra
+    category: ml-implementation
+    declared_allow_internet: true
+    network_mode: api
+    api_subtype: compute-backend
+    allowed_hosts:
+      - modal.com
+    skills: [attention-variants-from-papers, modal-gpu]
+    glossary_keywords: [pytorch, deep-learning, transformer, residual-connections, optimization, modal, gpu, attention-variants-from-papers, modal-gpu]
+  find-topk-similiar-chemicals:
+    group: tasks-extra
+    category: natural-science
+    declared_allow_internet: false
+    network_mode: api
+    api_subtype: data-api
+    allowed_hosts:
+      - pubchem.ncbi.nlm.nih.gov
+    skills: [pdf, pubchem-database, rdkit]
+    glossary_keywords: [chemistry, pdf, python, ranking, calculation, library-api-usage, domain-procedure, pubchem-database, rdkit]
+  gh-repo-analytics:
+    group: tasks-extra
+    category: software-engineering
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [gh-cli]
+    glossary_keywords: [github, gh-cli, data-analysis, ci-cd, devops, analysis, calculation, tool-workflow, library-api-usage]
+  gpu-cluster-online-scheduling:
+    group: tasks-extra
+    category: cloud-infrastructure
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [fragmentation-aware-packing, multi-resource-allocation-validation, online-resource-scheduling]
+    glossary_keywords: [gpu-scheduling, online-scheduling, fragmentation, cluster-management, resource-allocation, fragmentation-aware-packing, multi-resource-allocation-validation, online-resource-scheduling]
+  mhc-layer-impl:
+    group: tasks-extra
+    category: ml-implementation
+    declared_allow_internet: true
+    network_mode: api
+    api_subtype: compute-backend
+    allowed_hosts:
+      - modal.com
+    skills: [mhc-algorithm, modal-gpu, nanogpt-training]
+    glossary_keywords: [pytorch, deep-learning, transformer, residual-connections, optimization, modal, gpu, mhc-algorithm, modal-gpu, nanogpt-training]
+  pedestrian-traffic-counting:
+    group: tasks-extra
+    category: media-content-production
+    declared_allow_internet: true
+    network_mode: api
+    api_subtype: llm-provider
+    allowed_hosts:
+      - generativelanguage.googleapis.com
+    skills: [gemini-count-in-video, gemini-video-understanding, gpt-multimodal, video-frame-extraction]
+    glossary_keywords: [video understanding, pedestrian traffic counting, counting, detection, calculation, library-api-usage, domain-procedure, gemini-count-in-video, gemini-video-understanding, gpt-multimodal, video-frame-extraction]
+  pg-essay-to-audiobook:
+    group: tasks-extra
+    category: media-content-production
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [audiobook, elevenlabs-tts, gtts, openai-tts]
+    glossary_keywords: [tts, audiobook, web-scraping, openai-tts, elevenlabs, gtts, transformation, generation, library-api-usage, tool-workflow, elevenlabs-tts]
+  scheduling-email-assistant:
+    group: tasks-extra
+    category: Scheduling
+    declared_allow_internet: true
+    network_mode: api
+    api_subtype: cloud-api
+    allowed_hosts:
+      - www.googleapis.com
+      - oauth2.googleapis.com
+    skills: [constraint-parser, gmail-skill]
+    glossary_keywords: [scheduling, calendar, constraint-parser, gmail-skill]
+  speaker-diarization-subtitles:
+    group: tasks-extra
+    category: audio-visual
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [automatic-speech-recognition, multimodal-fusion, speaker-clustering, voice-activity-detection]
+    glossary_keywords: [speaker-diarization, audio, video, automatic-speech-recognition, multimodal-fusion, speaker-clustering, voice-activity-detection]
+  taxonomy-tree-merge:
+    group: tasks-extra
+    category: office-white-collar
+    declared_allow_internet: true
+    network_mode: disabled
+    tightened_from: enabled  # declared full internet but contacts no runtime host
+    skills: [hierarchical-taxonomy-clustering]
+    glossary_keywords: [taxonomy-alignment, hierarchical-clustering, embeddings, nlp, ecommerce, ontology-merging, transformation, classification, data-cleaning-procedure, domain-procedure, hierarchical-taxonomy-clustering]
+  video-filler-word-remover:
+    group: tasks-extra
+    category: media-content-production
+    declared_allow_internet: false
+    network_mode: disabled
+    skills: [ffmpeg-video-editing, filler-word-processing, whisper-transcription]
+    glossary_keywords: [video, audio, editing, filler-words, detection, transformation, tool-workflow, library-api-usage, ffmpeg-video-editing, filler-word-processing, whisper-transcription]
+  video-tutorial-indexer:
+    group: tasks-extra
+    category: media-content-production
+    declared_allow_internet: true
+    network_mode: api
+    api_subtype: llm-provider
+    allowed_hosts:
+      - api.openai.com
+    skills: [speech-to-text]
+    glossary_keywords: [video, speech-to-text, nlp, tutorial, education, multimodal, extraction, analysis, tool-workflow, domain-procedure]

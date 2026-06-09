@@ -1,0 +1,148 @@
+# SkillsBench-scope glossary — a FIXED controlled vocabulary that enriches the
+# Harbor task-config surface so SkillsBench tasks round-trip without free-form drift.
+#
+# Three tiers:
+#   1. controlled_*  — closed enums (lint-enforced). Mirror SkillsBench taxonomy.yaml.
+#   2. network_class — the enrichment this branch adds (see network-modes below).
+#   3. open tags + skills — uncontrolled domain keywords + SKILL.md triggers (advisory).
+#
+# Harbor mapping: SkillsBench metadata lives in Harbor's free-form [metadata]; this
+# glossary promotes the load-bearing fields to a validated vocabulary while keeping
+# them inside `metadata:` (no new root keys — see docs/task-standard.md root-key rule).
+
+schema:
+  version: "0.1-skillsbench"
+  enriches: harbor.TaskConfig            # schema_version "1.3" surface
+  scope: skillsbench                     # this glossary is intentionally SkillsBench-only
+  lint: tasks/*/task.toml [metadata] must use controlled_* values; tags/skills are open
+
+# ── Tier 1: controlled vocabulary (closed sets) — from SkillsBench taxonomy.yaml ──
+controlled_categories:
+  - software-engineering
+  - cybersecurity
+  - natural-science
+  - finance-economics
+  - office-white-collar
+  - media-content-production
+  - industrial-physical-systems
+  - mathematics-or-formal-reasoning
+
+controlled_task_types:
+  - analysis
+  - calculation
+  - classification
+  - detection
+  - debugging
+  - implementation
+  - optimization
+  - repair
+  - transformation
+  - extraction
+  - generation
+  - simulation
+  - planning
+  - verification
+  - search
+  - ranking
+  - formatting
+
+controlled_modalities:
+  - source-code
+  - binary
+  - csv
+  - spreadsheet
+  - pdf
+  - document
+  - presentation
+  - image
+  - video
+  - audio
+  - network-logs
+  - database
+  - json
+  - xml
+  - geospatial-data
+  - scientific-data
+  - 3d-model
+  - time-series
+  - webpage
+
+controlled_interfaces:
+  - terminal
+  - python
+  - r
+  - spreadsheet-app
+  - office-suite
+  - browser
+  - gui-desktop
+  - database
+  - compiler-toolchain
+  - simulation-tool
+  - formal-prover
+
+controlled_skill_types:
+  - domain-procedure          # most common (62 tasks): step-by-step domain method
+  - tool-workflow             # operate a specific tool/CLI to an output
+  - library-api-usage         # call a library/SDK/API correctly
+  - file-format-knowledge     # parse/produce a binary or structured format
+  - mathematical-method       # apply a formula / numerical method
+  - debugging-heuristic       # localize and fix a fault
+  - evaluation-protocol       # run/score an evaluation correctly
+  - data-cleaning-procedure   # normalize messy inputs
+
+controlled_difficulties: [easy, medium, hard]
+controlled_category_confidences: [high, medium, low]
+
+# ── Tier 2: network_class — the enrichment (replaces Harbor's binary allow_internet) ──
+# SkillsBench ships only `[environment] allow_internet = true|false`. That binary is
+# over-permissive: of 55 `true` tasks, ZERO need open web search and 48 contact no
+# runtime host at all. This vocabulary splits it into three executable classes that
+# map onto the existing benchflow NetworkMode enum + an agent-egress/forbidden-tools
+# overlay (see docs/task-standard.md "Agent And Runtime Policy").
+controlled_network_classes:
+  disabled:
+    meaning: no task-environment internet at agent runtime; data is pre-baked.
+    agent_egress: model-only          # the agent harness still reaches its LLM
+    maps_to: {network_mode: no-network, agent_policy.search: disabled}
+    forbidden_tools: [web_search, browser_fetch]
+  api:
+    meaning: a small enumerable set of API/data hosts; NO open web search/browsing.
+    agent_egress: model-and-allowlist
+    maps_to: {network_mode: allowlist, allowed_hosts: "<from network-map.yaml>"}
+    forbidden_tools: [web_search]      # browsing/search still denied; only the allowlist
+    subtypes: [data-api, cloud-api, llm-provider, compute-backend]
+  enabled-blacklist:
+    meaning: full internet minus a denylist. SkillsBench SOURCE default only.
+    note: no SkillsBench task actually requires this; kept for lossless source import.
+    agent_egress: open
+    maps_to: {network_mode: public, blocked_hosts: "<denylist>"}  # denylist = enrichment
+    enrichment_gap: benchflow NetworkMode has no denylist today; public is allow-all.
+
+# ── Tier 3: advisory keyword + skill vocabulary (open, not lint-enforced) ──
+# 511 distinct open tags and 228 SKILL.md skills across 100 tasks. These are NOT a
+# closed set; they drive skill-matching. The high-frequency domain keywords below are
+# documented for discoverability only.
+open_domain_keywords_top:
+  - pdf
+  - xlsx
+  - excel
+  - python
+  - security
+  - finance
+  - office
+  - astronomy
+  - statistics
+  - data-analysis
+  - energy
+  - signal-processing
+  - hydrology
+  - java
+  - compilation
+
+# Each task ships skills/ as Anthropic SKILL.md packages. The TRIGGER vocabulary is the
+# SKILL.md `description` (see skill_format below) — its keywords decide when a skill loads.
+skill_format:
+  reference: https://github.com/mattpocock/skills/blob/main/skills/productivity/grill-me/SKILL.md
+  frontmatter: {name: kebab-case-id, description: "what it does + WHEN to use (trigger keywords)"}
+  body: free-form operating instructions, no required headings
+  benchflow_placement: environment/skills/<name>/SKILL.md   # mounted per agent_policy.skill_access

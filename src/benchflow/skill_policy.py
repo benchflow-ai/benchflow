@@ -9,6 +9,7 @@ must be stripped so a no-skills run cannot pick them up through ``COPY .``.
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -180,6 +181,41 @@ def strip_task_bundled_skills(task_path: Path) -> None:
     bundled = task_bundled_skills_dir(task_path)
     if bundled.exists():
         shutil.rmtree(bundled)
+    _strip_bundled_skill_copy_lines(task_path / "environment" / "Dockerfile")
+
+
+def _strip_bundled_skill_copy_lines(dockerfile: Path) -> None:
+    if not dockerfile.exists():
+        return
+
+    lines = dockerfile.read_text().splitlines()
+    kept = [
+        line
+        for line in lines
+        if not _copies_only_task_bundled_skills(line)
+    ]
+    if kept != lines:
+        dockerfile.write_text("\n".join(kept) + "\n")
+
+
+def _copies_only_task_bundled_skills(line: str) -> bool:
+    match = re.match(r"^\s*COPY\s+(?:--\S+\s+)*(?P<args>\S.*\S|\S)\s*$", line)
+    if not match:
+        return False
+
+    try:
+        args = shlex.split(match.group("args"))
+    except ValueError:
+        return False
+    if len(args) < 2:
+        return False
+
+    sources = args[:-1]
+    return all(_is_task_bundled_skills_source(source) for source in sources)
+
+
+def _is_task_bundled_skills_source(source: str) -> bool:
+    return source.rstrip("/") == "skills"
 
 
 def _same_path(a: str | Path | None, b: Path) -> bool:

@@ -23,9 +23,7 @@ from benchflow.traces.models import GitContext, ParsedTrace, ToolCall, TraceStep
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
 # Claude Code JSONL parser
-# ---------------------------------------------------------------------------
 
 
 def _extract_content_text(content: Any) -> str:
@@ -236,9 +234,7 @@ def _parse_claude_entries(
     )
 
 
-# ---------------------------------------------------------------------------
 # opentraces JSONL parser
-# ---------------------------------------------------------------------------
 
 
 def parse_claude_code_file(path: Path) -> list[ParsedTrace]:
@@ -408,7 +404,6 @@ def parse_opentraces_record(
                     )
                 )
 
-    # Outcome
     outcome_info = record.get("outcome", {})
     outcome = "unknown"
     if isinstance(outcome_info, dict):
@@ -418,7 +413,6 @@ def parse_opentraces_record(
         elif status in ("failure", "error", "failed"):
             outcome = "failure"
 
-    # Metrics
     metrics_info = record.get("metrics", {})
     total_input = 0
     total_output = 0
@@ -476,12 +470,6 @@ def parse_opentraces_file(path: Path) -> list[ParsedTrace]:
         if isinstance(record, dict):
             traces.append(parse_opentraces_record(record))
     return traces
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _parse_iso(value: Any) -> datetime | None:
     """Parse an ISO-8601 string, returning None on failure."""

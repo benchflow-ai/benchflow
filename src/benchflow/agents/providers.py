@@ -85,10 +85,10 @@ class ProviderConfig:
         return merged
 
 
-# ── Provider registry ──
+# Provider registry
 
 PROVIDERS: dict[str, ProviderConfig] = {
-    # ── Native Vertex AI providers (agents support these natively) ──
+    # Native Vertex AI providers (agents support these natively)
     "google-vertex": ProviderConfig(
         name="google-vertex",
         base_url="https://aiplatform.googleapis.com/v1/projects/{project_id}/locations/{location}",
@@ -127,7 +127,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
             }
         ],
     ),
-    # ── Azure AI Foundry providers ──
+    # Azure AI Foundry providers
     #
     # Foundry exposes different protocol surfaces. Keep those surfaces explicit
     # in provider prefixes, while sharing one Azure resource/key env contract.
@@ -155,7 +155,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_env="AZURE_API_KEY",
         url_params={"resource": "AZURE_RESOURCE"},
     ),
-    # ── OpenAI first-party API ──
+    # OpenAI first-party API
     "openai": ProviderConfig(
         name="openai",
         base_url="https://api.openai.com/v1",
@@ -180,7 +180,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         },
     ),
     # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
-    # ── OpenAI-compatible inference servers (user-supplied base_url) ──
+    # OpenAI-compatible inference servers (user-supplied base_url)
     "vllm": ProviderConfig(
         name="vllm",
         base_url="",  # user-supplied via --agent-env BENCHFLOW_PROVIDER_BASE_URL=...
@@ -205,7 +205,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
             "anthropic-messages": "",
         },
     ),
-    # ── Custom providers (need explicit endpoint config in agent shims) ──
+    # Custom providers (need explicit endpoint config in agent shims)
     "zai": ProviderConfig(
         name="zai",
         base_url="https://api.z.ai/api/paas/v4",

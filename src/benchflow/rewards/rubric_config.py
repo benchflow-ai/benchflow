@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 try:
     import tomllib
 except ModuleNotFoundError:  # Python < 3.11
-    import tomli as tomllib  # type: ignore[no-redef]  # ty: ignore[unresolved-import]
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from benchflow.rewards.events import Space
-
-# ------------------------------------------------------------------
-# Data models
-# ------------------------------------------------------------------
 
 # The valid evaluation spaces a criterion may declare. Mirrors
 # ``benchflow.rewards.events.Space`` so rubrics can tag a criterion as
@@ -25,6 +22,13 @@ from benchflow.rewards.events import Space
 _VALID_SPACES: frozenset[str] = frozenset(
     {"output", "action", "reasoning", "memory", "latent"}
 )
+_VALID_REWARD_KIT_AGGREGATIONS = {
+    "weighted_mean",
+    "weighted_sum",
+    "all_pass",
+    "any_pass",
+    "threshold",
+}
 
 
 def _coerce_space(raw: object) -> Space:
@@ -38,7 +42,7 @@ def _coerce_space(raw: object) -> Space:
     if raw is None:
         return "output"
     if isinstance(raw, str) and raw in _VALID_SPACES:
-        return raw  # type: ignore[return-value]
+        return cast(Space, raw)
     raise ValueError(
         f"Rubric criterion 'space' must be one of {sorted(_VALID_SPACES)}; got {raw!r}"
     )
@@ -113,17 +117,11 @@ class RubricConfig:
     criteria: list[Criterion] = field(default_factory=list)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
 
-
-# ------------------------------------------------------------------
-# Parser
-# ------------------------------------------------------------------
-
-
 def _parse_criterion(raw: dict) -> Criterion:
     return Criterion(
-        description=raw.get("description", ""),
+        description=raw.get("description") or raw.get("match_criteria", ""),
         type=raw.get("type", "binary"),
-        name=raw.get("name") or raw.get("id"),
+        name=raw.get("name") or raw.get("id") or raw.get("title"),
         points=raw.get("points", 5),
         min=raw.get("min", 0.0),
         max=raw.get("max", 100.0),
@@ -145,8 +143,11 @@ def _parse_judge(raw: dict) -> JudgeConfig:
 
 
 def _parse_scoring(raw: dict) -> ScoringConfig:
+    aggregation = raw.get("aggregation", raw.get("method", "weighted_mean"))
+    if aggregation == "mean":
+        aggregation = "weighted_mean"
     return ScoringConfig(
-        aggregation=raw.get("aggregation", "weighted_mean"),
+        aggregation=aggregation,
         threshold=raw.get("threshold", 0.7),
     )
 
@@ -157,7 +158,8 @@ def load_rubric_toml(path: Path) -> RubricConfig:
         data = tomllib.load(f)
 
     judge = _parse_judge(data.get("judge", {}))
-    criteria = [_parse_criterion(c) for c in data.get("criterion", [])]
+    raw_criteria = data.get("criterion", data.get("criteria", []))
+    criteria = [_parse_criterion(c) for c in raw_criteria]
     scoring = _parse_scoring(data.get("scoring", {}))
 
     return RubricConfig(judge=judge, criteria=criteria, scoring=scoring)
@@ -218,3 +220,71 @@ def load_rubric(path: Path) -> RubricConfig:
     if path.suffix.lower() == ".json":
         return load_rubric_json(path)
     return load_rubric_toml(path)
+
+
+def criteria_aggregate_policy_from_rubric(path: Path) -> dict[str, Any]:
+    """Return a strict aggregate policy derived from declared rubric criteria.
+
+    Reward Kit runners may emit per-criterion ``metrics``. When a selected
+    verifier strategy declares a criteria file, BenchFlow treats that file as
+    the authoritative metric contract: ids are unique and nonempty, weights are
+    finite and nonnegative, and the rubric scoring method becomes the aggregate
+    policy used to compute the canonical reward.
+    """
+
+    rubric = load_rubric(path)
+    if not rubric.criteria:
+        raise ValueError(f"Reward Kit criteria file {path} declares no criteria")
+    if rubric.scoring.aggregation not in _VALID_REWARD_KIT_AGGREGATIONS:
+        raise ValueError(
+            f"Reward Kit criteria file {path} uses unsupported scoring method "
+            f"{rubric.scoring.aggregation!r}"
+        )
+    try:
+        threshold = float(rubric.scoring.threshold)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Reward Kit criteria file {path} has invalid scoring threshold"
+        ) from exc
+    if not math.isfinite(threshold) or threshold < 0.0 or threshold > 1.0:
+        raise ValueError(
+            f"Reward Kit criteria file {path} has invalid scoring threshold"
+        )
+
+    ids: list[str] = []
+    weights: dict[str, float] = {}
+    for criterion in rubric.criteria:
+        criterion_id = criterion.id.strip()
+        if not criterion_id:
+            raise ValueError(f"Reward Kit criteria file {path} has an empty id")
+        if criterion_id in weights:
+            raise ValueError(
+                f"Reward Kit criteria file {path} has duplicate id {criterion_id!r}"
+            )
+        if criterion.type not in {"binary", "likert", "numeric"}:
+            raise ValueError(
+                f"Reward Kit criteria file {path} has unsupported criterion type "
+                f"for {criterion_id!r}: {criterion.type!r}"
+            )
+        try:
+            weight = float(criterion.weight)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Reward Kit criteria file {path} has invalid weight for "
+                f"{criterion_id!r}"
+            ) from exc
+        if not math.isfinite(weight) or weight < 0.0:
+            raise ValueError(
+                f"Reward Kit criteria file {path} has invalid weight for "
+                f"{criterion_id!r}"
+            )
+        ids.append(criterion_id)
+        weights[criterion_id] = weight
+
+    return {
+        "field": "reward",
+        "method": rubric.scoring.aggregation,
+        "threshold": threshold,
+        "criteria": ids,
+        "weights": weights,
+    }

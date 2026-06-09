@@ -120,7 +120,7 @@ class Sandbox(Protocol):
     async def start(self) -> None: ...
     async def stop(self, *, delete: bool = True) -> None: ...
 
-    # --- container-level roll-back (the substrate Branch runs on) ---
+    # container-level roll-back (the substrate Branch runs on)
     async def snapshot(self, name: str | None = None) -> SandboxImage:
         """Capture the current container state as a re-usable image.
 

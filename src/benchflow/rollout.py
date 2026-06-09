@@ -48,7 +48,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from benchflow._types import Role, Scene, Turn
@@ -64,8 +64,11 @@ from benchflow._utils.result_metadata import (
 from benchflow._utils.scoring import classify_error, classify_verifier_error
 from benchflow.contracts import (
     AgentProtocolError,
+    AskUserRequest,
     BaseUser,
+    DocumentNudgeUser,
     Environment,
+    ModelDocumentNudgeUser,
     RolloutPlanes,
     RoundResult,
     SandboxStartupFailure,
@@ -205,9 +208,23 @@ def _native_acp_usage_delta(
 
 
 def _task_disallows_internet(task: Any) -> bool:
-    """Return True when task.toml requests no internet for the agent task."""
+    """Return True when task config requests no internet for the agent task."""
     env_config = getattr(getattr(task, "config", None), "environment", None)
     return getattr(env_config, "allow_internet", True) is False
+
+
+def _read_task_instruction(task_path: Path) -> str:
+    """Read the agent-facing instruction from legacy files or ``task.md``."""
+    document_path = task_path / "task.md"
+    if document_path.exists():
+        from benchflow.task.document import TaskDocument
+
+        return TaskDocument.from_path(document_path).instruction.strip()
+
+    instruction_path = task_path / "instruction.md"
+    if instruction_path.exists():
+        return instruction_path.read_text().strip()
+    raise FileNotFoundError(f"Task missing instruction.md or task.md: {task_path}")
 
 
 def _environment_uses_prebuilt_image(
@@ -247,6 +264,47 @@ def _agent_process_kill_pattern(agent_launch: str) -> str | None:
     if not agent_cmd:
         return None
     return rf"(^|[ /]){re.escape(agent_cmd)}( |$)"
+
+
+def _configured_task_workdir(task: Any) -> str | None:
+    """Return the task-declared sandbox workdir, if any."""
+
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    value = getattr(env_config, "workdir", None)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _validate_agent_workdir(workdir: str) -> None:
+    path = PurePosixPath(workdir)
+    if not path.is_absolute() or path == PurePosixPath("/"):
+        raise ValueError("environment.workdir must be an absolute non-root path")
+
+
+async def _resolve_agent_cwd(env: Any, task: Any) -> str:
+    """Resolve and materialize the workspace path used by agents and verifiers."""
+
+    configured = _configured_task_workdir(task)
+    if configured is None:
+        cwd_result = await env.exec("pwd", timeout_sec=10)
+        return (cwd_result.stdout or "").strip() or "/app"
+
+    _validate_agent_workdir(configured)
+    quoted = shlex.quote(configured)
+    result = await env.exec(
+        f"mkdir -p {quoted} && cd {quoted} && pwd",
+        user="root",
+        timeout_sec=10,
+    )
+    return_code = getattr(result, "return_code", getattr(result, "exit_code", 0))
+    if isinstance(return_code, int) and return_code != 0:
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        raise RuntimeError(
+            f"failed to prepare environment.workdir {configured!r}: {stderr}"
+        )
+    return (getattr(result, "stdout", "") or "").strip() or configured
 
 
 def _skill_nudge(agent_env: dict[str, str] | None) -> str:
@@ -504,6 +562,21 @@ def _should_record_env_entry(name: str, value: str) -> bool:
     return not _is_secret_env_key(name) and not _is_secret_env_value(name, value)
 
 
+def _environment_manifest_metadata(
+    manifest: EnvironmentManifest | None,
+) -> dict[str, Any] | None:
+    if manifest is None:
+        return None
+    return {
+        "name": manifest.name,
+        "image": manifest.image,
+        "base_image": manifest.base_image,
+        "owns_lifecycle": manifest.owns_lifecycle,
+        "isolation": manifest.isolation,
+        "services": [service.name for service in manifest.services],
+    }
+
+
 def _write_config(
     rollout_dir: Path,
     *,
@@ -525,6 +598,7 @@ def _write_config(
     agent_idle_timeout: int | None = None,
     scenes: list[Scene] | None = None,
     source_provenance: dict[str, Any] | None = None,
+    environment_manifest: EnvironmentManifest | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     recorded_env = {
@@ -536,6 +610,7 @@ def _write_config(
         "model": model,
         "reasoning_effort": reasoning_effort,
         "environment": environment,
+        "environment_manifest": _environment_manifest_metadata(environment_manifest),
         **skill_policy.config_metadata(),
         "sandbox_user": sandbox_user,
         "sandbox_locked_paths": sandbox_locked_paths,
@@ -806,11 +881,8 @@ def _resolve_prompts(
     agent: str | None = None,
     planes: RolloutPlanes | None = None,
 ) -> list[str]:
-    """Read instruction.md and resolve prompt list."""
-    instruction_path = task_path / "instruction.md"
-    if not instruction_path.exists():
-        raise FileNotFoundError(f"Task missing instruction.md: {task_path}")
-    instruction = instruction_path.read_text().strip()
+    """Read the task instruction and resolve prompt list."""
+    instruction = _read_task_instruction(task_path)
 
     if skill_nudge:
         skill_display_path = "~/.claude/skills"
@@ -865,6 +937,59 @@ def _resolve_prompts(
     return [p if p is not None else instruction for p in prompts]
 
 
+def _is_document_user(user: BaseUser) -> bool:
+    return isinstance(user, (DocumentNudgeUser, ModelDocumentNudgeUser))
+
+
+def _compose_scene_user_prompt(scene_prompt: str, user_prompt: str | None) -> str:
+    """Attach an optional simulated-user nudge to a required scene prompt."""
+
+    scene_prompt = scene_prompt.strip()
+    if user_prompt is None:
+        return scene_prompt
+    user_prompt = user_prompt.strip()
+    if not user_prompt or user_prompt == scene_prompt:
+        return scene_prompt
+    return f"{scene_prompt}\n\nUser follow-up:\n{user_prompt}"
+
+
+def _user_confirmation_policy(user: BaseUser) -> str | None:
+    value = getattr(user, "confirmation_policy", None)
+    return value if isinstance(value, str) else None
+
+
+def _user_handoff_kind(user: BaseUser) -> str | None:
+    value = getattr(user, "handoff_kind", None)
+    return value if isinstance(value, str) else None
+
+
+def _least_permissive_option_id(
+    options: list[str],
+    option_kinds: dict[str, str] | None = None,
+) -> str:
+    """Select a deny/reject option for non-interactive human confirmation."""
+
+    if not options:
+        return "deny"
+    option_kinds = option_kinds or {}
+    reject_kinds = ("reject", "deny", "cancel", "disallow", "block")
+    for option in options:
+        kind = option_kinds.get(option, "").replace("-", "_").lower()
+        if any(token in kind for token in reject_kinds):
+            return option
+    deny_tokens = ("deny", "reject", "cancel", "disallow", "block", "no")
+    for option in options:
+        normalized = option.replace("-", "_").lower()
+        if any(token in normalized for token in deny_tokens):
+            return option
+    allow_tokens = ("allow", "approve", "bypass", "yes")
+    for option in options:
+        normalized = option.replace("-", "_").lower()
+        if not any(token in normalized for token in allow_tokens):
+            return option
+    return options[0]
+
+
 async def _start_env_and_upload(
     env: Any,
     task_path: Path,
@@ -896,30 +1021,65 @@ async def _start_env_and_upload(
         timing["environment_setup"] = (datetime.now() - t0).total_seconds()
     if on_started is not None:
         on_started()
-    if (task_path / "instruction.md").exists():
-        await env.upload_file(task_path / "instruction.md", "/instruction.md")
-    if (task_path / "solution").is_dir():
-        await env.upload_dir(task_path / "solution", "/solution")
+    instruction_path = task_path / "instruction.md"
+    if instruction_path.exists() and not (task_path / "task.md").exists():
+        await env.upload_file(instruction_path, "/instruction.md")
+    else:
+        instruction = _read_task_instruction(task_path)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+            f.write(instruction)
+            f.write("\n")
+            temp_instruction = Path(f.name)
+        try:
+            await env.upload_file(temp_instruction, "/instruction.md")
+        finally:
+            temp_instruction.unlink(missing_ok=True)
+    from benchflow.task.paths import SandboxPaths, TaskPaths
+
+    paths = TaskPaths(task_path)
+    if paths.solution_dir.is_dir():
+        sandbox_paths = SandboxPaths()
+        target_dir = (
+            sandbox_paths.oracle_dir
+            if paths.uses_native_oracle_dir
+            else sandbox_paths.solution_dir
+        )
+        await env.upload_dir(paths.solution_dir, str(target_dir))
 
 
 async def _run_oracle(
     env: Any, task_path: Path, timeout: int, sandbox_user: str | None = None
 ) -> tuple[list[dict], str]:
-    """Run oracle mode (solution/solve.sh), return (trajectory, agent_name)."""
+    """Run oracle mode (oracle/solve.sh or legacy solution/solve.sh)."""
     from benchflow.task import Task, resolve_env_vars
+    from benchflow.task.paths import SandboxPaths
 
-    logger.info("Oracle mode: running solution/solve.sh")
-    if not (task_path / "solution" / "solve.sh").exists():
-        raise FileNotFoundError(f"Oracle requires solution/solve.sh: {task_path}")
+    logger.info("Oracle mode: running oracle solve.sh")
+    task = Task(task_path)
+    if not task.paths.solve_path.exists():
+        raise FileNotFoundError(
+            f"Oracle requires oracle/solve.sh or legacy solution/solve.sh: {task_path}"
+        )
+    sandbox_paths = SandboxPaths()
+    oracle_dir = (
+        sandbox_paths.oracle_dir
+        if task.paths.uses_native_oracle_dir
+        else sandbox_paths.solution_dir
+    )
+    oracle_command_label = (
+        "oracle/solve.sh"
+        if task.paths.uses_native_oracle_dir
+        else "solution/solve.sh"
+    )
+    oracle_script = shlex.quote(str(oracle_dir / "solve.sh"))
     if sandbox_user:
-        oracle_cmd = "DEBIAN_FRONTEND=noninteractive bash /solution/solve.sh"
+        oracle_cmd = f"DEBIAN_FRONTEND=noninteractive bash {oracle_script}"
         cmd = (
             f"su -s /bin/bash {shlex.quote(sandbox_user)} -c {shlex.quote(oracle_cmd)}"
         )
     else:
-        cmd = "bash /solution/solve.sh"
+        cmd = f"bash {oracle_script}"
     oracle_env: dict[str, str] = {"DEBIAN_FRONTEND": "noninteractive"}
-    task = Task(task_path)
     if task.config.solution.env:
         oracle_env.update(resolve_env_vars(task.config.solution.env))
     result = await env.exec(
@@ -937,7 +1097,7 @@ async def _run_oracle(
     trajectory = [
         {
             "type": "oracle",
-            "command": "solution/solve.sh",
+            "command": oracle_command_label,
             "return_code": result.return_code,
             "stdout": (preview.stdout or "")[:_DIAG_TRUNCATE],
         }
@@ -1025,6 +1185,49 @@ def _install_docker_compat(planes: RolloutPlanes | None = None) -> None:
     (planes or default_rollout_planes()).install_docker_compat()
 
 
+def _task_document_scenes(
+    task_path: Path,
+    *,
+    prompts: list[str | None] | None,
+    skill_mode: str,
+) -> list[Scene]:
+    """Load scene declarations from ``task.md`` when it is the task entrypoint."""
+    if prompts is not None or skill_mode == SKILL_MODE_SELF_GEN:
+        return []
+    document_path = task_path / "task.md"
+    if not document_path.exists():
+        return []
+
+    from benchflow.task.document import TaskDocument
+    from benchflow.task.prompts import materialize_prompt_plan_scenes
+
+    document = TaskDocument.from_path(document_path)
+    return materialize_prompt_plan_scenes(document)
+
+
+def _task_document_user_runtime(
+    task_path: Path,
+    *,
+    prompts: list[str | None] | None,
+    skill_mode: str,
+) -> tuple[BaseUser, int | None] | None:
+    """Compile a supported document-declared user into runtime configuration."""
+
+    if prompts is not None or skill_mode == SKILL_MODE_SELF_GEN:
+        return None
+    document_path = task_path / "task.md"
+    if not document_path.exists():
+        return None
+
+    from benchflow.task.document import TaskDocument
+    from benchflow.task.prompts import compile_document_user_runtime
+
+    runtime = compile_document_user_runtime(TaskDocument.from_path(document_path))
+    if runtime.user is None:
+        return None
+    return runtime.user, runtime.max_rounds
+
+
 __all__ = [
     "Role",
     "Scene",
@@ -1061,14 +1264,13 @@ class RolloutConfig:
     environment_manifest: EnvironmentManifest | None = None
     # Abort the prompt if no tool call arrives for this many seconds.
     # Catches agents that hung silently while the local process is alive
-    # (e.g. gemini-cli not responding). None disables idle detection and
-    # falls back to the agent's wall-clock timeout (task.toml [agent]).
+    # (e.g. gemini-cli not responding). None disables idle detection.
     agent_idle_timeout: int | None = 600
     # Hard wall-clock budget for the agent prompt, in seconds. When set,
-    # overrides the per-task default (``task.toml [agent] timeout_sec``).
+    # overrides the per-task default (task config [agent] timeout_sec).
     # ``None`` keeps the task's own default — this is the seam through which
     # ``Runtime(RuntimeConfig(timeout=...))`` enforces a caller-supplied
-    # budget without editing every task.toml (#378).
+    # budget without editing every task definition (#378).
     timeout: int | None = None
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
 
@@ -1106,6 +1308,23 @@ class RolloutConfig:
         self.skill_mode = normalize_skill_mode(self.skill_mode)
         if self.artifact_skill_mode is not None:
             self.artifact_skill_mode = normalize_skill_mode(self.artifact_skill_mode)
+        explicit_scenes = bool(self.scenes)
+        if not explicit_scenes:
+            self.scenes = _task_document_scenes(
+                self.task_path,
+                prompts=self.prompts,
+                skill_mode=self.skill_mode,
+            )
+        if self.user is None and not explicit_scenes:
+            document_user = _task_document_user_runtime(
+                self.task_path,
+                prompts=self.prompts,
+                skill_mode=self.skill_mode,
+            )
+            if document_user is not None:
+                self.user, max_rounds = document_user
+                if max_rounds is not None:
+                    self.max_user_rounds = max_rounds
         if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
             raise ValueError("skills_dir requires skill_mode='with-skill'")
         if not isinstance(self.jobs_dir, Path):
@@ -1141,10 +1360,17 @@ class RolloutConfig:
     ) -> RolloutConfig:
         """Construct from flat SDK.run()-style args."""
         mode = normalize_skill_mode(skill_mode)
-        scenes = (
-            []
-            if mode == SKILL_MODE_SELF_GEN
-            else [
+        document_scenes = _task_document_scenes(
+            Path(task_path),
+            prompts=prompts,
+            skill_mode=mode,
+        )
+        if mode == SKILL_MODE_SELF_GEN:
+            scenes = []
+        elif document_scenes:
+            scenes = document_scenes
+        else:
+            scenes = [
                 Scene.single(
                     agent=agent,
                     model=model,
@@ -1152,7 +1378,16 @@ class RolloutConfig:
                     prompts=prompts,
                 )
             ]
-        )
+        if "user" not in kwargs:
+            document_user = _task_document_user_runtime(
+                Path(task_path),
+                prompts=prompts,
+                skill_mode=mode,
+            )
+            if document_user is not None:
+                kwargs["user"], max_rounds = document_user
+                if max_rounds is not None and "max_user_rounds" not in kwargs:
+                    kwargs["max_user_rounds"] = max_rounds
         return cls(
             task_path=task_path,
             scenes=scenes,
@@ -1398,7 +1633,7 @@ class Rollout:
             raise RuntimeError("Rollout.setup() must run before building a result")
         return self._started_at
 
-    # ── Phase 1: SETUP (host-side, no container yet) ──
+    # Phase 1: SETUP (host-side, no container yet)
 
     async def setup(self) -> None:
         """Resolve config, create environment object (not yet started)."""
@@ -1410,7 +1645,7 @@ class Rollout:
             )
         if cfg.oracle_access and cfg.user is None:
             logger.warning(
-                "oracle_access=True without a User — /solution stays visible "
+                "oracle_access=True without a User — oracle files stay visible "
                 "to the agent for the entire trial."
             )
 
@@ -1527,6 +1762,7 @@ class Rollout:
             model=cfg.primary_model,
             reasoning_effort=cfg.primary_reasoning_effort,
             environment=cfg.environment,
+            environment_manifest=cfg.environment_manifest,
             skill_policy=task_skill_policy,
             sandbox_user=cfg.sandbox_user,
             context_root=cfg.context_root,
@@ -1544,7 +1780,7 @@ class Rollout:
 
         self._phase = "setup"
 
-    # ── Phase 2: START (container comes up) ──
+    # Phase 2: START (container comes up)
 
     async def start(self) -> None:
         """Start the environment and upload task files."""
@@ -1592,7 +1828,7 @@ class Rollout:
 
         self._phase = "started"
 
-    # ── Phase 3: INSTALL AGENT ──
+    # Phase 3: INSTALL AGENT
 
     async def install_agent(self) -> None:
         """Install the primary agent binary, set up credentials, sandbox user, skills, lockdown.
@@ -1604,9 +1840,7 @@ class Rollout:
         cfg = self._config
         rollout_dir = self._require_rollout_dir()
 
-        cwd_result = await self._env.exec("pwd", timeout_sec=10)
-        agent_cwd = (cwd_result.stdout or "").strip() or "/app"
-        self._agent_cwd = agent_cwd
+        self._agent_cwd = await _resolve_agent_cwd(self._env, self._task)
 
         if cfg.primary_agent == "oracle":
             if cfg.sandbox_user:
@@ -1692,7 +1926,7 @@ class Rollout:
 
         self._phase = "installed"
 
-    # ── Phase 3b: CONNECT (ACP session — re-entrant) ──
+    # Phase 3b: CONNECT (ACP session — re-entrant)
 
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
@@ -1822,6 +2056,37 @@ class Rollout:
             return
         adapter.on_ask_user(handler)
 
+    def _install_document_confirmation_handler(self, user: BaseUser) -> bool:
+        """Install a fail-closed permission handler for document human policy.
+
+        ``confirmation_policy: human`` means BenchFlow must not silently fall
+        back to ACP's benchmark-mode auto-approve path. If a caller already
+        registered an explicit ``on_ask_user`` handler we treat that as the
+        human/policy hook and leave it alone; otherwise the non-interactive
+        default denies/rejects permission requests when a deny option exists.
+        """
+
+        if _user_confirmation_policy(user) != "human":
+            return False
+        if getattr(self, "_ask_user_handler", None) is not None:
+            return False
+
+        async def _deny_without_human(request: AskUserRequest) -> str:
+            option = _least_permissive_option_id(
+                request.options,
+                request.option_kinds,
+            )
+            logger.info(
+                "Document confirmation_policy=human denied ask_user request "
+                "%s with option %s",
+                request.request_id,
+                option,
+            )
+            return option
+
+        self.on_ask_user(_deny_without_human)
+        return True
+
     def _capture_partial_acp_trajectory(self) -> None:
         """Append the live session's uncaptured tail to ``self._trajectory``.
 
@@ -1856,7 +2121,7 @@ class Rollout:
             self._n_tool_calls += new_tools
         self._session_tool_count = len(session.tool_calls)
 
-    # ── Phase 3c: EXECUTE ──
+    # Phase 3c: EXECUTE
 
     async def execute(
         self, prompts: list[str] | None = None, *, node: RolloutNode | None = None
@@ -2025,7 +2290,7 @@ class Rollout:
             steps[-1].data["n_tool_calls"] += new_tools - batch_tools
         return steps
 
-    # ── Phase 3d: BRANCH ──
+    # Phase 3d: BRANCH
 
     async def branch(
         self,
@@ -2058,7 +2323,7 @@ class Rollout:
             self, n, run_child, require_sandbox_snapshot=require_sandbox_snapshot
         )
 
-    # ── Phase 4: VERIFY ──
+    # Phase 4: VERIFY
 
     async def verify(self) -> dict | None:
         """Run the verifier and return rewards."""
@@ -2126,7 +2391,7 @@ class Rollout:
             )
             # Purge agent-injected conftest/sitecustomize/.pth without
             # killing processes or restoring workspace.
-            # Honor per-task [verifier.hardening] opt-outs from task.toml.
+            # Honor per-task [verifier.hardening] opt-outs from task config.
             await self._planes.cleanup_verifier_python_hooks(
                 self._env,
                 getattr(self._task, "task_dir", None),
@@ -2172,7 +2437,7 @@ class Rollout:
             logger.error(verifier_error)
         return rewards, verifier_output, verifier_error
 
-    # ── Phase 5: CLEANUP ──
+    # Phase 5: CLEANUP
 
     async def cleanup(self) -> None:
         """Close ACP client and stop the environment."""
@@ -2278,7 +2543,7 @@ class Rollout:
         )
         logger.error(self._error)
 
-    # ── Full run ──
+    # Full run
 
     async def run(self) -> RolloutResult:
         """Run the complete trial lifecycle.
@@ -2340,6 +2605,7 @@ class Rollout:
                 finally:
                     if cfg.oracle_access:
                         await self._env.exec(
+                            "mv /oracle_backup /oracle 2>/dev/null || true; "
                             "mv /solution_oracle_backup /solution 2>/dev/null || true",
                             user="root",
                             timeout_sec=10,
@@ -2406,7 +2672,7 @@ class Rollout:
             )
         return self._build_result()
 
-    # ── Scene-authored Step execution ──
+    # Scene-authored Step execution
 
     async def _export_generated_skills(self) -> None:
         """Download creator-produced skills before sandbox cleanup.
@@ -2501,9 +2767,11 @@ class Rollout:
             for step in steps:
                 role = scene_step_role(step)
                 role_key = (
+                    step.data.get("scene_index"),
                     role.name,
                     role.agent,
                     role.model,
+                    role.reasoning_effort,
                     role.timeout_sec,
                     role.idle_timeout_sec,
                     tuple(sorted(role.env.items())),
@@ -2536,133 +2804,239 @@ class Rollout:
         user = cfg.user
         assert user is not None
 
-        if len(cfg.effective_scenes) > 1:
-            raise ValueError(
-                "User-driven loops operate on a single scene. "
-                f"Got {len(cfg.effective_scenes)} scenes."
-            )
-        scene = cfg.effective_scenes[0]
-        if len(scene.roles) != 1:
-            raise ValueError(
-                "User-driven loops require a single-role scene. "
-                f"Got {len(scene.roles)} roles."
-            )
-        role = scene.roles[0]
+        scenes = cfg.effective_scenes
+        allow_team_handoff = (
+            _is_document_user(user) and _user_handoff_kind(user) == "sequential-shared"
+        )
+        for scene in scenes:
+            if len(scene.roles) != 1:
+                if not allow_team_handoff:
+                    raise ValueError(
+                        "User-driven loops require each scene to have exactly one "
+                        f"role. Scene {scene.name!r} has {len(scene.roles)} roles."
+                    )
+                if not scene.turns:
+                    raise ValueError(
+                        "Sequential team handoff user loops require explicit turns "
+                        f"for multi-role scene {scene.name!r}."
+                    )
+                continue
+            scene_role = scene.roles[0].name
+            if any(turn.role != scene_role for turn in scene.turns):
+                raise ValueError(
+                    "User-driven loops require every turn in a scene to use "
+                    f"that scene's single role. Scene {scene.name!r} uses role "
+                    f"{scene_role!r}."
+                )
 
-        instruction = (
-            self._resolved_prompts[0]
-            if self._resolved_prompts
-            else ("Solve the task described in /app/instruction.md")
+        steps = compile_scenes_to_steps(
+            scenes,
+            default_prompt=(
+                self._resolved_prompts[0] if self._resolved_prompts else None
+            ),
+        )
+        if not steps:
+            raise ValueError(
+                "User-driven loops require at least one single-role scene turn."
+            )
+        if len(steps) > cfg.max_user_rounds:
+            raise ValueError(
+                "User-driven loops require max_user_rounds to cover every "
+                f"scene turn. Got {len(steps)} turns and "
+                f"max_user_rounds={cfg.max_user_rounds}."
+            )
+        installed_confirmation_handler = self._install_document_confirmation_handler(
+            user
         )
 
-        # Oracle access: read /solution before the agent runs, then remove it
-        solution: str | None = None
-        if cfg.oracle_access:
-            cat = await self._env.exec(
-                "cat /solution/solve.sh 2>/dev/null || true",
-                user="root",
-                timeout_sec=10,
-            )
-            solution = (cat.stdout or "").strip() or None
-
-        await user.setup(instruction, solution)
-
-        # Hide oracle files from agent — move rather than delete so the
-        # final verify() can still access /solution if the verifier needs it.
-        if cfg.oracle_access:
-            await self._env.exec(
-                "mv /solution /solution_oracle_backup 2>/dev/null || true",
-                user="root",
-                timeout_sec=10,
+        try:
+            instruction = (
+                self._resolved_prompts[0]
+                if self._resolved_prompts
+                else ("Solve the task described in /app/instruction.md")
             )
 
-        round_result: RoundResult | None = None
-        rounds_log: list[dict] = []
-
-        for round_num in range(cfg.max_user_rounds):
-            try:
-                prompt = await user.run(round_num, instruction, round_result)
-            except Exception as e:
-                self._error = f"user.run() failed at round {round_num}: {e}"
-                logger.error(self._error, exc_info=True)
-                break
-
-            if prompt is None:
-                logger.info(f"[User] stopped at round {round_num}")
-                break
-
-            logger.info(
-                f"[User] round {round_num}: prompt={prompt[:80]!r}..."
-                if len(prompt) > 80
-                else f"[User] round {round_num}: prompt={prompt!r}"
-            )
-
-            # Fresh ACP session each round — agent starts clean but sees
-            # its previous workspace changes in the shared sandbox.
-            traj_before = len(self._trajectory)
-            try:
-                await self.connect_as(role)
-                await self.execute(prompts=[prompt])
-            finally:
-                await self.disconnect()
-
-            round_trajectory = self._trajectory[traj_before:]
-            round_tools = sum(
-                1
-                for e in round_trajectory
-                if isinstance(e, dict) and e.get("type") == "tool_call"
-            )
-
-            # Soft verify: run tests after agent disconnected but before
-            # next round. Temporarily restore /solution so the verifier can
-            # access it, then re-hide before the next agent round.
+            # Oracle access: read /solution before the agent runs, then remove it
+            solution: str | None = None
             if cfg.oracle_access:
-                await self._env.exec(
-                    "mv /solution_oracle_backup /solution 2>/dev/null || true",
+                cat = await self._env.exec(
+                    "cat /oracle/solve.sh 2>/dev/null || cat /solution/solve.sh 2>/dev/null || true",
                     user="root",
                     timeout_sec=10,
                 )
-            try:
-                rewards, verifier_output, verifier_error = await self.soft_verify()
-            finally:
+                solution = (cat.stdout or "").strip() or None
+
+            await user.setup(instruction, solution)
+
+            # Hide oracle files from agent — move rather than delete so the
+            # final verify() can still access them if the verifier needs them.
+            if cfg.oracle_access:
+                await self._env.exec(
+                    "mv /oracle /oracle_backup 2>/dev/null || true; "
+                    "mv /solution /solution_oracle_backup 2>/dev/null || true",
+                    user="root",
+                    timeout_sec=10,
+                )
+
+            round_result: RoundResult | None = None
+            rounds_log: list[dict] = []
+            last_role = scene_step_role(steps[0])
+            use_scene_prompts = _is_document_user(user)
+
+            async def run_round(
+                *,
+                round_num: int,
+                role: Role,
+                prompt: str,
+                scene_name: str | None,
+                handoff_from: str | None = None,
+            ) -> RoundResult:
+                nonlocal rounds_log
+
+                logger.info(
+                    f"[User] round {round_num}: prompt={prompt[:80]!r}..."
+                    if len(prompt) > 80
+                    else f"[User] round {round_num}: prompt={prompt!r}"
+                )
+
+                # Fresh ACP session each round — agent starts clean but sees
+                # its previous workspace changes in the shared sandbox.
+                traj_before = len(self._trajectory)
+                try:
+                    await self.connect_as(role)
+                    await self.execute(prompts=[prompt])
+                finally:
+                    await self.disconnect()
+
+                round_trajectory = self._trajectory[traj_before:]
+                round_tools = sum(
+                    1
+                    for e in round_trajectory
+                    if isinstance(e, dict) and e.get("type") == "tool_call"
+                )
+
+                # Soft verify: run tests after agent disconnected but before
+                # next round. Temporarily restore /solution so the verifier can
+                # access it, then re-hide before the next agent round.
                 if cfg.oracle_access:
                     await self._env.exec(
-                        "mv /solution /solution_oracle_backup 2>/dev/null || true",
+                        "mv /oracle_backup /oracle 2>/dev/null || true; "
+                        "mv /solution_oracle_backup /solution 2>/dev/null || true",
                         user="root",
                         timeout_sec=10,
                     )
+                try:
+                    rewards, verifier_output, verifier_error = await self.soft_verify()
+                finally:
+                    if cfg.oracle_access:
+                        await self._env.exec(
+                            "mv /oracle /oracle_backup 2>/dev/null || true; "
+                            "mv /solution /solution_oracle_backup 2>/dev/null || true",
+                            user="root",
+                            timeout_sec=10,
+                        )
 
-            round_result = RoundResult(
-                round=round_num,
-                trajectory=round_trajectory,
-                rewards=rewards,
-                verifier_output=verifier_output,
-                verifier_error=verifier_error,
-                n_tool_calls=round_tools,
-            )
+                handoff_from_role = (
+                    handoff_from if handoff_from and handoff_from != role.name else None
+                )
+                handoff_to_role = role.name if handoff_from_role else None
+                result = RoundResult(
+                    round=round_num,
+                    trajectory=round_trajectory,
+                    rewards=rewards,
+                    verifier_output=verifier_output,
+                    verifier_error=verifier_error,
+                    n_tool_calls=round_tools,
+                    scene=scene_name,
+                    role=role.name,
+                    handoff_from=handoff_from_role,
+                    handoff_to=handoff_to_role,
+                )
 
-            rounds_log.append(
-                {
-                    "round": round_num,
-                    "prompt": prompt,
-                    "rewards": rewards,
-                    "verifier_error": verifier_error,
-                    "n_tool_calls": round_tools,
-                    "n_trajectory_events": len(round_trajectory),
-                }
-            )
+                rounds_log.append(
+                    {
+                        "round": round_num,
+                        "scene": scene_name,
+                        "role": role.name,
+                        "handoff_from": handoff_from_role,
+                        "handoff_to": handoff_to_role,
+                        "prompt": prompt,
+                        "rewards": rewards,
+                        "verifier_error": verifier_error,
+                        "n_tool_calls": round_tools,
+                        "n_trajectory_events": len(round_trajectory),
+                    }
+                )
 
-            logger.info(
-                f"[User] round {round_num} done: rewards={rewards}, tools={round_tools}"
-            )
+                logger.info(
+                    f"[User] round {round_num} done: "
+                    f"rewards={rewards}, tools={round_tools}"
+                )
+                return result
 
-        # Persist round log
-        if rounds_log and self._rollout_dir:
-            log_path = self._rollout_dir / "user_rounds.jsonl"
-            with log_path.open("w") as f:
-                for entry in rounds_log:
-                    f.write(json.dumps(entry) + "\n")
-            logger.info(f"[User] {len(rounds_log)} rounds → {log_path}")
+            round_num = 0
+            for step in steps:
+                scene_prompt = scene_step_prompt(step)
+                try:
+                    user_prompt = await user.run(
+                        round_num,
+                        scene_prompt,
+                        round_result,
+                    )
+                except Exception as e:
+                    self._error = f"user.run() failed at round {round_num}: {e}"
+                    logger.error(self._error, exc_info=True)
+                    break
+
+                if use_scene_prompts:
+                    prompt = _compose_scene_user_prompt(scene_prompt, user_prompt)
+                else:
+                    if user_prompt is None:
+                        logger.info(f"[User] stopped at round {round_num}")
+                        break
+                    prompt = user_prompt
+                next_role = scene_step_role(step)
+                round_result = await run_round(
+                    round_num=round_num,
+                    role=next_role,
+                    prompt=prompt,
+                    scene_name=str(step.data.get("scene") or "") or None,
+                    handoff_from=round_result.role if round_result else None,
+                )
+                last_role = next_role
+                round_num += 1
+
+            while round_num < cfg.max_user_rounds:
+                try:
+                    prompt = await user.run(round_num, instruction, round_result)
+                except Exception as e:
+                    self._error = f"user.run() failed at round {round_num}: {e}"
+                    logger.error(self._error, exc_info=True)
+                    break
+
+                if prompt is None:
+                    logger.info(f"[User] stopped at round {round_num}")
+                    break
+
+                round_result = await run_round(
+                    round_num=round_num,
+                    role=last_role,
+                    prompt=prompt,
+                    scene_name=None,
+                    handoff_from=round_result.role if round_result else None,
+                )
+                round_num += 1
+
+            # Persist round log
+            if rounds_log and self._rollout_dir:
+                log_path = self._rollout_dir / "user_rounds.jsonl"
+                with log_path.open("w") as f:
+                    for entry in rounds_log:
+                        f.write(json.dumps(entry) + "\n")
+                logger.info(f"[User] {len(rounds_log)} rounds → {log_path}")
+        finally:
+            if installed_confirmation_handler:
+                self.on_ask_user(None)
 
     async def connect_as(self, role: Role) -> None:
         """Open an ACP connection for a specific role.
@@ -2764,7 +3138,7 @@ class Rollout:
 
         self._phase = "connected"
 
-    # ── Internal helpers ──
+    # Internal helpers
 
     async def _probe_sandbox_health(self) -> None:
         """Quick health probe after transport death. Enriches transport diagnostic.

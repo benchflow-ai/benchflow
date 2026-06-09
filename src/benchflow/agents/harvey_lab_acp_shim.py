@@ -108,9 +108,6 @@ if __name__ == "__main__":
 """
 
 
-# ── ACP stdio I/O ─────────────────────────────────────────────────────────────
-
-
 def send(msg):
     sys.stdout.write(json.dumps(msg) + "\n")
     sys.stdout.flush()
@@ -127,7 +124,7 @@ def recv():
         return json.loads(line)
 
 
-# ── Lightweight filesystem Sandbox ────────────────────────────────────────────
+# Lightweight filesystem Sandbox
 #
 # Implements the subset of sandbox.sandbox.Sandbox that ToolExecutor needs,
 # backed by direct filesystem and subprocess calls (no Podman).
@@ -297,7 +294,7 @@ class ExecResult:
         return self.returncode == 0
 
 
-# ── Harvey LAB agent runner ──────────────────────────────────────────────────
+# Harvey LAB agent runner
 
 
 def _load_system_prompt() -> str:
@@ -552,9 +549,6 @@ def _mirror_workspace_outputs(workspace_dir: Path, output_dir: Path) -> int:
     return mirrored
 
 
-# ── ACP notification helpers ──────────────────────────────────────────────────
-
-
 def _emit_text(session_id: str, text: str):
     """Emit agent text as ACP agent_message_chunk."""
     send(
@@ -627,10 +621,6 @@ def _emit_tool_result(session_id: str, tool_call_id: str, result: str):
             },
         }
     )
-
-
-# ── Main ACP loop ─────────────────────────────────────────────────────────────
-
 
 def main():
     session_id = "harvey-lab-shim"

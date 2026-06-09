@@ -44,9 +44,6 @@ _PARAM_MAP = {
 }
 
 
-# ── ACP stdio I/O ─────────────────────────────────────────────────────────────
-
-
 def send(msg):
     sys.stdout.write(json.dumps(msg) + "\n")
     sys.stdout.flush()
@@ -63,7 +60,7 @@ def recv():
         return json.loads(line)
 
 
-# ── Workspace + auth setup ────────────────────────────────────────────────────
+# Workspace + auth setup
 
 
 def setup_workspace(cwd: str):
@@ -233,7 +230,7 @@ def _get_adc_token() -> str:
         raise ValueError(f"Unsupported ADC credential type: {cred_type!r}")
 
 
-# ── Provider resolution ───────────────────────────────────────────────────────
+# Provider resolution
 
 
 def setup_custom_provider(
@@ -355,7 +352,7 @@ def _find_and_setup_provider(model: str) -> str | None:
     return None
 
 
-# ── Session parsing ───────────────────────────────────────────────────────────
+# Session parsing
 
 
 def find_session_jsonl() -> Path | None:
@@ -516,10 +513,6 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
         logger.debug("Failed to parse session JSONL for trajectory", exc_info=True)
 
     return updates
-
-
-# ── Main loop ─────────────────────────────────────────────────────────────────
-
 
 def main():
     setup_openai_auth()
