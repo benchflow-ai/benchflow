@@ -24,7 +24,7 @@ cd "$(dirname "$0")"
 export DEEPSEEK_BASE_URL="${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
 
 AGENT="${AGENT:-openhands}"
-MODEL="${MODEL:-deepseek/deepseek-v4}"   # confirm the EXACT id via DeepSeek /models (e.g. deepseek-v4-flash)
+MODEL="${MODEL:-deepseek/deepseek-v4-flash}"   # validated id; override via MODEL=... (confirm via DeepSeek /models)
 SANDBOX="${SANDBOX:-daytona}"
 TASKS_DIR="${TASKS_DIR:-./adapted}"
 CONC="${CONC:-8}"
@@ -32,10 +32,11 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 FIRST_TASK="$(grep -vE '^\s*(#|$)' simple_tasks.txt | head -1)"
 
 echo "verifying DeepSeek key is live (a dead key => opaque agent error later)..."
-if curl -sf -o /dev/null "$DEEPSEEK_BASE_URL/models" -H "Authorization: Bearer $DEEPSEEK_API_KEY"; then
-  echo "  DeepSeek key OK"
+_models="$(curl -sf "$DEEPSEEK_BASE_URL/models" -H "Authorization: Bearer $DEEPSEEK_API_KEY")" || { echo "  DeepSeek key/endpoint NOT reachable — fix before running"; exit 1; }
+if printf %s "$_models" | grep -q "\"${MODEL#deepseek/}\""; then
+  echo "  DeepSeek key OK and model $MODEL present"
 else
-  echo "  DeepSeek key/endpoint NOT reachable — fix before running"; exit 1
+  echo "  model $MODEL not in DeepSeek /models — fix MODEL before running"; exit 1
 fi
 
 run () {  # run <skill-mode> <suffix> [extra flags...]

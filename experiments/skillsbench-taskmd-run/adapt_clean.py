@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import sys
 from pathlib import Path
 
 import yaml
@@ -65,8 +64,13 @@ def _drop_empty(obj):
 
 def _split_frontmatter(text: str):
     assert text.startswith("---"), "task.md must start with YAML frontmatter"
-    _, fm, body = text.split("---", 2)
-    return yaml.safe_load(fm), body.lstrip("\n")
+    # Line-based split (mirror benchflow parser) so a --- inside a YAML scalar
+    # cannot truncate the frontmatter.
+    lines = text.splitlines(keepends=True)
+    end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+    fm = "".join(lines[1:end])
+    body = "".join(lines[end + 1:]).lstrip("\n")
+    return yaml.safe_load(fm), body
 
 
 def _clean_frontmatter(cfg: dict, *, offline_no_network: bool) -> dict:
