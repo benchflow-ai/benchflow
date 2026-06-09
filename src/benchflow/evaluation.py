@@ -117,6 +117,7 @@ def _environment_manifest_from_task_document(
         manifest_path = task_dir / manifest_path
     return load_manifest(manifest_path)
 
+
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
 
 

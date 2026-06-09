@@ -1067,9 +1067,7 @@ async def _run_oracle(
         else sandbox_paths.solution_dir
     )
     oracle_command_label = (
-        "oracle/solve.sh"
-        if task.paths.uses_native_oracle_dir
-        else "solution/solve.sh"
+        "oracle/solve.sh" if task.paths.uses_native_oracle_dir else "solution/solve.sh"
     )
     oracle_script = shlex.quote(str(oracle_dir / "solve.sh"))
     if sandbox_user:

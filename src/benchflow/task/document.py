@@ -262,13 +262,20 @@ def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
     text instead of fracturing the document into extra sections.
     """
 
-    data = tomllib.loads(frontmatter) if isinstance(frontmatter, str) else deepcopy(frontmatter)
+    data = (
+        tomllib.loads(frontmatter)
+        if isinstance(frontmatter, str)
+        else deepcopy(frontmatter)
+    )
     if "solution" in data:
         if "oracle" in data:
             raise ValueError(
                 "task config declares both 'oracle' and 'solution'; keep only 'oracle'"
             )
-        data = {("oracle" if key == "solution" else key): value for key, value in data.items()}
+        data = {
+            ("oracle" if key == "solution" else key): value
+            for key, value in data.items()
+        }
     rendered_frontmatter = yaml.safe_dump(data, sort_keys=False)
     body = _escape_reserved_section_headings(instruction.strip())
     return f"---\n{rendered_frontmatter}---\n\n{body}\n"
@@ -376,11 +383,7 @@ def _parse_authoring_profiles(frontmatter: dict[str, Any]) -> list[str]:
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = deepcopy(base)
     for key, value in override.items():
-        if (
-            key in merged
-            and isinstance(merged[key], dict)
-            and isinstance(value, dict)
-        ):
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
             merged[key] = _deep_merge(merged[key], value)
         else:
             merged[key] = deepcopy(value)
@@ -549,9 +552,7 @@ def _discover_conventional_evidence(task_dir: Path) -> dict[str, Any]:
         review_map = cast(dict[str, Any], review)
         review_evidence = {
             "anti_cheat": review_map.get("anti_cheat", "passed"),
-            "instruction_alignment": review_map.get(
-                "instruction_alignment", "passed"
-            ),
+            "instruction_alignment": review_map.get("instruction_alignment", "passed"),
             "artifact": "evidence/acceptance/review.json",
         }
         if isinstance(review_map.get("reviewer"), str):
@@ -571,7 +572,9 @@ def _discover_conventional_evidence(task_dir: Path) -> dict[str, Any]:
             artifact_paths.add("evidence/acceptance/calibration-report.json")
             gold_artifact = calibration_evidence.get("human_or_reference_examples", [])
             for example in gold_artifact:
-                if isinstance(example, dict) and isinstance(example.get("artifact"), str):
+                if isinstance(example, dict) and isinstance(
+                    example.get("artifact"), str
+                ):
                     artifact_paths.add(example["artifact"])
 
     live_report = root / "live-report.json"
@@ -692,7 +695,9 @@ def _pin_existing_files(task_dir: Path, paths: set[str]) -> list[dict[str, str]]
     for rel in sorted(paths):
         path = task_dir / rel
         if path.is_file():
-            pinned.append({"path": rel, "sha256": sha256(path.read_bytes()).hexdigest()})
+            pinned.append(
+                {"path": rel, "sha256": sha256(path.read_bytes()).hexdigest()}
+            )
     return pinned
 
 

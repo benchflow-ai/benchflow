@@ -444,7 +444,9 @@ def generate_tasks(
         if eval_reqs.exists():
             shutil.copy2(eval_reqs, env_dir / "requirements.txt")
 
-        verifier_dir = task_dir / ("verifier" if output_format == "task-md" else "tests")
+        verifier_dir = task_dir / (
+            "verifier" if output_format == "task-md" else "tests"
+        )
         verifier_dir.mkdir(exist_ok=True)
 
         # case.json — injected data for the judge. ``environment`` is
@@ -475,9 +477,7 @@ def generate_tasks(
         (verifier_dir / "test.sh").write_text(test_sh_template)
         (verifier_dir / "test.sh").chmod(0o755)
         if output_format == "task-md":
-            (verifier_dir / "verifier.md").write_text(
-                _build_verifier_md(dataset, case)
-            )
+            (verifier_dir / "verifier.md").write_text(_build_verifier_md(dataset, case))
             rubrics_dir = verifier_dir / "rubrics"
             rubrics_dir.mkdir(exist_ok=True)
             (rubrics_dir / "verifier.md").write_text(
@@ -487,12 +487,12 @@ def generate_tasks(
         task_dirs.append(task_dir)
 
     logger.info(
-            "Generated %d tasks in %s (with_skill=%s, output_format=%s)",
-            len(task_dirs),
-            output_dir,
-            with_skill,
-            output_format,
-        )
+        "Generated %d tasks in %s (with_skill=%s, output_format=%s)",
+        len(task_dirs),
+        output_dir,
+        with_skill,
+        output_format,
+    )
     return task_dirs
 
 

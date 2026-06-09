@@ -735,9 +735,7 @@ def tasks_check(
         acceptance_live_write_report=not no_report_write,
     )
     if not issues:
-        console.print(
-            f"[green]✓[/green] {task_dir.name} — valid ({validation_level})"
-        )
+        console.print(f"[green]✓[/green] {task_dir.name} — valid ({validation_level})")
     else:
         console.print(f"[red]✗[/red] {task_dir.name} — {len(issues)} issue(s):")
         for issue in issues:
@@ -865,7 +863,9 @@ def tasks_export(
             typer.echo(report.to_json(), nl=False)
             return
         if output_dir is None:
-            console.print("[red]Missing output_dir; pass one or use --report-only[/red]")
+            console.print(
+                "[red]Missing output_dir; pass one or use --report-only[/red]"
+            )
             raise typer.Exit(1)
         report = export_task_to_split_layout(
             task_dir,

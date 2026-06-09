@@ -87,8 +87,7 @@ def check_task(
         and validation_level != "acceptance-live"
     ):
         return [
-            "acceptance-live report output override requires "
-            "--level acceptance-live"
+            "acceptance-live report output override requires --level acceptance-live"
         ]
 
     issues = []
@@ -182,7 +181,10 @@ def check_task(
         issues.extend(_check_ctrf_path(test_sh))
 
     # Detect placeholder oracle scripts that have not been replaced (#360).
-    for solve_sh in (paths.oracle_dir / "solve.sh", paths.legacy_solution_dir / "solve.sh"):
+    for solve_sh in (
+        paths.oracle_dir / "solve.sh",
+        paths.legacy_solution_dir / "solve.sh",
+    ):
         if solve_sh.exists() and _PLACEHOLDER_MARKER in solve_sh.read_text():
             label = "oracle" if solve_sh.parent == paths.oracle_dir else "solution"
             issues.append(
@@ -191,9 +193,7 @@ def check_task(
             )
 
     if validation_level == "runtime-capability" and sandbox_type is None:
-        issues.append(
-            "runtime-capability validation requires --sandbox <backend>"
-        )
+        issues.append("runtime-capability validation requires --sandbox <backend>")
 
     if sandbox_type is not None:
         issues.extend(_check_runtime_capabilities(task_dir, sandbox_type=sandbox_type))
@@ -459,9 +459,7 @@ def migrate_task_to_task_md(
 
     if not task_dir.is_dir():
         raise NotADirectoryError(f"Not a directory: {task_dir}")
-    missing = [
-        path.name for path in (task_toml, instruction_md) if not path.exists()
-    ]
+    missing = [path.name for path in (task_toml, instruction_md) if not path.exists()]
     if missing:
         raise FileNotFoundError(
             "Cannot migrate task without legacy files: " + ", ".join(missing)
@@ -680,9 +678,7 @@ def _check_publication_grade(task_dir: Path) -> list[str]:
         )
 
     if not document.outputs.declared_reward_json:
-        issues.append(
-            "publication-grade verifier outputs must declare reward_json"
-        )
+        issues.append("publication-grade verifier outputs must declare reward_json")
 
     issues.extend(
         _check_selected_verifier_strategy_files(document, verifier_dir=verifier_dir)
@@ -891,9 +887,7 @@ def _check_verifier_stability_report(
         or isinstance(report_reruns, bool)
         or report_reruns < declared_reruns
     ):
-        issues.append(
-            f"{source}.reruns must be an integer >= declared verifier.reruns"
-        )
+        issues.append(f"{source}.reruns must be an integer >= declared verifier.reruns")
 
     min_reward = _number_value(report.get("min_reward"))
     if min_reward is None or not 0.0 <= min_reward <= 1.0:
@@ -1027,8 +1021,10 @@ def _check_calibration_acceptance_evidence(
     if isinstance(partial_range, list) and len(partial_range) == 2:
         partial_min = _number_value(partial_range[0])
         partial_max = _number_value(partial_range[1])
-    if partial_min is None or partial_max is None or not (
-        0.0 <= partial_min <= partial_max <= 1.0
+    if (
+        partial_min is None
+        or partial_max is None
+        or not (0.0 <= partial_min <= partial_max <= 1.0)
     ):
         issues.append(
             "acceptance calibration.partial_solution_range must be [min, max] "
@@ -1230,8 +1226,7 @@ def _check_listed_evidence_artifacts(
             expected_sha256 = item_mapping.get("sha256")
             if not isinstance(expected_sha256, str) or not expected_sha256.strip():
                 issues.append(
-                    f"acceptance evidence.{list_key}[{index}].sha256 must be "
-                    "declared"
+                    f"acceptance evidence.{list_key}[{index}].sha256 must be declared"
                 )
             issues.extend(
                 _check_declared_evidence_file(
@@ -1265,9 +1260,10 @@ def _pinned_evidence_paths(evidence: dict[str, object]) -> set[str]:
             if not isinstance(item, dict):
                 continue
             item_mapping = cast(dict[str, object], item)
-            if not isinstance(item_mapping.get("sha256"), str) or not str(
-                item_mapping.get("sha256")
-            ).strip():
+            if (
+                not isinstance(item_mapping.get("sha256"), str)
+                or not str(item_mapping.get("sha256")).strip()
+            ):
                 continue
             path = _declared_evidence_path_key(item_mapping.get("path"))
             if path is not None:

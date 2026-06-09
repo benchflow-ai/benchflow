@@ -97,7 +97,9 @@ def validate_reward_map(
         has_numeric_metric = True
 
     has_declared_aggregate = "aggregate" in parsed or bool(aggregate_policy)
-    if "reward" not in parsed and (not has_declared_aggregate or not has_numeric_metric):
+    if "reward" not in parsed and (
+        not has_declared_aggregate or not has_numeric_metric
+    ):
         raise ValueError(
             f"{source} returned rewards without numeric 'reward': "
             "missing numeric 'reward' or aggregate policy for multi-metric rewards"
@@ -182,8 +184,7 @@ def apply_aggregate_policy(
             )
         if not math.isclose(float(existing), reward, abs_tol=1e-9):
             raise ValueError(
-                f"{source} reward={existing} does not match criteria aggregate "
-                f"{reward}"
+                f"{source} reward={existing} does not match criteria aggregate {reward}"
             )
     return {**parsed, "reward": reward}
 
@@ -246,9 +247,7 @@ def _validate_aggregate(value: Any, *, source: str) -> dict[str, Any]:
         }
     primary = parsed.get("primary")
     if primary is not None and not isinstance(primary, str):
-        raise ValueError(
-            f"{source} returned rewards with invalid aggregate primary"
-        )
+        raise ValueError(f"{source} returned rewards with invalid aggregate primary")
     return parsed
 
 

@@ -846,7 +846,9 @@ class Verifier:
                 service=service,
             )
         except Exception as e:
-            raise AddTestsDirError("Failed to add verifier directory to sandbox.") from e
+            raise AddTestsDirError(
+                "Failed to add verifier directory to sandbox."
+            ) from e
 
         self._rollout_paths.test_stdout_path.touch()
         if service != "main":
@@ -884,7 +886,8 @@ class Verifier:
                 verifier_dir=self._task.paths.tests_dir,
             )
             env["BENCHFLOW_REWARD_KIT_CRITERIA"] = str(
-                verifier_code_dir / _safe_strategy_relative_path(
+                verifier_code_dir
+                / _safe_strategy_relative_path(
                     criteria,
                     strategy=strategy,
                     field="criteria",
@@ -1627,8 +1630,7 @@ def _reward_kit_runner(
     local_runner = verifier_dir / Path(*runner.parts)
     if not local_runner.is_file():
         raise VerifierOutputParseError(
-            f"reward-kit strategy {strategy.name!r} expected runner at "
-            f"{local_runner}"
+            f"reward-kit strategy {strategy.name!r} expected runner at {local_runner}"
         )
     return str(runner)
 
@@ -1740,8 +1742,7 @@ def _safe_strategy_relative_path(
     path = PurePosixPath(value)
     if not path.parts or path.is_absolute() or ".." in path.parts:
         raise VerifierOutputParseError(
-            f"verifier strategy {strategy.name!r} {field} must be a safe "
-            "relative path"
+            f"verifier strategy {strategy.name!r} {field} must be a safe relative path"
         )
     return path
 

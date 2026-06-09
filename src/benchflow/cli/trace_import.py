@@ -177,6 +177,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             return
 
         from benchflow.traces.task_gen import generate_tasks_from_traces
+
         if task_format not in ("task-md", "legacy"):
             console.print("[red]--task-format must be task-md or legacy[/red]")
             raise typer.Exit(1)
@@ -280,6 +281,7 @@ def _load_hf(dataset: str, format: str | None, split: str, max_rows: int) -> lis
         )
 
     return load_hf_dataset(dataset, format=fmt, split=split, max_rows=max_rows)
+
 
 def _parse_hf_messages_file(path: Path) -> list:
     """Parse a JSONL file of HuggingFace ``claude-messages`` rows."""

@@ -117,6 +117,7 @@ class RubricConfig:
     criteria: list[Criterion] = field(default_factory=list)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
 
+
 def _parse_criterion(raw: dict) -> Criterion:
     return Criterion(
         description=raw.get("description") or raw.get("match_criteria", ""),

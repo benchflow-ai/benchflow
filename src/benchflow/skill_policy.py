@@ -189,11 +189,7 @@ def _strip_bundled_skill_copy_lines(dockerfile: Path) -> None:
         return
 
     lines = dockerfile.read_text().splitlines()
-    kept = [
-        line
-        for line in lines
-        if not _copies_only_task_bundled_skills(line)
-    ]
+    kept = [line for line in lines if not _copies_only_task_bundled_skills(line)]
     if kept != lines:
         dockerfile.write_text("\n".join(kept) + "\n")
 

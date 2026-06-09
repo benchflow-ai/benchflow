@@ -209,9 +209,7 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     normalized = text.replace("\r\n", "\n")
     lines = normalized.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
-        raise VerifierDocumentParseError(
-            "verifier.md must start with YAML frontmatter"
-        )
+        raise VerifierDocumentParseError("verifier.md must start with YAML frontmatter")
 
     closing_index: int | None = None
     for index, line in enumerate(lines[1:], start=1):
@@ -229,9 +227,7 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if loaded is None:
         loaded = {}
     if not isinstance(loaded, dict):
-        raise VerifierDocumentParseError(
-            "verifier.md frontmatter must be a mapping"
-        )
+        raise VerifierDocumentParseError("verifier.md frontmatter must be a mapping")
     return loaded, body
 
 
@@ -283,7 +279,9 @@ def _validate_strategy(
     if strategy_type == "script":
         _required_str(config.get("command"), f"{prefix}.command")
     elif strategy_type == "reward-kit":
-        _safe_relative_path(_required_str(config.get("root"), f"{prefix}.root"), f"{prefix}.root")
+        _safe_relative_path(
+            _required_str(config.get("root"), f"{prefix}.root"), f"{prefix}.root"
+        )
         if "criteria" in config:
             _safe_relative_path(
                 _required_str(config.get("criteria"), f"{prefix}.criteria"),
@@ -325,16 +323,20 @@ def _validate_strategy(
                 f"{prefix}.isolation must be 'verifier-only'"
             )
         inputs = config.get("inputs")
-        if not isinstance(inputs, list) or not inputs or not all(
-            isinstance(item, str) and item for item in inputs
+        if (
+            not isinstance(inputs, list)
+            or not inputs
+            or not all(isinstance(item, str) and item for item in inputs)
         ):
             raise VerifierDocumentParseError(
                 f"{prefix}.inputs must be a non-empty list of strings"
             )
     elif strategy_type == "ors-episode":
         inputs = config.get("inputs")
-        if not isinstance(inputs, list) or not inputs or not all(
-            isinstance(item, str) and item for item in inputs
+        if (
+            not isinstance(inputs, list)
+            or not inputs
+            or not all(isinstance(item, str) and item for item in inputs)
         ):
             raise VerifierDocumentParseError(
                 f"{prefix}.inputs must be a non-empty list of strings"

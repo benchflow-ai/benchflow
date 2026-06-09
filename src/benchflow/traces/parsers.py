@@ -471,6 +471,7 @@ def parse_opentraces_file(path: Path) -> list[ParsedTrace]:
             traces.append(parse_opentraces_record(record))
     return traces
 
+
 def _parse_iso(value: Any) -> datetime | None:
     """Parse an ISO-8601 string, returning None on failure."""
     if not isinstance(value, str) or not value:

@@ -221,7 +221,12 @@ def local_script_strategy_files(
 
 
 def _looks_like_local_script_artifact(token: str) -> bool:
-    if not token or token.startswith("-") or "://" in token or any(c.isspace() for c in token):
+    if (
+        not token
+        or token.startswith("-")
+        or "://" in token
+        or any(c.isspace() for c in token)
+    ):
         return False
     path = PurePosixPath(token)
     if path.is_absolute():
@@ -242,7 +247,9 @@ def _reward_kit_strategy_files_exist(
     entrypoint_path = _safe_relative_path(entrypoint or "reward.py")
     if root_path is None or entrypoint_path is None:
         return False
-    if not (verifier_dir / Path(*root_path.parts) / Path(*entrypoint_path.parts)).is_file():
+    if not (
+        verifier_dir / Path(*root_path.parts) / Path(*entrypoint_path.parts)
+    ).is_file():
         return False
     return criteria is None or _strategy_file_exists(
         criteria,

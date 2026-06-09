@@ -514,6 +514,7 @@ def parse_session_jsonl(path: Path, session_id: str) -> list[dict]:
 
     return updates
 
+
 def main():
     setup_openai_auth()
     setup_gcloud_adc()

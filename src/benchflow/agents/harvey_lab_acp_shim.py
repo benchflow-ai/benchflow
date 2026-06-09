@@ -622,6 +622,7 @@ def _emit_tool_result(session_id: str, tool_call_id: str, result: str):
         }
     )
 
+
 def main():
     session_id = "harvey-lab-shim"
     cwd = "/app"

@@ -254,8 +254,7 @@ def _parse_workspace(
 
     if not _is_safe_sandbox_dir(target):
         return None, [
-            "acceptance-live workspace.target must be an absolute non-root "
-            "sandbox path"
+            "acceptance-live workspace.target must be an absolute non-root sandbox path"
         ]
     return (
         LiveAcceptanceWorkspace(
@@ -309,8 +308,10 @@ def _parse_generated_calibration_cases(
 
     issues: list[str] = []
     reruns = mapping.get("reruns", _DEFAULT_RERUNS)
-    if not isinstance(reruns, int) or isinstance(reruns, bool) or not (
-        1 <= reruns <= _MAX_RERUNS
+    if (
+        not isinstance(reruns, int)
+        or isinstance(reruns, bool)
+        or not (1 <= reruns <= _MAX_RERUNS)
     ):
         issues.append(f"{source}.reruns must be an integer within 1..{_MAX_RERUNS}")
         reruns = _DEFAULT_RERUNS
@@ -352,7 +353,10 @@ def _parse_generated_calibration_cases(
 
     report_path = task_dir / report_rel
     if not report_path.is_file():
-        return [], [*issues, f"{source}.from report is missing: {report_rel.as_posix()}"]
+        return [], [
+            *issues,
+            f"{source}.from report is missing: {report_rel.as_posix()}",
+        ]
     try:
         report = json.loads(report_path.read_text())
     except json.JSONDecodeError as exc:
@@ -403,9 +407,7 @@ def _generated_case_from_calibration_report(
         name = "<unnamed>"
     case_type = mapping.get("type")
     if case_type not in {"no-op", "known-bad", "partial", "reference"}:
-        issues.append(
-            f"{source}.type must be no-op, known-bad, partial, or reference"
-        )
+        issues.append(f"{source}.type must be no-op, known-bad, partial, or reference")
         case_type = "reference"
     command = mapping.get("command")
     parsed_command: str | None = None
@@ -576,11 +578,15 @@ def _parse_case(
                 f"or legacy solution/solve.sh: {solve_path}"
             )
         elif not _is_executable_file(solve_path):
-            issues.append(f"{prefix}.type=oracle requires executable file: {solve_path}")
+            issues.append(
+                f"{prefix}.type=oracle requires executable file: {solve_path}"
+            )
 
     reruns = mapping.get("reruns", _DEFAULT_RERUNS)
-    if not isinstance(reruns, int) or isinstance(reruns, bool) or not (
-        1 <= reruns <= _MAX_RERUNS
+    if (
+        not isinstance(reruns, int)
+        or isinstance(reruns, bool)
+        or not (1 <= reruns <= _MAX_RERUNS)
     ):
         issues.append(f"{prefix}.reruns must be an integer within 1..{_MAX_RERUNS}")
         reruns = _DEFAULT_RERUNS
@@ -615,8 +621,12 @@ def _parse_expectation(
         return [f"{prefix} must be a mapping"]
     mapping = cast(dict[str, object], value)
     issues: list[str] = []
-    reward_min = _optional_reward(mapping.get("reward_min"), f"{prefix}.reward_min", issues)
-    reward_max = _optional_reward(mapping.get("reward_max"), f"{prefix}.reward_max", issues)
+    reward_min = _optional_reward(
+        mapping.get("reward_min"), f"{prefix}.reward_min", issues
+    )
+    reward_max = _optional_reward(
+        mapping.get("reward_max"), f"{prefix}.reward_max", issues
+    )
     reward_equals = _optional_reward(
         mapping.get("reward_equals"),
         f"{prefix}.reward_equals",
@@ -672,7 +682,9 @@ def _optional_reward(value: object, source: str, issues: list[str]) -> float | N
     return reward
 
 
-def _required_probability(value: object, source: str, issues: list[str]) -> float | None:
+def _required_probability(
+    value: object, source: str, issues: list[str]
+) -> float | None:
     reward = _number_value(value)
     if reward is None or not 0.0 <= reward <= 1.0:
         issues.append(f"{source} must be numeric within 0..1")
@@ -1167,9 +1179,7 @@ def _leaderboard_suitability(
     total_runs = int(summary["total_runs"])
     failed_runs = int(summary["failed_runs"])
     flake_rate = float(summary["flake_rate"])
-    passed_records = [
-        record for record in records if record.get("status") == "passed"
-    ]
+    passed_records = [record for record in records if record.get("status") == "passed"]
     generated_types = {
         str(record.get("type"))
         for record in passed_records
@@ -1210,9 +1220,7 @@ def _leaderboard_suitability(
         "status": "suitable" if not issues else "insufficient",
         "required": spec.leaderboard.required,
         "max_flake_rate": spec.leaderboard.max_flake_rate,
-        "required_generated_calibration_types": sorted(
-            _LEADERBOARD_CALIBRATION_TYPES
-        ),
+        "required_generated_calibration_types": sorted(_LEADERBOARD_CALIBRATION_TYPES),
         "observed_generated_calibration_types": sorted(generated_types),
         "checks": checks,
         "issues": issues,
@@ -1313,13 +1321,11 @@ def _check_reward_expectation(
     issues: list[str] = []
     if expect.reward_min is not None and reward + 1e-9 < expect.reward_min:
         issues.append(
-            f"{prefix} reward {reward:.6g} is below reward_min "
-            f"{expect.reward_min:.6g}"
+            f"{prefix} reward {reward:.6g} is below reward_min {expect.reward_min:.6g}"
         )
     if expect.reward_max is not None and reward - 1e-9 > expect.reward_max:
         issues.append(
-            f"{prefix} reward {reward:.6g} is above reward_max "
-            f"{expect.reward_max:.6g}"
+            f"{prefix} reward {reward:.6g} is above reward_max {expect.reward_max:.6g}"
         )
     if expect.reward_range is not None:
         low, high = expect.reward_range

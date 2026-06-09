@@ -199,7 +199,9 @@ def _format_path(path: tuple[str | int, ...]) -> str:
     return rendered
 
 
-def _merge_missing(target: dict[str, Any] | list[Any], extra: dict[str, Any] | list[Any]) -> None:
+def _merge_missing(
+    target: dict[str, Any] | list[Any], extra: dict[str, Any] | list[Any]
+) -> None:
     if isinstance(target, list) and isinstance(extra, list):
         for index, value in enumerate(extra):
             if value is None:

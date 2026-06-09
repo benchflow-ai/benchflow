@@ -477,7 +477,9 @@ def _append_layout_issues(
     paths = TaskPaths(task_dir)
 
     task_md = paths.task_document_path
-    has_legacy_definition = paths.config_path.exists() or paths.instruction_path.exists()
+    has_legacy_definition = (
+        paths.config_path.exists() or paths.instruction_path.exists()
+    )
     if task_md.exists() and has_legacy_definition:
         if not (paths.config_path.exists() and paths.instruction_path.exists()):
             _issue(

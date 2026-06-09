@@ -117,7 +117,9 @@ class TaskPackage:
     def to_dict(self) -> dict[str, Any]:
         verifier_document = self.view.verifier_document
         selected_strategy = (
-            verifier_document.selected_strategy if verifier_document is not None else None
+            verifier_document.selected_strategy
+            if verifier_document is not None
+            else None
         )
         return {
             "task_dir": str(self.task_dir),
@@ -126,7 +128,9 @@ class TaskPackage:
                 "task.md" if self.view.entrypoint == "task.md" else "instruction.md"
             ),
             "selected_oracle_dir": _rel_or_none(self.task_dir, self.view.oracle_dir),
-            "selected_verifier_dir": _rel_or_none(self.task_dir, self.view.verifier_dir),
+            "selected_verifier_dir": _rel_or_none(
+                self.task_dir, self.view.verifier_dir
+            ),
             "verifier_document": (
                 {
                     "name": verifier_document.name,

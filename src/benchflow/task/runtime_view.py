@@ -79,7 +79,9 @@ class TaskRuntimeView:
         )
 
     @classmethod
-    def from_task(cls, task: Any, *, task_dir: str | Path | None = None) -> TaskRuntimeView:
+    def from_task(
+        cls, task: Any, *, task_dir: str | Path | None = None
+    ) -> TaskRuntimeView:
         """Build a view from a ``Task``-like object without reparsing."""
 
         root = Path(task_dir) if task_dir is not None else Path(task.task_dir)
@@ -107,7 +109,9 @@ class TaskRuntimeView:
 
         paths = TaskPaths(task_dir)
         entrypoint: TaskEntrypoint = (
-            "task.md" if document is not None or paths.task_document_path.exists() else "legacy"
+            "task.md"
+            if document is not None or paths.task_document_path.exists()
+            else "legacy"
         )
         return cls(
             task_dir=paths.task_dir,

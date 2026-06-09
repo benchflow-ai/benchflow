@@ -453,7 +453,9 @@ def _compile_supported_team_handoff(
             team=team_name,
             workspace_visibility="shared",
             trajectory_visibility=(
-                trajectory_visibility if isinstance(trajectory_visibility, str) else None
+                trajectory_visibility
+                if isinstance(trajectory_visibility, str)
+                else None
             ),
         ),
         [],

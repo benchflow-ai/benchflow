@@ -25,9 +25,7 @@ from pydantic import (
 )
 
 ORG_NAME_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
-_NETWORK_HOST_LABEL_PATTERN = re.compile(
-    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-)
+_NETWORK_HOST_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _ENV_VAR_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
@@ -305,9 +303,7 @@ class VerifierConfig(TaskConfigModel):
 
     @field_validator("allowed_hosts")
     @classmethod
-    def validate_allowed_hosts(
-        cls, hosts: list[str] | None
-    ) -> list[str] | None:
+    def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
         return _validate_allowed_hosts(hosts)
 
     @model_validator(mode="after")
@@ -343,9 +339,7 @@ class AgentConfig(TaskConfigModel):
 
     @field_validator("allowed_hosts")
     @classmethod
-    def validate_allowed_hosts(
-        cls, hosts: list[str] | None
-    ) -> list[str] | None:
+    def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
         return _validate_allowed_hosts(hosts)
 
     @model_validator(mode="after")
@@ -480,9 +474,7 @@ class SandboxConfig(TaskConfigModel):
 
     @field_validator("allowed_hosts")
     @classmethod
-    def validate_allowed_hosts(
-        cls, hosts: list[str] | None
-    ) -> list[str] | None:
+    def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
         return _validate_allowed_hosts(hosts)
 
     @field_validator("os", mode="before")
@@ -569,9 +561,7 @@ class SolutionConfig(TaskConfigModel):
             elif isinstance(value, str) and _ENV_VAR_NAME_PATTERN.match(key):
                 existing = env.get(key)
                 if existing is not None and existing != value:
-                    raise ValueError(
-                        f"Conflicting values for solution env var {key!r}"
-                    )
+                    raise ValueError(f"Conflicting values for solution env var {key!r}")
                 env[key] = value
             else:
                 normalized[key] = value
@@ -672,9 +662,7 @@ class TaskConfig(TaskConfigModel):
                 f"schema_version {value!r} is not a valid MAJOR.MINOR version"
             ) from None
         if major not in cls._SUPPORTED_SCHEMA_MAJORS:
-            supported = ", ".join(
-                str(m) for m in sorted(cls._SUPPORTED_SCHEMA_MAJORS)
-            )
+            supported = ", ".join(str(m) for m in sorted(cls._SUPPORTED_SCHEMA_MAJORS))
             raise ValueError(
                 f"Unsupported schema_version major {major} (from {value!r}); "
                 f"supported major version(s): {supported}"

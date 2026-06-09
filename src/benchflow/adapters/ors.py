@@ -116,7 +116,9 @@ class ORSAdapter:
             if not isinstance(output, dict):
                 raise ValueError("ORS tool output records must be JSON objects")
             reward = _bounded_reward(_reward_value(output), path=f"outputs[{index}]")
-            finished = bool(output.get("finished") is True or output.get("done") is True)
+            finished = bool(
+                output.get("finished") is True or output.get("done") is True
+            )
             record_type = str(
                 output.get("type") or ("terminal" if finished else "dense")
             )
@@ -130,7 +132,9 @@ class ORSAdapter:
                     or source
                 ),
                 "step": _step_value(output, fallback=index),
-                "space": str(output.get("space") or ("output" if finished else "action")),
+                "space": str(
+                    output.get("space") or ("output" if finished else "action")
+                ),
                 "granularity": str(
                     output.get("granularity") or ("terminal" if finished else "step")
                 ),
