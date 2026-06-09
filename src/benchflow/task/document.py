@@ -217,14 +217,26 @@ class TaskDocument:
             task_dir=doc_path.parent if doc_path is not None else None,
         )
         prompt_sections = _extract_prompt_sections(body)
+        # Sidecar prompt files (prompts/role.<name>.md, prompts/scene.<name>.md,
+        # prompts/user-persona.md) are the native authoring surface and take
+        # precedence over reserved ## headings, which remain a compat-import path.
+        role_prompts = dict(prompt_sections.role_prompts)
+        scene_prompts = dict(prompt_sections.scene_prompts)
+        user_persona = prompt_sections.user_persona
+        if doc_path is not None:
+            sidecars = _load_prompt_sidecars(doc_path.parent)
+            role_prompts.update(sidecars.role_prompts)
+            scene_prompts.update(sidecars.scene_prompts)
+            if sidecars.user_persona is not None:
+                user_persona = sidecars.user_persona
         config = _config_from_frontmatter(frontmatter)
         roles = _parse_roles(frontmatter)
         scenes = _parse_scenes(
             frontmatter,
             roles=roles,
             instruction=prompt_sections.instruction,
-            role_prompts=prompt_sections.role_prompts,
-            scene_prompts=prompt_sections.scene_prompts,
+            role_prompts=role_prompts,
+            scene_prompts=scene_prompts,
         )
         user = _mapping(frontmatter.get("user"), "user", default={})
         benchflow = _mapping(frontmatter.get("benchflow"), "benchflow", default={})
@@ -235,10 +247,10 @@ class TaskDocument:
             config=config,
             roles=roles,
             scenes=scenes,
-            role_prompts=prompt_sections.role_prompts,
-            scene_prompts=prompt_sections.scene_prompts,
+            role_prompts=role_prompts,
+            scene_prompts=scene_prompts,
             user=user,
-            user_persona=prompt_sections.user_persona,
+            user_persona=user_persona,
             benchflow=benchflow,
             path=doc_path,
         )
@@ -789,6 +801,37 @@ def _extract_prompt_sections(body: str) -> _PromptSections:
     )
     return _PromptSections(
         instruction=instruction,
+        role_prompts=role_prompts,
+        scene_prompts=scene_prompts,
+        user_persona=user_persona,
+    )
+
+
+def _load_prompt_sidecars(task_dir: Path) -> _PromptSections:
+    """Load native sidecar prompt files from ``<task_dir>/prompts/``.
+
+    Roles, scenes, and the simulated-user persona are authored as their own
+    free-form markdown files — ``role.<name>.md``, ``scene.<name>.md``, and
+    ``user-persona.md`` — so the ``task.md`` body stays one clean prompt with no
+    reserved-heading ceremony. Each file's whole body is the prompt text.
+    """
+    prompts_dir = task_dir / "prompts"
+    role_prompts: dict[str, str] = {}
+    scene_prompts: dict[str, str] = {}
+    user_persona: str | None = None
+    if not prompts_dir.is_dir():
+        return _PromptSections("", role_prompts, scene_prompts, user_persona)
+    for prompt_file in sorted(prompts_dir.glob("*.md")):
+        stem = prompt_file.name[: -len(".md")]
+        text = prompt_file.read_text().strip()
+        if stem == "user-persona":
+            user_persona = text
+        elif stem.startswith("role."):
+            role_prompts[stem[len("role.") :]] = text
+        elif stem.startswith("scene."):
+            scene_prompts[stem[len("scene.") :]] = text
+    return _PromptSections(
+        instruction="",
         role_prompts=role_prompts,
         scene_prompts=scene_prompts,
         user_persona=user_persona,

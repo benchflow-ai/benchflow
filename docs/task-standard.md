@@ -141,16 +141,29 @@ Native authoring should use `oracle`. Importers may accept the compatibility
 
 ## Prompt Body
 
-Markdown sections are part of the document syntax:
+The `task.md` body **is** the base prompt — free-form markdown, exactly like a
+`SKILL.md` body. No `## prompt` heading is required: if the body carries no
+reserved section headings, the entire body is the prompt. The common single-shot
+task is just frontmatter plus prose, so a bespoke benchmark ports by dropping its
+existing instruction text in as the body with no markup.
 
-| Section | Meaning |
+Tasks that need more than a base prompt — multiple roles, multiple scenes, or a
+simulated-user persona — author each as its **own** free-form file under
+`prompts/`, so no body ever carries reserved-heading ceremony:
+
+| File | Meaning |
 |---|---|
-| `## prompt` | Base agent-facing prompt |
-| `## role:<name>` | Role prompt |
-| `## scene:<name>` | Scene prompt |
-| `## user-persona` | Simulated user persona |
+| `prompts/role.<name>.md` | Role prompt |
+| `prompts/scene.<name>.md` | Scene prompt |
+| `prompts/user-persona.md` | Simulated user persona |
 
-Legacy/default runtime precedence remains simple fallback:
+Each sidecar file is itself a clean free-form body. For backward compatibility,
+single-prompt source formats may instead embed the same content in the body via
+reserved `## prompt`, `## role:<name>`, `## scene:<name>`, and `## user-persona`
+headings; these import losslessly and normalize to the file layout. Sidecar files
+take precedence over a heading of the same name. New tasks should prefer the files.
+
+Default runtime precedence remains a simple fallback:
 
 1. inline turn prompt
 2. scene prompt

@@ -1053,3 +1053,46 @@ def test_render_task_md_dict_and_toml_text_are_equivalent() -> None:
     from_text = render_task_md(toml_text, "Do it.")
 
     assert from_dict == from_text
+
+
+def test_sidecar_prompt_files_are_the_native_role_scene_authoring_surface(
+    tmp_path: Path,
+) -> None:
+    """Roles/scenes/persona load from prompts/*.md so the body stays one prompt."""
+    (tmp_path / "task.md").write_text(
+        "---\ntask:\n  name: demo/clean-body\n---\n\n"
+        "Fix the failing test in app.py and explain the root cause.\n"
+    )
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "role.reviewer.md").write_text("Be strict about edge cases.")
+    (prompts / "scene.investigate.md").write_text("Reproduce before fixing.")
+    (prompts / "user-persona.md").write_text("A terse senior engineer.")
+
+    doc = TaskDocument.from_path(tmp_path / "task.md")
+
+    # base prompt is the bare body — no ## prompt heading required
+    assert (
+        doc.instruction == "Fix the failing test in app.py and explain the root cause."
+    )
+    assert doc.role_prompts == {"reviewer": "Be strict about edge cases."}
+    assert doc.scene_prompts == {"investigate": "Reproduce before fixing."}
+    assert doc.user_persona == "A terse senior engineer."
+
+
+def test_sidecar_prompt_files_take_precedence_over_legacy_headings(
+    tmp_path: Path,
+) -> None:
+    """The compat ## role: heading is overridden by the native sidecar file."""
+    (tmp_path / "task.md").write_text(
+        "---\ntask:\n  name: demo/precedence\n---\n\n"
+        "Base prompt.\n\n## role:reviewer\n\nHeading version.\n"
+    )
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "role.reviewer.md").write_text("File version wins.")
+
+    doc = TaskDocument.from_path(tmp_path / "task.md")
+
+    assert doc.instruction == "Base prompt."
+    assert doc.role_prompts == {"reviewer": "File version wins."}
