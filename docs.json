@@ -11,7 +11,8 @@
         "group": "Start here",
         "pages": [
           "docs/getting-started",
-          "docs/concepts"
+          "docs/concepts",
+          "docs/task-standard"
         ]
       },
       {
@@ -33,7 +34,8 @@
           "docs/reference/cli",
           "docs/reference/python-api",
           "docs/release",
-          "docs/integration-tests"
+          "docs/integration-tests",
+          "docs/reports/2026-06-09-task-standard-validation"
         ]
       }
     ]
