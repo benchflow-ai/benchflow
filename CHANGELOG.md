@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`benchflow continue <run-folder>`** — resume a previous, unfinished
+  (timed-out) `openhands` run to completion. A standalone tool (it does not
+  touch the normal run path) that reconstructs the run's exact workspace and
+  agent memory from the recorded `llm_trajectory.jsonl` via record-replay,
+  then continues with the live model — no injected prompt — and writes a new
+  HF-compatible folder with `continued_from` provenance. See
+  [`docs/continue-runs.md`](docs/continue-runs.md).
+
 ### Changed
 
 - Document the public vs internal preview install/upgrade command matrix,
