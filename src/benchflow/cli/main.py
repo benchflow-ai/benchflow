@@ -568,6 +568,12 @@ def skills_eval(
             f"Create one with test cases. See: benchflow skills eval --help"
         )
         raise typer.Exit(1)
+    if model is not None and len(model) not in {1, len(agent)}:
+        console.print(
+            "[red]--model may be provided once for all agents or once per --agent; "
+            f"got {len(model)} models for {len(agent)} agents[/red]"
+        )
+        raise typer.Exit(1)
 
     evaluator = SkillEvaluator(skill_dir)
     console.print(
