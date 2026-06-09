@@ -196,7 +196,7 @@ class LearnerStore:
         self.commit(state, metric=metric)
         return True
 
-    # --- persistence ---
+    # persistence
     #
     # The store is otherwise pure data, but a continual-learning Job survives
     # process death only if it can be reloaded from disk on resume. These

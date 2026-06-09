@@ -46,9 +46,7 @@ class _NativeNodeReward:
         )
 
 
-# ---------------------------------------------------------------------------
 # Canonical contract
-# ---------------------------------------------------------------------------
 
 
 def test_reward_protocol_is_runtime_checkable_and_node_based() -> None:
@@ -90,9 +88,7 @@ async def test_legacy_reward_func_must_be_adapted_before_acting_as_reward(
     assert isinstance(result, VerifyResult)
 
 
-# ---------------------------------------------------------------------------
 # PathReward adapter behaviour
-# ---------------------------------------------------------------------------
 
 
 async def test_path_reward_reads_rollout_dir_from_node_state(tmp_path: Path) -> None:

@@ -27,9 +27,7 @@ from benchflow.sandbox._base import ExecResult
 from benchflow.task import RolloutPaths, Verifier
 from benchflow.task.config import TaskConfig
 
-# ---------------------------------------------------------------------------
 # Item 5 — [verifier].service task-schema convention
-# ---------------------------------------------------------------------------
 
 
 class TestVerifierServiceConfig:
@@ -65,9 +63,7 @@ user = "root"
         assert cfg.verifier.user == "root"
 
 
-# ---------------------------------------------------------------------------
 # Item 4 — target-side test.sh verification
-# ---------------------------------------------------------------------------
 
 
 def _make_task(tmp_path: Path, toml: str) -> MagicMock:
@@ -95,11 +91,13 @@ class _RecordingSandbox:
         self,
         rollout_paths: RolloutPaths,
         reward: str = "1.0",
+        reward_details: str | None = None,
         is_mounted: bool = False,
     ) -> None:
         self.is_mounted = is_mounted
         self._rollout_paths = rollout_paths
         self._reward = reward
+        self._reward_details = reward_details
         self.upload_calls: list[dict] = []
         self.download_calls: list[dict] = []
         self.exec_calls: list[dict] = []
@@ -117,6 +115,8 @@ class _RecordingSandbox:
         dest = Path(target_dir)
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "reward.txt").write_text(self._reward)
+        if self._reward_details is not None:
+            (dest / "reward-details.json").write_text(self._reward_details)
 
     async def exec(self, command, service: str = "main", **kwargs) -> ExecResult:
         self.exec_calls.append({"command": command, "service": service, **kwargs})
@@ -177,6 +177,26 @@ class TestTargetSideTestScriptVerification:
 
         assert sandbox.download_calls, "reward must be downloaded from the target"
         assert {c["service"] for c in sandbox.download_calls} == {"target"}
+
+    @pytest.mark.asyncio
+    async def test_target_side_reward_details_downloaded_from_target_service(
+        self, tmp_path: Path
+    ) -> None:
+        """Verifier evidence artifacts are copied with target-side rewards."""
+        toml = 'version = "1.0"\n[verifier]\nservice = "target"\n'
+        task = _make_task(tmp_path, toml)
+        rollout_paths = RolloutPaths(rollout_dir=tmp_path / "rollout")
+        rollout_paths.mkdir()
+        details = '{"criteria":[{"id":"target","score":1.0}]}'
+        sandbox = _RecordingSandbox(
+            rollout_paths,
+            reward="1.0",
+            reward_details=details,
+        )
+
+        await Verifier(task, rollout_paths, sandbox).verify()
+
+        assert rollout_paths.reward_details_json_path.read_text() == details
 
     @pytest.mark.asyncio
     async def test_target_service_logs_verifier_dir_created_before_test_sh(
@@ -275,9 +295,7 @@ class TestTargetSideTestScriptVerification:
         assert result.rewards == {"reward": 1.0}
 
 
-# ---------------------------------------------------------------------------
 # Item 3 — cross-container hardening policy
-# ---------------------------------------------------------------------------
 
 
 class TestCrossContainerHardeningPolicy:

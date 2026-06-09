@@ -175,7 +175,7 @@ class ManifestEnvironment:
                     f"pkill -f {shlex.quote(binary)}", timeout_sec=10
                 )
 
-    # --- roll-back (the substrate branching runs on) ---
+    # roll-back (the substrate branching runs on)
 
     async def snapshot(self) -> StateSnapshot:
         """Capture the environment's declared state — Han's roll-back.

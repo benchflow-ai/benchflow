@@ -182,9 +182,7 @@ def test_to_jsonl_no_redaction_preserves_keys():
     assert "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx" in jsonl
 
 
-# ---------------------------------------------------------------------------
 # PR #585 finding 1: raw-text header / key-value forms (not only JSON keys)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -231,9 +229,7 @@ def test_to_jsonl_redacts_raw_env_dump_in_message():
     assert "abc123secret456value" not in jsonl
 
 
-# ---------------------------------------------------------------------------
 # PR #585 finding 2: audit-sensitive tokens redacted whole (no live prefix)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -276,11 +272,9 @@ def test_leak_audit_intent_passes_end_to_end():
     assert residual == [], f"live key shapes survived: {residual}"
 
 
-# ---------------------------------------------------------------------------
 # PR #585 bug 1: acp_trajectory.jsonl (the file the PR claims to protect) was
 # written with raw json.dumps and no redaction. rollout.py and hosted_env.py
 # now serialize ACP events through redact_acp_trajectory_jsonl.
-# ---------------------------------------------------------------------------
 
 
 def test_acp_trajectory_jsonl_redacts_event_content(tmp_path):
@@ -318,12 +312,10 @@ def test_acp_trajectory_jsonl_redacts_event_content(tmp_path):
     assert "env | grep API" in written
 
 
-# ---------------------------------------------------------------------------
 # PR #585 bug 2: namespaced *_API_KEY=value env vars were not redacted because
 # the underscore api_key rule had a (?<![A-Za-z0-9_]) lookbehind that the `_`
 # in GEMINI_API_KEY tripped. The lookbehind was removed; the \1 capture keeps
 # the key name so no over-redaction is introduced.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
