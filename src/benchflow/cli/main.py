@@ -21,6 +21,7 @@ from benchflow._utils.config import (
     normalize_sandbox_user,
 )
 from benchflow.agents.registry import parse_agent_spec
+from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
@@ -39,6 +40,9 @@ app = typer.Typer(
     help="ACP-native agent benchmarking framework.",
     no_args_is_help=True,
 )
+
+# Standalone `benchflow continue <orig-run-folder>` — resume a timed-out run.
+register_continue(app)
 
 
 def _version_callback(value: bool) -> None:

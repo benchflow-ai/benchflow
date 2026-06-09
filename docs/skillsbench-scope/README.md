@@ -20,14 +20,15 @@ SkillsBench tasks are authored as Harbor-style split packages (`task.toml` +
 `instruction.md` + `environment/` + `solution/` + `tests/`). Harbor's `[metadata]`
 is free-form, so the only thing keeping categories/keywords consistent is
 SkillsBench's own `taxonomy.yaml` + `lint_taxonomy.py`. This branch promotes that
-taxonomy into the task.md standard as a **closed, lint-enforced vocabulary**, kept
+taxonomy into the task.md standard as a **closed vocabulary** (advisory; enforcement is
+a planned CI lint), kept
 inside `metadata:` so no new root keys are added (per the standard's root-key rule).
 
 The glossary has three tiers:
 
 | Tier | What | Enforcement |
 |---|---|---|
-| **Controlled** | `category`, `task_type`, `modality`, `interface`, `skill_type`, `difficulty` | closed enums, lint-enforced (mirror `taxonomy.yaml`) |
+| **Controlled** | `category`, `task_type`, `modality`, `interface`, `skill_type`, `difficulty` | closed enums (advisory; CI-lint intended, not parse-time enforced) |
 | **network_class** | the enrichment this branch adds (below) | closed enum, maps to runtime |
 | **Open** | 511 distinct domain `tags` + 228 `skills` | advisory; skills trigger via SKILL.md `description` |
 

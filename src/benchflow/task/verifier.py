@@ -1207,6 +1207,10 @@ class Verifier:
         self,
         strategy: VerifierStrategy,
     ) -> list[dict[str, Any]]:
+        if not strategy.inputs:
+            raise AgentJudgeInputError(
+                f"agent-judge strategy {strategy.name!r} must declare inputs"
+            )
         inputs_dir = self._rollout_paths.verifier_dir / "agent-judge-inputs"
         if inputs_dir.exists():
             if inputs_dir.is_dir() and not inputs_dir.is_symlink():

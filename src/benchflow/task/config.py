@@ -13,7 +13,7 @@ import re
 import tomllib
 import warnings
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import (
     AliasChoices,
@@ -513,10 +513,29 @@ class SandboxConfig(TaskConfigModel):
             )
             self.storage_mb = self._parse_size_to_mb(storage)
             self.storage = None
+        # Reconcile the deprecated allow_internet flag with network_mode.
+        # The new field is authoritative: when network_mode was explicitly
+        # provided, allow_internet must not silently override it. An explicit
+        # contradiction (e.g. network_mode='allowlist' + allow_internet=False)
+        # is a hard error rather than a silent downgrade to no-network.
+        network_mode_explicit = "network_mode" in self.model_fields_set
         if self.allow_internet is False:
-            self.network_mode = NetworkMode.NO_NETWORK
+            if network_mode_explicit:
+                if self.network_mode != NetworkMode.NO_NETWORK:
+                    raise ValueError(
+                        "allow_internet=False contradicts the explicit "
+                        f"network_mode={self.network_mode.value!r}; "
+                        "drop the deprecated allow_internet field and rely on "
+                        "network_mode (use network_mode='no-network' to "
+                        "disable networking)."
+                    )
+            else:
+                self.network_mode = NetworkMode.NO_NETWORK
         if self.network_mode == NetworkMode.NO_NETWORK:
             self.allow_internet = False
+        # Reconciliation must never leave the object in a state that
+        # _validate_network_policy_fields itself rejects.
+        _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
         return self
 
 
@@ -620,6 +639,8 @@ class TaskConfig(TaskConfigModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    _SUPPORTED_SCHEMA_MAJORS: ClassVar[frozenset[int]] = frozenset({1})
+
     @model_validator(mode="before")
     @classmethod
     def handle_version_rename(cls, data: Any) -> Any:
@@ -633,6 +654,32 @@ class TaskConfig(TaskConfigModel):
             if "version" in data:
                 data.setdefault("schema_version", data.pop("version"))
         return data
+
+    @field_validator("schema_version")
+    @classmethod
+    def validate_schema_version(cls, value: str) -> str:
+        """Reject unknown/unparseable schema majors; stay permissive on minor.
+
+        The schema version is ``MAJOR.MINOR``; only majors the loader knows how
+        to interpret are accepted. Unknown majors or non-numeric versions are a
+        hard error rather than a value silently carried through.
+        """
+        major_part = value.split(".", 1)[0]
+        try:
+            major = int(major_part)
+        except ValueError:
+            raise ValueError(
+                f"schema_version {value!r} is not a valid MAJOR.MINOR version"
+            ) from None
+        if major not in cls._SUPPORTED_SCHEMA_MAJORS:
+            supported = ", ".join(
+                str(m) for m in sorted(cls._SUPPORTED_SCHEMA_MAJORS)
+            )
+            raise ValueError(
+                f"Unsupported schema_version major {major} (from {value!r}); "
+                f"supported major version(s): {supported}"
+            )
+        return value
 
     @classmethod
     def model_validate_toml(cls, toml_data: str) -> TaskConfig:

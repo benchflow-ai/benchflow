@@ -513,8 +513,35 @@ def _promote_legacy_task_md_alias_dirs(task_dir: Path) -> tuple[str, ...]:
         if not legacy_dir.is_dir() or native_dir.exists():
             continue
         legacy_dir.rename(native_dir)
+        _rewrite_promoted_mount_prefix(native_dir, legacy_name, native_name)
         migrated.append(f"{legacy_name}/ -> {native_name}/")
     return tuple(migrated)
+
+
+_PROMOTED_TEXT_SUFFIXES = (".sh", ".py", ".txt")
+
+
+def _rewrite_promoted_mount_prefix(
+    native_dir: Path, legacy_name: str, native_name: str
+) -> None:
+    """Rewrite the hardcoded absolute mount prefix inside promoted scripts.
+
+    A promoted ``tests/ -> verifier/`` directory is mounted at ``/verifier``
+    at runtime, so a script that hardcodes ``/tests/...`` (the old mount
+    point) breaks. Rewrite the legacy absolute prefix to the native one,
+    scoped to that single leading path segment so unrelated paths such as
+    ``/logs/verifier/ctrf.json`` are left untouched (#651).
+    """
+
+    legacy_prefix = f"/{legacy_name}/"
+    native_prefix = f"/{native_name}/"
+    for path in native_dir.rglob("*"):
+        if not path.is_file() or path.suffix not in _PROMOTED_TEXT_SUFFIXES:
+            continue
+        text = path.read_text()
+        rewritten = text.replace(legacy_prefix, native_prefix)
+        if rewritten != text:
+            path.write_text(rewritten)
 
 
 def normalize_task_md(
