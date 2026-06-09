@@ -18,6 +18,7 @@
         "group": "Guides",
         "pages": [
           "docs/running-benchmarks",
+          "docs/continue-runs",
           "docs/task-authoring",
           "docs/use-cases",
           "docs/progressive-disclosure",
