@@ -8,6 +8,7 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
+import yaml
 
 from benchflow._utils.task_authoring import check_task, migrate_task_to_task_md
 from benchflow.task import (
@@ -250,6 +251,31 @@ def test_exported_real_skillsbench_examples_migrate_back_to_native_task_md(
     assert (out_dir / "verifier" / "rubrics" / "verifier.md").is_file()
     assert (out_dir / "oracle" / "solve.sh").is_file()
     assert check_task(out_dir, validation_level="publication-grade") == []
+
+
+def test_migrate_minimal_frontmatter_round_trips_equivalent_config(
+    tmp_path: Path,
+) -> None:
+    """Migrated frontmatter is the declared config surface, not a model dump."""
+    toml_text = (
+        '[metadata]\ndifficulty = "easy"\n\n'
+        "[agent]\ntimeout_sec = 120\n\n"
+        "[environment]\ncpus = 2\n"
+    )
+    (tmp_path / "task.toml").write_text(toml_text)
+    (tmp_path / "instruction.md").write_text("Solve the declared task.\n")
+
+    result = migrate_task_to_task_md(tmp_path)
+
+    text = result.task_md.read_text()
+    frontmatter = yaml.safe_load(text.split("---\n")[1])
+    assert sorted(frontmatter) == ["agent", "environment", "metadata", "schema_version"]
+    assert "judge" not in text
+    document = TaskDocument.from_path(result.task_md)
+    assert document.config.model_dump() == (
+        TaskConfig.model_validate_toml(toml_text).model_dump()
+    )
+    assert document.instruction == "Solve the declared task."
 
 
 def test_export_roundtrips_config_and_prompt(tmp_path: Path) -> None:

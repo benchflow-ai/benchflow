@@ -1555,7 +1555,7 @@ method = "weighted_mean"
 
 def _write_task_md(task_dir: Path, name: str) -> None:
     (task_dir / TASK_DOCUMENT_FILE).write_text(f"""---
-version: "1.0"
+schema_version: "1.0"
 metadata:
   author_name: ""
   difficulty: medium

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from benchflow._utils.learner_memory import expected_skills_for_task
 from benchflow.rollout import RolloutConfig, Scene, _resolve_prompts
@@ -42,6 +43,48 @@ def test_task_document_preserves_demo_task_config_and_prompt() -> None:
 
     assert document.config.model_dump() == legacy_config.model_dump()
     assert document.instruction == (demo_task / "instruction.md").read_text().strip()
+
+
+def test_render_task_md_from_legacy_emits_only_declared_frontmatter(
+    tmp_path: Path,
+) -> None:
+    """Migration must not materialize runtime defaults the author never wrote."""
+    (tmp_path / "task.toml").write_text(
+        '[metadata]\ndifficulty = "easy"\n\n'
+        "[agent]\ntimeout_sec = 120\n\n"
+        "[environment]\ncpus = 2\n"
+    )
+    (tmp_path / "instruction.md").write_text("Do the declared thing.\n")
+
+    rendered = render_task_md_from_legacy(tmp_path)
+    frontmatter = yaml.safe_load(rendered.split("---\n")[1])
+
+    assert frontmatter == {
+        "schema_version": "1.3",
+        "metadata": {"difficulty": "easy"},
+        "agent": {"timeout_sec": 120},
+        "environment": {"cpus": 2},
+    }
+
+
+def test_render_task_md_from_legacy_canonicalizes_version_key(
+    tmp_path: Path,
+) -> None:
+    """Generated documents pin schema_version; 'version' stays a parse alias."""
+    (tmp_path / "task.toml").write_text('version = "1.0"\n')
+    (tmp_path / "instruction.md").write_text("Do it.\n")
+
+    rendered = render_task_md_from_legacy(tmp_path)
+    frontmatter = yaml.safe_load(rendered.split("---\n")[1])
+
+    assert frontmatter == {"schema_version": "1.0"}
+    assert TaskDocument.from_text(rendered).config.schema_version == "1.0"
+
+
+def test_task_document_accepts_legacy_version_alias_on_parse() -> None:
+    document = TaskDocument.from_text('---\nversion: "1.0"\n---\nDo it.\n')
+
+    assert document.config.schema_version == "1.0"
 
 
 @pytest.mark.parametrize(
