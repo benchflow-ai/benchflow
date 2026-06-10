@@ -42,7 +42,7 @@ MODELS = {
 }
 HFMODE = {"with": "with-skills", "without": "no-skills"}
 
-# --- secret hygiene: nothing with a credential ever leaves for the public PR ---
+# secret hygiene: nothing with a credential ever leaves for the public PR
 # benchflow already scrubs config/result/trajectories, but the publisher guarantees
 # it too: drop secret-named keys, redact secret-shaped values, and ABORT a cell if
 # any secret pattern survives in any file about to be uploaded.
