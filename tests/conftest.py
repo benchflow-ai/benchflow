@@ -1,6 +1,7 @@
 """Test fixtures."""
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,11 @@ REPO_ROOT = Path(__file__).parent.parent
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+
+# LiteLLM's import-time dotenv load walks up parent directories and can pull a
+# developer-machine `.env` into os.environ, leaking real credentials into every
+# test that runs after the first litellm import. PRODUCTION mode disables it.
+os.environ.setdefault("LITELLM_MODE", "PRODUCTION")
 
 # Vendored upstream tasks ship their own pytest files (task verifiers, run
 # inside task sandboxes) — they are fixtures, not suite tests.
