@@ -10,6 +10,7 @@ structurally validated. Deterministic — no network, no sandbox, no model.
         --tasks-file simple_tasks.txt
     python adapt.py --skillsbench /path/to/skillsbench --out ./adapted --all
 """
+
 from __future__ import annotations
 
 import argparse
@@ -75,7 +76,9 @@ def _normalize_legacy_test_paths(dst: Path) -> None:
     for sh in vdir.rglob("*.sh"):
         txt = sh.read_text()
         new = txt.replace("[ -d /tests ]", "[ -d /verifier ]")
-        new = _re.sub(r"(?m)(\s|^)tests/test_outputs\.py", r"\1/verifier/test_outputs.py", new)
+        new = _re.sub(
+            r"(?m)(\s|^)tests/test_outputs\.py", r"\1/verifier/test_outputs.py", new
+        )
         if new != txt:
             sh.write_text(new)
     for py in vdir.rglob("*.py"):
@@ -89,11 +92,22 @@ def _normalize_legacy_test_paths(dst: Path) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--skillsbench", required=True, type=Path, help="path to a skillsbench checkout")
-    ap.add_argument("--out", required=True, type=Path, help="output dir for adapted task.md packages")
-    ap.add_argument("--tasks-file", type=Path, help="newline-delimited task names (# comments ok)")
+    ap.add_argument(
+        "--skillsbench", required=True, type=Path, help="path to a skillsbench checkout"
+    )
+    ap.add_argument(
+        "--out",
+        required=True,
+        type=Path,
+        help="output dir for adapted task.md packages",
+    )
+    ap.add_argument(
+        "--tasks-file", type=Path, help="newline-delimited task names (# comments ok)"
+    )
     ap.add_argument("--tasks", nargs="*", default=[], help="task names")
-    ap.add_argument("--all", action="store_true", help="adapt every task in the checkout")
+    ap.add_argument(
+        "--all", action="store_true", help="adapt every task in the checkout"
+    )
     args = ap.parse_args()
 
     names = list(args.tasks)
