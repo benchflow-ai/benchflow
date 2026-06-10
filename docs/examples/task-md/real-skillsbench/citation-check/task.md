@@ -1,5 +1,5 @@
 ---
-version: '1.0'
+schema_version: "1.3"
 metadata:
   author_name: Xuandong Zhao
   author_email: csxuandongzhao@gmail.com
@@ -30,11 +30,11 @@ metadata:
   - crossref
   - semantic-scholar
 verifier:
-  timeout_sec: 900.0
+  timeout_sec: 900
 agent:
-  timeout_sec: 900.0
+  timeout_sec: 900
 environment:
-  build_timeout_sec: 600.0
+  build_timeout_sec: 600
   cpus: 1
   memory_mb: 2048
   storage_mb: 10240

@@ -1,5 +1,5 @@
 ---
-version: '1.0'
+schema_version: "1.3"
 metadata:
   author_name: Wengao Ye
   author_email: wengao.ye@kellogg.ox.ac.uk
@@ -28,11 +28,11 @@ metadata:
   - 3d-geometry
   - stl
 verifier:
-  timeout_sec: 900.0
+  timeout_sec: 900
 agent:
-  timeout_sec: 900.0
+  timeout_sec: 900
 environment:
-  build_timeout_sec: 600.0
+  build_timeout_sec: 600
   cpus: 1
   memory_mb: 4096
   storage_mb: 10240
