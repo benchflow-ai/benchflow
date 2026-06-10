@@ -36,28 +36,22 @@ python adapt.py --skillsbench ../skillsbench --out ./adapted --tasks-file simple
 # validated structurally; this same pipeline passes schema/structural/publication-grade
 ```
 
-## 2 · Smoke (one task, prove a real rollout)
+## 2 · Run (smoke one task first, then the matrix)
 
 ```bash
-./run_matrix.sh smoke
-# inspect jobs/sb-smoke-*/*/result.json — trust ONLY if:
+# smoke: one task, one mode, concurrency 1 — prove a REAL rollout end-to-end
+uv run bench eval create --tasks-dir ./adapted --include <task> \
+  --agent openhands --model "$MODEL" --sandbox daytona \
+  --skill-mode with-skill --concurrency 1 --jobs-dir jobs/smoke-$(date -u +%H%M%SZ)
+# inspect result.json — trust ONLY if:
 #   n_tool_calls > 0  AND  total_tokens > 0  AND  reward is non-None
-```
 
-## 3 · Full matrix (3 skill modes)
-
-```bash
-./run_matrix.sh full
-#   no-skill   = baseline
-#   with-skill = skill mounted
-#   self-gen   = agent generates the skill first (--self-gen-no-internet)
+# full matrix: repeat per skill mode (no-skill / with-skill / self-gen) with a
+# FRESH --jobs-dir per batch; self-gen adds --self-gen-no-internet.
 # compare per-task mean reward across the three modes (skill lift)
 ```
 
-Overrides: `AGENT`, `MODEL`, `SANDBOX` (default `daytona`; use `docker` if you
-have a local daemon), `TASKS_DIR`, `CONC`.
-
-## Landmines (from the handoff runbook §5)
+## Landmines
 
 - **Resume trap:** `bench eval create` resumes a matching `--jobs-dir` and reuses
   stale results. The harness uses a fresh timestamped dir per batch — keep it.

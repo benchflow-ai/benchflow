@@ -1,7 +1,6 @@
 # Simple, light SkillsBench tasks for the run-through (Daytona 10 GB/sandbox cap).
 # Network varies by task: most inherit network_mode=public (no runtime host is
-# actually contacted); only bike-rebalance declares offline. Use adapt_clean.py
-# --offline-no-network to harden if true offline is required. Each ships skills/,
+# actually contacted); only bike-rebalance declares offline. Each ships skills/,
 # so all three skill modes (no-skill / with-skill / self-gen) are meaningful.
 weighted-gdp-calc
 powerlifting-coef-calc

@@ -22,7 +22,7 @@ that the **adapted task.md runs through** the full harness in every skill mode.
 
 Auditing a migrated package (`ada-bathroom-plan-repair`) against the real `TaskConfig`
 schema surfaced **one runtime defect** plus cosmetic serializer noise. Fixed/handled in
-`adapt_clean.py`:
+the adapter (originally `adapt_clean.py`, since consolidated into `adapt.py`):
 
 1. **Runtime verifier bug (real; fixed).** `migrate_task_to_task_md` renames
    `tests/`→`verifier/` but leaves `verifier/test.sh` referencing
@@ -32,6 +32,8 @@ schema surfaced **one runtime defect** plus cosmetic serializer noise. Fixed/han
    `/tests/`→`/verifier/`.
    **Recommended core fix:** apply the same rewrite inside `migrate_task_to_task_md`'s
    dir-promotion step so every migrated legacy task is fixed class-wide.
+   *(Implemented — `migrate_task_to_task_md` now applies the rewrite; `adapt.py`
+   additionally normalizes constructed `/tests` paths the string rewrite misses.)*
 
 2. **Empty-default scaffolding (cosmetic; pruned).** `model_dump_toml(by_alias=True)`
    emits `artifacts: []`, `reward: {}`, `oracle: {env: {}}`, every empty `env: {}`,
@@ -42,14 +44,14 @@ schema surfaced **one runtime defect** plus cosmetic serializer noise. Fixed/han
    faithful migration. (Frontmatter shrank 78 → 62 lines on the sample task.)
 
 3. **Over-permissive network default (authoring note).** Offline tasks inherit the
-   schema default `network_mode: public`. `adapt_clean.py --offline-no-network` hardens
+   schema default `network_mode: public`. The retired `--offline-no-network` flag hardened
    that to `no-network` (least privilege); left opt-in to keep the migration faithful.
 
 ## Files
 
-- `adapt.py` — faithful migration wrapper (`migrate_task_to_task_md` over a task set).
-- `adapt_clean.py` — minimal/clean adapter: faithful migrate → lossless prune → verifier-path fix.
-- `run_matrix.sh` — openhands/deepseek matrix runner (no-skill / with-skill / self-gen), smoke then full.
+- `adapt.py` — batch adapter: faithful migrate → legacy-quirk normalizations →
+  `check_task` validation (canonical; supersedes the retired `adapt_clean.py` /
+  `run_matrix.sh`).
 - `simple_tasks.txt` — offline, light task subset used for the smoke/run-through.
 
 Run artifacts (`adapted*/`, `jobs/`, `sb-runs/`) are git-ignored.

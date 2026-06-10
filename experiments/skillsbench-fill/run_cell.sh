@@ -13,7 +13,7 @@ SB="$HOME/skillsbench"
 JOBS="$JOBS_ROOT/$CELL"
 mkdir -p "$JOBS" "$STATE_DIR"
 
-# env: load keys, strip All-Hands proxy hijack vars, fix per-provider keys
+# --- env: load keys, strip All-Hands proxy hijack vars, fix per-provider keys ---
 set -a; source "$HOME/keys.env" 2>/dev/null || true; set +a
 unset OPENAI_API_KEY OPENAI_BASE_URL LLM_API_KEY LLM_BASE_URL \
       BENCHFLOW_PROVIDER_API_KEY BENCHFLOW_PROVIDER_BASE_URL \
@@ -24,7 +24,7 @@ export AWS_REGION=us-west-2 AWS_DEFAULT_REGION=us-west-2
 export BENCHFLOW_BEDROCK_THINKING_EFFORT=max
 [ -n "${GEMINI_API_KEY_2:-}" ] && export GEMINI_API_KEY="$GEMINI_API_KEY_2"
 
-# per-model flags (effort is env-delivered; --reasoning-effort is rejected by openhands)
+# --- per-model flags (effort is env-delivered; --reasoning-effort is rejected by openhands) ---
 case "$MODEL" in
   opus-4.8)
     MODEL_ARGS=(--model aws-bedrock/us.anthropic.claude-opus-4-8
@@ -40,7 +40,7 @@ esac
 # skill modes (current benchflow): with-skill | no-skill | self-gen. without => omit --skills-dir.
 if [ "$MODE" = "with" ]; then SKILL_ARGS=(--skills-dir "$SB/tasks/$TASK/environment/skills" --skill-mode with-skill); else SKILL_ARGS=(); fi
 
-# state: running
+# --- state: running ---
 python3 - "$STATE_DIR/$CELL.json" "$CELL" "$MODEL" "$MODE" "$TASK" "$SLOT" "$SANDBOX" "$JOBS" <<'PY'
 import json,sys,datetime
 p,cell,model,mode,task,slot,sb,jobs=sys.argv[1:9]
@@ -49,7 +49,7 @@ json.dump({"cell_id":cell,"model":model,"skill_mode":mode,"task":task,"trial_slo
            "sandbox":sb,"status":"running","run_root":jobs,"started_at":now,"updated_at":now}, open(p,"w"), indent=2)
 PY
 
-# run the cell (one ephemeral sandbox)
+# --- run the cell (one ephemeral sandbox) ---
 cd "$BENCH"
 "$BENCH/.venv/bin/bench" eval create \
   --tasks-dir "$SB/tasks" --include "$TASK" --concurrency 1 \
@@ -59,7 +59,7 @@ cd "$BENCH"
   --jobs-dir "$JOBS" > "$JOBS/cell.log" 2>&1
 RC=$?
 
-# collect: parse result.json, detect ENOSPC for docker fallback signal
+# --- collect: parse result.json, detect ENOSPC for docker fallback signal ---
 python3 - "$STATE_DIR/$CELL.json" "$JOBS" "$RC" <<'PY'
 import json,sys,glob,os,datetime
 statef,jobs,rc=sys.argv[1],sys.argv[2],int(sys.argv[3])
