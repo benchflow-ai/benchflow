@@ -153,7 +153,17 @@ async def test_runtime_reuse_and_stop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_required_usage_fails_when_litellm_lacks_provider_key():
+async def test_required_usage_fails_when_litellm_lacks_provider_key(monkeypatch):
+    # Isolate from host state: a developer's Codex CLI login
+    # (~/.codex/auth.json) would otherwise satisfy subscription auth and
+    # skip LiteLLM entirely. This test is about the no-key, no-subscription
+    # path.
+    monkeypatch.setattr(
+        runtime_mod,
+        "uses_native_subscription_auth",
+        lambda *_args, **_kwargs: False,
+    )
+
     with pytest.raises(RuntimeError, match="requires OPENAI_API_KEY"):
         await ensure_litellm_runtime(
             agent="codex-acp",
