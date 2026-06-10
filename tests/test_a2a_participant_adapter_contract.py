@@ -352,6 +352,58 @@ async def test_a2a_file_artifacts_are_materialized_under_workspace(
     assert artifacts[0]["materialized"] is True
 
 
+@pytest.mark.parametrize(
+    "malicious_path",
+    [
+        "../../logs/verifier/reward.txt",  # relative traversal out of /app
+        "/logs/verifier/reward.txt",  # absolute path outside the workspace
+        "/application/escape.txt",  # sibling dir sharing the /app prefix
+    ],
+)
+async def test_a2a_file_artifacts_outside_workspace_are_rejected(
+    tmp_path: Path,
+    malicious_path: str,
+) -> None:
+    """Endpoint-supplied paths escaping the workspace must hard-fail.
+
+    final_response files[].path comes from an external (untrusted) A2A
+    endpoint and _upload_a2a_file runs mkdir/upload/chown as root, so a
+    traversal or absolute path here is a reward-forgery seam (e.g. writing
+    /logs/verifier/reward.txt). The containment check must raise before any
+    sandbox command or upload runs.
+    """
+    adapter = FakeA2AAdapter(
+        A2AParticipantResult(
+            status="completed",
+            final_response={"files": [{"path": malicious_path, "content": "forged"}]},
+        )
+    )
+    scene = Scene(roles=[_a2a_role()], turns=[Turn("agent", "Solve.")])
+    trial = _make_rollout(tmp_path, adapter, scene)
+
+    with pytest.raises(ValueError, match="must stay under the rollout workspace"):
+        await trial._run_steps(compile_scenes_to_steps([scene]))
+
+    assert trial._env.uploads == {}
+    assert not any("mkdir" in cmd for cmd in trial._env.exec_log)
+
+
+async def test_a2a_turn_accumulates_agent_execution_timing(tmp_path: Path) -> None:
+    """An A2A turn adds to agent_execution instead of only recording the first.
+
+    Matches the ACP execute() accumulation semantics: in multi-turn scenes the
+    reported agent execution time is the sum over turns, not the first turn.
+    """
+    adapter = FakeA2AAdapter()
+    scene = Scene(roles=[_a2a_role()], turns=[Turn("agent", "Solve.")])
+    trial = _make_rollout(tmp_path, adapter, scene)
+    trial._timing["agent_execution"] = 5.0  # a prior turn already recorded time
+
+    await trial._run_steps(compile_scenes_to_steps([scene]))
+
+    assert trial._timing["agent_execution"] > 5.0
+
+
 async def test_a2a_successful_done_signal_runs_existing_verifier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

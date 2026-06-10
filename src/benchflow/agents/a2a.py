@@ -1,8 +1,10 @@
-"""AgentBeats A2A participant adapter contract.
+"""AgentBeats A2A participant adapter: contract types and SDK-backed client.
 
-This module intentionally defines the contract only. Runtime wiring belongs in
-the later implementation phase after the SkillsBench green-agent skeleton can
-exercise this boundary against AgentBeats-style assessment requests.
+Defines the request/handle/result/trajectory contract for external A2A
+participant endpoints plus :class:`A2AClientParticipantAdapter`, an a2a-sdk
+based implementation that resolves the participant's agent card, sends one
+visible prompt per role turn, and normalizes the resulting task states and
+artifacts for the Rollout to persist and hand to the existing verifier path.
 """
 
 from __future__ import annotations
@@ -80,7 +82,7 @@ class A2AParticipantResult:
 
 
 class A2AParticipantAdapter(Protocol):
-    """Protocol a future BenchFlow A2A participant adapter must satisfy."""
+    """Protocol a BenchFlow A2A participant adapter must satisfy."""
 
     async def start(self, request: A2AParticipantRequest) -> A2ATaskHandle:
         """Create a fresh participant task for one BenchFlow role turn."""
@@ -262,6 +264,11 @@ def _participant_result_from_events(
 
 
 def _normalize_task_status(value: str) -> A2ATaskStatus:
+    # The a2a-sdk TaskState enum has nine states. Benchmark turns are
+    # non-interactive, so any state in which the participant cannot make
+    # progress on its own (input-required, auth-required, rejected, unknown)
+    # is scored as "failed" rather than left waiting for input that will
+    # never arrive.
     if value == "completed":
         return "completed"
     if value in {"canceled", "cancelled"}:

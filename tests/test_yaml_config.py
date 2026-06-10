@@ -239,6 +239,53 @@ def test_rollout_yaml_reasoning_effort_reaches_primary_role():
     assert cfg.primary_reasoning_effort == "max"
 
 
+def test_rollout_yaml_scene_role_parses_transport_and_runtime_keys():
+    """Pins _parse_role wiring for A2A transport plus newly honored role keys.
+
+    transport/endpoint_url arrived with the A2A participant adapter. The same
+    change also made the loader honor timeout_sec, idle_timeout_sec,
+    skills_dir, and capabilities, which were previously ignored on role
+    dicts — a behavior change for existing YAML files that already carried
+    them, so pin all six keys here.
+    """
+    from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+    cfg = rollout_config_from_dict(
+        {
+            "task_dir": "tests/examples/hello-world-task",
+            "scenes": [
+                {
+                    "roles": [
+                        {
+                            "name": "participant",
+                            "agent": "external-participant",
+                            "transport": "a2a",
+                            "endpoint_url": "http://participant.example/a2a",
+                            "timeout_sec": 120,
+                            "idle_timeout_sec": 30,
+                            "skills_dir": "/skills/demo",
+                            "capabilities": ["tool-use"],
+                        },
+                        {"name": "coder", "agent": "claude-agent-acp"},
+                    ],
+                    "turns": [{"role": "participant", "prompt": "Review."}],
+                }
+            ],
+        }
+    )
+
+    role = cfg.scenes[0].roles[0]
+    assert role.transport == "a2a"
+    assert role.endpoint_url == "http://participant.example/a2a"
+    assert role.timeout_sec == 120
+    assert role.idle_timeout_sec == 30
+    assert role.skills_dir == "/skills/demo"
+    assert role.capabilities == ["tool-use"]
+    acp_role = cfg.scenes[0].roles[1]
+    assert acp_role.transport == "acp"
+    assert acp_role.endpoint_url is None
+
+
 def test_native_yaml_rejects_bool_agent_idle_timeout(tmp_path):
     """Guards v0.5-idle-timeout@1566fed against bool-to-int coercion."""
     tasks = tmp_path / "tasks" / "task-a"

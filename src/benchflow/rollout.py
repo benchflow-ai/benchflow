@@ -2725,8 +2725,9 @@ class Rollout:
         self._trajectory_source = (
             "a2a" if self._trajectory_source is None else self._trajectory_source
         )
-        if "agent_execution" not in self._timing:
-            self._timing["agent_execution"] = (datetime.now() - t0).total_seconds()
+        self._timing["agent_execution"] = self._timing.get(
+            "agent_execution", 0.0
+        ) + (datetime.now() - t0).total_seconds()
         self._phase = "executed"
 
     def _append_a2a_event(
@@ -2825,6 +2826,16 @@ class Rollout:
                 yield from self._iter_a2a_file_specs(item)
 
     def _normalize_a2a_output_path(self, path: str) -> str:
+        """Contain endpoint-supplied output paths to the rollout workspace.
+
+        final_response files[].path comes from an external (untrusted) A2A
+        endpoint while _upload_a2a_file runs mkdir/upload/chown as root, so
+        any path escaping the workspace (e.g. the verifier log dir) must be
+        rejected. Trust model: containment is enforced on the normalized
+        path string only — symlinks already present under the workspace are
+        not resolved, because only the sandboxed agent could have created
+        them and a write through one stays inside the sandbox.
+        """
         workspace = posixpath.normpath(self._agent_cwd or "/app")
         candidate = (
             posixpath.normpath(posixpath.join(workspace, path))
