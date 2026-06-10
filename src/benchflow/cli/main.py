@@ -20,6 +20,7 @@ from benchflow._utils.config import (
     normalize_reasoning_effort,
     normalize_sandbox_user,
 )
+from benchflow.agent_router import register_agent_router
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.trace_import import register_tasks_generate
@@ -961,6 +962,7 @@ def cleanup(
 
 agent_app = typer.Typer(help="Agent management commands.")
 app.add_typer(agent_app, name="agent")
+register_agent_router(agent_app)
 
 
 @agent_app.command("list")
