@@ -187,18 +187,14 @@ Validate a task directory (Dockerfile, instruction.md, tests/).
 bench tasks check tasks/my-task
 ```
 
-> The `--level` option is available on the development branch; not yet in this release.
-
 With `--level`, validation runs at a chosen depth: `schema`, `structural`,
 `runtime-capability`, `publication-grade`, `acceptance`, or `acceptance-live`.
 Acceptance-level errors such as
 `acceptance validation requires benchflow.evidence mapping` refer to the
 `benchflow.evidence` schema documented in the "Assets, Provenance, And
-Evidence" section of `docs/task-standard.md` on the same branch.
+Evidence" section of `docs/task-standard.md`.
 
 ### bench tasks migrate
-
-> Available on the development branch; not yet in this release.
 
 Convert a legacy `task.toml` + `instruction.md` task into the unified
 `task.md` format. By default the legacy files are kept alongside the new
@@ -215,8 +211,6 @@ bench tasks migrate tasks/my-task --overwrite --remove-legacy
 | `--remove-legacy` | `false` | Delete split files and promote tests/solution aliases after task.md is verified |
 
 ### bench tasks normalize
-
-> Available on the development branch; not yet in this release.
 
 Expand minimal `task.md` authoring profiles into the canonical `task.md`
 form. Prints the normalized document to stdout unless told otherwise.
