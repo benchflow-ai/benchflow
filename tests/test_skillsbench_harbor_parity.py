@@ -1,420 +1,84 @@
+"""Conversion-parity conformance over vendored public SkillsBench tasks.
+
+The fixtures under ``tests/fixtures/skillsbench_slice/`` are vendored verbatim
+from github.com/benchflow-ai/skillsbench at the commit pinned in
+``manifest.json``, so the parity claim is reproducible from the public repo:
+re-fetch the pinned commit and the per-file digests must match. Each runner
+case feeds a real task through the migrate/export conversion path
+(``build_harbor_roundtrip_conformance_report``: split -> task.md -> split) and
+asserts every compared surface — canonical config, normalized prompt, and the
+environment/solution/tests file-hash maps — survives with zero mismatches.
+"""
+
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
-from tests.integration.check_skillsbench_harbor_parity import (
-    DEFAULT_HARBOR_BASELINE_REF,
-    PIN_FILE,
-    main,
+import pytest
+
+from benchflow.task.export import build_harbor_roundtrip_conformance_report
+
+SLICE_DIR = Path(__file__).parent / "fixtures" / "skillsbench_slice"
+MANIFEST = json.loads((SLICE_DIR / "manifest.json").read_text())
+VENDORED_TASKS = (
+    "flood-risk-analysis",
+    "lake-warming-attribution",
+    "r2r-mpc-control",
+    "suricata-custom-exfil",
+    "syzkaller-ppdev-syzlang",
 )
-
-TASK_MD_HASH = "sha256:" + ("1" * 64)
-TASK_TOML_HASH = "sha256:" + ("2" * 64)
-SOURCE_SHA = "a" * 40
+MAX_SLICE_BYTES = 300 * 1024
 
 
-def _write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
-
-
-def _write_harbor_result(root: Path, task: str, reward: float, trial: str) -> None:
-    trial_dir = root / f"{task}__{trial}"
-    _write_json(
-        trial_dir / "result.json",
-        {
-            "task_name": task,
-            "trial_name": f"{task}__{trial}",
-            "config": {
-                "agent": {
-                    "name": "gemini-cli",
-                    "model_name": "google/gemini-3-flash-preview",
-                },
-                "environment": {"type": "docker"},
-            },
-            "agent_info": {
-                "name": "gemini-cli",
-                "model_info": {
-                    "name": "gemini-3-flash-preview",
-                    "provider": "google",
-                },
-            },
-            "verifier_result": {"rewards": {"reward": reward}},
-            "exception_info": None,
-        },
-    )
-    _write_json(
-        trial_dir / "agent" / "trajectory.json",
-        {
-            "schema_version": "ATIF-v1.2",
-            "steps": [
-                {"source": "user", "message": "solve"},
-                {
-                    "source": "agent",
-                    "message": "done",
-                    "tool_calls": [{"function_name": "run_shell_command"}],
-                },
-            ],
-        },
-    )
-
-
-def _write_benchflow_result(
-    root: Path,
-    task: str,
-    reward: float,
-    rollout: str,
-    *,
-    skill_mode: str = "no-skill",
-    skill_source: str = "none",
-    source_repo: str = "benchflow-ai/skillsbench",
-    source_sha: str = SOURCE_SHA,
-    source_path: str | None = None,
-    file_hashes: dict[str, str] | None = None,
-    config_skill_mode: str | None = None,
-    config_skill_source: str | None = None,
-) -> None:
-    rollout_dir = root / "2026-05-24__00-00-00" / f"{task}__{rollout}"
-    task_source_path = source_path or f"tasks/{task}"
-    task_local_path = root / "tasks" / task
-    source = {
-        "type": "github",
-        "repo": source_repo,
-        "requested_ref": "main",
-        "resolved_sha": source_sha,
-        "path": task_source_path,
-        "local_path": str(task_local_path),
-        "dirty": False,
-        "file_hashes": file_hashes or {"task.md": TASK_MD_HASH},
+def _file_digests(task_dir: Path) -> dict[str, str]:
+    return {
+        path.relative_to(task_dir).as_posix(): (
+            "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+        for path in sorted(task_dir.rglob("*"))
+        if path.is_file()
     }
-    _write_json(
-        rollout_dir / "result.json",
-        {
-            "task_name": task,
-            "rollout_name": f"{task}__{rollout}",
-            "rewards": {"reward": reward},
-            "agent": "gemini",
-            "model": "gemini-3.1-flash-lite-preview",
-            "skill_mode": skill_mode,
-            "skill_source": skill_source,
-            "error": None,
-            "verifier_error": None,
-            "source": source,
-        },
-    )
-    _write_json(
-        rollout_dir / "config.json",
-        {
-            "task_path": str(task_local_path),
-            "agent": "gemini",
-            "model": "gemini-3.1-flash-lite-preview",
-            "environment": "daytona",
-            "skill_mode": config_skill_mode or skill_mode,
-            "skill_source": config_skill_source or skill_source,
-            "source": {
-                "type": "github",
-                "repo": source_repo,
-                "requested_ref": "main",
-                "resolved_sha": source_sha,
-                "path": "tasks",
-                "local_path": str(root / "tasks"),
-                "dirty": False,
-                "file_hashes": {},
-            },
-        },
-    )
-    trajectory = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
-    trajectory.parent.mkdir(parents=True, exist_ok=True)
-    trajectory.write_text(
-        json.dumps({"type": "user_message", "text": "solve"})
-        + "\n"
-        + json.dumps({"type": "assistant_message", "text": "done"})
-        + "\n"
-    )
 
 
-def test_skillsbench_harbor_parity_normalizes_expected_schema_differences(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    """Guards issue #508 against comparing Harbor and BenchFlow artifacts literally."""
-    harbor = tmp_path / "harbor"
-    benchflow = tmp_path / "benchflow"
-    harbor.mkdir()
-    (harbor / PIN_FILE).write_text(DEFAULT_HARBOR_BASELINE_REF + "\n")
-
-    _write_harbor_result(harbor, "jax-computing-basics", 1.0, "harbor-a")
-    _write_harbor_result(harbor, "python-scala-translation", 0.0, "harbor-b")
-    _write_benchflow_result(benchflow, "jax-computing-basics", 1.0, "bf-a")
-    _write_benchflow_result(benchflow, "python-scala-translation", 0.0, "bf-b")
-
-    rc = main(
-        [
-            "--benchflow-root",
-            str(benchflow),
-            "--harbor-baseline-root",
-            str(harbor),
-            "--task",
-            "jax-computing-basics",
-            "--task",
-            "python-scala-translation",
-            "--max-outcome-rate-delta",
-            "0",
-            "--max-mean-reward-delta",
-            "0",
-        ]
-    )
-
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "PASS" in out
-    assert "BenchFlow: total=2 passed=1 failed=1" in out
-    assert "Harbor: total=2 passed=1 failed=1" in out
+def test_manifest_pins_the_public_source_commit() -> None:
+    assert MANIFEST["source_repo"] == "https://github.com/benchflow-ai/skillsbench"
+    assert MANIFEST["source_path_prefix"] == "tasks"
+    commit = MANIFEST["source_commit"]
+    assert len(commit) == 40
+    assert set(commit) <= set("0123456789abcdef")
 
 
-def test_skillsbench_harbor_parity_fails_on_meaningful_reward_drift(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    """Guards issue #508 against accepting reward distribution drift."""
-    harbor = tmp_path / "harbor"
-    benchflow = tmp_path / "benchflow"
-    harbor.mkdir()
-    (harbor / PIN_FILE).write_text(DEFAULT_HARBOR_BASELINE_REF + "\n")
-
-    _write_harbor_result(harbor, "jax-computing-basics", 1.0, "harbor-a")
-    _write_benchflow_result(benchflow, "jax-computing-basics", 0.0, "bf-a")
-
-    rc = main(
-        [
-            "--benchflow-root",
-            str(benchflow),
-            "--harbor-baseline-root",
-            str(harbor),
-            "--task",
-            "jax-computing-basics",
-            "--max-outcome-rate-delta",
-            "0",
-            "--max-mean-reward-delta",
-            "0",
-        ]
-    )
-
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "FAIL" in out
-    assert "outcome 'failed' is not present" in out
-    assert "mean reward drift" in out
+def test_vendored_slice_matches_manifest_inventory_and_digests() -> None:
+    on_disk = sorted(p.name for p in SLICE_DIR.iterdir() if p.is_dir())
+    assert on_disk == sorted(VENDORED_TASKS)
+    assert sorted(MANIFEST["tasks"]) == sorted(VENDORED_TASKS)
+    for task in VENDORED_TASKS:
+        assert _file_digests(SLICE_DIR / task) == MANIFEST["tasks"][task], task
 
 
-def test_skillsbench_harbor_parity_requires_native_task_md_provenance(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    """Guards issue #508 against accepting legacy SkillsBench task artifacts."""
-    harbor = tmp_path / "harbor"
-    benchflow = tmp_path / "benchflow"
-    harbor.mkdir()
-    (harbor / PIN_FILE).write_text(DEFAULT_HARBOR_BASELINE_REF + "\n")
-
-    _write_harbor_result(harbor, "jax-computing-basics", 1.0, "harbor-a")
-    _write_benchflow_result(
-        benchflow,
-        "jax-computing-basics",
-        1.0,
-        "bf-a",
-        file_hashes={"task.toml": TASK_TOML_HASH},
-    )
-
-    rc = main(
-        [
-            "--benchflow-root",
-            str(benchflow),
-            "--harbor-baseline-root",
-            str(harbor),
-            "--task",
-            "jax-computing-basics",
-        ]
-    )
-
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "FAIL" in out
-    assert "source.file_hashes must include native task.md" in out
+def test_vendored_slice_stays_small_and_text_only() -> None:
+    files = [
+        path
+        for path in SLICE_DIR.rglob("*")
+        if path.is_file() and path.name != "manifest.json"
+    ]
+    assert files
+    assert sum(path.stat().st_size for path in files) <= MAX_SLICE_BYTES
+    for path in files:
+        path.read_text(encoding="utf-8")
 
 
-def test_skillsbench_harbor_parity_requires_expected_skill_lane(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    """Guards issue #508 against comparing with-skills runs to no-skills Harbor."""
-    harbor = tmp_path / "harbor"
-    benchflow = tmp_path / "benchflow"
-    harbor.mkdir()
-    (harbor / PIN_FILE).write_text(DEFAULT_HARBOR_BASELINE_REF + "\n")
+@pytest.mark.parametrize("task_name", VENDORED_TASKS)
+def test_harbor_roundtrip_is_lossless_for_vendored_task(task_name: str) -> None:
+    report = build_harbor_roundtrip_conformance_report(SLICE_DIR / task_name)
 
-    _write_harbor_result(harbor, "jax-computing-basics", 1.0, "harbor-a")
-    _write_benchflow_result(
-        benchflow,
-        "jax-computing-basics",
-        1.0,
-        "bf-a",
-        skill_mode="with-skill",
-        skill_source="task_bundled",
-    )
-
-    rc = main(
-        [
-            "--benchflow-root",
-            str(benchflow),
-            "--harbor-baseline-root",
-            str(harbor),
-            "--task",
-            "jax-computing-basics",
-        ]
-    )
-
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "FAIL" in out
-    assert "skill_mode 'with-skill' does not match expected 'no-skill'" in out
-    assert "skill_source 'task_bundled' does not match expected 'none'" in out
-
-
-def test_skillsbench_harbor_parity_requires_config_skill_metadata_match(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    """Guards issue #508 against stitched result/config artifacts."""
-    harbor = tmp_path / "harbor"
-    benchflow = tmp_path / "benchflow"
-    harbor.mkdir()
-    (harbor / PIN_FILE).write_text(DEFAULT_HARBOR_BASELINE_REF + "\n")
-
-    _write_harbor_result(harbor, "jax-computing-basics", 1.0, "harbor-a")
-    _write_benchflow_result(
-        benchflow,
-        "jax-computing-basics",
-        1.0,
-        "bf-a",
-        config_skill_mode="with-skill",
-        config_skill_source="task_bundled",
-    )
-
-    rc = main(
-        [
-            "--benchflow-root",
-            str(benchflow),
-            "--harbor-baseline-root",
-            str(harbor),
-            "--task",
-            "jax-computing-basics",
-        ]
-    )
-
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "FAIL" in out
-    assert "config.skill_mode 'with-skill' does not match result" in out
-    assert "config.skill_source 'task_bundled' does not match result" in out
-
-
-def test_skillsbench_harbor_parity_can_pin_exact_benchflow_source_sha(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    """Guards issue #508 against accepting stale source checkouts."""
-    harbor = tmp_path / "harbor"
-    benchflow = tmp_path / "benchflow"
-    harbor.mkdir()
-    (harbor / PIN_FILE).write_text(DEFAULT_HARBOR_BASELINE_REF + "\n")
-
-    _write_harbor_result(harbor, "jax-computing-basics", 1.0, "harbor-a")
-    _write_benchflow_result(
-        benchflow,
-        "jax-computing-basics",
-        1.0,
-        "bf-a",
-        source_sha="b" * 40,
-    )
-
-    rc = main(
-        [
-            "--benchflow-root",
-            str(benchflow),
-            "--harbor-baseline-root",
-            str(harbor),
-            "--task",
-            "jax-computing-basics",
-            "--expected-benchflow-source-sha",
-            SOURCE_SHA,
-        ]
-    )
-
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "FAIL" in out
-    assert f"source.resolved_sha {('b' * 40)!r} does not match" in out
-
-
-def test_skillsbench_harbor_parity_rejects_mismatched_source_task(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    """Guards issue #508 against copied result files with the wrong task source."""
-    harbor = tmp_path / "harbor"
-    benchflow = tmp_path / "benchflow"
-    harbor.mkdir()
-    (harbor / PIN_FILE).write_text(DEFAULT_HARBOR_BASELINE_REF + "\n")
-
-    _write_harbor_result(harbor, "jax-computing-basics", 1.0, "harbor-a")
-    _write_benchflow_result(
-        benchflow,
-        "jax-computing-basics",
-        1.0,
-        "bf-a",
-        source_path="tasks/python-scala-translation",
-    )
-
-    rc = main(
-        [
-            "--benchflow-root",
-            str(benchflow),
-            "--harbor-baseline-root",
-            str(harbor),
-            "--task",
-            "jax-computing-basics",
-        ]
-    )
-
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "FAIL" in out
-    assert "source.path task segment 'python-scala-translation'" in out
-
-
-def test_skillsbench_harbor_parity_requires_a_pinned_baseline(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    """Guards issue #508 against unpinned Harbor baseline evidence."""
-    harbor = tmp_path / "harbor"
-    benchflow = tmp_path / "benchflow"
-
-    _write_harbor_result(harbor, "jax-computing-basics", 1.0, "harbor-a")
-    _write_benchflow_result(benchflow, "jax-computing-basics", 1.0, "bf-a")
-
-    rc = main(
-        [
-            "--benchflow-root",
-            str(benchflow),
-            "--harbor-baseline-root",
-            str(harbor),
-            "--task",
-            "jax-computing-basics",
-        ]
-    )
-
-    assert rc == 1
-    assert f"no {PIN_FILE} pin file" in capsys.readouterr().out
+    assert [(m.path, m.reason) for m in report.mismatches] == []
+    assert report.status == "lossless"
+    assert report.config_equal is True
+    assert report.prompt_equal is True
+    assert report.environment_file_map_equal is True
+    assert report.solution_file_map_equal is True
+    assert report.tests_file_map_equal is True
+    assert report.restored_extension_paths == []

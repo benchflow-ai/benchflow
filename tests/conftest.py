@@ -12,6 +12,10 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+# Vendored upstream tasks ship their own pytest files (task verifiers, run
+# inside task sandboxes) — they are fixtures, not suite tests.
+collect_ignore = ["fixtures/skillsbench_slice"]
+
 REF_TASKS = REPO_ROOT / ".cache" / "datasets" / "benchflow" / "examples" / "tasks"
 
 
