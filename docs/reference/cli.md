@@ -187,6 +187,51 @@ Validate a task directory (Dockerfile, instruction.md, tests/).
 bench tasks check tasks/my-task
 ```
 
+> The `--level` option is available on the development branch; not yet in this release.
+
+With `--level`, validation runs at a chosen depth: `schema`, `structural`,
+`runtime-capability`, `publication-grade`, `acceptance`, or `acceptance-live`.
+Acceptance-level errors such as
+`acceptance validation requires benchflow.evidence mapping` refer to the
+`benchflow.evidence` schema documented in the "Assets, Provenance, And
+Evidence" section of `docs/task-standard.md` on the same branch.
+
+### bench tasks migrate
+
+> Available on the development branch; not yet in this release.
+
+Convert a legacy `task.toml` + `instruction.md` task into the unified
+`task.md` format. By default the legacy files are kept alongside the new
+`task.md`.
+
+```bash
+bench tasks migrate tasks/my-task
+bench tasks migrate tasks/my-task --overwrite --remove-legacy
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--overwrite` | `false` | Replace an existing task.md |
+| `--remove-legacy` | `false` | Delete split files and promote tests/solution aliases after task.md is verified |
+
+### bench tasks normalize
+
+> Available on the development branch; not yet in this release.
+
+Expand minimal `task.md` authoring profiles into the canonical `task.md`
+form. Prints the normalized document to stdout unless told otherwise.
+
+```bash
+bench tasks normalize tasks/my-task
+bench tasks normalize tasks/my-task --write
+bench tasks normalize tasks/my-task -o normalized-task.md
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output`, `-o` | — | Write normalized task.md to this path instead of stdout |
+| `--write` | `false` | Replace task.md in place with the normalized canonical form |
+
 ### bench tasks generate
 
 Generate benchmark task directories from real agent traces.
