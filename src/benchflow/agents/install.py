@@ -160,14 +160,35 @@ async def _link_skill_paths(
     return len(parts)
 
 
-async def install_agent(env, agent: str, rollout_dir: Path) -> AgentConfig | None:
+def effective_install_timeout(
+    agent: str, sandbox_setup_timeout: int = 120
+) -> int | None:
+    """Timeout enforced for the agent install step, or None when no install runs.
+
+    Single source of truth shared by :func:`install_agent` and the
+    ``config.json`` recorder, so the recorded value always equals the enforced
+    one: a per-agent registry ``install_timeout`` overrides the configured
+    ``sandbox_setup_timeout``.
+    """
+    agent_base = agent.split()[0]
+    if agent_base not in AGENT_INSTALLERS:
+        return None
+    agent_cfg = AGENTS.get(agent_base)
+    if agent_cfg is not None:
+        return agent_cfg.install_timeout
+    return sandbox_setup_timeout
+
+
+async def install_agent(
+    env, agent: str, rollout_dir: Path, sandbox_setup_timeout: int = 120
+) -> AgentConfig | None:
     """Install agent in sandbox and return its config."""
     agent_base = agent.split()[0]
     agent_cfg = AGENTS.get(agent_base)
     if agent_base not in AGENT_INSTALLERS:
         return agent_cfg
     install_cmd = AGENT_INSTALLERS[agent_base]
-    install_timeout = agent_cfg.install_timeout if agent_cfg else 900
+    install_timeout = effective_install_timeout(agent, sandbox_setup_timeout)
     logger.info(f"Installing {agent_base} in sandbox (timeout={install_timeout}s)...")
     install_result = await env.exec(
         install_cmd,

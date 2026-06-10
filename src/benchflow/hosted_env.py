@@ -532,6 +532,7 @@ def _write_run_artifacts(
         "sandbox_user": None,
         "sandbox_locked_paths": None,
         "sandbox_setup_timeout": None,
+        "agent_install_timeout": None,
         "context_root": None,
         "timeout_sec": None,
         "concurrency": config.concurrency,
