@@ -54,18 +54,20 @@ SkillsBench interaction modes — **no-skill**, **with-skill**, and **self-gen**
 (the agent authors a skill, then solves with it). A rollout is counted only when
 it produced real work (tokens spent, tool calls made, and a verdict returned).
 
-**12 / 12 clean rollouts** on the four healthy tasks (4 tasks × 3 modes), each a
-real rollout. The skill machinery genuinely engages: skills are injected and
-invoked, not merely declared. All clean rewards were `0.0` — expected for the
-small model used here; these tasks sit below its capability floor, so the result
-to read is *the packages run and the skill path fires in every mode*, not the
-absolute score. The lone failing task failed for environment/verifier-portability
+**12 of 15 mode-cells ran clean** (4 of 5 tasks across 3 skill modes; the fifth
+fails for non-task.md infrastructure reasons), each a real rollout. The skill
+machinery genuinely engages: skills are injected and invoked, not merely
+declared. All clean rewards were `0.0` — expected for the small model used here;
+these tasks sit below its capability floor, so the result to read is *the
+packages run and the skill path fires in every mode*, not the absolute score.
+The failing task's three mode-cells failed for environment/verifier-portability
 reasons unrelated to the conversion.
 
 ## What this shows / does not show
 
 - **Shows:** `task.md` losslessly represents 100% of SkillsBench, scores with exact
   oracle parity to the legacy layout, and runs end-to-end under a live agent in all
-  three interaction modes.
+  three interaction modes on 4 of the 5 sampled tasks (the fifth fails for
+  non-task.md infrastructure reasons).
 - **Does not show:** a measurable skill *uplift* — that needs a base model strong
   enough to sometimes pass; the runs here establish the plumbing, not the lift.

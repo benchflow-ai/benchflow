@@ -1,6 +1,8 @@
 # Authoring tasks
 A BenchFlow task packages an instruction, a sandboxed environment, and a verifier into a directory that BenchFlow runs and scores automatically.
 
+This page covers the Harbor-compatible split layout (`task.toml` + `instruction.md`). For the native single-document format, see [Authoring native task.md tasks](./task-authoring-task-md.md).
+
 ---
 
 ## Directory layout

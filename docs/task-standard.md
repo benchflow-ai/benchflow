@@ -849,8 +849,14 @@ goal, and `runtime_policy.phase_overrides`). The genuinely missing primitives ar
 **G1 (hybrid reward), G2 (GAIN), G4 (arena), and G6 (RL step-reward)**; only G4
 needs heavy new runtime.
 
-Sequencing — schema is complete for all three axes now so AAA/ORS/Kaggle import
-without loss; runtime lands in tiers:
+Sequencing — the schema covers all three axes now, but cross-standard interop
+is narrower than the schema. ORS interop today is a reward-contract bridge —
+`adapters/ors.py` exports `VerifyResult`/`RewardEvent` records in the ORS
+reward-response format, and the `ors-episode` strategy normalizes declared
+tool-output rewards — not a task or environment importer. There is no AAA
+import adapter; the arena plane is schema-only until M2. Harbor split-layout
+conversion is the proven import/export path (see the conversion-parity
+evidence). Runtime lands in tiers:
 
 - **M0 (package + sequential runtime, today):** native authoring, `workspace-test`
   + `llm-judge`, environment interchange, per-phase policy, compat import/export.
