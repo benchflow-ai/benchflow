@@ -181,7 +181,7 @@ def test_build_launch_command_omits_model_when_absent() -> None:
 
 
 def test_collect_adoption_skills_references_convert_guide(tmp_path: Path) -> None:
-    skills = collect_adoption_skills(tmp_path)
+    skills = collect_adoption_skills()
     refs = {s.reference for s in skills}
     assert any("CONVERT.md" in r for r in refs)
 
@@ -418,6 +418,23 @@ def test_roundtrip_conformance_status_maps_report() -> None:
     )
     assert status == "drift"
     assert reasons == ["tests/ differ"]
+
+
+def test_roundtrip_conformance_status_real_import_binding() -> None:
+    """Exercise the real report_fn=None branch so the import wiring can't rot.
+
+    Every other test injects a fake report_fn; this one runs the actual
+    benchflow.task.build_harbor_roundtrip_conformance_report against a real
+    example task, locking the import path and the (status, reasons) shape.
+    """
+    task_dir = Path(__file__).parent / "examples" / "hello-world-task"
+    if not task_dir.exists():
+        import pytest
+
+        pytest.skip("hello-world-task fixture not present")
+    status, reasons = roundtrip_conformance_status(task_dir)
+    assert isinstance(status, str) and status
+    assert isinstance(reasons, list)
 
 
 # ── CLI surface ───────────────────────────────────────────────────────

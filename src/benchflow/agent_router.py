@@ -222,7 +222,7 @@ class AdoptionSkill:
     reference: str
 
 
-def collect_adoption_skills(repo_root: Path) -> list[AdoptionSkill]:
+def collect_adoption_skills() -> list[AdoptionSkill]:
     """The adoption skills surfaced to the driver (static references, no I/O)."""
     return [
         AdoptionSkill("conversion-guide", "benchmarks/CONVERT.md"),
@@ -330,7 +330,7 @@ def prepare_adoption_launch(
     name = validate_benchmark_name(name)
     if convert_guide is None:
         convert_guide = load_convert_guide(repo_root)
-    skills = collect_adoption_skills(repo_root)
+    skills = collect_adoption_skills()
     prompt = assemble_adoption_context(
         source, name, convert_guide=convert_guide, skills=skills
     )
@@ -618,10 +618,15 @@ def build_verify_report(
 def confidence_line(report: VerifyReport) -> str:
     """User-facing confidence framing (correctness/parity-based, no fixed %)."""
     if report.verdict == "parity-confirmed":
+        if report.conversion.compared:
+            return (
+                "High-confidence: the converted evaluation reproduces the "
+                "original's verdicts on every compared criterion and stays "
+                "within reward tolerance."
+            )
         return (
-            "High-confidence: the converted evaluation reproduces the original's "
-            "verdicts on every compared criterion and stays within reward "
-            "tolerance."
+            "High-confidence: the converted evaluation's rewards stay within "
+            "tolerance of the original across every recorded sample."
         )
     if report.verdict == "parity-divergent":
         return (
@@ -708,6 +713,11 @@ def roundtrip_conformance_status(
 
     Thin wiring to ``benchflow.task.build_harbor_roundtrip_conformance_report``
     (the existing parity utility). Returns ``(status, mismatch_reasons)``.
+
+    ``verify`` runs this only when ``--roundtrip-task`` names a task directory;
+    by default the verify gate scores the recorded ``parity_experiment.json``
+    and this stays an opt-in structural check (the harness needs a concrete
+    task tree, which the benchmark-level verdict does not require).
     """
     if report_fn is None:
         from benchflow.task import build_harbor_roundtrip_conformance_report
@@ -812,6 +822,13 @@ def register_agent_router(agent_app: typer.Typer) -> None:
             Path | None,
             typer.Option("--issue-out", help="Write the divergence issue draft here"),
         ] = None,
+        roundtrip_task: Annotated[
+            Path | None,
+            typer.Option(
+                "--roundtrip-task",
+                help="Also run the structural round-trip check on this task dir",
+            ),
+        ] = None,
     ) -> None:
         """Run the parity gate for an adopted benchmark; emit a verdict."""
         root = benchmarks_dir or default_benchmarks_dir()
@@ -840,6 +857,12 @@ def register_agent_router(agent_app: typer.Typer) -> None:
                 f"(tolerance {report.reward.tolerance:.4f})"
             )
         console.print(confidence_line(report))
+
+        if roundtrip_task is not None:
+            status, reasons = roundtrip_conformance_status(roundtrip_task)
+            console.print(f"  round-trip: {status}")
+            for reason in reasons:
+                console.print(f"    [yellow]- {reason}[/yellow]")
 
         if report.passed:
             return
