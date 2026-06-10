@@ -59,6 +59,7 @@ from benchflow._utils.scoring import (
     pass_rate_excl_errors,
 )
 from benchflow._utils.source_provenance import summary_source_fields
+from benchflow._utils.text import truncate_end
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.learner_store import LearnerState, LearnerStore
@@ -759,7 +760,8 @@ class Evaluation:
         for task, (_mt, r) in best.items():
             if r.get("verifier_error"):
                 logger.info(
-                    f"Skipping verifier-errored task on resume: {task} ({r['verifier_error'][:80]})"
+                    f"Skipping verifier-errored task on resume: {task} "
+                    f"({truncate_end(r['verifier_error'], 80)})"
                 )
             completed[task] = r
         return completed
@@ -975,7 +977,9 @@ class Evaluation:
                 break
 
             if attempt <= cfg.retry.max_retries:
-                err_preview = (result.error or result.verifier_error or "")[:60]
+                err_preview = truncate_end(
+                    result.error or result.verifier_error or "", 60
+                )
                 logger.info(
                     f"Retrying {task_dir.name} (attempt {attempt + 1}): {err_preview}"
                 )
@@ -990,7 +994,7 @@ class Evaluation:
         reward = result.rewards.get("reward") if result.rewards else None
         status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
         err_msg = result.error or result.verifier_error
-        err = f" ({err_msg[:50]})" if err_msg else ""
+        err = f" ({truncate_end(err_msg, 50)})" if err_msg else ""
         logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
         if self._on_result:
             self._on_result(td.name, result)
