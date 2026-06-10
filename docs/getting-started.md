@@ -94,8 +94,11 @@ native default auth. For Azure Foundry, use models such as
 from `AZURE_API_ENDPOINT` and routes the selected agent through a generated
 LiteLLM gateway config.
 
-Other provider-prefixed models follow the `<PROVIDER>_API_KEY` +
-`<PROVIDER>_BASE_URL` convention. For example, `deepseek/<model>` reads:
+Several providers with user-supplied endpoints — `deepseek`, `glm`, `kimi`,
+`minimax`, `hunyuan`, and others — follow the `<PROVIDER>_API_KEY` +
+`<PROVIDER>_BASE_URL` convention; providers with fixed endpoints (such as
+`zai` or `openai`) need only the API key. For example, `deepseek/<model>`
+reads:
 
 ```bash
 export DEEPSEEK_API_KEY=...
@@ -103,7 +106,7 @@ export DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
 If the base URL is missing, the run fails with
-`Provider 'deepseek' for model 'deepseek/<model>' requires DEEPSEEK_BASE_URL.`
+`Provider 'deepseek' for model 'deepseek/<model>' requires DEEPSEEK_BASE_URL to build the provider base URL.`
 
 These variables must be **exported** to reach the benchflow runtime — a plain
 shell assignment or a `source .env` without `export` stays local to your shell
@@ -164,9 +167,10 @@ directory or `--config <config.yaml>` for a YAML config.
 
 You can also fetch tasks straight from a remote repo with
 `--source-repo <org/repo> --source-path <subpath>`, but note that this clones
-the full repository (`git clone --depth 1` into `.cache/datasets/<org>/<repo>/`)
-— large for big task repos. To download only the task you need, use a sparse
-checkout and point `--tasks-dir` at it:
+the full repository (`git clone --depth 1` into `.cache/datasets/<org>/<repo>/`
+under the enclosing git repo root, or the current directory when you run
+outside one) — large for big task repos. To download only the task you need,
+use a sparse checkout and point `--tasks-dir` at it:
 
 ```bash
 git clone --depth 1 --filter=blob:none --sparse https://github.com/benchflow-ai/skillsbench
@@ -185,14 +189,14 @@ Each run writes under `--jobs-dir` (default `jobs/`):
 
 ```
 <jobs-dir>/
-  summary.json                      # eval-level aggregate (score, counts)
+  summary.json                      # copy of the latest job summary (overwritten by the next run)
   <YYYY-MM-DD__HH-MM-SS>/           # job directory, named by start time
     summary.json                    # job-level aggregate
     <task>__<hash8>/                # one rollout: task name + 8-char id
       result.json                   # rollout summary: rewards, errors, token usage/cost
       trajectory/
         acp_trajectory.jsonl        # full agent trace (ACP events)
-        llm_trajectory.jsonl        # raw provider requests/responses (usage tracking)
+        llm_trajectory.jsonl        # raw provider requests/responses (when the usage-tracking proxy captured exchanges)
       trainer/
         verifiers.jsonl             # trainer-ready scored trajectory
       verifier/
@@ -207,9 +211,9 @@ Exit code 0 means the pipeline completed — it is not a pass/fail signal. A
 rollout whose reward is below the pass threshold still exits 0 and prints
 `[FAIL]` with `Score: 0/1`: `Score` is pass-threshold aggregation (a task
 counts as passed only at reward 1.0), while `reward` — in `result.json` and
-`verifier/reward.txt` — is the raw verifier value. Config errors (bad flags,
-unknown agents, missing credentials) exit 1, and so do runs with agent or
-verifier errors.
+`verifier/reward.txt` — is the raw verifier value. Config errors (unknown
+agents, missing credentials) exit 1, and so do runs with agent or verifier
+errors. CLI usage errors (bad flags) exit 2.
 
 The Docker sandbox needs the Docker daemon running. There is no up-front
 check — if the daemon is down the run fails partway through rather than at

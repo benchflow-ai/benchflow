@@ -187,9 +187,11 @@ Validate a task directory (Dockerfile, instruction.md, tests/).
 bench tasks check tasks/my-task
 ```
 
-On the development branch, `bench tasks check` gains a `--level` option
-(`schema`, `structural`, `runtime-capability`, `publication-grade`,
-`acceptance`, `acceptance-live`). Acceptance-level errors such as
+> The `--level` option is available on the development branch; not yet in this release.
+
+With `--level`, validation runs at a chosen depth: `schema`, `structural`,
+`runtime-capability`, `publication-grade`, `acceptance`, or `acceptance-live`.
+Acceptance-level errors such as
 `acceptance validation requires benchflow.evidence mapping` refer to the
 `benchflow.evidence` schema documented in the "Assets, Provenance, And
 Evidence" section of `docs/task-standard.md` on the same branch.
