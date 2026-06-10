@@ -140,49 +140,32 @@ def _daytona_client_or_exit():
 
 
 def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
-    """Clean up orphaned Daytona sandboxes."""
-    from datetime import datetime
+    """Clean up orphaned Daytona sandboxes (display wrapper over the library reaper)."""
+    from benchflow.sandbox.daytona import reap_stale_sandboxes
 
     d = _daytona_client_or_exit()
-    now = datetime.now(UTC)
-    total_deleted = 0
-    total_found = 0
-    total_skipped = 0
 
-    # daytona SDK >=0.18 replaced the paged ``list(page=, limit=)`` API (which
-    # returned a page object with ``.items``) with ``list()`` -> an
-    # auto-paginating ``Iterator[Sandbox]``. Iterate it directly.
-    for sb in d.list():
-        total_found += 1
-        if not sb.created_at:
-            continue
-        created_at = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
-        age_minutes = (now - created_at).total_seconds() / 60
-        if age_minutes < max_age_minutes:
-            total_skipped += 1
-            if dry_run:
-                console.print(
-                    f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [green](skip)[/green]"
-                )
-            continue
-        if dry_run:
+    def _show(sb, age_minutes, will_delete):
+        verdict = "[red](delete)[/red]" if will_delete else "[green](skip)[/green]"
+        if dry_run or not will_delete:
             console.print(
-                f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m [red](delete)[/red]"
+                f"  [dim]{sb.id}[/dim] state={sb.state} age={age_minutes:.0f}m {verdict}"
             )
-        else:
-            try:
-                d.delete(sb)
-                total_deleted += 1
-            except Exception as e:
-                console.print(f"  [yellow]Failed to delete {sb.id}: {e}[/yellow]")
 
+    counts = reap_stale_sandboxes(
+        d,
+        max_age_minutes=max_age_minutes,
+        failed_max_age_minutes=max_age_minutes,
+        dry_run=dry_run,
+        on_decision=_show,
+    )
     if dry_run:
         console.print(
-            f"\n[bold]{total_found} sandboxes found, {total_found - total_skipped} older than {max_age_minutes}m[/bold] (use without --dry-run to delete)"
+            f"\n[bold]{counts['found']} sandboxes found, {counts['deleted']} older than {max_age_minutes}m[/bold] (use without --dry-run to delete)"
         )
     else:
         console.print(
-            f"\n[bold green]{total_deleted} sandboxes deleted[/bold green] ({total_skipped} skipped, younger than {max_age_minutes}m)"
+            f"\n[bold green]{counts['deleted']} sandboxes deleted[/bold green] ({counts['skipped']} skipped, younger than {max_age_minutes}m)"
         )
 
 

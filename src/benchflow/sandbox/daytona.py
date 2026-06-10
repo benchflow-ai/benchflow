@@ -199,6 +199,65 @@ _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
 _DAYTONA_SHELL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+_REAP_DEFAULT_MAX_AGE_MIN = 1440
+_REAP_FAILED_MAX_AGE_MIN = 120
+_REAP_FAILED_STATE_MARKERS = ("FAILED", "ERROR")
+
+
+def reap_stale_sandboxes(
+    client: Any | None = None,
+    *,
+    max_age_minutes: int = _REAP_DEFAULT_MAX_AGE_MIN,
+    failed_max_age_minutes: int = _REAP_FAILED_MAX_AGE_MIN,
+    dry_run: bool = False,
+    on_decision: Any | None = None,
+) -> dict[str, int]:
+    """Delete orphaned Daytona sandboxes past their TTL.
+
+    Two tiers: sandboxes whose state contains a failure marker (e.g.
+    ``BUILD_FAILED``) are reaped after *failed_max_age_minutes*; everything
+    else after *max_age_minutes*. Defaults are deliberately conservative so
+    concurrent live runs are never touched — only multi-hour orphans from
+    crashed or interrupted sessions.
+
+    *on_decision* (sandbox, age_minutes, will_delete) is called per sandbox
+    when provided — the CLI uses it for per-row display. Returns counts:
+    ``{"found", "deleted", "skipped", "failed"}``.
+    """
+    from datetime import UTC, datetime
+
+    if client is None:
+        client = build_sync_client()
+    now = datetime.now(UTC)
+    counts = {"found": 0, "deleted": 0, "skipped": 0, "failed": 0}
+    for sb in client.list():
+        counts["found"] += 1
+        if not getattr(sb, "created_at", None):
+            counts["skipped"] += 1
+            continue
+        created_at = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
+        age_minutes = (now - created_at).total_seconds() / 60
+        state = str(getattr(sb, "state", "") or "").upper()
+        is_failed = any(marker in state for marker in _REAP_FAILED_STATE_MARKERS)
+        ttl = failed_max_age_minutes if is_failed else max_age_minutes
+        will_delete = age_minutes >= ttl
+        if on_decision is not None:
+            on_decision(sb, age_minutes, will_delete)
+        if not will_delete:
+            counts["skipped"] += 1
+            continue
+        if dry_run:
+            counts["deleted"] += 1
+            continue
+        try:
+            client.delete(sb)
+            counts["deleted"] += 1
+        except Exception:
+            logger.warning("Failed to delete sandbox %s", getattr(sb, "id", "?"))
+            counts["failed"] += 1
+    return counts
+
+
 def _wrap_daytona_command_with_env_file(env: dict[str, str], command: str) -> str:
     """Return *command* prefixed to materialize *env* from a file.
 

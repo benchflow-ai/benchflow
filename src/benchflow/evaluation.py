@@ -1235,7 +1235,37 @@ class Evaluation:
         self.learner_nodes.append(node)
         return node
 
+    def _maybe_start_daytona_reap(self) -> None:
+        """Fire-and-forget auto-reap of orphaned Daytona sandboxes (issue: leakage at scale).
+
+        Gated by ``BENCHFLOW_DAYTONA_AUTO_REAP`` (default on). Conservative
+        TTLs (24h general / 2h failed states) mean concurrent live runs are
+        never touched. Runs in a daemon thread so eval startup never blocks
+        or fails on reaping.
+        """
+        if self._config.environment != "daytona":
+            return
+        if os.environ.get("BENCHFLOW_DAYTONA_AUTO_REAP", "1") == "0":
+            return
+
+        def _reap() -> None:
+            try:
+                from benchflow.sandbox.daytona import reap_stale_sandboxes
+
+                counts = reap_stale_sandboxes()
+                if counts["deleted"] or counts["failed"]:
+                    logger.info(
+                        "Daytona auto-reap: %s stale sandboxes deleted (%s failed)",
+                        counts["deleted"],
+                        counts["failed"],
+                    )
+            except Exception as e:
+                logger.debug("Daytona auto-reap skipped: %s", e)
+
+        threading.Thread(target=_reap, name="daytona-auto-reap", daemon=True).start()
+
     async def run(self) -> EvaluationResult:
+        self._maybe_start_daytona_reap()
         """Execute the job."""
         task_dirs = self._get_task_dirs()
         if not task_dirs:
