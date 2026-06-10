@@ -17,7 +17,7 @@ pip install --upgrade benchflow
 For a `uv`-managed CLI install or upgrade of the current public release:
 
 ```bash
-uv tool install --prerelease allow --upgrade 'benchflow==0.5.2'
+uv tool install --prerelease allow --upgrade 'benchflow==0.6.0'
 ```
 
 Use the exact public version pin for stable CLI installs. To follow the newest
@@ -194,11 +194,16 @@ Each run writes under `--jobs-dir` (default `jobs/`):
     summary.json                    # job-level aggregate
     <task>__<hash8>/                # one rollout: task name + 8-char id
       result.json                   # rollout summary: rewards, errors, token usage/cost
+      rewards.jsonl                 # reward record for this rollout
+      timing.json                   # per-phase timing breakdown
+      prompts.json                  # prompts sent to the agent
       trajectory/
         acp_trajectory.jsonl        # full agent trace (ACP events)
         llm_trajectory.jsonl        # raw provider requests/responses (when the usage-tracking proxy captured exchanges)
       trainer/
-        verifiers.jsonl             # trainer-ready scored trajectory
+        verifiers.jsonl             # trainer-ready scored trajectory (Verifiers/ORS record)
+        atif.json                   # ATIF trajectory record (omitted if the trajectory is empty)
+        adp.jsonl                   # ADP trajectory record
       verifier/
         ctrf.json                   # CTRF test report (when test.sh emits one)
         reward.txt                  # raw verifier reward (0.0-1.0)

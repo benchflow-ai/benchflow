@@ -38,7 +38,7 @@ Route changed files by path:
 
 - **tests** → `/test-review`: `tests/**/test_*.py`, `tests/**/*_test.py`
 - **src** → `/code-cleanup`: `src/benchflow/**/*.py`
-- **docs** → `/docs-review`: `*.md`, `docs/**/*`, `.dev-docs/**/*`, `src/benchflow/**/*.md`
+- **docs** → `/docs-review`: `*.md`, `docs/**/*`, `.claude/dev-docs/**/*`, `src/benchflow/**/*.md`
 
 **Skip silently** (no routing, no findings, no warning): `uv.lock`, `.venv/**`, `__pycache__/**`, `*.egg-info/**`, `dist/**`, `build/**`, `.pytest_cache/**`, generated files.
 
