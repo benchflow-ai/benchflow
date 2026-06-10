@@ -55,6 +55,29 @@ def test_task_config_rejects_malformed_expected_skills():
         )
 
 
+def test_verifier_timeout_sec_omitted_inherits_default_budget():
+    """Omitting [verifier].timeout_sec must yield the documented 600s default."""
+    cfg = TaskConfig.model_validate_toml('version = "1.0"\n')
+    assert cfg.verifier.timeout_sec == 600.0
+
+
+def test_verifier_timeout_sec_explicit_value_is_used_exactly():
+    cfg = TaskConfig.model_validate_toml(
+        'version = "1.0"\n[verifier]\ntimeout_sec = 90.5\n'
+    )
+    assert cfg.verifier.timeout_sec == 90.5
+
+
+@pytest.mark.parametrize("value", ["0", "0.0", "-30", "nan", "inf"])
+def test_verifier_timeout_sec_rejects_unusable_budgets(value):
+    """Zero/negative/non-finite budgets fail at parse time instead of
+    producing an instant verifier timeout at execution time."""
+    with pytest.raises(ValueError, match=r"verifier\.timeout_sec"):
+        TaskConfig.model_validate_toml(
+            f'version = "1.0"\n[verifier]\ntimeout_sec = {value}\n'
+        )
+
+
 def test_task_config_accepts_current_harbor_task_toml_surface():
     """Guards commit 67378ddd's 2026-06-04 parity pass against schema shrinkage."""
     cfg = TaskConfig.model_validate_toml(
