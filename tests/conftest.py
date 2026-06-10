@@ -20,6 +20,10 @@ if str(SRC_ROOT) not in sys.path:
 # as isolate_local_dotenv below, but for litellm's import-time side effect.
 os.environ.setdefault("LITELLM_MODE", "PRODUCTION")
 
+# Vendored upstream tasks ship their own pytest files (task verifiers, run
+# inside task sandboxes) — they are fixtures, not suite tests.
+collect_ignore = ["fixtures/skillsbench_slice"]
+
 REF_TASKS = REPO_ROOT / ".cache" / "datasets" / "benchflow" / "examples" / "tasks"
 
 

@@ -1,3 +1,12 @@
+"""Unit coverage for the runtime-results parity checker.
+
+``tests/integration/check_skillsbench_harbor_parity.py`` compares completed
+BenchFlow rollouts against a pinned Harbor baseline (rc codes, schema
+normalization, reward drift, provenance, skill lane, and source-sha rules).
+Conversion round-trip parity lives separately in
+``tests/test_skillsbench_conversion_conformance.py``.
+"""
+
 from __future__ import annotations
 
 import json

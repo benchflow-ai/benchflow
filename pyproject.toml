@@ -112,6 +112,7 @@ target-version = "py312"
 extend-exclude = [
     ".claude/skills/skill-creator",
     "benchmarks/**/tasks/**/environment/claw-*",
+    "tests/fixtures/skillsbench_slice",
 ]
 
 [tool.ruff.lint]
