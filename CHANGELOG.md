@@ -2,8 +2,32 @@
 
 ## [Unreleased]
 
+## 0.6.0 — 2026-06-10
+
 ### Added
 
+- **The `task.md` task standard** — a single-file unified task format (parser,
+  verifier planes, prompt sidecars, round-trip export with a machine-readable
+  loss report) plus the authoring CLI: `bench tasks init / check / migrate /
+  export`, with a layered `check --level` ladder up to a leaderboard-grade
+  acceptance gate. See [`docs/task-standard.md`](docs/task-standard.md) and the
+  [native authoring guide](docs/task-authoring-task-md.md).
+- **`bench agent` benchmark-adoption router** — `create` scaffolds a benchmark
+  conversion per [`benchmarks/CONVERT.md`](benchmarks/CONVERT.md), `run` drives
+  the host `codex` CLI through the conversion workflow, and `verify` runs the
+  parity gate (deterministic per-criterion conversion parity plus the
+  agent-scale reward-distribution layer) and emits a confidence verdict, with a
+  drafted support issue on divergence.
+- **ATIF and ADP trajectory artifacts** — every scored rollout now emits
+  `trainer/atif.json` and `trainer/adp.jsonl` (alongside the existing
+  `verifiers.jsonl`), with job-level ADP aggregation. One canonical raw
+  trajectory, multiple ecosystem formats out of the box.
+- **OpenReward (ORS) hosted-environment runner** — run OpenReward-hosted
+  environments via `--source-env openreward:<owner>/<name>`, driving the
+  episode loop and landing standard scored artifacts.
+- **Daytona sandbox auto-reap** — orphaned sandboxes are cleaned at eval start
+  (TTL-tiered; failure states reaped sooner), gated by
+  `BENCHFLOW_DAYTONA_AUTO_REAP`.
 - **`benchflow continue <run-folder>`** — resume a previous, unfinished
   (timed-out) `openhands` run to completion. A standalone tool (it does not
   touch the normal run path) that reconstructs the run's exact workspace and
@@ -12,8 +36,24 @@
   HF-compatible folder with `continued_from` provenance. See
   [`docs/continue-runs.md`](docs/continue-runs.md).
 
+### Fixed
+
+- `bench tasks migrate` emits minimal, canonical (`schema_version`) front
+  matter instead of a full defaults dump.
+- Verifier `timeout_sec` is validated as a positive, finite budget
+  (fail-closed at parse time; omission inherits the documented default).
+- Docker `compose up` retries on the daemon network create/attach race.
+- Console error messages truncate at word boundaries instead of mid-token.
+- Recorded sandbox-setup timeouts and trajectory artifacts are consistent
+  across the Docker and Daytona backends.
+- The `task.md` init scaffold is agent-neutral, so `--agent oracle` works on a
+  freshly scaffolded task.
+
 ### Changed
 
+- Quickstart and CLI reference now match observed run behavior — the real jobs
+  directory layout and artifact map, the `<PROVIDER>_API_KEY` /
+  `<PROVIDER>_BASE_URL` convention, and exit-code semantics.
 - Document the public vs internal preview install/upgrade command matrix,
   including `uv tool` exact pins, internal preview upgrades, and the
   `--force` path for replacing stale entrypoint scripts.
