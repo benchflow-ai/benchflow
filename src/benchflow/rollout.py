@@ -834,6 +834,8 @@ def _build_rollout_result(
     _write_trainer_artifact(
         rollout_dir,
         task_name=task_name,
+        rollout_name=rollout_name,
+        agent_name=agent_name or agent,
         prompts=prompts,
         trajectory=trajectory,
         rewards=rewards,
@@ -847,21 +849,34 @@ def _write_trainer_artifact(
     rollout_dir: Path,
     *,
     task_name: str,
+    rollout_name: str,
+    agent_name: str,
     prompts: list[str],
     trajectory: list[dict],
     rewards: dict | None,
     model: str | None,
     verifier_error: str | None,
 ) -> None:
-    """Emit ``rollout_dir/trainer/verifiers.jsonl`` for this scored rollout.
+    """Emit the trainer-format artifacts for this scored rollout.
 
     The architecture's train-mode seam (issue #385): every scored rollout
-    that reaches result-building should produce a trainer-ready Verifiers /
-    ORS record so prime-rl / Verifiers can ingest the run directly. Failures
-    here are logged but never block result writing.
+    that reaches result-building produces a trainer-ready Verifiers / ORS
+    record (``trainer/verifiers.jsonl``) plus the ecosystem trajectory
+    formats — ATIF (``trainer/atif.json``; omitted for empty trajectories,
+    which the schema forbids) and ADP (``trainer/adp.jsonl``). Each format
+    is written independently; failures are logged but never block result
+    writing or each other.
     """
     from benchflow.trajectories.export import write_rollout_verifiers_jsonl
+    from benchflow.trajectories.export_adp import write_rollout_adp_jsonl
+    from benchflow.trajectories.export_atif import write_rollout_atif_json
 
+    # Real rollout names already embed the task (``<task>__<hash>``); only
+    # prefix when they don't, so ids stay unique without doubling the task.
+    if rollout_name.startswith(f"{task_name}__"):
+        trajectory_id = rollout_name
+    else:
+        trajectory_id = f"{task_name}__{rollout_name}"
     try:
         write_rollout_verifiers_jsonl(
             rollout_dir,
@@ -875,6 +890,30 @@ def _write_trainer_artifact(
         )
     except Exception as e:  # pragma: no cover - defensive
         logger.warning("Trainer artifact write failed: %s", e)
+    try:
+        write_rollout_atif_json(
+            rollout_dir,
+            session_id=trajectory_id,
+            agent_name=agent_name,
+            prompts=prompts,
+            trajectory=trajectory,
+            model=model,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("ATIF artifact write failed: %s", e)
+    try:
+        write_rollout_adp_jsonl(
+            rollout_dir,
+            trajectory_id=trajectory_id,
+            task_id=task_name,
+            prompts=prompts,
+            trajectory=trajectory,
+            model=model,
+            environment=task_name,
+            reward=(rewards or {}).get("reward"),
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("ADP artifact write failed: %s", e)
 
 
 def _resolve_prompts(
