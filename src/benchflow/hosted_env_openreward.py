@@ -41,8 +41,11 @@ Primary sources for the hosted API surface (verified 2026-06-10):
   variant selection via the ``variant`` parameter of ``environments.get``.
 - https://docs.openreward.ai/environments/ways-to-access-tasks.md — task
   dicts are environment-defined JSON objects (e.g. ``{"task_id": ...}``).
-- https://docs.openreward.ai/environments/evaluation.md — per-task rewards
-  aggregate over all attempted tasks (errored/unfinished count as 0).
+- https://docs.openreward.ai/environments/evaluation.md — the page does not
+  state a general aggregation rule; our convention (every attempted task in
+  the denominator, errored/unscored episodes count as 0) is consistent with
+  its documented pass@1 example, which counts ``r == 1`` results (skipping
+  ``None``) over ``num_samples``.
 """
 
 from __future__ import annotations
@@ -266,9 +269,13 @@ def _default_client_factory(env: Mapping[str, str]) -> Any:
 
     The client authenticates via the ``OPENREWARD_API_KEY`` process
     environment variable (https://pypi.org/project/openreward/); we check it
-    up front so a missing key fails before any network call.
+    up front so a missing key fails before any network call. Because the SDK
+    reads ``os.environ`` internally, the validated key from *env* is mirrored
+    into the process environment before construction — an injected mapping
+    therefore works even when it does not alias ``os.environ``.
     """
-    if not (env.get(OPENREWARD_API_KEY_ENV) or "").strip():
+    api_key = (env.get(OPENREWARD_API_KEY_ENV) or "").strip()
+    if not api_key:
         raise HostedEnvError(
             f"{OPENREWARD_API_KEY_ENV} is required to run OpenReward-hosted "
             "environments (see https://docs.openreward.ai/quickstart)."
@@ -281,6 +288,7 @@ def _default_client_factory(env: Mapping[str, str]) -> Any:
             "runs: pip install openreward (Python 3.11+, "
             "https://pypi.org/project/openreward/)."
         ) from exc
+    os.environ[OPENREWARD_API_KEY_ENV] = api_key
     return OpenReward()
 
 
@@ -396,9 +404,10 @@ def run_openreward_env(
     ]
     finished_at = datetime.now(UTC)
 
-    # Aggregation matches the hosted evaluation convention
-    # (docs.openreward.ai/environments/evaluation.md): every attempted task
-    # is in the denominator; errored/unscored episodes count as 0.
+    # Every attempted task is in the denominator; errored/unscored episodes
+    # count as 0. This is consistent with the pass@1 example documented at
+    # docs.openreward.ai/environments/evaluation.md (no general aggregation
+    # rule is stated there).
     reward = round(
         sum(ep.reward if ep.reward is not None else 0.0 for ep in episodes)
         / len(episodes),

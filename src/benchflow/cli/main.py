@@ -1293,6 +1293,12 @@ def eval_create(
                         "[yellow]--source-env-rollouts-per-example is for Verifiers "
                         "runs; ignoring for the openreward runner.[/yellow]"
                     )
+                if concurrency is not None:
+                    console.print(
+                        "[yellow]--concurrency is for Verifiers runs; the "
+                        "openreward runner drives episodes sequentially. "
+                        "Ignoring.[/yellow]"
+                    )
                 run_result = run_openreward_env(
                     OpenRewardRunConfig(
                         source_env=ref,
@@ -1307,6 +1313,12 @@ def eval_create(
                     )
                 )
             else:
+                if source_env_max_turns != 16:  # 16 is the CLI default
+                    console.print(
+                        "[yellow]--source-env-max-turns is for the openreward "
+                        "runner; ignoring for Verifiers runs (vf-eval owns the "
+                        "episode loop).[/yellow]"
+                    )
                 run_result = run_hosted_env(
                     HostedEnvRunConfig(
                         source_env=ref,

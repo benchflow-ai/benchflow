@@ -12,6 +12,7 @@ network, no API keys. The fakes mirror the documented client surface
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -100,6 +101,7 @@ class FakeEnvironment:
         self._sessions = sessions
         self.sessions_used: list[FakeSession] = []
         self.split_seen: str | None = None
+        self.tasks_seen: list = []
 
     def list_tasks(self, split: str) -> list:
         self.split_seen = split
@@ -110,6 +112,7 @@ class FakeEnvironment:
         return self._tools
 
     def session(self, task: dict) -> FakeSession:
+        self.tasks_seen.append(task)
         session = self._sessions.pop(0)
         self.sessions_used.append(session)
         return session
@@ -347,6 +350,26 @@ def test_default_client_factory_requires_openreward_package(monkeypatch):
         _default_client_factory({"OPENREWARD_API_KEY": "or-key"})
 
 
+def test_default_client_factory_mirrors_injected_key_into_process_env(monkeypatch):
+    """The SDK reads os.environ internally; the validated key from the
+    injected mapping must be set there before the client is constructed."""
+    seen_at_construction: list[str | None] = []
+
+    class FakeOpenReward:
+        def __init__(self) -> None:
+            seen_at_construction.append(os.environ.get("OPENREWARD_API_KEY"))
+
+    monkeypatch.setitem(
+        sys.modules, "openreward", SimpleNamespace(OpenReward=FakeOpenReward)
+    )
+    monkeypatch.setenv("OPENREWARD_API_KEY", "stale-process-key")
+
+    client = _default_client_factory({"OPENREWARD_API_KEY": "injected-key"})
+
+    assert isinstance(client, FakeOpenReward)
+    assert seen_at_construction == ["injected-key"]
+
+
 # ── Episode happy path ──
 
 
@@ -361,6 +384,8 @@ def test_happy_path_drives_episode_and_scores(tmp_path):
     assert result.normalized_model == "served-model"
     assert client.get_kwargs == {"name": "GeneralReasoning/CTF"}
     assert environment.split_seen == "train"
+    # The session was started on the exact task the artifacts claim was run.
+    assert environment.tasks_seen == [{"task_id": "t0"}]
     episode = result.episodes[0]
     assert episode.finished is True
     assert episode.truncated is False
@@ -770,7 +795,7 @@ def test_rewards_aggregate_as_mean_over_all_episodes(tmp_path):
         [FakeToolOutput("right", reward=1.0, finished=True)],
         [FakeToolOutput("wrong", reward=0.0, finished=True)],
     ]
-    result, _, _, _ = run_fake(
+    result, _, environment, _ = run_fake(
         tmp_path,
         turns=turns,
         outputs_per_task=outputs,
@@ -780,6 +805,9 @@ def test_rewards_aggregate_as_mean_over_all_episodes(tmp_path):
 
     assert result.reward == 0.5
     assert result.total_tool_calls == 2
+    # Each session was opened on its own task, in task order — the runner
+    # must pass the task it scores, not None or a stale loop variable.
+    assert environment.tasks_seen == [{"task_id": "t0"}, {"task_id": "t1"}]
     payload = json.loads((result.run_dir / "result.json").read_text())
     assert payload["rewards"]["rubric"] == [
         {"name": "example_0", "score": 1.0},
@@ -851,6 +879,47 @@ def test_eval_create_openreward_routes_to_openreward_runner(tmp_path, monkeypatc
     assert config.max_turns == 8
     assert config.model == "openai/gpt-test"
     assert "openreward:GeneralReasoning/CTF@latest" in result.output
+
+
+def test_eval_create_openreward_warns_on_concurrency_flag(tmp_path, monkeypatch):
+    """--concurrency has no effect on the openreward path (episodes run
+    sequentially); the CLI must say so instead of silently ignoring it."""
+    seen: dict[str, object] = {}
+
+    def fake_run(config: OpenRewardRunConfig, **kwargs) -> OpenRewardRunResult:
+        seen["config"] = config
+        return OpenRewardRunResult(
+            source_env=config.source_env,
+            run_dir=tmp_path / "run",
+            model=config.model,
+            normalized_model="gpt-test",
+            reward=1.0,
+            total_tool_calls=0,
+            episodes=[],
+            error=None,
+        )
+
+    monkeypatch.setattr("benchflow.hosted_env_openreward.run_openreward_env", fake_run)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--source-env",
+            "openreward:GeneralReasoning/CTF",
+            "--concurrency",
+            "8",
+            "--model",
+            "openai/gpt-test",
+            "--jobs-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "--concurrency is for Verifiers runs" in result.output
+    assert "config" in seen  # the run still executes
 
 
 def test_eval_create_openreward_run_error_exits_nonzero(tmp_path, monkeypatch):

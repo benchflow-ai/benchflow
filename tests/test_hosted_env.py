@@ -268,3 +268,47 @@ def test_eval_create_source_env_routes_to_hosted_runner(tmp_path, monkeypatch):
     assert config.agent == "gemini"
     assert config.model == "gemini-3.1-flash-lite-preview"
     assert "not used by source-env runs" in result.output
+
+
+def test_eval_create_source_env_warns_on_max_turns_flag(tmp_path, monkeypatch):
+    """--source-env-max-turns only drives the openreward episode loop; the
+    Verifiers path (vf-eval owns the loop) must warn instead of silently
+    ignoring it."""
+    seen: dict[str, object] = {}
+
+    def fake_run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
+        seen["config"] = config
+        return HostedEnvRunResult(
+            source_env=config.source_env,
+            run_dir=tmp_path / "run",
+            command=["vf-eval"],
+            returncode=0,
+            stdout="",
+            stderr="",
+            model=config.model,
+            normalized_model=normalize_verifiers_model(config.model),
+            reward=1.0,
+            total_tool_calls=0,
+        )
+
+    monkeypatch.setattr("benchflow.hosted_env.run_hosted_env", fake_run_hosted_env)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "create",
+            "--source-env",
+            "primeintellect/general-agent",
+            "--source-env-max-turns",
+            "8",
+            "--model",
+            "gpt-5-mini",
+            "--jobs-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "--source-env-max-turns is for the openreward" in result.output
+    assert "config" in seen  # the run still executes
