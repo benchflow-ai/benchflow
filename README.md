@@ -15,8 +15,11 @@ BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Sing
 
 - **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, OpenClaw, Pi, or your own
 - **Single + multi + progressive** — single-agent / multi-agent (coder + reviewer, simulated user) / multi-round with a Python `BaseUser` callback
-- **Sandboxes** — Docker locally, Daytona for parallel cloud runs, Modal for serverless/GPU-backed task environments
+- **`task.md` tasks** — one file (YAML frontmatter + prompt body) replaces the split `task.toml` + `instruction.md` layout; author with `bench tasks init` / `check` / `migrate` / `export`
+- **Hosted environments** — run external PrimeIntellect / Verifiers environments through `--source-env`, without converting them to BenchFlow tasks
+- **Sandboxes** — Docker locally, Daytona for parallel cloud runs (orphaned sandboxes auto-reaped at eval start), Modal for serverless/GPU-backed task environments
 - **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
+- **Training-ready output** — every scored rollout emits ATIF (`trainer/atif.json`) and ADP (`trainer/adp.jsonl`) trajectory records next to the Verifiers/ORS (OpenReward) reward record
 
 ## Install
 
@@ -60,6 +63,8 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
 | Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |
+| Author a task in the native `task.md` format | [Native task.md authoring](./docs/task-authoring-task-md.md) |
+| Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
 | Skill evaluation (when the artifact is a skill, not a workspace) | [Skill eval](./docs/skill-eval.md) |
@@ -98,9 +103,37 @@ bench eval create \
 
 Repos are cloned and cached locally under `.cache/datasets/` on first use.
 
+Hosted environments are another source type. Instead of a repo, pass
+`--source-env` to run an external PrimeIntellect / Verifiers environment on its
+own native harness — BenchFlow preserves the hosted identity (`env_uid`,
+`hub_url`) and still writes the shared rollout output contract:
+
+```bash
+bench eval create \
+    --source-env primeintellect/general-agent \
+    --source-env-version 0.1.1 \
+    --model google/gemini-2.5-flash-lite
+```
+
 Downstream projects should depend on the public PyPI release by default. For
 internal validation before the next public release, install or lock the internal
 preview channel with prereleases enabled; see [Release channels](./docs/release.md).
+
+## Authoring tasks
+
+A task is one `task.md` (YAML frontmatter for config + a markdown prompt body)
+plus `environment/` and `verifier/` sidecars. The `bench tasks` commands cover
+the authoring lifecycle:
+
+```bash
+bench tasks init my-task                 # scaffold a task.md package under tasks/
+bench tasks check tasks/my-task          # validate (default --level structural)
+bench tasks migrate legacy-task/         # convert task.toml + instruction.md → task.md
+bench tasks export tasks/my-task out/    # write a Harbor/Pier split layout + loss report
+```
+
+See [Native task.md authoring](./docs/task-authoring-task-md.md) and the
+[task standard](./docs/task-standard.md).
 
 ## Featured
 
