@@ -153,7 +153,10 @@ async def test_runtime_reuse_and_stop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_required_usage_fails_when_litellm_lacks_provider_key():
+async def test_required_usage_fails_when_litellm_lacks_provider_key(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HOME", str(tmp_path))  # hide any host ~/.codex/auth.json
     with pytest.raises(RuntimeError, match="requires OPENAI_API_KEY"):
         await ensure_litellm_runtime(
             agent="codex-acp",
