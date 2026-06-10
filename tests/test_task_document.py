@@ -151,6 +151,35 @@ Do it.
     assert document.config.verifier.timeout_sec == 33
 
 
+def test_task_document_omitted_verifier_timeout_inherits_default() -> None:
+    """A task.md with no verifier block inherits the 600s verifier budget."""
+    document = TaskDocument.from_text(
+        """---
+name: default-budget
+image: ubuntu:24.04
+---
+Do it.
+"""
+    )
+
+    assert document.config.verifier.timeout_sec == 600.0
+
+
+def test_task_document_zero_second_verifier_budget_fails_closed() -> None:
+    """An explicit 0s verifier budget is a parse error, not an instant timeout."""
+    with pytest.raises(ValueError, match=r"verifier\.timeout_sec"):
+        TaskDocument.from_text(
+            """---
+name: zero-budget
+image: ubuntu:24.04
+verifier:
+  timeout_sec: 0
+---
+Do it.
+"""
+        )
+
+
 def test_task_document_parses_roles_scenes_and_user_persona() -> None:
     """Guards commit 67378ddd's 2026-06-04 task.md spike for teams/scenes."""
     document = TaskDocument.from_text(

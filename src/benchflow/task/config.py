@@ -241,7 +241,14 @@ class VerifierConfig(TaskConfigModel):
         default="test-script",
         description="Verification method.",
     )
-    timeout_sec: float = 600.0
+    timeout_sec: float = Field(
+        default=600.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Wall-clock budget in seconds for verifier execution. "
+        "Omitting the field inherits this default; zero, negative, and "
+        "non-finite budgets are rejected at validation time.",
+    )
     env: dict[str, str] = Field(default_factory=dict)
     user: str | int | None = Field(
         default=None,
