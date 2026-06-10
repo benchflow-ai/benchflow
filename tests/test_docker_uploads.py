@@ -40,6 +40,26 @@ async def test_prebuilt_stop_does_not_remove_images() -> None:
 
 
 @pytest.mark.asyncio
+async def test_self_built_delete_removes_images_and_volumes(monkeypatch) -> None:
+    """Self-built images are torn down fully when safe-cleanup is off."""
+    monkeypatch.delenv("BENCHFLOW_DOCKER_SAFE_CLEANUP", raising=False)
+    sandbox = DockerSandbox.__new__(DockerSandbox)
+    sandbox._keep_containers = False
+    sandbox._use_prebuilt = False
+    sandbox._chown_to_host_user = AsyncMock()
+    sandbox._run_docker_compose_command = AsyncMock(
+        return_value=ExecResult(stdout="", stderr=None, return_code=0)
+    )
+
+    await sandbox.stop(delete=True)
+
+    sandbox._run_docker_compose_command.assert_awaited_once_with(
+        ["down", "--rmi", "all", "--volumes", "--remove-orphans", "-t", "5"],
+        timeout_sec=120,
+    )
+
+
+@pytest.mark.asyncio
 async def test_agentbeats_safe_cleanup_skips_image_and_volume_removal(
     monkeypatch,
 ) -> None:

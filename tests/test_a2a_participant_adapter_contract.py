@@ -202,6 +202,44 @@ async def test_a2a_endpoint_role_skips_acp_install_and_invokes_endpoint(
     assert adapter.waited[0].role_name == "agent"
 
 
+async def test_a2a_step_after_acp_step_tears_down_acp_session(
+    tmp_path: Path,
+) -> None:
+    """Switching from an ACP turn to an A2A turn disconnects the ACP session.
+
+    Guards the Steps-engine dispatch: the A2A turn must run through the
+    participant adapter only, after exactly one ACP disconnect (no trailing
+    disconnect, since no ACP session remains live after the A2A turn).
+    """
+    adapter = FakeA2AAdapter()
+    acp_role = Role(name="coder", agent="claude-agent-acp")
+    scene = Scene(
+        roles=[acp_role, _a2a_role()],
+        turns=[Turn("coder", "Write code."), Turn("agent", "Review the workspace.")],
+    )
+    trial = _make_rollout(tmp_path, adapter, scene)
+    calls: list[str] = []
+
+    async def fake_connect_as(role: Role) -> None:
+        calls.append(f"connect:{role.name}")
+
+    async def fake_execute(prompts: list[str]) -> None:
+        calls.append(f"execute:{prompts[0]}")
+
+    async def fake_disconnect() -> None:
+        calls.append("disconnect")
+
+    trial.connect_as = fake_connect_as  # type: ignore[method-assign]
+    trial.execute = fake_execute  # type: ignore[method-assign]
+    trial.disconnect = fake_disconnect  # type: ignore[method-assign]
+
+    await trial._run_steps(compile_scenes_to_steps([scene]))
+
+    assert calls == ["connect:coder", "execute:Write code.", "disconnect"]
+    assert [request.role_name for request in adapter.requests] == ["agent"]
+    assert adapter.requests[0].prompt == "Review the workspace."
+
+
 async def test_a2a_request_points_at_task_skill_policy_sandbox_dir(
     tmp_path: Path,
 ) -> None:
