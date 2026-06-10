@@ -37,6 +37,56 @@ def _all_task_names(skillsbench: Path) -> list[str]:
     return names
 
 
+import re as _re
+
+
+def _normalize_legacy_toml(dst: Path) -> None:
+    """Drop a stray legacy top-level `version = "0.x"` so the task defaults to
+    the current schema_version (1.3) like the other tasks."""
+    t = dst / "task.toml"
+    if not t.exists():
+        return
+    txt = t.read_text()
+    new = _re.sub(r'(?m)^version\s*=\s*"0[^"]*"\s*\n', "", txt)
+    if new != txt:
+        t.write_text(new)
+
+
+def _normalize_ctrf(dst: Path) -> None:
+    """Rewrite non-standard CTRF outputs to the expected /logs/verifier/ctrf.json."""
+    vdir = dst / "verifier"
+    if not vdir.is_dir():
+        return
+    for sh in vdir.rglob("*.sh"):
+        txt = sh.read_text()
+        new = txt.replace("ctrf-report.json", "ctrf.json")
+        new = new.replace("--ctrf ctrf.json", "--ctrf /logs/verifier/ctrf.json")
+        if new != txt:
+            sh.write_text(new)
+
+
+def _normalize_legacy_test_paths(dst: Path) -> None:
+    """Rewrite leftover legacy /tests references that the migrator's .sh-only
+    /tests -> /verifier rewrite misses: dir-existence gates and relative paths
+    in shell, and constructed paths in promoted Python verifiers."""
+    vdir = dst / "verifier"
+    if not vdir.is_dir():
+        return
+    for sh in vdir.rglob("*.sh"):
+        txt = sh.read_text()
+        new = txt.replace("[ -d /tests ]", "[ -d /verifier ]")
+        new = _re.sub(r"(?m)(\s|^)tests/test_outputs\.py", r"\1/verifier/test_outputs.py", new)
+        if new != txt:
+            sh.write_text(new)
+    for py in vdir.rglob("*.py"):
+        txt = py.read_text()
+        new = txt.replace('Path("/tests")', 'Path("/verifier")')
+        new = new.replace("Path('/tests')", "Path('/verifier')")
+        new = _re.sub(r'/ "tests"', '/ "verifier"', new)
+        if new != txt:
+            py.write_text(new)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--skillsbench", required=True, type=Path, help="path to a skillsbench checkout")
@@ -71,12 +121,15 @@ def main() -> int:
         if dst.exists():
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
+        _normalize_legacy_toml(dst)
         try:
             migrate_task_to_task_md(dst, overwrite=True, remove_legacy=True)
         except Exception as exc:
             print(f"FAIL {name}: migrate error: {exc}")
             warn += 1
             continue
+        _normalize_ctrf(dst)
+        _normalize_legacy_test_paths(dst)
         issues = check_task(dst)  # structural validation
         if issues:
             print(f"WARN {name}: {issues}")
