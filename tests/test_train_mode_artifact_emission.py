@@ -326,3 +326,84 @@ def test_build_rollout_result_emits_trainer_artifact(tmp_path):
     assert parsed["reward"] == 1.0
     assert parsed["info"]["task_id"] == "archive-alice"
     assert parsed["info"]["model"] == "claude-haiku-4-5"
+
+
+def test_build_rollout_result_emits_atif_and_adp(tmp_path):
+    """Scored rollouts emit the ecosystem trajectory formats out of the box.
+
+    ATIF (trainer/atif.json) and ADP (trainer/adp.jsonl) must land beside
+    verifiers.jsonl from _build_rollout_result — library-only emitters that
+    no run ever calls are a doc-claim violation, not a feature.
+    """
+    rollout_dir = tmp_path / "rollout-formats"
+    rollout_dir.mkdir()
+    _build_rollout_result(
+        rollout_dir,
+        task_name="archive-alice",
+        rollout_name="r1",
+        agent="claude-agent-acp",
+        agent_name="claude-agent-acp",
+        model="claude-haiku-4-5",
+        n_tool_calls=1,
+        prompts=["Archive the email from Alice."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 0.45},
+        started_at=datetime.now(),
+        timing={},
+    )
+    atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
+    assert atif["session_id"] == "archive-alice__r1"
+    assert atif["agent"]["name"] == "claude-agent-acp"
+    assert atif["steps"], "non-empty trajectory must produce ATIF steps"
+
+    adp_line = (rollout_dir / "trainer/adp.jsonl").read_text().strip()
+    adp = json.loads(adp_line)
+    assert adp["id"] == "archive-alice__r1"
+    assert adp["details"]["task_id"] == "archive-alice"
+    action_rewards = [
+        item["reward"] for item in adp["content"] if "reward" in item
+    ]
+    assert action_rewards == [0.45], (
+        "terminal reward must attach to the final action per ADP convention"
+    )
+
+
+def test_build_rollout_result_atif_for_empty_trajectory_is_prompt_only(tmp_path):
+    """Oracle runs (no agent events) emit a prompts-only ATIF, never agent steps.
+
+    The emitter folds prompts into user steps by design, so the document
+    stays schema-valid (steps non-empty); what must never happen is a
+    fabricated agent step from an empty trajectory.
+    """
+    rollout_dir = tmp_path / "rollout-oracle"
+    rollout_dir.mkdir()
+    _build_rollout_result(
+        rollout_dir,
+        task_name="archive-alice",
+        rollout_name="oracle",
+        agent="oracle",
+        agent_name="oracle",
+        model=None,
+        n_tool_calls=0,
+        prompts=["Archive the email from Alice."],
+        error=None,
+        verifier_error=None,
+        trajectory=[],
+        partial_trajectory=False,
+        trajectory_source=None,
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+    atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
+    sources = [s.get("source") for s in atif["steps"]]
+    assert sources == ["user"], (
+        f"oracle ATIF must contain only the prompt-derived user step, got {sources}"
+    )
+    assert (rollout_dir / "trainer/adp.jsonl").exists(), (
+        "ADP records prompts even without actions"
+    )
