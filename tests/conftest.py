@@ -1,6 +1,7 @@
 """Test fixtures."""
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,13 @@ REPO_ROOT = Path(__file__).parent.parent
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+
+# Unless LITELLM_MODE is PRODUCTION, importing litellm runs load_dotenv(),
+# which walks ancestor directories and injects any developer `.env` (real API
+# keys included) into os.environ for the rest of the pytest process — breaking
+# env-sensitive tests that run after a litellm-importing module. Same intent
+# as isolate_local_dotenv below, but for litellm's import-time side effect.
+os.environ.setdefault("LITELLM_MODE", "PRODUCTION")
 
 REF_TASKS = REPO_ROOT / ".cache" / "datasets" / "benchflow" / "examples" / "tasks"
 
