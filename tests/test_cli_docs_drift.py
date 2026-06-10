@@ -59,6 +59,7 @@ def test_eval_create_help_lists_all_documented_flags() -> None:
         "--source-env-max-tokens",
         "--source-env-temperatu",
         "--source-env-sampling-",
+        "--source-env-max-turns",
         "--agent",
         "--model",
         "--sandbox",

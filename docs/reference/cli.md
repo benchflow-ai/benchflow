@@ -71,6 +71,14 @@ bench eval create \
   --agent gemini \
   --model google/gemini-2.5-flash-lite
 
+# From an OpenReward (ORS) hosted environment
+# (requires `pip install openreward` and OPENREWARD_API_KEY)
+bench eval create \
+  --source-env openreward:GeneralReasoning/CTF \
+  --source-env-arg split=train \
+  --source-env-num-examples 2 \
+  --model openai/gpt-5-mini
+
 # Single task with mounted skills and the recommended skill nudge
 bench eval create \
   --tasks-dir tasks/pdf-fix \
@@ -88,14 +96,15 @@ bench eval create \
 | `--source-repo` | — | Remote repo as `org/repo` (e.g. `benchflow-ai/skillsbench`) |
 | `--source-path` | — | Subpath within the repo (e.g. `tasks`) |
 | `--source-ref` | — | Branch or tag to clone (e.g. `main`) |
-| `--source-env` | — | Hosted environment source (e.g. `primeintellect/general-agent`) |
-| `--source-env-version` | — | Hosted environment version |
-| `--source-env-arg` | — | Hosted environment argument as `KEY=VALUE`; repeatable |
+| `--source-env` | — | Hosted environment source (e.g. `primeintellect/general-agent` or `openreward:GeneralReasoning/CTF`) |
+| `--source-env-version` | — | Hosted environment version (for `openreward:` refs, the environment variant) |
+| `--source-env-arg` | — | Hosted environment argument as `KEY=VALUE`; repeatable (`split=train` selects the openreward task split) |
 | `--source-env-num-examples` | `1` | Number of hosted environment examples |
-| `--source-env-rollouts-per-example` | `1` | Rollouts per hosted environment example |
+| `--source-env-rollouts-per-example` | `1` | Rollouts per hosted environment example (Verifiers runner only) |
 | `--source-env-max-tokens` | `1024` | Max tokens for hosted environment model calls |
 | `--source-env-temperature` | `0.0` | Temperature for hosted environment model calls |
 | `--source-env-sampling-arg` | — | Verifiers sampling argument as `KEY=VALUE`; repeatable (for example `reasoning_effort=minimal`) |
+| `--source-env-max-turns` | `16` | Max model turns per hosted episode (openreward runner only) |
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |

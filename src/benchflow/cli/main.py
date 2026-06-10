@@ -861,12 +861,18 @@ def eval_create(
         str | None,
         typer.Option(
             "--source-env",
-            help="Hosted environment source (e.g. primeintellect/general-agent)",
+            help=(
+                "Hosted environment source (e.g. primeintellect/general-agent "
+                "or openreward:GeneralReasoning/CTF)"
+            ),
         ),
     ] = None,
     source_env_version: Annotated[
         str | None,
-        typer.Option("--source-env-version", help="Hosted environment version"),
+        typer.Option(
+            "--source-env-version",
+            help="Hosted environment version (openreward: variant)",
+        ),
     ] = None,
     source_env_arg: Annotated[
         list[str] | None,
@@ -901,6 +907,13 @@ def eval_create(
             help="Hosted env sampling arg as KEY=VALUE; repeatable (e.g. reasoning_effort=minimal)",
         ),
     ] = None,
+    source_env_max_turns: Annotated[
+        int,
+        typer.Option(
+            "--source-env-max-turns",
+            help="Max model turns per hosted episode (openreward runner)",
+        ),
+    ] = 16,
     agent: Annotated[
         str | None,
         typer.Option("--agent", help="Agent name"),
@@ -1244,7 +1257,7 @@ def eval_create(
             )
         if eval_agent != DEFAULT_AGENT:
             console.print(
-                f"[dim]source-env records --agent {eval_agent!r}, but executes the model endpoint through Verifiers.[/dim]"
+                f"[dim]source-env records --agent {eval_agent!r}, but executes the model endpoint through the hosted runner.[/dim]"
             )
         if eval_env_manifest is not None:
             console.print(
@@ -1264,21 +1277,51 @@ def eval_create(
 
         try:
             ref = HostedEnvRef.parse(source_env, version=source_env_version)
-            run_result = run_hosted_env(
-                HostedEnvRunConfig(
-                    source_env=ref,
-                    model=model or "",
-                    env_args=parse_source_env_args(source_env_arg),
-                    agent=eval_agent,
-                    jobs_dir=Path(output_jobs_dir),
-                    concurrency=eval_concurrency,
-                    num_examples=source_env_num_examples,
-                    rollouts_per_example=source_env_rollouts_per_example,
-                    max_tokens=source_env_max_tokens,
-                    temperature=source_env_temperature,
-                    sampling_args=parse_sampling_args(source_env_sampling_arg),
+            if ref.provider == "openreward":
+                from benchflow.hosted_env_openreward import (
+                    OpenRewardRunConfig,
+                    run_openreward_env,
                 )
-            )
+
+                if source_env_sampling_arg:
+                    console.print(
+                        "[yellow]--source-env-sampling-arg is for Verifiers runs; "
+                        "ignoring for the openreward runner.[/yellow]"
+                    )
+                if source_env_rollouts_per_example != 1:
+                    console.print(
+                        "[yellow]--source-env-rollouts-per-example is for Verifiers "
+                        "runs; ignoring for the openreward runner.[/yellow]"
+                    )
+                run_result = run_openreward_env(
+                    OpenRewardRunConfig(
+                        source_env=ref,
+                        model=model or "",
+                        env_args=parse_source_env_args(source_env_arg),
+                        agent=eval_agent,
+                        jobs_dir=Path(output_jobs_dir),
+                        num_examples=source_env_num_examples,
+                        max_turns=source_env_max_turns,
+                        max_tokens=source_env_max_tokens,
+                        temperature=source_env_temperature,
+                    )
+                )
+            else:
+                run_result = run_hosted_env(
+                    HostedEnvRunConfig(
+                        source_env=ref,
+                        model=model or "",
+                        env_args=parse_source_env_args(source_env_arg),
+                        agent=eval_agent,
+                        jobs_dir=Path(output_jobs_dir),
+                        concurrency=eval_concurrency,
+                        num_examples=source_env_num_examples,
+                        rollouts_per_example=source_env_rollouts_per_example,
+                        max_tokens=source_env_max_tokens,
+                        temperature=source_env_temperature,
+                        sampling_args=parse_sampling_args(source_env_sampling_arg),
+                    )
+                )
         except HostedEnvError as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None

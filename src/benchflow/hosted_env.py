@@ -6,6 +6,11 @@ they do not use BenchFlow's Docker/Daytona sandbox runner directly. The adapter
 keeps their hosted identity intact and runs them through their native Verifiers
 execution surface.
 
+:class:`HostedEnvRef` is the shared addressing scheme for all hosted hubs.
+This module's runner (:func:`run_hosted_env`) executes ``primeintellect``
+references through ``vf-eval``; ``openreward`` references execute through
+:mod:`benchflow.hosted_env_openreward`.
+
 Hosted runs share the rollout artifact contract — ``result.json``,
 ``rewards.jsonl``, ``trajectory/acp_trajectory.jsonl``, ``config.json``,
 ``timing.json``, and ``prompts.json`` — so dashboards and release checks can
@@ -39,6 +44,12 @@ logger = logging.getLogger(__name__)
 
 PRIME_SIMPLE_INDEX = "https://hub.primeintellect.ai/primeintellect/simple/"
 PRIME_HUB_ENV_URL = "https://app.primeintellect.ai/dashboard/environments"
+OPENREWARD_HUB_ENV_URL = "https://openreward.ai/environments"
+
+# Providers HostedEnvRef.parse accepts. Each one has a native runner:
+# primeintellect -> run_hosted_env (vf-eval), openreward ->
+# benchflow.hosted_env_openreward.run_openreward_env.
+EXECUTABLE_PROVIDERS = ("primeintellect", "openreward")
 
 
 class HostedEnvError(RuntimeError):
@@ -69,6 +80,17 @@ class HostedEnvRef:
         - ``primeintellect/general-agent@0.1.1``
         - ``primeintellect:general-agent@0.1.1``
         - ``primeintellect:primeintellect/general-agent@0.1.1``
+        - ``openreward:GeneralReasoning/CTF``
+        - ``openreward:GeneralReasoning/CTF@somevariant``
+
+        Provider-less references default to *default_provider*
+        (``primeintellect``), so OpenReward environments always carry the
+        explicit ``openreward:`` prefix. For OpenReward the ``@`` slot
+        selects the environment *variant* (the ``variant`` parameter of the
+        ORS client's ``environments.get``,
+        https://docs.openreward.ai/environments/using-environment-variants.md);
+        OpenReward deployments are otherwise unversioned — every run hits
+        the currently deployed build.
         """
         provider = default_provider
         value = raw.strip()
@@ -98,10 +120,10 @@ class HostedEnvRef:
             owner, name = None, value
 
         provider = provider.lower()
-        if provider != "primeintellect":
+        if provider not in EXECUTABLE_PROVIDERS:
             raise HostedEnvError(
                 f"Unsupported hosted environment provider: {provider}. "
-                "Only primeintellect Verifiers environments are executable today."
+                f"Executable providers: {', '.join(EXECUTABLE_PROVIDERS)}."
             )
         if not name:
             raise HostedEnvError(f"Invalid hosted environment reference: {raw}")
@@ -126,6 +148,8 @@ class HostedEnvRef:
     @property
     def hub_url(self) -> str:
         """Canonical hosted hub URL."""
+        if self.provider == "openreward":
+            return OPENREWARD_HUB_ENV_URL
         if self.provider == "primeintellect" and self.owner:
             return f"{PRIME_HUB_ENV_URL}/{self.owner}/{self.name}"
         return PRIME_HUB_ENV_URL
@@ -215,6 +239,12 @@ def normalize_verifiers_model(model: str) -> str:
 
 def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
     """Run a hosted environment using a controlled local Verifiers install."""
+    if config.source_env.provider != "primeintellect":
+        raise HostedEnvError(
+            f"run_hosted_env executes primeintellect Verifiers environments; "
+            f"{config.source_env.provider!r} references run through "
+            "benchflow.hosted_env_openreward.run_openreward_env."
+        )
     if config.runner != "verifiers":
         raise HostedEnvError(
             "Only runner='verifiers' is implemented. Use Prime CLI directly for "
@@ -331,6 +361,7 @@ def prime_env_list(
 
 def prime_env_info(ref: HostedEnvRef) -> str:
     """Return Prime environment info output."""
+    _require_prime_ref(ref)
     cmd = ["prime", "--plain", "env", "info", ref.env_id]
     if ref.version:
         cmd.extend(["-v", ref.version])
@@ -339,9 +370,18 @@ def prime_env_info(ref: HostedEnvRef) -> str:
 
 def prime_env_inspect(ref: HostedEnvRef, path: str = "README.md") -> str:
     """Return a file from a Prime environment package."""
+    _require_prime_ref(ref)
     return _run_prime(
         ["prime", "--plain", "env", "inspect", ref.versioned_env_id, path]
     )
+
+
+def _require_prime_ref(ref: HostedEnvRef) -> None:
+    if ref.provider != "primeintellect":
+        raise HostedEnvError(
+            f"Environment metadata via the prime CLI only covers primeintellect "
+            f"references; browse {ref.provider!r} environments at {ref.hub_url}."
+        )
 
 
 def _parse_scalar(value: str) -> Any:
