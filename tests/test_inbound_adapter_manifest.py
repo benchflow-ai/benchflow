@@ -31,9 +31,7 @@ from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.task.config import TaskConfig
 
-# ---------------------------------------------------------------------------
 # Foreign task fixtures — minimal Harbor / Terminal-Bench task dirs
-# ---------------------------------------------------------------------------
 
 
 _HARBOR_TASK_TOML = """\
@@ -93,9 +91,7 @@ def _write_tb_task(root: Path) -> Path:
     return task_dir
 
 
-# ---------------------------------------------------------------------------
 # manifest_from_task_config — the derivation seam
-# ---------------------------------------------------------------------------
 
 
 class TestManifestFromTaskConfig:
@@ -140,9 +136,7 @@ class TestManifestFromTaskConfig:
         assert manifest.services == []
 
 
-# ---------------------------------------------------------------------------
 # Adapter -> manifest contract — the core of #420
-# ---------------------------------------------------------------------------
 
 
 class TestHarborManifestSeam:
@@ -204,9 +198,7 @@ class TestTerminalBenchManifestSeam:
         assert result.manifest.base_image is None
 
 
-# ---------------------------------------------------------------------------
 # Manifest can be consumed by manifest-backed runtime
-# ---------------------------------------------------------------------------
 
 
 class _FakeSandbox:
@@ -247,9 +239,7 @@ async def test_adapter_manifest_runs_through_manifest_environment(
     assert isinstance(handle.endpoints, dict)
 
 
-# ---------------------------------------------------------------------------
 # Legacy compatibility — the file-map layer still works
-# ---------------------------------------------------------------------------
 
 
 def test_legacy_file_map_still_carried(tmp_path: Path) -> None:

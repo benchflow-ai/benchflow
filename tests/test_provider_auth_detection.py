@@ -166,9 +166,6 @@ def test_snapshot_after_late_capture_import():
     assert _provider_auth_status_from_runtime(proxy) == 401
 
 
-# ── Rollout-level run()/cleanup() ordering (PR #564 deeper review) ──
-
-
 def _auth_rollout(tmp_path, *, usage_source="unavailable"):
     """Build a minimal real Rollout whose usage proxy carries a 401 but reports
     no provider token usage — the exact shape of a provider-auth failure under

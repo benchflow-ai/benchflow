@@ -19,7 +19,7 @@ from benchflow.agents.env import (
     validate_aws_bedrock_env,
 )
 
-# ── auto_inherit_env ──
+# auto_inherit_env
 
 
 class TestAutoInheritEnv:
@@ -173,7 +173,7 @@ class TestAutoInheritEnv:
         assert env["AZURE_RESOURCE"] == "example-resource"
 
 
-# ── inject_vertex_credentials ──
+# inject_vertex_credentials
 
 
 class TestInjectVertexCredentials:
@@ -212,7 +212,7 @@ class TestInjectVertexCredentials:
         assert env["GOOGLE_CLOUD_LOCATION"] == "global"
 
 
-# ── resolve_provider_env ──
+# resolve_provider_env
 
 
 class TestResolveProviderEnv:
@@ -390,7 +390,7 @@ class TestResolveProviderEnv:
         assert env["ANTHROPIC_MODEL"] == "claude-sonnet-4-6"
 
 
-# ── check_subscription_auth ──
+# check_subscription_auth
 
 
 class TestCheckSubscriptionAuth:
@@ -444,7 +444,7 @@ class TestCheckSubscriptionAuth:
         assert check_subscription_auth("codex-acp", "OPENAI_API_KEY") is True
 
 
-# ── validate_aws_bedrock_env ──
+# validate_aws_bedrock_env
 
 
 class TestValidateAwsBedrockEnv:
@@ -471,7 +471,7 @@ class TestValidateAwsBedrockEnv:
         assert env["AWS_DEFAULT_REGION"] == "us-east-1"
 
 
-# ── resolve_agent_env: no-model subscription auth ──
+# resolve_agent_env: no-model subscription auth
 
 
 class TestResolveAgentEnvNoModel:

@@ -186,6 +186,47 @@ def test_resolve_source_with_metadata_records_sha_and_task_hashes(
     assert resolved.provenance["file_hashes"]["task.toml"].startswith("sha256:")
 
 
+def test_resolve_source_with_metadata_records_task_md_hashes(tmp_path, monkeypatch):
+    """Guards commit 67378ddd's 2026-06-04 task.md spike source hashes."""
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, check=False, capture_output=False, text=False):
+        del capture_output, text
+        if cmd[:2] == ["git", "clone"]:
+            assert check is True
+            clone_dir = Path(cmd[-1])
+            task = clone_dir / "tasks" / "sample"
+            (task / "tests").mkdir(parents=True)
+            (task / "task.md").write_text(
+                "---\nversion: '1.0'\n---\n## prompt\n\nSolve it.\n"
+            )
+            (task / "tests" / "test.sh").write_text("exit 0\n")
+            (clone_dir / ".git").mkdir()
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "worktree" in cmd:
+            assert check is True
+            return _fake_worktree(cmd)
+        if cmd[-2:] == ["rev-parse", "HEAD"]:
+            return SimpleNamespace(returncode=0, stdout="c" * 40 + "\n", stderr="")
+        if cmd[-2:] == ["status", "--porcelain"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(task_download.subprocess, "run", fake_run)
+
+    resolved = resolve_source_with_metadata(
+        "acme-org/benchmarks",
+        path="tasks/sample",
+        ref="main",
+    )
+
+    assert set(resolved.provenance["file_hashes"]) == {
+        "task.md",
+        "tests/test.sh",
+    }
+    assert resolved.provenance["file_hashes"]["task.md"].startswith("sha256:")
+
+
 def test_resolve_source_with_metadata_uses_snapshot_sha_for_provenance(
     tmp_path, monkeypatch
 ):

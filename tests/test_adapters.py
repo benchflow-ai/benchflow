@@ -15,16 +15,19 @@ import json
 import math
 from pathlib import Path
 
+import pytest
+
 from benchflow._types import Role, Scene, Turn
 from benchflow.adapters.inspect_ai import InspectAdapter, to_inspect_task
-from benchflow.adapters.ors import ORSAdapter, to_ors_reward
+from benchflow.adapters.ors import (
+    ORSAdapter,
+    ors_tool_outputs_to_reward_events,
+    to_ors_reward,
+    write_ors_tool_outputs_jsonl,
+)
 from benchflow.rewards.events import RewardEvent
 from benchflow.rewards.protocol import VerifyResult
 from benchflow.rewards.rubric import Rubric
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 class _ConstantReward:
@@ -45,9 +48,7 @@ def _make_scene(*, name: str = "test-scene", n_turns: int = 2) -> Scene:
     )
 
 
-# ---------------------------------------------------------------------------
 # InspectAdapter
-# ---------------------------------------------------------------------------
 
 
 class TestInspectAdapter:
@@ -95,9 +96,7 @@ class TestInspectAdapter:
         assert result["scorer"]["weights"] is None
 
 
-# ---------------------------------------------------------------------------
 # ORSAdapter
-# ---------------------------------------------------------------------------
 
 
 class TestORSAdapter:
@@ -241,10 +240,98 @@ class TestORSAdapter:
             ("memory", "step"),
         ]
 
+    def test_tool_outputs_to_reward_events(self) -> None:
+        """ORS runtime tool rewards become verifier evidence records."""
+        records = ORSAdapter.tool_outputs_to_reward_events(
+            [
+                {
+                    "tool": "tool-call-check",
+                    "reward": 0.25,
+                    "step": 1,
+                    "tool_call_id": "call-1",
+                    "timestamp": "2026-06-05T00:00:00Z",
+                },
+                {
+                    "tool": "ors-terminal",
+                    "reward": {"reward": 0.88},
+                    "step": 2,
+                    "finished": True,
+                    "toolCallId": "call-2",
+                },
+            ]
+        )
 
-# ---------------------------------------------------------------------------
+        assert records == [
+            {
+                "type": "dense",
+                "reward": 0.25,
+                "source": "tool-call-check",
+                "step": 1,
+                "space": "action",
+                "granularity": "step",
+                "timestamp": "2026-06-05T00:00:00Z",
+                "tool_call_id": "call-1",
+            },
+            {
+                "type": "terminal",
+                "reward": 0.88,
+                "source": "ors-terminal",
+                "step": 2,
+                "space": "output",
+                "granularity": "terminal",
+                "tool_call_id": "call-2",
+                "finished": True,
+            },
+        ]
+
+    def test_write_tool_outputs_jsonl(self, tmp_path: Path) -> None:
+        """The runtime helper writes the artifact consumed by ``ors-episode``."""
+        output_path = tmp_path / "trajectory" / "ors-rewards.jsonl"
+
+        records = write_ors_tool_outputs_jsonl(
+            [
+                {"tool": "search", "reward": 0.2},
+                {"tool": "submit", "reward": 0.8, "done": True},
+            ],
+            output_path,
+        )
+
+        assert output_path.exists()
+        assert [
+            json.loads(line) for line in output_path.read_text().splitlines()
+        ] == records
+        assert records[-1]["type"] == "terminal"
+        assert records[-1]["finished"] is True
+
+    def test_tool_outputs_reject_invalid_rewards(self) -> None:
+        """Runtime ORS reward evidence fails closed before verifier handoff."""
+        for output in (
+            {"reward": -0.1},
+            {"reward": 1.1},
+            {"reward": float("nan")},
+            {"reward": "not-a-number"},
+        ):
+            with pytest.raises(ValueError, match="reward"):
+                ORSAdapter.tool_outputs_to_reward_events([output])
+
+    def test_tool_output_convenience_function(self) -> None:
+        records = ors_tool_outputs_to_reward_events(
+            [{"tool": "submit", "result": {"reward": 0.7}, "finished": True}]
+        )
+        assert records == [
+            {
+                "type": "terminal",
+                "reward": 0.7,
+                "source": "submit",
+                "step": 1,
+                "space": "output",
+                "granularity": "terminal",
+                "finished": True,
+            }
+        ]
+
+
 # Convenience functions
-# ---------------------------------------------------------------------------
 
 
 class TestConvenienceFunctions:
@@ -260,10 +347,13 @@ class TestConvenienceFunctions:
         assert ors["reward"] == 0.9
         assert ors["is_valid"] is True
 
+    def test_top_level_ors_tool_output_reexport(self) -> None:
+        from benchflow import write_ors_tool_outputs_jsonl as top_level_writer
 
-# ---------------------------------------------------------------------------
+        assert top_level_writer is write_ors_tool_outputs_jsonl
+
+
 # Round-trip tests
-# ---------------------------------------------------------------------------
 
 
 class TestRoundTrip:
@@ -293,9 +383,7 @@ class TestRoundTrip:
             assert ev["timestamp"] == f"t{i}"
 
 
-# ---------------------------------------------------------------------------
 # Top-level re-export
-# ---------------------------------------------------------------------------
 
 
 class TestReexport:

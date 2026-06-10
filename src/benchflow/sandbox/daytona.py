@@ -303,7 +303,7 @@ class DaytonaClientManager:
                     self._client = None
 
 
-# ── Strategy pattern ──────────────────────────────────────────────────
+# Strategy pattern
 
 
 class _DaytonaStrategy:
@@ -1015,9 +1015,29 @@ class _DaytonaDinD(_DaytonaStrategy):
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         sandbox_path = self._sandbox_log_path(source_path)
         if sandbox_path:
-            await self._env._sdk_download_file(sandbox_path, target_path)
+            try:
+                await self._env._sdk_download_file(sandbox_path, target_path)
+            except Exception as host_error:
+                self._env.logger.warning(
+                    "Daytona host log download_file failed for %s; falling back "
+                    "to docker compose cp: %s",
+                    source_path,
+                    host_error,
+                )
+                try:
+                    await self._compose_download_file(source_path, target_path)
+                except Exception as compose_error:
+                    raise RuntimeError(
+                        "Daytona log download_file failed via host path and "
+                        "compose fallback"
+                    ) from compose_error
             return
 
+        await self._compose_download_file(source_path, target_path)
+
+    async def _compose_download_file(
+        self, source_path: str, target_path: Path | str
+    ) -> None:
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             result = await self._compose_exec(
@@ -1045,9 +1065,31 @@ class _DaytonaDinD(_DaytonaStrategy):
         if service == "main":
             sandbox_path = self._sandbox_log_path(source_dir)
             if sandbox_path:
-                await self._env._sdk_download_dir(sandbox_path, target_dir)
+                try:
+                    await self._env._sdk_download_dir(sandbox_path, target_dir)
+                except Exception as host_error:
+                    self._env.logger.warning(
+                        "Daytona host log download_dir failed for %s; falling "
+                        "back to docker compose cp: %s",
+                        source_dir,
+                        host_error,
+                    )
+                    try:
+                        await self._compose_download_dir(
+                            source_dir, target_dir, service=service
+                        )
+                    except Exception as compose_error:
+                        raise RuntimeError(
+                            "Daytona log download_dir failed via host path and "
+                            "compose fallback"
+                        ) from compose_error
                 return
 
+        await self._compose_download_dir(source_dir, target_dir, service=service)
+
+    async def _compose_download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str
+    ) -> None:
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             await self._vm_exec(f"mkdir -p {shlex.quote(temp)}", timeout_sec=10)
@@ -1116,9 +1158,6 @@ class _DaytonaDinD(_DaytonaStrategy):
                 remote_cmd,
             ],
         )
-
-
-# ── Main environment class ─────────────────────────────────────────────
 
 
 class DaytonaSandbox(BaseSandbox):
@@ -1207,7 +1246,7 @@ class DaytonaSandbox(BaseSandbox):
         if not path.exists():
             raise FileNotFoundError(f"{path} not found. Please ensure the file exists.")
 
-    # ── Shared helpers used by both strategies ──────────────────────────
+    # Shared helpers used by both strategies
 
     def _on_sandbox_created(self) -> None:
         """Persist sandbox.json the instant the Daytona sandbox id is known.
@@ -1505,8 +1544,16 @@ class DaytonaSandbox(BaseSandbox):
                     f"Skipping file not found during download_dir: {file_path}"
                 )
                 continue
+            except Exception as exc:
+                self.logger.warning(
+                    "Could not read Daytona file info for %s; treating search "
+                    "hit as a file: %s",
+                    file_path,
+                    exc,
+                )
+                file_info = None
 
-            if not file_info.is_dir:
+            if file_info is None or not file_info.is_dir:
                 path_obj = Path(file_path)
                 relative_path = path_obj.relative_to(Path(source_dir))
                 local_file_path = target_dir / relative_path
@@ -1519,9 +1566,47 @@ class DaytonaSandbox(BaseSandbox):
                 )
 
         if file_downloads:
-            await self._sandbox.fs.download_files(files=file_downloads)
+            try:
+                await self._sandbox.fs.download_files(files=file_downloads)
+            except Exception as batch_error:
+                self.logger.warning(
+                    "Daytona batch download_dir failed for %s (%d files); "
+                    "retrying files individually: %s",
+                    source_dir,
+                    len(file_downloads),
+                    batch_error,
+                )
+                await self._download_files_individually(file_downloads)
 
-    # ── Public interface — delegates to strategy ────────────────────────
+    async def _download_files_individually(self, file_downloads: list[Any]) -> None:
+        if not self._sandbox:
+            raise RuntimeError("Sandbox not found. Please build the environment first.")
+
+        failures: list[str] = []
+        downloaded = 0
+        for request in file_downloads:
+            source = request.source
+            destination = request.destination
+            try:
+                await self._sandbox.fs.download_file(source, destination)
+                downloaded += 1
+            except DaytonaNotFoundError:
+                self.logger.debug(
+                    "Skipping file not found during individual download_dir: %s",
+                    source,
+                )
+            except Exception as exc:
+                failures.append(f"{source}: {exc}")
+
+        if failures:
+            preview = "; ".join(failures[:3])
+            if len(failures) > 3:
+                preview += f"; ... {len(failures) - 3} more"
+            raise RuntimeError(f"Daytona individual download_dir failed: {preview}")
+        if downloaded == 0:
+            raise RuntimeError("Daytona individual download_dir recovered no files")
+
+    # Public interface — delegates to strategy
 
     async def start(self, force_build: bool) -> None:
         return await self._strategy.start(force_build)
@@ -1593,7 +1678,7 @@ class DaytonaSandbox(BaseSandbox):
     async def attach(self) -> None:
         return await self._strategy.attach()
 
-    # ── Container snapshot/restore — delegates to active strategy (#384) ──
+    # Container snapshot/restore — delegates to active strategy (#384)
 
     @property
     def supports_snapshot(self) -> bool:

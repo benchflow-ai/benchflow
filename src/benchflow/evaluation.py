@@ -59,6 +59,7 @@ from benchflow._utils.scoring import (
     pass_rate_excl_errors,
 )
 from benchflow._utils.source_provenance import summary_source_fields
+from benchflow._utils.text import truncate_end
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.learner_store import LearnerState, LearnerStore
@@ -89,7 +90,44 @@ BENCHFLOW_OWNED_LABEL = "benchflow.owned=true"
 # flight, skip — there's nothing new to clean since the in-flight one started.
 _PRUNE_LOCK = threading.Lock()
 
+
+def _environment_manifest_from_task_document(
+    task_dir: Path,
+) -> EnvironmentManifest | None:
+    task_md = task_dir / "task.md"
+    if not task_md.is_file():
+        return None
+
+    from benchflow.environment.manifest import load_manifest
+    from benchflow.task.document import TaskDocument
+
+    document = TaskDocument.from_path(task_md)
+    environment = document.benchflow.get("environment")
+    if environment is None:
+        return None
+    if not isinstance(environment, dict):
+        raise ValueError("task.md benchflow.environment must be a mapping")
+    manifest = environment.get("manifest")
+    if manifest is None:
+        return None
+    if not isinstance(manifest, str) or not manifest.strip():
+        raise ValueError("task.md benchflow.environment.manifest must be a path")
+
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = task_dir / manifest_path
+    return load_manifest(manifest_path)
+
+
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
+
+
+def _is_task_dir(path: Path) -> bool:
+    if not (path / "task.md").exists():
+        return (path / "task.toml").exists()
+    from benchflow._utils.task_authoring import check_task
+
+    return check_task(path) == []
 
 
 class EmptyTaskSelectionError(ValueError):
@@ -297,7 +335,7 @@ class EvaluationConfig:
                 f"unknown job_mode {self.job_mode!r} — "
                 f"expected one of {', '.join(JOB_MODES)}"
             )
-        if self.agent not in AGENTS:
+        if self.agent != "oracle" and self.agent not in AGENTS:
             available = ", ".join(sorted(AGENTS.keys()))
             logger.warning(
                 f"Unknown agent {self.agent!r} — not in registry. "
@@ -675,7 +713,7 @@ class Evaluation:
 
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories."""
-        if (self._tasks_dir / "task.toml").exists():
+        if _is_task_dir(self._tasks_dir):
             if self._tasks_dir.name in self._config.exclude_tasks:
                 return []
             if (
@@ -688,7 +726,7 @@ class Evaluation:
             d
             for d in self._tasks_dir.iterdir()
             if d.is_dir()
-            and (d / "task.toml").exists()
+            and _is_task_dir(d)
             and d.name not in self._config.exclude_tasks
             and (not self._config.include_tasks or d.name in self._config.include_tasks)
         )
@@ -722,7 +760,8 @@ class Evaluation:
         for task, (_mt, r) in best.items():
             if r.get("verifier_error"):
                 logger.info(
-                    f"Skipping verifier-errored task on resume: {task} ({r['verifier_error'][:80]})"
+                    f"Skipping verifier-errored task on resume: {task} "
+                    f"({truncate_end(r['verifier_error'], 80)})"
                 )
             completed[task] = r
         return completed
@@ -832,6 +871,9 @@ class Evaluation:
             if self._learner_export_dir is not None
             else None
         )
+        environment_manifest = cfg.environment_manifest
+        if environment_manifest is None:
+            environment_manifest = _environment_manifest_from_task_document(task_dir)
         rollout_config = RolloutConfig.from_legacy(
             task_path=task_dir,
             agent=cfg.agent,
@@ -843,7 +885,7 @@ class Evaluation:
             jobs_dir=str(self._jobs_dir),
             concurrency=cfg.concurrency,
             environment=cfg.environment,
-            environment_manifest=cfg.environment_manifest,
+            environment_manifest=environment_manifest,
             skills_dir=skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
@@ -935,7 +977,9 @@ class Evaluation:
                 break
 
             if attempt <= cfg.retry.max_retries:
-                err_preview = (result.error or result.verifier_error or "")[:60]
+                err_preview = truncate_end(
+                    result.error or result.verifier_error or "", 60
+                )
                 logger.info(
                     f"Retrying {task_dir.name} (attempt {attempt + 1}): {err_preview}"
                 )
@@ -950,7 +994,7 @@ class Evaluation:
         reward = result.rewards.get("reward") if result.rewards else None
         status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
         err_msg = result.error or result.verifier_error
-        err = f" ({err_msg[:50]})" if err_msg else ""
+        err = f" ({truncate_end(err_msg, 50)})" if err_msg else ""
         logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
         if self._on_result:
             self._on_result(td.name, result)
@@ -1315,7 +1359,11 @@ class Evaluation:
         job_result = EvaluationResult(
             job_name=self._job_name,
             config=cfg,
-            total=len(task_dirs),
+            # Score counts cover one entry per scored rollout. Skill-eval expands
+            # a single task into multiple rollouts (baseline/skill x trials), so
+            # the denominator must be the number of results, not task dirs, or the
+            # invariant below (and every pass-rate/percentage) is wrong.
+            total=len(all_results),
             passed=score_counts["passed"],
             failed=score_counts["failed"],
             errored=score_counts["errored"],

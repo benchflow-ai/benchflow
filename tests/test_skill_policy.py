@@ -49,6 +49,34 @@ def test_task_skills_are_stripped_from_no_skills_task_copy(tmp_path: Path) -> No
     assert not (task / "environment" / "skills").exists()
 
 
+def test_task_skill_strip_removes_direct_dockerfile_skill_copies(
+    tmp_path: Path,
+) -> None:
+    """Guards SkillsBench a8eefb4 radar-vital-signs no-skill sandbox startup."""
+    task = tmp_path / "task"
+    _make_task_skills(task)
+    dockerfile = task / "environment" / "Dockerfile"
+    dockerfile.write_text(
+        "\n".join(
+            [
+                "FROM python:3.11-slim",
+                "COPY recordings /root/recordings",
+                "COPY skills /root/.claude/skills",
+                "COPY skills /root/.codex/skills",
+                "RUN echo ready",
+            ]
+        )
+        + "\n"
+    )
+
+    strip_task_bundled_skills(task)
+
+    assert not (task / "environment" / "skills").exists()
+    assert dockerfile.read_text() == (
+        "FROM python:3.11-slim\nCOPY recordings /root/recordings\nRUN echo ready\n"
+    )
+
+
 def test_with_skill_mode_keeps_task_bundle(tmp_path: Path) -> None:
     """Guards PR #586 so canonical with-skill mode enables task skills."""
     task = tmp_path / "task"

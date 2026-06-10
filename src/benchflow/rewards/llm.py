@@ -24,9 +24,7 @@ class JudgeEnvironmentError(RuntimeError):
     """
 
 
-# ------------------------------------------------------------------
 # Verdict parsing
-# ------------------------------------------------------------------
 
 
 def _reject_json_constant(value: str) -> None:
@@ -78,9 +76,7 @@ def parse_binary_verdict(text: str) -> bool:
     return lowered in {"yes", "true", "1", "pass", "passed"}
 
 
-# ------------------------------------------------------------------
 # Provider routing
-# ------------------------------------------------------------------
 
 
 def _is_anthropic_model(model: str) -> bool:
@@ -211,9 +207,7 @@ async def call_judge(
     )
 
 
-# ------------------------------------------------------------------
 # Provider implementations
-# ------------------------------------------------------------------
 
 
 async def _call_anthropic(

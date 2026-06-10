@@ -44,9 +44,7 @@ def _write_skill_dir(
     return skill
 
 
-# ---------------------------------------------------------------------------
 # #361 — case id as task_dir segment
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -80,9 +78,7 @@ def test_generate_tasks_rejects_traversal_case_id_at_call_time(
     assert not (tmp_path / "escaped-case" / "task.toml").exists()
 
 
-# ---------------------------------------------------------------------------
 # #405 — skill_name as skills/<name> segment
-# ---------------------------------------------------------------------------
 
 
 def test_load_eval_dataset_rejects_traversal_skill_name(tmp_path: Path) -> None:
@@ -107,9 +103,7 @@ def test_generate_tasks_rejects_traversal_skill_name_at_call_time(
     assert not (tmp_path / "escaped-skill-copy").exists()
 
 
-# ---------------------------------------------------------------------------
 # #403 — case id as GEPA trace filename component
-# ---------------------------------------------------------------------------
 
 
 def test_export_gepa_rejects_traversal_case_id(tmp_path: Path) -> None:

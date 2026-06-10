@@ -318,7 +318,7 @@ class BaseSandbox(ABC):
     async def attach(self) -> None:
         raise NotImplementedError("This environment does not support attaching.")
 
-    # ── Container-level snapshot/restore (Branch substrate) ──────────────
+    # Container-level snapshot/restore (Branch substrate)
     #
     # Part of the Sandbox contract (``docs/architecture.md``): the Branch
     # lifecycle composes container ⊃ environment-state ⊃ agent-session in

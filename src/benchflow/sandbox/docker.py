@@ -51,6 +51,17 @@ _DOCKER_BUILD_RETRYABLE_ERRORS = (
     re.compile(r"connection (?:timed out|reset by peer)", re.IGNORECASE),
 )
 
+_COMPOSE_UP_RETRY_DELAYS_SEC = (2.0, 5.0)
+# Daemon-side create/attach race seen on Docker 29.x: `compose up` prints
+# "Network ... Created" but the container create/start that follows fails with
+# "network <project>_default not found". Older daemons emit the same race
+# without the "failed to set up container networking" wrapper.
+_COMPOSE_UP_NETWORK_RACE_ERROR = re.compile(
+    r"error response from daemon: "
+    r"(?:failed to set up container networking: )?network \S+ not found",
+    re.IGNORECASE,
+)
+
 
 def _sanitize_docker_image_name(name: str) -> str:
     name = name.lower()
@@ -70,6 +81,10 @@ def _sanitize_docker_compose_project_name(name: str) -> str:
 
 def _is_retryable_docker_build_error(message: str) -> bool:
     return any(pattern.search(message) for pattern in _DOCKER_BUILD_RETRYABLE_ERRORS)
+
+
+def _is_compose_up_network_race_error(message: str) -> bool:
+    return bool(_COMPOSE_UP_NETWORK_RACE_ERROR.search(message))
 
 
 class DockerSandboxEnvVars(BaseModel):
@@ -362,6 +377,30 @@ class DockerSandbox(BaseSandbox):
                 )
                 await asyncio.sleep(delay)
 
+    async def _run_docker_compose_up(self) -> None:
+        max_attempts = len(_COMPOSE_UP_RETRY_DELAYS_SEC) + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await self._run_docker_compose_command(["up", "--detach", "--wait"])
+                return
+            except RuntimeError as exc:
+                if attempt == max_attempts or not _is_compose_up_network_race_error(
+                    str(exc)
+                ):
+                    raise
+
+                delay = _COMPOSE_UP_RETRY_DELAYS_SEC[attempt - 1]
+                self.logger.warning(
+                    "Retrying docker compose up for %s after network "
+                    "create/attach race (attempt %s/%s, retrying in %.1fs): %s",
+                    self.environment_name,
+                    attempt,
+                    max_attempts,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+
     async def start(self, force_build: bool) -> None:
         if self._mounts_json:
             self._mounts_compose_path = self._write_mounts_compose_file()
@@ -386,7 +425,7 @@ class DockerSandbox(BaseSandbox):
             with contextlib.suppress(RuntimeError):
                 await self._run_docker_compose_command(["down", "--remove-orphans"])
 
-            await self._run_docker_compose_command(["up", "--detach", "--wait"])
+            await self._run_docker_compose_up()
         finally:
             if build_sem is not None:
                 build_sem.release()
@@ -564,7 +603,7 @@ class DockerSandbox(BaseSandbox):
             check=True,
         )
 
-    # ── Container snapshot/restore (Branch substrate) ────────────────────
+    # Container snapshot/restore (Branch substrate)
     #
     # ``docker commit`` captures the ``main`` container's filesystem into a
     # local image; restore re-creates ``main`` from that image. Snapshots

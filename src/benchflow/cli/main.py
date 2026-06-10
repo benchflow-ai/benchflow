@@ -6,7 +6,7 @@ import logging
 import os
 from datetime import UTC
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 import typer
 from rich.console import Console
@@ -605,7 +605,6 @@ def skills_eval(
 
     console.print(table)
 
-    # GEPA export
     if export_gepa:
         gepa_dir = export_gepa_traces(
             result,
@@ -631,24 +630,45 @@ def tasks_init(
     no_pytest: Annotated[
         bool, typer.Option("--no-pytest", help="Skip pytest template")
     ] = False,
-    no_solution: Annotated[
-        bool, typer.Option("--no-solution", help="Skip solution template")
+    no_oracle: Annotated[
+        bool,
+        typer.Option(
+            "--no-oracle",
+            "--no-solution",
+            help="Skip oracle template",
+        ),
     ] = False,
+    task_format: Annotated[
+        str, typer.Option("--format", help="Task format: legacy or task-md")
+    ] = "task-md",
 ) -> None:
     """Scaffold a new benchmark task."""
     from benchflow._utils.task_authoring import init_task
 
     try:
         task_dir = init_task(
-            name, parent_dir=parent_dir, no_pytest=no_pytest, no_solution=no_solution
+            name,
+            parent_dir=parent_dir,
+            no_pytest=no_pytest,
+            no_oracle=no_oracle,
+            task_format=cast(Literal["legacy", "task-md"], task_format),
         )
         console.print(f"[green]Created:[/green] {task_dir}/")
-        console.print(
-            "  task.toml, instruction.md, environment/Dockerfile, tests/test.sh"
-        )
-        if not no_solution:
-            console.print("  solution/solve.sh")
-    except FileExistsError as e:
+        if task_format == "task-md":
+            console.print(
+                "  task.md, environment/Dockerfile, verifier/test.sh, "
+                "verifier/verifier.md, verifier/rubrics/"
+            )
+        else:
+            console.print(
+                "  task.toml, instruction.md, environment/Dockerfile, tests/test.sh"
+            )
+        if not no_oracle:
+            oracle_path = (
+                "solution/solve.sh" if task_format == "legacy" else "oracle/solve.sh"
+            )
+            console.print(f"  {oracle_path}")
+    except (FileExistsError, ValueError) as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
 
@@ -656,15 +676,66 @@ def tasks_init(
 @tasks_app.command("check")
 def tasks_check(
     task_dir: Annotated[Path, typer.Argument(help="Path to task directory")],
+    validation_level: Annotated[
+        Literal[
+            "schema",
+            "structural",
+            "runtime-capability",
+            "publication-grade",
+            "acceptance",
+            "acceptance-live",
+        ],
+        typer.Option(
+            "--level",
+            help=(
+                "Validation level: schema, structural, runtime-capability, "
+                "publication-grade, acceptance, or acceptance-live"
+            ),
+        ),
+    ] = "structural",
+    sandbox: Annotated[
+        str | None,
+        typer.Option(
+            "--sandbox",
+            help="Also validate parsed runtime semantics for docker, daytona, or modal",
+        ),
+    ] = None,
+    report_output: Annotated[
+        Path | None,
+        typer.Option(
+            "--report-output",
+            help=(
+                "Write the acceptance-live report to this host path instead "
+                "of the task-declared report path"
+            ),
+        ),
+    ] = None,
+    no_report_write: Annotated[
+        bool,
+        typer.Option(
+            "--no-report-write",
+            help=(
+                "Validate acceptance-live without writing the declared report "
+                "or its .sha256 sidecar (report-only dogfood; leaves the task "
+                "package unmodified). Takes precedence over --report-output."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Validate a task directory structure."""
     from rich.markup import escape
 
     from benchflow._utils.task_authoring import check_task
 
-    issues = check_task(task_dir)
+    issues = check_task(
+        task_dir,
+        sandbox_type=sandbox,
+        validation_level=validation_level,
+        acceptance_live_report_output=report_output,
+        acceptance_live_write_report=not no_report_write,
+    )
     if not issues:
-        console.print(f"[green]✓[/green] {task_dir.name} — valid")
+        console.print(f"[green]✓[/green] {task_dir.name} — valid ({validation_level})")
     else:
         console.print(f"[red]✗[/red] {task_dir.name} — {len(issues)} issue(s):")
         for issue in issues:
@@ -672,6 +743,145 @@ def tasks_check(
             # render verbatim instead of being parsed as styling (#379).
             console.print(f"  [yellow]→[/yellow] {escape(issue)}")
         raise typer.Exit(1)
+
+
+@tasks_app.command("migrate")
+def tasks_migrate(
+    task_dir: Annotated[Path, typer.Argument(help="Legacy task directory")],
+    overwrite: Annotated[
+        bool,
+        typer.Option("--overwrite", help="Replace an existing task.md"),
+    ] = False,
+    remove_legacy: Annotated[
+        bool,
+        typer.Option(
+            "--remove-legacy",
+            help=(
+                "Delete split files and promote tests/solution aliases after "
+                "task.md is verified"
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Convert task.toml + instruction.md into the unified task.md format."""
+    from benchflow._utils.task_authoring import migrate_task_to_task_md
+
+    try:
+        result = migrate_task_to_task_md(
+            task_dir,
+            overwrite=overwrite,
+            remove_legacy=remove_legacy,
+        )
+    except (FileExistsError, FileNotFoundError, NotADirectoryError, ValueError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    console.print(f"[green]Created:[/green] {result.task_md}")
+    if result.removed_legacy:
+        console.print("  removed task.toml and instruction.md")
+        for migrated_dir in result.migrated_legacy_dirs:
+            console.print(f"  promoted {migrated_dir}")
+    else:
+        console.print("  kept task.toml and instruction.md")
+
+
+@tasks_app.command("normalize")
+def tasks_normalize(
+    task_dir: Annotated[Path, typer.Argument(help="Task directory with task.md")],
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Write normalized task.md to this path instead of stdout",
+        ),
+    ] = None,
+    write: Annotated[
+        bool,
+        typer.Option(
+            "--write",
+            help="Replace task.md in place with the normalized canonical form",
+        ),
+    ] = False,
+) -> None:
+    """Expand minimal task.md authoring profiles into canonical task.md."""
+    from benchflow._utils.task_authoring import normalize_task_md
+
+    try:
+        result = normalize_task_md(task_dir, output_path=output, write=write)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    if result.output_path is None:
+        typer.echo(result.normalized_text, nl=False)
+    else:
+        console.print(f"[green]Normalized:[/green] {result.output_path}")
+
+
+@tasks_app.command("export")
+def tasks_export(
+    task_dir: Annotated[Path, typer.Argument(help="Task directory to export")],
+    output_dir: Annotated[
+        Path | None,
+        typer.Argument(
+            help="Destination split-layout directory (omit with --report-only)",
+        ),
+    ] = None,
+    target: Annotated[
+        str,
+        typer.Option("--target", help="Compatibility target: harbor or pier"),
+    ] = "harbor",
+    overwrite: Annotated[
+        bool,
+        typer.Option("--overwrite", help="Replace an existing export directory"),
+    ] = False,
+    report_only: Annotated[
+        bool,
+        typer.Option(
+            "--report-only",
+            help="Print the compatibility loss report without writing files",
+        ),
+    ] = False,
+) -> None:
+    """Export a task to a Harbor/Pier split layout with a loss report."""
+    from benchflow.task import (
+        build_compatibility_export_report,
+        export_task_to_split_layout,
+    )
+
+    if target not in {"harbor", "pier"}:
+        console.print("[red]target must be 'harbor' or 'pier'[/red]")
+        raise typer.Exit(1)
+
+    try:
+        if report_only:
+            report = build_compatibility_export_report(
+                task_dir,
+                target=cast(Literal["harbor", "pier"], target),
+            )
+            typer.echo(report.to_json(), nl=False)
+            return
+        if output_dir is None:
+            console.print(
+                "[red]Missing output_dir; pass one or use --report-only[/red]"
+            )
+            raise typer.Exit(1)
+        report = export_task_to_split_layout(
+            task_dir,
+            output_dir,
+            target=cast(Literal["harbor", "pier"], target),
+            overwrite=overwrite,
+        )
+    except (FileExistsError, FileNotFoundError, NotADirectoryError, ValueError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    console.print(f"[green]Exported:[/green] {output_dir}")
+    console.print(f"  target: {report.target}")
+    console.print(f"  status: {report.status}")
+    console.print(f"  losses: {len(report.losses)}")
+    console.print("  report: compatibility/export-report.json")
 
 
 compat_app = typer.Typer(help="Third-party framework compatibility checks.")
@@ -764,7 +974,7 @@ def cleanup(
     _cleanup_daytona_sandboxes(dry_run=dry_run, max_age_minutes=max_age_minutes)
 
 
-# ── Resource-verb subgroups (0.3 CLI) ────────────────────────────────────────
+# Resource-verb subgroups (0.3 CLI)
 
 agent_app = typer.Typer(help="Agent management commands.")
 app.add_typer(agent_app, name="agent")
@@ -1434,7 +1644,7 @@ app.add_typer(env_app, name="environment")
 def environment_create(
     task_dir: Annotated[
         Path,
-        typer.Argument(help="Task directory with task.toml + environment/Dockerfile"),
+        typer.Argument(help="Task directory with task.md or task.toml + Dockerfile"),
     ],
     sandbox: Annotated[
         str,

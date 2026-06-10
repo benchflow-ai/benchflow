@@ -67,9 +67,7 @@ def find_deliverables(directory: Path) -> dict[str, str]:
     return texts
 
 
-# ------------------------------------------------------------------
 # Format-specific readers
-# ------------------------------------------------------------------
 
 
 def _read_docx(path: Path) -> str:

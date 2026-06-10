@@ -41,9 +41,9 @@ class _FakeHostServer:
         self.stopped = True
 
 
-# --------------------------------------------------------------------------- #
+# #
 # Routing: native-protocol agents excluded; opencode hits a registered route   #
-# --------------------------------------------------------------------------- #
+# #
 
 
 @pytest.mark.parametrize(
@@ -90,9 +90,9 @@ def test_vllm_route_honors_runtime_supplied_base_url():
     assert route.litellm_params["model"] == "openai/Qwen/Qwen3-Coder"
 
 
-# --------------------------------------------------------------------------- #
+# #
 # Security: provider keys are isolated from the agent env                       #
-# --------------------------------------------------------------------------- #
+# #
 
 
 @pytest.mark.asyncio
@@ -127,9 +127,9 @@ async def test_agent_env_strips_raw_provider_secrets(monkeypatch):
     assert updated["LLM_BASE_URL"] == "http://127.0.0.1:4000/v1"
 
 
-# --------------------------------------------------------------------------- #
+# #
 # Networking: host proxy binds loopback locally, bridge IP for docker          #
-# --------------------------------------------------------------------------- #
+# #
 
 
 def test_host_bind_address_local_is_loopback():
@@ -164,9 +164,9 @@ def test_agent_endpoint_docker_bridge_ip_is_used_for_both():
     assert endpoint.local_base_url == "http://172.17.0.1:4000"
 
 
-# --------------------------------------------------------------------------- #
+# #
 # Robustness: deterministic callback-log flush wait (no fixed sleep)           #
-# --------------------------------------------------------------------------- #
+# #
 
 
 @pytest.mark.asyncio
@@ -204,9 +204,9 @@ async def test_await_log_stable_bails_at_deadline_while_growing():
     assert counter["v"] > 0
 
 
-# --------------------------------------------------------------------------- #
+# #
 # Sandbox orchestration: real _start_sandbox_litellm + SandboxLiteLLMProcess   #
-# --------------------------------------------------------------------------- #
+# #
 
 
 class _ExecResult:
@@ -368,9 +368,9 @@ async def test_sandbox_litellm_startup_failure_tears_down():
     assert any(call.strip().startswith("rm -rf") for call in sandbox.exec_calls)
 
 
-# --------------------------------------------------------------------------- #
+# #
 # Bedrock adaptive-thinking patch actually applies (no silent no-op)           #
-# --------------------------------------------------------------------------- #
+# #
 
 
 def test_bedrock_patch_recognizes_bedrock_opus_48_as_adaptive_thinking():
@@ -410,9 +410,9 @@ def test_bedrock_patch_flags_cost_map_when_entry_present():
         assert flagged, "bedrock 4.8+ cost entries should be flagged adaptive-thinking"
 
 
-# --------------------------------------------------------------------------- #
+# #
 # Embedded callback logger actually produces importable JSONL (no drift)       #
-# --------------------------------------------------------------------------- #
+# #
 
 
 @pytest.mark.asyncio
@@ -481,9 +481,9 @@ def test_gemini_usage_metadata_is_detected_as_provider_usage():
     assert usage["usage_source"] == "provider_response"
 
 
-# --------------------------------------------------------------------------- #
+# #
 # Trajectory.to_jsonl redaction (coverage lost when test_atif was deleted)     #
-# --------------------------------------------------------------------------- #
+# #
 
 
 def test_to_jsonl_redacts_provider_secrets():
@@ -517,9 +517,9 @@ def test_to_jsonl_redacts_provider_secrets():
     assert anthropic_key in trajectory.to_jsonl(redact_keys=False)
 
 
-# --------------------------------------------------------------------------- #
+# #
 # Cost: LiteLLM is the single source; custom prices injected per-route          #
-# --------------------------------------------------------------------------- #
+# #
 
 
 def test_custom_cost_per_token_substring_match(monkeypatch):

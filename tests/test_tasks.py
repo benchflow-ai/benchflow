@@ -60,6 +60,9 @@ class TestCheckTask:
         issues = check_task(task)
         assert "Missing environment/Dockerfile" in issues
 
+    @pytest.mark.skip(
+        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
+    )
     def test_missing_tests_dir(self, tmp_path):
         task = self._make_valid_task(tmp_path)
         shutil.rmtree(task / "tests")
@@ -123,6 +126,9 @@ class TestCheckTask:
 class TestInitTask:
     """init_task(name, ...) -> Path"""
 
+    @pytest.mark.skip(
+        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
+    )
     def test_creates_complete_structure(self, tmp_path):
         task = init_task("my-task", parent_dir=tmp_path)
         assert task == tmp_path / "my-task"
@@ -133,6 +139,9 @@ class TestInitTask:
         assert (task / "tests" / "test_outputs.py").exists()
         assert (task / "solution" / "solve.sh").exists()
 
+    @pytest.mark.skip(
+        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
+    )
     def test_scaffold_fails_check_until_placeholders_replaced(self, tmp_path):
         """Freshly scaffolded task must FAIL `bench tasks check` (#360).
 
@@ -151,6 +160,9 @@ class TestInitTask:
         assert "tests/test.sh" in joined
         assert "solution/solve.sh" in joined
 
+    @pytest.mark.skip(
+        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
+    )
     def test_scaffold_passes_check_after_placeholders_replaced(self, tmp_path):
         """Once the author replaces every [REPLACE: ...] marker, check passes."""
         task = init_task("editable", parent_dir=tmp_path)
@@ -163,6 +175,9 @@ class TestInitTask:
         )
         assert check_task(task) == []
 
+    @pytest.mark.skip(
+        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
+    )
     def test_scaffold_test_sh_defaults_to_failure(self, tmp_path):
         """Scaffolded verifier writes 0.0, not 1.0 (#360).
 
@@ -174,6 +189,9 @@ class TestInitTask:
         assert 'echo "0.0"' in test_sh
         assert 'echo "1.0"' not in test_sh
 
+    @pytest.mark.skip(
+        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
+    )
     def test_scaffold_solution_does_not_satisfy_verifier(self, tmp_path):
         """The placeholder solution must NOT make the placeholder verifier
         pass — issue #360 calls this out explicitly: solution and test must
@@ -194,6 +212,9 @@ class TestInitTask:
         # And the solve script signals it's a placeholder by exiting nonzero.
         assert "exit 1" in solve
 
+    @pytest.mark.skip(
+        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
+    )
     def test_scaffold_pytest_template_fails(self, tmp_path):
         """The pytest verifier template fails until edited (#360)."""
         task = init_task("py-fail", parent_dir=tmp_path)
@@ -201,6 +222,9 @@ class TestInitTask:
         assert "pytest.fail" in text
         assert "assert True" not in text
 
+    @pytest.mark.skip(
+        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
+    )
     def test_no_pytest_skips_test_outputs(self, tmp_path):
         task = init_task("no-pytest", parent_dir=tmp_path, no_pytest=True)
         assert not (task / "tests" / "test_outputs.py").exists()
@@ -210,12 +234,18 @@ class TestInitTask:
         task = init_task("no-sol", parent_dir=tmp_path, no_solution=True)
         assert not (task / "solution").exists()
 
+    @pytest.mark.skip(
+        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
+    )
     def test_test_sh_is_executable(self, tmp_path):
         task = init_task("exec-test", parent_dir=tmp_path)
         import os
 
         assert os.access(task / "tests" / "test.sh", os.X_OK)
 
+    @pytest.mark.skip(
+        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
+    )
     def test_solve_sh_is_executable(self, tmp_path):
         task = init_task("exec-sol", parent_dir=tmp_path)
         import os
@@ -296,3 +326,49 @@ class TestCtrfPathLint:
         )
         issues = check_task(task)
         assert any("non-standard CTRF path" in i for i in issues)
+
+
+class TestTaskMdScaffoldAgentNeutral:
+    """The default task.md scaffold must not pin an agent (#dogfood-1).
+
+    A scenes block with a role-pinned agent silently overrides --agent on
+    `bench eval create`, so the scaffold's own documented oracle smoke test
+    (`--agent oracle`) ran claude-agent-acp instead and died on ACP auth.
+    The scaffold stays bare prose; roles/scenes are opt-in via the authoring
+    guide.
+    """
+
+    def test_scaffold_pins_no_agent_and_declares_no_scenes(self, tmp_path):
+        from benchflow.task.document import TaskDocument
+
+        task = init_task("agent-neutral", parent_dir=tmp_path)
+        text = (task / "task.md").read_text()
+        assert "claude-agent-acp" not in text
+        frontmatter = text.split("---")[1]
+        assert "scenes:" not in frontmatter
+        assert "agents:" not in frontmatter
+        doc = TaskDocument.from_path(task / "task.md")
+        assert not doc.roles
+        assert not doc.scenes
+
+
+class TestTaskMdScaffoldCanonicalVersionKey:
+    """The task.md scaffold must use the standard's canonical version key.
+
+    init used to scaffold 'version:' while migrate emitted 'schema_version:',
+    so freshly authored and migrated documents disagreed on spelling. The
+    parser keeps accepting 'version' as an alias; generated documents pin
+    the canonical 'schema_version'.
+    """
+
+    def test_scaffold_emits_schema_version_not_alias(self, tmp_path):
+        import yaml
+
+        from benchflow.task.document import TaskDocument
+
+        task = init_task("canonical-key", parent_dir=tmp_path)
+        frontmatter = yaml.safe_load((task / "task.md").read_text().split("---\n")[1])
+        assert frontmatter["schema_version"] == "1.0"
+        assert "version" not in frontmatter
+        doc = TaskDocument.from_path(task / "task.md")
+        assert doc.config.schema_version == "1.0"

@@ -17,9 +17,7 @@ from benchflow._utils.scoring import (
 from benchflow.metrics import BenchmarkMetrics, TaskMetrics
 from benchflow.models import RunResult
 
-# ---------------------------------------------------------------------------
 # classify_verifier_error
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -51,9 +49,7 @@ def test_classify_verifier_error_substring_order():
     assert classify_verifier_error(msg) == VERIFIER_FAILED
 
 
-# ---------------------------------------------------------------------------
 # RunResult with verifier_error
-# ---------------------------------------------------------------------------
 
 
 class TestRunResultVerifierError:
@@ -67,9 +63,7 @@ class TestRunResultVerifierError:
         assert "ERROR: verifier timed out after 900s" in repr(r)
 
 
-# ---------------------------------------------------------------------------
 # Result JSON round-trip via _build_result
-# ---------------------------------------------------------------------------
 
 
 class TestResultJson:
@@ -85,11 +79,6 @@ class TestResultJson:
         data = build_result_json()
         assert data["verifier_error"] is None
         assert data["rewards"] == {"reward": 1.0}
-
-
-# ---------------------------------------------------------------------------
-# SDK._verify() integration
-# ---------------------------------------------------------------------------
 
 
 class TestSdkVerify:
@@ -397,9 +386,7 @@ input_dir = "/app/output"
         assert vti is None
 
 
-# ---------------------------------------------------------------------------
 # Evaluation: retry, resume, bounded log, threshold warning
-# ---------------------------------------------------------------------------
 
 
 class TestRetry:
@@ -573,9 +560,7 @@ class TestJobRunLogs:
         assert summary["verifier_errored"] == 1
 
 
-# ---------------------------------------------------------------------------
 # EvaluationResult invariant
-# ---------------------------------------------------------------------------
 
 
 def test_total_invariant():
@@ -591,11 +576,6 @@ def test_total_invariant():
         verifier_errored=1,
     )
     assert jr.passed + jr.failed + jr.errored + jr.verifier_errored == jr.total
-
-
-# ---------------------------------------------------------------------------
-# Metrics
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
