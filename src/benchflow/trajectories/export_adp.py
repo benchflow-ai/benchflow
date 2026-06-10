@@ -40,15 +40,16 @@ Mapping from BenchFlow ACP trajectory events (see
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.json_safe import dumps_finite
-from benchflow.trajectories.export_atif import content_blocks_to_text
+from benchflow.trajectories._export_common import (
+    ThoughtBuffer,
+    aggregate_rollout_jsonl,
+    content_blocks_to_text,
+)
 from benchflow.trajectories.types import redact_trajectory_text
-
-logger = logging.getLogger(__name__)
 
 ADP_SCHEMA_VERSION = "1.3.1"
 
@@ -73,7 +74,7 @@ def acp_events_to_adp_content(
     trajectory would otherwise drop them.
     """
     content: list[dict[str, Any]] = []
-    pending_thoughts: list[str] = []
+    thoughts = ThoughtBuffer()
     used_ids: set[str] = set()
     synth_count = 0
 
@@ -86,15 +87,8 @@ def acp_events_to_adp_content(
         used_ids.add(candidate)
         return candidate
 
-    def take_reasoning() -> str | None:
-        if not pending_thoughts:
-            return None
-        joined = "\n\n".join(pending_thoughts)
-        pending_thoughts.clear()
-        return joined
-
     def flush_thoughts() -> None:
-        reasoning = take_reasoning()
+        reasoning = thoughts.take()
         if reasoning:
             content.append(
                 {
@@ -128,12 +122,12 @@ def acp_events_to_adp_content(
         elif etype == "agent_thought":
             text = str(event.get("text") or "")
             if text:
-                pending_thoughts.append(text)
+                thoughts.push(text)
         elif etype == "agent_message":
             text = str(event.get("text") or "")
             if text:
                 action: dict[str, Any] = {"class_": "message_action", "content": text}
-                reasoning = take_reasoning()
+                reasoning = thoughts.take()
                 if reasoning:
                     action["reasoning_content"] = reasoning
                 content.append(action)
@@ -148,7 +142,7 @@ def acp_events_to_adp_content(
             title = event.get("title")
             if title:
                 action["description"] = str(title)
-            reasoning = take_reasoning()
+            reasoning = thoughts.take()
             if reasoning:
                 action["reasoning_content"] = reasoning
             content.append(action)
@@ -240,21 +234,8 @@ def write_job_adp_jsonl(job_dir: str | Path) -> Path | None:
     into one job-level dataset. Returns the artifact path, or ``None``
     when no rollouts have emitted records yet.
     """
-    job_path = Path(job_dir)
-    if not job_path.is_dir():
-        return None
-    rollout_files = sorted(job_path.glob(f"*/{ROLLOUT_ADP_RELPATH}"))
-    if not rollout_files:
-        return None
-    out = job_path / JOB_ADP_FILENAME
-    with out.open("w") as fout:
-        for src in rollout_files:
-            try:
-                text = src.read_text()
-            except OSError as e:
-                logger.warning("Skipping unreadable trainer artifact %s: %s", src, e)
-                continue
-            if not text.endswith("\n"):
-                text = text + "\n"
-            fout.write(redact_trajectory_text(text))
-    return out
+    return aggregate_rollout_jsonl(
+        job_dir,
+        rollout_relpath=ROLLOUT_ADP_RELPATH,
+        out_filename=JOB_ADP_FILENAME,
+    )

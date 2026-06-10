@@ -40,36 +40,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.json_safe import dumps_finite
+from benchflow.trajectories._export_common import ThoughtBuffer, content_blocks_to_text
 from benchflow.trajectories.types import redact_trajectory_text
 
 ATIF_SCHEMA_VERSION = "ATIF-v1.7"
 
 # Canonical artifact location, sibling of ``trainer/verifiers.jsonl``.
 ROLLOUT_ATIF_RELPATH = "trainer/atif.json"
-
-
-def content_blocks_to_text(content: Any) -> str:
-    """Render ACP tool-call content blocks to plain text.
-
-    Handles both the flat shape (``{"text": ...}`` / ``{"content": "..."}``)
-    and the nested ACP shape (``{"type": "content", "content": {"type":
-    "text", "text": ...}}``). Non-text blocks are skipped.
-    """
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        inner = item.get("content")
-        if isinstance(inner, dict):
-            inner = inner.get("text")
-        text = item.get("text") or inner
-        if text:
-            parts.append(str(text))
-    return "\n".join(parts)
 
 
 def acp_events_to_atif_steps(
@@ -85,20 +62,13 @@ def acp_events_to_atif_steps(
     a user step or the end of the trajectory would otherwise drop them.
     """
     steps: list[dict[str, Any]] = []
-    pending_thoughts: list[str] = []
-
-    def take_reasoning() -> str | None:
-        if not pending_thoughts:
-            return None
-        joined = "\n\n".join(pending_thoughts)
-        pending_thoughts.clear()
-        return joined
+    thoughts = ThoughtBuffer()
 
     def append_step(source: str, body: dict[str, Any]) -> None:
         steps.append({"step_id": len(steps) + 1, "source": source, **body})
 
     def flush_thoughts() -> None:
-        reasoning = take_reasoning()
+        reasoning = thoughts.take()
         if reasoning:
             append_step("agent", {"message": "", "reasoning_content": reasoning})
 
@@ -118,16 +88,19 @@ def acp_events_to_atif_steps(
         elif etype == "agent_thought":
             text = str(event.get("text") or "")
             if text:
-                pending_thoughts.append(text)
+                thoughts.push(text)
         elif etype == "agent_message":
             text = str(event.get("text") or "")
             if text:
                 body: dict[str, Any] = {"message": text}
-                reasoning = take_reasoning()
+                reasoning = thoughts.take()
                 if reasoning:
                     body["reasoning_content"] = reasoning
                 append_step("agent", body)
         elif etype == "tool_call":
+            # The fallback id needs no trajectory-wide dedupe: ATIF resolves
+            # source_call_id within the same step's tool_calls only (unlike
+            # ADP, whose claim_call_id must keep ids unique per trajectory).
             call_id = str(event.get("tool_call_id") or "") or f"call_{len(steps) + 1}"
             tool_call: dict[str, Any] = {
                 "tool_call_id": call_id,
@@ -140,7 +113,7 @@ def acp_events_to_atif_steps(
             if extra:
                 tool_call["extra"] = extra
             body = cast(dict[str, Any], {"message": "", "tool_calls": [tool_call]})
-            reasoning = take_reasoning()
+            reasoning = thoughts.take()
             if reasoning:
                 body["reasoning_content"] = reasoning
             result_text = content_blocks_to_text(event.get("content"))
@@ -235,20 +208,21 @@ def write_rollout_atif_json(
     an empty ATIF document would be schema-invalid, so no artifact is
     produced in that case.
     """
-    if not acp_events_to_atif_steps(trajectory, prompts):
+    try:
+        record = trajectory_to_atif_record(
+            session_id=session_id,
+            agent_name=agent_name,
+            events=trajectory,
+            prompts=prompts,
+            agent_version=agent_version,
+            model=model,
+            total_prompt_tokens=total_prompt_tokens,
+            total_completion_tokens=total_completion_tokens,
+            total_cached_tokens=total_cached_tokens,
+            total_cost_usd=total_cost_usd,
+        )
+    except ValueError:
         return None
-    record = trajectory_to_atif_record(
-        session_id=session_id,
-        agent_name=agent_name,
-        events=trajectory,
-        prompts=prompts,
-        agent_version=agent_version,
-        model=model,
-        total_prompt_tokens=total_prompt_tokens,
-        total_completion_tokens=total_completion_tokens,
-        total_cached_tokens=total_cached_tokens,
-        total_cost_usd=total_cost_usd,
-    )
     out = Path(rollout_dir) / ROLLOUT_ATIF_RELPATH
     out.parent.mkdir(parents=True, exist_ok=True)
     redacted = _record_to_redacted_json(record)
