@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, ClassVar
 
-# ── Diagnostic value objects ──────────────────────────────────────────────
+# Diagnostic value objects
 
 
 @dataclass
@@ -40,7 +40,7 @@ class Diagnostic:
     invalidation lines.
     """
 
-    # ── Class-level metadata (overridden by subclasses) ──
+    # Class-level metadata (overridden by subclasses)
     # Field name under which to_dict() lands in result.json.
     field: ClassVar[str] = ""
     # error_category (from _utils.scoring) that this diagnostic backs.
@@ -229,7 +229,7 @@ DIAGNOSTIC_BY_FIELD: dict[str, type[Diagnostic]] = {
 }
 
 
-# ── Diagnostic-carrying exceptions ────────────────────────────────────────
+# Diagnostic-carrying exceptions
 
 
 class IdleTimeoutError(TimeoutError):
@@ -265,7 +265,7 @@ class TransportClosedError(ConnectionError):
 # :class:`SandboxStartupDiagnostic` via its ``.diagnostic`` attribute.
 
 
-# ── Collector — replaces 4 parallel _*_info slots on Rollout ──────────────
+# Collector — replaces 4 parallel _*_info slots on Rollout
 
 
 class RolloutDiagnostics:
@@ -351,7 +351,7 @@ class RolloutDiagnostics:
         return d if isinstance(d, TransportClosedDiagnostic) else None
 
 
-# ── Summary / check_results helpers driven by the registry ────────────────
+# Summary / check_results helpers driven by the registry
 
 
 def summary_warning(diagnostic_cls: type[Diagnostic], count: int, total: int) -> str:
