@@ -1568,14 +1568,6 @@ verifier:
 environment:
   cpus: 1
   memory_mb: 2048
-agents:
-  roles:
-    solver:
-      agent: claude-agent-acp
-scenes:
-  - name: solve
-    turns:
-      - role: solver
 ---
 # {name}
 
@@ -1583,14 +1575,4 @@ scenes:
 
 [REPLACE: describe the goal, constraints, and expected outputs.
 Be specific - list files to produce, commands to run, or behaviours to verify.]
-
-## role:solver
-
-[REPLACE: optional solver-specific guidance. Delete this section if the task
-does not need per-role prompting.]
-
-## user-persona
-
-[REPLACE: optional NudgeBench-style simulated-user persona. Delete this section
-if the task does not need a user.]
 """)

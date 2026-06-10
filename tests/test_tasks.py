@@ -326,3 +326,27 @@ class TestCtrfPathLint:
         )
         issues = check_task(task)
         assert any("non-standard CTRF path" in i for i in issues)
+
+
+class TestTaskMdScaffoldAgentNeutral:
+    """The default task.md scaffold must not pin an agent (#dogfood-1).
+
+    A scenes block with a role-pinned agent silently overrides --agent on
+    `bench eval create`, so the scaffold's own documented oracle smoke test
+    (`--agent oracle`) ran claude-agent-acp instead and died on ACP auth.
+    The scaffold stays bare prose; roles/scenes are opt-in via the authoring
+    guide.
+    """
+
+    def test_scaffold_pins_no_agent_and_declares_no_scenes(self, tmp_path):
+        from benchflow.task.document import TaskDocument
+
+        task = init_task("agent-neutral", parent_dir=tmp_path)
+        text = (task / "task.md").read_text()
+        assert "claude-agent-acp" not in text
+        frontmatter = text.split("---")[1]
+        assert "scenes:" not in frontmatter
+        assert "agents:" not in frontmatter
+        doc = TaskDocument.from_path(task / "task.md")
+        assert not doc.roles
+        assert not doc.scenes
