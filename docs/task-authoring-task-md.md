@@ -30,9 +30,8 @@ runnable entrypoint. An `oracle/` directory is optional.
 
 ```markdown
 ---
-version: "1.0"
 agent:
-  timeout_sec: 300         # REQUIRED — fail-closed: omitting it fails validation
+  timeout_sec: 300         # strongly recommended — unset means no wall-clock cap
 verifier:
   timeout_sec: 120
 environment:
@@ -84,9 +83,9 @@ so typos fail at parse time instead of becoming silently-ignored config:
 | `oracle` | Oracle run policy: `env`, `timeout_sec` (import alias: `solution`) |
 | `source`, `artifacts`, `steps`, `multi_step_reward_strategy`, `reward` | Provenance and Harbor-compatible extras |
 
-`agent.timeout_sec` is **strictly required**: a task that omits it fails
-validation closed rather than running with no wall-clock cap. Every other
-config key has a default.
+`agent.timeout_sec` is **strongly recommended**: it is optional and defaults
+to unset, and a task that omits it runs the agent with no wall-clock cap
+unless the caller supplies a per-run timeout. Set it on every published task.
 
 Declaring both `oracle` and the legacy `solution` alias in one config is
 invalid and rejected; native tasks use `oracle`.

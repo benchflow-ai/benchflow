@@ -8,7 +8,7 @@ This page covers the Harbor-compatible split layout (`task.toml` + `instruction.
 ## Directory layout
 
 > [!NOTE]
-> BenchFlow will provide first-party support for Kaggle, Verifiers, and OpenReward Standard.
+> BenchFlow will provide first-party support for hosted competition platforms, Verifiers, and OpenReward Standard.
 
 You can create [Harbor-format tasks](https://www.harborframework.com/docs/tasks) in BenchFlow with a `task.toml` config file, separate `instruction.md`, sandbox assets under `environment/`, verifier files under `tests/`, and an optional `solution/` oracle.
 
