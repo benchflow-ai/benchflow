@@ -511,7 +511,7 @@ def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -
 async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
     """Auto-discover pytest plugins from root-owned system packages.
 
-    Runs a container-side script that enumerates pytest11 entry points and
+    Runs a sandbox-side script that enumerates pytest11 entry points and
     filters to only those whose dist-info is in a root-owned directory.
     Falls back to task verifier pytest_plugins declarations if discovery fails.
     Replaces the previous hand-curated whitelist mechanism.
@@ -523,7 +523,7 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
         if name and name not in plugins:
             plugins.append(name)
 
-    # Container-side auto-discovery
+    # Sandbox-side auto-discovery
     try:
         result = await env.exec(
             f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
@@ -544,7 +544,7 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
                 for p in discovered:
                     if isinstance(p, str):
                         add_plugin(p)
-            logger.info(f"Discovered {len(plugins)} pytest plugins from container")
+            logger.info(f"Discovered {len(plugins)} pytest plugins from sandbox")
     except Exception as e:
         logger.debug(
             "Pytest plugin discovery failed; using task verifier plugin "

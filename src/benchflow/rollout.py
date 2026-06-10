@@ -601,6 +601,8 @@ def _write_config(
     environment_manifest: EnvironmentManifest | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
+    from benchflow.agents.install import effective_install_timeout
+
     recorded_env = {
         k: v for k, v in agent_env.items() if _should_record_env_entry(k, v)
     }
@@ -615,6 +617,9 @@ def _write_config(
         "sandbox_user": sandbox_user,
         "sandbox_locked_paths": sandbox_locked_paths,
         "sandbox_setup_timeout": sandbox_setup_timeout,
+        "agent_install_timeout": effective_install_timeout(
+            agent, sandbox_setup_timeout
+        ),
         "context_root": str(context_root) if context_root else None,
         "timeout_sec": timeout,
         "concurrency": concurrency,
@@ -1103,14 +1108,24 @@ async def _run_oracle(
     return trajectory, "oracle"
 
 
-async def _publish_trajectory_for_verifier(env, trajectory: list[dict]) -> None:
-    """Make the captured ACP trajectory available inside /logs for verifiers."""
+async def _publish_trajectory_for_verifier(
+    env, trajectory: list[dict], agent_dir: Path
+) -> None:
+    """Make the captured ACP trajectory available inside /logs for verifiers.
+
+    Also writes the same payload to the host rollout ``agent/`` dir so the
+    artifact set matches across backends: Docker bind-mounts ``/logs/agent``
+    to the host agent dir, while remote sandboxes (Daytona, Modal) never
+    mirror the published file back.
+    """
     if not trajectory:
         return
+    payload = redact_acp_trajectory_jsonl(trajectory) + "\n"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "acp_trajectory.jsonl").write_text(payload)
     await env.exec("mkdir -p /logs/agent", user="root", timeout_sec=10)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
-        f.write(redact_acp_trajectory_jsonl(trajectory))
-        f.write("\n")
+        f.write(payload)
         tmp_path = f.name
     try:
         await env.upload_file(tmp_path, "/logs/agent/acp_trajectory.jsonl")
@@ -1873,7 +1888,10 @@ class Rollout:
 
         agent_name = cfg.primary_agent
         self._agent_cfg = await self._planes.install_agent(
-            self._env, agent_name, rollout_dir
+            self._env,
+            agent_name,
+            rollout_dir,
+            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
         )
         if cfg.sandbox_user:
             self._agent_cwd = await self._planes.setup_sandbox_user(
@@ -2338,7 +2356,9 @@ class Rollout:
                     f"Using scraped trajectory ({len(scraped)} events) — UNTRUSTED"
                 )
 
-        await _publish_trajectory_for_verifier(self._env, self._trajectory)
+        await _publish_trajectory_for_verifier(
+            self._env, self._trajectory, self._rollout_paths.agent_dir
+        )
 
         (
             self._rewards,
@@ -3082,7 +3102,10 @@ class Rollout:
         )
         if role_agent_differs:
             agent_cfg = await self._planes.install_agent(
-                self._env, role.agent, rollout_dir
+                self._env,
+                role.agent,
+                rollout_dir,
+                sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             )
         else:
             agent_cfg = getattr(self, "_agent_cfg", None)
