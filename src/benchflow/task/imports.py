@@ -34,10 +34,16 @@ class TaskConfigImportReport:
 
 @dataclass(frozen=True)
 class ImportedTaskConfig:
-    """A validated task config plus any preserved foreign extensions."""
+    """A validated task config plus any preserved foreign extensions.
+
+    ``declared`` is the parsed source mapping restricted to natively supported
+    keys (compat extras removed). It records what the author actually wrote,
+    so emitters can stay minimal instead of materializing model defaults.
+    """
 
     config: TaskConfig
     report: TaskConfigImportReport
+    declared: dict[str, Any]
 
 
 def import_task_config_toml(
@@ -69,6 +75,7 @@ def import_task_config_toml(
             value = _pop_path(sanitized, path)
             _set_path(extra, path, value)
 
+        declared = copy.deepcopy(sanitized)
         try:
             config = TaskConfig.model_validate(sanitized)
         except ValidationError as sanitized_exc:
@@ -83,11 +90,13 @@ def import_task_config_toml(
                 extra=extra,
                 extra_paths=paths,
             ),
+            declared=declared,
         )
 
     return ImportedTaskConfig(
         config=config,
         report=TaskConfigImportReport(source=source, status="strict"),
+        declared=raw,
     )
 
 

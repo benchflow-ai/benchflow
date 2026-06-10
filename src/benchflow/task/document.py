@@ -294,13 +294,25 @@ def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
 
 
 def render_task_md_from_legacy(task_dir: str | Path) -> str:
-    """Render a legacy ``task.toml`` + ``instruction.md`` task as ``task.md``."""
+    """Render a legacy ``task.toml`` + ``instruction.md`` task as ``task.md``.
+
+    The generated frontmatter stays minimal: only keys the source ``task.toml``
+    actually declared are emitted, under the canonical ``schema_version``
+    spelling, instead of materializing the full runtime config with defaults
+    the author never wrote.
+    """
 
     root = Path(task_dir)
     config_path = root / "task.toml"
     instruction_path = root / "instruction.md"
     imported = import_task_config_toml(config_path.read_text(), source="legacy")
-    frontmatter_data = tomllib.loads(imported.config.model_dump_toml())
+    declared = dict(imported.declared)
+    declared.pop("version", None)
+    declared.pop("schema_version", None)
+    frontmatter_data: dict[str, Any] = {
+        "schema_version": imported.config.schema_version,
+        **declared,
+    }
     if imported.report.extra:
         frontmatter_data["benchflow"] = {
             "compat": {

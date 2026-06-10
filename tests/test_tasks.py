@@ -350,3 +350,25 @@ class TestTaskMdScaffoldAgentNeutral:
         doc = TaskDocument.from_path(task / "task.md")
         assert not doc.roles
         assert not doc.scenes
+
+
+class TestTaskMdScaffoldCanonicalVersionKey:
+    """The task.md scaffold must use the standard's canonical version key.
+
+    init used to scaffold 'version:' while migrate emitted 'schema_version:',
+    so freshly authored and migrated documents disagreed on spelling. The
+    parser keeps accepting 'version' as an alias; generated documents pin
+    the canonical 'schema_version'.
+    """
+
+    def test_scaffold_emits_schema_version_not_alias(self, tmp_path):
+        import yaml
+
+        from benchflow.task.document import TaskDocument
+
+        task = init_task("canonical-key", parent_dir=tmp_path)
+        frontmatter = yaml.safe_load((task / "task.md").read_text().split("---\n")[1])
+        assert frontmatter["schema_version"] == "1.0"
+        assert "version" not in frontmatter
+        doc = TaskDocument.from_path(task / "task.md")
+        assert doc.config.schema_version == "1.0"
