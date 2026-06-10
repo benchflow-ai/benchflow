@@ -18,17 +18,15 @@ from pathlib import Path
 
 import pytest
 
-from benchflow.task.export import build_harbor_roundtrip_conformance_report
+from benchflow.task import export as task_export
+from benchflow.task.export import (
+    HarborRoundTripMismatch,
+    build_harbor_roundtrip_conformance_report,
+)
 
 SLICE_DIR = Path(__file__).parent / "fixtures" / "skillsbench_slice"
 MANIFEST = json.loads((SLICE_DIR / "manifest.json").read_text())
-VENDORED_TASKS = (
-    "flood-risk-analysis",
-    "lake-warming-attribution",
-    "r2r-mpc-control",
-    "suricata-custom-exfil",
-    "syzkaller-ppdev-syzlang",
-)
+TASK_NAMES = sorted(MANIFEST["tasks"])
 MAX_SLICE_BYTES = 300 * 1024
 
 
@@ -52,9 +50,9 @@ def test_manifest_pins_the_public_source_commit() -> None:
 
 def test_vendored_slice_matches_manifest_inventory_and_digests() -> None:
     on_disk = sorted(p.name for p in SLICE_DIR.iterdir() if p.is_dir())
-    assert on_disk == sorted(VENDORED_TASKS)
-    assert sorted(MANIFEST["tasks"]) == sorted(VENDORED_TASKS)
-    for task in VENDORED_TASKS:
+    assert TASK_NAMES
+    assert on_disk == TASK_NAMES
+    for task in TASK_NAMES:
         assert _file_digests(SLICE_DIR / task) == MANIFEST["tasks"][task], task
 
 
@@ -70,7 +68,7 @@ def test_vendored_slice_stays_small_and_text_only() -> None:
         path.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("task_name", VENDORED_TASKS)
+@pytest.mark.parametrize("task_name", TASK_NAMES)
 def test_harbor_roundtrip_is_lossless_for_vendored_task(task_name: str) -> None:
     report = build_harbor_roundtrip_conformance_report(SLICE_DIR / task_name)
 
@@ -82,3 +80,37 @@ def test_harbor_roundtrip_is_lossless_for_vendored_task(task_name: str) -> None:
     assert report.solution_file_map_equal is True
     assert report.tests_file_map_equal is True
     assert report.restored_extension_paths == []
+
+
+def test_harbor_roundtrip_reports_tampered_environment_as_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A silently disabled environment comparator must fail this test."""
+    real_export = task_export.export_task_to_split_layout
+
+    def tampering_export(task_dir, output_dir, **kwargs):
+        report = real_export(task_dir, output_dir, **kwargs)
+        victim = next(
+            path
+            for path in sorted((Path(output_dir) / "environment").rglob("*"))
+            if path.is_file()
+        )
+        victim.write_bytes(victim.read_bytes() + b"# drift\n")
+        return report
+
+    monkeypatch.setattr(task_export, "export_task_to_split_layout", tampering_export)
+
+    report = build_harbor_roundtrip_conformance_report(SLICE_DIR / TASK_NAMES[0])
+
+    assert report.status == "drift"
+    assert report.environment_file_map_equal is False
+    assert report.mismatches == [
+        HarborRoundTripMismatch(
+            path="environment/",
+            reason="environment file hashes differ after migrate/export",
+        )
+    ]
+    assert report.config_equal is True
+    assert report.prompt_equal is True
+    assert report.solution_file_map_equal is True
+    assert report.tests_file_map_equal is True
