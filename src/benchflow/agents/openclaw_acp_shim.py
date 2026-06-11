@@ -271,12 +271,33 @@ def setup_custom_provider(
 
 
 def _infer_provider_prefix(model: str) -> str:
-    """Infer the openclaw provider prefix from a bare model name."""
+    """Infer the openclaw provider prefix from a bare model name.
+
+    Resolution order:
+      1. The benchflow provider registry — any registered custom provider
+         (deepseek/glm/qwen-dashscope/...) that claims this bare model id via
+         its declared model_prefixes. This routes prefix-stripped ids like
+         "deepseek-v4-flash" to "deepseek" instead of defaulting to anthropic.
+      2. The native gemini/gpt heuristics (openclaw handles these directly).
+      3. Anthropic as the final fallback.
+    """
     m = model.lower()
+    # 1. Registry-driven bare-model routing (registry owns provider knowledge).
+    try:
+        from benchflow.agents.providers import find_provider_for_bare_model
+
+        result = find_provider_for_bare_model(model)
+        if result is not None:
+            return result[0]
+    except ImportError:
+        logger.debug("benchflow.agents.providers unavailable; using name heuristics")
+
+    # 2. Native providers openclaw recognizes without registry config.
     if "gemini" in m:
         return "google"
     if "gpt" in m or m.startswith(("o1", "o3")):
         return "openai"
+    # 3. Default.
     return "anthropic"
 
 
