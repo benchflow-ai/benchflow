@@ -330,6 +330,19 @@ def _check_partial_split_definition(paths: TaskPaths) -> list[str]:
     ]
 
 
+@dataclass(frozen=True)
+class ScaffoldResult:
+    """A freshly scaffolded task plus every file the scaffold wrote.
+
+    ``files`` are relative POSIX paths under ``task_dir``, sorted, derived from
+    what actually landed on disk — so a ``Created:`` summary can list the real
+    scaffold instead of a hand-maintained subset that drifts from it.
+    """
+
+    task_dir: Path
+    files: list[str]
+
+
 def init_task(
     name: str,
     parent_dir: Path = Path("tasks"),
@@ -339,7 +352,36 @@ def init_task(
     *,
     no_solution: bool | None = None,
 ) -> Path:
-    """Scaffold a new task directory with standard structure."""
+    """Scaffold a new task directory; return its path.
+
+    Thin wrapper over :func:`scaffold_task` for callers that only need the
+    directory. Use :func:`scaffold_task` when you also need the exact list of
+    files written (e.g. to print an accurate ``Created:`` summary).
+    """
+    return scaffold_task(
+        name,
+        parent_dir=parent_dir,
+        no_pytest=no_pytest,
+        no_oracle=no_oracle,
+        task_format=task_format,
+        no_solution=no_solution,
+    ).task_dir
+
+
+def scaffold_task(
+    name: str,
+    parent_dir: Path = Path("tasks"),
+    no_pytest: bool = False,
+    no_oracle: bool = False,
+    task_format: Literal["legacy", "task-md"] = "task-md",
+    *,
+    no_solution: bool | None = None,
+) -> ScaffoldResult:
+    """Scaffold a new task directory with standard structure.
+
+    Returns the directory together with every file written (see
+    :class:`ScaffoldResult`).
+    """
     if no_solution is not None:
         no_oracle = no_solution
     if task_format not in ("legacy", "task-md"):
@@ -435,7 +477,12 @@ exit 1
 """)
         (sol_dir / "solve.sh").chmod(0o755)
 
-    return task_dir
+    written = sorted(
+        path.relative_to(task_dir).as_posix()
+        for path in task_dir.rglob("*")
+        if path.is_file()
+    )
+    return ScaffoldResult(task_dir=task_dir, files=written)
 
 
 def migrate_task_to_task_md(

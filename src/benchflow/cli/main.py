@@ -627,31 +627,23 @@ def tasks_init(
     ] = "task-md",
 ) -> None:
     """Scaffold a new benchmark task."""
-    from benchflow._utils.task_authoring import init_task
+    from benchflow._utils.task_authoring import scaffold_task
 
     try:
-        task_dir = init_task(
+        result = scaffold_task(
             name,
             parent_dir=parent_dir,
             no_pytest=no_pytest,
             no_oracle=no_oracle,
             task_format=cast(Literal["legacy", "task-md"], task_format),
         )
-        console.print(f"[green]Created:[/green] {task_dir}/")
-        if task_format == "task-md":
-            console.print(
-                "  task.md, environment/Dockerfile, verifier/test.sh, "
-                "verifier/verifier.md, verifier/rubrics/"
-            )
-        else:
-            console.print(
-                "  task.toml, instruction.md, environment/Dockerfile, tests/test.sh"
-            )
-        if not no_oracle:
-            oracle_path = (
-                "solution/solve.sh" if task_format == "legacy" else "oracle/solve.sh"
-            )
-            console.print(f"  {oracle_path}")
+        console.print(f"[green]Created:[/green] {result.task_dir}/")
+        # List every file actually written, derived from the scaffold itself so
+        # the summary can never under-report (e.g. omit verifier/test_outputs.py
+        # or verifier/rubrics/verifier.toml, both of which `bench tasks check`
+        # validates).
+        for rel in result.files:
+            console.print(f"  {rel}")
     except (FileExistsError, ValueError) as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None

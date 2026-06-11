@@ -430,12 +430,17 @@ def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def extract_criterion_comparisons(data: Mapping[str, Any]) -> list[CriterionComparison]:
-    """Pull per-criterion verdict pairs from a parity_experiment.json mapping.
+def extract_criterion_comparisons(data: Any) -> list[CriterionComparison]:
+    """Pull per-criterion verdict pairs from a parity_experiment.json payload.
 
     Tolerant of the scaffold shape (``conversion_parity.tasks``) and the
-    CONVERT.md example shape (top-level ``tasks``).
+    CONVERT.md example shape (top-level ``tasks``). A non-mapping top level
+    (e.g. a JSON array of experiment summaries, as some adopted benchmarks
+    ship) is not a supported parity schema: return no comparisons so the
+    caller reports ``insufficient-evidence`` instead of crashing on ``.get``.
     """
+    if not isinstance(data, Mapping):
+        return []
     task_lists: list[Any] = []
     conv = data.get("conversion_parity")
     if isinstance(conv, Mapping):
@@ -482,12 +487,17 @@ def _reward_pair(result: Mapping[str, Any]) -> tuple[float | None, float | None,
     return legacy_f, converted_f, delta
 
 
-def extract_reward_samples(data: Mapping[str, Any]) -> list[RewardSample]:
+def extract_reward_samples(data: Any) -> list[RewardSample]:
     """Pull legacy-vs-converted reward deltas (the statistical parity layer).
 
     Tolerant of the scaffold shape (``reward_distribution_parity.samples``) and
-    the reference ``agent_parity.results`` (programbench/benchflow rewards).
+    the reference ``agent_parity.results`` (programbench/benchflow rewards). A
+    non-mapping top level is not a supported parity schema: return no samples
+    so the caller reports ``insufficient-evidence`` rather than crashing (and
+    never fabricates phantom zero-delta samples from summary records).
     """
+    if not isinstance(data, Mapping):
+        return []
     result_lists: list[Any] = []
     rdp = data.get("reward_distribution_parity")
     if isinstance(rdp, Mapping):
@@ -576,7 +586,7 @@ class VerifyReport:
 
 def build_verify_report(
     name: str,
-    data: Mapping[str, Any],
+    data: Any,
     *,
     tolerance: float = DEFAULT_REWARD_TOLERANCE,
 ) -> VerifyReport:
@@ -691,8 +701,13 @@ def render_divergence_issue(report: VerifyReport) -> str:
     return "\n".join(lines)
 
 
-def load_parity_experiment(benchmarks_root: Path, name: str) -> dict:
-    """Load an adopted benchmark's parity_experiment.json (fail-closed)."""
+def load_parity_experiment(benchmarks_root: Path, name: str) -> Any:
+    """Load an adopted benchmark's parity_experiment.json (fail-closed).
+
+    Returns whatever JSON the file holds — usually a mapping, but some adopted
+    benchmarks ship a top-level array. The parity extractors tolerate either,
+    so callers must not assume a mapping.
+    """
     name = validate_benchmark_name(name)
     benchmark_dir = Path(benchmarks_root) / name
     if not benchmark_dir.exists():
@@ -838,7 +853,7 @@ def register_agent_router(agent_app: typer.Typer) -> None:
         root = benchmarks_dir or default_benchmarks_dir()
         try:
             name = validate_benchmark_name(name)
-            data: dict = load_parity_experiment(root, name)
+            data: Any = load_parity_experiment(root, name)
         except InvalidBenchmarkName as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc
