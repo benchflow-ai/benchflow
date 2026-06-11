@@ -13,7 +13,8 @@
 
 BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Single-agent, multi-agent, and multi-round patterns share one Scene-based lifecycle.
 
-- **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, OpenClaw, Pi, or your own
+- **Run any benchmark** — three-layer routing runs supported frameworks natively, translates unknown formats and proves equivalence with a parity gate, or runs a bespoke harness as-is; every layer emits one scored-trajectory contract. See [Run any benchmark](./docs/running-any-benchmark.md)
+- **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, Pi, or your own
 - **Single + multi + progressive** — single-agent / multi-agent (coder + reviewer, simulated user) / multi-round with a Python `BaseUser` callback
 - **`task.md` tasks** — one file (YAML frontmatter + prompt body) replaces the split `task.toml` + `instruction.md` layout; author with `bench tasks init` / `check` / `migrate` / `export`
 - **Hosted environments** — run external PrimeIntellect / Verifiers environments through `--source-env`, without converting them to BenchFlow tasks
@@ -61,6 +62,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | If you want to… | Read |
 |------------------|------|
 | Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
+| Understand how BenchFlow runs *any* benchmark (the three-layer model) | [Run any benchmark](./docs/running-any-benchmark.md) |
 | Have an AI agent install + run the quickstart end to end | [Agent quickstart prompt](./docs/agent-quickstart.md) |
 | Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |

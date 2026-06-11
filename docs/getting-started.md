@@ -249,6 +249,7 @@ print(result.n_tool_calls)
 
 | If you want to… | Read |
 |------------------|------|
+| Understand how BenchFlow runs *any* benchmark (the three-layer model) | [Run any benchmark](./running-any-benchmark.md) |
 | Understand the model — Rollout, Scene, Role, Verifier | [Concepts](./concepts.md) |
 | Author a task | [Task authoring](./task-authoring.md) |
 | Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [Use cases](./use-cases.md) |
