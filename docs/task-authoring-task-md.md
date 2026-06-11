@@ -259,3 +259,21 @@ migrating, validate the result:
 bench tasks check tasks/my-task
 bench eval create --tasks-dir tasks/my-task --agent oracle --sandbox docker
 ```
+
+## Exporting to the split layout
+
+To go the other way — produce a Harbor/Pier-compatible split layout from a
+`task.md` package — use `bench tasks export`:
+
+```bash
+bench tasks export tasks/my-task out/my-task-split            # harbor target
+bench tasks export tasks/my-task --report-only                # loss report only
+```
+
+The export writes a compatibility loss report to
+`compatibility/export-report.json` so you can see what (if anything) the
+split layout cannot represent. Publication-grade validation requires
+`task.md` to be the only authoritative entrypoint, so keep exported split
+layouts in a separate output directory rather than beside `task.md`. See
+[CLI reference: bench tasks export](./reference/cli.md#bench-tasks-export)
+for all flags.

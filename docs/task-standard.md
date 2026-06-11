@@ -1,6 +1,6 @@
 # BenchFlow Task Package Standard
 
-Status: draft v0.6, 2026-06-08
+Status: v0.6 — shipped with BenchFlow 0.6.0 (2026-06-10)
 
 This document defines the direction for BenchFlow-native task packages. The
 short version: `task.md` is the native authoring entrypoint; `oracle/` and

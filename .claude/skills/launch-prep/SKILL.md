@@ -46,7 +46,7 @@ Run A → B → C → D serially (each skill spawns its own subagents; stacking
 them saturates the pool).
 
 **A — `/docs-review`** (full). Covers `README.md`, `docs/*.md`, `AGENTS.md`,
-and the light-touch `.dev-docs/` set. Captures drift vs. code, stale refs,
+and the light-touch `.claude/dev-docs/` set. Captures drift vs. code, stale refs,
 link integrity, registry alignment. Supersedes the old ad-hoc docs pass.
 
 **B — labs/ (ad-hoc subagent)** — `/docs-review` skips labs. Spawn one

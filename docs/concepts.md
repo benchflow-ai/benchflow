@@ -7,7 +7,7 @@ The mental model for benchflow. Read once, then refer back from the how-tos.
 
 | Primitive | What it is |
 |-----------|------------|
-| **Task** | A directory on disk: `instruction.md` for the agent + `tests/` for the verifier + (optional) `solution/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Authored once, evaluated many times. |
+| **Task** | A directory on disk: a `task.md` document (YAML frontmatter + prompt body) plus `environment/Dockerfile` for the sandbox, `verifier/` checks, and optional `oracle/` — or the legacy split layout (`task.toml` + `instruction.md` + `tests/` + `solution/`). Authored once, evaluated many times. |
 | **Agent** | A registered ACP-speaking program (Claude Code, Gemini CLI, OpenCode, etc.). Identified by name (`"gemini"`, `"opencode"`) plus an optional model ID. Use the `acpx/` prefix (e.g. `acpx/gemini`) to route through [ACPX](https://acpx.sh/), a headless ACP client with persistent sessions and crash recovery. |
 | **Environment** | The sandbox where the agent runs and the verifier checks the result. Docker locally, Daytona for cloud, Modal for serverless/GPU. Abstracted behind the `Sandbox` protocol — bring your own sandbox backend. |
 | **Verifier** | The test runner that scores the rollout. By default `pytest /tests/...` against the workspace the agent left behind. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier with a `rubric.toml`. Outputs `rewards: {reward: float}`. |
@@ -151,7 +151,8 @@ Trajectories are written to `<evaluations_dir>/<evaluation_name>/<rollout_name>/
 ## Where to go next
 
 - [Getting started](./getting-started.md) — install, run your first eval.
-- [Task authoring](./task-authoring.md) — write a task with `task.toml` + `tests/` + `solution/`.
+- [Task authoring (native task.md)](./task-authoring-task-md.md) — write a task as a single `task.md` document plus `environment/` and `verifier/`.
+- [Task authoring (legacy split layout)](./task-authoring.md) — write a task with `task.toml` + `tests/` + `solution/`.
 - [LLM-as-judge](./llm-judge.md) — use an LLM to score subjective tasks with `rubric.toml`.
 - [Progressive disclosure](./progressive-disclosure.md) — the User abstraction; SWE-bench Pro case study.
 - [Use cases](./use-cases.md) — multi-agent patterns (coder/reviewer, simulated user, BYOS, stateful environments).

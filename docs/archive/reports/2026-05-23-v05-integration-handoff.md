@@ -43,8 +43,8 @@ Important code areas:
 
 Important durable reports:
 
-- `docs/reports/2026-05-23-skillsbench-full94-baseline-audit.md`
-- `docs/reports/2026-05-23-skillsbench-3mode-subset-audit.md`
+- `docs/archive/reports/2026-05-23-skillsbench-full94-baseline-audit.md`
+- `docs/archive/reports/2026-05-23-skillsbench-3mode-subset-audit.md`
 
 ## Handoff Verdict
 
@@ -89,7 +89,7 @@ Parent/state changes already applied:
 Run root:
 
 ```text
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64
 ```
 
 Summary:
@@ -132,7 +132,7 @@ Invalid or release-blocking measurement classes:
 Durable audit:
 
 ```text
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/docs/reports/2026-05-23-skillsbench-full94-baseline-audit.md
+docs/archive/reports/2026-05-23-skillsbench-full94-baseline-audit.md
 ```
 
 ### 9-Task Three-Mode SkillsBench Subset
@@ -140,7 +140,7 @@ Durable audit:
 Run root:
 
 ```text
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset
 ```
 
 Modes:
@@ -163,7 +163,7 @@ solver skill `SKILL.md` was persisted outside creator scaffolding.
 Durable audit:
 
 ```text
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/docs/reports/2026-05-23-skillsbench-3mode-subset-audit.md
+docs/archive/reports/2026-05-23-skillsbench-3mode-subset-audit.md
 ```
 
 ## Actual Trajectory Paths
@@ -173,33 +173,33 @@ Durable audit:
 All 27 task-mode rows have ACP trajectory files:
 
 ```text
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/data-to-d3__534b3e2e/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/grid-dispatch-operator__10b5966a/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/jax-computing-basics__f523cdb4/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/jpg-ocr-stat__97d1d558/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/lake-warming-attribution__daffb946/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/python-scala-translation__ac3cca33/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/shock-analysis-supply__de031190/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/threejs-to-obj__1d751567/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/weighted-gdp-calc__5be9271b/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/data-to-d3__f4fd1d1c/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/grid-dispatch-operator__76c38257/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/jax-computing-basics__8c52e991/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/jpg-ocr-stat__6b929da7/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/lake-warming-attribution__128f6494/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/python-scala-translation__c3ff7696/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/shock-analysis-supply__57c6e480/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/threejs-to-obj__b68a7407/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/weighted-gdp-calc__879537c2/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/data-to-d3__b846c3e8/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/grid-dispatch-operator__8bb95f14/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/jax-computing-basics__2b9a9b0a/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/jpg-ocr-stat__310a5a20/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/lake-warming-attribution__39207e39/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/python-scala-translation__d766a9ce/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/shock-analysis-supply__d7e84e66/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/threejs-to-obj__f84eb30a/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/weighted-gdp-calc__971d72ce/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/data-to-d3__534b3e2e/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/grid-dispatch-operator__10b5966a/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/jax-computing-basics__f523cdb4/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/jpg-ocr-stat__97d1d558/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/lake-warming-attribution__daffb946/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/python-scala-translation__ac3cca33/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/shock-analysis-supply__de031190/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/threejs-to-obj__1d751567/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/baseline/2026-05-23__00-31-36/weighted-gdp-calc__5be9271b/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/data-to-d3__f4fd1d1c/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/grid-dispatch-operator__76c38257/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/jax-computing-basics__8c52e991/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/jpg-ocr-stat__6b929da7/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/lake-warming-attribution__128f6494/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/python-scala-translation__c3ff7696/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/shock-analysis-supply__57c6e480/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/threejs-to-obj__b68a7407/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/with-task-skills/2026-05-23__00-37-02/weighted-gdp-calc__879537c2/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/data-to-d3__b846c3e8/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/grid-dispatch-operator__8bb95f14/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/jax-computing-basics__2b9a9b0a/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/jpg-ocr-stat__310a5a20/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/lake-warming-attribution__39207e39/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/python-scala-translation__d766a9ce/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/shock-analysis-supply__d7e84e66/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/threejs-to-obj__f84eb30a/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260523-003051-skillsbench-3modes-gemini31-flash-lite-daytona-release-subset/self-gen/2026-05-23__00-44-33/weighted-gdp-calc__971d72ce/trajectory/acp_trajectory.jsonl
 ```
 
 ### Full-Run P0/P1 Trajectory Examples
@@ -208,16 +208,16 @@ The full 94-task audit report contains the complete rollout ledger. The most
 important repair targets are:
 
 ```text
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/video-filler-word-remover__4b9e74b6/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/quantum-numerical-simulation__3031c9cf/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/quantum-numerical-simulation__a43c7238/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/dynamic-object-aware-egomotion__c905a992/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/threejs-structure-parser__94aa9b66/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/threejs-to-obj__fd7de03b/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/simpo-code-reproduction__82e67221/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/court-form-filling__4d161ed7/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/shock-analysis-supply__d95da6be/trajectory/acp_trajectory.jsonl
-/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/video-tutorial-indexer__7fe67e9d/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/video-filler-word-remover__4b9e74b6/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/quantum-numerical-simulation__3031c9cf/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/quantum-numerical-simulation__a43c7238/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/dynamic-object-aware-egomotion__c905a992/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/threejs-structure-parser__94aa9b66/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/threejs-to-obj__fd7de03b/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/simpo-code-reproduction__82e67221/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/court-form-filling__4d161ed7/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/shock-analysis-supply__d95da6be/trajectory/acp_trajectory.jsonl
+jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/2026-05-22__16-54-22/video-tutorial-indexer__7fe67e9d/trajectory/acp_trajectory.jsonl
 ```
 
 ## How To Fix All Previous-Run Issues

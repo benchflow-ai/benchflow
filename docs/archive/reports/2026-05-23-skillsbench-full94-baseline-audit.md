@@ -6,8 +6,8 @@ This is a durable per-task audit of the full SkillsBench baseline run. It was pr
 
 ## Scope
 
-- Run root: `/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64`
-- Summary: `/Users/lixiangyi/.codex/worktrees/v05-integration-merge-20260522114632/jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/summary.json`
+- Run root: `jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64`
+- Summary: `jobs/e2e/20260522-165420-skillsbench-all-gemini31-flash-lite-daytona-c64/summary.json`
 - Benchmark source: `benchflow-ai/skillsbench@main`
 - Resolved source SHA in artifacts: `20149520474cfc8d7eb3c8000ec403d10145a9fd`
 - Current `main` SHA verified during audit: `20149520474cfc8d7eb3c8000ec403d10145a9fd`
