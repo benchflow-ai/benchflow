@@ -364,9 +364,7 @@ def test_build_rollout_result_emits_atif_and_adp(tmp_path):
     adp = json.loads(adp_line)
     assert adp["id"] == "archive-alice__r1"
     assert adp["details"]["task_id"] == "archive-alice"
-    action_rewards = [
-        item["reward"] for item in adp["content"] if "reward" in item
-    ]
+    action_rewards = [item["reward"] for item in adp["content"] if "reward" in item]
     assert action_rewards == [0.45], (
         "terminal reward must attach to the final action per ADP convention"
     )

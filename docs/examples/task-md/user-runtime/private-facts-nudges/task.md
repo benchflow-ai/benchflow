@@ -18,7 +18,7 @@ environment:
 agents:
   roles:
     support_solver:
-      agent: codex-acp
+      agent: claude-agent-acp
       capabilities: [tool-use, file-write, user-dialogue]
 scenes:
   - name: triage

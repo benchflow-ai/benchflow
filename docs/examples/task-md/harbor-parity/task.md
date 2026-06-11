@@ -75,12 +75,12 @@ steps:
 agents:
   roles:
     solver:
-      agent: codex
+      agent: claude-agent-acp
 scenes:
   - name: solve
     roles: [solver]
 user:
-  model: gemini-2.5-flash
+  model: scripted
 ---
 
 ## prompt

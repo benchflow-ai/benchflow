@@ -11,6 +11,7 @@
         "group": "Start here",
         "pages": [
           "docs/getting-started",
+          "docs/agent-quickstart",
           "docs/concepts",
           "docs/task-standard",
           "docs/task-standard-roadmap"
@@ -27,7 +28,9 @@
           "docs/progressive-disclosure",
           "docs/skill-eval",
           "docs/llm-judge",
-          "docs/sandbox-hardening"
+          "docs/sandbox-hardening",
+          "docs/architecture",
+          "docs/environment-plane"
         ]
       },
       {

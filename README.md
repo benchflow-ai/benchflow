@@ -23,7 +23,7 @@ BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Sing
 
 ## Install
 
-BenchFlow's current public release is `0.5.2`:
+BenchFlow's current public release is `0.6.0`:
 
 ```bash
 pip install --upgrade benchflow
@@ -32,10 +32,10 @@ pip install --upgrade benchflow
 For a `uv`-managed CLI install or upgrade of the public release:
 
 ```bash
-uv tool install --prerelease allow --upgrade 'benchflow==0.5.2'
+uv tool install --prerelease allow --upgrade 'benchflow==0.6.0'
 ```
 
-Use the exact `benchflow==0.5.2` pin for the public CLI. The
+Use the exact `benchflow==0.6.0` pin for the public CLI. The
 `--prerelease allow` flag is currently needed for BenchFlow's pinned LiteLLM
 release-candidate dependency; the exact BenchFlow pin keeps you off internal
 preview builds.
@@ -47,7 +47,7 @@ the exact public pin:
 uv tool install --prerelease allow --upgrade benchflow
 ```
 
-That installs the latest internal preview, such as `0.5.3.dev<N>`. If either
+That installs the latest internal preview, such as `0.6.1.dev<N>`. If either
 command reports `Executables already exist: bench, benchflow`, the machine has
 old entrypoints from a previous install; rerun the same command with `--force`
 to let `uv` replace them.
@@ -56,11 +56,12 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY
 
 ## Documentation
 
-Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/concepts.md) for the mental model. Then by goal:
+Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/concepts.md) for the mental model. Prefer to have an AI coding agent run the whole quickstart for you? Paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code, Codex CLI, or Gemini CLI. Then by goal:
 
 | If you want to… | Read |
 |------------------|------|
 | Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
+| Have an AI agent install + run the quickstart end to end | [Agent quickstart prompt](./docs/agent-quickstart.md) |
 | Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |
 | Author a task in the native `task.md` format | [Native task.md authoring](./docs/task-authoring-task-md.md) |

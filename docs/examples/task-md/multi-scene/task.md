@@ -1,5 +1,5 @@
 ---
-version: "1.0"
+schema_version: "1.3"
 metadata:
   author_name: benchflow
   difficulty: medium
@@ -16,16 +16,12 @@ agents:
   roles:
     planner:
       agent: claude-agent-acp
-      model: claude-sonnet-4-6
       capabilities: [tool-use]
     executor:
-      agent: codex-acp
-      model: gpt-5.5
-      reasoning_effort: high
+      agent: claude-agent-acp
       capabilities: [tool-use, code-edit]
     reviewer:
       agent: claude-agent-acp
-      model: claude-sonnet-4-6
       capabilities: [tool-use, review]
 scenes:
   - name: plan

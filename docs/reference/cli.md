@@ -98,11 +98,16 @@ bench eval create \
 | `--source-env-sampling-arg` | — | Verifiers sampling argument as `KEY=VALUE`; repeatable (for example `reasoning_effort=minimal`) |
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
+| `--reasoning-effort` | — | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) |
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |
 | `--environment-manifest` | — | Path to an Environment-plane manifest (`environment.toml`); applied to every rollout in the batch |
 | `--prompt` | `instruction.md` | Prompt to send to the agent; repeatable for multi-prompt runs |
 | `--concurrency` | `4` | Max concurrent tasks (batch mode only) |
+| `--build-concurrency` | `--concurrency` | Max concurrent docker image builds; set lower (e.g. `8`) when `--concurrency` is high to avoid overwhelming the docker daemon |
+| `--worker-concurrency` | — | Run batch eval through isolated worker subprocesses, each with at most this many concurrent tasks; `--concurrency` remains the aggregate target |
+| `--worker-retries` | `1` | Retry a crashed worker shard this many times, resuming its jobs dir |
+| `--worker-start-stagger-sec` | `1.0` | Seconds to stagger worker starts to avoid Daytona connection storms |
 | `--agent-idle-timeout` | (built-in default) | Abort ACP prompts after this many idle seconds; `0` disables idle detection |
 | `--jobs-dir` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
@@ -177,11 +182,16 @@ Scaffold a new benchmark task.
 ```bash
 bench tasks init my-new-task
 bench tasks init my-new-task --dir tasks/
+bench tasks init my-new-task --format legacy
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `task-md` | Task format: `task-md` (native single-document) or `legacy` (split `task.toml` + `instruction.md` layout) |
 
 ### bench tasks check
 
-Validate a task directory (Dockerfile, instruction.md, tests/).
+Validate a task directory (`task.md` or legacy `task.toml` + `instruction.md`, `environment/Dockerfile`, `verifier/` or legacy `tests/`).
 
 ```bash
 bench tasks check tasks/my-task
@@ -226,6 +236,27 @@ bench tasks normalize tasks/my-task -o normalized-task.md
 | `--output`, `-o` | — | Write normalized task.md to this path instead of stdout |
 | `--write` | `false` | Replace task.md in place with the normalized canonical form |
 
+### bench tasks export
+
+Export a `task.md` task to a Harbor/Pier-compatible split layout, with a
+compatibility loss report written to `compatibility/export-report.json` in
+the export directory.
+
+```bash
+bench tasks export tasks/my-task out/my-task-split
+bench tasks export tasks/my-task --report-only
+bench tasks export tasks/my-task out/my-task-split --target pier --overwrite
+```
+
+Arguments: `TASK_DIR` (task directory to export) and optional `OUTPUT_DIR`
+(destination split-layout directory; may be omitted with `--report-only`).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target` | `harbor` | Compatibility target: `harbor` or `pier` |
+| `--overwrite` | `false` | Replace an existing export directory |
+| `--report-only` | `false` | Print the compatibility loss report without writing files |
+
 ### bench tasks generate
 
 Generate benchmark task directories from real agent traces.
@@ -251,6 +282,7 @@ bench tasks generate --from-hf opentraces-test --limit 50
 | `--min-steps` | `2` | Minimum steps per trace |
 | `--outcome` | — | Filter by outcome: success, failure, unknown |
 | `--author` | `benchflow-traces` | Author name for generated task metadata |
+| `--task-format` | `task-md` | Generated task package format: `task-md` or `legacy` |
 | `--dry-run` | `false` | Preview traces without generating tasks |
 
 ### bench tasks list-sources
@@ -397,5 +429,29 @@ bench continue path/to/original/run-folder --tasks-dir path/to/tasks
 
 Key options: `--model` (override the live-continuation model; defaults to the
 original run's model), `--timeout`, `--output`, `--require-timeout`,
-`--strict-divergence`, and `--replay-only` (rebuild via replay and stop at the
-cut-point — no live model or API key needed).
+`--strict-divergence`, `--replay-only` (rebuild via replay and stop at the
+cut-point — no live model or API key needed), and `--proxy-mode` (replay
+proxy placement: `auto`, `host`, or `sandbox`; default `auto` uses
+sandbox-local replay for Daytona/Modal and host replay for Docker).
+
+### bench continue-batch
+
+Continue all timed-out OpenHands runs found under a directory tree. Discovers
+run folders (`config.json` + `trajectory/llm_trajectory.jsonl`) recursively,
+continues each, and prints a JSON batch summary (exits 1 if any continuation
+failed).
+
+```bash
+bench continue-batch path/to/jobs-root --tasks-dir path/to/tasks
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--tasks-dir` | — | Directory holding task sources; required unless the recorded task path exists |
+| `--model` | original run's model | Override the live-continuation model |
+| `--timeout` | — | Wall-clock budget per continuation |
+| `--output` | — | Output jobs dir for continued runs |
+| `--concurrency` | `100` | Maximum number of continuation runs in flight |
+| `--limit` | — | Limit discovered timeout folders |
+| `--strict-divergence` | `false` | Abort a run if replay leaves the original rails |
+| `--proxy-mode` | `auto` | Replay proxy placement: `auto`, `host`, or `sandbox` |

@@ -85,4 +85,4 @@ python labs/reward-hack-matrix/run_matrix.py
 
 ## See also
 
-- [`.dev-docs/harden-sandbox.md`](../.dev-docs/harden-sandbox.md) — full seven-pattern BenchJack threat model and hardening audit
+- [`harden-sandbox.md`](./harden-sandbox.md) — full seven-pattern BenchJack threat model and hardening audit
