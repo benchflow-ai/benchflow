@@ -144,10 +144,10 @@ See [Native task.md authoring](./docs/task-authoring-task-md.md) and the
 
 ## Research artifacts
 
-Two runnable labs validate the security story:
+Two runnable labs validate the security story (historical, 0.2.x-era — archived under [`labs/archive/`](./labs/archive/)):
 
-- [`labs/benchjack-sandbox-hardening/`](./labs/benchjack-sandbox-hardening/) — end-to-end demo that 0.2.1+ blocks three [BenchJack](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/) exploits that flip 0.2.0's reward from 0.0 to 1.0.
-- [`labs/reward-hack-matrix/`](./labs/reward-hack-matrix/) — full reward-hack sweep across real benchmarks comparing 0.2.0 vs 0.2.2.
+- [`labs/archive/benchjack-sandbox-hardening/`](./labs/archive/benchjack-sandbox-hardening/) — end-to-end demo that 0.2.1+ blocks three [BenchJack](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/) exploits that flip 0.2.0's reward from 0.0 to 1.0.
+- [`labs/archive/reward-hack-matrix/`](./labs/archive/reward-hack-matrix/) — full reward-hack sweep across real benchmarks comparing 0.2.0 vs 0.2.2.
 
 ## Audience
 

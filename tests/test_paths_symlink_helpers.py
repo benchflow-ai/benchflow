@@ -4,7 +4,6 @@ These cover the primitives (`is_safe_regular_file`, `iter_safe_children`,
 `iter_safe_tree`, `ignore_symlinks`) added for PR-B's symlink-defence work.
 The higher-level call sites have their own regression files:
 
-* ``test_dashboard_symlink_ingestion.py``  (#390, #416)
 * ``test_judge_symlink_ingestion.py``      (#404)
 * ``test_sandbox_upload_symlink.py``       (#411)
 """

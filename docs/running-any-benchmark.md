@@ -231,8 +231,8 @@ docstring), with `source.type="hosted_env"` / `trajectory_source="hosted_env"`
 marking the lineage.
 
 Because the contract is the same regardless of which layer produced it, one
-ingestion path serves every benchmark: dashboards, release checks, and trainers
-read the same files whether the run came from a native adapter, a parity-proven
+ingestion path serves every benchmark: release checks, trainers, and downstream
+reporting tools read the same files whether the run came from a native adapter, a parity-proven
 translation, or a bespoke harness.
 
 ---
