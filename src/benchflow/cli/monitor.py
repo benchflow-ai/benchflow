@@ -54,7 +54,9 @@ def register_monitor(app: typer.Typer) -> None:
         ],
         rubric: Annotated[
             Path | None,
-            typer.Option("--rubric", help="Rubric/verifier definition to score against."),
+            typer.Option(
+                "--rubric", help="Rubric/verifier definition to score against."
+            ),
         ] = None,
         jobs_dir: MonitorJobsDirOption = "jobs/monitor",
         run_name: Annotated[
@@ -82,7 +84,9 @@ def register_monitor(app: typer.Typer) -> None:
     def monitor_watch(
         source: Annotated[
             str,
-            typer.Argument(help="Live event source (webhook, polling endpoint, queue)."),
+            typer.Argument(
+                help="Live event source (webhook, polling endpoint, queue)."
+            ),
         ],
         jobs_dir: MonitorJobsDirOption = "jobs/monitor",
     ) -> None:

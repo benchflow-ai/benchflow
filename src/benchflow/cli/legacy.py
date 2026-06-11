@@ -70,7 +70,9 @@ def register_legacy(app: typer.Typer) -> None:
         jobs_dir: JobsDirOption = "jobs",
         skills_dir: Annotated[
             Path | None,
-            typer.Option("--skills-dir", help="Skills directory to deploy into sandbox"),
+            typer.Option(
+                "--skills-dir", help="Skills directory to deploy into sandbox"
+            ),
         ] = None,
         skill_mode: SkillModeOption = SKILL_MODE_NO_SKILL,
     ) -> None:
