@@ -50,8 +50,11 @@ latest 0.6.0 release-candidate WHEEL from the GitHub prerelease page instead:
 open https://github.com/benchflow-ai/benchflow/releases, pick the newest
 `0.6.0-rc.*` prerelease, and install its `.whl` asset directly, e.g.
     uv tool install --prerelease allow \
-      'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.2/benchflow-0.6.0rc2-py3-none-any.whl'
-(The URL above pins rc.2; substitute whatever the newest `0.6.0-rc.*` tag is.)
+      'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.3/benchflow-0.6.0rc3-py3-none-any.whl'
+(The URL above pins rc.3 — the newest at time of writing. If a later
+`0.6.0-rc.*` prerelease exists on the releases page, use that tag/filename
+instead; any `0.6.0-rc.*` is a valid full-0.6 build. Confirm with
+`bench --version`.)
 Once 0.6.0 ships to PyPI, the `uv tool install --prerelease allow
 'benchflow==0.6.0'` command above is the one to use.
 The `--prerelease allow` flag is REQUIRED: benchflow pins a litellm release
@@ -183,9 +186,11 @@ verifier/verifier.md, verifier/rubrics/, and oracle/solve.sh. The scaffold
 deliberately fails until edited — test.sh writes reward 0.0,
 test_outputs.py contains a failing placeholder test, and oracle/solve.sh
 exits 1 — so an unedited task can never pass by accident. With the user:
-replace the prompt placeholder in task.md with a small concrete goal (e.g.
-"create hello.txt containing 'hello benchflow'"); make verifier/test.sh
-check exactly that and write 1.0 to /logs/verifier/reward.txt on success;
+replace the prompt placeholder in task.md with a small concrete goal — use
+an ABSOLUTE path so the oracle and verifier agree on location (the agent
+workspace is `/app`), e.g. "create `/app/hello.txt` containing
+'hello benchflow'"; make verifier/test.sh check exactly that (read
+`/app/hello.txt`) and write 1.0 to /logs/verifier/reward.txt on success;
 replace the placeholder assertion in verifier/test_outputs.py (or delete
 that file); replace the `[REPLACE: ...]` placeholders in the three verifier
 description files the scaffold also writes — verifier/verifier.md,
