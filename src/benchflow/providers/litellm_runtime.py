@@ -27,6 +27,12 @@ import yaml
 from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
+from benchflow.providers.litellm_bedrock_preflight import (
+    BEDROCK_PATCH_PREFLIGHT_SOURCE,
+    preflight_host_bedrock_patch,
+    preflight_sandbox_bedrock_patch,
+    route_requires_bedrock_patch,
+)
 from benchflow.providers.litellm_config import (
     LITELLM_MASTER_KEY_ENV,
     LITELLM_MODEL_ALIAS_ENV,
@@ -49,44 +55,6 @@ LITELLM_VERSION_SPEC = "litellm[proxy]==1.88.0rc1"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
-
-# Behavioral preflight for the Bedrock Claude 4.8+ adaptive-thinking patch
-# (#602). Runs in a fresh interpreter with the SAME env/PYTHONPATH as the
-# proxy, so ``site`` loads the runtime dir's sitecustomize exactly like the
-# proxy process does. It deliberately imports only litellm internals — never
-# the patch module itself, which would apply the patches in-process and mask
-# a sitecustomize/PYTHONPATH load failure. Exit 0 = patch active.
-_BEDROCK_PATCH_PREFLIGHT_SOURCE = """\
-import sys
-
-# Probe with a VERSIONED Bedrock inference-profile ID: stock litellm 1.88.0rc1
-# resolves the bare alias ("us.anthropic.claude-opus-4-8") through its cost
-# map, so only the versioned form discriminates patched from stock (#602).
-PROBE = "us.anthropic.claude-opus-4-8-20251101-v1:0"
-
-failures = []
-try:
-    from litellm.llms.anthropic.chat.transformation import AnthropicConfig
-
-    if not AnthropicConfig._is_adaptive_thinking_model(PROBE):
-        failures.append(
-            "adaptive-thinking gate inactive: "
-            f"_is_adaptive_thinking_model({PROBE!r}) is False"
-        )
-except Exception as exc:  # noqa: BLE001 - report any import/shape drift
-    failures.append(f"anthropic transform unavailable: {exc}")
-try:
-    from litellm.llms.bedrock.chat.converse_transformation import AmazonConverseConfig
-
-    handler = AmazonConverseConfig._handle_reasoning_effort_parameter
-    if not getattr(handler, "__benchflow_bedrock_patch__", False):
-        failures.append("reasoning-effort override inactive")
-except Exception as exc:  # noqa: BLE001 - report any import/shape drift
-    failures.append(f"bedrock converse transform unavailable: {exc}")
-if failures:
-    print("; ".join(failures))
-    sys.exit(1)
-"""
 
 # Agents that speak a provider-native wire protocol the LiteLLM proxy does not
 # expose on its OpenAI/Anthropic surfaces. Routing them through the proxy would
@@ -438,84 +406,6 @@ def _write_runtime_files(
     return config_path, callback_path, patch_path
 
 
-def _route_requires_bedrock_patch(route: LiteLLMRoute) -> bool:
-    """True when this resolved route depends on the Bedrock 4.8+ patch (#602).
-
-    Bedrock adaptive-thinking classification belongs to route resolution. The
-    runtime only checks the resolved route contract so the model-matching rules
-    stay in one layer.
-    """
-    return (
-        route.provider_name == "aws-bedrock"
-        and "reasoning_effort" in route.litellm_params
-    )
-
-
-def _host_python_for_litellm(litellm_executable: str) -> str:
-    """Interpreter that runs the host LiteLLM proxy (for the patch preflight)."""
-    sibling = Path(litellm_executable).with_name("python")
-    if sibling.exists():
-        return str(sibling)
-    return sys.executable
-
-
-def _preflight_host_bedrock_patch(
-    *,
-    env: dict[str, str],
-    litellm_executable: str,
-) -> None:
-    """Fail closed if the Bedrock 4.8+ patch is not active for the host proxy.
-
-    Mirrors the proxy's exact load mechanism: a fresh interpreter started with
-    the proxy's own env (whose PYTHONPATH includes the runtime dir) must pick
-    up sitecustomize → patch module → patched litellm internals. A broken shim
-    otherwise surfaces only mid-task as a Bedrock 400/ACP -32603 after burning
-    a long real run (#602).
-    """
-    result = subprocess.run(
-        [
-            _host_python_for_litellm(litellm_executable),
-            "-c",
-            _BEDROCK_PATCH_PREFLIGHT_SOURCE,
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if result.returncode != 0:
-        detail = (result.stdout or "").strip() or (result.stderr or "").strip()
-        raise RuntimeError(
-            "Bedrock Claude 4.8+ adaptive-thinking patch is NOT active in the "
-            f"host LiteLLM runtime: {detail[:2000]}. Failing closed before agent "
-            "launch (#602) — a silent fallback would send the legacy thinking "
-            "shape Bedrock rejects."
-        )
-
-
-async def _preflight_sandbox_bedrock_patch(
-    sandbox: Any,
-    *,
-    python: str,
-    runtime_dir: str,
-    preflight_path: str,
-) -> None:
-    """Sandbox flavor of the fail-closed Bedrock 4.8+ patch preflight (#602)."""
-    command = (
-        f"PYTHONPATH={shlex.quote(runtime_dir)} "
-        f"{shlex.quote(python)} {shlex.quote(preflight_path)}"
-    )
-    result = await sandbox.exec(command, timeout_sec=120)
-    if result.return_code != 0:
-        raise RuntimeError(
-            "Bedrock Claude 4.8+ adaptive-thinking patch is NOT active in the "
-            "sandbox LiteLLM runtime: "
-            f"{_exec_details('bedrock patch preflight', result)}. Failing closed "
-            "before agent launch (#602) — a silent fallback would send the "
-            "legacy thinking shape Bedrock rejects."
-        )
-
-
 async def _poll_host_health(process: HostLiteLLMProcess) -> None:
     last_error = ""
     for _ in range(120):
@@ -598,11 +488,11 @@ async def _start_host_litellm(
     )
     try:
         await _poll_host_health(runner)
-        if _route_requires_bedrock_patch(route):
+        if route_requires_bedrock_patch(route):
             # Fail closed before the agent launches when the Bedrock 4.8+
             # thinking patch did not activate (#602).
             await asyncio.to_thread(
-                _preflight_host_bedrock_patch,
+                preflight_host_bedrock_patch,
                 env=env,
                 litellm_executable=litellm_executable,
             )
@@ -718,7 +608,7 @@ async def _upload_runtime_files_to_sandbox(
     )
     await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
     await _upload_text(
-        sandbox, _BEDROCK_PATCH_PREFLIGHT_SOURCE, paths["preflight"], ".py"
+        sandbox, BEDROCK_PATCH_PREFLIGHT_SOURCE, paths["preflight"], ".py"
     )
     return paths
 
@@ -894,11 +784,11 @@ async def _start_sandbox_litellm(
             port=port,
             stderr_path=paths["stderr"],
         )
-        if _route_requires_bedrock_patch(route):
+        if route_requires_bedrock_patch(route):
             # Fail closed before the agent launches when the Bedrock 4.8+
             # thinking patch did not activate (#602). On Daytona this proxy is
             # the only protection — there is no host proxy to fall back to.
-            await _preflight_sandbox_bedrock_patch(
+            await preflight_sandbox_bedrock_patch(
                 sandbox,
                 python=python,
                 runtime_dir=runtime_dir,

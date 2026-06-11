@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from benchflow.providers import litellm_bedrock_preflight as preflight_mod
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_config import resolve_litellm_route
 from benchflow.providers.litellm_logging import (
@@ -440,7 +441,7 @@ def test_route_requires_bedrock_patch_gating(model, required):
     """Guards PR #668's fail-closed gating for issue #602: only Bedrock Claude 4.8+
     routes require the thinking patch; 4.7 and below stay best-effort."""
     route = resolve_litellm_route(model, dict(_BEDROCK_ENV))
-    assert runtime_mod._route_requires_bedrock_patch(route) is required
+    assert preflight_mod.route_requires_bedrock_patch(route) is required
 
 
 def test_route_requires_bedrock_patch_ignores_non_bedrock_providers():
@@ -450,7 +451,7 @@ def test_route_requires_bedrock_patch_ignores_non_bedrock_providers():
         "minimax/MiniMax-M3",
         {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
     )
-    assert runtime_mod._route_requires_bedrock_patch(route) is False
+    assert preflight_mod.route_requires_bedrock_patch(route) is False
 
 
 def test_bedrock_patch_preflight_passes_when_runtime_files_on_pythonpath(tmp_path):
@@ -465,7 +466,7 @@ def test_bedrock_patch_preflight_passes_when_runtime_files_on_pythonpath(tmp_pat
     env = dict(os.environ)
     env["PYTHONPATH"] = str(tmp_path)
     result = subprocess.run(
-        [sys.executable, "-c", runtime_mod._BEDROCK_PATCH_PREFLIGHT_SOURCE],
+        [sys.executable, "-c", preflight_mod.BEDROCK_PATCH_PREFLIGHT_SOURCE],
         env=env,
         capture_output=True,
         text=True,
@@ -486,7 +487,7 @@ def test_bedrock_patch_preflight_fails_closed_when_patch_not_loaded(tmp_path):
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     result = subprocess.run(
-        [sys.executable, "-c", runtime_mod._BEDROCK_PATCH_PREFLIGHT_SOURCE],
+        [sys.executable, "-c", preflight_mod.BEDROCK_PATCH_PREFLIGHT_SOURCE],
         env=env,
         capture_output=True,
         text=True,
