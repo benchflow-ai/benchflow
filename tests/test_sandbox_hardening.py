@@ -307,7 +307,7 @@ class TestVerifierDirWipe:
     @pytest.mark.parametrize("workspace", ["/root", "/home/agent", "/app"])
     async def test_reclaim_plumbs_workspace_into_guard(self, workspace):
         """The active workspace is passed to the reclaim snippet as argv[1] so
-        the realpath overlap guard can protect it (#601)."""
+        the realpath overlap guard can protect it. Guards PR #669."""
         import shlex
 
         from benchflow.sandbox.lockdown import harden_before_verify
@@ -333,15 +333,15 @@ class TestVerifierDirWipe:
 
     @staticmethod
     def _run_reclaim(workspace: str, prefix) -> None:
-        """Execute the production _RECLAIM_CACHES_PY hermetically under
-        ``prefix`` — the same code, same interpreter contract as the sandbox."""
+        """Execute the production reclaim snippet hermetically under
+        ``prefix`` - the same code, same interpreter contract as the sandbox."""
         import subprocess
         import sys
 
-        from benchflow.sandbox.lockdown import _RECLAIM_CACHES_PY
+        from benchflow.sandbox._cache_reclaim import RECLAIM_CACHES_PY
 
         result = subprocess.run(
-            [sys.executable, "-c", _RECLAIM_CACHES_PY, workspace, str(prefix)],
+            [sys.executable, "-c", RECLAIM_CACHES_PY, workspace, str(prefix)],
             capture_output=True,
             text=True,
             timeout=60,
