@@ -43,12 +43,24 @@ STEP 1 — Install benchflow
 This prompt requires benchflow 0.6.0 or newer (the task.md authoring CLI and
 trainer artifacts shipped in 0.6.0). Run:
     uv tool install --prerelease allow 'benchflow==0.6.0'
+RC NOTE — while 0.6.0 is in RELEASE-CANDIDATE testing it is NOT yet on PyPI
+(the newest build published there is still 0.5.x), so the command above cannot
+resolve `benchflow==0.6.0` yet. To get the real 0.6 flow TODAY, install the
+latest 0.6.0 release-candidate WHEEL from the GitHub prerelease page instead:
+open https://github.com/benchflow-ai/benchflow/releases, pick the newest
+`0.6.0-rc.*` prerelease, and install its `.whl` asset directly, e.g.
+    uv tool install --prerelease allow \
+      'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.2/benchflow-0.6.0rc2-py3-none-any.whl'
+(The URL above pins rc.2; substitute whatever the newest `0.6.0-rc.*` tag is.)
+Once 0.6.0 ships to PyPI, the `uv tool install --prerelease allow
+'benchflow==0.6.0'` command above is the one to use.
 The `--prerelease allow` flag is REQUIRED: benchflow pins a litellm release
 candidate (litellm[proxy]==1.88.0rc1), and uv refuses prerelease transitive
 dependencies without it. If uv reports "Executables already exist: bench,
 benchflow", rerun the same command with `--force`. If the resolver reports
-that no version of `benchflow==0.6.0` exists, the release has not propagated
-to PyPI yet — fall back to:
+that no version of `benchflow==0.6.0` exists and you cannot use the RC wheel
+above, the release has not propagated to PyPI yet — as a last resort, fall
+back to:
     uv tool install --prerelease allow --upgrade benchflow
 and check `bench --version`. If the installed version is still older than
 0.6.0, CONTINUE anyway in degraded mode: steps 0–6 work on 0.5.x too. Tell
@@ -59,6 +71,11 @@ my-first-task` (the `--format task-md` flag and `task.md` scaffold are
 0.6.0+; older builds emit the split `task.toml` layout — the oracle run
 works the same). Note in your final summary that upgrading to 0.6.0
 unlocks the full flow.
+TRAP — this quickstart uses the tool-installed `bench` (on PATH after
+`uv tool install`); if you instead invoke benchflow as `uv run bench …` from a
+benchflow source checkout, run it from INSIDE that project directory, because
+`uv run bench` launched from outside the repo can resolve a different or legacy
+`bench`.
 Verify:
     bench --version
     bench agent list
@@ -170,7 +187,12 @@ replace the prompt placeholder in task.md with a small concrete goal (e.g.
 "create hello.txt containing 'hello benchflow'"); make verifier/test.sh
 check exactly that and write 1.0 to /logs/verifier/reward.txt on success;
 replace the placeholder assertion in verifier/test_outputs.py (or delete
-that file); and make oracle/solve.sh perform the task. Validate:
+that file); replace the `[REPLACE: ...]` placeholders in the three verifier
+description files the scaffold also writes — verifier/verifier.md,
+verifier/rubrics/verifier.md, and verifier/rubrics/verifier.toml (`bench
+tasks check` rejects any unreplaced placeholder, these three included, so
+skipping them fails the check below); and make oracle/solve.sh perform the
+task. Validate:
     bench tasks check tasks/my-first-task
 Fix anything it flags (it rejects unreplaced [REPLACE: ...] placeholders).
 Then run the task with the built-in oracle agent — it executes
