@@ -1224,6 +1224,9 @@ def eval_create(
             "[red]Choose only one source: --config, --tasks-dir, --source-repo, or --source-env[/red]"
         )
         raise typer.Exit(1)
+    if tasks_dir and not Path(tasks_dir).exists():
+        console.print(f"[red]--tasks-dir not found: {tasks_dir}[/red]")
+        raise typer.Exit(1)
     if worker_concurrency is not None and not (tasks_dir or source_repo):
         console.print(
             "[red]--worker-concurrency is supported for --tasks-dir and --source-repo batch runs[/red]"
@@ -1239,9 +1242,45 @@ def eval_create(
         _normalize_eval_agent_or_exit(agent) if agent is not None else DEFAULT_AGENT
     )
     eval_environment = environment or "docker"
+    if eval_environment == "modal":
+        # Fail fast with the actionable extra hint instead of surfacing a raw
+        # ModuleNotFoundError deep inside the rollout (the in-sandbox guard
+        # remains as defense-in-depth for programmatic callers).
+        try:
+            import modal  # noqa: F401
+        except ModuleNotFoundError:
+            console.print(
+                "[red]Missing optional dependency for 'modal' sandbox.[/red] "
+                "Install it with [cyan]uv sync --extra sandbox-modal[/cyan]."
+            )
+            raise typer.Exit(1) from None
     eval_prompts = cast("list[str | None] | None", prompt)
     sandbox_user = normalize_sandbox_user(sandbox_user)
     eval_concurrency = concurrency if concurrency is not None else 4
+    if eval_concurrency < 1:
+        # A non-positive concurrency builds asyncio.Semaphore(0), which can never
+        # be acquired and deadlocks the run — reject it up front instead.
+        console.print(f"[red]--concurrency must be >= 1 (got {eval_concurrency})[/red]")
+        raise typer.Exit(1)
+    if build_concurrency is not None and build_concurrency < 1:
+        console.print(
+            f"[red]--build-concurrency must be >= 1 (got {build_concurrency})[/red]"
+        )
+        raise typer.Exit(1)
+    if skill_mode not in {"no-skill", "with-skill", "self-gen"}:
+        console.print(
+            f"[red]Invalid --skill-mode {skill_mode!r}: "
+            "choose no-skill, with-skill, or self-gen[/red]"
+        )
+        raise typer.Exit(1)
+    try:
+        # Validate the agent/model pairing up front so an agent with no default
+        # model (e.g. codex) reports a clean error instead of an uncaught
+        # ValueError traceback once the rollout starts.
+        effective_model(eval_agent, model)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
     usage_tracking_overridden = usage_tracking is not None
     try:
         eval_usage_tracking = UsageTrackingConfig(mode=usage_tracking)
