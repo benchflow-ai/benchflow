@@ -44,6 +44,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -316,8 +317,6 @@ def _skill_nudge(agent_env: dict[str, str] | None) -> str:
 
 def _safe_skill_name(value: str) -> str:
     """Return an AgentSkills-compatible generated skill directory name."""
-    import re
-
     name = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
     name = re.sub(r"-+", "-", name).strip("-")
     return name or "generated-task"
@@ -1482,28 +1481,30 @@ class RolloutConfig:
         return self.artifact_skill_mode or self.skill_mode
 
     @property
-    def primary_agent(self) -> str:
-        """Agent name for the first role of the first scene."""
+    def _primary_role(self) -> Role | None:
+        """First role of the first scene, if any."""
         scenes = self.effective_scenes
         if scenes and scenes[0].roles:
-            return scenes[0].roles[0].agent
-        return self.agent
+            return scenes[0].roles[0]
+        return None
+
+    @property
+    def primary_agent(self) -> str:
+        """Agent name for the first role of the first scene."""
+        role = self._primary_role
+        return role.agent if role else self.agent
 
     @property
     def primary_model(self) -> str | None:
         """Model for the first role of the first scene."""
-        scenes = self.effective_scenes
-        if scenes and scenes[0].roles:
-            return scenes[0].roles[0].model
-        return self.model
+        role = self._primary_role
+        return role.model if role else self.model
 
     @property
     def primary_reasoning_effort(self) -> str | None:
         """Reasoning effort for the first role of the first scene."""
-        scenes = self.effective_scenes
-        if scenes and scenes[0].roles:
-            return scenes[0].roles[0].reasoning_effort
-        return self.reasoning_effort
+        role = self._primary_role
+        return role.reasoning_effort if role else self.reasoning_effort
 
 
 class Rollout:
@@ -1541,6 +1542,11 @@ class Rollout:
         self._disallow_web_tools: bool = False
         self._effective_skills_dir: Path | None = None
         self._effective_skills_sandbox_dir: str | None = None
+        # Task dir actually deployed: a temp copy (self._task_tmp) when
+        # Dockerfile mutations are needed, otherwise config.task_path.
+        # cleanup() removes the temp copy.
+        self._effective_task_path: Path = config.task_path
+        self._task_tmp: Path | None = None
         self._task_skill_policy: TaskSkillPolicy | None = None
         self._usage_runtime: Any = None
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
@@ -1580,6 +1586,12 @@ class Rollout:
         self._ask_user_handler_set: bool = False
         self._agent_name: str = ""
         self._active_role: Role | None = None
+        # Cursors into the live ACP session's cumulative trajectory and
+        # tool-call totals so execute() and the partial-capture path extend
+        # only the delta since the last read. Reset per session in
+        # install_agent().
+        self._session_traj_count: int = 0
+        self._session_tool_count: int = 0
 
         # Populated by execute()
         self._trajectory: list[dict] = []
@@ -1749,9 +1761,6 @@ class Rollout:
         # rewrites COPY paths — neither should modify the source tree)
         effective_task_path = cfg.task_path
         if cfg.context_root or task_skill_policy.needs_task_copy:
-            import shutil
-            import tempfile
-
             tmp = Path(tempfile.mkdtemp(prefix="benchflow-task-"))
             shutil.copytree(cfg.task_path, tmp / cfg.task_path.name, dirs_exist_ok=True)
             effective_task_path = tmp / cfg.task_path.name
@@ -1910,7 +1919,7 @@ class Rollout:
             )
             await self._planes.deploy_skills(
                 self._env,
-                getattr(self, "_effective_task_path", cfg.task_path),
+                self._effective_task_path,
                 self._effective_skills_dir,
                 None,
                 cfg.sandbox_user,
@@ -1966,7 +1975,7 @@ class Rollout:
 
         await self._planes.deploy_skills(
             self._env,
-            getattr(self, "_effective_task_path", cfg.task_path),
+            self._effective_task_path,
             self._effective_skills_dir,
             self._agent_cfg,
             cfg.sandbox_user,
@@ -2196,7 +2205,7 @@ class Rollout:
         effective_prompts = prompts or self._resolved_prompts
         if self._acp_client is None:
             raise RuntimeError("Rollout.connect() must run before execute()")
-        prev_session_tools = getattr(self, "_session_tool_count", 0)
+        prev_session_tools = self._session_tool_count
         t0 = datetime.now()
         active_role = getattr(self, "_active_role", None)
         timeout = (
@@ -2221,7 +2230,7 @@ class Rollout:
         # trajectory and n_tool_calls are cumulative for this session.
         # Compute the delta since last execute() on this session.
         new_tools = n_tool_calls - prev_session_tools
-        new_events = trajectory[getattr(self, "_session_traj_count", 0) :]
+        new_events = trajectory[self._session_traj_count :]
         self._session_tool_count = n_tool_calls
         self._session_traj_count = len(trajectory)
 
@@ -2567,8 +2576,6 @@ class Rollout:
                 logger.warning(f"Cleanup failed: {e}")
 
         if hasattr(self, "_task_tmp") and self._task_tmp:
-            import shutil
-
             shutil.rmtree(self._task_tmp, ignore_errors=True)
 
         self._phase = "cleaned"
@@ -2602,6 +2609,19 @@ class Rollout:
 
     # Full run
 
+    def _record_agent_timeout(self, e: TimeoutError) -> None:
+        """Record a timed-out agent run on the rollout's error state.
+
+        Shared by run()'s inner per-scene handler and the outer wall-clock
+        handler. Preserves the watchdog's diagnostic message ("Agent idle
+        for 600s with no new tool call ...") when it raised one, falling
+        back to the generic wall-clock message only when there's no detail.
+        """
+        detail = str(e).strip()
+        self._error = detail or f"Agent timed out after {self._timeout}s"
+        self._diagnostics.capture_idle(e)
+        logger.error(self._error)
+
     async def run(self) -> RolloutResult:
         """Run the complete trial lifecycle.
 
@@ -2623,8 +2643,6 @@ class Rollout:
             if cfg.primary_agent == "oracle":
                 await self.install_agent()
                 # git safe.directory needed for SWE-bench tasks with sandbox_user
-                import shlex
-
                 await self._env.exec(
                     f"git config --global --add safe.directory "
                     f"{shlex.quote(self._agent_cwd)} 2>/dev/null || true",
@@ -2653,12 +2671,7 @@ class Rollout:
                             )
                     except TimeoutError as e:
                         agent_timed_out = True
-                        detail = str(e).strip()
-                        self._error = (
-                            detail or f"Agent timed out after {self._timeout}s"
-                        )
-                        self._diagnostics.capture_idle(e)
-                        logger.error(self._error)
+                        self._record_agent_timeout(e)
                 finally:
                     if cfg.oracle_access:
                         await self._env.exec(
@@ -2679,13 +2692,7 @@ class Rollout:
                     self._verifier_error = None
 
         except TimeoutError as e:
-            # Preserve the watchdog's diagnostic message ("Agent idle for 600s
-            # with no new tool call ...") if it raised one. Fall back to the
-            # generic wall-clock message only when there's no detail.
-            detail = str(e).strip()
-            self._error = detail or f"Agent timed out after {self._timeout}s"
-            self._diagnostics.capture_idle(e)
-            logger.error(self._error)
+            self._record_agent_timeout(e)
         except ConnectionError as e:
             self._error = str(e)
             self._diagnostics.capture_transport(e)
