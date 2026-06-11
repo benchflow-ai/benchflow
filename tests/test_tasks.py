@@ -368,7 +368,7 @@ class TestTaskMdScaffoldCanonicalVersionKey:
 
         task = init_task("canonical-key", parent_dir=tmp_path)
         frontmatter = yaml.safe_load((task / "task.md").read_text().split("---\n")[1])
-        assert frontmatter["schema_version"] == "1.0"
+        assert frontmatter["schema_version"] == "1.3"
         assert "version" not in frontmatter
         doc = TaskDocument.from_path(task / "task.md")
-        assert doc.config.schema_version == "1.0"
+        assert doc.config.schema_version == "1.3"
