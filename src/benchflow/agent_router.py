@@ -615,7 +615,7 @@ def build_verify_report(
         verdict: Verdict = "insufficient-evidence"
     else:
         conversion_ok = (not has_conversion) or conversion.all_agree
-        reward_ok = (not has_reward) or reward.within_tolerance
+        reward_ok = (reward is None) or reward.within_tolerance
         verdict = (
             "parity-confirmed" if conversion_ok and reward_ok else ("parity-divergent")
         )

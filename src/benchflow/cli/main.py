@@ -520,7 +520,11 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
 
     req = plan.request
-    j = Evaluation.from_yaml(req.config_file)
+    config_file = req.config_file
+    assert (
+        config_file is not None
+    )  # config-file source: build_eval_plan guarantees this
+    j = Evaluation.from_yaml(config_file)
     if req.agent is not None:
         j._config.agent = plan.eval_agent
     else:
@@ -618,8 +622,10 @@ def _run_source_env_eval(
             "source-env runs own their prompts. Ignoring.[/yellow]"
         )
 
+    source_env = req.source_env
+    assert source_env is not None  # source-env source: build_eval_plan guarantees this
     try:
-        ref = HostedEnvRef.parse(req.source_env, version=source_env_version)
+        ref = HostedEnvRef.parse(source_env, version=source_env_version)
         run_result = run_hosted_env(
             HostedEnvRunConfig(
                 source_env=ref,

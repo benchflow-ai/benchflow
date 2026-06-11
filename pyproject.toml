@@ -155,6 +155,8 @@ include = ["src", "tools"]
 # produce cascading type errors when those packages aren't installed.
 exclude = [
     "src/benchflow/sandbox/daytona.py",
+    "src/benchflow/sandbox/daytona_strategies.py",
+    "src/benchflow/sandbox/daytona_dind.py",
     "src/benchflow/sandbox/modal_impl.py",
     "src/benchflow/sandbox/docker.py",
     "src/benchflow/sandbox/_base.py",
