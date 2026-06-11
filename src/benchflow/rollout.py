@@ -79,6 +79,7 @@ from benchflow.diagnostics import RolloutDiagnostics, VerifierTimeoutDiagnostic
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rewards.validation import (
+    declared_reward_range,
     reward_lenient_from_env,
     validate_reward_map,
 )
@@ -1204,7 +1205,7 @@ async def _verify_rollout(
             timeout=timeout_budget,
         )
         timing["verifier"] = (datetime.now() - t0).total_seconds()
-        rewards = _ensure_canonical_rewards(verifier_result.rewards)
+        rewards = _ensure_canonical_rewards(verifier_result.rewards, task=task)
         logger.info(f"Rewards: {rewards}")
     except TimeoutError:
         elapsed = (datetime.now() - t0).total_seconds()
@@ -1225,12 +1226,16 @@ async def _verify_rollout(
     return rewards, verifier_error, verifier_timeout
 
 
-def _ensure_canonical_rewards(rewards: dict | None) -> dict:
-    # Honour the same BENCHFLOW_REWARD_LENIENT toggle as the reward.json parse
-    # path so the final canonicalization gate stays consistent with how the
-    # verifier accepted the map (no-op unless the operator opts in).
+def _ensure_canonical_rewards(rewards: dict | None, *, task: Any = None) -> dict:
+    # Honour the same BENCHFLOW_REWARD_LENIENT toggle and task-declared
+    # ``[verifier] reward_range`` (BF-8) as the reward.json parse path so the
+    # final canonicalization gate stays consistent with how the verifier
+    # accepted the map (no-op unless the operator/task opts in).
     return validate_reward_map(
-        rewards, source="verifier", lenient=reward_lenient_from_env()
+        rewards,
+        source="verifier",
+        lenient=reward_lenient_from_env(),
+        reward_range=declared_reward_range(task),
     )
 
 
@@ -2503,7 +2508,9 @@ class Rollout:
                 verifier.verify(),
                 timeout=self._task.config.verifier.timeout_sec,
             )
-            rewards = _ensure_canonical_rewards(verifier_result.rewards)
+            rewards = _ensure_canonical_rewards(
+                verifier_result.rewards, task=self._task
+            )
             # Capture raw verifier output for the user
             cat = await self._env.exec(
                 "cat /logs/verifier/*.log 2>/dev/null || "
