@@ -28,6 +28,84 @@ about provider-specific credentials.
 bench agent show gemini
 ```
 
+### bench agent create
+
+Scaffold `benchmarks/<name>/` for a new benchmark adoption. The layout mirrors
+the reference benchmark `benchmarks/programbench/` and the contract in
+[`benchmarks/CONVERT.md`](../../benchmarks/CONVERT.md): it writes
+`benchflow.py` (converter), `main.py`, `parity_test.py`, `run_<name>.py`,
+`<name>.yaml`, `benchmark.yaml`, `parity_experiment.json` (status `template`),
+`README.md`, and `__init__.py`. It is fail-closed: the slug is validated
+(lowercase, leading letter, single internal hyphens, max 64 chars) and the
+command refuses to overwrite an existing benchmark directory.
+
+```bash
+bench agent create my-bench
+bench agent create my-bench --benchmarks-dir ./benchmarks
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--benchmarks-dir` | repo `benchmarks/` | Target benchmarks/ directory |
+
+### bench agent run
+
+Drive the `CONVERT.md` adoption workflow by launching the host `codex` CLI.
+The command assembles the adoption context (the source, the target
+`benchmarks/<name>/` path, the adoption skills, and the embedded
+`benchmarks/CONVERT.md` guide) and runs `codex exec` against the repo root to
+drive the conversion toward a `benchmarks/<name>/` pull request. It is
+fail-closed on credentials: `codex` needs `OPENAI_API_KEY` (or `CODEX_API_KEY`)
+in the environment, or a `~/.codex/auth.json` from `codex login`, otherwise the
+command exits before assembling any context. Use `--dry-run` to print the exact
+launch command without running it (no credentials required). When `--name` is
+omitted the slug is derived from the source basename.
+
+```bash
+# Print the codex launch command without running it
+bench agent run https://github.com/org/some-benchmark --dry-run
+
+# Launch the host codex driver against a local source
+bench agent run ./vendor/some-benchmark --name my-bench --model o3
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name` | derived from source | Benchmark slug (default: from source basename) |
+| `--model` | codex default | Model for the codex driver |
+| `--dry-run` | `false` | Print the launch command, do not run |
+| `--codex-bin` | `codex` | Host codex binary |
+
+### bench agent verify
+
+Run the parity gate for an adopted benchmark and emit a confidence verdict. It
+reads `benchmarks/<name>/parity_experiment.json` and scores two layers: a
+deterministic conversion-faithfulness floor (every compared criterion's
+converted verdict must match the original's verdict on identical inputs) and a
+statistical reward-distribution layer (every legacy-vs-converted reward delta
+must sit within `--tolerance`). The gate is parity-only — a faithful conversion
+reproduces the original's behavior, including any reward-hackability the source
+has; it never "improves" or sanitizes the source. The verdict is one of
+`parity-confirmed`, `parity-divergent`, or `insufficient-evidence` (no recorded
+comparisons). On any non-confirmed verdict the command exits non-zero and emits
+a draft GitHub issue body for human support — printed to stdout, or written to
+`--issue-out`. The draft is never filed automatically. Pass `--roundtrip-task`
+to also run the structural round-trip conformance check on a concrete task
+directory.
+
+```bash
+bench agent verify my-bench
+bench agent verify my-bench --tolerance 0.05 --issue-out divergence.md
+bench agent verify my-bench --roundtrip-task benchmarks/my-bench/tasks/example
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--benchmarks-dir` | repo `benchmarks/` | Target benchmarks/ directory |
+| `--tolerance` | `0.02` | Max abs reward delta (statistical layer) |
+| `--issue-out` | — | Write the divergence issue draft to this path instead of stdout |
+| `--roundtrip-task` | — | Also run the structural round-trip check on this task dir |
+
 ## bench eval
 
 ### bench eval create
