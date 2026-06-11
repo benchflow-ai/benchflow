@@ -45,6 +45,11 @@ Common optional fields
 - ``models``           Optional list of model metadata dicts (id, name,
                        contextWindow, etc.) consumed by agent shims. ``id``
                        is required and must be unique within the provider.
+- ``model_prefixes``   Bare-model-name family tokens this provider owns
+                       (e.g. ``["deepseek"]``), used by
+                       ``find_provider_for_bare_model()`` to route
+                       prefix-stripped ids. Tokens must be lowercase and
+                       unique across providers (longest token wins).
 - ``credential_files`` List of dicts with ``"path"`` and ``"env_source"``
                        (and optional ``"post_env"``) — used by ADC providers
                        to write the credential blob into the container.

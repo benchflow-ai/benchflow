@@ -29,6 +29,11 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-only; the shim must stay runnable without benchflow installed.
+    from benchflow.agents.providers import ProviderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +306,9 @@ def _infer_provider_prefix(model: str) -> str:
     return "anthropic"
 
 
-def _setup_provider_from_config(provider_name: str, cfg) -> str | None:
+def _setup_provider_from_config(
+    provider_name: str, cfg: "ProviderConfig"
+) -> str | None:
     """Write a resolved registry ProviderConfig into openclaw.json.
 
     Shared by the prefix-based (``_find_and_setup_provider``) and bare-model
@@ -665,10 +672,14 @@ def main():
                 # provider must be written into openclaw.json before we hand
                 # openclaw a "deepseek/..." id, or the run fails with an unknown
                 # provider. _setup_bare_custom_provider does that registration
-                # (a no-op for openclaw-native gemini/gpt and unknown ids).
+                # (a no-op for openclaw-native gemini/gpt and unknown ids) and
+                # returns the registered provider, which then doubles as the
+                # prefix; otherwise fall back to the prefix heuristics.
                 elif "/" not in model:
-                    _setup_bare_custom_provider(model)
-                    model = f"{_infer_provider_prefix(model)}/{model}"
+                    prefix = _setup_bare_custom_provider(
+                        model
+                    ) or _infer_provider_prefix(model)
+                    model = f"{prefix}/{model}"
 
                 subprocess.run(
                     [_OPENCLAW_BIN, "config", "set", "agents.defaults.model", model],

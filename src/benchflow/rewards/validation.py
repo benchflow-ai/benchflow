@@ -94,9 +94,9 @@ def _apply_structured(
     try:
         parsed[key] = validate(value, source=source)
     except ValueError:
+        # The assignment never ran, so ``parsed`` is untouched; just record it.
         if not lenient:
             raise
-        parsed.pop(key, None)
         dropped.append(key)
 
 

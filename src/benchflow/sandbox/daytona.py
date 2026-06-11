@@ -201,8 +201,9 @@ _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
 # deliberately sized *well above* any legitimately long-running command (an
 # agent rollout can run for many minutes) so it never trips for real work — it
 # exists purely so a never-completing session command cannot spin the poll loop
-# indefinitely. It applies ONLY on the ``timeout_sec is None`` path; an explicit
-# ``timeout_sec`` is honored byte-for-byte as before.
+# indefinitely. It applies ONLY when no positive ``timeout_sec`` is supplied
+# (``None``, or a non-positive value — both previously meant "no deadline");
+# an explicit positive ``timeout_sec`` is honored byte-for-byte as before.
 _DAYTONA_EXEC_HARD_CAP_SEC = 3600
 
 
@@ -1540,9 +1541,9 @@ class DaytonaSandbox(BaseSandbox):
     ) -> RuntimeError:
         """Build the ``RuntimeError`` raised when a poll deadline is exceeded.
 
-        The bounded path (explicit ``timeout_sec``) keeps the exact legacy
-        message so its semantics are byte-for-byte unchanged. The safety-net
-        path (``timeout_sec is None`` falling back to
+        The bounded path (explicit positive ``timeout_sec``) keeps the exact
+        legacy message so its semantics are byte-for-byte unchanged. The
+        safety-net path (no positive ``timeout_sec``, falling back to
         :data:`_DAYTONA_EXEC_HARD_CAP_SEC`) raises the *same* ``RuntimeError``
         type for consistent error handling, but with a message that points at
         the most likely cause — a backgrounded command still holding the Daytona
@@ -1551,7 +1552,8 @@ class DaytonaSandbox(BaseSandbox):
         if capped:
             return RuntimeError(
                 f"Command timed out after {_DAYTONA_EXEC_HARD_CAP_SEC} seconds "
-                "(no timeout_sec given; hit the Daytona exec safety-net cap). "
+                "(no positive timeout_sec given; hit the Daytona exec "
+                "safety-net cap). "
                 "A backgrounded command is likely holding the session "
                 "stdout/stderr stream open — redirect its std fds, e.g. "
                 "`nohup CMD </dev/null >log 2>&1 &`."
