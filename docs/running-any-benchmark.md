@@ -85,7 +85,7 @@ matches what you are translating:
 | A task you already control, in the legacy split layout (`task.toml` + `instruction.md`) | `bench tasks migrate` → `bench tasks check` | Structural validation of the generated `task.md` (config equivalence is enforced at conversion time) |
 | A foreign benchmark with no reusable adapter | `bench agent create` → `bench agent run` → `bench agent verify` | The parity gate **proves** the converted benchmark reproduces the original's results |
 
-The two paths are not interchangeable: `bench agent verify` scores only a
+The two paths are not interchangeable: `bench agent verify` runs only against a
 benchmark *adopted* with `bench agent create`. It reads
 `benchmarks/<name>/parity_experiment.json` and errors `benchmark not adopted …
 run bench agent create first` on anything else — including a migrated `task.md`.
@@ -153,19 +153,30 @@ returns `insufficient-evidence`). Two principles keep it honest:
 ### The artifacts
 
 Each adopted benchmark records its evidence in
-`benchmarks/<name>/parity_experiment.json`, and `bench agent verify` scores that
-file. The repository ships recorded parity experiments under
-[`benchmarks/*/parity_experiment.json`](../benchmarks/) spanning deterministic
-side-by-side conversion parity (per-criterion verdict agreement), structural
-parity (every generated task carries the required files and valid metadata), and
-agent-scale reward-distribution parity (legacy-vs-converted reward deltas across
-trials).
+`benchmarks/<name>/parity_experiment.json`. `bench agent verify <name>` reads and
+scores that file when it is a JSON object in the shape `bench agent create`
+scaffolds (the example in [`benchmarks/CONVERT.md`](../benchmarks/CONVERT.md)): it
+pulls per-criterion verdict pairs and legacy-vs-converted reward samples from the
+object and emits a verdict. A file that records neither yields no comparisons, so
+the gate returns `insufficient-evidence`.
 
-Read the recorded experiments honestly: they report per-criterion agreement and
-aggregate reward deltas **within tolerance**, with the residual disagreements
-triaged to causes such as model non-determinism rather than conversion defects.
-The guarantee is "parity within tolerance, divergences triaged, no conversion
-defect found" — not a fixed headline percentage.
+The repository ships several recorded experiments under
+[`benchmarks/*/parity_experiment.json`](../benchmarks/), and they are **not**
+uniform — do not assume `verify` scores all of them. `bench agent verify
+programbench` reads recorded reward-distribution samples and reports
+`parity-confirmed` (max abs reward delta within the default `0.02` tolerance).
+Other shipped experiments record structural- and eval-parity notes the gate does
+not read as criteria or reward samples, so `verify` returns
+`insufficient-evidence` for them; and one predates this object contract and
+stores a top-level list of experiment runs, which the gate cannot score. Use
+`verify` as the gate for experiments recorded in the object shape, and read the
+JSON files directly for the rest.
+
+Read the recorded experiments honestly: where rewards are recorded they report
+aggregate deltas **within tolerance**, with residual disagreements triaged to
+causes such as model non-determinism rather than conversion defects. The
+guarantee is "parity within tolerance, divergences triaged, no conversion defect
+found" — not a fixed headline percentage.
 
 ---
 
