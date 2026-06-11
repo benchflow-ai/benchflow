@@ -191,6 +191,20 @@ _SandboxParams = Any
 _DAYTONA_COMMAND_POLL_INTERVAL_SEC = 1.0
 _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
 
+# Safety-net ceiling for ``_poll_response`` when the caller passes no
+# ``timeout_sec``. A Daytona *session* command only reports its ``exit_code``
+# once it completes, and Daytona treats the command as still-running while any
+# child holds the session's stdout/stderr stream open. So a backgrounded daemon
+# launched without redirecting its std fds (``mysvc &`` with no
+# ``</dev/null >log 2>&1``) keeps that stream open, ``exit_code`` never arrives,
+# and an unbounded poll loop would wedge ``exec`` forever (BF-6). This cap is
+# deliberately sized *well above* any legitimately long-running command (an
+# agent rollout can run for many minutes) so it never trips for real work — it
+# exists purely so a never-completing session command cannot spin the poll loop
+# indefinitely. It applies ONLY on the ``timeout_sec is None`` path; an explicit
+# ``timeout_sec`` is honored byte-for-byte as before.
+_DAYTONA_EXEC_HARD_CAP_SEC = 3600
+
 
 # A POSIX shell identifier: a name the shell can ``export``. Keys outside this
 # grammar (e.g. containing ``.`` or ``-``) are valid process env keys but cannot
@@ -1520,6 +1534,30 @@ class DaytonaSandbox(BaseSandbox):
             session_id, command_id
         )
 
+    @staticmethod
+    def _poll_timeout_error(
+        timeout_sec: int | float | None, capped: bool
+    ) -> RuntimeError:
+        """Build the ``RuntimeError`` raised when a poll deadline is exceeded.
+
+        The bounded path (explicit ``timeout_sec``) keeps the exact legacy
+        message so its semantics are byte-for-byte unchanged. The safety-net
+        path (``timeout_sec is None`` falling back to
+        :data:`_DAYTONA_EXEC_HARD_CAP_SEC`) raises the *same* ``RuntimeError``
+        type for consistent error handling, but with a message that points at
+        the most likely cause — a backgrounded command still holding the Daytona
+        session's stdout/stderr stream open.
+        """
+        if capped:
+            return RuntimeError(
+                f"Command timed out after {_DAYTONA_EXEC_HARD_CAP_SEC} seconds "
+                "(no timeout_sec given; hit the Daytona exec safety-net cap). "
+                "A backgrounded command is likely holding the session "
+                "stdout/stderr stream open — redirect its std fds, e.g. "
+                "`nohup CMD </dev/null >log 2>&1 &`."
+            )
+        return RuntimeError(f"Command timed out after {timeout_sec} seconds")
+
     async def _poll_response(
         self,
         session_id: str,
@@ -1530,24 +1568,30 @@ class DaytonaSandbox(BaseSandbox):
             raise RuntimeError("Sandbox not found. Please build the environment first.")
 
         loop = asyncio.get_running_loop()
-        deadline = (
-            loop.time() + float(timeout_sec)
-            if timeout_sec is not None and timeout_sec > 0
-            else None
-        )
+        # When the caller passes an explicit, positive ``timeout_sec`` we honor
+        # it exactly as before. When it is ``None`` (or non-positive) we fall
+        # back to a generous safety-net ceiling so ``deadline`` is *never*
+        # ``None`` — a Daytona session command whose ``exit_code`` never resolves
+        # (e.g. a backgrounded child still holding the session stdout/stderr
+        # stream open) can therefore never spin this loop forever (BF-6). The
+        # cap is sized well above any real command, so normal behavior on the
+        # unbounded path is unchanged for everything except the wedge case.
+        if timeout_sec is not None and timeout_sec > 0:
+            deadline = loop.time() + float(timeout_sec)
+            capped = False
+        else:
+            deadline = loop.time() + float(_DAYTONA_EXEC_HARD_CAP_SEC)
+            capped = True
 
         response = await self._get_session_command_with_retry(session_id, command_id)
 
         while response.exit_code is None:  # type: ignore[union-attr]
-            if deadline is None:
-                await asyncio.sleep(_DAYTONA_COMMAND_POLL_INTERVAL_SEC)
-            else:
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
-                await asyncio.sleep(min(_DAYTONA_COMMAND_POLL_INTERVAL_SEC, remaining))
-                if loop.time() >= deadline:
-                    raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise self._poll_timeout_error(timeout_sec, capped)
+            await asyncio.sleep(min(_DAYTONA_COMMAND_POLL_INTERVAL_SEC, remaining))
+            if loop.time() >= deadline:
+                raise self._poll_timeout_error(timeout_sec, capped)
             response = await self._get_session_command_with_retry(
                 session_id,
                 response.id,  # type: ignore[union-attr]
@@ -1570,6 +1614,15 @@ class DaytonaSandbox(BaseSandbox):
         shell: str = "bash -c",
         user: str | int | None = None,
     ) -> ExecResult:
+        """Run ``command`` as a Daytona session command and poll to completion.
+
+        ``timeout_sec=None`` falls back to the
+        :data:`_DAYTONA_EXEC_HARD_CAP_SEC` safety-net deadline in
+        :meth:`_poll_response`, so a backgrounded command that never releases the
+        session stdout/stderr stream cannot wedge ``exec`` forever (BF-6).
+        Backgrounded daemons must redirect all std fds
+        (``</dev/null >log 2>&1``) — see :meth:`exec`.
+        """
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please build the environment first.")
 
@@ -1780,6 +1833,27 @@ class DaytonaSandbox(BaseSandbox):
         user: str | int | None = None,
         service: str = "main",
     ) -> ExecResult:
+        """Run ``command`` to completion in the sandbox and return its result.
+
+        Daytona runs every command as a *session* command and reports its
+        ``exit_code`` only once the command completes; it treats the command as
+        still-running while any child keeps the session's stdout/stderr stream
+        open. A backgrounded process that inherits those fds (``mysvc &`` with no
+        redirection) therefore holds ``exec`` open until ``timeout_sec`` elapses
+        — or, when ``timeout_sec`` is ``None``, until the safety-net cap
+        (:data:`_DAYTONA_EXEC_HARD_CAP_SEC`, currently 3600s) is reached, at
+        which point a "Command timed out" :class:`RuntimeError` is raised. To run
+        a daemon in the background, fully detach its std fds so it does not hold
+        the session stream open, e.g.
+        ``nohup CMD </dev/null >log 2>&1 &`` (redirection alone severs the
+        inherited session stream; ``disown`` is bash/zsh-only and absent from a
+        plain ``sh`` hook shell).
+
+        This is a Daytona-specific asymmetry: ``DockerSandbox.exec`` returns as
+        soon as the foreground ``sh -c`` exits regardless of orphaned background
+        children, so a ``mysvc &`` setup hook can pass under Docker yet wedge on
+        Daytona without the redirection above.
+        """
         user = self._resolve_user(user)
         env = self._merge_env(env)
         return await self._strategy.exec(
