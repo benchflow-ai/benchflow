@@ -611,6 +611,106 @@ class TestUserLoop:
 
         assert "user.run() failed" in trial._error
 
+    @pytest.mark.asyncio
+    async def test_explicit_stop_does_not_resurrect_user(self):
+        """A classic user that stops (returns None) in the scene-step loop must
+        not be re-invoked by the free-round loop.
+
+        Counts user.run() invocations and agent rounds. The user returns a live
+        prompt on any call after the first, so if the free-round loop wrongly
+        re-invokes run(), the user is resurrected and extra agent rounds fire —
+        which these counts catch. Regression guard for the break fall-through.
+        """
+
+        class StopThenResurrectUser(BaseUser):
+            def __init__(self) -> None:
+                self.run_calls = 0
+
+            async def run(self, round, instruction, round_result=None):
+                self.run_calls += 1
+                if self.run_calls == 1:
+                    return None  # explicit stop on the single scene step
+                return "resurrected prompt"
+
+        user = StopThenResurrectUser()
+        trial = _make_user_trial(user, max_rounds=5)
+
+        agent_rounds = 0
+
+        async def mock_execute(prompts=None):
+            nonlocal agent_rounds
+            agent_rounds += 1
+            return [], 0
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock),
+            patch.object(trial, "execute", side_effect=mock_execute),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=(None, None, None),
+            ),
+        ):
+            await trial._run_user_loop()
+
+        # Stopped at the first (and only) scene step: run() called exactly once,
+        # zero agent rounds executed, and no spurious error recorded.
+        assert user.run_calls == 1
+        assert agent_rounds == 0
+        assert trial._error is None
+
+    @pytest.mark.asyncio
+    async def test_raise_terminates_loop_without_retry(self):
+        """When user.run() raises in the scene-step loop, the loop terminates
+        with the error set and must not retry run() or run further agent rounds.
+
+        The user succeeds on a retry, so a fall-through into the free-round loop
+        would execute extra rounds while self._error stays set — a half-script
+        rollout reported as errored. The call/round counts make that visible.
+        """
+
+        class RaiseThenSucceedUser(BaseUser):
+            def __init__(self) -> None:
+                self.run_calls = 0
+
+            async def run(self, round, instruction, round_result=None):
+                self.run_calls += 1
+                if self.run_calls == 1:
+                    raise RuntimeError("transient user error")
+                return "retry prompt"
+
+        user = RaiseThenSucceedUser()
+        trial = _make_user_trial(user, max_rounds=5)
+
+        agent_rounds = 0
+
+        async def mock_execute(prompts=None):
+            nonlocal agent_rounds
+            agent_rounds += 1
+            return [], 0
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock),
+            patch.object(trial, "execute", side_effect=mock_execute),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=(None, None, None),
+            ),
+        ):
+            await trial._run_user_loop()
+
+        # The raise terminates the loop: run() called exactly once, no agent
+        # rounds executed, and the error is recorded for round 0.
+        assert user.run_calls == 1
+        assert agent_rounds == 0
+        assert trial._error is not None
+        assert "user.run() failed at round 0" in trial._error
+
 
 class TestSoftVerify:
     @pytest.mark.asyncio

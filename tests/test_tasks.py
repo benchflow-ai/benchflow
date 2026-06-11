@@ -1,5 +1,6 @@
 """Tests for benchflow.tasks — task authoring (check and init)."""
 
+import os
 import shutil
 from pathlib import Path
 
@@ -60,15 +61,20 @@ class TestCheckTask:
         issues = check_task(task)
         assert "Missing environment/Dockerfile" in issues
 
-    @pytest.mark.skip(
-        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
-    )
     def test_missing_tests_dir(self, tmp_path):
+        """A missing legacy tests/ verifier dir is still reported.
+
+        _make_valid_task uses the legacy split layout whose verifier package
+        is the tests/ alias. That alias still ships, so removing it must make
+        check_task report the missing verifier package and name the legacy
+        tests/ fallback.
+        """
         task = self._make_valid_task(tmp_path)
         shutil.rmtree(task / "tests")
         issues = check_task(task)
         assert (
-            "Missing tests/ directory (verifier needs test.sh or evaluate.py)" in issues
+            "Missing verifier/ directory (or legacy tests/; verifier needs "
+            "test.sh or a verifier.md selected strategy)" in issues
         )
 
     def test_empty_tests_dir(self, tmp_path):
@@ -124,13 +130,35 @@ class TestCheckTask:
 
 
 class TestInitTask:
-    """init_task(name, ...) -> Path"""
+    """init_task(name, ...) -> Path — default task.md format."""
 
-    @pytest.mark.skip(
-        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
-    )
+    def test_no_solution_skips_solution_dir(self, tmp_path):
+        task = init_task("no-sol", parent_dir=tmp_path, no_solution=True)
+        assert not (task / "solution").exists()
+
+    def test_raises_on_existing_dir(self, tmp_path):
+        (tmp_path / "dupe").mkdir()
+        with pytest.raises(FileExistsError):
+            init_task("dupe", parent_dir=tmp_path)
+
+    def test_creates_parent_dirs(self, tmp_path):
+        task = init_task("deep", parent_dir=tmp_path / "nested" / "tasks")
+        assert task.exists()
+
+
+class TestInitTaskLegacyScaffold:
+    """init_task(..., task_format="legacy") — the shipped legacy scaffold.
+
+    `bench tasks init --format legacy` still ships on this release, and the
+    legacy code paths (render_task_md_from_legacy, the tests/ and solution/
+    aliases, legacy_solution_dir) remain in src/benchflow. These tests guard
+    the legacy split-scaffold contract — task.toml + instruction.md + tests/
+    + solution/ with fail-closed placeholder defaults — so the shipped path
+    can't silently regress while it is still reachable from the CLI.
+    """
+
     def test_creates_complete_structure(self, tmp_path):
-        task = init_task("my-task", parent_dir=tmp_path)
+        task = init_task("my-task", parent_dir=tmp_path, task_format="legacy")
         assert task == tmp_path / "my-task"
         assert (task / "task.toml").exists()
         assert (task / "instruction.md").exists()
@@ -139,59 +167,51 @@ class TestInitTask:
         assert (task / "tests" / "test_outputs.py").exists()
         assert (task / "solution" / "solve.sh").exists()
 
-    @pytest.mark.skip(
-        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
-    )
     def test_scaffold_fails_check_until_placeholders_replaced(self, tmp_path):
-        """Freshly scaffolded task must FAIL `bench tasks check` (#360).
+        """Freshly scaffolded legacy task must FAIL `bench tasks check` (#360).
 
-        Otherwise authors can `bench tasks init foo && bench tasks check foo`
-        and get a green ✓ on a task that auto-passes with reward 1.0 —
-        silent false positives in eval sets.
+        Otherwise authors can `bench tasks init --format legacy foo &&
+        bench tasks check foo` and get a green check on a task that
+        auto-passes with reward 1.0 — silent false positives in eval sets.
         """
-        task = init_task("scaffolded", parent_dir=tmp_path)
+        task = init_task("scaffolded", parent_dir=tmp_path, task_format="legacy")
         issues = check_task(task)
         assert issues, "scaffold must not pass check_task before editing"
-        # instruction.md, tests/test.sh and solution/solve.sh all carry the
-        # placeholder marker — each must be flagged so the author sees what
-        # to replace.
+        # instruction.md, tests/test.sh, tests/test_outputs.py and
+        # solution/solve.sh all carry the placeholder marker — each must be
+        # flagged so the author sees what to replace.
         joined = "\n".join(issues)
         assert "instruction.md" in joined
         assert "tests/test.sh" in joined
+        assert "tests/test_outputs.py" in joined
         assert "solution/solve.sh" in joined
 
-    @pytest.mark.skip(
-        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
-    )
     def test_scaffold_passes_check_after_placeholders_replaced(self, tmp_path):
         """Once the author replaces every [REPLACE: ...] marker, check passes."""
-        task = init_task("editable", parent_dir=tmp_path)
+        task = init_task("editable", parent_dir=tmp_path, task_format="legacy")
         (task / "instruction.md").write_text("# editable\n\nDo the thing.\n")
         (task / "tests" / "test.sh").write_text(
             '#!/bin/bash\necho "1.0" > /logs/verifier/reward.txt\n'
+        )
+        (task / "tests" / "test_outputs.py").write_text(
+            "def test_outputs():\n    assert True\n"
         )
         (task / "solution" / "solve.sh").write_text(
             "#!/bin/bash\ntouch /app/output.txt\n"
         )
         assert check_task(task) == []
 
-    @pytest.mark.skip(
-        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
-    )
     def test_scaffold_test_sh_defaults_to_failure(self, tmp_path):
         """Scaffolded verifier writes 0.0, not 1.0 (#360).
 
         Fail-closed default means even if check_task were skipped, the task
         cannot give a passing reward without explicit author edits.
         """
-        task = init_task("fail-closed", parent_dir=tmp_path)
+        task = init_task("fail-closed", parent_dir=tmp_path, task_format="legacy")
         test_sh = (task / "tests" / "test.sh").read_text()
         assert 'echo "0.0"' in test_sh
         assert 'echo "1.0"' not in test_sh
 
-    @pytest.mark.skip(
-        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
-    )
     def test_scaffold_solution_does_not_satisfy_verifier(self, tmp_path):
         """The placeholder solution must NOT make the placeholder verifier
         pass — issue #360 calls this out explicitly: solution and test must
@@ -200,7 +220,7 @@ class TestInitTask:
         We simulate by reading both files and checking that solve.sh exits
         nonzero (it does not produce side effects) while test.sh writes 0.0.
         """
-        task = init_task("collision", parent_dir=tmp_path)
+        task = init_task("collision", parent_dir=tmp_path, task_format="legacy")
         solve = (task / "solution" / "solve.sh").read_text()
         test_sh = (task / "tests" / "test.sh").read_text()
         # Solve.sh must not write a passing reward itself (no echo of 1.0
@@ -212,54 +232,27 @@ class TestInitTask:
         # And the solve script signals it's a placeholder by exiting nonzero.
         assert "exit 1" in solve
 
-    @pytest.mark.skip(
-        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
-    )
     def test_scaffold_pytest_template_fails(self, tmp_path):
         """The pytest verifier template fails until edited (#360)."""
-        task = init_task("py-fail", parent_dir=tmp_path)
+        task = init_task("py-fail", parent_dir=tmp_path, task_format="legacy")
         text = (task / "tests" / "test_outputs.py").read_text()
         assert "pytest.fail" in text
         assert "assert True" not in text
 
-    @pytest.mark.skip(
-        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
-    )
     def test_no_pytest_skips_test_outputs(self, tmp_path):
-        task = init_task("no-pytest", parent_dir=tmp_path, no_pytest=True)
+        task = init_task(
+            "no-pytest", parent_dir=tmp_path, no_pytest=True, task_format="legacy"
+        )
         assert not (task / "tests" / "test_outputs.py").exists()
         assert (task / "tests" / "test.sh").exists()
 
-    def test_no_solution_skips_solution_dir(self, tmp_path):
-        task = init_task("no-sol", parent_dir=tmp_path, no_solution=True)
-        assert not (task / "solution").exists()
-
-    @pytest.mark.skip(
-        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
-    )
     def test_test_sh_is_executable(self, tmp_path):
-        task = init_task("exec-test", parent_dir=tmp_path)
-        import os
-
+        task = init_task("exec-test", parent_dir=tmp_path, task_format="legacy")
         assert os.access(task / "tests" / "test.sh", os.X_OK)
 
-    @pytest.mark.skip(
-        reason="Legacy solution/+tests/ scaffold superseded by task.md-native oracle/+verifier/ layout; see docs/task-standard.md"
-    )
     def test_solve_sh_is_executable(self, tmp_path):
-        task = init_task("exec-sol", parent_dir=tmp_path)
-        import os
-
+        task = init_task("exec-sol", parent_dir=tmp_path, task_format="legacy")
         assert os.access(task / "solution" / "solve.sh", os.X_OK)
-
-    def test_raises_on_existing_dir(self, tmp_path):
-        (tmp_path / "dupe").mkdir()
-        with pytest.raises(FileExistsError):
-            init_task("dupe", parent_dir=tmp_path)
-
-    def test_creates_parent_dirs(self, tmp_path):
-        task = init_task("deep", parent_dir=tmp_path / "nested" / "tasks")
-        assert task.exists()
 
 
 class TestCtrfPathLint:
