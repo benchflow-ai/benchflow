@@ -70,6 +70,11 @@ def _patch_bedrock_effort() -> None:
                 reasoning_effort = override
         return original(self, model, reasoning_effort, optional_params)
 
+    # Marker for the fail-closed startup preflight (#602): lets the runtime
+    # verify this override is installed without importing this module (which
+    # would itself apply the patches and mask a sitecustomize load failure).
+    setattr(handle, "__benchflow_bedrock_patch__", True)  # noqa: B010
+
     setattr(  # noqa: B010 - avoids static type narrowing on monkey-patched vendor API
         AmazonConverseConfig,
         "_handle_reasoning_effort_parameter",

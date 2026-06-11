@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchflow.agents.registry import get_sandbox_home_dirs
+from benchflow.sandbox._cache_reclaim import build_reclaim_caches_cmd
 
 if TYPE_CHECKING:
     from benchflow.task import Task
@@ -881,21 +882,6 @@ CLEANUP_CMD = _build_cleanup_cmd()
 # strings are byte-identical to the historical inline f-strings — the rendered
 # payloads, not the call sites, are the security contract under test.
 
-# Skip any per-user cache that overlaps the active workspace in either
-# direction — restore_workspace defaults False, so the later full restore does
-# NOT run to undo a stray deletion. Workspace path is spliced verbatim (already
-# shell-quoted by the caller) as the ``WS`` value.
-_RECLAIM_DISK_CMD_TEMPLATE = (
-    "WS=__WS__; "
-    "for u in /root /home/*; do "
-    '  case "$WS" in "$u" | "$u"/*) continue ;; esac; '
-    '  case "$u" in "$WS"/*) continue ;; esac; '
-    '  rm -rf "$u/.cache/uv" "$u/.cache/pip" "$u/.cache/uv_build" 2>/dev/null; '
-    "done; "
-    "rm -rf /tmp/uv-* /tmp/.uv-* /var/cache/apt/archives/*.deb 2>/dev/null; "
-    "true"
-)
-
 # Full workspace restore from /testbed_verify (the pre-agent canonical copy) so
 # ALL source files — not just build-config files — are reset to their pre-agent
 # state before freezing. Closes the editable-install source modification vector
@@ -944,11 +930,6 @@ _PURGE_PYCACHE_CMD_TEMPLATE = (
 )
 
 
-def _reclaim_disk_cmd(workspace_guard: str) -> str:
-    """Render the best-effort re-downloadable-cache reclaim command."""
-    return _RECLAIM_DISK_CMD_TEMPLATE.replace("__WS__", workspace_guard)
-
-
 def _restore_workspace_cmd(workspace: str) -> str:
     """Render the full /testbed_verify → workspace restore command."""
     return _RESTORE_WORKSPACE_CMD_TEMPLATE.replace("__WSQ__", shlex.quote(workspace))
@@ -994,14 +975,16 @@ async def _reclaim_disk(env, workspace: str | None) -> None:
     tools, or task assets — and a failure here never blocks the verifier. Runs
     on ``main`` only, consistent with the hardening policy.
 
-    Workspace-aware: a task can legitimately use /root or /home/<user> as its
-    workspace (so "$u/.cache" would be workspace state the verifier must see
-    untouched).
+    Workspace-aware AND symlink-safe (#601): a task can legitimately use /root,
+    /home/<user>, or /tmp/uv-* as its workspace, and an agent can plant
+    ``~/.cache -> /app`` so a naive ``rm -rf "$u/.cache/uv"`` would traverse into
+    workspace/output state. ``build_reclaim_caches_cmd`` rejects symlinked
+    candidates and realpath-guards every deletion against the workspace and
+    /logs — this matters because restore_workspace defaults to False.
     """
-    workspace_guard = shlex.quote(workspace) if workspace else "/nonexistent"
     try:
         await env.exec(
-            _reclaim_disk_cmd(workspace_guard),
+            build_reclaim_caches_cmd(workspace),
             user="root",
             timeout_sec=30,
         )
