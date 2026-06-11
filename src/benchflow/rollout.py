@@ -3032,6 +3032,12 @@ class Rollout:
                 return result
 
             round_num = 0
+            # Tracks whether the scene-step loop terminated because the user
+            # stopped (returned None) or raised. When set, the free-round loop
+            # below must NOT run: re-calling user.run() would resurrect a
+            # stopped user or retry one that already errored, while self._error
+            # stays set — producing a half-script rollout reported as errored.
+            loop_terminated = False
             for step in steps:
                 scene_prompt = scene_step_prompt(step)
                 try:
@@ -3043,6 +3049,7 @@ class Rollout:
                 except Exception as e:
                     self._error = f"user.run() failed at round {round_num}: {e}"
                     logger.error(self._error, exc_info=True)
+                    loop_terminated = True
                     break
 
                 if use_scene_prompts:
@@ -3050,6 +3057,7 @@ class Rollout:
                 else:
                     if user_prompt is None:
                         logger.info(f"[User] stopped at round {round_num}")
+                        loop_terminated = True
                         break
                     prompt = user_prompt
                 next_role = scene_step_role(step)
@@ -3063,7 +3071,7 @@ class Rollout:
                 last_role = next_role
                 round_num += 1
 
-            while round_num < cfg.max_user_rounds:
+            while not loop_terminated and round_num < cfg.max_user_rounds:
                 try:
                     prompt = await user.run(round_num, instruction, round_result)
                 except Exception as e:
