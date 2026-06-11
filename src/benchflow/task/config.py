@@ -24,6 +24,8 @@ from pydantic import (
     model_validator,
 )
 
+from benchflow.rewards.validation import validate_declared_reward_range
+
 ORG_NAME_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
 _NETWORK_HOST_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _ENV_VAR_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
@@ -250,6 +252,21 @@ class VerifierConfig(TaskConfigModel):
         "non-finite budgets are rejected at validation time.",
     )
     env: dict[str, str] = Field(default_factory=dict)
+    reward_range: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "Declared [lo, hi] reward contract for this task. Omitted (None) "
+            "keeps BenchFlow's strict canonical [0.0, 1.0]. A declared range "
+            "may only WIDEN the canonical range — lo <= 0.0, hi >= 1.0, "
+            "lo < hi, both finite — so 0 ('did nothing') and 1 ('solved') "
+            "stay meaningful for every task; e.g. safety-floor benchmarks "
+            "declare reward_range = [-1.0, 1.0] to score deliberate "
+            "violations below doing nothing. Applies to the test-script "
+            "reward contract (reward.txt / reward.json scalar reward, "
+            "numeric metrics, aggregate results) and the final reward "
+            "canonicalization gate; LLM-judge rubric scores stay [0, 1]."
+        ),
+    )
     user: str | int | None = Field(
         default=None,
         description="Username or UID to run the verifier as.",
@@ -312,6 +329,15 @@ class VerifierConfig(TaskConfigModel):
     @classmethod
     def validate_allowed_hosts(cls, hosts: list[str] | None) -> list[str] | None:
         return _validate_allowed_hosts(hosts)
+
+    @field_validator("reward_range")
+    @classmethod
+    def validate_reward_range(
+        cls, value: tuple[float, float] | None
+    ) -> tuple[float, float] | None:
+        # Widen-only rule (lo <= 0.0 <= 1.0 <= hi, lo < hi, finite) lives with
+        # the reward contract in benchflow.rewards.validation.
+        return None if value is None else validate_declared_reward_range(value)
 
     @model_validator(mode="after")
     def validate_verifier_environment(self) -> VerifierConfig:
