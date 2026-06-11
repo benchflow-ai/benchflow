@@ -1,4 +1,5 @@
 ---
+schema_version: "1.3"
 task:
   name: benchflow/clean-body-roles-scenes
   description: Authoring example — clean skill-style body, roles/scenes as files

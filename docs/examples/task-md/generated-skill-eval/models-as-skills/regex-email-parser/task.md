@@ -1,5 +1,5 @@
 ---
-version: '1.0'
+schema_version: "1.3"
 metadata:
   author_name: benchflow-skill-eval
   difficulty: medium
