@@ -32,6 +32,98 @@ def _provider_auth_status_from_runtime(runtime: Any) -> int | None:
     return None
 
 
+def _api_error_subcategory(status: int) -> tuple[str, bool]:
+    """Map a provider HTTP failure status to (subcategory, transient).
+
+    Status-code-only by design — same #546/#564 security posture as the
+    401/403 scan above (never read bodies or headers, so no credential
+    material can leak into ``result.error``).
+    """
+    if status in (401, 403):
+        return "auth", False
+    if status == 402:
+        return "quota", False
+    if status == 404:
+        return "model_not_found", False
+    if status == 429:
+        return "rate_limit", True
+    if status >= 500 or status == 408:
+        return "provider_error", True
+    return "rejected_request", False
+
+
+def _provider_api_failure_summary_from_runtime(runtime: Any) -> dict[str, Any] | None:
+    """Summarize provider HTTP failures from a usage runtime's trajectory.
+
+    Returns ``None`` when there is no runtime/trajectory or no captured
+    exchanges; otherwise a dict with request totals, per-status failure
+    counts, and the dominant failure's (subcategory, transient, fingerprint)
+    classification. Reads only integer status codes (#546/#564).
+    """
+    server = getattr(runtime, "server", None)
+    trajectory = getattr(server, "trajectory", None)
+    exchanges = getattr(trajectory, "exchanges", None) or []
+    total = 0
+    failed: dict[int, int] = {}
+    last_failed_status: int | None = None
+    for exchange in exchanges:
+        status = getattr(getattr(exchange, "response", None), "status_code", None)
+        if not isinstance(status, int):
+            continue
+        total += 1
+        if status >= 400:
+            failed[status] = failed.get(status, 0) + 1
+            last_failed_status = status
+    if total == 0:
+        return None
+    summary: dict[str, Any] = {
+        "total_requests": total,
+        "failed_requests": sum(failed.values()),
+    }
+    if failed:
+        dominant = max(
+            failed.items(), key=lambda kv: (kv[1], kv[0] == last_failed_status)
+        )[0]
+        subcategory, transient = _api_error_subcategory(dominant)
+        summary.update(
+            status_counts={str(k): v for k, v in sorted(failed.items())},
+            dominant_status=dominant,
+            subcategory=subcategory,
+            transient=transient,
+            fingerprint=f"{subcategory}:{dominant}",
+        )
+    return summary
+
+
+def classify_api_failure(
+    summary: dict[str, Any] | None,
+    *,
+    total_tokens: int,
+    n_tool_calls: int,
+) -> tuple[str | None, dict[str, Any]]:
+    """Decide the post-rollout API-error verdict for an error-free rollout.
+
+    Returns ``("api_error", summary)`` when the proxy captured provider
+    requests and every one of them failed while the agent produced zero
+    tokens (proxy-proven); ``("suspected_api_error", {...})`` when there is
+    no proxy failure evidence but the agent ended with zero tokens AND zero
+    tool calls (zero-signal heuristic — e.g. an agent that validates the
+    model id locally and never issues a request); ``(None, {})`` otherwise.
+    A rollout with any real token usage or tool activity is never flagged.
+    """
+    summary = summary or {}
+    failed = summary.get("failed_requests") or 0
+    total = summary.get("total_requests") or 0
+    if failed and failed == total and total_tokens == 0:
+        return "api_error", summary
+    if total_tokens == 0 and n_tool_calls == 0:
+        return "suspected_api_error", {
+            "total_requests": total,
+            "failed_requests": failed,
+        }
+    return None, {}
+
+
 _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT = {
     "input_tokens": "n_input_tokens",
     "output_tokens": "n_output_tokens",
