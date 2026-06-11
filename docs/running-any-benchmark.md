@@ -10,13 +10,18 @@ format picks it for you:
 
 | If the benchmark is… | Layer | What BenchFlow does |
 |----------------------|-------|---------------------|
-| In a framework BenchFlow already speaks (Harbor / Terminal-Bench, PrimeIntellect / Verifiers, Inspect AI, ORS / OpenReward) | **1 — native** | Runs it in its supported form; correctness is inherited from the original format |
+| In a framework BenchFlow speaks *inbound* — Harbor / Terminal-Bench (task-dir adapter) or PrimeIntellect / Verifiers (hosted) | **1 — native** | Runs it in its supported form; correctness is inherited from the original format |
 | In a variant of a known format, or a format BenchFlow has never seen | **2 — translated** | Translates it to the native `task.md` format, then *proves* equivalence with a parity gate |
 | A one-off harness with its own runner and scoring, no reusable adapter | **3 — as-is** | Runs the benchmark under its own harness and interfaces with its output only |
 
 All three layers terminate at the same scored-trajectory contract (see
 [The seam](#the-seam-one-scored-trajectory-contract) below). One ingestion,
 every benchmark.
+
+Inspect AI and ORS / OpenReward are deliberately **not** in the table above:
+BenchFlow has no inbound run path for them. They are *outbound* export targets —
+BenchFlow writes its own native results into those formats — covered under
+[Layer 1's outbound format seams](#layer-1--supported-framework--run-natively).
 
 ---
 
