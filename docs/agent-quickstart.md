@@ -51,8 +51,14 @@ that no version of `benchflow==0.6.0` exists, the release has not propagated
 to PyPI yet — fall back to:
     uv tool install --prerelease allow --upgrade benchflow
 and check `bench --version`. If the installed version is still older than
-0.6.0, STOP and report that to the user instead of continuing: steps 6–8
-assume the 0.6.0 scaffold and artifact layout.
+0.6.0, CONTINUE anyway in degraded mode: steps 0–6 work on 0.5.x too. Tell
+the user which version you got, then (a) in step 6, expect only
+`trainer/verifiers.jsonl` (the `atif.json`/`adp.jsonl` trainer artifacts
+ship in 0.6.0), and (b) in step 7, scaffold with plain `bench tasks init
+my-first-task` (the `--format task-md` flag and `task.md` scaffold are
+0.6.0+; older builds emit the split `task.toml` layout — the oracle run
+works the same). Note in your final summary that upgrading to 0.6.0
+unlocks the full flow.
 Verify:
     bench --version
     bench agent list
