@@ -72,26 +72,57 @@ round-trip *out* into the frameworks teams already use:
 
 ---
 
-## Layer 2 — unknown or variant format → translate, then prove parity
+## Layer 2 — unknown or variant format → translate, then validate or prove parity
 
 When a benchmark's format is **not** one BenchFlow speaks natively — a variant of
 a known layout, or an entirely new one — BenchFlow translates it to the native
-`task.md` format and then **proves** the translation produces the same results.
-This is the load-bearing "same results" guarantee, and it is the difference
-between a conversion you can trust and one you merely hope is faithful.
+`task.md` format. There are **two distinct translation flows**, and they check the
+result in **different** ways. They do not chain together; pick the one that
+matches what you are translating:
 
-### Translate
+| You are translating… | Command path | How the result is checked |
+|----------------------|--------------|---------------------------|
+| A task you already control, in the legacy split layout (`task.toml` + `instruction.md`) | `bench tasks migrate` → `bench tasks check` | Structural validation of the generated `task.md` (config equivalence is enforced at conversion time) |
+| A foreign benchmark with no reusable adapter | `bench agent create` → `bench agent run` → `bench agent verify` | The parity gate **proves** the converted benchmark reproduces the original's results |
 
-- `bench tasks migrate <dir>` converts a legacy split layout (`task.toml` +
-  `instruction.md`) into the unified `task.md` format
-  ([`cli/main.py`](../src/benchflow/cli/main.py) → `migrate_task_to_task_md`).
-- For a foreign benchmark with no reusable adapter, the benchmark-adoption router
-  in [`src/benchflow/agent_router.py`](../src/benchflow/agent_router.py) drives
-  the work: `bench agent create <name>` scaffolds `benchmarks/<name>/` to the
-  reference layout and the contract in
-  [`benchmarks/CONVERT.md`](../benchmarks/CONVERT.md), and `bench agent run
-  <source>` drives that conversion workflow with an agent toward a
-  `benchmarks/<name>/` pull request.
+The two paths are not interchangeable: `bench agent verify` scores only a
+benchmark *adopted* with `bench agent create`. It reads
+`benchmarks/<name>/parity_experiment.json` and errors `benchmark not adopted …
+run bench agent create first` on anything else — including a migrated `task.md`.
+A migrated `task.md` is validated with `bench tasks check`, never with `verify`.
+
+### (a) Migrate a task you control → validate with `bench tasks check`
+
+`bench tasks migrate <dir>` converts a legacy split layout (`task.toml` +
+`instruction.md`) into the unified `task.md` format
+([`cli/main.py`](../src/benchflow/cli/main.py) → `migrate_task_to_task_md`). The
+conversion checks config equivalence before writing, so it cannot silently drop
+supported task configuration. Validate the generated package with:
+
+```bash
+bench tasks check <dir>
+```
+
+That is the structural gate (`check_task` in
+[`_utils/task_authoring.py`](../src/benchflow/_utils/task_authoring.py)): it
+rejects unreplaced `[REPLACE: …]` placeholders, missing required files, and a
+verifier package with no runnable entrypoint. This flow records no
+`parity_experiment.json` and runs no parity gate — it is a faithful in-place
+format conversion of a task you already own.
+
+### (b) Adopt a foreign benchmark → `bench agent create`, then prove with `bench agent verify`
+
+For a foreign benchmark with no reusable adapter, the benchmark-adoption router
+in [`src/benchflow/agent_router.py`](../src/benchflow/agent_router.py) drives the
+work:
+
+- `bench agent create <name>` scaffolds `benchmarks/<name>/` to the reference
+  layout and the contract in [`benchmarks/CONVERT.md`](../benchmarks/CONVERT.md).
+- `bench agent run <source>` drives that conversion workflow with an agent toward
+  a `benchmarks/<name>/` pull request.
+
+Only a benchmark adopted this way carries the `benchmarks/<name>/` directory the
+parity gate below requires.
 
 ### Prove — the parity gate
 
