@@ -89,6 +89,5 @@ def build_reclaim_caches_cmd(workspace: str | None) -> str:
     """Build the best-effort cache reclaim shell command."""
     workspace_arg = shlex.quote(workspace) if workspace else "/nonexistent"
     return (
-        f"python3 -c {shlex.quote(RECLAIM_CACHES_PY)} {workspace_arg} "
-        "2>/dev/null; true"
+        f"python3 -c {shlex.quote(RECLAIM_CACHES_PY)} {workspace_arg} 2>/dev/null; true"
     )
