@@ -22,9 +22,10 @@
   `trainer/atif.json` and `trainer/adp.jsonl` (alongside the existing
   `verifiers.jsonl`), with job-level ADP aggregation. One canonical raw
   trajectory, multiple ecosystem formats out of the box.
-- **OpenReward (ORS) hosted-environment runner** — run OpenReward-hosted
-  environments via `--source-env openreward:<owner>/<name>`, driving the
-  episode loop and landing standard scored artifacts.
+- **OpenReward (ORS) reward-format interop** — export BenchFlow rewards in the
+  Open Reward Standard shape (`benchflow.adapters.ors`) and the `ors-episode`
+  verifier strategy is recognized. (The hosted-environment episode runner that
+  executes ORS environments end-to-end is in progress, not in this release.)
 - **Daytona sandbox auto-reap** — orphaned sandboxes are cleaned at eval start
   (TTL-tiered; failure states reaped sooner), gated by
   `BENCHFLOW_DAYTONA_AUTO_REAP`.
