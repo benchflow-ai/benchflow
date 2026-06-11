@@ -9,6 +9,15 @@ bench --version
 
 ## bench agent
 
+> **Two different nouns share this group.** `bench agent list` and `bench agent
+> show` operate on **registered AI agents** (Claude Code, Gemini CLI, Codex,
+> OpenHands, …) — the programs that solve tasks. `bench agent create`, `bench
+> agent run`, and `bench agent verify` operate on **benchmark adoptions** —
+> scaffolding, driving, and parity-gating a `benchmarks/<name>/` adoption of a
+> third-party benchmark. They are unrelated despite living under the same
+> command group: `list`/`show` inspect solver agents, while
+> `create`/`run`/`verify` are the benchmark-onboarding workflow.
+
 ### bench agent list
 
 List all registered agents with their protocol and native/default auth
