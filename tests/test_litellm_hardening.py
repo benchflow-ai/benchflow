@@ -454,6 +454,33 @@ def test_route_requires_bedrock_patch_ignores_non_bedrock_providers():
     assert preflight_mod.route_requires_bedrock_patch(route) is False
 
 
+def test_host_bedrock_preflight_uses_litellm_shebang_python(tmp_path):
+    """Guards PR #668 against checking a different Python than the LiteLLM CLI
+    will actually run under when the executable is a script with a shebang."""
+    litellm = tmp_path / "litellm"
+    python = tmp_path / "tools" / "python"
+    python.parent.mkdir()
+    litellm.write_text(f"#!{python}\n")
+
+    assert preflight_mod._host_python_for_litellm(str(litellm)) == str(python)
+
+
+def test_host_bedrock_preflight_resolves_env_shebang_with_proxy_path(tmp_path):
+    """Guards PR #668 against resolving `/usr/bin/env python*` with a different
+    PATH than the LiteLLM proxy receives."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    python = bindir / "python3"
+    python.write_text("")
+    python.chmod(0o755)
+    litellm = tmp_path / "litellm"
+    litellm.write_text("#!/usr/bin/env python3\n")
+
+    assert preflight_mod._host_python_for_litellm(
+        str(litellm), env={"PATH": str(bindir)}
+    ) == str(python)
+
+
 def test_bedrock_patch_preflight_passes_when_runtime_files_on_pythonpath(tmp_path):
     """End-to-end happy path for the PR #668 preflight (issue #602): a fresh interpreter
     with the runtime dir on PYTHONPATH loads sitecustomize -> patch module, so

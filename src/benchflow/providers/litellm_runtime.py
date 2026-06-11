@@ -29,6 +29,7 @@ from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.litellm_bedrock_preflight import (
     BEDROCK_PATCH_PREFLIGHT_SOURCE,
+    BedrockPatchPreflightError,
     preflight_host_bedrock_patch,
     preflight_sandbox_bedrock_patch,
     route_requires_bedrock_patch,
@@ -1083,6 +1084,8 @@ async def ensure_litellm_runtime(
                 session_id=session_id,
                 agent_name=agent,
             )
+    except BedrockPatchPreflightError:
+        raise
     except Exception as exc:
         return await _fallback_or_raise_for_unavailable_litellm(
             usage_cfg=usage_cfg,
