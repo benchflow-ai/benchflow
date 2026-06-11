@@ -203,6 +203,41 @@ _REAP_DEFAULT_MAX_AGE_MIN = 1440
 _REAP_FAILED_MAX_AGE_MIN = 120
 _REAP_FAILED_STATE_MARKERS = ("FAILED", "ERROR")
 
+# Ownership scoping for the auto-reaper. Every sandbox benchflow creates is
+# stamped with this label so :func:`reap_stale_sandboxes` can restrict its
+# age-based deletion to benchflow's *own* sandboxes. Without it, a reap run
+# against a ``DAYTONA_API_KEY`` shared across an org (or with other tools) would
+# delete unrelated sandboxes by age alone — irreversible, cross-tenant data
+# loss. Foreign / unlabeled sandboxes are therefore never touched, regardless
+# of age. The dotted key follows the Docker/Daytona label convention.
+_BENCHFLOW_MANAGED_LABEL = "benchflow.managed"
+_BENCHFLOW_MANAGED_VALUE = "1"
+
+
+def _benchflow_owned_labels() -> dict[str, str]:
+    """Return a fresh ownership-label dict for one sandbox-creation call.
+
+    A new dict per call is required: the Daytona SDK mutates ``params.labels``
+    in place (it injects the language label), so a shared dict would leak that
+    mutation across creation sites.
+    """
+    return {_BENCHFLOW_MANAGED_LABEL: _BENCHFLOW_MANAGED_VALUE}
+
+
+def _is_benchflow_owned(sb: Any) -> bool:
+    """Return whether *sb* carries benchflow's exact ownership label.
+
+    This scope check is the only thing standing between the age-based reaper
+    and other people's sandboxes when the API key is shared. Anything missing
+    the exact key/value pair — including sandboxes with no labels at all, or a
+    ``labels`` attribute that is not a mapping — is treated as foreign and left
+    untouched.
+    """
+    labels = getattr(sb, "labels", None)
+    if not isinstance(labels, dict):
+        return False
+    return labels.get(_BENCHFLOW_MANAGED_LABEL) == _BENCHFLOW_MANAGED_VALUE
+
 
 def reap_stale_sandboxes(
     client: Any | None = None,
@@ -214,15 +249,23 @@ def reap_stale_sandboxes(
 ) -> dict[str, int]:
     """Delete orphaned Daytona sandboxes past their TTL.
 
+    Ownership-scoped: only sandboxes benchflow created — those carrying the
+    ``benchflow.managed`` label (see :func:`_is_benchflow_owned`) — are ever
+    considered. Foreign / unlabeled sandboxes are skipped before any age check,
+    so a ``DAYTONA_API_KEY`` shared across an org or with other tools cannot be
+    used to destroy unrelated sandboxes by age alone.
+
     Two tiers: sandboxes whose state contains a failure marker (e.g.
     ``BUILD_FAILED``) are reaped after *failed_max_age_minutes*; everything
     else after *max_age_minutes*. Defaults are deliberately conservative so
     concurrent live runs are never touched — only multi-hour orphans from
     crashed or interrupted sessions.
 
-    *on_decision* (sandbox, age_minutes, will_delete) is called per sandbox
-    when provided — the CLI uses it for per-row display. Returns counts:
-    ``{"found", "deleted", "skipped", "failed"}``.
+    *on_decision* (sandbox, age_minutes, will_delete) is called per *owned*
+    sandbox when provided — the CLI uses it for per-row display; foreign
+    sandboxes are never surfaced as reap candidates. Returns counts:
+    ``{"found", "deleted", "skipped", "failed"}`` (``found`` counts every
+    sandbox listed; foreign ones fall into ``skipped``).
     """
     from datetime import UTC, datetime
 
@@ -232,6 +275,11 @@ def reap_stale_sandboxes(
     counts = {"found": 0, "deleted": 0, "skipped": 0, "failed": 0}
     for sb in client.list():
         counts["found"] += 1
+        if not _is_benchflow_owned(sb):
+            # Scope guard: never touch a sandbox benchflow did not create.
+            # This is the load-bearing safety check on a shared API key.
+            counts["skipped"] += 1
+            continue
         if not getattr(sb, "created_at", None):
             counts["skipped"] += 1
             continue
@@ -483,6 +531,7 @@ class _DaytonaDirect(_DaytonaStrategy):
                 auto_stop_interval=env._auto_stop_interval,
                 snapshot=snapshot_name,
                 network_block_all=env._network_block_all,
+                labels=_benchflow_owned_labels(),
             )
         elif force_build or not env.task_env_config.docker_image:
             env.logger.debug(f"Building environment from {env._dockerfile_path}")
@@ -493,6 +542,7 @@ class _DaytonaDirect(_DaytonaStrategy):
                 auto_stop_interval=env._auto_stop_interval,
                 resources=resources,
                 network_block_all=env._network_block_all,
+                labels=_benchflow_owned_labels(),
             )
         else:
             env.logger.debug(
@@ -505,6 +555,7 @@ class _DaytonaDirect(_DaytonaStrategy):
                 auto_stop_interval=env._auto_stop_interval,
                 resources=resources,
                 network_block_all=env._network_block_all,
+                labels=_benchflow_owned_labels(),
             )
 
         try:
@@ -684,6 +735,7 @@ class _DaytonaDirect(_DaytonaStrategy):
             auto_stop_interval=env._auto_stop_interval,
             snapshot=image.ref,
             network_block_all=env._network_block_all,
+            labels=_benchflow_owned_labels(),
         )
         await env._create_sandbox(params=params)
         env.logger.info(f"Snapshot restored: {image.ref}")
@@ -857,6 +909,7 @@ class _DaytonaDinD(_DaytonaStrategy):
                 auto_delete_interval=env._auto_delete_interval,
                 auto_stop_interval=env._auto_stop_interval,
                 network_block_all=False,
+                labels=_benchflow_owned_labels(),
             )
         else:
             image = Image.base(dind_image)
@@ -866,6 +919,7 @@ class _DaytonaDinD(_DaytonaStrategy):
                 auto_stop_interval=env._auto_stop_interval,
                 resources=resources,
                 network_block_all=False,
+                labels=_benchflow_owned_labels(),
             )
 
         try:
