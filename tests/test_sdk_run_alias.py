@@ -1,5 +1,7 @@
 """Tests for the deprecated ``SDK.run(trial_name=...)`` alias.
 
+Guards the fix from benchflow-ai/benchflow PR #670 (BF-2).
+
 v0.6 renamed ``SDK.run(trial_name=...)`` to ``rollout_name`` with no alias,
 a hard break for downstream callers (clawsbench). BF-2 restores a
 backward-compatible deprecation alias: ``trial_name`` maps to ``rollout_name``

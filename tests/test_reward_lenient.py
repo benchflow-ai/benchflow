@@ -1,5 +1,7 @@
 """Tests for BF-3: lenient reward.json validation (legacy rich-reward flow).
 
+Guards the fix from benchflow-ai/benchflow PR #670 (BF-3).
+
 The strict contract (the default) rejects any unrecognized non-numeric
 top-level key — e.g. the Harbor-era ``{"reward": 1.0, "done": true}`` — and any
 non-numeric metric. Lenient mode (opt-in via ``BENCHFLOW_REWARD_LENIENT=1``)

@@ -291,6 +291,8 @@ class TestCreateEnvironment:
         fails at env selection with the actionable install hint, not a raw
         ImportError deep inside DaytonaSandbox.__init__.
 
+        Guards the fix from benchflow-ai/benchflow PR #670 (BF-1).
+
         ``benchflow.sandbox.daytona`` is import-safe without the SDK (#358), so the
         factory's import guard alone never trips; the SDK only fails when
         ``_load_daytona_sdk`` runs. Here we simulate the absent SDK and assert the
