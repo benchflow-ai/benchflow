@@ -174,9 +174,16 @@ def effective_install_timeout(
     if agent_base not in AGENT_INSTALLERS:
         return None
     agent_cfg = AGENTS.get(agent_base)
-    if agent_cfg is not None:
-        return agent_cfg.install_timeout
-    return sandbox_setup_timeout
+    if agent_cfg is None:
+        # Defensive fallback, not dead code: an installer can live in
+        # AGENT_INSTALLERS without a matching AGENTS entry (e.g. one injected
+        # directly into the derived install table by external tooling). The
+        # built-in registry keeps the two maps in lockstep, but when they
+        # diverge we still bound the install by the configured sandbox setup
+        # timeout rather than leaving it unbounded. Covered by
+        # test_effective_install_timeout_branches / the fake-agent fallback test.
+        return sandbox_setup_timeout
+    return agent_cfg.install_timeout
 
 
 async def install_agent(

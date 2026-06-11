@@ -256,3 +256,30 @@ async def test_install_timeout_falls_back_to_config_without_registry_entry(
 
     assert env.exec.await_args_list[0].kwargs["timeout_sec"] == 41
     assert effective_install_timeout("fake-agent", 41) == 41
+
+
+def test_effective_install_timeout_branches(monkeypatch):
+    """Direct coverage of every effective_install_timeout branch.
+
+    The three branches return three *distinct* values (None / per-agent override
+    / config fallback), so a revert of any one branch — including the
+    ``agent_cfg is None`` defensive guard the audit flagged — flips a concrete
+    assertion here rather than passing silently.
+    """
+    # 1. No installer registered at all → None, whatever the config timeout is.
+    assert "definitely-not-an-agent" not in AGENT_INSTALLERS
+    assert effective_install_timeout("definitely-not-an-agent", 41) is None
+
+    # 2. Real registry entry → the per-agent install_timeout overrides config.
+    override = AGENTS["openhands"].install_timeout
+    assert override != 41  # the override is genuinely distinct from the config value
+    assert effective_install_timeout("openhands", 41) == override
+
+    # 3. Installer in AGENT_INSTALLERS but absent from AGENTS (label/registry
+    #    drift) → defensive fallback to the configured sandbox setup timeout.
+    monkeypatch.setitem(AGENT_INSTALLERS, "fake-agent", "echo install")
+    assert "fake-agent" not in AGENTS
+    assert effective_install_timeout("fake-agent", 41) == 41
+    # agent_base is the first whitespace-delimited token, so specs with flags
+    # resolve through the same fallback.
+    assert effective_install_timeout("fake-agent --acp", 41) == 41

@@ -212,6 +212,12 @@ _REAP_FAILED_STATE_MARKERS = ("FAILED", "ERROR")
 # of age. The dotted key follows the Docker/Daytona label convention.
 _BENCHFLOW_MANAGED_LABEL = "benchflow.managed"
 _BENCHFLOW_MANAGED_VALUE = "1"
+# The dotted prefix every benchflow-stamped label key shares. Used only by the
+# read-only orphan-leak guard below to recognize a sandbox that *looks* like
+# benchflow created it (carries the namespace) yet fails the strict ownership
+# check — i.e. its ownership label drifted off the exact key/value the reaper
+# keys on. ``_BENCHFLOW_MANAGED_LABEL`` itself lives under this namespace.
+_BENCHFLOW_LABEL_NAMESPACE = "benchflow."
 
 
 def _benchflow_owned_labels() -> dict[str, str]:
@@ -237,6 +243,30 @@ def _is_benchflow_owned(sb: Any) -> bool:
     if not isinstance(labels, dict):
         return False
     return labels.get(_BENCHFLOW_MANAGED_LABEL) == _BENCHFLOW_MANAGED_VALUE
+
+
+def _is_benchflow_label_orphan(sb: Any) -> bool:
+    """Return whether *sb* looks benchflow-created but lacks the ownership label.
+
+    True only when the sandbox carries at least one ``benchflow.``-namespaced
+    label key yet fails :func:`_is_benchflow_owned` (the exact
+    ``benchflow.managed=1`` pair is absent or has drifted to another value).
+    Such a sandbox is almost certainly one benchflow created whose ownership
+    label was lost — the age-based reaper's scope gate will now skip it forever,
+    so it leaks. This is a *detection-only* predicate: the missing/altered label
+    means ownership cannot be proven strongly enough to delete on a shared API
+    key, so the reaper only warns. A correctly-labeled (owned) sandbox is never
+    an orphan, and a purely foreign sandbox (no benchflow namespace) is ignored.
+    """
+    if _is_benchflow_owned(sb):
+        return False
+    labels = getattr(sb, "labels", None)
+    if not isinstance(labels, dict):
+        return False
+    return any(
+        isinstance(key, str) and key.startswith(_BENCHFLOW_LABEL_NAMESPACE)
+        for key in labels
+    )
 
 
 def reap_stale_sandboxes(
@@ -278,6 +308,20 @@ def reap_stale_sandboxes(
         if not _is_benchflow_owned(sb):
             # Scope guard: never touch a sandbox benchflow did not create.
             # This is the load-bearing safety check on a shared API key.
+            if _is_benchflow_label_orphan(sb):
+                # Read-only orphan-leak guard: a sandbox carrying the benchflow
+                # namespace but missing the exact ownership label will never be
+                # reaped by age. Surface it so an operator can reclaim it by
+                # hand; we deliberately do not delete unlabeled sandboxes.
+                logger.warning(
+                    "Daytona sandbox %s carries a benchflow label namespace but "
+                    "is missing the %s=%s ownership label; the age-based reaper "
+                    "will never reclaim it (possible orphan leak). Not deleting — "
+                    "verify and remove it manually if it is stale.",
+                    getattr(sb, "id", "?"),
+                    _BENCHFLOW_MANAGED_LABEL,
+                    _BENCHFLOW_MANAGED_VALUE,
+                )
             counts["skipped"] += 1
             continue
         if not getattr(sb, "created_at", None):
