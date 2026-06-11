@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from benchflow.providers import litellm_runtime as runtime_mod
+from benchflow.providers.litellm_bedrock_preflight import BedrockPatchPreflightError
 from benchflow.providers.litellm_config import LITELLM_MODEL_ALIAS_ENV
 from benchflow.providers.runtime import (
     ProviderRuntime,
@@ -153,10 +154,9 @@ async def test_runtime_reuse_and_stop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_required_usage_fails_when_litellm_lacks_provider_key(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv("HOME", str(tmp_path))  # hide any host ~/.codex/auth.json
+async def test_required_usage_fails_when_litellm_lacks_provider_key(monkeypatch):
+    monkeypatch.setattr(runtime_mod, "uses_native_subscription_auth", lambda *_: False)
+
     with pytest.raises(RuntimeError, match="requires OPENAI_API_KEY"):
         await ensure_litellm_runtime(
             agent="codex-acp",
@@ -333,6 +333,30 @@ async def test_auto_usage_falls_back_when_litellm_start_fails(monkeypatch):
 
     assert updated == env
     assert provider_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_auto_usage_does_not_fallback_on_bedrock_patch_preflight(monkeypatch):
+    """Guards PR #668's fail-closed fix for issue #602: an inactive Bedrock patch
+    must abort even when usage_tracking=auto would normally skip LiteLLM."""
+
+    async def fail_start(**_kwargs):
+        raise BedrockPatchPreflightError("patch inactive")
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+
+    with pytest.raises(BedrockPatchPreflightError, match="patch inactive"):
+        await ensure_litellm_runtime(
+            agent="openhands",
+            agent_env={
+                "AWS_BEARER_TOKEN_BEDROCK": "tok",
+                "AWS_REGION": "us-west-2",
+            },
+            model="aws-bedrock/us.anthropic.claude-opus-4-8-20251101-v1:0",
+            runtime=None,
+            environment="docker",
+            usage_tracking="auto",
+        )
 
 
 @pytest.mark.asyncio

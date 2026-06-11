@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from benchflow.providers import litellm_bedrock_preflight as preflight_mod
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_config import resolve_litellm_route
 from benchflow.providers.litellm_logging import (
@@ -242,10 +243,17 @@ _SUCCESS_LOG = json.dumps(
 class _FakeSandbox:
     """Drives the real sandbox-local LiteLLM launch/teardown code paths."""
 
-    def __init__(self, *, fail_launch: bool = False, log_content: str = _SUCCESS_LOG):
+    def __init__(
+        self,
+        *,
+        fail_launch: bool = False,
+        fail_preflight: bool = False,
+        log_content: str = _SUCCESS_LOG,
+    ):
         self.uploaded: dict[str, str] = {}
         self.exec_calls: list[str] = []
         self.fail_launch = fail_launch
+        self.fail_preflight = fail_preflight
         self.log_content = log_content
         self._started = False
 
@@ -257,6 +265,10 @@ class _FakeSandbox:
         if "stat -c %s" in command:
             return _ExecResult(0, stdout=str(len(self.log_content)))
         if "urllib.request" in command:
+            return _ExecResult(0)
+        if "bedrock_patch_preflight.py" in command:
+            if self.fail_preflight:
+                return _ExecResult(1, stdout="adaptive-thinking gate inactive")
             return _ExecResult(0)
         if "launcher.py" in command:
             if self.fail_launch:
@@ -410,7 +422,181 @@ def test_bedrock_patch_flags_cost_map_when_entry_present():
         assert flagged, "bedrock 4.8+ cost entries should be flagged adaptive-thinking"
 
 
-# #
+# --------------------------------------------------------------------------- #
+# Bedrock 4.8+ patch preflight fails closed (issue #602)                       #
+# --------------------------------------------------------------------------- #
+
+_BEDROCK_ENV = {"AWS_BEARER_TOKEN_BEDROCK": "tok", "AWS_REGION": "us-east-1"}
+
+
+@pytest.mark.parametrize(
+    "model,required",
+    [
+        ("aws-bedrock/us.anthropic.claude-opus-4-8-20251101-v1:0", True),
+        ("aws-bedrock/eu.anthropic.claude-sonnet-4-9-20260301-v1:0", True),
+        ("aws-bedrock/us.anthropic.claude-opus-4-7-20251101-v1:0", False),
+    ],
+)
+def test_route_requires_bedrock_patch_gating(model, required):
+    """Guards PR #668's fail-closed gating for issue #602: only Bedrock Claude 4.8+
+    routes require the thinking patch; 4.7 and below stay best-effort."""
+    route = resolve_litellm_route(model, dict(_BEDROCK_ENV))
+    assert preflight_mod.route_requires_bedrock_patch(route) is required
+
+
+def test_route_requires_bedrock_patch_ignores_non_bedrock_providers():
+    """Guards PR #668 / issue #602 scope: a 4.8 model on a non-Bedrock provider does not
+    trigger the fail-closed preflight (direct Anthropic handles 4.8 natively)."""
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    assert preflight_mod.route_requires_bedrock_patch(route) is False
+
+
+def test_host_bedrock_preflight_uses_litellm_shebang_python(tmp_path):
+    """Guards PR #668 against checking a different Python than the LiteLLM CLI
+    will actually run under when the executable is a script with a shebang."""
+    litellm = tmp_path / "litellm"
+    python = tmp_path / "tools" / "python"
+    python.parent.mkdir()
+    litellm.write_text(f"#!{python}\n")
+
+    assert preflight_mod._host_python_for_litellm(str(litellm)) == str(python)
+
+
+def test_host_bedrock_preflight_resolves_env_shebang_with_proxy_path(tmp_path):
+    """Guards PR #668 against resolving `/usr/bin/env python*` with a different
+    PATH than the LiteLLM proxy receives."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    python = bindir / "python3"
+    python.write_text("")
+    python.chmod(0o755)
+    litellm = tmp_path / "litellm"
+    litellm.write_text("#!/usr/bin/env python3\n")
+
+    assert preflight_mod._host_python_for_litellm(
+        str(litellm), env={"PATH": str(bindir)}
+    ) == str(python)
+
+
+def test_bedrock_patch_preflight_passes_when_runtime_files_on_pythonpath(tmp_path):
+    """End-to-end happy path for the PR #668 preflight (issue #602): a fresh interpreter
+    with the runtime dir on PYTHONPATH loads sitecustomize -> patch module, so
+    the behavioral probe sees the patched litellm and exits 0."""
+    import os
+    import subprocess
+    import sys
+
+    runtime_mod._write_runtime_files(tmp_path, config={"model_list": []})
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-c", preflight_mod.BEDROCK_PATCH_PREFLIGHT_SOURCE],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_bedrock_patch_preflight_fails_closed_when_patch_not_loaded(tmp_path):
+    """THE regression test for issue #602's fail-open (fixed in PR #668): when the patch never
+    loads (sitecustomize missing from PYTHONPATH — the exact silent-failure
+    mode), the behavioral probe against stock litellm must exit non-zero so
+    setup fails before the agent launches, instead of regressing mid-task."""
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [sys.executable, "-c", preflight_mod.BEDROCK_PATCH_PREFLIGHT_SOURCE],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert "inactive" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_sandbox_litellm_bedrock_route_runs_preflight():
+    """Guards PR #668 / issue #602 wiring: a Bedrock 4.8+ sandbox route must run the
+    patch preflight after health and succeed when the patch is active."""
+    route = resolve_litellm_route(
+        "aws-bedrock/us.anthropic.claude-opus-4-8-20251101-v1:0", dict(_BEDROCK_ENV)
+    )
+    sandbox = _FakeSandbox()
+
+    proc = await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env=dict(_BEDROCK_ENV),
+        session_id="s",
+        agent_name="openhands",
+    )
+
+    preflights = [c for c in sandbox.exec_calls if "bedrock_patch_preflight.py" in c]
+    assert preflights, "Bedrock 4.8+ route must run the patch preflight"
+    assert proc.base_url == "http://127.0.0.1:45999"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_litellm_bedrock_preflight_failure_fails_closed():
+    """THE sandbox fail-closed regression for issue #602 (PR #668): an inactive patch on
+    a Daytona Bedrock 4.8+ route must abort startup (RuntimeError) and tear the
+    half-started proxy down — never continue into the task fail-open."""
+    route = resolve_litellm_route(
+        "aws-bedrock/us.anthropic.claude-opus-4-8-20251101-v1:0", dict(_BEDROCK_ENV)
+    )
+    sandbox = _FakeSandbox(fail_preflight=True)
+
+    with pytest.raises(RuntimeError, match="NOT active"):
+        await runtime_mod._start_sandbox_litellm(
+            sandbox=sandbox,
+            route=route,
+            master_key="sk-master",
+            agent_env=dict(_BEDROCK_ENV),
+            session_id="s",
+            agent_name="openhands",
+        )
+
+    assert any(call.strip().startswith("rm -rf") for call in sandbox.exec_calls)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_litellm_non_bedrock_route_skips_preflight():
+    """Guards PR #668 / issue #602 scope: non-Bedrock routes never run the preflight, so
+    a broken patch can not fail runs that do not depend on it."""
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    sandbox = _FakeSandbox(fail_preflight=True)  # would fail IF it ran
+
+    proc = await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env={
+            "MINIMAX_API_KEY": "k",
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        },
+        session_id="s",
+        agent_name="openhands",
+    )
+
+    assert not [c for c in sandbox.exec_calls if "bedrock_patch_preflight.py" in c]
+    assert proc.base_url == "http://127.0.0.1:45999"
+
+
+# --------------------------------------------------------------------------- #
 # Embedded callback logger actually produces importable JSONL (no drift)       #
 # #
 
