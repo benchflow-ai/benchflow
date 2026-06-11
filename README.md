@@ -24,34 +24,44 @@ BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Sing
 
 ## Install
 
-BenchFlow's current public release is `0.6.0`:
+`0.6.0` is in **release-candidate** testing and is **not on PyPI yet** — the
+newest build published there is still `0.5.x`. While 0.6 is RC, install the
+latest `0.6.0-rc.*` wheel from the
+[GitHub releases page](https://github.com/benchflow-ai/benchflow/releases)
+(open it, pick the newest `0.6.0-rc.*` prerelease, and install its `.whl`
+asset):
 
 ```bash
-pip install --upgrade benchflow
+uv tool install --prerelease allow \
+  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.3/benchflow-0.6.0rc3-py3-none-any.whl'
 ```
 
-For a `uv`-managed CLI install or upgrade of the public release:
+The URL above pins `0.6.0-rc.3` (the newest at time of writing); if a later
+`0.6.0-rc.*` prerelease exists, use that tag and filename instead. Confirm with
+`bench --version`.
+
+The `--prerelease allow` flag is required for BenchFlow's pinned LiteLLM
+release-candidate dependency. If the command reports `Executables already
+exist: bench, benchflow`, the machine has old entrypoints from a previous
+install; rerun the same command with `--force` to let `uv` replace them.
+
+**Once `0.6.0` ships to PyPI**, the plain install commands will work:
 
 ```bash
-uv tool install --prerelease allow --upgrade 'benchflow==0.6.0'
+pip install --upgrade benchflow                                  # once 0.6.0 is on PyPI
+uv tool install --prerelease allow --upgrade 'benchflow==0.6.0'  # once 0.6.0 is on PyPI
 ```
 
-Use the exact `benchflow==0.6.0` pin for the public CLI. The
-`--prerelease allow` flag is currently needed for BenchFlow's pinned LiteLLM
-release-candidate dependency; the exact BenchFlow pin keeps you off internal
-preview builds.
+Until then, `pip install --upgrade benchflow` resolves only to `0.5.x`, and
+`benchflow==0.6.0` does not resolve at all.
 
-Internal users who want the newest preview published from `main` should omit
-the exact public pin:
+Internal users who want the newest preview published from `main` can install
+the internal preview channel (currently a `0.5.3.dev<N>` build; it becomes
+`0.6.1.dev<N>` once `0.6.0` is tagged):
 
 ```bash
 uv tool install --prerelease allow --upgrade benchflow
 ```
-
-That installs the latest internal preview, such as `0.6.1.dev<N>`. If either
-command reports `Executables already exist: bench, benchflow`, the machine has
-old entrypoints from a previous install; rerun the same command with `--force`
-to let `uv` replace them.
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona runs or configure Modal auth for Modal runs; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth. Provider-prefixed models may use provider-specific credentials; Azure Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
 
@@ -77,6 +87,13 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Python API surface | [Python API reference](./docs/reference/python-api.md) |
 
 Notebooks and runnable example scripts live under [`docs/examples/`](./docs/examples/) so examples stay versioned with the docs that explain them.
+
+> **Heads-up on `bench agent`.** Two different nouns share this command group:
+> `bench agent list` / `bench agent show` inspect **registered AI agents** (the
+> solver programs like Claude Code or Gemini CLI), while `bench agent create` /
+> `run` / `verify` drive **benchmark adoptions** (onboarding a third-party
+> benchmark into `benchmarks/<name>/`). See the
+> [CLI reference](./docs/reference/cli.md#bench-agent) for details.
 
 ## Benchmark task sources
 
