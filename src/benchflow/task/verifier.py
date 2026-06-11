@@ -32,6 +32,7 @@ from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubri
 from benchflow.rewards.validation import (
     apply_aggregate_policy,
     is_valid_reward_number,
+    reward_lenient_from_env,
     validate_reward_map,
 )
 from benchflow.sandbox.lockdown import _exec_return_code, clear_verifier_output_dir
@@ -283,6 +284,7 @@ class Verifier:
                 rewards,
                 source="reward JSON",
                 aggregate_policy=aggregate_policy,
+                lenient=reward_lenient_from_env(),
             )
         except ValueError as e:
             raise VerifierOutputParseError(

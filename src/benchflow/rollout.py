@@ -77,7 +77,10 @@ from benchflow.contracts import (
 from benchflow.diagnostics import RolloutDiagnostics, VerifierTimeoutDiagnostic
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
-from benchflow.rewards.validation import validate_reward_map
+from benchflow.rewards.validation import (
+    reward_lenient_from_env,
+    validate_reward_map,
+)
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
 from benchflow.sandbox.metadata import persist_sandbox_info
@@ -1224,7 +1227,12 @@ async def _verify_rollout(
 
 
 def _ensure_canonical_rewards(rewards: dict | None) -> dict:
-    return validate_reward_map(rewards, source="verifier")
+    # Honour the same BENCHFLOW_REWARD_LENIENT toggle as the reward.json parse
+    # path so the final canonicalization gate stays consistent with how the
+    # verifier accepted the map (no-op unless the operator opts in).
+    return validate_reward_map(
+        rewards, source="verifier", lenient=reward_lenient_from_env()
+    )
 
 
 def _install_docker_compat(planes: RolloutPlanes | None = None) -> None:
