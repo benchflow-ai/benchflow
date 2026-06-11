@@ -1,0 +1,97 @@
+"""Pre-verifier cache reclaim command construction.
+
+The sandbox cannot import benchflow internals, so the reclaim implementation is
+an embedded Python snippet passed to ``python3 -c``. Keep it here instead of in
+``lockdown.py`` so the hardening orchestrator stays readable.
+"""
+
+import shlex
+from textwrap import dedent
+
+# Symlink- and workspace-safe cache reclaim for #601.
+#
+# The previous shell form (`rm -rf "$u/.cache/uv" ...; rm -rf /tmp/uv-*`) could
+# delete agent-visible state before scoring: `rm -rf` traverses intermediate
+# symlinks (an agent-planted `~/.cache -> /app` turned the cache delete into
+# `rm -rf /app/uv`), and the `/tmp/uv-*` glob matched a legitimate
+# `/tmp/uv-workspace`. The textual `$WS`/`$u` guard saw none of that. Since
+# ``restore_workspace`` defaults to False, nothing undid the damage.
+#
+# This snippet hardens every deletion candidate:
+#  - rejects any candidate with a symlink path component, including the final
+#    one, so agent-controlled parents can no longer redirect the delete;
+#  - resolves protected roots (workspace + /logs, covering /logs/artifacts and
+#    /logs/verifier) via realpath and skips candidates overlapping in either
+#    direction, applied uniformly to per-user caches, /tmp globs, and apt;
+#  - deletes with shutil.rmtree, which removes child symlinks without following
+#    them.
+#
+# argv[1] = active workspace (or /nonexistent). argv[2] = optional filesystem
+# prefix, "" in production; tests pass a temp root so the exact production code
+# runs hermetically against a fake filesystem.
+#
+# Fail-safe by construction: if python3 is unavailable the reclaim simply does
+# not run (the trailing `true` swallows it). Losing best-effort ENOSPC mitigation
+# is strictly better than deleting the wrong state.
+RECLAIM_CACHES_PY = dedent(
+    """
+    import glob, os, shutil, sys
+
+    ws = sys.argv[1]
+    px = sys.argv[2] if len(sys.argv) > 2 else ''
+
+    def linked(path):
+        p = px or ''
+        for part in path[len(px):].strip('/').split('/'):
+            p = p + '/' + part
+            if os.path.islink(p):
+                return True
+        return False
+
+    protected = []
+    for root in (ws, px + '/logs'):
+        try:
+            if root and os.path.exists(root):
+                protected.append(os.path.realpath(root))
+        except OSError:
+            pass
+
+    def overlaps(path):
+        return any(
+            path == r or path.startswith(r + '/') or r.startswith(path + '/')
+            for r in protected
+        )
+
+    cands = [
+        u + '/.cache/' + name
+        for u in [px + '/root'] + sorted(glob.glob(px + '/home/*'))
+        for name in ('uv', 'pip', 'uv_build')
+    ]
+    cands += sorted(glob.glob(px + '/tmp/uv-*'))
+    cands += sorted(glob.glob(px + '/tmp/.uv-*'))
+    cands += sorted(glob.glob(px + '/var/cache/apt/archives/*.deb'))
+    for c in cands:
+        try:
+            if not os.path.lexists(c) or linked(c):
+                continue
+            # linked() proved no symlink components below the prefix, so
+            # realpath only normalizes the prefix itself - consistent with
+            # the realpath'd protected roots.
+            if overlaps(os.path.realpath(c)):
+                continue
+            if os.path.isdir(c):
+                shutil.rmtree(c, ignore_errors=True)
+            else:
+                os.remove(c)
+        except OSError:
+            pass
+    """
+).strip()
+
+
+def build_reclaim_caches_cmd(workspace: str | None) -> str:
+    """Build the best-effort cache reclaim shell command."""
+    workspace_arg = shlex.quote(workspace) if workspace else "/nonexistent"
+    return (
+        f"python3 -c {shlex.quote(RECLAIM_CACHES_PY)} {workspace_arg} 2>/dev/null; true"
+    )
