@@ -9,6 +9,7 @@ Terminology:
 from __future__ import annotations
 
 import shlex
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -145,7 +146,12 @@ class TaskPaths:
         except Exception:
             return False
         if document is None:
-            return self.test_path.exists()
+            # No verifier.md strategy document. A test-script package supplies
+            # test.sh. A *legacy* llm-judge package (task.toml with
+            # ``[verifier] type = "llm-judge"`` and a rubric) is verifiable via
+            # the judge instead, so recognise its rubric as a valid entrypoint
+            # rather than demanding test.sh it will never have (#dogfood).
+            return self.test_path.exists() or self._has_legacy_llm_judge_entrypoint()
 
         strategy = document.selected_strategy
         if strategy.type == "script":
@@ -174,6 +180,40 @@ class TaskPaths:
         if strategy.type == "ors-episode":
             return bool(strategy.inputs)
         return strategy.type == "agent-judge"
+
+    def _has_legacy_llm_judge_entrypoint(self) -> bool:
+        """Whether task.toml declares a runnable legacy llm-judge verifier.
+
+        A legacy llm-judge package has no verifier.md strategy and no test.sh;
+        it is verified by scoring deliverables against a rubric. The runtime
+        resolves the rubric relative to the *task directory* from
+        ``[verifier.judge].rubric_path`` (default ``tests/rubric.toml``), so the
+        same resolution is mirrored here to confirm the rubric actually exists.
+        """
+        config_path = self.config_path
+        if not config_path.is_file():
+            return False
+        try:
+            with open(config_path, "rb") as handle:
+                config = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            return False
+        verifier = config.get("verifier")
+        if not isinstance(verifier, dict) or verifier.get("type") != "llm-judge":
+            return False
+        judge = verifier.get("judge")
+        rubric_value = "tests/rubric.toml"
+        if isinstance(judge, dict):
+            configured = judge.get("rubric_path")
+            if isinstance(configured, str) and configured:
+                rubric_value = configured
+        rubric_path = Path(rubric_value)
+        if not rubric_path.is_absolute():
+            relative = _safe_relative_path(rubric_value)
+            if relative is None:
+                return False
+            rubric_path = self.task_dir / Path(*relative.parts)
+        return rubric_path.is_file()
 
     def is_valid(self, disable_verification: bool = False) -> bool:
         has_legacy_definition = (

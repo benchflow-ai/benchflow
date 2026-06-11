@@ -1419,6 +1419,18 @@ class RolloutConfig:
         if mode == SKILL_MODE_SELF_GEN:
             scenes = []
         elif document_scenes:
+            if agent == "oracle":
+                # The task.md pins its own scene agents (document_scenes), which
+                # become the primary agent — so an explicit `--agent oracle`
+                # is silently dropped and oracle mode never engages. Warn loudly
+                # rather than running the role agent under the guise of oracle.
+                logger.warning(
+                    "--agent oracle was requested, but %s pins scene agents "
+                    "(agents.roles / document scenes), which take precedence. "
+                    "Oracle mode will NOT run; the task's scene agent(s) will "
+                    "execute instead.",
+                    Path(task_path).name,
+                )
             scenes = document_scenes
         else:
             scenes = [
