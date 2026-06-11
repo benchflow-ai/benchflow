@@ -10,10 +10,15 @@ not edge cases.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from benchflow.sandbox.daytona import _is_benchflow_owned, reap_stale_sandboxes
+from benchflow.sandbox.daytona import (
+    _is_benchflow_label_orphan,
+    _is_benchflow_owned,
+    reap_stale_sandboxes,
+)
 
 # The ownership label benchflow stamps on every sandbox it creates. Mirrors the
 # (private) constants in benchflow.sandbox.daytona so a rename there that breaks
@@ -211,6 +216,112 @@ class TestIsBenchflowOwned:
 
     def test_non_mapping_labels_not_owned(self):
         assert not _is_benchflow_owned(SimpleNamespace(labels=["benchflow.managed"]))
+
+
+class TestIsBenchflowLabelOrphan:
+    """The read-only orphan-leak predicate (label-integrity, mutation surface).
+
+    True only for a sandbox that carries the ``benchflow.`` namespace yet fails
+    the strict ownership check — a sandbox we likely created whose ownership
+    label drifted, which the age-based reaper would otherwise leak forever.
+    """
+
+    def test_namespace_key_without_managed_is_orphan(self):
+        assert _is_benchflow_label_orphan(
+            SimpleNamespace(labels={"benchflow.run": "abc"})
+        )
+
+    def test_drifted_managed_value_is_orphan(self):
+        # Exact key, wrong value: namespaced but not owned → orphan.
+        assert _is_benchflow_label_orphan(
+            SimpleNamespace(labels={"benchflow.managed": "0"})
+        )
+
+    def test_owned_is_not_orphan(self):
+        # A correctly-labeled (owned) sandbox is never an orphan.
+        assert not _is_benchflow_label_orphan(
+            SimpleNamespace(labels={"benchflow.managed": "1"})
+        )
+
+    def test_owned_with_extra_namespace_label_is_not_orphan(self):
+        assert not _is_benchflow_label_orphan(
+            SimpleNamespace(labels={"benchflow.managed": "1", "benchflow.run": "x"})
+        )
+
+    def test_purely_foreign_labels_not_orphan(self):
+        # No benchflow namespace at all → not ours, not flagged.
+        assert not _is_benchflow_label_orphan(
+            SimpleNamespace(labels={"owner": "alice"})
+        )
+
+    def test_empty_labels_not_orphan(self):
+        assert not _is_benchflow_label_orphan(SimpleNamespace(labels={}))
+
+    def test_none_labels_not_orphan(self):
+        assert not _is_benchflow_label_orphan(SimpleNamespace(labels=None))
+
+    def test_no_labels_attr_not_orphan(self):
+        assert not _is_benchflow_label_orphan(SimpleNamespace(id="x"))
+
+    def test_non_mapping_labels_not_orphan(self):
+        assert not _is_benchflow_label_orphan(SimpleNamespace(labels=["benchflow.run"]))
+
+
+class TestOrphanLeakGuard:
+    """Reaper flags benchflow-namespaced-but-unlabeled sandboxes, never deletes.
+
+    The guard is read-only: a missing/altered ownership label means we cannot
+    prove ownership strongly enough to delete on a shared API key, so the
+    sandbox is warned about and skipped — never reaped.
+    """
+
+    def _orphan_warnings(self, caplog) -> list[str]:
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "orphan leak" in r.getMessage()
+        ]
+
+    def test_label_orphan_is_warned_and_never_deleted(self, caplog):
+        client = FakeClient(
+            [_sb("drifted-bf", "STARTED", 9999, labels={"benchflow.run": "r1"})]
+        )
+        with caplog.at_level(logging.WARNING, logger="benchflow"):
+            counts = reap_stale_sandboxes(client)
+        # Read-only: skipped, not deleted, counts contract unchanged.
+        assert client.deleted == []
+        assert counts == {"found": 1, "deleted": 0, "skipped": 1, "failed": 0}
+        warnings = self._orphan_warnings(caplog)
+        assert len(warnings) == 1
+        # Mutation guards: the warning names the sandbox and the missing label.
+        assert "drifted-bf" in warnings[0]
+        assert "benchflow.managed" in warnings[0]
+
+    def test_drifted_ownership_value_is_warned(self, caplog):
+        # Same key, wrong value — still a benchflow sandbox the reaper can't reap.
+        client = FakeClient(
+            [_sb("v0", "STARTED", 9999, labels={"benchflow.managed": "0"})]
+        )
+        with caplog.at_level(logging.WARNING, logger="benchflow"):
+            reap_stale_sandboxes(client)
+        assert client.deleted == []
+        assert len(self._orphan_warnings(caplog)) == 1
+
+    def test_owned_sandbox_is_not_warned(self, caplog):
+        # A correctly-labeled stale sandbox is reaped with no orphan warning.
+        client = FakeClient([_sb("bf-stale", "STARTED", 9999)])
+        with caplog.at_level(logging.WARNING, logger="benchflow"):
+            reap_stale_sandboxes(client)
+        assert client.deleted == ["bf-stale"]
+        assert self._orphan_warnings(caplog) == []
+
+    def test_purely_foreign_sandbox_is_not_warned(self, caplog):
+        # Foreign labels (no benchflow namespace) must not trip the guard.
+        client = FakeClient([_sb("theirs", "STARTED", 9999, labels={"owner": "alice"})])
+        with caplog.at_level(logging.WARNING, logger="benchflow"):
+            reap_stale_sandboxes(client)
+        assert client.deleted == []
+        assert self._orphan_warnings(caplog) == []
 
 
 class TestCliCleanupWrapper:

@@ -59,11 +59,27 @@ def test_validate_name_accepts_valid_slugs(name: str) -> None:
         "../escape",  # path traversal
         "a/b",  # path separator
         "x" * 65,  # too long
+        "good\n",  # trailing newline — `$` matches before it; `fullmatch` rejects
+        "good\nbad",  # embedded newline
+        "good\r\n",  # CRLF tail
     ],
 )
 def test_validate_name_rejects_invalid_slugs(name: str) -> None:
     with pytest.raises(InvalidBenchmarkName):
         validate_benchmark_name(name)
+
+
+def test_validate_name_rejects_trailing_newline_but_accepts_stripped() -> None:
+    """A trailing newline must not slip past the slug check.
+
+    Mutation guard: ``re`` ``$`` matches just before a final ``\\n``, so a
+    ``match`` (or a pattern anchored with ``$``) would accept ``"good\\n"``.
+    Pinning both the rejection *and* the accepted stripped form kills a revert
+    to ``match``/``$`` — under that mutation ``"good\\n"`` would validate.
+    """
+    assert validate_benchmark_name("good") == "good"
+    with pytest.raises(InvalidBenchmarkName):
+        validate_benchmark_name("good\n")
 
 
 def test_derive_name_from_source_strips_git_and_slugifies() -> None:

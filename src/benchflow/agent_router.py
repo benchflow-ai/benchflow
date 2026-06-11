@@ -92,7 +92,11 @@ def _default_codex_auth_file() -> Path:
 # ── Name validation ───────────────────────────────────────────────────
 
 # Lowercase slug: starts with a letter, single internal hyphens, no traversal.
-_SLUG_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
+# Validated with ``fullmatch`` (not ``match`` + ``$``): in Python ``re`` the
+# ``$`` anchor also matches just *before* a trailing newline, so an anchored
+# ``match`` would accept ``"good\n"``. ``fullmatch`` requires the whole string
+# to be consumed, rejecting any trailing newline outright.
+_SLUG_RE = re.compile(r"[a-z][a-z0-9]*(-[a-z0-9]+)*")
 _MAX_NAME_LEN = 64
 
 
@@ -110,7 +114,7 @@ def validate_benchmark_name(name: str) -> str:
         raise InvalidBenchmarkName(
             f"benchmark name too long (>{_MAX_NAME_LEN} chars): {name!r}"
         )
-    if not _SLUG_RE.match(name):
+    if not _SLUG_RE.fullmatch(name):
         raise InvalidBenchmarkName(
             f"invalid benchmark name {name!r}: use a lowercase slug like "
             "'my-bench' (letters/digits, single internal hyphens, leading letter)"
