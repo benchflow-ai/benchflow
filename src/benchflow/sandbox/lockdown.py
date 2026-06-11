@@ -417,11 +417,6 @@ except Exception as e:
 """.strip()
 
 
-def _under_path(path: str, prefix: str) -> bool:
-    prefix = prefix.rstrip("/")
-    return path == prefix or path.startswith(f"{prefix}/")
-
-
 def _blocked_verifier_path_prefixes(
     sandbox_user: str | None, workspace: str | None
 ) -> tuple[str, ...]:

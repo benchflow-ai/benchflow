@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import base64
 import importlib
 import logging
 import os
-import re
 import shlex
 from abc import abstractmethod
 from pathlib import Path
@@ -53,6 +51,7 @@ from benchflow.sandbox._base import (
     BaseSandbox,
     ExecResult,
     _filter_compose_service_names,
+    wrap_command_with_env_file,
 )
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
@@ -206,12 +205,17 @@ _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
 # an explicit positive ``timeout_sec`` is honored byte-for-byte as before.
 _DAYTONA_EXEC_HARD_CAP_SEC = 3600
 
-
-# A POSIX shell identifier: a name the shell can ``export``. Keys outside this
-# grammar (e.g. containing ``.`` or ``-``) are valid process env keys but cannot
-# be assigned via ``export NAME=...``; sourcing such a line aborts the whole
-# ``. {env_path}`` step. Matches ``DockerSandbox._SHELL_IDENTIFIER_RE``.
-_DAYTONA_SHELL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Shared tenacity policy for the idempotent Daytona SDK calls — session-command
+# polling and filesystem up/download. Three attempts with exponential backoff,
+# re-raising the final failure. ``_create_sandbox`` and ``_stop_sandbox`` keep
+# their own policies (different attempt counts and backoff bounds), so they are
+# intentionally not folded in here. Reusing one ``retry(...)`` decorator across
+# methods is safe: tenacity builds a fresh controller per decorated function.
+_SDK_RETRY = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    reraise=True,
+)
 
 
 _REAP_DEFAULT_MAX_AGE_MIN = 1440
@@ -365,41 +369,29 @@ def reap_stale_sandboxes(
     return counts
 
 
+# Prefix for the decoded env file inside the Daytona sandbox. A unique 16-hex
+# suffix is appended by the shared wrapper so concurrent exec() calls can't
+# clobber each other's env file.
+_DAYTONA_ENV_FILE_PREFIX = "/tmp/.benchflow_daytona_env_"
+
+
 def _wrap_daytona_command_with_env_file(env: dict[str, str], command: str) -> str:
     """Return *command* prefixed to materialize *env* from a file.
 
-    Mirrors :meth:`benchflow.sandbox.docker.DockerSandbox._wrap_command_with_env_file`
-    so secrets never reach the remote process argv (visible via ``ps``, Daytona
-    audit logs, or any provider-side command logging). The env vars are
-    base64-encoded into the command string (not visible as individual
-    ``KEY=VALUE`` argv entries), decoded to a mode-0600 file inside the sandbox,
-    sourced, and unconditionally removed via ``trap ... EXIT``.
+    Thin wrapper over the canonical
+    :func:`benchflow.sandbox._base.wrap_command_with_env_file` so the
+    secret-redaction logic lives in exactly one place (shared with the Docker
+    backend). See that function for the full contract: secrets never reach the
+    remote process argv (visible via ``ps``, Daytona audit logs, or any
+    provider-side command logging) — they are base64-encoded into the command
+    string, decoded to a mode-0600 file inside the sandbox, sourced, and
+    unconditionally removed via ``trap ... EXIT``.
 
     Issue #412: previously this used ``env K=V ...`` argv, which placed raw
     secret values into the remote command line.
     """
-    exportable: dict[str, str] = {}
-    skipped: list[str] = []
-    for k, v in env.items():
-        if _DAYTONA_SHELL_IDENTIFIER_RE.match(k):
-            exportable[k] = v
-        else:
-            skipped.append(k)
-    if skipped:
-        logger.warning(
-            "Skipping env var(s) with non-identifier names (cannot be "
-            "exported by the shell): %s",
-            ", ".join(sorted(skipped)),
-        )
-
-    env_body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in exportable.items())
-    encoded = base64.b64encode(env_body.encode()).decode()
-    env_path = f"/tmp/.benchflow_daytona_env_{uuid4().hex[:16]}"
-    return (
-        f"trap 'rm -f {env_path}' EXIT && "
-        f"(umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
-        f"{env_path}) && set -a && . {env_path} && set +a && "
-        f"{command}"
+    return wrap_command_with_env_file(
+        env, command, env_path_prefix=_DAYTONA_ENV_FILE_PREFIX
     )
 
 
@@ -410,6 +402,22 @@ def _exec_failure_output(result: ExecResult) -> str:
         if text and text.strip()
     )
     return output[:4000]
+
+
+def _reject_non_main_service(service: str) -> None:
+    """Raise ``ValueError`` for a non-``main`` service on the direct strategy.
+
+    The direct (single-container) Daytona sandbox cannot target additional
+    compose services; multi-container (vulhub-style) tasks require a
+    ``docker-compose.yaml`` (#248). Centralizes the identical guard that
+    ``_DaytonaDirect.exec``/``upload_dir``/``download_dir`` each raised inline.
+    """
+    if service != "main":
+        raise ValueError(
+            f"Direct (non-compose) Daytona sandbox is single-container "
+            f"and cannot target service {service!r}. Multi-container "
+            "(vulhub-style) tasks require a docker-compose.yaml (#248)."
+        )
 
 
 def _daytona_preflight() -> None:
@@ -592,22 +600,19 @@ class _DaytonaDirect(_DaytonaStrategy):
                 network_block_all=env._network_block_all,
                 labels=_benchflow_owned_labels(),
             )
-        elif force_build or not env.task_env_config.docker_image:
-            env.logger.debug(f"Building environment from {env._dockerfile_path}")
-            image = Image.from_dockerfile(env._dockerfile_path)
-            params = CreateSandboxFromImageParams(
-                image=image,
-                auto_delete_interval=env._auto_delete_interval,
-                auto_stop_interval=env._auto_stop_interval,
-                resources=resources,
-                network_block_all=env._network_block_all,
-                labels=_benchflow_owned_labels(),
-            )
         else:
-            env.logger.debug(
-                f"Using prebuilt image: {env.task_env_config.docker_image}"
-            )
-            image = Image.base(env.task_env_config.docker_image)
+            # Both non-snapshot paths build identical CreateSandboxFromImageParams
+            # (including the benchflow.managed ownership label); only the image
+            # source and log line differ between build-from-Dockerfile and
+            # prebuilt-image.
+            if force_build or not env.task_env_config.docker_image:
+                env.logger.debug(f"Building environment from {env._dockerfile_path}")
+                image = Image.from_dockerfile(env._dockerfile_path)
+            else:
+                env.logger.debug(
+                    f"Using prebuilt image: {env.task_env_config.docker_image}"
+                )
+                image = Image.base(env.task_env_config.docker_image)
             params = CreateSandboxFromImageParams(
                 image=image,
                 auto_delete_interval=env._auto_delete_interval,
@@ -666,12 +671,7 @@ class _DaytonaDirect(_DaytonaStrategy):
         user: str | int | None = None,
         service: str = "main",
     ) -> ExecResult:
-        if service != "main":
-            raise ValueError(
-                f"Direct (non-compose) Daytona sandbox is single-container "
-                f"and cannot target service {service!r}. Multi-container "
-                "(vulhub-style) tasks require a docker-compose.yaml (#248)."
-            )
+        _reject_non_main_service(service)
         return await self._env._sandbox_exec(
             command, cwd=cwd, env=env, timeout_sec=timeout_sec, user=user
         )
@@ -682,12 +682,7 @@ class _DaytonaDirect(_DaytonaStrategy):
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"
     ) -> None:
-        if service != "main":
-            raise ValueError(
-                f"Direct (non-compose) Daytona sandbox is single-container "
-                f"and cannot target service {service!r}. Multi-container "
-                "(vulhub-style) tasks require a docker-compose.yaml (#248)."
-            )
+        _reject_non_main_service(service)
         prep_result = await self._env._sandbox_exec(
             f"mkdir -p {shlex.quote(target_dir)}",
             timeout_sec=30,
@@ -706,24 +701,17 @@ class _DaytonaDirect(_DaytonaStrategy):
     async def download_dir(
         self, source_dir: str, target_dir: Path | str, service: str = "main"
     ) -> None:
-        if service != "main":
-            raise ValueError(
-                f"Direct (non-compose) Daytona sandbox is single-container "
-                f"and cannot target service {service!r}. Multi-container "
-                "(vulhub-style) tasks require a docker-compose.yaml (#248)."
-            )
+        _reject_non_main_service(service)
         await self._env._sdk_download_dir(source_dir, target_dir)
 
     async def is_dir(self, path: str, user: str | int | None = None) -> bool:
-        if not self._env._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
-        file_info = await self._env._sandbox.fs.get_file_info(path)
+        sandbox = self._env._require_sandbox()
+        file_info = await sandbox.fs.get_file_info(path)
         return file_info.is_dir
 
     async def is_file(self, path: str, user: str | int | None = None) -> bool:
-        if not self._env._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
-        file_info = await self._env._sandbox.fs.get_file_info(path)
+        sandbox = self._env._require_sandbox()
+        file_info = await sandbox.fs.get_file_info(path)
         return not file_info.is_dir
 
     async def services(self) -> list[str]:
@@ -1420,6 +1408,18 @@ class DaytonaSandbox(BaseSandbox):
 
     # Shared helpers used by both strategies
 
+    def _require_sandbox(self) -> AsyncSandbox:  # pyright: ignore[reportInvalidTypeForm]
+        """Return the started sandbox, raising if ``start()`` has not run.
+
+        Centralizes the ``if not self._sandbox`` precondition repeated across the
+        SDK helpers (and the direct strategy's ``is_dir``/``is_file``) so the type
+        checker narrows ``AsyncSandbox | None`` to ``AsyncSandbox`` at each call
+        site. Uses the same falsiness check and message as the inlined guards.
+        """
+        if not self._sandbox:
+            raise RuntimeError("Sandbox not found. Please build the environment first.")
+        return self._sandbox
+
     def _on_sandbox_created(self) -> None:
         """Persist sandbox.json the instant the Daytona sandbox id is known.
 
@@ -1509,31 +1509,19 @@ class DaytonaSandbox(BaseSandbox):
         if self._sandbox:
             await self._sandbox.delete()
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
+    @_SDK_RETRY
     async def _get_session_command_with_retry(
         self, session_id: str, command_id: str
     ) -> object:
-        if not self._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
-        return await self._sandbox.process.get_session_command(session_id, command_id)
+        sandbox = self._require_sandbox()
+        return await sandbox.process.get_session_command(session_id, command_id)
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
+    @_SDK_RETRY
     async def _get_session_command_logs_with_retry(
         self, session_id: str, command_id: str
     ) -> object:
-        if not self._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
-        return await self._sandbox.process.get_session_command_logs(
-            session_id, command_id
-        )
+        sandbox = self._require_sandbox()
+        return await sandbox.process.get_session_command_logs(session_id, command_id)
 
     @staticmethod
     def _poll_timeout_error(
@@ -1566,8 +1554,7 @@ class DaytonaSandbox(BaseSandbox):
         command_id: str,
         timeout_sec: int | float | None = None,
     ) -> ExecResult:
-        if not self._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
+        self._require_sandbox()
 
         loop = asyncio.get_running_loop()
         # When the caller passes an explicit, positive ``timeout_sec`` we honor
@@ -1625,80 +1612,64 @@ class DaytonaSandbox(BaseSandbox):
         Backgrounded daemons must redirect all std fds
         (``</dev/null >log 2>&1``) — see :meth:`exec`.
         """
-        if not self._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
+        sandbox = self._require_sandbox()
 
         session_id = str(uuid4())
-        try:
-            await self._sandbox.process.create_session(session_id)
+        await sandbox.process.create_session(session_id)
 
-            # Env vars are written to a temp file inside the sandbox and
-            # sourced rather than passed as ``env KEY=value ...`` argv. The
-            # argv form would leak verifier API keys / agent secrets into the
-            # remote process list and any provider-side command audit log
-            # (#412). The wrapping must happen before the ``timeout``/``su``
-            # prefixes so they too see the exported vars; the wrapper itself
-            # runs under ``sh``-compatible POSIX constructs so the surrounding
-            # ``bash -c`` / ``su -s /bin/bash -c`` shells handle it fine.
-            if env:
-                command = f"{shell} {shlex.quote(_wrap_daytona_command_with_env_file(env, command))}"
+        # Env vars are written to a temp file inside the sandbox and
+        # sourced rather than passed as ``env KEY=value ...`` argv. The
+        # argv form would leak verifier API keys / agent secrets into the
+        # remote process list and any provider-side command audit log
+        # (#412). The wrapping must happen before the ``timeout``/``su``
+        # prefixes so they too see the exported vars; the wrapper itself
+        # runs under ``sh``-compatible POSIX constructs so the surrounding
+        # ``bash -c`` / ``su -s /bin/bash -c`` shells handle it fine.
+        if env:
+            command = f"{shell} {shlex.quote(_wrap_daytona_command_with_env_file(env, command))}"
+        else:
+            command = f"{shell} {shlex.quote(command)}"
+
+        if timeout_sec:
+            command = f"timeout {timeout_sec} {command}"
+
+        if cwd:
+            command = f"cd {cwd} && {command}"
+
+        if user is not None:
+            if isinstance(user, int):
+                user_arg = f"$(getent passwd {user} | cut -d: -f1)"
             else:
-                command = f"{shell} {shlex.quote(command)}"
+                user_arg = shlex.quote(user)
+            command = f"su {user_arg} -s /bin/bash -c {shlex.quote(command)}"
 
-            if timeout_sec:
-                command = f"timeout {timeout_sec} {command}"
+        response = await sandbox.process.execute_session_command(
+            session_id,
+            SessionExecuteRequest(
+                command=command,
+                run_async=True,
+            ),
+            timeout=timeout_sec,
+        )
 
-            if cwd:
-                command = f"cd {cwd} && {command}"
+        if response.cmd_id is None:
+            raise RuntimeError("Cannot find command ID.")
 
-            if user is not None:
-                if isinstance(user, int):
-                    user_arg = f"$(getent passwd {user} | cut -d: -f1)"
-                else:
-                    user_arg = shlex.quote(user)
-                command = f"su {user_arg} -s /bin/bash -c {shlex.quote(command)}"
+        # Don't delete session; Daytona kills child processes
+        return await self._poll_response(
+            session_id,
+            response.cmd_id,
+            timeout_sec=timeout_sec,
+        )
 
-            response = await self._sandbox.process.execute_session_command(
-                session_id,
-                SessionExecuteRequest(
-                    command=command,
-                    run_async=True,
-                ),
-                timeout=timeout_sec,
-            )
-
-            if response.cmd_id is None:
-                raise RuntimeError("Cannot find command ID.")
-
-            result = await self._poll_response(
-                session_id,
-                response.cmd_id,
-                timeout_sec=timeout_sec,
-            )
-
-        finally:
-            pass  # Don't delete session; Daytona kills child processes
-
-        return result
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
+    @_SDK_RETRY
     async def _sdk_upload_file(self, source_path: Path | str, target_path: str) -> None:
-        if not self._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
-        await self._sandbox.fs.upload_file(str(source_path), target_path)
+        sandbox = self._require_sandbox()
+        await sandbox.fs.upload_file(str(source_path), target_path)
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
+    @_SDK_RETRY
     async def _sdk_upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
-        if not self._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
+        sandbox = self._require_sandbox()
 
         file_uploads = []
         source_dir = Path(source_dir)
@@ -1719,38 +1690,28 @@ class DaytonaSandbox(BaseSandbox):
             )
 
         if file_uploads:
-            await self._sandbox.fs.upload_files(files=file_uploads)
+            await sandbox.fs.upload_files(files=file_uploads)
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
+    @_SDK_RETRY
     async def _sdk_download_file(
         self, source_path: str, target_path: Path | str
     ) -> None:
-        if not self._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
-        await self._sandbox.fs.download_file(source_path, str(target_path))
+        sandbox = self._require_sandbox()
+        await sandbox.fs.download_file(source_path, str(target_path))
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
+    @_SDK_RETRY
     async def _sdk_download_dir(self, source_dir: str, target_dir: Path | str) -> None:
-        if not self._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
+        sandbox = self._require_sandbox()
 
         target_dir = Path(target_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        search_result = await self._sandbox.fs.search_files(source_dir, "*")
+        search_result = await sandbox.fs.search_files(source_dir, "*")
 
         file_downloads = []
         for file_path in search_result.files:
             try:
-                file_info = await self._sandbox.fs.get_file_info(file_path)
+                file_info = await sandbox.fs.get_file_info(file_path)
             except DaytonaNotFoundError:
                 self.logger.debug(
                     f"Skipping file not found during download_dir: {file_path}"
@@ -1779,7 +1740,7 @@ class DaytonaSandbox(BaseSandbox):
 
         if file_downloads:
             try:
-                await self._sandbox.fs.download_files(files=file_downloads)
+                await sandbox.fs.download_files(files=file_downloads)
             except Exception as batch_error:
                 self.logger.warning(
                     "Daytona batch download_dir failed for %s (%d files); "
@@ -1791,8 +1752,7 @@ class DaytonaSandbox(BaseSandbox):
                 await self._download_files_individually(file_downloads)
 
     async def _download_files_individually(self, file_downloads: list[Any]) -> None:
-        if not self._sandbox:
-            raise RuntimeError("Sandbox not found. Please build the environment first.")
+        sandbox = self._require_sandbox()
 
         failures: list[str] = []
         downloaded = 0
@@ -1800,7 +1760,7 @@ class DaytonaSandbox(BaseSandbox):
             source = request.source
             destination = request.destination
             try:
-                await self._sandbox.fs.download_file(source, destination)
+                await sandbox.fs.download_file(source, destination)
                 downloaded += 1
             except DaytonaNotFoundError:
                 self.logger.debug(

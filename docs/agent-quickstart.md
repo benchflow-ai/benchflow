@@ -41,22 +41,27 @@ STEP 0 — Preflight
 
 STEP 1 — Install benchflow
 This prompt requires benchflow 0.6.0 or newer (the task.md authoring CLI and
-trainer artifacts shipped in 0.6.0). Run:
-    uv tool install --prerelease allow 'benchflow==0.6.0'
-RC NOTE — while 0.6.0 is in RELEASE-CANDIDATE testing it is NOT yet on PyPI
-(the newest build published there is still 0.5.x), so the command above cannot
-resolve `benchflow==0.6.0` yet. To get the real 0.6 flow TODAY, install the
-latest 0.6.0 release-candidate WHEEL from the GitHub prerelease page instead:
-open https://github.com/benchflow-ai/benchflow/releases, pick the newest
-`0.6.0-rc.*` prerelease, and install its `.whl` asset directly, e.g.
+trainer artifacts shipped in 0.6.0). While 0.6.0 is in RELEASE-CANDIDATE
+testing it is NOT yet on PyPI (the newest build published there is still
+0.5.x), so `uv tool install --prerelease allow 'benchflow==0.6.0'` cannot
+resolve yet. To get the real 0.6 flow TODAY, install the latest 0.6.0
+release-candidate WHEEL from the GitHub prerelease page.
+  1. Open https://github.com/benchflow-ai/benchflow/releases and find the
+     NEWEST `0.6.0-rc.*` prerelease (highest rc number — do not assume a
+     specific rc; rc.3 may already be superseded by rc.4 or later).
+  2. Copy the download URL of that release's `.whl` asset (named like
+     `benchflow-0.6.0rcN-py3-none-any.whl`). The tag and the filename share
+     the same rc number — tag `0.6.0-rc.N`, file `benchflow-0.6.0rcN`.
+  3. Install it with the URL you copied, e.g. (this example pins rc.3; replace
+     `rc.3`/`rc3` with the actual newest rc you found):
     uv tool install --prerelease allow \
       'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.3/benchflow-0.6.0rc3-py3-none-any.whl'
-(The URL above pins rc.3 — the newest at time of writing. If a later
-`0.6.0-rc.*` prerelease exists on the releases page, use that tag/filename
-instead; any `0.6.0-rc.*` is a valid full-0.6 build. Confirm with
-`bench --version`.)
+Any `0.6.0-rc.*` is a valid full-0.6 build. If `gh` is available, you can
+resolve the newest tag without opening a browser:
+    gh release list --repo benchflow-ai/benchflow --limit 20 | grep '0.6.0-rc'
+Confirm with `bench --version` after install.
 Once 0.6.0 ships to PyPI, the `uv tool install --prerelease allow
-'benchflow==0.6.0'` command above is the one to use.
+'benchflow==0.6.0'` command is the one to use.
 The `--prerelease allow` flag is REQUIRED: benchflow pins a litellm release
 candidate (litellm[proxy]==1.88.0rc1), and uv refuses prerelease transitive
 dependencies without it. If uv reports "Executables already exist: bench,
