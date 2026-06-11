@@ -49,6 +49,13 @@
   across the Docker and Daytona backends.
 - The `task.md` init scaffold is agent-neutral, so `--agent oracle` works on a
   freshly scaffolded task.
+- `gemini/`-prefixed judge/simulated-user models now resolve to the Google
+  backend instead of passing the slashed name through and 404-ing.
+- Model-backed judges raise a clear error naming the provider and pointing at
+  `pip install benchflow[judge]` when the judge SDK is missing, instead of the
+  misleading "Missing OPENAI_API_KEY" fall-through.
+- `bench tasks check` recognizes a rubric-backed `llm-judge` verifier as a valid
+  entrypoint and no longer demands a `test.sh`.
 
 ### Changed
 
