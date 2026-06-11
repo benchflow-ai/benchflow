@@ -56,6 +56,13 @@
   misleading "Missing OPENAI_API_KEY" fall-through.
 - `bench tasks check` recognizes a rubric-backed `llm-judge` verifier as a valid
   entrypoint and no longer demands a `test.sh`.
+- Pre-verifier disk reclaim is workspace-aware and symlink-safe: it rejects
+  symlinked cache candidates and realpath-guards every deletion against the
+  workspace and `/logs`, so an agent-planted `~/.cache` symlink cannot steer the
+  reclaim into workspace or output state (#601).
+- Bedrock Claude 4.8+ routes fail closed when LiteLLM's adaptive-thinking patch
+  is inactive, instead of silently sending a request the proxy cannot satisfy
+  (#602).
 
 ### Changed
 
