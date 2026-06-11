@@ -324,3 +324,36 @@ uv run bench eval create --config tests/integration/configs/gemini.yaml
 # Run validator standalone
 uv run python tests/integration/check_results.py jobs/integration gemini pi-acp
 ```
+
+## Agent-as-Judge Verification
+
+`agent_judge.py` adds a second, model-based signal on top of the mechanical
+schema checks. Given a completed rollout directory, it reuses BenchFlow's own
+`call_judge` primitive (default model `gemini-3.1-flash-lite`) to grade whether
+the run is a trustworthy measurement: the agent genuinely attempted the task,
+the trajectory is coherent, and there is no obvious reward-hacking. The judge
+reads `result.json` plus the recorded `trajectory/acp_trajectory.jsonl`, and
+treats the trajectory as untrusted evidence rather than as instructions.
+
+The gate combines two requirements:
+
+1. **Realness** — the run is REAL only when `n_tool_calls > 0`, token usage
+   `> 0`, and the reward is non-null. These mechanical invariants hold
+   independently of the judge: a judge pass cannot rescue an unreal run.
+2. **Agent judge** — the judge must return a `pass` verdict. It is
+   fail-closed: a missing provider SDK, an API error, or an unparseable or
+   fieldless verdict all read as FAIL, never a silent pass.
+
+```bash
+# Judge a rollout dir (or a jobs root to search for the latest rollout)
+uv run python tests/integration/agent_judge.py jobs/integration-eval --json
+```
+
+The lightweight `.github/workflows/integration-eval.yml` workflow runs one
+small task through `bench eval create --agent openhands --model
+deepseek/deepseek-v4-flash --sandbox docker`, then runs the agent judge over
+the rollout and fails the job if the run is not REAL or the judge fails. It
+triggers on `workflow_dispatch` and nightly, and is capped at one task to keep
+the check cheap. It references the `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and
+`GEMINI_API_KEY` repository secrets; the judge SDKs come from the `judge`
+extra (`uv sync --extra judge`).
