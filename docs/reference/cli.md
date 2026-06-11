@@ -339,6 +339,11 @@ than 24 hours; use `--dry-run` to preview what would be deleted.
 bench environment cleanup --dry-run --max-age 1440
 ```
 
+Daytona-backed evals also reap orphaned sandboxes automatically at run start
+(failure states such as `BUILD_FAILED` are reaped sooner than healthy ones, and
+concurrent live runs are never touched). Set `BENCHFLOW_DAYTONA_AUTO_REAP=0` to
+disable that automatic pass and rely on the manual command above.
+
 ## bench compat
 
 Third-party framework compatibility checks.
