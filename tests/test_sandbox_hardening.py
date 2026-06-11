@@ -287,30 +287,28 @@ class TestVerifierDirWipe:
         await harden_before_verify(env, _make_task(), sandbox_user=None)
 
         reclaim = next(
-            (c for c in env.exec.call_args_list if ".cache/uv" in c.args[0]),
+            (c for c in env.exec.call_args_list if "/.cache/" in c.args[0]),
             None,
         )
         assert reclaim is not None, "expected a pre-verifier disk reclaim exec"
         cmd = reclaim.args[0]
-        # clears only re-downloadable caches ...
-        assert ".cache/pip" in cmd and "apt/archives" in cmd
-        # ... and never the workspace, agent outputs, installed tools, or assets
-        for forbidden in ("/app", "/workspace", "/tests", "site-packages", ".venv"):
-            assert forbidden not in cmd, f"reclaim must not touch {forbidden}"
+        # clears only re-downloadable caches (uv/pip/apt) ...
+        assert "uv_build" in cmd and "pip" in cmd and "apt/archives" in cmd
+        # ... guarded against symlinks and the workspace/output roots (#601)
+        assert "islink" in cmd and "realpath" in cmd and "/logs" in cmd
+        # no active workspace -> the guard placeholder is plumbed through
+        assert "/nonexistent" in cmd
         # best-effort: swallows errors and never aborts hardening
         assert "2>/dev/null" in cmd and cmd.rstrip().endswith("true")
         # runs as root so it can clear every user's cache
         assert reclaim.kwargs.get("user") == "root"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("workspace", ["/root", "/home/agent"])
-    async def test_reclaim_skips_caches_inside_the_workspace(self, workspace):
-        """When a task uses /root or /home/<user> as its workspace, the reclaim
-        must NOT delete "$workspace/.cache" — that is workspace state the verifier
-        must see untouched. restore_workspace defaults False, so nothing would
-        restore a stray deletion. Guards the workspace-fidelity review blocker."""
+    @pytest.mark.parametrize("workspace", ["/root", "/home/agent", "/app"])
+    async def test_reclaim_plumbs_workspace_into_guard(self, workspace):
+        """The active workspace is passed to the reclaim snippet as argv[1] so
+        the realpath overlap guard can protect it (#601)."""
         import shlex
-        import subprocess
 
         from benchflow.sandbox.lockdown import harden_before_verify
 
@@ -320,47 +318,104 @@ class TestVerifierDirWipe:
         )
 
         reclaim = next(
-            (c for c in env.exec.call_args_list if ".cache/uv" in c.args[0]), None
+            (c for c in env.exec.call_args_list if "/.cache/" in c.args[0]), None
         )
         assert reclaim is not None
-        cmd = reclaim.args[0]
-        # the active workspace is plumbed into the guard ...
-        assert f"WS={shlex.quote(workspace)}" in cmd
-        # ... and overlap is guarded in both directions
-        assert 'case "$WS" in "$u" | "$u"/*) continue' in cmd
-        assert 'case "$u" in "$WS"/*) continue' in cmd
+        assert (
+            reclaim.args[0]
+            .rstrip()
+            .endswith(f"{shlex.quote(workspace)} 2>/dev/null; true")
+        )
 
-        # behaviorally: the guard skips the workspace dir itself (hermetic check)
-        decide = subprocess.run(
-            [
-                "sh",
-                "-c",
-                f"WS={shlex.quote(workspace)}; u={shlex.quote(workspace)}; "
-                'case "$WS" in "$u" | "$u"/*) echo skip; exit ;; esac; '
-                'case "$u" in "$WS"/*) echo skip; exit ;; esac; echo clear',
-            ],
+    # ── Behavior tests: run the REAL reclaim snippet against a temp root ──────
+    # (#601 regression suite — the old string-shape tests passed while the
+    # shell command deleted agent state through symlinks and /tmp globs.)
+
+    @staticmethod
+    def _run_reclaim(workspace: str, prefix) -> None:
+        """Execute the production _RECLAIM_CACHES_PY hermetically under
+        ``prefix`` — the same code, same interpreter contract as the sandbox."""
+        import subprocess
+        import sys
+
+        from benchflow.sandbox.lockdown import _RECLAIM_CACHES_PY
+
+        result = subprocess.run(
+            [sys.executable, "-c", _RECLAIM_CACHES_PY, workspace, str(prefix)],
             capture_output=True,
             text=True,
-        ).stdout.strip()
-        assert decide == "skip", (
-            f"workspace {workspace} should be skipped, got {decide}"
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_reclaim_does_not_traverse_cache_symlink_into_workspace(self, tmp_path):
+        """Guards PR #669 for issue #601 (repro 1): an agent-planted
+        ``~/.cache -> /app`` must not turn the cache delete into
+        ``rm -rf /app/uv`` — the old shell form did exactly that."""
+        (tmp_path / "app" / "uv").mkdir(parents=True)
+        (tmp_path / "app" / "uv" / "state.txt").write_text("agent state")
+        (tmp_path / "root").mkdir()
+        (tmp_path / "root" / ".cache").symlink_to(tmp_path / "app")
+
+        self._run_reclaim(str(tmp_path / "app"), tmp_path)
+
+        assert (tmp_path / "app" / "uv" / "state.txt").exists()
+
+    def test_reclaim_does_not_traverse_symlink_into_artifacts(self, tmp_path):
+        """Guards PR #669 for issue #601 (repro 2): ``.cache -> /logs/artifacts``
+        must not delete artifact state — /logs is a protected root even when it
+        is not the workspace."""
+        (tmp_path / "logs" / "artifacts" / "uv").mkdir(parents=True)
+        (tmp_path / "logs" / "artifacts" / "uv" / "state.txt").write_text("x")
+        (tmp_path / "home" / "agent").mkdir(parents=True)
+        (tmp_path / "home" / "agent" / ".cache").symlink_to(
+            tmp_path / "logs" / "artifacts"
         )
 
-    @pytest.mark.asyncio
-    async def test_reclaim_still_clears_caches_outside_the_workspace(self):
-        """A workspace like /app (not under /root or /home) leaves the per-user
-        cache reclaim fully active."""
-        from benchflow.sandbox.lockdown import harden_before_verify
+        self._run_reclaim("/nonexistent", tmp_path)
 
-        env = _make_env()
-        await harden_before_verify(
-            env, _make_task(), sandbox_user=None, workspace="/app"
-        )
-        reclaim = next(
-            (c for c in env.exec.call_args_list if ".cache/uv" in c.args[0]), None
-        )
-        assert reclaim is not None
-        assert "WS=/app" in reclaim.args[0]
+        assert (tmp_path / "logs" / "artifacts" / "uv" / "state.txt").exists()
+
+    def test_reclaim_spares_tmp_workspace_matching_glob(self, tmp_path):
+        """Guards PR #669 for issue #601 (repro 3): a legitimate
+        ``/tmp/uv-workspace`` workspace must survive the ``/tmp/uv-*`` glob —
+        the old form deleted it unconditionally."""
+        ws = tmp_path / "tmp" / "uv-workspace"
+        ws.mkdir(parents=True)
+        (ws / "state.txt").write_text("answer")
+
+        self._run_reclaim(str(ws), tmp_path)
+
+        assert (ws / "state.txt").exists()
+
+    def test_reclaim_still_clears_real_caches_outside_workspace(self, tmp_path):
+        """Guards PR #669 for issue #601 (repro 4): real, non-symlinked caches
+        outside the workspace are still reclaimed, so the ENOSPC mitigation
+        the reclaim exists for stays effective."""
+        (tmp_path / "root" / ".cache" / "uv" / "blob").mkdir(parents=True)
+        (tmp_path / "home" / "u1" / ".cache" / "pip").mkdir(parents=True)
+        (tmp_path / "tmp" / "uv-build123").mkdir(parents=True)
+        (tmp_path / "var" / "cache" / "apt" / "archives").mkdir(parents=True)
+        (tmp_path / "var" / "cache" / "apt" / "archives" / "x.deb").write_text("d")
+
+        self._run_reclaim(str(tmp_path / "app"), tmp_path)
+
+        assert not (tmp_path / "root" / ".cache" / "uv").exists()
+        assert not (tmp_path / "home" / "u1" / ".cache" / "pip").exists()
+        assert not (tmp_path / "tmp" / "uv-build123").exists()
+        assert not (tmp_path / "var" / "cache" / "apt" / "archives" / "x.deb").exists()
+
+    def test_reclaim_skips_caches_inside_the_workspace(self, tmp_path):
+        """When a task uses /root as its workspace, "$ws/.cache" is workspace
+        state the verifier must see untouched (the pre-#601 guarantee, now
+        enforced by realpath overlap instead of string comparison)."""
+        cache = tmp_path / "root" / ".cache" / "uv"
+        cache.mkdir(parents=True)
+        (cache / "state.txt").write_text("workspace state")
+
+        self._run_reclaim(str(tmp_path / "root"), tmp_path)
+
+        assert (cache / "state.txt").exists()
 
 
 # ── TestBuildConfigSnapshot ───────────────────────────────────────────────────
