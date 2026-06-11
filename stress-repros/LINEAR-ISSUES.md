@@ -1,7 +1,9 @@
 # Linear-ready issues — benchflow v0.6.0 stress test
 
-Paste-ready backlog. Linear is not connected to this session, so these are staged here;
-once the Linear MCP is connected I can file them directly (team/project of your choice).
+**Filed in Linear `eng` team on 2026-06-11:** BF-1→ENG-248 · BF-2→ENG-249 · BF-3→ENG-250 ·
+BF-4→ENG-251 · BF-5→ENG-252 · BF-6→ENG-253 · BF-7→ENG-254 · BF-8→ENG-255 · BF-9→ENG-256 ·
+BF-10→ENG-257 (deferred/open). All labeled `bug`.
+
 Each fix below is applied on branch `stress/v0.6.0-fork` and dogfooded.
 
 Suggested labels: `bug`, `v0.6.0`, `cli`, `dx`, `examples`.
