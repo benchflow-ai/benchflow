@@ -352,6 +352,18 @@ def eval_create(
             help="Timeout (seconds) for sandbox user setup inside the environment.",
         ),
     ] = 120,
+    context_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--context-root",
+            help=(
+                "Repo root that task Dockerfile COPY sources are relative to. "
+                "Sources are staged into environment/_deps/ before the build "
+                "(see stage_dockerfile_deps), so Dockerfiles that COPY "
+                "repo-root paths build without a pre-staging script."
+            ),
+        ),
+    ] = None,
     skills_dir: Annotated[
         Path | None,
         typer.Option("--skills-dir", help="Skills directory to deploy"),
@@ -484,6 +496,7 @@ def eval_create(
             agent_env=parsed_env,
             sandbox_user=sandbox_user,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            context_root=str(context_root) if context_root else None,
             skills_dir=str(skills_dir) if skills_dir else None,
             skill_mode=skill_mode,
             skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
@@ -561,6 +574,8 @@ def eval_create(
             j._config.prompts = eval_prompts
         if agent_idle_timeout is not None:
             j._config.agent_idle_timeout = eval_agent_idle_timeout
+        if context_root is not None:
+            j._config.context_root = str(context_root)
         if usage_tracking_overridden:
             j._config.usage_tracking = j._config.usage_tracking.overlay(
                 eval_usage_tracking
