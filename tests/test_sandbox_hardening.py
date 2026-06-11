@@ -280,7 +280,8 @@ class TestVerifierDirWipe:
     async def test_reclaims_redownloadable_caches_before_verify(self):
         """Frees uv/pip/apt download caches so the verifier's own deps fit on
         disk-constrained sandboxes (e.g. Daytona's 10GB cap), without ever
-        touching the workspace, agent outputs, installed tools, or task assets."""
+        touching the workspace, agent outputs, installed tools, or task assets.
+        Guards PR #669."""
         from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
@@ -408,7 +409,7 @@ class TestVerifierDirWipe:
     def test_reclaim_skips_caches_inside_the_workspace(self, tmp_path):
         """When a task uses /root as its workspace, "$ws/.cache" is workspace
         state the verifier must see untouched (the pre-#601 guarantee, now
-        enforced by realpath overlap instead of string comparison)."""
+        enforced by realpath overlap instead of string comparison). Guards PR #669."""
         cache = tmp_path / "root" / ".cache" / "uv"
         cache.mkdir(parents=True)
         (cache / "state.txt").write_text("workspace state")

@@ -6,6 +6,7 @@ an embedded Python snippet passed to ``python3 -c``. Keep it here instead of in
 """
 
 import shlex
+from textwrap import dedent
 
 # Symlink- and workspace-safe cache reclaim for #601.
 #
@@ -32,57 +33,60 @@ import shlex
 # Fail-safe by construction: if python3 is unavailable the reclaim simply does
 # not run (the trailing `true` swallows it). Losing best-effort ENOSPC mitigation
 # is strictly better than deleting the wrong state.
-RECLAIM_CACHES_PY = (
-    "import glob, os, shutil, sys;"
-    "ws = sys.argv[1];"
-    "px = sys.argv[2] if len(sys.argv) > 2 else '';"
-    "\n"
-    "def linked(path):\n"
-    "    p = px or ''\n"
-    "    for part in path[len(px):].strip('/').split('/'):\n"
-    "        p = p + '/' + part\n"
-    "        if os.path.islink(p):\n"
-    "            return True\n"
-    "    return False\n"
-    "\n"
-    "protected = []\n"
-    "for root in (ws, px + '/logs'):\n"
-    "    try:\n"
-    "        if root and os.path.exists(root):\n"
-    "            protected.append(os.path.realpath(root))\n"
-    "    except OSError:\n"
-    "        pass\n"
-    "\n"
-    "def overlaps(path):\n"
-    "    return any(\n"
-    "        path == r or path.startswith(r + '/') or r.startswith(path + '/')\n"
-    "        for r in protected\n"
-    "    )\n"
-    "\n"
-    "cands = [\n"
-    "    u + '/.cache/' + name\n"
-    "    for u in [px + '/root'] + sorted(glob.glob(px + '/home/*'))\n"
-    "    for name in ('uv', 'pip', 'uv_build')\n"
-    "]\n"
-    "cands += sorted(glob.glob(px + '/tmp/uv-*'))\n"
-    "cands += sorted(glob.glob(px + '/tmp/.uv-*'))\n"
-    "cands += sorted(glob.glob(px + '/var/cache/apt/archives/*.deb'))\n"
-    "for c in cands:\n"
-    "    try:\n"
-    "        if not os.path.lexists(c) or linked(c):\n"
-    "            continue\n"
-    "        # linked() proved no symlink components below the prefix, so\n"
-    "        # realpath only normalizes the prefix itself - consistent with\n"
-    "        # the realpath'd protected roots.\n"
-    "        if overlaps(os.path.realpath(c)):\n"
-    "            continue\n"
-    "        if os.path.isdir(c):\n"
-    "            shutil.rmtree(c, ignore_errors=True)\n"
-    "        else:\n"
-    "            os.remove(c)\n"
-    "    except OSError:\n"
-    "        pass\n"
-)
+RECLAIM_CACHES_PY = dedent(
+    """
+    import glob, os, shutil, sys
+
+    ws = sys.argv[1]
+    px = sys.argv[2] if len(sys.argv) > 2 else ''
+
+    def linked(path):
+        p = px or ''
+        for part in path[len(px):].strip('/').split('/'):
+            p = p + '/' + part
+            if os.path.islink(p):
+                return True
+        return False
+
+    protected = []
+    for root in (ws, px + '/logs'):
+        try:
+            if root and os.path.exists(root):
+                protected.append(os.path.realpath(root))
+        except OSError:
+            pass
+
+    def overlaps(path):
+        return any(
+            path == r or path.startswith(r + '/') or r.startswith(path + '/')
+            for r in protected
+        )
+
+    cands = [
+        u + '/.cache/' + name
+        for u in [px + '/root'] + sorted(glob.glob(px + '/home/*'))
+        for name in ('uv', 'pip', 'uv_build')
+    ]
+    cands += sorted(glob.glob(px + '/tmp/uv-*'))
+    cands += sorted(glob.glob(px + '/tmp/.uv-*'))
+    cands += sorted(glob.glob(px + '/var/cache/apt/archives/*.deb'))
+    for c in cands:
+        try:
+            if not os.path.lexists(c) or linked(c):
+                continue
+            # linked() proved no symlink components below the prefix, so
+            # realpath only normalizes the prefix itself - consistent with
+            # the realpath'd protected roots.
+            if overlaps(os.path.realpath(c)):
+                continue
+            if os.path.isdir(c):
+                shutil.rmtree(c, ignore_errors=True)
+            else:
+                os.remove(c)
+        except OSError:
+            pass
+    """
+).strip()
 
 
 def build_reclaim_caches_cmd(workspace: str | None) -> str:
