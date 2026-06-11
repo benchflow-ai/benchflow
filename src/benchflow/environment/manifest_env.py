@@ -41,6 +41,34 @@ from benchflow.environment.protocol import (
     StateSnapshot,
 )
 
+# Bounded guard for the detached-start exec. The start command backgrounds the
+# service and returns immediately, so this only bounds sandbox transport
+# stalls — readiness() owns how long the service may take to become healthy.
+_SERVICE_START_TIMEOUT_SEC = 15
+
+
+def service_log_path(service_name: str) -> str:
+    """In-sandbox path collecting a started service's stdout+stderr."""
+    return f"/tmp/benchflow-env-{service_name}.log"
+
+
+def service_start_command(svc: ServiceSpec) -> str:
+    """Render the fully detached background start for one manifest service.
+
+    Full fd detachment — ``nohup {cmd} </dev/null >{log} 2>&1 &`` — is
+    load-bearing on Daytona (BF-9, the same failure class as BF-6/W9):
+    Daytona runs each exec as a *session command*, and a backgrounded service
+    that inherits ANY of the session's std streams keeps the session command
+    "running", wedging the exec until its timeout — which the bounded start
+    timeout turns into a hard provision failure on Daytona while the same
+    manifest passes on Docker. The three redirections sever every inherited
+    stream and ``nohup`` survives the session's terminal HUP. No ``disown``:
+    that is a bash/zsh builtin, absent from the ``sh``/dash shell sandbox
+    execs run under. The manifest's ``command`` is a single command line and
+    is used verbatim, matching clawbench's ``_build_service_hooks`` shape.
+    """
+    return f"nohup {svc.command} </dev/null >{service_log_path(svc.name)} 2>&1 &"
+
 
 class EnvironmentSnapshotError(RuntimeError):
     """Raised when a snapshot or restore sandbox command fails (issue #387).
@@ -108,11 +136,7 @@ class ManifestEnvironment:
                 )
                 if probe.return_code != 0:
                     continue  # binary missing or its package absent — skip
-                log = f"/tmp/benchflow-env-{svc.name}.log"
-                await self._sandbox.exec(
-                    f"{svc.command} > {log} 2>&1 &",
-                    timeout_sec=15,
-                )
+                await self._start_service(svc)
                 self._started.append(svc)
         endpoints = {p: f"http://localhost:{p}" for p in m.all_ports}
         self._handle = EnvHandle(name=m.name, endpoints=endpoints)
@@ -122,6 +146,19 @@ class ManifestEnvironment:
         if m.state is not None:
             self._baseline = await self._capture_baseline()
         return self._handle
+
+    async def _start_service(self, svc: ServiceSpec) -> None:
+        """Start one service fully detached, logging to its per-service file.
+
+        Shared by ``provision`` and ``reset`` so the (Daytona-critical)
+        detachment shape lives in exactly one place — see
+        :func:`service_start_command`. The service's output is retrievable at
+        :func:`service_log_path` for its name.
+        """
+        await self._sandbox.exec(
+            service_start_command(svc),
+            timeout_sec=_SERVICE_START_TIMEOUT_SEC,
+        )
 
     async def readiness(self) -> ReadinessProbe:
         """Poll each service's health endpoint from inside the sandbox.
@@ -298,11 +335,8 @@ class ManifestEnvironment:
         if self._baseline is not None:
             await self.restore(self._baseline)
         # 3. Restart the same services we previously started, in the same
-        #    background-with-log shape provision() uses. owns_lifecycle = true
-        #    manifests reach this with an empty self._started — nothing to do.
+        #    detached background-with-log shape provision() uses.
+        #    owns_lifecycle = true manifests reach this with an empty
+        #    self._started — nothing to do.
         for svc in self._started:
-            log = f"/tmp/benchflow-env-{svc.name}.log"
-            await self._sandbox.exec(
-                f"{svc.command} > {log} 2>&1 &",
-                timeout_sec=15,
-            )
+            await self._start_service(svc)
