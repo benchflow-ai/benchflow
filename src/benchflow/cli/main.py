@@ -6,7 +6,7 @@ import logging
 import os
 from datetime import UTC
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 import typer
 from rich.console import Console
@@ -22,11 +22,23 @@ from benchflow._utils.config import (
 )
 from benchflow.agent_router import register_agent_router
 from benchflow.agents.registry import parse_agent_spec
+from benchflow.cli._options import (
+    AgentOption,
+    ConcurrencyOption,
+    JobsDirOption,
+    ModelOption,
+    MonitorJobsDirOption,
+    SandboxOption,
+    SkillModeOption,
+)
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.usage_tracking import UsageTrackingConfig
+
+if TYPE_CHECKING:
+    from benchflow.evaluation import EvaluationResult
 
 # Show progress messages (logger.info) from benchflow internals by default.
 logging.basicConfig(
@@ -109,6 +121,14 @@ def _exit_if_evaluation_had_errors(result: object) -> None:
         raise typer.Exit(1)
 
 
+def _report_eval_result(result: "EvaluationResult") -> None:
+    """Print the standard Score/errors summary line for an evaluation result."""
+    console.print(
+        f"\n[bold]Score: {result.passed}/{result.total} "
+        f"({result.score:.1%})[/bold], errors={result.errored}"
+    )
+
+
 def _normalize_eval_agent_or_exit(agent_spec: str) -> str:
     protocol, canonical_agent = parse_agent_spec(agent_spec)
     if protocol not in ("acp", "acpx"):
@@ -188,32 +208,18 @@ def job(
         str | None,
         typer.Option("--model", help="Model to use"),
     ] = None,
-    environment: Annotated[
-        str,
-        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
-    ] = "docker",
-    concurrency: Annotated[
-        int,
-        typer.Option("--concurrency", help="Max concurrent tasks"),
-    ] = 4,
+    environment: SandboxOption = "docker",
+    concurrency: ConcurrencyOption = 4,
     max_retries: Annotated[
         int,
         typer.Option("--retries", help="Max retries per task"),
     ] = 0,
-    jobs_dir: Annotated[
-        str,
-        typer.Option("--jobs-dir", help="Output directory for results"),
-    ] = "jobs",
+    jobs_dir: JobsDirOption = "jobs",
     skills_dir: Annotated[
         Path | None,
         typer.Option("--skills-dir", help="Skills directory to deploy into sandbox"),
     ] = None,
-    skill_mode: Annotated[
-        str,
-        typer.Option(
-            "--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"
-        ),
-    ] = SKILL_MODE_NO_SKILL,
+    skill_mode: SkillModeOption = SKILL_MODE_NO_SKILL,
 ) -> None:
     """Run all tasks in a directory with concurrency and retries.
 
@@ -243,11 +249,7 @@ def job(
 
     result = asyncio.run(j.run())
 
-    console.print(
-        f"\n[bold]Score: {result.passed}/{result.total} "
-        f"({result.score:.1%})[/bold], "
-        f"errors={result.errored}"
-    )
+    _report_eval_result(result)
 
 
 @app.command(hidden=True, deprecated=True)
@@ -283,10 +285,7 @@ def metrics(
         str,
         typer.Option("--benchmark", help="Benchmark name"),
     ] = "",
-    agent: Annotated[
-        str,
-        typer.Option("--agent", help="Agent name"),
-    ] = "",
+    agent: AgentOption = "",
     model: Annotated[
         str,
         typer.Option("--model", help="Model name"),
@@ -365,32 +364,15 @@ def eval(
         Path | None,
         typer.Option("--skills-dir", help="Skills directory for agent discovery"),
     ] = None,
-    agent: Annotated[
-        str,
-        typer.Option("--agent", help="Agent name"),
-    ] = DEFAULT_AGENT,
-    model: Annotated[
-        str | None,
-        typer.Option("--model", help="Model"),
-    ] = None,
-    environment: Annotated[
-        str,
-        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
-    ] = "docker",
-    concurrency: Annotated[
-        int,
-        typer.Option("--concurrency", help="Max concurrent tasks"),
-    ] = 4,
+    agent: AgentOption = DEFAULT_AGENT,
+    model: ModelOption = None,
+    environment: SandboxOption = "docker",
+    concurrency: ConcurrencyOption = 4,
     jobs_dir: Annotated[
         str,
         typer.Option("--jobs-dir", help="Output directory"),
     ] = "jobs",
-    skill_mode: Annotated[
-        str,
-        typer.Option(
-            "--skill-mode", help="Skill mode: no-skill, with-skill, or self-gen"
-        ),
-    ] = SKILL_MODE_NO_SKILL,
+    skill_mode: SkillModeOption = SKILL_MODE_NO_SKILL,
 ) -> None:
     """Evaluate a skill against multiple tasks.
 
@@ -511,18 +493,9 @@ def skills_eval(
         list[str] | None,
         typer.Option("--model", help="Model(s) (matched 1:1 with agents)"),
     ] = None,
-    environment: Annotated[
-        str,
-        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
-    ] = "docker",
-    concurrency: Annotated[
-        int,
-        typer.Option("--concurrency", help="Max concurrent tasks"),
-    ] = 1,
-    jobs_dir: Annotated[
-        str,
-        typer.Option("--jobs-dir", help="Output directory for results"),
-    ] = "jobs",
+    environment: SandboxOption = "docker",
+    concurrency: ConcurrencyOption = 1,
+    jobs_dir: JobsDirOption = "jobs",
     no_baseline: Annotated[
         bool,
         typer.Option("--no-baseline", help="Skip baseline (without-skill) runs"),
@@ -1092,10 +1065,7 @@ def eval_create(
         str | None,
         typer.Option("--agent", help="Agent name"),
     ] = None,
-    model: Annotated[
-        str | None,
-        typer.Option("--model", help="Model"),
-    ] = None,
+    model: ModelOption = None,
     reasoning_effort: Annotated[
         str | None,
         typer.Option(
@@ -1200,13 +1170,7 @@ def eval_create(
         Path | None,
         typer.Option("--skills-dir", help="Skills directory to deploy"),
     ] = None,
-    skill_mode: Annotated[
-        str,
-        typer.Option(
-            "--skill-mode",
-            help="Skill mode: no-skill, with-skill, or self-gen",
-        ),
-    ] = SKILL_MODE_NO_SKILL,
+    skill_mode: SkillModeOption = SKILL_MODE_NO_SKILL,
     skill_creator_dir: Annotated[
         Path | None,
         typer.Option(
@@ -1318,6 +1282,33 @@ def eval_create(
             )
             raise typer.Exit(1) from None
 
+    def _make_eval_config(
+        source_provenance: dict[str, Any] | None = None,
+    ) -> EvaluationConfig:
+        """Build the EvaluationConfig shared by the source-repo and tasks-dir paths."""
+        return EvaluationConfig(
+            agent=eval_agent,
+            model=effective_model(eval_agent, model),
+            reasoning_effort=eval_reasoning_effort,
+            environment=eval_environment,
+            concurrency=eval_concurrency,
+            build_concurrency=build_concurrency,
+            prompts=eval_prompts,
+            agent_idle_timeout=eval_agent_idle_timeout,
+            agent_env=parsed_env,
+            sandbox_user=sandbox_user,
+            sandbox_setup_timeout=sandbox_setup_timeout,
+            skills_dir=str(skills_dir) if skills_dir else None,
+            skill_mode=skill_mode,
+            skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
+            self_gen_no_internet=self_gen_no_internet,
+            source_provenance=source_provenance,
+            include_tasks=include_tasks,
+            exclude_tasks=exclude_tasks,
+            usage_tracking=eval_usage_tracking,
+            environment_manifest=eval_env_manifest,
+        )
+
     def _run_batch_eval(
         resolved_tasks_dir: Path,
         eval_config: EvaluationConfig,
@@ -1354,10 +1345,7 @@ def eval_create(
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
 
-        console.print(
-            f"\n[bold]Score: {result.passed}/{result.total} "
-            f"({result.score:.1%})[/bold], errors={result.errored}"
-        )
+        _report_eval_result(result)
         _exit_if_evaluation_had_errors(result)
         return result
 
@@ -1405,10 +1393,7 @@ def eval_create(
         except (EmptyTaskSelectionError, ValueError) as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
-        console.print(
-            f"\n[bold]Score: {result.passed}/{result.total} "
-            f"({result.score:.1%})[/bold], errors={result.errored}"
-        )
+        _report_eval_result(result)
         _exit_if_evaluation_had_errors(result)
     elif source_env:
         from benchflow.hosted_env import (
@@ -1494,64 +1479,19 @@ def eval_create(
             source_repo, path=source_path, ref=source_ref
         )
         resolved_tasks_dir = resolved.path
-        eff_model = effective_model(eval_agent, model)
         _run_batch_eval(
             resolved_tasks_dir,
-            EvaluationConfig(
-                agent=eval_agent,
-                model=eff_model,
-                reasoning_effort=eval_reasoning_effort,
-                environment=eval_environment,
-                concurrency=eval_concurrency,
-                build_concurrency=build_concurrency,
-                prompts=eval_prompts,
-                agent_idle_timeout=eval_agent_idle_timeout,
-                agent_env=parsed_env,
-                sandbox_user=sandbox_user,
-                sandbox_setup_timeout=sandbox_setup_timeout,
-                skills_dir=str(skills_dir) if skills_dir else None,
-                skill_mode=skill_mode,
-                skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
-                self_gen_no_internet=self_gen_no_internet,
-                source_provenance=resolved.provenance,
-                include_tasks=include_tasks,
-                exclude_tasks=exclude_tasks,
-                usage_tracking=eval_usage_tracking,
-                environment_manifest=eval_env_manifest,
-            ),
+            _make_eval_config(source_provenance=resolved.provenance),
         )
     elif tasks_dir:
         resolved_tasks_dir = tasks_dir
-        eff_model = effective_model(eval_agent, model)
         # Single-task and batch share one orchestration path. Evaluation
         # handles both layouts (Evaluation._get_task_dirs detects when
         # tasks_dir itself contains task.toml) and applies include/exclude
         # filters uniformly (#400, #401, #407).
         _run_batch_eval(
             resolved_tasks_dir,
-            EvaluationConfig(
-                agent=eval_agent,
-                model=eff_model,
-                reasoning_effort=eval_reasoning_effort,
-                environment=eval_environment,
-                concurrency=eval_concurrency,
-                build_concurrency=build_concurrency,
-                prompts=eval_prompts,
-                agent_idle_timeout=eval_agent_idle_timeout,
-                agent_env=parsed_env,
-                sandbox_user=sandbox_user,
-                sandbox_setup_timeout=sandbox_setup_timeout,
-                skills_dir=str(skills_dir) if skills_dir else None,
-                skill_mode=skill_mode,
-                skill_creator_dir=(
-                    str(skill_creator_dir) if skill_creator_dir else None
-                ),
-                self_gen_no_internet=self_gen_no_internet,
-                include_tasks=include_tasks,
-                exclude_tasks=exclude_tasks,
-                usage_tracking=eval_usage_tracking,
-                environment_manifest=eval_env_manifest,
-            ),
+            _make_eval_config(),
         )
     else:
         console.print(
@@ -1623,10 +1563,7 @@ def environment_create(
         Path,
         typer.Argument(help="Task directory with task.md or task.toml + Dockerfile"),
     ],
-    sandbox: Annotated[
-        str,
-        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
-    ] = "daytona",
+    sandbox: SandboxOption = "daytona",
 ) -> None:
     """Create an environment from a task directory (does not start it)."""
     from benchflow.runtime import Environment
@@ -1829,10 +1766,7 @@ def monitor_run(
         Path | None,
         typer.Option("--rubric", help="Rubric/verifier definition to score against."),
     ] = None,
-    jobs_dir: Annotated[
-        str,
-        typer.Option("--jobs-dir", help="Output root for monitor artifacts."),
-    ] = "jobs/monitor",
+    jobs_dir: MonitorJobsDirOption = "jobs/monitor",
     run_name: Annotated[
         str | None,
         typer.Option("--run-name", help="Human-readable id for this monitor run."),
@@ -1849,10 +1783,7 @@ def monitor_replay(
         Path,
         typer.Argument(help="Path to a persisted rollout/trajectory to re-score."),
     ],
-    jobs_dir: Annotated[
-        str,
-        typer.Option("--jobs-dir", help="Output root for monitor artifacts."),
-    ] = "jobs/monitor",
+    jobs_dir: MonitorJobsDirOption = "jobs/monitor",
 ) -> None:
     """Re-score a persisted rollout under monitor semantics. **Not yet implemented (#386).**"""
     del trajectory_path, jobs_dir  # accepted for API stability
@@ -1865,10 +1796,7 @@ def monitor_watch(
         str,
         typer.Argument(help="Live event source (webhook, polling endpoint, queue)."),
     ],
-    jobs_dir: Annotated[
-        str,
-        typer.Option("--jobs-dir", help="Output root for monitor artifacts."),
-    ] = "jobs/monitor",
+    jobs_dir: MonitorJobsDirOption = "jobs/monitor",
 ) -> None:
     """Stream-score live production events. **Not yet implemented (#386).**"""
     del source, jobs_dir  # accepted for API stability
