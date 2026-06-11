@@ -4,7 +4,7 @@ Date: 2026-05-19
 
 > **Historical note:** this dated gate predates the shipped public `0.5.2`
 > release and the public/internal preview publishing split. Current
-> release-channel mechanics live in [`docs/release.md`](./release.md).
+> release-channel mechanics live in [`docs/release.md`](../release.md).
 
 ## Verdict
 
@@ -186,7 +186,7 @@ Release sequence after merge approval:
 
 > Historical note: this dated gate predates the public/internal preview
 > publishing split. Current release-channel mechanics live in
-> [`docs/release.md`](./release.md).
+> [`docs/release.md`](../release.md).
 
 1. Merge PRs #279, #280, #283, #290, #291, and #292.
 2. Bump `pyproject.toml` on `main` to `1.0.0`.
