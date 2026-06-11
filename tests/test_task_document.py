@@ -688,6 +688,92 @@ Apply the plan.
     ]
 
 
+def _write_scene_pinned_task_md(tmp_path: Path) -> Path:
+    (tmp_path / "task.md").write_text(
+        """---
+agents:
+  roles:
+    solver:
+      agent: codex
+      model: gpt-5.5
+scenes:
+  - name: solve
+    roles: [solver]
+---
+## prompt
+
+Handle the request.
+
+## role:solver
+
+Solve it.
+"""
+    )
+    return tmp_path
+
+
+def test_from_legacy_warns_when_agent_oracle_loses_to_scene_agents(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Dogfood bug (4): `--agent oracle` is silently ignored for a task.md that
+    pins scene agents (the doc scene's role agent becomes the primary agent, so
+    oracle mode never engages). At minimum, warn that the scene agents take
+    precedence so the user is not misled into thinking oracle ran.
+    """
+    _write_scene_pinned_task_md(tmp_path)
+
+    with caplog.at_level("WARNING"):
+        config = RolloutConfig.from_legacy(task_path=tmp_path, agent="oracle")
+
+    # Behavioral reality: the scene agent wins, oracle mode will NOT run.
+    assert config.primary_agent == "codex-acp"
+    assert config.primary_agent != "oracle"
+
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and "oracle" in r.getMessage()
+    ]
+    assert warnings, "expected a warning that scene agents override --agent oracle"
+    message = warnings[0]
+    assert "oracle" in message
+    assert "precedence" in message or "take precedence" in message
+
+
+def test_from_legacy_no_oracle_warning_without_scene_agents(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The warning is scoped to scene-pinned task.md only — a plain task with
+    no document scenes honors `--agent oracle` and must not warn."""
+    (tmp_path / "instruction.md").write_text("Do the thing.\n")
+
+    with caplog.at_level("WARNING"):
+        config = RolloutConfig.from_legacy(task_path=tmp_path, agent="oracle")
+
+    assert config.primary_agent == "oracle"
+    assert not [r for r in caplog.records if "precedence" in r.getMessage()], (
+        "no precedence warning should fire when the task has no scene agents"
+    )
+
+
+def test_from_legacy_no_oracle_warning_for_non_oracle_agent(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A scene-pinned task with a normal (non-oracle) requested agent already
+    documents that scenes win elsewhere — it must not emit the oracle warning."""
+    _write_scene_pinned_task_md(tmp_path)
+
+    with caplog.at_level("WARNING"):
+        RolloutConfig.from_legacy(task_path=tmp_path, agent="claude-agent-acp")
+
+    assert not [r for r in caplog.records if "oracle" in r.getMessage().lower()], (
+        "no oracle warning should fire when --agent oracle was not requested"
+    )
+
+
 def test_rollout_config_uses_task_package_prompt_plan_for_append(
     tmp_path: Path,
 ) -> None:
