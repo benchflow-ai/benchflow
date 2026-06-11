@@ -6,12 +6,14 @@ cd "$(git rev-parse --show-toplevel)"
 D=$(mktemp -d)
 cp -R docs/examples/task-md/real-skillsbench/weighted-gdp-calc/. "$D/"
 python3 - "$D" <<'PY'
-import pathlib, sys
+import pathlib, sys, re
 p = pathlib.Path(sys.argv[1]) / "task.md"
 t = p.read_text()
-import re
-t = re.sub(r'timeout_sec:\s*\d+', 'timeout_sec: -5', t, count=1)  # first timeout = agent's
-p.write_text(t)
+# Target the AGENT block specifically (NOT the verifier block, which is validated and would
+# mask the defect). Matches `agent:\n  timeout_sec: <n>` and only that.
+t2 = re.sub(r'(agent:\s*\n\s*timeout_sec:\s*)\d+', r'\g<1>-5', t, count=1)
+assert t2 != t, "agent.timeout_sec block not found — task.md layout changed"
+p.write_text(t2)
 PY
 echo "--- agent.timeout_sec = -5 ---"
 uv run bench tasks check "$D" --level schema; echo "schema RC=$?"
