@@ -7,8 +7,8 @@ leaderboard, and monitor the whole pipeline live.
 
 Built for the Opus 4.8 / Gemini 3.5 Flash / MiniMax M3 fill →
 `benchflow/skillsbench-leaderboard` `refs/pr/5`, but the harness is
-model/task-agnostic. Pairs with the dashboard **Experiments** tab
-(`dashboard/experiments_status.py`).
+model/task-agnostic. Emits an `experiments_ledger.json` status summary for
+live monitoring.
 
 ## Architecture
 
@@ -31,7 +31,7 @@ queued → running → completed → review_pass → published
 | `review_cell.py` | Mechanical health review of completed cells → `review/<cell>.json` (pass/fail/quarantine). Uses the `benchflow-experiment-review` skill's `extract_harness_skills.py` for skill posture |
 | `audit_evidence.py` | Per-cell evidence dump for the **subagent** `benchflow-experiment-review` audit (the authoritative gate — only agent-confirmed cells count) |
 | `publish.py` | Push a healthy cell's 5 canonical files + group `metadata.yaml` → HF PR ref; dedup by trial id; **scrubs secrets** + aborts if any survive |
-| `build_ledger.py` | Merge queue + state + review + published → `experiments_ledger.json` (drives the dashboard) |
+| `build_ledger.py` | Merge queue + state + review + published → `experiments_ledger.json` (the live status ledger) |
 | `requeue_quarantine.py` | Reset infra-failed (quarantine) cells → re-run (gemini 429 / opus Bedrock transients) |
 | `requeue_nonpass.py` | Reset every non-pass cell (fail + quarantine) → re-run (e.g. after a task/skill fix) |
 | `trim_skill_fm.py` | Skill hygiene: trim bloated `SKILL.md` frontmatter that the OpenHands SDK silently drops (see skillsbench #914) |

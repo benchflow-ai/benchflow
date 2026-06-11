@@ -2,7 +2,9 @@
 
 Runnable, Docker-heavy experiments that exercise the full benchflow SDK end-to-end. Labs are distinct from unit tests (real Docker, no mocking) and from docs (executable, with expected output). Each lab is self-contained with its own README and orchestrator script.
 
-Labs live under [`labs/`](../labs/).
+> **Historical (0.2.x-era).** The labs below are archived under [`labs/archive/`](../labs/archive/). They compare benchflow 0.2.0 against 0.2.1/0.2.2 and are kept as cited security evidence; the hardening they validate still ships.
+
+Labs live under [`labs/archive/`](../labs/archive/).
 
 | Lab                                                         | Question summary                                                                 | Benchflow versions | API key needed               |
 | ----------------------------------------------------------- | -------------------------------------------------------------------------------- | ------------------ | ---------------------------- |
@@ -15,7 +17,7 @@ Labs live under [`labs/`](../labs/).
 
 **Question:** Does sandbox hardening in benchflow 0.2.1 block BenchJack-style exploits that succeed under 0.2.0?
 
-**Location:** [`labs/benchjack-sandbox-hardening/`](../labs/benchjack-sandbox-hardening/)
+**Location:** [`labs/archive/benchjack-sandbox-hardening/`](../labs/archive/benchjack-sandbox-hardening/)
 
 **Prerequisites:**
 
@@ -28,7 +30,7 @@ Labs live under [`labs/`](../labs/).
 **Run:**
 
 ```sh
-python3 labs/benchjack-sandbox-hardening/run_comparison.py
+python3 labs/archive/benchjack-sandbox-hardening/run_comparison.py
 ```
 
 - `--clean` — delete `.venvs/` and `.jobs/` before running
@@ -43,7 +45,7 @@ python3 labs/benchjack-sandbox-hardening/run_comparison.py
 **Related:** `comparison.ipynb` — narrative deep-dive into P1; run `run_comparison.py` first, then open with:
 
 ```sh
-uv run --with jupyter jupyter notebook labs/benchjack-sandbox-hardening/comparison.ipynb
+uv run --with jupyter jupyter notebook labs/archive/benchjack-sandbox-hardening/comparison.ipynb
 ```
 
 ---
@@ -52,7 +54,7 @@ uv run --with jupyter jupyter notebook labs/benchjack-sandbox-hardening/comparis
 
 **Question:** Do the same BenchJack exploits succeed on real production benchmark tasks, and does benchflow 0.2.2's hardening block them there too?
 
-**Location:** [`labs/reward-hack-matrix/`](../labs/reward-hack-matrix/)
+**Location:** [`labs/archive/reward-hack-matrix/`](../labs/archive/reward-hack-matrix/)
 
 **Prerequisites:**
 
@@ -62,13 +64,13 @@ uv run --with jupyter jupyter notebook labs/benchjack-sandbox-hardening/comparis
 - Network access to PyPI and GitHub
 - Corpora must be cloned first:
   ```sh
-  cd labs/reward-hack-matrix && ./fetch_corpora.sh
+  cd labs/archive/reward-hack-matrix && ./fetch_corpora.sh
   ```
 
 **Run:**
 
 ```sh
-python labs/reward-hack-matrix/run_matrix.py
+python labs/archive/reward-hack-matrix/run_matrix.py
 ```
 
 - `--cells "P1@swebench-verified/astropy__astropy-12907"` — run a single cell
