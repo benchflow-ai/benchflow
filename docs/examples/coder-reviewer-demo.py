@@ -3,7 +3,9 @@
 
 Demonstrates:
   - Multi-role Scene (coder + reviewer) in a shared sandbox
-  - Outbox-based message passing between roles
+  - File-based handoff through the shared workspace: the reviewer writes
+    feedback to a declared file and the coder's next prompt names it.
+    BenchFlow does not inject messages between turns.
   - Standard bf.run(RolloutConfig) API — same path for single or multi-agent
 
 Requirements:
