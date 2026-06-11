@@ -146,7 +146,7 @@ VERSIONS: list[tuple[str, list[str]]] = [
 
 
 # ---------------------------------------------------------------------------
-# venv setup (mirrors labs/benchjack-sandbox-hardening/run_comparison.py)
+# venv setup (mirrors docs/labs/benchjack-sandbox-hardening/run_comparison.py)
 
 
 def _have_uv() -> bool:
