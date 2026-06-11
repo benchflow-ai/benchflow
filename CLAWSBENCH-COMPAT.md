@@ -106,7 +106,7 @@ ENG-74) + the native-YAML key, threading to the existing `EvaluationConfig.conte
 new logic.
 
 ## BF-8 — verifier rejects negative rewards even when the benchmark's contract floors at −1.0
-**Severity:** high · **Status:** OPEN · **Upstream:** benchflow-ai/benchflow#675
+**Severity:** high · **Status:** FIXED · **Upstream:** benchflow-ai/benchflow#675
 Surfaced running skillsgym directly on `benchflow eval create` (smolclaws PR #93). skillsgym's
 safety tasks floor reward to **−1.0** on safety violations — the floor sits BELOW
 doing-nothing 0.0, which is core to the benchmark's thesis. benchflow's reward contract is
@@ -287,3 +287,27 @@ needs; validate the `/testbed_verify` lockdown before any bump.
   `EvaluationConfig`; YAML key parses; CLI overrides YAML; defaults unchanged (None) with and
   without a config file; `--help` documents the flag → 6 passed; broader
   `-k "context_root or eval_create or idle_timeout"` → 76 passed.
+- **BF-8** · `fix/bf-8-reward-range` → merged (`--no-ff`) into `clawsbench-compat`
+  (change `021a6935`) · upstream benchflow-ai/benchflow#675 · Task-config opt-in:
+  `[verifier] reward_range = [lo, hi]` (`VerifierConfig.reward_range`, default None =
+  canonical strict [0,1]), parsed from task.toml AND task.md frontmatter (both funnel
+  through `TaskConfig.model_validate`). **Design: widen-only** — `lo <= 0.0`, `hi >= 1.0`,
+  `lo < hi`, finite, validated once at config parse (`validate_declared_reward_range` in
+  `rewards/validation.py`, delegated to by a pydantic field validator) so 0 ("did nothing")
+  and 1 ("solved") stay scorable anchors for every task and a range can never narrow or
+  shift the contract. Threaded as an explicit `reward_range` parameter through every
+  scalar-reward chokepoint: `is_valid_reward_number`, `validate_reward_map`,
+  `apply_aggregate_policy` (incl. strict consistency check), `Verifier._parse_reward_text`
+  / `_parse_reward_json` / aggregate compat path (range resolved once in `Verifier.__init__`
+  via the `declared_reward_range(task)` accessor, MagicMock/legacy-task safe), and rollout's
+  final `_ensure_canonical_rewards(…, task=…)` gate. Defaults byte-identical; lenient (BF-3)
+  still never accepts negatives on its own — range and lenient compose but neither implies
+  the other. **Scoped out, documented:** LLM-judge/agent-judge/ORS-episode scores stay [0,1]
+  (normalized judge criteria, not task rewards); string safety verdicts (e.g. `safety_gate`)
+  still drop-with-warning in lenient mode per BF-3 — the strict-mode escape hatch is nesting
+  them under a structured key (`details`/`metadata`/`reason`), covered by a test. Tests:
+  `tests/test_reward_range.py` → 45 passed (declared range accepts −1.0; undeclared still
+  raises; malformed/narrowed/shifted ranges rejected at parse; range+lenient and
+  range+strict-aggregate compose; task.toml + task.md round-trips; rollout final gate);
+  sweep `-k "reward or verifier or validation or config"` → 788 passed / 1 skipped.
+  ruff check + format clean; import smoke OK.
