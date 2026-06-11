@@ -28,7 +28,6 @@ from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
 from benchflow.providers.litellm_config import (
-    _BEDROCK_ADAPTIVE_THINKING_RE,
     LITELLM_MASTER_KEY_ENV,
     LITELLM_MODEL_ALIAS_ENV,
     LITELLM_MODEL_VIA_ENV,
@@ -440,15 +439,16 @@ def _write_runtime_files(
 
 
 def _route_requires_bedrock_patch(route: LiteLLMRoute) -> bool:
-    """True when this route depends on the Bedrock 4.8+ thinking patch (#602).
+    """True when this resolved route depends on the Bedrock 4.8+ patch (#602).
 
-    Only Bedrock Claude 4.8+ inference-profile IDs need the sitecustomize
-    patch; stock LiteLLM rejects-or-regresses their adaptive thinking. Every
-    other provider/model keeps today's best-effort behavior (never fatal).
+    Bedrock adaptive-thinking classification belongs to route resolution. The
+    runtime only checks the resolved route contract so the model-matching rules
+    stay in one layer.
     """
-    if route.provider_name != "aws-bedrock":
-        return False
-    return bool(_BEDROCK_ADAPTIVE_THINKING_RE.search(route.upstream_model))
+    return (
+        route.provider_name == "aws-bedrock"
+        and "reasoning_effort" in route.litellm_params
+    )
 
 
 def _host_python_for_litellm(litellm_executable: str) -> str:
