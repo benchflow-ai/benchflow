@@ -530,16 +530,36 @@ jobs/
     └── ...
 ```
 
-The `result.json` contains:
+The `result.json` contains (abridged):
 ```json
 {
   "rewards": {"reward": 0.48},
   "n_tool_calls": 12,
   "n_skill_invocations": 2,
-  "passed": true,
-  "verifier_output": "..."
+  "agent_result": {"total_tokens": 23993, "cost_usd": 0.07, "usage_source": "provider_response"},
+  "final_metrics": {"total_prompt_tokens": 18000, "total_completion_tokens": 5993},
+  "error": null,
+  "verifier_error": null
 }
 ```
+
+**Canonical fields — read these, not invented top-level ones.** The reward,
+token totals, and outcome each live in exactly one place:
+
+| You want | Read | Notes |
+| --- | --- | --- |
+| reward | `rewards.reward` | scalar 0.0–1.0, or `null` if unscored |
+| token total | `agent_result.total_tokens` | `null` when no provider usage was captured (e.g. hosted runs) |
+| outcome / status | derived from `rewards.reward` + `error`/`verifier_error` | not stored as a field; see below |
+
+There is intentionally **no top-level `reward`, `total_tokens`, or `status`
+key** — those names are absent, not `null`. A naive consumer doing
+`result["reward"]` or `result.get("total_tokens")` gets `None` because the key
+does not exist, never because the value is null. Pass/fail is a *derived*
+classification (only `reward == 1.0` passes); BenchFlow computes it from
+`rewards.reward` plus the error channels rather than persisting a redundant
+`status`. The same nested shape is produced for both native rollouts and
+hosted-env runs, so one reader handles both.
 
 `n_skill_invocations` is derived from structured ACP trajectory events: BenchFlow
 counts only `tool_call` events whose `kind` is `skill`. Job `summary.json`
