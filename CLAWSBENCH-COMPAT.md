@@ -91,7 +91,7 @@ consumer.
 `_poll_response`; add the protocol docstring note.
 
 ## BF-7 — `bench eval create` has no `--context-root`; YAML config has no key either
-**Severity:** medium · **Status:** OPEN
+**Severity:** medium · **Status:** FIXED · **Upstream:** benchflow-ai/benchflow#674
 Surfaced running skillsgym directly on `benchflow eval create` (smolclaws PR #93).
 `context_root` / `stage_dockerfile_deps` exist end-to-end in benchflow — `EvaluationConfig.
 context_root` (`evaluation.py:300`) threads through both single-task paths into
@@ -106,7 +106,7 @@ ENG-74) + the native-YAML key, threading to the existing `EvaluationConfig.conte
 new logic.
 
 ## BF-8 — verifier rejects negative rewards even when the benchmark's contract floors at −1.0
-**Severity:** high · **Status:** OPEN
+**Severity:** high · **Status:** OPEN · **Upstream:** benchflow-ai/benchflow#675
 Surfaced running skillsgym directly on `benchflow eval create` (smolclaws PR #93). skillsgym's
 safety tasks floor reward to **−1.0** on safety violations — the floor sits BELOW
 doing-nothing 0.0, which is core to the benchmark's thesis. benchflow's reward contract is
@@ -124,7 +124,7 @@ validators. Default stays [0,1] strict — zero behavior change unless a task de
 Avoid blanket lenient-mode acceptance of negatives (silent contract erosion).
 
 ## BF-9 — `ManifestEnvironment` service start lacks the W9 Daytona detachment
-**Severity:** high · **Status:** OPEN
+**Severity:** high · **Status:** OPEN · **Upstream:** benchflow-ai/benchflow#676
 Surfaced running skillsgym directly on `benchflow eval create` (smolclaws PR #93).
 `ManifestEnvironment.provision()`/`reset()` (`environment/manifest_env.py`) start each
 `[[environment.services]]` command as `{cmd} > {log} 2>&1 &` — stdout/stderr are redirected but
@@ -274,3 +274,16 @@ needs; validate the `/testbed_verify` lockdown before any bump.
   (`ac1c2c18`, release/v0.6.0 rc4 + BF-1..6 + audit fixes); restored the latest version
   (`45f68888`) onto the branch, marked BF-6 FIXED, and filed BF-7/8/9 (below) from running
   skillsgym directly on `benchflow eval create` (smolclaws PR #93).
+- **BF-7** · `fix/bf-7-eval-create-context-root` → merged (`--no-ff`) into `clawsbench-compat`
+  (merge `73fc57b6`, change `887757b9`) · filed upstream as benchflow-ai/benchflow#674 ·
+  `context_root`/`stage_dockerfile_deps` existed end-to-end (`EvaluationConfig.context_root` →
+  `RolloutConfig` → `stage_dockerfile_deps`, sharded eval worker payload included) but neither
+  operator entry point could set it. Fix threads the value to the existing plumbing only — no
+  new logic: `eval_create` gains `--context-root PATH` (full-name flag, no short form per
+  ENG-74), wired into `_make_eval_config` for the tasks-dir/source-repo paths and as a CLI-wins
+  override on the `--config` path (same pattern as `--agent-idle-timeout`);
+  `Evaluation._from_native_yaml` gains the `context_root` key (string, default None). Tests:
+  `tests/test_context_root_cli.py` (mirrors `test_agent_idle_timeout_cli`) — flag reaches
+  `EvaluationConfig`; YAML key parses; CLI overrides YAML; defaults unchanged (None) with and
+  without a config file; `--help` documents the flag → 6 passed; broader
+  `-k "context_root or eval_create or idle_timeout"` → 76 passed.
