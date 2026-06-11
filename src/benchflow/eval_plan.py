@@ -213,6 +213,12 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         else DEFAULT_AGENT
     )
     eval_environment = request.environment or "docker"
+    if eval_environment not in {"docker", "daytona", "modal"}:
+        # Unknown sandbox values otherwise surface as a raw traceback per-task
+        # once the rollout starts — reject them at planning instead.
+        raise EvalPlanError(
+            f"Invalid --sandbox {eval_environment!r}: choose docker, daytona, or modal"
+        )
     if eval_environment == "modal":
         # Fail fast with the actionable extra hint instead of surfacing a raw
         # ModuleNotFoundError deep inside the rollout (the in-sandbox guard in

@@ -70,6 +70,15 @@ def test_skill_mode_bogus_clean_error(tmp_path: Path):
     assert "Traceback (most recent call last)" not in result.stdout
 
 
+def test_sandbox_bogus_clean_error(tmp_path: Path):
+    # Unknown sandbox values must be rejected at planning, not surface a raw
+    # per-task traceback once the rollout starts.
+    result = _invoke(tmp_path, "--sandbox", "nope")
+    assert result.exit_code == 1
+    assert "Invalid --sandbox" in result.stdout
+    assert "Traceback (most recent call last)" not in result.stdout
+
+
 def test_reasoning_effort_bogus_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--reasoning-effort", "banana")
     assert result.exit_code == 1
