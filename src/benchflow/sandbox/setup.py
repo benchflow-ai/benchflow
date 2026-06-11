@@ -63,7 +63,7 @@ _OPTIONAL_SANDBOX_EXTRAS = {
 
 def _raise_missing_optional_sandbox_dependency(
     sandbox_type: str,
-    exc: ModuleNotFoundError,
+    exc: ImportError,
 ) -> NoReturn:
     extra = _OPTIONAL_SANDBOX_EXTRAS[sandbox_type]
     raise RuntimeError(
@@ -689,8 +689,17 @@ def _create_sandbox_environment(
     elif sandbox_type == "daytona":
         try:
             from benchflow.sandbox._sdk_ops import apply as _apply_daytona_patches
-            from benchflow.sandbox.daytona import DaytonaSandbox
-        except ModuleNotFoundError as exc:
+            from benchflow.sandbox.daytona import DaytonaSandbox, _load_daytona_sdk
+
+            # ``benchflow.sandbox.daytona`` is deliberately import-safe without the
+            # optional Daytona SDK (#358), so the imports above succeed even on a
+            # base install. Force the SDK to load here — at env selection — so a
+            # missing ``[sandbox-daytona]`` extra fails fast with the same
+            # actionable install hint as ``modal``, instead of leaking a raw
+            # ``ImportError`` deep inside ``DaytonaSandbox.__init__`` after the
+            # CPU/memory clamping below has already run (BF-1).
+            _load_daytona_sdk()
+        except ImportError as exc:
             _raise_missing_optional_sandbox_dependency("daytona", exc)
 
         _apply_daytona_patches()
