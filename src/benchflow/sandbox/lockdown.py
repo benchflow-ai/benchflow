@@ -29,7 +29,15 @@ logger = logging.getLogger(__name__)
 
 # Path lockdown defaults and validation
 
-_DEFAULT_LOCKED = ["/oracle", "/solution", "/verifier", "/tests"]
+# /testbed_verify is the root-owned pre-agent workspace snapshot seeded by
+# _seed_verifier_workspace, which makes it world-readable (chmod -R o+rX) so the
+# verifier can diff against it. That readability leaks grading-side state to the
+# agent: an agent can read the snapshot's verifier/judge config (rubrics,
+# expected outputs, judge credentials) and forge or reverse-engineer a reward.
+# Seeding runs before lockdown in install_agent, so locking it here (chmod 700,
+# root-owned) closes the read window before the agent starts. The verifier runs
+# as root and so still reads /testbed_verify regardless of mode.
+_DEFAULT_LOCKED = ["/oracle", "/solution", "/verifier", "/tests", "/testbed_verify"]
 _SAFE_PATH_RE = re.compile(r"^/[a-zA-Z0-9_./*?\-]+(/[a-zA-Z0-9_./*?\-]+)*$")
 
 
@@ -62,7 +70,8 @@ def _resolve_locked_paths(
     """Resolve effective locked paths.
 
     - sandbox_user=None → [] (no lockdown)
-    - sandbox_user set, paths=None → defaults (/oracle, /solution, /verifier, /tests)
+    - sandbox_user set, paths=None → defaults (/oracle, /solution, /verifier,
+      /tests, /testbed_verify)
     - sandbox_user set, paths=[] → [] (explicit opt-out)
     - sandbox_user set, paths=[...] → union of defaults + caller paths
     """
