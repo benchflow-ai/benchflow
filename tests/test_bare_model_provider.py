@@ -1,5 +1,8 @@
 """BF-4: bare (prefix-stripped) model ids resolve to the right provider.
 
+Guards the fix from benchflow-ai/benchflow PR #670 (BF-4) against the
+regression where bare custom-provider ids defaulted to anthropic.
+
 ``find_provider`` only matches an explicit ``provider/`` prefix, so after
 ``strip_provider_prefix`` runs, a bare id like ``deepseek-v4-flash`` no longer
 resolves and the openclaw shim's ``_infer_provider_prefix`` historically
@@ -11,11 +14,17 @@ These tests pin the registry-driven bare-model routing:
     provider's declared ``model_prefixes`` (registry owns the knowledge).
   - ``_infer_provider_prefix`` consults that helper before its native
     gemini/gpt heuristics, and still falls back to anthropic.
+  - ``_setup_bare_custom_provider`` (Codex P1 follow-up on PR #670) actually
+    registers the resolved custom provider in openclaw.json before the bare id
+    is prefixed, while openclaw-native and unknown ids trigger no setup.
 """
 
 import pytest
 
-from benchflow.agents.openclaw_acp_shim import _infer_provider_prefix
+from benchflow.agents.openclaw_acp_shim import (
+    _infer_provider_prefix,
+    _setup_bare_custom_provider,
+)
 from benchflow.agents.providers import (
     find_provider,
     find_provider_for_bare_model,
@@ -108,3 +117,88 @@ class TestInferProviderPrefixRegistry:
     )
     def test_infer(self, model, expected):
         assert _infer_provider_prefix(model) == expected
+
+
+class TestSetupBareCustomProvider:
+    """Codex P1 (PR #670): bare custom ids must REGISTER their provider.
+
+    ``_infer_provider_prefix`` only names the prefix; for a registered custom
+    provider the shim must also write the provider into ``openclaw.json``, or
+    openclaw receives a ``deepseek/...`` id pointing at a provider it never
+    learned about and the run fails. These tests spy on ``setup_custom_provider``
+    (the openclaw.json writer) to prove the bare custom path triggers setup and
+    that openclaw-native / unknown ids do NOT.
+    """
+
+    def test_bare_custom_model_registers_provider(self, monkeypatch):
+        """deepseek-v4-flash → setup_custom_provider called with deepseek config."""
+        monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.test/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+
+        calls = []
+        monkeypatch.setattr(
+            "benchflow.agents.openclaw_acp_shim.setup_custom_provider",
+            lambda *a, **k: calls.append((a, k)),
+        )
+
+        provider = _setup_bare_custom_provider("deepseek-v4-flash")
+
+        assert provider == "deepseek"
+        assert len(calls) == 1
+        args, _ = calls[0]
+        # setup_custom_provider(provider_name, base_url, api_key, api_protocol, models)
+        assert args[0] == "deepseek"
+        assert args[1] == "https://api.deepseek.test/v1"
+        assert args[2] == "sk-deepseek-test"
+
+    def test_bare_custom_model_uses_registry_endpoint(self, monkeypatch):
+        """glm-4.6 routes to the glm provider with its own env-supplied endpoint."""
+        monkeypatch.setenv("GLM_BASE_URL", "https://glm.test/v1")
+        monkeypatch.setenv("GLM_API_KEY", "glm-test-key")
+
+        calls = []
+        monkeypatch.setattr(
+            "benchflow.agents.openclaw_acp_shim.setup_custom_provider",
+            lambda *a, **k: calls.append(a),
+        )
+
+        assert _setup_bare_custom_provider("glm-4.6") == "glm"
+        assert len(calls) == 1
+        assert calls[0][0] == "glm"
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gemini-3.1-flash-lite",
+            "gpt-4o",
+            "o3-mini",
+            "claude-sonnet-4-6",
+            "whatever-7b",
+        ],
+    )
+    def test_native_and_unknown_models_do_not_register(self, model, monkeypatch):
+        """openclaw-native (gemini/gpt/claude) and unknown ids trigger NO setup."""
+        calls = []
+        monkeypatch.setattr(
+            "benchflow.agents.openclaw_acp_shim.setup_custom_provider",
+            lambda *a, **k: calls.append(a),
+        )
+
+        assert _setup_bare_custom_provider(model) is None
+        assert calls == []
+
+    def test_missing_config_env_does_not_register(self, monkeypatch):
+        """A resolved custom provider with unset url_params/key registers nothing."""
+        # Ensure the deepseek config env vars are absent.
+        monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+        calls = []
+        monkeypatch.setattr(
+            "benchflow.agents.openclaw_acp_shim.setup_custom_provider",
+            lambda *a, **k: calls.append(a),
+        )
+
+        # Resolves to deepseek in the registry, but can't be configured → None.
+        assert _setup_bare_custom_provider("deepseek-v4-flash") is None
+        assert calls == []
