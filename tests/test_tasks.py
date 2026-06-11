@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from benchflow._utils.task_authoring import _check_ctrf_path, check_task, init_task
+from benchflow._utils.task_authoring import (
+    _check_ctrf_path,
+    check_task,
+    init_task,
+    scaffold_task,
+)
 
 
 class TestCheckTask:
@@ -144,6 +149,76 @@ class TestInitTask:
     def test_creates_parent_dirs(self, tmp_path):
         task = init_task("deep", parent_dir=tmp_path / "nested" / "tasks")
         assert task.exists()
+
+
+class TestScaffoldTaskReportedFiles:
+    """scaffold_task(...).files must equal exactly what landed on disk.
+
+    The CLI ``Created:`` summary prints ``result.files`` verbatim, so this is
+    the contract that keeps the summary from under-reporting (it used to omit
+    verifier/test_outputs.py and verifier/rubrics/verifier.toml, both of which
+    ``bench tasks check`` validates).
+    """
+
+    @staticmethod
+    def _disk_files(task_dir: Path) -> set[str]:
+        return {
+            p.relative_to(task_dir).as_posix()
+            for p in task_dir.rglob("*")
+            if p.is_file()
+        }
+
+    def test_reported_set_equals_written_set_task_md(self, tmp_path):
+        result = scaffold_task("rep", parent_dir=tmp_path)
+        assert set(result.files) == self._disk_files(result.task_dir)
+        assert result.files == sorted(result.files)
+        assert set(result.files) == {
+            "task.md",
+            "environment/Dockerfile",
+            "verifier/test.sh",
+            "verifier/test_outputs.py",
+            "verifier/verifier.md",
+            "verifier/rubrics/verifier.md",
+            "verifier/rubrics/verifier.toml",
+            "oracle/solve.sh",
+        }
+
+    def test_reported_set_equals_written_set_legacy(self, tmp_path):
+        result = scaffold_task("rep", parent_dir=tmp_path, task_format="legacy")
+        assert set(result.files) == self._disk_files(result.task_dir)
+        assert set(result.files) == {
+            "task.toml",
+            "instruction.md",
+            "environment/Dockerfile",
+            "tests/test.sh",
+            "tests/test_outputs.py",
+            "solution/solve.sh",
+        }
+
+    def test_reported_set_tracks_no_pytest_and_no_oracle_flags(self, tmp_path):
+        result = scaffold_task(
+            "rep", parent_dir=tmp_path, no_pytest=True, no_oracle=True
+        )
+        assert set(result.files) == self._disk_files(result.task_dir)
+        assert "verifier/test_outputs.py" not in result.files
+        assert "oracle/solve.sh" not in result.files
+        # the rubric package (validated by `bench tasks check`) is still written
+        assert "verifier/rubrics/verifier.toml" in result.files
+
+    def test_cli_init_summary_lists_every_written_file(self, tmp_path):
+        import click
+        from typer.testing import CliRunner
+
+        from benchflow.cli.main import app
+
+        out = CliRunner().invoke(app, ["tasks", "init", "rep", "--dir", str(tmp_path)])
+        assert out.exit_code == 0, out.output
+        text = click.unstyle(out.output)
+        reported = {line.strip() for line in text.splitlines() if line.startswith("  ")}
+        assert reported == self._disk_files(tmp_path / "rep")
+        # the two files the old hardcoded summary dropped (#regression)
+        assert "verifier/test_outputs.py" in reported
+        assert "verifier/rubrics/verifier.toml" in reported
 
 
 class TestInitTaskLegacyScaffold:
