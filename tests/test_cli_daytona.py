@@ -34,13 +34,25 @@ def _install_fake_daytona(monkeypatch, sandboxes):
 
 def test_environment_cleanup_dry_run_lists_old_daytona_sandboxes(monkeypatch):
     """Guards PR #605: cleanup must iterate Daytona.list() (Iterator[Sandbox],
-    SDK >=0.18) instead of the removed paged ``.items`` page object."""
+    SDK >=0.18) instead of the removed paged ``.items`` page object.
+
+    Also guards ownership scoping: only benchflow-owned sandboxes are listed as
+    delete candidates; a foreign sandbox sharing the API key is left alone even
+    when it is far past the age cutoff.
+    """
     sandboxes = [
         SimpleNamespace(
             id="old-sandbox",
             state="started",
             created_at="2025-01-01T00:00:00Z",
-        )
+            labels={"benchflow.managed": "1"},
+        ),
+        SimpleNamespace(
+            id="foreign-sandbox",
+            state="started",
+            created_at="2025-01-01T00:00:00Z",
+            labels={"owner": "someone-else"},
+        ),
     ]
     fake_daytona = _install_fake_daytona(monkeypatch, sandboxes)
 
@@ -51,6 +63,7 @@ def test_environment_cleanup_dry_run_lists_old_daytona_sandboxes(monkeypatch):
     assert result.exit_code == 0
     assert "old-sandbox" in result.output
     assert "(delete)" in result.output
+    assert "foreign-sandbox" not in result.output
     assert fake_daytona.instances[0].deleted == []
 
 
@@ -62,7 +75,14 @@ def test_legacy_cleanup_delegates_to_daytona_cleanup(monkeypatch):
             id="old-sandbox",
             state="started",
             created_at="2025-01-01T00:00:00Z",
-        )
+            labels={"benchflow.managed": "1"},
+        ),
+        SimpleNamespace(
+            id="foreign-sandbox",
+            state="started",
+            created_at="2025-01-01T00:00:00Z",
+            labels={"owner": "someone-else"},
+        ),
     ]
     fake_daytona = _install_fake_daytona(monkeypatch, sandboxes)
 
