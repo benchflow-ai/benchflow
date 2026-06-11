@@ -17,12 +17,16 @@ These tests pin the registry-driven bare-model routing:
   - ``_setup_bare_custom_provider`` (Codex P1 follow-up on PR #670) actually
     registers the resolved custom provider in openclaw.json before the bare id
     is prefixed, while openclaw-native and unknown ids trigger no setup.
+  - ``_resolve_bare_model_prefix`` (Codex P2 follow-up on PR #670) falls back
+    to the generic ``BENCHFLOW_PROVIDER_*`` env setup when the registry config
+    is unresolvable, instead of prefixing an unconfigured provider.
 """
 
 import pytest
 
 from benchflow.agents.openclaw_acp_shim import (
     _infer_provider_prefix,
+    _resolve_bare_model_prefix,
     _setup_bare_custom_provider,
 )
 from benchflow.agents.providers import (
@@ -202,3 +206,86 @@ class TestSetupBareCustomProvider:
         # Resolves to deepseek in the registry, but can't be configured → None.
         assert _setup_bare_custom_provider("deepseek-v4-flash") is None
         assert calls == []
+
+
+class TestResolveBareModelPrefix:
+    """Codex P2 (PR #670): generic env fallback before prefixing bare ids.
+
+    Guards the fix from benchflow-ai/benchflow PR #670 against the regression
+    where a bare custom id whose registry config could not resolve (e.g.
+    DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY unset) was prefixed via
+    ``_infer_provider_prefix`` anyway — handing openclaw ``deepseek/<model>``
+    for a provider never written to openclaw.json — even though the generic
+    ``BENCHFLOW_PROVIDER_BASE_URL``/``BENCHFLOW_PROVIDER_API_KEY`` envs could
+    have configured a working provider via ``_find_and_setup_provider``.
+    """
+
+    GENERIC_ENVS = (
+        "BENCHFLOW_PROVIDER_BASE_URL",
+        "BENCHFLOW_PROVIDER_API_KEY",
+        "BENCHFLOW_PROVIDER_PROTOCOL",
+        "BENCHFLOW_PROVIDER_MODELS",
+    )
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        """Start from no provider config; individual tests opt back in."""
+        for var in (*self.GENERIC_ENVS, "DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+    @pytest.fixture
+    def setup_spy(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "benchflow.agents.openclaw_acp_shim.setup_custom_provider",
+            lambda *a, **k: calls.append(a),
+        )
+        return calls
+
+    def test_generic_envs_used_when_registry_config_unresolvable(
+        self, monkeypatch, setup_spy
+    ):
+        """Registry names deepseek but its envs are unset → generic setup runs."""
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "https://proxy.test/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "sk-generic-test")
+
+        assert _resolve_bare_model_prefix("deepseek-v4-flash") == "custom"
+        assert len(setup_spy) == 1
+        # setup_custom_provider(provider_name, base_url, api_key, protocol, models)
+        assert setup_spy[0][:3] == (
+            "custom",
+            "https://proxy.test/v1",
+            "sk-generic-test",
+        )
+
+    def test_registry_config_wins_over_generic_envs(self, monkeypatch, setup_spy):
+        """Provider-specific envs take precedence over the generic fallback."""
+        monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.test/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "https://proxy.test/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "sk-generic-test")
+
+        assert _resolve_bare_model_prefix("deepseek-v4-flash") == "deepseek"
+        assert len(setup_spy) == 1
+        assert setup_spy[0][0] == "deepseek"
+
+    def test_no_config_anywhere_prefixes_without_registration(self, setup_spy):
+        """With neither registry nor generic envs, keep the inferred prefix
+        and register nothing (the run cannot work without a key anyway)."""
+        assert _resolve_bare_model_prefix("deepseek-v4-flash") == "deepseek"
+        assert setup_spy == []
+
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("gemini-3.1-flash-lite", "google"),
+            ("gpt-4o", "openai"),
+            ("o3-mini", "openai"),
+            ("claude-sonnet-4-6", "anthropic"),
+            ("whatever-7b", "anthropic"),
+        ],
+    )
+    def test_native_and_unknown_ids_unchanged(self, model, expected, setup_spy):
+        """Without generic envs, builtin/unknown ids resolve exactly as before."""
+        assert _resolve_bare_model_prefix(model) == expected
+        assert setup_spy == []

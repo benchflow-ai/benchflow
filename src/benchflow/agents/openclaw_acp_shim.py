@@ -435,6 +435,30 @@ def _find_and_setup_provider(model: str) -> str | None:
     return None
 
 
+def _resolve_bare_model_prefix(model: str) -> str:
+    """Resolve (and, where possible, configure) the provider for a BARE model id.
+
+    Used by the ``session/set_model`` branch where ``BENCHFLOW_PROVIDER_NAME``
+    is absent. Each step falls through on ``None``:
+
+    1. ``_setup_bare_custom_provider`` — the registry claims the bare id and
+       its provider-specific config env vars resolve; the provider is written
+       into openclaw.json.
+    2. ``_find_and_setup_provider`` — generic ``BENCHFLOW_PROVIDER_*`` env
+       fallback: a harness may inject endpoint config without the provider
+       name. Explicit endpoint config must win over a prefix guess for a
+       provider openclaw was never configured with (codex P2 on PR #670).
+    3. ``_infer_provider_prefix`` — no config available anywhere; name the
+       prefix without registration (openclaw-native gemini/gpt ids, or a
+       custom provider whose run cannot work without its key anyway).
+    """
+    return (
+        _setup_bare_custom_provider(model)
+        or _find_and_setup_provider(model)
+        or _infer_provider_prefix(model)
+    )
+
+
 # ── Session parsing ───────────────────────────────────────────────────────────
 
 
@@ -666,20 +690,11 @@ def main():
                     _provider_name = _find_and_setup_provider(model)
                     if _provider_name and "/" not in model:
                         model = f"{_provider_name}/{model}"
-                # No provider env var — infer the prefix from the model name.
-                # A bare id may still resolve to a registered *custom* provider
-                # (deepseek/glm/qwen-dashscope/...) via the registry; that
-                # provider must be written into openclaw.json before we hand
-                # openclaw a "deepseek/..." id, or the run fails with an unknown
-                # provider. _setup_bare_custom_provider does that registration
-                # (a no-op for openclaw-native gemini/gpt and unknown ids) and
-                # returns the registered provider, which then doubles as the
-                # prefix; otherwise fall back to the prefix heuristics.
+                # No provider env var — resolve the bare id: registry-specific
+                # setup, then the generic BENCHFLOW_PROVIDER_* env fallback,
+                # then prefix heuristics (see _resolve_bare_model_prefix).
                 elif "/" not in model:
-                    prefix = _setup_bare_custom_provider(
-                        model
-                    ) or _infer_provider_prefix(model)
-                    model = f"{prefix}/{model}"
+                    model = f"{_resolve_bare_model_prefix(model)}/{model}"
 
                 subprocess.run(
                     [_OPENCLAW_BIN, "config", "set", "agents.defaults.model", model],
