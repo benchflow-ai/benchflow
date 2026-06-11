@@ -288,7 +288,7 @@ wheels = [
 
 [[package]]
 name = "benchflow"
-version = "0.6.0rc5"
+version = "0.6.0rc6"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
