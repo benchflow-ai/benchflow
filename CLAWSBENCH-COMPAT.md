@@ -124,7 +124,7 @@ validators. Default stays [0,1] strict — zero behavior change unless a task de
 Avoid blanket lenient-mode acceptance of negatives (silent contract erosion).
 
 ## BF-9 — `ManifestEnvironment` service start lacks the W9 Daytona detachment
-**Severity:** high · **Status:** OPEN · **Upstream:** benchflow-ai/benchflow#676
+**Severity:** high · **Status:** FIXED · **Upstream:** benchflow-ai/benchflow#676
 Surfaced running skillsgym directly on `benchflow eval create` (smolclaws PR #93).
 `ManifestEnvironment.provision()`/`reset()` (`environment/manifest_env.py`) start each
 `[[environment.services]]` command as `{cmd} > {log} 2>&1 &` — stdout/stderr are redirected but
@@ -311,3 +311,21 @@ needs; validate the `/testbed_verify` lockdown before any bump.
   range+strict-aggregate compose; task.toml + task.md round-trips; rollout final gate);
   sweep `-k "reward or verifier or validation or config"` → 788 passed / 1 skipped.
   ruff check + format clean; import smoke OK.
+- **BF-9** · `fix/bf-9-manifest-detach` → merged (`--no-ff`) into `clawsbench-compat`
+  (change `d4e13c03`) · upstream benchflow-ai/benchflow#676 ·
+  `ManifestEnvironment.provision()`/`reset()` started each `[[environment.services]]`
+  command as `{cmd} > {log} 2>&1 &` — stdin inherited, no `nohup` — the BF-6/W9 Daytona
+  session-command wedge (the bounded 15s start timeout turns it into a hard provision
+  failure on Daytona while Docker passes). Fix in `environment/manifest_env.py`: one shared
+  start shape `nohup {cmd} </dev/null >{log} 2>&1 &` built by `service_start_command()`
+  (Daytona rationale documented at the helper) and launched via `_start_service()` from
+  BOTH provision and reset — the duplicated inline shape is gone. No `disown` (bash/zsh-only;
+  the sandbox exec shell is `sh`/dash), matching clawbench's `_build_service_hooks`.
+  Per-service logs retrievable via `service_log_path(name)` (`/tmp/benchflow-env-<name>.log`);
+  start execs keep the explicit bounded `_SERVICE_START_TIMEOUT_SEC = 15`; readiness execs
+  were already bounded (`timeout + 10`). Tests at the exec boundary
+  (`tests/environment/test_manifest_env.py`, FakeSandbox now records `(cmd, timeout_sec)`):
+  command shape (nohup + three redirections + trailing `&`, no disown), provision and reset
+  emit the identical detached shape, bounded timeout recorded, per-service log path →
+  27 passed; sweep `-k "manifest or environment or service"` → 163 passed / 23 skipped.
+  ruff check + format clean.
