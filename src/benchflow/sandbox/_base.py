@@ -8,12 +8,14 @@ Internalized from Harbor's BaseEnvironment with RL-first terminology:
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import shlex
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -42,6 +44,72 @@ def _filter_compose_service_names(output: str) -> list[str]:
         for raw in output.splitlines()
         if (line := raw.strip()) and _COMPOSE_SERVICE_NAME_RE.match(line)
     ]
+
+
+# A POSIX shell identifier: a name the shell can `export`. Keys outside this
+# grammar (e.g. containing `.` or `-`) are valid process env keys but cannot be
+# assigned via `export NAME=...`; sourcing such a line aborts the whole
+# `. {env_path}` step, so the user command would never run (PR #323).
+_SHELL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def wrap_command_with_env_file(
+    env: dict[str, str], command: str, *, env_path_prefix: str
+) -> str:
+    """Return *command* prefixed to materialize *env* from a sourced file.
+
+    Single canonical home for the secret-redaction wrapper shared by every
+    sandbox backend (Docker compose ``exec``, Daytona direct ``exec``, Daytona
+    DinD compose ``exec``). Keeping one implementation guarantees identical
+    redaction across backends — two drifting copies of this logic was a
+    release-quality security risk (issue #412).
+
+    The env vars are base64-encoded into the command string (not visible as
+    individual ``KEY=VALUE`` args in ``ps aux`` / provider command audit logs),
+    decoded to a mode-0600 file inside the sandbox, and sourced before the real
+    command runs. A ``trap ... EXIT`` deletes the temp file unconditionally —
+    even if the decode/source step fails — so a failed ``&&`` chain can never
+    leave the env file behind.
+
+    Only keys that are valid POSIX shell identifiers are emitted as ``export``
+    lines. Keys that are not (e.g. containing ``.`` or ``-``) cannot be assigned
+    by the shell — emitting them would make ``. {env_path}`` fail and the user
+    command would never run — so they are skipped with a warning rather than
+    silently breaking exec (regression guarded — PR #323).
+
+    The ``umask 077`` that protects the env file is scoped to a subshell so it
+    does not leak into the user's command — otherwise files the command creates
+    would get mode-0600 unexpectedly (PR #323).
+
+    *env_path_prefix* is the temp-file path prefix the caller wants for the
+    decoded env file (a unique 16-hex suffix is appended so concurrent
+    ``exec()`` calls in one sandbox can't clobber each other's env file). It is
+    the only thing that legitimately varies between backends; the redaction and
+    command shape are otherwise byte-for-byte identical.
+    """
+    exportable: dict[str, str] = {}
+    skipped: list[str] = []
+    for k, v in env.items():
+        if _SHELL_IDENTIFIER_RE.match(k):
+            exportable[k] = v
+        else:
+            skipped.append(k)
+    if skipped:
+        logger.warning(
+            "Skipping env var(s) with non-identifier names (cannot be "
+            "exported by the shell): %s",
+            ", ".join(sorted(skipped)),
+        )
+
+    env_body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in exportable.items())
+    encoded = base64.b64encode(env_body.encode()).decode()
+    env_path = f"{env_path_prefix}{uuid4().hex[:16]}"
+    return (
+        f"trap 'rm -f {env_path}' EXIT && "
+        f"(umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
+        f"{env_path}) && set -a && . {env_path} && set +a && "
+        f"{command}"
+    )
 
 
 class ExecResult(BaseModel):

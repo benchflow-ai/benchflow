@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess
-import base64
 import contextlib
 import json
 import logging
@@ -27,6 +26,7 @@ from benchflow.sandbox._base import (
     BaseSandbox,
     ExecResult,
     _filter_compose_service_names,
+    wrap_command_with_env_file,
 )
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
@@ -802,60 +802,23 @@ class DockerSandbox(BaseSandbox):
             exec_command, check=False, timeout_sec=timeout_sec
         )
 
-    # A POSIX shell identifier: a name the shell can `export`. Keys outside
-    # this grammar (e.g. containing `.` or `-`) are valid process env keys but
-    # cannot be assigned via `export NAME=...`; sourcing such a line aborts the
-    # whole `. {env_path}` step, so the user command would never run (PR #323).
-    _SHELL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    # Prefix for the decoded env file inside the container. A unique 16-hex
+    # suffix is appended by the shared wrapper so concurrent exec() calls in one
+    # container can't clobber each other's env file.
+    _ENV_FILE_PREFIX = "/tmp/.benchflow_exec_env_"
 
     @classmethod
     def _wrap_command_with_env_file(cls, env: dict[str, str], command: str) -> str:
         """Return *command* prefixed to materialize *env* from a file.
 
-        The env vars are base64-encoded into the command string (not visible
-        as individual ``KEY=VALUE`` args in ``ps aux``), decoded to a
-        mode-0600 file inside the container, and sourced before the real
-        command runs. A ``trap ... EXIT`` deletes the temp file
-        unconditionally — even if the decode/source step fails — so a failed
-        ``&&`` chain can never leave the env file behind.
-
-        Only keys that are valid POSIX shell identifiers are emitted as
-        ``export`` lines. Keys that are not (e.g. containing ``.`` or ``-``)
-        cannot be assigned by the shell — emitting them would make
-        ``. {env_path}`` fail and the user command would never run — so they
-        are skipped with a warning rather than silently breaking exec
-        (regression guarded — PR #323).
-
-        The ``umask 077`` that protects the env file is scoped to a subshell
-        so it does not leak into the user's command — otherwise files the
-        command creates would get mode-0600 unexpectedly (PR #323).
+        Thin wrapper over the canonical :func:`wrap_command_with_env_file` so
+        the secret-redaction logic lives in exactly one place (shared with the
+        Daytona backend). See that function for the full contract — base64
+        argv-hiding, mode-0600 file, ``trap ... EXIT`` cleanup, non-identifier
+        key skipping (PR #323), and subshell-scoped ``umask 077`` (PR #323).
         """
-        exportable: dict[str, str] = {}
-        skipped: list[str] = []
-        for k, v in env.items():
-            if cls._SHELL_IDENTIFIER_RE.match(k):
-                exportable[k] = v
-            else:
-                skipped.append(k)
-        if skipped:
-            logger.warning(
-                "Skipping env var(s) with non-identifier names (cannot be "
-                "exported by the shell): %s",
-                ", ".join(sorted(skipped)),
-            )
-
-        env_body = "".join(
-            f"export {k}={shlex.quote(v)}\n" for k, v in exportable.items()
-        )
-        encoded = base64.b64encode(env_body.encode()).decode()
-        # Unique suffix so concurrent exec() calls in one container can't
-        # clobber each other's env file.
-        env_path = f"/tmp/.benchflow_exec_env_{uuid.uuid4().hex[:16]}"
-        return (
-            f"trap 'rm -f {env_path}' EXIT && "
-            f"(umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
-            f"{env_path}) && set -a && . {env_path} && set +a && "
-            f"{command}"
+        return wrap_command_with_env_file(
+            env, command, env_path_prefix=cls._ENV_FILE_PREFIX
         )
 
     async def attach(self) -> None:
