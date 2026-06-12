@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 _EVENT_FIELDS = ("type", "reward", "source", "space", "granularity", "step")
 
@@ -32,6 +32,7 @@ def build_rewards_jsonl_events(
         for i, item in enumerate(rubric):
             if not isinstance(item, dict):
                 continue
+            item = cast("dict[str, Any]", item)
             score = item.get("score")
             if not isinstance(score, (int, float)) or isinstance(score, bool):
                 continue
