@@ -400,6 +400,59 @@ class TestRolloutConfigLoopStrategy:
                 loop_strategy="verify-retry:k=1",
             )
 
+    def test_dict_form_materializes_user(self, tmp_path):
+        """Guard the confirmed-high: a to_mapping()-shaped dict (round-tripped
+        --config YAML / SDK kwargs) must materialize, not silently drop the
+        strategy and mislabel the run single-shot."""
+        from benchflow.rollout import RolloutConfig
+
+        config = RolloutConfig(
+            task_path=tmp_path,
+            loop_strategy={"strategy": "verify-retry", "params": {"k": 2}},
+        )
+        assert isinstance(config.user, VerifyRetryUser)
+        assert config.loop_strategy_spec == LoopStrategySpec("verify-retry", {"k": 2})
+
+    def test_to_mapping_round_trip_materializes(self, tmp_path):
+        """The exact stamped shape (to_mapping) fed back in must rebuild."""
+        from benchflow.rollout import RolloutConfig
+
+        spec = LoopStrategySpec("verify-retry", {"k": 3, "feedback": "names"})
+        config = RolloutConfig(task_path=tmp_path, loop_strategy=spec.to_mapping())
+        assert config.loop_strategy_spec == spec
+        assert isinstance(config.user, VerifyRetryUser)
+
+    def test_bad_loop_strategy_type_raises(self, tmp_path):
+        from benchflow.rollout import RolloutConfig
+
+        with pytest.raises(ValueError, match="spec string, mapping, or LoopStrategySpec"):
+            RolloutConfig(task_path=tmp_path, loop_strategy=5)
+
+
+class TestEvaluationConfigLoopStrategy:
+    """The non-sharded --config / SDK path — the one the sharding guard never
+    protects, so the dict coercion must live in EvaluationConfig too."""
+
+    def test_dict_form_materializes(self):
+        from benchflow.evaluation import EvaluationConfig
+
+        cfg = EvaluationConfig(
+            loop_strategy={"strategy": "verify-retry", "params": {"k": 2}}
+        )
+        assert cfg.loop_strategy == LoopStrategySpec("verify-retry", {"k": 2})
+
+    def test_string_form_still_materializes(self):
+        from benchflow.evaluation import EvaluationConfig
+
+        cfg = EvaluationConfig(loop_strategy="verify-retry:k=2")
+        assert cfg.loop_strategy == LoopStrategySpec("verify-retry", {"k": 2})
+
+    def test_bad_type_raises(self):
+        from benchflow.evaluation import EvaluationConfig
+
+        with pytest.raises(ValueError, match="spec string, mapping, or LoopStrategySpec"):
+            EvaluationConfig(loop_strategy=5)
+
 
 class TestResumeLoopMismatchWarning:
     def _job_dir(self, tmp_path, config_data: dict):

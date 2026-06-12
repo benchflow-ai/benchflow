@@ -189,6 +189,17 @@ class RolloutConfig:
             self.allow_document_user = not explicit_scenes
         if isinstance(self.loop_strategy, str):
             self.loop_strategy = parse_loop_strategy_spec(self.loop_strategy)
+        elif isinstance(self.loop_strategy, dict):
+            # to_mapping() dict shape (round-tripped --config YAML / SDK kwargs)
+            # must materialize, not fall through and mislabel single-shot.
+            self.loop_strategy = LoopStrategySpec.from_mapping(self.loop_strategy)
+        elif self.loop_strategy is not None and not isinstance(
+            self.loop_strategy, LoopStrategySpec
+        ):
+            raise ValueError(
+                "loop_strategy must be a spec string, mapping, or LoopStrategySpec, "
+                f"got {type(self.loop_strategy).__name__}"
+            )
         self._resolve_user()
         if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
             raise ValueError("skills_dir requires skill_mode='with-skill'")

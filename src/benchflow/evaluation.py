@@ -475,6 +475,19 @@ class EvaluationConfig:
         self.skill_mode = normalize_skill_mode(self.skill_mode)
         if isinstance(self.loop_strategy, str):
             self.loop_strategy = parse_loop_strategy_spec(self.loop_strategy)
+        elif isinstance(self.loop_strategy, dict):
+            # The to_mapping() dict shape (e.g. a stamped spec round-tripped back
+            # through a --config YAML, or an SDK EvaluationConfig(loop_strategy={...}))
+            # must materialize too — not silently fall through and mislabel the run
+            # single-shot. Mirror the sharding guard's loud-failure stance.
+            self.loop_strategy = LoopStrategySpec.from_mapping(self.loop_strategy)
+        elif self.loop_strategy is not None and not isinstance(
+            self.loop_strategy, LoopStrategySpec
+        ):
+            raise ValueError(
+                "loop_strategy must be a spec string, mapping, or LoopStrategySpec, "
+                f"got {type(self.loop_strategy).__name__}"
+            )
         if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
             raise ValueError("skills_dir requires skill_mode='with-skill'")
         if self.job_mode not in JOB_MODES:
