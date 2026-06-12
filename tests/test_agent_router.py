@@ -485,19 +485,96 @@ def test_scaffolded_parity_file_is_insufficient_evidence() -> None:
 
 
 def _rerun(tmp_path: Path, runner) -> object:
-    create_benchmark("my-bench", tmp_path)  # ships parity_test.py
+    if not (tmp_path / "my-bench").exists():
+        create_benchmark("my-bench", tmp_path)  # ships parity_test.py
     return rerun_parity_experiment(tmp_path, "my-bench", runner=runner)
 
 
-def test_rerun_parses_fresh_side_by_side_json(tmp_path: Path) -> None:
-    """A clean side-by-side run's JSON is parsed (tolerating log noise around it)."""
-    payload = {"side_by_side": {"criteria_compared": 4, "agreed": 4}}
+def test_rerun_parses_scoreable_side_by_side_json(tmp_path: Path) -> None:
+    """A clean side-by-side run's scoreable JSON is parsed (tolerating log noise)."""
+    payload = _criteria_doc(("pass", "pass"), ("fail", "fail"))
 
     def runner(command: list[str], cwd: Path) -> tuple[int, str, str]:
         assert command[-2:] == ["--mode", "side-by-side"]
         return 0, f"running parity…\n{json.dumps(payload)}\n[done]", ""
 
     assert _rerun(tmp_path, runner) == payload
+
+
+def test_rerun_parses_top_level_array(tmp_path: Path) -> None:
+    """Robust parse handles a top-level JSON array (the harvey-lab shape) carrying
+    reward samples — not just a single ``{...}`` object."""
+    payload = [
+        {"metrics": [{"name": "pass_rate", "original": "1.0", "converted": "1.0"}]}
+    ]
+    assert _rerun(tmp_path, lambda c, w: (0, json.dumps(payload), "")) == payload
+
+
+def test_rerun_fail_closed_on_unscoreable_shape(tmp_path: Path) -> None:
+    """Parses cleanly but carries NO scoreable parity data → fail closed, instead
+    of silently feeding build_verify_report an insufficient-evidence verdict that
+    would FAIL the gate on a benchmark whose recorded JSON passes (gh #694)."""
+    payload = {"side_by_side": {"criteria_compared": 4, "agreed": 4}}
+    with pytest.raises(ParityRerunError, match="no scoreable parity data"):
+        _rerun(tmp_path, lambda c, w: (0, json.dumps(payload), ""))
+
+
+def test_rerun_output_scores_through_build_verify_report(tmp_path: Path) -> None:
+    """The load-bearing seam: rerun output must feed build_verify_report to a
+    USABLE verdict, agreeing and diverging as the fresh comparisons dictate."""
+    agree = _criteria_doc(("pass", "pass"), ("fail", "fail"))
+    data = _rerun(tmp_path, lambda c, w: (0, json.dumps(agree), ""))
+    report = build_verify_report("my-bench", data)
+    assert report.verdict == "parity-confirmed"
+    assert report.conversion.compared == 2
+
+    diverge = _criteria_doc(("pass", "pass"), ("pass", "fail"))
+    data2 = _rerun(tmp_path, lambda c, w: (0, json.dumps(diverge), ""))
+    assert build_verify_report("my-bench", data2).verdict == "parity-divergent"
+
+
+def test_run_parity_script_timeout_is_fail_closed(tmp_path: Path, monkeypatch) -> None:
+    """A hung parity_test.py raises ParityRerunError, never wedges the gate."""
+    import subprocess
+
+    from benchflow import agent_router
+
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="parity_test.py", timeout=1)
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(ParityRerunError, match="timed out"):
+        agent_router._run_parity_script(
+            ["python", "x.py", "--mode", "side-by-side"], tmp_path, timeout_sec=1
+        )
+
+
+def test_verify_rerun_cli_end_to_end(tmp_path: Path) -> None:
+    """`bench agent verify <name> --rerun` exercises the REAL subprocess path: a
+    parity_test.py that prints scoreable JSON → parity-confirmed, exit 0."""
+    create_benchmark("my-bench", tmp_path)
+    payload = _criteria_doc(("pass", "pass"), ("fail", "fail"))
+    (tmp_path / "my-bench" / "parity_test.py").write_text(
+        "print('''" + json.dumps(payload) + "''')\n"
+    )
+    result = CliRunner().invoke(
+        app,
+        ["agent", "verify", "my-bench", "--rerun", "--benchmarks-dir", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "parity-confirmed" in result.output
+
+
+def test_verify_rerun_cli_fails_closed_on_script_error(tmp_path: Path) -> None:
+    """`verify --rerun` exits 1 with a clear error when parity_test.py fails."""
+    create_benchmark("my-bench", tmp_path)
+    (tmp_path / "my-bench" / "parity_test.py").write_text("import sys\nsys.exit(3)\n")
+    result = CliRunner().invoke(
+        app,
+        ["agent", "verify", "my-bench", "--rerun", "--benchmarks-dir", str(tmp_path)],
+    )
+    assert result.exit_code == 1
+    assert "rerun" in result.output.lower()
 
 
 def test_rerun_fail_closed_on_nonzero_exit(tmp_path: Path) -> None:

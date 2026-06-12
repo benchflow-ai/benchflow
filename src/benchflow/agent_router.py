@@ -478,11 +478,20 @@ def rerun_parity_experiment(
 
     The default verify gate *scores the recorded* ``parity_experiment.json`` —
     fast, but it trusts an artifact the conversion produced about itself. This
-    runs ``python <benchmark>/parity_test.py --mode side-by-side`` (the scaffold
-    contract) and parses the JSON it prints, so ``verify --rerun`` validates the
-    conversion independently. Fail-closed: a missing script, a nonzero exit, or
-    unparseable output all raise — ``--rerun`` never silently falls back to
-    stale or absent data.
+    runs ``python <benchmark>/parity_test.py --mode side-by-side`` and parses the
+    JSON it prints, so ``verify --rerun`` validates the conversion independently.
+
+    CONTRACT: ``--mode side-by-side`` must emit (to stdout) the same shape the
+    recorded ``parity_experiment.json`` uses and that :func:`build_verify_report`
+    scores — i.e. per-criterion comparisons (``conversion_parity.tasks[].
+    criteria_results[]`` or a recognized ``*_parity`` summary block) and/or
+    reward samples. The scaffolded ``parity_test.py`` already prints this shape.
+
+    Fail-closed: a missing script, a nonzero exit, unparseable output, OR output
+    that parses but carries NO scoreable parity data all raise
+    ``ParityRerunError`` — ``--rerun`` never silently falls back to stale/absent
+    data, and never reports a misleading ``insufficient-evidence`` verdict on a
+    shape the gate cannot read (a benchmark whose recorded JSON *would* score).
 
     ``runner`` is injected in tests; it returns ``(returncode, stdout, stderr)``.
     """
@@ -506,11 +515,42 @@ def rerun_parity_experiment(
             f"parity_test.py --mode side-by-side exited {returncode}: "
             f"{(stderr or stdout).strip()[-2000:]}"
         )
-    # Tolerate leading log lines: extract the JSON object the script prints.
+    data = _parse_parity_stdout(stdout)
+    # Fail closed if the re-run output parses but is not in the scoreable shape:
+    # without this, build_verify_report would report `insufficient-evidence` and
+    # `--rerun` would silently FAIL the gate on a benchmark whose recorded JSON
+    # would pass — defeating the feature (gh review on #694).
+    if not extract_criterion_comparisons(data) and not extract_reward_samples(data):
+        shape = (
+            f"top-level keys {sorted(data)}"
+            if isinstance(data, dict)
+            else f"a top-level {type(data).__name__}"
+        )
+        raise ParityRerunError(
+            "parity_test.py --mode side-by-side produced no scoreable parity data "
+            "(no criterion comparisons and no reward samples) in the "
+            f"parity_experiment.json shape the gate scores — got {shape}. Expected "
+            "conversion_parity.tasks[].criteria_results[] (or a recognized "
+            "*_parity summary block) and/or reward samples."
+        )
+    return data
+
+
+def _parse_parity_stdout(stdout: str) -> Any:
+    """Parse a ``parity_test.py`` JSON payload, tolerating leading log lines.
+
+    Parses the whole (stripped) output first so a clean JSON object OR a
+    top-level array parses directly; only falls back to slicing the outermost
+    ``{...}`` object when the whole-string parse fails (e.g. log preamble)."""
+    text = stdout.strip()
     try:
-        start = stdout.index("{")
-        end = stdout.rindex("}") + 1
-        return json.loads(stdout[start:end])
+        return json.loads(text)
+    except (ValueError, json.JSONDecodeError):
+        pass
+    try:
+        start = text.index("{")
+        end = text.rindex("}") + 1
+        return json.loads(text[start:end])
     except (ValueError, json.JSONDecodeError) as exc:
         raise ParityRerunError(
             "could not parse parity_test.py --mode side-by-side output as JSON "
@@ -518,13 +558,23 @@ def rerun_parity_experiment(
         ) from exc
 
 
-def _run_parity_script(command: list[str], cwd: Path) -> tuple[int, str, str]:
+def _run_parity_script(
+    command: list[str], cwd: Path, *, timeout_sec: int = 600
+) -> tuple[int, str, str]:
     import subprocess
     import sys
 
     # Use the interpreter running benchflow so parity_test.py imports resolve.
     argv = [sys.executable, *command[1:]] if command[:1] == ["python"] else command
-    proc = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True)
+    try:
+        proc = subprocess.run(
+            argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_sec
+        )
+    except subprocess.TimeoutExpired as exc:
+        # A hung parity_test.py must not wedge the gate forever.
+        raise ParityRerunError(
+            f"parity_test.py --mode side-by-side timed out after {timeout_sec}s"
+        ) from exc
     return proc.returncode, proc.stdout, proc.stderr
 
 
