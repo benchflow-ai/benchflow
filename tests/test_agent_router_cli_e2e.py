@@ -292,7 +292,11 @@ def test_cli_verify_fresh_scaffold_is_insufficient_evidence(tmp_path: Path) -> N
     assert verify.exit_code == 1
     out = click.unstyle(verify.output)
     assert "insufficient-evidence" in out
-    assert "NOT been filed" in out
+    # A fresh scaffold has not diverged — it simply has no recorded parity data —
+    # so the divergence "could not be closed / open an issue" draft must NOT be
+    # dumped; the gate points the author at parity_test.py instead.
+    assert "NOT been filed" not in out
+    assert "parity_test.py" in out
 
 
 # ── run: dry-run prints the command; live path fails closed ───────────

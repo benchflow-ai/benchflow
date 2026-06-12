@@ -621,6 +621,11 @@ def register_agent_router(agent_app: typer.Typer) -> None:
 
         if report.passed:
             return
+        if report.verdict == "insufficient-evidence":
+            # No parity data recorded yet — nothing diverged, so do not emit a
+            # "parity could not be closed" divergence issue draft. confidence_line
+            # above already told the author to run parity_test.py and record results.
+            raise typer.Exit(1)
         issue = render_divergence_issue(report)
         if issue_out is not None:
             Path(issue_out).write_text(issue)

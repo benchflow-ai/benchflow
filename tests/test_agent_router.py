@@ -644,14 +644,15 @@ def test_cli_create_then_verify_roundtrip(tmp_path: Path) -> None:
     assert (tmp_path / "my-bench" / "benchflow.py").exists()
 
     # a fresh scaffold has no parity evidence → verify exits non-zero and
-    # prints the support-path issue draft.
+    # points the author at parity_test.py (no divergence draft — nothing diverged).
     verify = runner.invoke(
         app, ["agent", "verify", "my-bench", "--benchmarks-dir", str(tmp_path)]
     )
     assert verify.exit_code == 1
     out = click.unstyle(verify.output)
     assert "insufficient-evidence" in out
-    assert "NOT been filed" in out
+    assert "NOT been filed" not in out
+    assert "parity_test.py" in out
 
 
 def test_cli_create_refuses_existing(tmp_path: Path) -> None:
