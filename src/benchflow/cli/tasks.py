@@ -299,28 +299,32 @@ def register_tasks(app: typer.Typer) -> None:
         """Compute the content digest that pins a task's files, independent of git.
 
         Matches the digests in the skillsbench dataset registry (registry.json).
-        Given a single task directory (contains task.toml), prints the digest;
-        given a directory of tasks, prints one "<name> <digest>" line per task.
+        Given a single task directory (a legacy ``task.toml`` or a native
+        ``task.md`` task), prints the digest; given a directory of tasks, prints
+        one "<name> <digest>" line per task.
         """
         from benchflow._utils.task_authoring import task_digest
+
+        # A task directory is either a legacy task.toml task or a native task.md
+        # task (the universal-adapter format) — recognize both, not just legacy.
+        def _is_task_dir(p: Path) -> bool:
+            return (p / "task.toml").is_file() or (p / "task.md").is_file()
 
         if not path.is_dir():
             console.print(f"[red]Not a directory: {path}[/red]")
             raise typer.Exit(1)
 
-        if (path / "task.toml").is_file():
+        if _is_task_dir(path):
             # typer.echo, not console.print: Rich wraps lines at terminal width,
             # which would corrupt piped machine-readable output.
             typer.echo(task_digest(path))
             return
 
-        task_dirs = sorted(
-            d for d in path.iterdir() if d.is_dir() and (d / "task.toml").is_file()
-        )
+        task_dirs = sorted(d for d in path.iterdir() if d.is_dir() and _is_task_dir(d))
         if not task_dirs:
             console.print(
-                f"[red]No tasks under {path} — expected task.toml in it "
-                f"or in its immediate subdirectories[/red]"
+                f"[red]No tasks under {path} — expected task.toml or task.md "
+                f"in it or in its immediate subdirectories[/red]"
             )
             raise typer.Exit(1)
         for task_dir in task_dirs:

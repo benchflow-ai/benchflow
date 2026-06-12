@@ -29,6 +29,11 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-only; the shim must stay runnable without benchflow installed.
+    from benchflow.agents.providers import ProviderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -271,13 +276,112 @@ def setup_custom_provider(
 
 
 def _infer_provider_prefix(model: str) -> str:
-    """Infer the openclaw provider prefix from a bare model name."""
+    """Infer the openclaw provider prefix from a bare model name.
+
+    Resolution order:
+      1. The benchflow provider registry — any registered custom provider
+         (deepseek/glm/qwen-dashscope/...) that claims this bare model id via
+         its declared model_prefixes. This routes prefix-stripped ids like
+         "deepseek-v4-flash" to "deepseek" instead of defaulting to anthropic.
+      2. The native gemini/gpt heuristics (openclaw handles these directly).
+      3. Anthropic as the final fallback.
+    """
     m = model.lower()
+    # 1. Registry-driven bare-model routing (registry owns provider knowledge).
+    try:
+        from benchflow.agents.providers import find_provider_for_bare_model
+
+        result = find_provider_for_bare_model(model)
+        if result is not None:
+            return result[0]
+    except ImportError:
+        logger.debug("benchflow.agents.providers unavailable; using name heuristics")
+
+    # 2. Native providers openclaw recognizes without registry config.
     if "gemini" in m:
         return "google"
     if "gpt" in m or m.startswith(("o1", "o3")):
         return "openai"
+    # 3. Default.
     return "anthropic"
+
+
+def _setup_provider_from_config(
+    provider_name: str, cfg: "ProviderConfig"
+) -> str | None:
+    """Write a resolved registry ProviderConfig into openclaw.json.
+
+    Shared by the prefix-based (``_find_and_setup_provider``) and bare-model
+    (``_setup_bare_custom_provider``) paths so both register a custom provider
+    through exactly the same logic. Returns ``provider_name`` on success, or
+    ``None`` if required config (base_url / api key) is missing — callers then
+    fall through to their next resolution strategy.
+
+    Raises ``KeyError`` if a required ``url_params`` env var is missing, so the
+    prefix-based caller can preserve its existing "fall through to the
+    BENCHFLOW_PROVIDER_* env-var path" behavior on that specific failure.
+    """
+    from benchflow.agents.providers import resolve_base_url
+
+    env = dict(os.environ)
+    base_url = resolve_base_url(cfg, env)  # may raise KeyError (missing url_params)
+    if cfg.auth_type == "adc":
+        try:
+            api_key = _get_adc_token()
+        except Exception:
+            logger.debug(
+                "ADC token acquisition failed for %s", provider_name, exc_info=True
+            )
+            return None
+    elif cfg.auth_type == "none":
+        api_key = ""
+    elif cfg.auth_env:
+        api_key = env.get(cfg.auth_env, "")
+        if not api_key:
+            return None
+    else:
+        return None
+    setup_custom_provider(
+        provider_name, base_url, api_key, cfg.api_protocol, cfg.models
+    )
+    return provider_name
+
+
+def _setup_bare_custom_provider(model: str) -> str | None:
+    """Configure the custom provider a BARE model id resolves to, if any.
+
+    Companion to ``_infer_provider_prefix`` for the ``session/set_model``
+    "No provider" branch: ``_infer_provider_prefix`` only *names* the provider
+    prefix, but a registered custom provider (deepseek/glm/qwen-dashscope/...)
+    must also be written into ``~/.openclaw/openclaw.json`` or openclaw gets a
+    ``deepseek/...`` model id pointing at a provider it was never told about.
+
+    Resolves ``model`` via ``find_provider_for_bare_model`` (registry-owned
+    ``model_prefixes``) and, when that names a custom provider, registers it via
+    the shared ``_setup_provider_from_config`` path. Returns the provider name
+    if setup succeeded, else ``None`` (openclaw-native ids like gemini/gpt and
+    unknown ids resolve to no registry provider and need no custom config).
+    """
+    try:
+        from benchflow.agents.providers import find_provider_for_bare_model
+
+        result = find_provider_for_bare_model(model)
+        if result is not None:
+            provider_name, cfg = result
+            try:
+                return _setup_provider_from_config(provider_name, cfg)
+            except KeyError:
+                # Missing url_params env var — provider can't be configured.
+                logger.debug(
+                    "Bare model %s resolved to %s but its config env vars are "
+                    "unset; leaving provider unconfigured",
+                    model,
+                    provider_name,
+                )
+                return None
+    except ImportError:
+        logger.debug("benchflow.agents.providers unavailable; skipping bare setup")
+    return None
 
 
 def _find_and_setup_provider(model: str) -> str | None:
@@ -294,39 +398,15 @@ def _find_and_setup_provider(model: str) -> str | None:
     """
     # 1. Try benchflow provider registry (prefix-based match)
     try:
-        from benchflow.agents.providers import find_provider, resolve_base_url
+        from benchflow.agents.providers import find_provider
 
         result = find_provider(model)
         if result is not None:
             provider_name, cfg = result
-            env = dict(os.environ)
             try:
-                base_url = resolve_base_url(cfg, env)
+                return _setup_provider_from_config(provider_name, cfg)
             except KeyError:
-                pass  # fall through to env var path
-            else:
-                if cfg.auth_type == "adc":
-                    try:
-                        api_key = _get_adc_token()
-                    except Exception:
-                        logger.debug(
-                            "ADC token acquisition failed for %s",
-                            provider_name,
-                            exc_info=True,
-                        )
-                        return None
-                elif cfg.auth_type == "none":
-                    api_key = ""
-                elif cfg.auth_env:
-                    api_key = env.get(cfg.auth_env, "")
-                    if not api_key:
-                        return None
-                else:
-                    return None
-                setup_custom_provider(
-                    provider_name, base_url, api_key, cfg.api_protocol, cfg.models
-                )
-                return provider_name
+                pass  # missing url_params env var; fall through to env var path
     except ImportError:
         logger.debug("benchflow.agents.providers not available, using env var fallback")
 
@@ -353,6 +433,30 @@ def _find_and_setup_provider(model: str) -> str | None:
         setup_custom_provider(provider_name, base_url, api_key, api_protocol, models)
         return provider_name
     return None
+
+
+def _resolve_bare_model_prefix(model: str) -> str:
+    """Resolve (and, where possible, configure) the provider for a BARE model id.
+
+    Used by the ``session/set_model`` branch where ``BENCHFLOW_PROVIDER_NAME``
+    is absent. Each step falls through on ``None``:
+
+    1. ``_setup_bare_custom_provider`` — the registry claims the bare id and
+       its provider-specific config env vars resolve; the provider is written
+       into openclaw.json.
+    2. ``_find_and_setup_provider`` — generic ``BENCHFLOW_PROVIDER_*`` env
+       fallback: a harness may inject endpoint config without the provider
+       name. Explicit endpoint config must win over a prefix guess for a
+       provider openclaw was never configured with (codex P2 on PR #670).
+    3. ``_infer_provider_prefix`` — no config available anywhere; name the
+       prefix without registration (openclaw-native gemini/gpt ids, or a
+       custom provider whose run cannot work without its key anyway).
+    """
+    return (
+        _setup_bare_custom_provider(model)
+        or _find_and_setup_provider(model)
+        or _infer_provider_prefix(model)
+    )
 
 
 # ── Session parsing ───────────────────────────────────────────────────────────
@@ -586,9 +690,11 @@ def main():
                     _provider_name = _find_and_setup_provider(model)
                     if _provider_name and "/" not in model:
                         model = f"{_provider_name}/{model}"
-                # No provider — infer standard prefix from model name
+                # No provider env var — resolve the bare id: registry-specific
+                # setup, then the generic BENCHFLOW_PROVIDER_* env fallback,
+                # then prefix heuristics (see _resolve_bare_model_prefix).
                 elif "/" not in model:
-                    model = f"{_infer_provider_prefix(model)}/{model}"
+                    model = f"{_resolve_bare_model_prefix(model)}/{model}"
 
                 subprocess.run(
                     [_OPENCLAW_BIN, "config", "set", "agents.defaults.model", model],

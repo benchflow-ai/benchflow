@@ -198,6 +198,36 @@ def test_build_launch_command_omits_model_when_absent() -> None:
     assert "--model" not in cmd
 
 
+def test_build_launch_command_injects_codex_config_overrides() -> None:
+    """`-c key=value` overrides let a run work around host codex config drift."""
+    cmd = build_codex_launch_command(
+        "PROMPT",
+        workdir="/repo",
+        config_overrides=["service_tier=flex", "model_reasoning_effort=high"],
+    )
+    assert cmd.count("-c") == 2
+    # each -c is immediately followed by its key=value, and all precede the prompt.
+    pairs = [(cmd[i], cmd[i + 1]) for i, c in enumerate(cmd) if c == "-c"]
+    assert pairs == [("-c", "service_tier=flex"), ("-c", "model_reasoning_effort=high")]
+    assert cmd[-1] == "PROMPT"
+    assert cmd.index("-c") < cmd.index("PROMPT")
+
+
+def test_build_launch_command_no_overrides_by_default() -> None:
+    assert "-c" not in build_codex_launch_command("P", workdir="/repo")
+
+
+def test_run_command_dry_run_passes_codex_config(tmp_path: Path) -> None:
+    """`bench agent run -c k=v --dry-run` surfaces the override in the command."""
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["agent", "run", "github.com/foo/bar", "-c", "service_tier=flex", "--dry-run"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "-c service_tier=flex" in result.output
+
+
 def test_collect_adoption_skills_references_convert_guide(tmp_path: Path) -> None:
     skills = collect_adoption_skills()
     refs = {s.reference for s in skills}

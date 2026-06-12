@@ -3,11 +3,24 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+import os
+import warnings
+from collections.abc import Callable, Mapping
 from typing import Any
 
 RewardValue = float | int
 RewardMap = dict[str, Any]
+
+# Operator toggle for the lenient reward-map path. Default (unset/empty/``0``)
+# keeps the strict contract; any truthy value opts the classic
+# ``test.sh → reward.json`` flow into lenient parsing. Lives here next to the
+# validator so the toggle is documented alongside the behaviour it controls.
+_REWARD_LENIENT_ENV = "BENCHFLOW_REWARD_LENIENT"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# Legacy aliases a lenient reward map may carry instead of a scalar ``reward``.
+# Checked in order; the first numeric match becomes the canonical ``reward``.
+_LENIENT_REWARD_ALIASES = ("score", "rewards")
 
 _VALID_SPACES = {"output", "action", "reasoning", "memory", "latent"}
 _VALID_GRANULARITIES = {"terminal", "step"}
@@ -40,11 +53,59 @@ def is_valid_reward_number(value: Any) -> bool:
     )
 
 
+def reward_lenient_from_env() -> bool:
+    """Return True when ``BENCHFLOW_REWARD_LENIENT`` opts into lenient parsing.
+
+    Lenient mode keeps the classic ``test.sh → reward.json`` flow working when a
+    verifier emits a rich reward map carrying extra bookkeeping keys (e.g. the
+    Harbor-era ``{"reward": 1.0, "done": true, ...}``) or non-numeric metrics:
+    unrecognized/non-numeric top-level keys and non-numeric metric entries are
+    dropped with a single warning instead of failing the whole run. A usable
+    scalar ``reward`` is still required (or derived from a ``score``/``rewards``
+    alias / declared aggregate policy). Unset, empty, or ``0`` keeps the default
+    strict contract — there is no behaviour change unless the operator opts in.
+    """
+    return os.environ.get(_REWARD_LENIENT_ENV, "").strip().lower() in _TRUTHY
+
+
+def _lenient_reward_alias(rewards: Mapping[str, Any]) -> str | None:
+    """Return the first legacy alias key holding a usable scalar reward."""
+    for alias in _LENIENT_REWARD_ALIASES:
+        if alias in rewards and is_valid_reward_number(rewards[alias]):
+            return alias
+    return None
+
+
+def _apply_structured(
+    parsed: RewardMap,
+    key: str,
+    value: Any,
+    validate: Callable[..., Any],
+    *,
+    source: str,
+    lenient: bool,
+    dropped: list[str],
+) -> None:
+    """Validate a recognized structured key, dropping it in lenient mode.
+
+    Strict mode re-raises the validator's ``ValueError``; lenient mode records
+    the malformed key so it can be reported in the single aggregated warning.
+    """
+    try:
+        parsed[key] = validate(value, source=source)
+    except ValueError:
+        # The assignment never ran, so ``parsed`` is untouched; just record it.
+        if not lenient:
+            raise
+        dropped.append(key)
+
+
 def validate_reward_map(
     rewards: Mapping[str, Any] | None,
     *,
     source: str = "verifier",
     aggregate_policy: Mapping[str, Any] | None = None,
+    lenient: bool = False,
 ) -> RewardMap:
     """Validate and normalize a verifier reward mapping.
 
@@ -52,12 +113,44 @@ def validate_reward_map(
     present. Richer verifier packages may also return structured details such
     as ``metrics``, ``aggregate``, ``rubric``, or evidence payloads; those are
     preserved rather than flattened into scalar-only maps.
+
+    With ``lenient=False`` (the default) the strict contract applies: any
+    unrecognized non-numeric top-level key, or a non-numeric metric, raises and
+    fails the run.
+
+    With ``lenient=True`` the classic ``test.sh → reward.json`` flow keeps
+    working when a verifier emits extra bookkeeping keys (e.g. ``done``) or
+    non-numeric metrics. Such keys — and any malformed recognized-structured
+    key — are dropped, the non-numeric metric *entries* are pruned from
+    ``metrics``, and a single :func:`warnings.warn` lists everything dropped
+    instead of raising. A usable scalar ``reward`` is still required: it is
+    taken from ``reward`` when valid, otherwise derived from a numeric
+    ``score``/``rewards`` alias, otherwise from numeric metrics plus a declared
+    aggregate policy. The operator opts in via ``BENCHFLOW_REWARD_LENIENT=1``
+    (see :func:`reward_lenient_from_env`).
     """
     if rewards is None:
         raise ValueError(f"{source} returned no rewards")
 
-    reward = rewards.get("reward")
-    if "reward" in rewards and not is_valid_reward_number(reward):
+    working: Mapping[str, Any] = rewards
+    dropped: list[str] = []
+
+    if lenient:
+        # Operate on a copy so we can re-home a legacy alias onto ``reward``
+        # and drop an unusable scalar without mutating the caller's mapping.
+        mutable = dict(rewards)
+        if "reward" in mutable and not is_valid_reward_number(mutable["reward"]):
+            dropped.append("reward")
+            del mutable["reward"]
+        if "reward" not in mutable:
+            alias = _lenient_reward_alias(mutable)
+            if alias is not None:
+                mutable["reward"] = mutable.pop(alias)
+        working = mutable
+
+    reward = working.get("reward")
+    if "reward" in working and not is_valid_reward_number(reward):
+        # Unreachable in lenient mode (an unusable ``reward`` is dropped above).
         raise ValueError(
             f"{source} returned rewards without numeric 'reward': "
             "missing numeric 'reward' between 0.0 and 1.0"
@@ -65,31 +158,72 @@ def validate_reward_map(
 
     parsed: RewardMap = {}
     has_numeric_metric = False
-    for key, value in rewards.items():
+    for key, value in working.items():
         key = str(key)
         if key == "reward":
             parsed[key] = value
             continue
         if key == "rubric":
-            parsed[key] = _validate_rubric(value, source=source)
+            _apply_structured(
+                parsed,
+                key,
+                value,
+                _validate_rubric,
+                source=source,
+                lenient=lenient,
+                dropped=dropped,
+            )
             continue
         if key == "metrics":
+            if lenient:
+                metrics = _lenient_metrics(value, dropped=dropped)
+                if metrics is not None:
+                    parsed[key] = metrics
+                    has_numeric_metric = has_numeric_metric or bool(metrics)
+                continue
             parsed[key] = _validate_metrics(value, source=source)
             has_numeric_metric = bool(parsed[key])
             continue
         if key == "space":
-            parsed[key] = _validate_space(value, source=source)
+            _apply_structured(
+                parsed,
+                key,
+                value,
+                _validate_space,
+                source=source,
+                lenient=lenient,
+                dropped=dropped,
+            )
             continue
         if key == "granularity":
-            parsed[key] = _validate_granularity(value, source=source)
+            _apply_structured(
+                parsed,
+                key,
+                value,
+                _validate_granularity,
+                source=source,
+                lenient=lenient,
+                dropped=dropped,
+            )
             continue
         if key == "aggregate":
-            parsed[key] = _validate_aggregate(value, source=source)
+            _apply_structured(
+                parsed,
+                key,
+                value,
+                _validate_aggregate,
+                source=source,
+                lenient=lenient,
+                dropped=dropped,
+            )
             continue
         if key in _STRUCTURED_REWARD_KEYS:
             parsed[key] = value
             continue
         if not is_valid_reward_number(value):
+            if lenient:
+                dropped.append(key)
+                continue
             raise ValueError(
                 f"{source} returned rewards with invalid reward value for {key!r}"
             )
@@ -104,7 +238,38 @@ def validate_reward_map(
             f"{source} returned rewards without numeric 'reward': "
             "missing numeric 'reward' or aggregate policy for multi-metric rewards"
         )
+
+    if lenient and dropped:
+        warnings.warn(
+            f"{source} reward map parsed in lenient mode; dropped "
+            f"unrecognized/non-numeric keys: {', '.join(dropped)}",
+            stacklevel=2,
+        )
     return parsed
+
+
+def _lenient_metrics(
+    value: Any,
+    *,
+    dropped: list[str],
+) -> dict[str, RewardValue] | None:
+    """Prune a ``metrics`` mapping to numeric entries for lenient parsing.
+
+    Returns the kept numeric metrics (possibly empty) and records each pruned
+    entry as ``metrics.<key>``. A non-mapping ``metrics`` value is dropped
+    wholesale (recorded as ``metrics``) and ``None`` is returned to signal the
+    key should not appear in the parsed map.
+    """
+    if not isinstance(value, Mapping):
+        dropped.append("metrics")
+        return None
+    kept: dict[str, RewardValue] = {}
+    for key, metric in value.items():
+        if is_valid_reward_number(metric):
+            kept[str(key)] = metric
+        else:
+            dropped.append(f"metrics.{key}")
+    return kept
 
 
 def apply_aggregate_policy(
