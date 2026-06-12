@@ -213,23 +213,28 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         else DEFAULT_AGENT
     )
     eval_environment = request.environment or "docker"
-    if eval_environment not in {"docker", "daytona", "modal"}:
-        # Unknown sandbox values otherwise surface as a raw traceback per-task
-        # once the rollout starts — reject them at planning instead.
-        raise EvalPlanError(
-            f"Invalid --sandbox {eval_environment!r}: choose docker, daytona, or modal"
-        )
-    if eval_environment == "modal":
-        # Fail fast with the actionable extra hint instead of surfacing a raw
-        # ModuleNotFoundError deep inside the rollout (the in-sandbox guard in
-        # sandbox/setup.py remains as defense-in-depth for programmatic callers).
-        try:
-            import modal  # noqa: F401
-        except ModuleNotFoundError as exc:
+    # --sandbox is ignored by hosted source-env runs (the hosted Verifiers
+    # environment owns its harness), so only validate / preflight it for the
+    # paths that actually use the local sandbox.
+    if not request.source_env:
+        if eval_environment not in {"docker", "daytona", "modal"}:
+            # Unknown sandbox values otherwise surface as a raw traceback per-task
+            # once the rollout starts — reject them at planning instead.
             raise EvalPlanError(
-                "Missing optional dependency for 'modal' sandbox. "
-                "Install it with `uv sync --extra sandbox-modal`."
-            ) from exc
+                f"Invalid --sandbox {eval_environment!r}: "
+                "choose docker, daytona, or modal"
+            )
+        if eval_environment == "modal":
+            # Fail fast with the actionable extra hint instead of surfacing a raw
+            # ModuleNotFoundError deep inside the rollout (the in-sandbox guard in
+            # sandbox/setup.py remains as defense-in-depth for programmatic callers).
+            try:
+                import modal  # noqa: F401
+            except ModuleNotFoundError as exc:
+                raise EvalPlanError(
+                    "Missing optional dependency for 'modal' sandbox. "
+                    "Install it with `uv sync --extra sandbox-modal`."
+                ) from exc
     eval_prompts = cast("list[str | None] | None", request.prompt)
     sandbox_user = normalize_sandbox_user(request.sandbox_user)
     eval_concurrency = request.concurrency if request.concurrency is not None else 4

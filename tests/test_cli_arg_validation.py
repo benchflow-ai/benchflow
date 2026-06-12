@@ -191,6 +191,24 @@ def test_sandbox_modal_missing_extra_rejected_even_when_installed(
         )
 
 
+def test_source_env_skips_sandbox_preflight(monkeypatch):
+    # Regression: --sandbox is ignored by hosted source-env runs, so a missing
+    # modal extra (and an unknown sandbox value) must NOT block them — only
+    # --tasks-dir/--source-repo/--config use the local sandbox.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "modal":
+            raise ModuleNotFoundError("No module named 'modal'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    plan = build_eval_plan(EvalCreateRequest(source_env="org/env", environment="modal"))
+    assert plan is not None
+
+
 @pytest.mark.parametrize("ok", [None, 1, 900.0])
 def test_agent_timeout_sec_accepts_positive_or_none(ok):
     assert AgentConfig(timeout_sec=ok).timeout_sec == ok
