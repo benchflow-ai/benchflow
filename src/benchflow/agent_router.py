@@ -312,8 +312,15 @@ def build_codex_launch_command(
     codex_bin: str = "codex",
     model: str | None = None,
     sandbox: str = "workspace-write",
+    config_overrides: Sequence[str] = (),
 ) -> list[str]:
-    """Construct the host ``codex exec`` argv for the adoption run (pure)."""
+    """Construct the host ``codex exec`` argv for the adoption run (pure).
+
+    ``config_overrides`` are passed through as codex ``-c key=value`` flags, so
+    host ``~/.codex/config.toml`` drift can be worked around per-run without
+    editing the user's config (e.g. ``-c service_tier=flex`` when an installed
+    codex version rejects a stale value).
+    """
     command = [
         codex_bin,
         "exec",
@@ -323,6 +330,8 @@ def build_codex_launch_command(
         "--sandbox",
         sandbox,
     ]
+    for override in config_overrides:
+        command += ["-c", override]
     if model:
         command += ["--model", model]
     command.append(prompt)
@@ -347,6 +356,7 @@ def prepare_adoption_launch(
     codex_bin: str = "codex",
     model: str | None = None,
     sandbox: str = "workspace-write",
+    config_overrides: Sequence[str] = (),
 ) -> AdoptionLaunch:
     """Assemble context + build the codex command (no exec, no credentials)."""
     name = validate_benchmark_name(name)
@@ -357,7 +367,12 @@ def prepare_adoption_launch(
         source, name, convert_guide=convert_guide, skills=skills
     )
     command = build_codex_launch_command(
-        prompt, workdir=repo_root, codex_bin=codex_bin, model=model, sandbox=sandbox
+        prompt,
+        workdir=repo_root,
+        codex_bin=codex_bin,
+        model=model,
+        sandbox=sandbox,
+        config_overrides=config_overrides,
     )
     return AdoptionLaunch(command=command, cwd=str(repo_root), prompt=prompt)
 
@@ -390,6 +405,7 @@ def run_agent_adoption(
     codex_bin: str = "codex",
     model: str | None = None,
     sandbox: str = "workspace-write",
+    config_overrides: Sequence[str] = (),
 ) -> int:
     """Launch the host codex CLI to drive the adoption. Fail-closed on creds.
 
@@ -412,6 +428,7 @@ def run_agent_adoption(
         codex_bin=codex_bin,
         model=model,
         sandbox=sandbox,
+        config_overrides=config_overrides,
     )
     return exec_fn(launch.command, cwd=launch.cwd, env=resolved_env)
 
@@ -521,9 +538,20 @@ def register_agent_router(agent_app: typer.Typer) -> None:
         codex_bin: Annotated[
             str, typer.Option("--codex-bin", help="Host codex binary")
         ] = "codex",
+        codex_config: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--codex-config",
+                "-c",
+                help="Codex config override as key=value, passed to codex as "
+                "`-c key=value`; repeatable (e.g. -c service_tier=flex to work "
+                "around host ~/.codex/config.toml drift)",
+            ),
+        ] = None,
     ) -> None:
         """Drive the CONVERT.md workflow by launching the host codex CLI."""
         repo_root = default_repo_root()
+        overrides = tuple(codex_config or ())
         try:
             resolved = name or derive_name_from_source(source)
             if dry_run:
@@ -533,6 +561,7 @@ def register_agent_router(agent_app: typer.Typer) -> None:
                     repo_root=repo_root,
                     codex_bin=codex_bin,
                     model=model,
+                    config_overrides=overrides,
                 )
                 console.print(" ".join(shlex.quote(c) for c in launch.command))
                 return
@@ -543,6 +572,7 @@ def register_agent_router(agent_app: typer.Typer) -> None:
                 exec_fn=_subprocess_exec,
                 codex_bin=codex_bin,
                 model=model,
+                config_overrides=overrides,
             )
         except (InvalidBenchmarkName, CodexLaunchError) as exc:
             console.print(f"[red]{exc}[/red]")
