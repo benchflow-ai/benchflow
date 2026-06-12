@@ -1,9 +1,8 @@
 """Deprecated top-level benchflow commands (hidden in ``--help``).
 
 These predate the 0.3 resource-verb subgroups (``eval``/``environment``/
-``agent``) and are kept for backwards compatibility only: ``job``, ``agents``,
-``metrics``, ``view``, ``eval`` (legacy skill eval), and ``cleanup``. Each is
-``hidden=True, deprecated=True``.
+``agent``) and are kept for backwards compatibility only: ``metrics``,
+``view``, and ``cleanup``. Each is ``hidden=True, deprecated=True``.
 
 Registered onto the top-level app by :func:`register_legacy`; ``cli/main.py``
 only wires the call. ``cleanup`` resolves the Daytona helpers through the
