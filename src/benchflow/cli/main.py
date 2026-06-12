@@ -1109,6 +1109,14 @@ def eval_create(
             "(default: the skillsbench registry). Only valid with --dataset.",
         ),
     ] = None,
+    ignore_bench_version: Annotated[
+        bool,
+        typer.Option(
+            "--ignore-bench-version",
+            help="Run a dataset even when this bench version is outside the "
+            "range it was validated against. Only valid with --dataset.",
+        ),
+    ] = False,
 ) -> None:
     """Run an evaluation — single task or batch.
 
@@ -1139,6 +1147,9 @@ def eval_create(
         raise typer.Exit(1)
     if registry and not dataset:
         console.print("[red]--registry requires --dataset[/red]")
+        raise typer.Exit(1)
+    if ignore_bench_version and not dataset:
+        console.print("[red]--ignore-bench-version requires --dataset[/red]")
         raise typer.Exit(1)
     if worker_concurrency is not None and not (tasks_dir or source_repo):
         console.print(
@@ -1383,8 +1394,20 @@ def eval_create(
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
         version_issue = bench_version_issue(resolved_dataset.bench_version)
+        if version_issue and not ignore_bench_version:
+            # Hard gate: published results must come from a harness the
+            # dataset version was validated against. The escape hatch keeps
+            # local experimentation possible without weakening the default.
+            console.print(f"[red]{version_issue}[/red]")
+            console.print(
+                "Pick a dataset version validated for this harness, or re-run "
+                "with --ignore-bench-version to proceed anyway."
+            )
+            raise typer.Exit(1)
         if version_issue:
-            console.print(f"[yellow]Warning:[/yellow] {version_issue}")
+            console.print(
+                f"[yellow]Warning:[/yellow] {version_issue} (--ignore-bench-version)"
+            )
         console.print(
             f"[green]✓[/green] {resolved_dataset.spec}: "
             f"{len(resolved_dataset.task_names)} tasks, digests verified "
