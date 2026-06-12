@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Removed
+- Removed the `experiments/` research/dev tooling tree (never shipped in the
+  wheel) and its 6 dependent test modules, completing the dev-tree cleanup
+  alongside the earlier `dashboard/` removal and `labs/` → `docs/labs`
+  migration. Benchmark result files were preserved out-of-tree, not deleted.
+
 ## 0.6.0 — 2026-06-10
 
 ### Added
