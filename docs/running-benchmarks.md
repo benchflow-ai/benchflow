@@ -171,10 +171,12 @@ content digests. Resolution clones the pinned commit into
 `.cache/datasets`, materializes an immutable per-commit snapshot,
 recomputes every task's digest, and **fails before running anything** on
 any mismatch. Snapshot directories that are not part of the registry entry
-are excluded from the run. The entry's `bench_version` range is checked
-against the installed benchflow; running outside the range the dataset was
-validated against prints a warning — results may not be comparable with
-published runs.
+are excluded from the run. The entry's `bench_version` range is a hard
+gate: running on a benchflow outside the range the dataset was validated
+against fails before anything runs, because the results may not be
+comparable with published runs. `--ignore-bench-version` overrides the
+gate for local experimentation — the run then proceeds with a visible
+warning on the record.
 
 The registry is fetched from the skillsbench repo by default; point
 `--registry` at another URL or a local `registry.json` to override.
