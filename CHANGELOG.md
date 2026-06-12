@@ -3,10 +3,28 @@
 ## [Unreleased]
 
 ### Removed
+- Dead-code purge (no public-API impact unless noted): removed the unused
+  `job_config_from_yaml` helper, the nominal `TASK_REPOS` back-compat dict
+  (use `TASK_ALIASES`), the `_looks_like_verifier_dep_install_error` shim
+  (use `contains_verifier_dep_install_marker`), the unused `parse_binary_verdict`
+  reward helper (use `parse_verdict`), the dead `SandboxBackend` type alias,
+  an unused `StdioTransport._read_buffer` field, and 12 redundant `rollout`
+  package re-export aliases (submodule definitions unchanged).
+- Removed the deprecated, hidden `benchflow skills install` CLI command. The
+  SDK function `benchflow.skills.install_skill` is unchanged.
+- Retired the deprecated top-level legacy CLI (`cli/legacy.py`). The dead
+  0.3-era `job`/`agents`/`eval` commands are removed; `metrics` and `view` are
+  promoted to first-class `bench eval metrics` / `bench eval view`; and the
+  redundant `cleanup` command is dropped in favor of the existing
+  `bench environment cleanup`.
 - Removed the `experiments/` research/dev tooling tree (never shipped in the
   wheel) and its 6 dependent test modules, completing the dev-tree cleanup
   alongside the earlier `dashboard/` removal and `labs/` → `docs/labs`
   migration. Benchmark result files were preserved out-of-tree, not deleted.
+
+### Changed
+- `bench metrics` → `bench eval metrics` and `bench view` → `bench eval view`
+  (the deprecated hidden top-level forms are gone; use the `eval` subgroup).
 
 ## 0.6.0 — 2026-06-10
 
@@ -23,7 +41,13 @@
   the host `codex` CLI through the conversion workflow, and `verify` runs the
   parity gate (deterministic per-criterion conversion parity plus the
   agent-scale reward-distribution layer) and emits a confidence verdict, with a
-  drafted support issue on divergence.
+  drafted support issue on divergence. `bench agent verify --rerun` independently
+  re-executes the benchmark's `parity_test.py` and scores its fresh output
+  (instead of trusting the recorded `parity_experiment.json`), failing closed if
+  the output is not scoreable; `bench agent run -c key=value` passes codex config
+  overrides through to the host codex driver (e.g. to work around `~/.codex`
+  drift). `bench tasks digest` recognizes native `task.md` tasks as well as
+  legacy `task.toml`.
 - **ATIF and ADP trajectory artifacts** — every scored rollout now emits
   `trainer/atif.json` and `trainer/adp.jsonl` (alongside the existing
   `verifiers.jsonl`), with job-level ADP aggregation. One canonical raw

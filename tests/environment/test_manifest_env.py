@@ -12,6 +12,8 @@ from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import (
     EnvironmentSnapshotError,
     ManifestEnvironment,
+    service_log_path,
+    service_start_command,
 )
 from benchflow.environment.protocol import Environment, StateSnapshot
 from benchflow.sandbox.protocol import ExecResult
@@ -76,6 +78,8 @@ paths = ["/data/gmail.db", "/data/gcal.db"]
 class FakeSandbox:
     """Minimal Sandbox stand-in recording exec calls.
 
+    ``exec_calls`` records commands; ``exec_detail`` additionally records
+    ``(command, timeout_sec)`` pairs for exec-boundary assertions.
     ``absent_binaries`` — the `<binary> --help` detection probe returns
     non-zero for these: the service's package is not installed in this
     per-task image (a bare PATH stub, or genuinely missing).
@@ -90,6 +94,7 @@ class FakeSandbox:
         fail_health_for: str | None = None,
     ) -> None:
         self.exec_calls: list[str] = []
+        self.exec_detail: list[tuple[str, int]] = []
         self._absent = absent_binaries or set()
         self._fail_health_for = fail_health_for
         self.host = "localhost"
@@ -99,6 +104,7 @@ class FakeSandbox:
         self, cmd: str, *, user: str = "root", timeout_sec: int = 30
     ) -> ExecResult:
         self.exec_calls.append(cmd)
+        self.exec_detail.append((cmd, timeout_sec))
         if "--help" in cmd:  # the service-detection probe: `<binary> --help`
             binary = cmd.split()[0]
             rc = 1 if binary in self._absent else 0
@@ -408,3 +414,52 @@ async def test_provision_baseline_capture_failure_surfaces():
     env = ManifestEnvironment(CLAWS_STATEFUL, sandbox=sandbox)
     with pytest.raises(EnvironmentSnapshotError):
         await env.provision(ctx=None)
+
+
+# BF-9 (benchflow-ai/benchflow#676): service starts must be fully detached.
+# On Daytona each exec is a session command — a backgrounded service that
+# inherits any of the session's std streams keeps the session "running" and
+# wedges the exec until its timeout (hard provision failure at the bounded
+# start timeout, while the same manifest passes on Docker).
+
+
+def test_service_start_command_fully_detaches():
+    svc = CLAWS.services[0]
+    cmd = service_start_command(svc)
+    assert cmd.startswith("nohup ")
+    assert svc.command in cmd
+    assert "</dev/null" in cmd
+    assert f">{service_log_path(svc.name)}" in cmd
+    assert "2>&1" in cmd
+    assert cmd.endswith("&")
+    assert "disown" not in cmd  # bash/zsh-only builtin; sandbox shell is sh/dash
+
+
+def test_service_log_path_is_per_service_and_retrievable():
+    assert service_log_path("gmail") == "/tmp/benchflow-env-gmail.log"
+    assert service_log_path("gmail") != service_log_path("gcal")
+
+
+async def test_provision_starts_services_detached_with_bounded_timeout():
+    sandbox = FakeSandbox()
+    env = ManifestEnvironment(CLAWS, sandbox=sandbox)
+    await env.provision(ctx=None)
+    starts = [(c, t) for c, t in sandbox.exec_detail if "serve" in c]
+    assert [c for c, _ in starts] == [
+        service_start_command(CLAWS.services[0]),
+        service_start_command(CLAWS.services[1]),
+    ]
+    assert all(t == 15 for _, t in starts), "start exec must stay bounded"
+
+
+async def test_reset_restarts_services_with_the_same_detached_shape():
+    sandbox = FakeSandbox()
+    env = ManifestEnvironment(CLAWS, sandbox=sandbox)
+    await env.provision(ctx=None)
+    provision_starts = [c for c in sandbox.exec_calls if c.startswith("nohup ")]
+    sandbox.exec_calls.clear()
+    sandbox.exec_detail.clear()
+    await env.reset()
+    restarts = [(c, t) for c, t in sandbox.exec_detail if c.startswith("nohup ")]
+    assert [c for c, _ in restarts] == provision_starts
+    assert all(t == 15 for _, t in restarts), "restart exec must stay bounded"
