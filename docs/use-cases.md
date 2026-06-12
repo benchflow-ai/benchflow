@@ -3,6 +3,18 @@ BenchFlow's Scene-based lifecycle enables evaluation patterns that go far beyond
 
 The patterns below are all variants of one primitive: **Scenes with Roles and Turns**, all running in a single shared sandbox via ACP. No sidecar containers, no Docker Compose networking — every role lives in the same workspace and talks through ACP.
 
+> **Sandbox paths used in the prompts below.** The runtime stages the task
+> instruction at `/instruction.md` (sandbox root), and the oracle at `/oracle`
+> for native `task.md` tasks (legacy split-layout tasks use `/solution` as an
+> alias). The agent workspace is `/app`. For a turn with no explicit prompt
+> (`Turn("role")` / a bare `- role:` entry), the runtime passes the task goal
+> **inline** — for native `task.md` tasks it reads the prompt body from
+> `task.md` and sends it directly, so the agent doesn't have to read
+> `/instruction.md` to know the task. `/instruction.md` is still staged for
+> every task, so a role with an explicit prompt can read or quote it. Use
+> `/oracle` first and fall back to `/solution` if you support both layouts,
+> e.g. `cat /oracle/solve.sh 2>/dev/null || cat /solution/solve.sh`.
+
 ---
 
 ## 1. Interactive User Simulation
@@ -32,21 +44,21 @@ scenes:
     turns:
       - role: user
         prompt: |
-          You are simulating a user who needs help with the task in /app/instruction.md.
-          You have access to the solution in /solution/solve.sh.
+          You are simulating a user who needs help with the task in /instruction.md.
+          You have access to the oracle solution at /oracle/solve.sh (legacy tasks: /solution/solve.sh).
           Give the assistant a high-level description of what you want. Do NOT reveal implementation details yet.
           Write your guidance to /app/user-guidance.md.
       - role: assistant
       - role: user
         prompt: |
-          Read the assistant's work in /app/. Compare against /solution/solve.sh.
+          Read the assistant's work in /app/. Compare against /oracle/solve.sh (legacy: /solution/solve.sh).
           If incomplete, provide a targeted hint (one specific detail from the solution).
           Update /app/user-guidance.md with the targeted hint.
       - role: assistant
         prompt: "The user provided additional guidance. Read it and continue working."
       - role: user
         prompt: |
-          Final check. Read /app/ and compare to /solution/. If correct, write
+          Final check. Read /app/ and compare to /oracle/ (legacy: /solution/). If correct, write
           LGTM to /app/user-guidance.md.
           If not, give one final hint.
       - role: assistant
@@ -68,9 +80,9 @@ config = RolloutConfig(
                   Role("assistant", "claude-agent-acp", "claude-sonnet-4-6"),
               ],
               turns=[
-                  Turn("user", "You are simulating a user. Read /app/instruction.md..."),
-                  Turn("assistant"),  # None = use instruction.md
-                  Turn("user", "Check the assistant's work against /solution/..."),
+                  Turn("user", "You are simulating a user. Read /instruction.md..."),
+                  Turn("assistant"),  # None = native goal passed inline (legacy: instruction.md)
+                  Turn("user", "Check the assistant's work against /oracle/ (legacy: /solution/)..."),
                   Turn("assistant", "The user provided additional guidance..."),
               ]),
     ],
@@ -118,7 +130,7 @@ scenes:
       - role: coder
       - role: reviewer
         prompt: |
-          You are an expert code reviewer. Read the task at /app/instruction.md
+          You are an expert code reviewer. Read the task at /instruction.md
           and the coder's work in /app/. Write specific, actionable feedback.
           IMPORTANT: Do NOT modify any files in /app/ except /app/review-feedback.md.
           Write your specific feedback to /app/review-feedback.md.
@@ -197,7 +209,7 @@ scenes:
     turns:
       - role: gen
         prompt: |
-          Read /app/instruction.md. Analyze the task requirements.
+          Read /instruction.md. Analyze the task requirements.
           Write a skill document to /app/generated-skill.md that will help
           an agent solve this task. Include: key steps, common pitfalls,
           relevant commands or APIs, and a solution outline.
@@ -224,7 +236,7 @@ config = RolloutConfig(
               turns=[Turn("gen", "Analyze the task and write a skill to /app/generated-skill.md")]),
         Scene(name="solve",
               roles=[Role("solver", "gemini", "gemini-3.1-flash-lite-preview")],
-              turns=[Turn("solver")]),  # None prompt = use instruction.md
+              turns=[Turn("solver")]),  # None prompt = native goal inline (legacy: instruction.md)
     ],
     environment="daytona",
 )
@@ -234,7 +246,7 @@ result = await bf.run(config)
 ### How scenes work here
 
 1. **Scene 1 (`skill-gen`)**: The `gen` agent reads the task instruction, analyzes it, and writes a skill file. This scene is unscored -- its output is an artifact that persists in the sandbox filesystem.
-2. **Scene 2 (`solve`)**: A fresh agent session starts (no context from scene 1). The `solver` agent gets the standard `instruction.md` prompt and also sees `/app/generated-skill.md` on disk. The verifier scores only the final `/app/` state.
+2. **Scene 2 (`solve`)**: A fresh agent session starts (no context from scene 1). The `solver` agent gets the standard task goal as its prompt (passed inline for native `task.md` tasks; legacy tasks read it from `/instruction.md`) and also sees `/app/generated-skill.md` on disk. The verifier scores only the final `/app/` state.
 
 The key insight: `disconnect()` between scenes kills the agent process, so there is no context bleed. The only communication is through the shared filesystem.
 
@@ -283,7 +295,7 @@ config = RolloutConfig(
         Scene(name="iterative-solve",
               roles=[Role("solver", "gemini", "gemini-3.1-flash-lite-preview")],
               turns=[
-                  Turn("solver"),  # instruction.md
+                  Turn("solver"),  # native goal inline (legacy: instruction.md)
                   Turn("solver", "Review your solution. Run tests. Fix issues."),
                   Turn("solver", "Final check: verify every requirement is met."),
               ]),
@@ -334,7 +346,7 @@ scenes:
       - role: reviewer
         prompt: |
           You are reviewing code written by a different agent.
-          Read /app/instruction.md for the task requirements.
+          Read /instruction.md for the task requirements.
           Examine the coder's work in /app/. Write specific feedback
           to /app/review-feedback.md
       - role: coder

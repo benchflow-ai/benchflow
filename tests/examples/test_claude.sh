@@ -37,8 +37,6 @@ AGENT="claude-agent-acp"
 JOBS_DIR="jobs/test-claude"
 PROJECT="${GOOGLE_CLOUD_PROJECT:-skillsbench}"
 
-# ── Helpers ──
-
 show_failure() {
   local dir="$1"
   local latest
@@ -59,7 +57,7 @@ show_failure() {
   fi
 }
 
-# ── Model definitions ──
+# Model definitions
 declare -A MODELS
 MODELS=(
   [subscription]="claude-sonnet-4-6"
@@ -75,7 +73,7 @@ EXTRA_ARGS=(
   [zai-glm5]="--agent-env ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic --agent-env ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY"
 )
 
-# ── Pre-flight checks ──
+# Pre-flight checks
 
 if [ "$ENV" = "daytona" ]; then
   if [ -z "${DAYTONA_API_KEY:-}" ]; then
@@ -123,7 +121,7 @@ check_env() {
   return 0
 }
 
-# ── Determine which models to test ──
+# Determine which models to test
 
 if [ $# -gt 0 ]; then
   SELECTED=("$@")
@@ -178,7 +176,7 @@ for label in "${SELECTED[@]}"; do
   echo ""
 done
 
-# ── Summary ──
+# Summary
 
 TOTAL=$((PASS + FAIL + SKIP))
 echo "=== Summary ==="

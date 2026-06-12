@@ -252,9 +252,7 @@ def _download_via_api(
     logger.info("Downloaded %d rows to %s", len(rows), out_path)
 
 
-# ---------------------------------------------------------------------------
 # Format-specific parsers for HuggingFace datasets
-# ---------------------------------------------------------------------------
 
 
 _SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)

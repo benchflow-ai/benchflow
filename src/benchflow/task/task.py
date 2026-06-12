@@ -1,14 +1,11 @@
-"""Task ($T$) — the problem specification an agent solves.
-
-Internalized from Harbor's Task class. Loads task.toml + instruction.md
-from a task directory.
-"""
+"""Task ($T$) - the problem specification an agent solves."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from benchflow.task.config import TaskConfig
+from benchflow.task.document import TaskDocument
 from benchflow.task.paths import TaskPaths
 
 
@@ -18,8 +15,9 @@ class Task:
     ::
 
         task_dir/
-        ├── instruction.md
-        ├── task.toml
+        ├── task.md              # native unified format, or:
+        ├── instruction.md        # legacy split format
+        ├── task.toml             # legacy split format
         ├── environment/
         │   ├── Dockerfile
         │   └── ...
@@ -34,8 +32,18 @@ class Task:
     def __init__(self, task_dir: Path | str) -> None:
         self._task_dir = Path(task_dir).resolve()
         self.paths = TaskPaths(self._task_dir)
-        self.instruction = self.paths.instruction_path.read_text()
-        self.config = TaskConfig.model_validate_toml(self.paths.config_path.read_text())
+        self.document: TaskDocument | None = None
+        if self.paths.task_document_path.exists():
+            self.document = TaskDocument.from_path(self.paths.task_document_path)
+            self.instruction = self.document.instruction
+            self.config = self.document.config
+            self.scenes = self.document.scenes
+        else:
+            self.instruction = self.paths.instruction_path.read_text()
+            self.config = TaskConfig.model_validate_toml(
+                self.paths.config_path.read_text()
+            )
+            self.scenes = []
         if self.config.task is not None:
             self.name = self.config.task.name
         else:

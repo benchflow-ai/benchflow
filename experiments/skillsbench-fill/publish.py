@@ -62,11 +62,53 @@ SECRET_VAL_RE = re.compile(
     r"(AQ\.[A-Za-z0-9._-]{8,}|AIza[A-Za-z0-9._-]{10,}|sk-api-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9-]{16,}|"
     r"ABSK[A-Za-z0-9+/=]{8,}|Bearer\s+[A-Za-z0-9._-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{20,})"
 )
+TOKEN_COUNTER_KEYS = {
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "cached_read_tokens",
+    "cached_tokens",
+    "cached_write_tokens",
+    "completion_tokens",
+    "input_tokens",
+    "max_tokens",
+    "n_cache_creation_tokens",
+    "n_cache_read_tokens",
+    "n_input_tokens",
+    "n_output_tokens",
+    "output_tokens",
+    "prompt_tokens",
+    "provider_total_tokens",
+    "thought_tokens",
+    "total_cached_tokens",
+    "total_completion_tokens",
+    "total_cost_usd",
+    "total_input_tokens",
+    "total_output_tokens",
+    "total_prompt_tokens",
+    "total_tokens",
+}
+
+
+def _is_token_counter(key: str, value) -> bool:
+    """Keep numeric usage telemetry while still redacting credential tokens."""
+    normalized = key.lower()
+    if normalized not in TOKEN_COUNTER_KEYS and not normalized.endswith("_tokens"):
+        return False
+    return value is None or (
+        isinstance(value, int | float) and not isinstance(value, bool)
+    )
 
 
 def _scrub(o):
     if isinstance(o, dict):
-        return {k: ("[REDACTED]" if SECRET_NAME_RE.search(k) else _scrub(v)) for k, v in o.items()}
+        return {
+            k: (
+                _scrub(v)
+                if _is_token_counter(k, v) or not SECRET_NAME_RE.search(k)
+                else "[REDACTED]"
+            )
+            for k, v in o.items()
+        }
     if isinstance(o, list):
         return [_scrub(x) for x in o]
     if isinstance(o, str):
@@ -144,6 +186,12 @@ def _load_repair_queue(value: str) -> dict[str, str]:
         if cell and hf_path:
             dests[cell] = hf_path
     return dests
+
+
+def configure_hf_token_env() -> str:
+    token = os.environ.get("HF_TOKEN") or hf_token()
+    os.environ["HF_TOKEN"] = token
+    return token
 
 
 def metadata_yaml(model_key: str, mode: str, src_commit: str) -> str:
@@ -249,9 +297,9 @@ def main() -> int:
     only_cells = _load_only_cells(a.only_cells)
     repair_dests = _load_repair_queue(a.repair_queue)
 
-    os.environ.setdefault("HF_TOKEN", hf_token())
+    token = configure_hf_token_env()
     from huggingface_hub import CommitOperationAdd, HfApi
-    api = HfApi(token=os.environ["HF_TOKEN"])
+    api = HfApi(token=token)
 
     # existing cells per group: {trial_id: cell_dir_path} for dedup AND path recovery, cached.
     _exist_cache: dict = {}
@@ -348,17 +396,19 @@ def main() -> int:
     if a.dry_run:
         print("DRY RUN — nothing pushed")
         return 0
-    # Always (re)write publish records so the dashboard links every cell that IS in PR5.
-    (ROOT / "published").mkdir(exist_ok=True)
-    for p in published:
-        with open(ROOT / "published" / f"{p['cell_id']}.json", "w") as fh:
-            json.dump(p, fh, indent=2)
     if ops:
         CH = 400
         for i in range(0, len(ops), CH):
             api.create_commit(repo_id=REPO, repo_type=REPO_TYPE, revision=PR_REF, operations=ops[i:i + CH],
                               commit_message=f"max-effort fill: {len(new)} cells, repair {len(repaired)} (batch {i // CH + 1})")
             print(f"  committed batch {i // CH + 1}: {len(ops[i:i+CH])} files")
+    # Always (re)write publish records so the dashboard links every cell that IS in PR5.
+    # This must happen after create_commit, otherwise a failed HF upload creates
+    # local dashboard credit for a cell that is not actually present in PR5.
+    (ROOT / "published").mkdir(exist_ok=True)
+    for p in published:
+        with open(ROOT / "published" / f"{p['cell_id']}.json", "w") as fh:
+            json.dump(p, fh, indent=2)
     print(f"[done] {len(new)} uploaded, {len(repaired)} repaired, {len(published)} recorded -> {PR_REF}")
     return 0
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-ROLL_OUT = Path("src/benchflow/rollout.py")
+# ``rollout.py`` was split into the ``benchflow.rollout`` package; the kernel
+# invariant now spans every module in it.
+ROLL_OUT = Path("src/benchflow/rollout")
 
 CONCRETE_PLANE_MODULES = {
     "benchflow.acp.client",
@@ -28,13 +30,15 @@ COMPOSITION_BOUNDARY_MODULES = {
 
 
 def _imported_modules(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text())
+    sources = sorted(path.glob("*.py")) if path.is_dir() else [path]
     modules: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            modules.add(node.module)
+    for source in sources:
+        tree = ast.parse(source.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules.add(node.module)
     return modules
 
 

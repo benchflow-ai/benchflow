@@ -32,17 +32,13 @@ The user may say `/docs-review` with an optional argument:
 
 ### Light-touch (checks 1, 2, 6 only — drift, stale refs, link integrity)
 
-- `.dev-docs/sdk-reference.md` — internal SDK surface; verify class/function
-  names + signatures still resolve in `src/benchflow/`.
-- `.dev-docs/harden-sandbox.md` — sandbox hardening notes; verify referenced
-  files / knobs / env vars still exist.
-- `.dev-docs/tested-agents.md` — matrix of agent × model × provider; verify
-  names still appear in `agents/registry.py` and `agents/providers.py`.
+- `.claude/dev-docs/harden-sandbox.md` — sandbox hardening notes; verify
+  referenced files / knobs / env vars still exist.
+- `.claude/dev-docs/tested-agents.md` — matrix of agent × model × provider;
+  verify names still appear in `agents/registry.py` and `agents/providers.py`.
 
 ### Skipped entirely
 
-- `.dev-docs/sdk-refactor-notes.md` — dated refactor record (April 2026);
-  historical, status language is expected. Do not flag or edit.
 - Anything matching `*-notes.md`, `*-archive.md`.
 - `.smoke-jobs/`, `trajectories/`, `examples/`, `fixtures/` — generated or
   sample output, not documentation.
@@ -64,7 +60,7 @@ entries. Cross-check:
   mentioned in docs, grep `src/benchflow/agents/registry.py` and
   `src/benchflow/agents/providers.py`. A name in docs but not in the
   registry dict → stale; a name in the registry but not documented where
-  expected (`docs/architecture.md` matrix, `.dev-docs/tested-agents.md`)
+  expected (`docs/architecture.md` matrix, `.claude/dev-docs/tested-agents.md`)
   → gap.
 - Env vars mentioned in docs (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
   `GROQ_API_KEY`, `BENCHFLOW_*`, etc.) — still referenced in
@@ -94,11 +90,11 @@ Grep for implementation-tracking words:
 
 For each hit, ask: is this describing the *design* (stays true) or
 *in-flight work* (rots)? In-flight language belongs in commit messages,
-PR descriptions, or `.dev-docs/*-notes.md`, not user-facing reference
+PR descriptions, or `.claude/dev-docs/*-notes.md`, not user-facing reference
 docs.
 
-**Suppress for `.dev-docs/*-notes.md`** — dated refactor notes legitimately
-carry status language.
+**Suppress for `.claude/dev-docs/*-notes.md`** — dated refactor notes
+legitimately carry status language.
 
 ### 4. Duplication
 
@@ -109,11 +105,10 @@ for benchflow:
 - **SDK Run Phases** (SETUP → START → AGENT → VERIFY) — should live in
   `architecture.md`; others should link.
 - **Registry examples** — one copy in `architecture.md` + one in
-  `task-authoring.md` or `.dev-docs/sdk-reference.md` is OK if they
-  illustrate distinct use cases; two near-identical `register_agent(...)`
-  blocks is not.
+  `task-authoring.md` is OK if they illustrate distinct use cases; two
+  near-identical `register_agent(...)` blocks is not.
 - **Agent × Model × Provider matrix** — live in
-  `.dev-docs/tested-agents.md`; `architecture.md` should link, not
+  `.claude/dev-docs/tested-agents.md`; `architecture.md` should link, not
   duplicate.
 - **Env var reference** — should live in `docs/getting-started.md` or
   `docs/cli-reference.md`; not re-listed in README.
@@ -164,7 +159,7 @@ All markdown links resolve:
   "how benchflow works" overview — link to architecture for that.
 - **docs/getting-started.md / docs/labs.md**: tutorial tone; design
   rationale belongs elsewhere.
-- **.dev-docs/**: internal — can carry status language, refactor
+- **.claude/dev-docs/**: internal — can carry status language, refactor
   histories, signature tables.
 
 ## Execution
@@ -207,7 +202,7 @@ For a full review:
   prose quality or tone.
 - **Don't grow scope.** If a check isn't in the seven above, don't add it
   mid-review. File a suggestion in the punch list instead.
-- **Don't touch archives or refactor notes.** `.dev-docs/*-notes.md`
+- **Don't touch archives or refactor notes.** `.claude/dev-docs/*-notes.md`
   legitimately carry status language and reflect state at the time they
   were written; don't normalize them.
 - **Don't flag registry drift without reading the registry dict.**
@@ -229,7 +224,7 @@ Stale:
 - docs/architecture.md:39 — "Phase 1: SETUP (host)" numbering implies sequential work-in-progress; phases are always-on
 - docs/task-authoring.md:88 — "TODO: document verifier timeout knob"
 - docs/getting-started.md:121 — example task ID "demo-fizzbuzz" renamed to "examples-fizzbuzz"
-- .dev-docs/tested-agents.md:14 — lists claude-code-acp; registry only has claude-agent-acp
+- .claude/dev-docs/tested-agents.md:14 — lists claude-code-acp; registry only has claude-agent-acp
 
 Polish:
 - README.md:98-134 — full src/ tree duplicates docs/architecture.md:12-38

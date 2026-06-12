@@ -26,16 +26,14 @@ This module also provides the live wiring used by ``Rollout`` and
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.adapters.ors import ORSAdapter
 from benchflow.rewards.protocol import VerifyResult
+from benchflow.trajectories._export_common import aggregate_rollout_jsonl
 from benchflow.trajectories.types import redact_trajectory_text
-
-logger = logging.getLogger(__name__)
 
 # Canonical artifact locations (see issue #385).
 ROLLOUT_ARTIFACT_RELPATH = "trainer/verifiers.jsonl"
@@ -284,21 +282,8 @@ def write_job_verifiers_jsonl(job_dir: str | Path) -> Path | None:
     dataset. Returns the artifact path, or ``None`` when no rollouts have
     emitted records yet.
     """
-    job_path = Path(job_dir)
-    if not job_path.is_dir():
-        return None
-    rollout_files = sorted(job_path.glob(f"*/{ROLLOUT_ARTIFACT_RELPATH}"))
-    if not rollout_files:
-        return None
-    out = job_path / JOB_ARTIFACT_FILENAME
-    with out.open("w") as fout:
-        for src in rollout_files:
-            try:
-                text = src.read_text()
-            except OSError as e:
-                logger.warning("Skipping unreadable trainer artifact %s: %s", src, e)
-                continue
-            if not text.endswith("\n"):
-                text = text + "\n"
-            fout.write(redact_trajectory_text(text))
-    return out
+    return aggregate_rollout_jsonl(
+        job_dir,
+        rollout_relpath=ROLLOUT_ARTIFACT_RELPATH,
+        out_filename=JOB_ARTIFACT_FILENAME,
+    )

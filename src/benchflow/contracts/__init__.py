@@ -12,7 +12,9 @@ from benchflow.agents.protocol import (
 from benchflow.contracts.planes import RolloutPlanes, default_rollout_planes
 from benchflow.contracts.user import (
     BaseUser,
+    DocumentNudgeUser,
     FunctionUser,
+    ModelDocumentNudgeUser,
     PassthroughUser,
     RoundResult,
 )
@@ -42,6 +44,7 @@ __all__ = [
     "AskUserHandler",
     "AskUserRequest",
     "BaseUser",
+    "DocumentNudgeUser",
     "Environment",
     "EnvHandle",
     "EnvState",
@@ -50,6 +53,7 @@ __all__ = [
     "ImageBuilder",
     "ImageConfig",
     "ImageRef",
+    "ModelDocumentNudgeUser",
     "PassthroughUser",
     "ReadinessProbe",
     "Reward",

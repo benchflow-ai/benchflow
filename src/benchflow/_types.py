@@ -52,7 +52,7 @@ class Role:
     model: str | None = None
     reasoning_effort: str | None = None
     env: dict[str, str] = field(default_factory=dict)
-    timeout_sec: int | None = None  # None = inherit from task.toml
+    timeout_sec: int | None = None  # None = inherit from task config
     idle_timeout_sec: int | None = None
     skills_dir: str | Path | None = None
     capabilities: list[str] | None = None  # e.g. ["tool-use", "agent-as-tool", "loop"]
@@ -63,7 +63,7 @@ class Turn:
     """One prompt in a scene. *role* selects which Role acts."""
 
     role: str
-    prompt: str | None = None  # None = expand from instruction.md
+    prompt: str | None = None  # None = expand from the task prompt
 
 
 @dataclass

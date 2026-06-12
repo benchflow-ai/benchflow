@@ -24,10 +24,36 @@ exceptions without pulling Daytona/Modal SDKs.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar
 
-# ── Diagnostic value objects ──────────────────────────────────────────────
+# Diagnostic value objects
+
+
+class AgentPromptTimeoutError(TimeoutError):
+    """BenchFlow-owned prompt wall-clock timeout with captured ACP state.
+
+    This is distinct from provider/client ``TimeoutError`` exceptions. It is
+    raised only when BenchFlow's prompt budget expires and the ACP prompt task
+    can be cancelled/drained cleanly enough to snapshot the session. The
+    attached diagnostic says whether that snapshot is a complete terminal
+    timeout trajectory or still has pending tool calls and must remain partial.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        trajectory: list[dict],
+        diagnostic: AgentPromptTimeoutDiagnostic,
+        executed_prompts: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.trajectory = trajectory
+        self.diagnostic = diagnostic
+        self.n_tool_calls = diagnostic.n_tool_calls
+        self.terminal_trajectory_complete = diagnostic.terminal_trajectory_complete
+        self.executed_prompts = executed_prompts or []
 
 
 @dataclass
@@ -40,7 +66,7 @@ class Diagnostic:
     invalidation lines.
     """
 
-    # ── Class-level metadata (overridden by subclasses) ──
+    # Class-level metadata (overridden by subclasses)
     # Field name under which to_dict() lands in result.json.
     field: ClassVar[str] = ""
     # error_category (from _utils.scoring) that this diagnostic backs.
@@ -105,6 +131,31 @@ class IdleTimeoutDiagnostic(Diagnostic):
             f"{self.idle_duration_sec}s idle "
             f"({self.n_tool_calls} tool calls, "
             f"{self.wall_clock_elapsed_sec}s wall)"
+        )
+
+
+@dataclass
+class AgentPromptTimeoutDiagnostic(Diagnostic):
+    """BenchFlow hit the prompt wall-clock budget and wrote timeout evidence."""
+
+    reason: str = "wall_clock_timeout"
+    timeout_sec: float = 0.0
+    n_tool_calls: int = 0
+    pending_tool_call_ids: list[str] = field(default_factory=list)
+    terminal_event_recorded: bool = False
+    terminal_trajectory_complete: bool = False
+
+    field: ClassVar[str] = "agent_timeout_info"
+    category: ClassVar[str | None] = "timeout"
+    summary_description: ClassVar[str] = "hit agent wall-clock timeout"
+
+    def format_issue(self, task_name: str) -> str:
+        pending = len(self.pending_tool_call_ids)
+        complete = "complete" if self.terminal_trajectory_complete else "partial"
+        return (
+            f"{task_name}: agent wall-clock timeout after "
+            f"{self.timeout_sec}s ({complete}, {self.n_tool_calls} tool calls, "
+            f"{pending} pending)"
         )
 
 
@@ -215,12 +266,71 @@ class VerifierTimeoutDiagnostic(Diagnostic):
         )
 
 
+@dataclass
+class ProviderApiErrorDiagnostic(Diagnostic):
+    """Every captured provider API request failed — no model response ever
+    reached the agent (rate limit, auth rejection, quota, model-not-found,
+    5xx). Proxy-proven: built from the usage proxy's captured exchange status
+    codes only (#546/#564 — bodies/headers are never read)."""
+
+    subcategory: str = "provider_error"
+    transient: bool = False
+    dominant_status: int | None = None
+    status_counts: dict[str, int] | None = None
+    total_requests: int = 0
+    failed_requests: int = 0
+    fingerprint: str = ""
+
+    field: ClassVar[str] = "api_error_info"
+    category: ClassVar[str | None] = "api_error"
+    summary_description: ClassVar[str] = "failed on provider API errors"
+
+    def format_issue(self, task_name: str) -> str:
+        kind = "transient" if self.transient else "permanent"
+        return (
+            f"{task_name}: provider api error [{self.subcategory}/{kind}] "
+            f"HTTP {self.dominant_status} on "
+            f"{self.failed_requests}/{self.total_requests} requests — "
+            f"measurement invalid (agent never got a model response)"
+        )
+
+
+@dataclass
+class SuspectedApiErrorDiagnostic(Diagnostic):
+    """Zero-signal rollout: the agent ended its turn with zero tokens AND
+    zero tool calls and no error — the signature of a provider API failure
+    swallowed inside the agent (e.g. a model id rejected against the agent's
+    own catalog before any request is issued)."""
+
+    total_tokens: int = 0
+    n_tool_calls: int = 0
+    total_requests: int = 0
+    failed_requests: int = 0
+
+    field: ClassVar[str] = "suspected_api_error_info"
+    category: ClassVar[str | None] = "suspected_api_error"
+    summary_description: ClassVar[str] = (
+        "ended with zero model/tool activity (suspected provider api error)"
+    )
+
+    def format_issue(self, task_name: str) -> str:
+        return (
+            f"{task_name}: suspected provider api error — agent ended with "
+            f"{self.total_tokens} tokens and {self.n_tool_calls} tool calls "
+            f"({self.failed_requests}/{self.total_requests} captured requests "
+            f"failed) — measurement suspect"
+        )
+
+
 # Public registry — every diagnostic kind goes here exactly once.
 DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     IdleTimeoutDiagnostic,
+    AgentPromptTimeoutDiagnostic,
     SandboxStartupDiagnostic,
     TransportClosedDiagnostic,
     VerifierTimeoutDiagnostic,
+    ProviderApiErrorDiagnostic,
+    SuspectedApiErrorDiagnostic,
 )
 
 # field_name → Diagnostic class, for check_results lookup.
@@ -229,7 +339,7 @@ DIAGNOSTIC_BY_FIELD: dict[str, type[Diagnostic]] = {
 }
 
 
-# ── Diagnostic-carrying exceptions ────────────────────────────────────────
+# Diagnostic-carrying exceptions
 
 
 class IdleTimeoutError(TimeoutError):
@@ -265,7 +375,7 @@ class TransportClosedError(ConnectionError):
 # :class:`SandboxStartupDiagnostic` via its ``.diagnostic`` attribute.
 
 
-# ── Collector — replaces 4 parallel _*_info slots on Rollout ──────────────
+# Collector — replaces 4 parallel _*_info slots on Rollout
 
 
 class RolloutDiagnostics:
@@ -288,15 +398,19 @@ class RolloutDiagnostics:
     def get(self, field_name: str) -> Diagnostic | None:
         return self._events.get(field_name)
 
-    def capture_idle(self, exc: BaseException) -> None:
-        """Extract the IdleTimeoutDiagnostic from a TimeoutError, if present.
+    def capture_timeout(self, exc: BaseException) -> None:
+        """Extract a structured timeout diagnostic from a TimeoutError, if present.
 
-        Wall-clock TimeoutErrors carry no diagnostic; only idle-watchdog
-        timeouts attach one via ``.diagnostic`` (issue #503).
+        Idle-watchdog and BenchFlow-owned wall-clock prompt timeouts both carry
+        typed diagnostics. Provider/client ``TimeoutError`` exceptions do not.
         """
         diag = getattr(exc, "diagnostic", None)
-        if isinstance(diag, IdleTimeoutDiagnostic):
+        if isinstance(diag, (IdleTimeoutDiagnostic, AgentPromptTimeoutDiagnostic)):
             self.set(diag)
+
+    def capture_idle(self, exc: BaseException) -> None:
+        """Backward-compatible alias for older call sites."""
+        self.capture_timeout(exc)
 
     def capture_transport(self, exc: ConnectionError) -> None:
         """Record the transport-closed diagnostic.
@@ -351,7 +465,7 @@ class RolloutDiagnostics:
         return d if isinstance(d, TransportClosedDiagnostic) else None
 
 
-# ── Summary / check_results helpers driven by the registry ────────────────
+# Summary / check_results helpers driven by the registry
 
 
 def summary_warning(diagnostic_cls: type[Diagnostic], count: int, total: int) -> str:

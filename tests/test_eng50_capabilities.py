@@ -13,9 +13,7 @@ import pytest
 from benchflow._types import Role, Scene, Turn
 from benchflow.scenes import compile_scenes_to_steps, scene_step_role
 
-# ---------------------------------------------------------------------------
 # Role.capabilities
-# ---------------------------------------------------------------------------
 
 
 class TestRoleCapabilities:
@@ -56,9 +54,7 @@ class TestRoleCapabilities:
         assert scene.roles[0].capabilities is None
 
 
-# ---------------------------------------------------------------------------
 # Sandbox.expose_ports — protocol conformance
-# ---------------------------------------------------------------------------
 
 
 class TestDockerSandboxExposePorts:

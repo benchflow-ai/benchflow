@@ -29,7 +29,7 @@ from benchflow.environment.manifest import (
 from benchflow.sandbox.setup import _create_sandbox_environment
 from benchflow.task import Task
 
-# ── Manifests ────────────────────────────────────────────────────────────
+# Manifests
 
 _CHI_MANIFEST = EnvironmentManifest.model_validate_toml(
     """
@@ -64,7 +64,7 @@ port    = 9001
 )
 
 
-# ── Fixtures ─────────────────────────────────────────────────────────────
+# Fixtures
 
 
 def _write_task(root: Path, name: str = "demo-task") -> Path:
@@ -97,7 +97,7 @@ def _stub_rollout_paths(tmp_path: Path):
     )()
 
 
-# ── Unit-level: helper functions ─────────────────────────────────────────
+# Unit-level: helper functions
 
 
 def test_resolve_manifest_image_prefers_image_over_base_image():
@@ -148,7 +148,7 @@ inject_into = "exec"
     assert resolve_manifest_runtime_env(m, task_id="task-1", host_env={}) == {}
 
 
-# ── Sandbox-construction: the three control points end-to-end ───────────
+# Sandbox-construction: the three control points end-to-end
 
 
 def test_manifest_image_overrides_task_docker_image(tmp_path):
@@ -241,7 +241,7 @@ def test_manifest_forward_env_pulls_host_vars_into_sandbox(tmp_path, monkeypatch
     assert persistent["TASK_ID"] == "task-42"
 
 
-# ── Negative: manifest=None preserves the legacy path ───────────────────
+# Negative: manifest=None preserves the legacy path
 
 
 def test_no_manifest_means_no_persistent_env_and_no_image_override(tmp_path):

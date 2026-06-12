@@ -8,6 +8,9 @@ Small, deterministic tasks that every registered agent in `src/benchflow/agents/
 |---|---|
 | `acp_smoke/` | ACP handshake · single tool call · file write · terminal reward |
 
+`acp_smoke/` carries a native `task.md` entrypoint while retaining the legacy
+split files used by older conformance docs and tests.
+
 ## Run
 
 ```bash

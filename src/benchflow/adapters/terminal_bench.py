@@ -120,8 +120,6 @@ class TerminalBenchAdapter:
             files=files,
         )
 
-    # -- internals ----------------------------------------------------------
-
     @staticmethod
     def _locate_config(root: Path) -> Path:
         for candidate in ("task.yaml", "task.yml"):

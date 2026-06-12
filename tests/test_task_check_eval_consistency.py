@@ -12,11 +12,31 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from benchflow._utils.task_authoring import check_task
 from benchflow.cli.main import app
 from benchflow.evaluation import Evaluation, EvaluationConfig
+
+SCHEMA_ONLY_TASK_MD_EXAMPLES = (
+    Path("docs/examples/task-md/harbor-parity"),
+    Path("docs/examples/task-md/multi-scene"),
+    Path("docs/examples/task-md/nudgebench-team"),
+)
+FIRST_PARTY_MIXED_TASK_MD_FIXTURES = (
+    Path("src/benchflow/demo_task"),
+    Path("tests/examples/hello-world-task"),
+    Path("tests/conformance/acp_smoke"),
+)
+REAL_SKILLSBENCH_TASK_MD_EXAMPLES = (
+    Path("docs/examples/task-md/real-skillsbench/3d-scan-calc"),
+    Path("docs/examples/task-md/real-skillsbench/citation-check"),
+    Path("docs/examples/task-md/real-skillsbench/weighted-gdp-calc"),
+)
+USER_RUNTIME_TASK_MD_EXAMPLES = (
+    Path("docs/examples/task-md/user-runtime/private-facts-nudges"),
+)
 
 
 def _make_task_missing_agent(
@@ -34,6 +54,26 @@ def _make_task_missing_agent(
     tests = task / "tests"
     tests.mkdir()
     (tests / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+    return task
+
+
+def _make_schema_only_task(parent: Path, name: str = "schema-only") -> Path:
+    """Create a parse-valid task.md fixture with no runnable task package assets."""
+    task = parent / name
+    task.mkdir()
+    (task / "task.md").write_text(
+        """---
+task:
+  name: benchflow/schema-only
+metadata:
+  category: schema
+---
+
+## prompt
+
+This fixture validates task.md authoring syntax only.
+"""
+    )
     return task
 
 
@@ -100,6 +140,188 @@ def test_check_and_eval_agree_on_missing_agent(tmp_path):
     )
     # Both must accept — that's the contract.
     assert check_accepts, f"Both should accept; check_task says: {check_issues}"
+
+
+def test_eval_create_does_not_enumerate_schema_only_task_md(tmp_path):
+    """Schema-valid task.md fixtures are not runnable eval task directories."""
+    task = _make_schema_only_task(tmp_path)
+
+    assert check_task(task, validation_level="schema") == []
+    assert check_task(task), (
+        "default structural validation should reject schema fixture"
+    )
+
+    ev = Evaluation(
+        tasks_dir=str(task),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+
+    assert ev._get_task_dirs() == []
+
+
+def test_eval_create_skips_schema_only_task_md_in_task_collections(tmp_path):
+    """Evaluation discovery must agree with structural task validation."""
+    schema_fixture = _make_schema_only_task(tmp_path)
+    runnable = _make_task_missing_agent(tmp_path, name="runnable-task")
+
+    ev = Evaluation(
+        tasks_dir=str(tmp_path),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+
+    assert check_task(schema_fixture, validation_level="schema") == []
+    assert check_task(schema_fixture)
+    assert check_task(runnable) == []
+    assert ev._get_task_dirs() == [runnable]
+
+
+@pytest.mark.parametrize("task", SCHEMA_ONLY_TASK_MD_EXAMPLES, ids=lambda p: p.name)
+def test_real_schema_only_task_md_examples_are_not_eval_tasks(task: Path, tmp_path):
+    """Guards PR #1 against docs example fixtures drifting into runnable tasks."""
+    assert (task / "task.md").is_file()
+    assert check_task(task, validation_level="schema") == []
+    assert check_task(task), "default structural validation should reject fixture"
+
+    ev = Evaluation(
+        tasks_dir=str(task),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+
+    assert ev._get_task_dirs() == []
+
+
+@pytest.mark.parametrize(
+    "task",
+    FIRST_PARTY_MIXED_TASK_MD_FIXTURES,
+    ids=lambda p: p.name,
+)
+def test_eval_create_enumerates_first_party_mixed_task_md_fixtures(
+    task: Path,
+    tmp_path,
+):
+    """First-party task.md fixtures are real runnable tasks, not schema examples."""
+    assert check_task(task) == []
+
+    ev = Evaluation(
+        tasks_dir=str(task),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+
+    assert ev._get_task_dirs() == [task]
+
+
+def test_eval_create_enumerates_real_skillsbench_native_examples(tmp_path):
+    """Publication-grade native SkillsBench examples are runnable eval tasks."""
+    root = Path("docs/examples/task-md/real-skillsbench")
+    ev = Evaluation(
+        tasks_dir=str(root),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+
+    for task in REAL_SKILLSBENCH_TASK_MD_EXAMPLES:
+        assert check_task(task, validation_level="publication-grade") == []
+
+    assert ev._get_task_dirs() == list(REAL_SKILLSBENCH_TASK_MD_EXAMPLES)
+
+
+def test_eval_create_enumerates_user_runtime_native_examples(tmp_path):
+    """Guards PR #1's runnable simulated-user task.md fixture discovery."""
+    root = Path("docs/examples/task-md/user-runtime")
+    ev = Evaluation(
+        tasks_dir=str(root),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+
+    for task in USER_RUNTIME_TASK_MD_EXAMPLES:
+        assert check_task(task, validation_level="publication-grade") == []
+
+    assert ev._get_task_dirs() == list(USER_RUNTIME_TASK_MD_EXAMPLES)
+
+
+def _make_legacy_llm_judge_task(
+    parent: Path,
+    name: str = "legacy-llm-judge",
+    *,
+    rubric_path: str = "tests/rubric.toml",
+    write_rubric: bool = True,
+) -> Path:
+    """Create a legacy llm-judge task: type llm-judge + rubric, no test.sh."""
+    task = parent / name
+    task.mkdir()
+    (task / "task.toml").write_text(
+        'version = "1.0"\n\n'
+        "[verifier]\n"
+        'type = "llm-judge"\n\n'
+        "[verifier.judge]\n"
+        'model = "claude-sonnet-4-6"\n'
+        f'rubric_path = "{rubric_path}"\n'
+    )
+    (task / "instruction.md").write_text("# Judge me\n")
+    (task / "environment").mkdir()
+    (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+    tests = task / "tests"
+    tests.mkdir()
+    if write_rubric:
+        rubric_file = task / rubric_path
+        rubric_file.parent.mkdir(parents=True, exist_ok=True)
+        rubric_file.write_text(
+            '[[criteria]]\nname = "correct"\nweight = 1.0\n'
+            'description = "Output is correct."\n'
+        )
+    return task
+
+
+def test_check_task_accepts_legacy_llm_judge_without_test_sh(tmp_path):
+    """Dogfood bug (3): a legacy llm-judge task (type llm-judge + rubric, no
+    test.sh and no verifier.md) must NOT be flagged for a missing verifier
+    entrypoint — the rubric-backed judge IS the entrypoint."""
+    task = _make_legacy_llm_judge_task(tmp_path)
+    issues = check_task(task)
+    assert not any("verifier entrypoint" in i for i in issues), (
+        f"check_task wrongly demanded test.sh for an llm-judge task: {issues}"
+    )
+    assert issues == [], f"legacy llm-judge task should pass check: {issues}"
+
+
+def test_check_task_accepts_legacy_llm_judge_default_rubric_path(tmp_path):
+    """The default rubric_path (tests/rubric.toml) is honored when the
+    [verifier.judge] section omits it explicitly."""
+    task = tmp_path / "legacy-llm-judge-default"
+    task.mkdir()
+    (task / "task.toml").write_text(
+        'version = "1.0"\n\n[verifier]\ntype = "llm-judge"\n'
+    )
+    (task / "instruction.md").write_text("# Judge me\n")
+    (task / "environment").mkdir()
+    (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+    tests = task / "tests"
+    tests.mkdir()
+    (tests / "rubric.toml").write_text(
+        '[[criteria]]\nname = "ok"\nweight = 1.0\ndescription = "ok"\n'
+    )
+    issues = check_task(task)
+    assert not any("verifier entrypoint" in i for i in issues), (
+        f"default rubric path not recognised: {issues}"
+    )
+
+
+def test_check_task_still_flags_llm_judge_with_missing_rubric(tmp_path):
+    """The relaxation is rubric-gated: an llm-judge task that declares the
+    type but ships no rubric is still (correctly) flagged — it has nothing
+    runnable."""
+    task = _make_legacy_llm_judge_task(
+        tmp_path, name="llm-judge-no-rubric", write_rubric=False
+    )
+    issues = check_task(task)
+    assert any("verifier entrypoint" in i for i in issues), (
+        f"a rubric-less llm-judge task should still be flagged: {issues}"
+    )
 
 
 def test_tasks_check_escapes_rich_markup_in_diagnostic(tmp_path):

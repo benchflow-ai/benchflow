@@ -84,7 +84,7 @@ def _assert_no_trainer_secret_leak(text: str) -> None:
     assert residual == [], f"live Gemini key shapes survived: {residual}"
 
 
-# ── unit-level helpers ────────────────────────────────────────────────
+# unit-level helpers
 
 
 def test_acp_events_to_messages_prepends_prompts_and_keeps_order():
@@ -131,7 +131,7 @@ def test_reward_map_to_verify_result_handles_none():
     assert vr.error == "verifier crashed"
 
 
-# ── rollout-level write ───────────────────────────────────────────────
+# rollout-level write
 
 
 def test_write_rollout_verifiers_jsonl_emits_canonical_path(tmp_path):
@@ -213,7 +213,7 @@ def test_write_rollout_verifiers_jsonl_redacts_trajectory_secrets(tmp_path):
     json.loads(text)
 
 
-# ── job-level aggregation ─────────────────────────────────────────────
+# job-level aggregation
 
 
 def test_write_job_verifiers_jsonl_aggregates_all_rollouts(tmp_path):
@@ -288,7 +288,7 @@ def test_write_job_verifiers_jsonl_redacts_aggregated_records(tmp_path):
     json.loads(text)
 
 
-# ── end-to-end: _build_rollout_result wires the seam ─────────────────
+# end-to-end: _build_rollout_result wires the seam
 
 
 def test_build_rollout_result_emits_trainer_artifact(tmp_path):
@@ -326,3 +326,123 @@ def test_build_rollout_result_emits_trainer_artifact(tmp_path):
     assert parsed["reward"] == 1.0
     assert parsed["info"]["task_id"] == "archive-alice"
     assert parsed["info"]["model"] == "claude-haiku-4-5"
+
+
+def test_build_rollout_result_emits_atif_and_adp(tmp_path):
+    """Scored rollouts emit the ecosystem trajectory formats out of the box.
+
+    ATIF (trainer/atif.json) and ADP (trainer/adp.jsonl) must land beside
+    verifiers.jsonl from _build_rollout_result — library-only emitters that
+    no run ever calls are a doc-claim violation, not a feature.
+    """
+    rollout_dir = tmp_path / "rollout-formats"
+    rollout_dir.mkdir()
+    _build_rollout_result(
+        rollout_dir,
+        task_name="archive-alice",
+        rollout_name="r1",
+        agent="claude-agent-acp",
+        agent_name="claude-agent-acp",
+        model="claude-haiku-4-5",
+        n_tool_calls=1,
+        prompts=["Archive the email from Alice."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 0.45},
+        started_at=datetime.now(),
+        timing={},
+    )
+    atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
+    assert atif["session_id"] == "archive-alice__r1"
+    assert atif["agent"]["name"] == "claude-agent-acp"
+    assert atif["steps"], "non-empty trajectory must produce ATIF steps"
+
+    adp_line = (rollout_dir / "trainer/adp.jsonl").read_text().strip()
+    adp = json.loads(adp_line)
+    assert adp["id"] == "archive-alice__r1"
+    assert adp["details"]["task_id"] == "archive-alice"
+    action_rewards = [item["reward"] for item in adp["content"] if "reward" in item]
+    assert action_rewards == [0.45], (
+        "terminal reward must attach to the final action per ADP convention"
+    )
+
+
+def test_build_rollout_result_forwards_token_metrics_to_atif(tmp_path):
+    """Usage metrics in scope at result-building must reach ATIF final_metrics.
+
+    ATIF's token/cost capability is implemented in export_atif, but the
+    production seam (_build_rollout_result -> _write_trainer_artifact ->
+    write_rollout_atif_json) used to drop the four usage fields, so every live
+    atif.json carried only total_steps. This pins the live wiring with the exact
+    forwarded values (note the n_cache_read -> total_cached mapping).
+    """
+    rollout_dir = tmp_path / "rollout-usage"
+    rollout_dir.mkdir()
+    _build_rollout_result(
+        rollout_dir,
+        task_name="archive-alice",
+        rollout_name="r1",
+        agent="claude-agent-acp",
+        agent_name="claude-agent-acp",
+        model="claude-haiku-4-5",
+        n_tool_calls=1,
+        prompts=["Archive the email from Alice."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+        n_input_tokens=1234,
+        n_output_tokens=567,
+        n_cache_read_tokens=89,
+        cost_usd=0.0421,
+    )
+    atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
+    metrics = atif["final_metrics"]
+    assert metrics["total_prompt_tokens"] == 1234
+    assert metrics["total_completion_tokens"] == 567
+    assert metrics["total_cached_tokens"] == 89
+    assert metrics["total_cost_usd"] == 0.0421
+
+
+def test_build_rollout_result_atif_for_empty_trajectory_is_prompt_only(tmp_path):
+    """Oracle runs (no agent events) emit a prompts-only ATIF, never agent steps.
+
+    The emitter folds prompts into user steps by design, so the document
+    stays schema-valid (steps non-empty); what must never happen is a
+    fabricated agent step from an empty trajectory.
+    """
+    rollout_dir = tmp_path / "rollout-oracle"
+    rollout_dir.mkdir()
+    _build_rollout_result(
+        rollout_dir,
+        task_name="archive-alice",
+        rollout_name="oracle",
+        agent="oracle",
+        agent_name="oracle",
+        model=None,
+        n_tool_calls=0,
+        prompts=["Archive the email from Alice."],
+        error=None,
+        verifier_error=None,
+        trajectory=[],
+        partial_trajectory=False,
+        trajectory_source=None,
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+    atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
+    sources = [s.get("source") for s in atif["steps"]]
+    assert sources == ["user"], (
+        f"oracle ATIF must contain only the prompt-derived user step, got {sources}"
+    )
+    assert (rollout_dir / "trainer/adp.jsonl").exists(), (
+        "ADP records prompts even without actions"
+    )

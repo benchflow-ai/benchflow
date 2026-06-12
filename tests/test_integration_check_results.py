@@ -2343,3 +2343,257 @@ def test_check_results_flags_verifier_timeout(tmp_path: Path) -> None:
         and "timeout" in issue.lower()
         for issue in findings["issues"]
     )
+
+
+# ── Dataset identity stamp validation (dataset-versioning plan) ──────────────
+# Guards the stamp contract introduced by #690 (dataset_name/dataset_version/
+# task_digest in result.json/config.json) and the dev-run digest follow-up.
+
+from tests.integration.check_results import (  # noqa: E402
+    _dataset_stamp_issues,
+    _task_digest_truth_issues,
+)
+
+_DIGEST = "sha256:" + "f" * 64
+
+
+def test_dataset_stamp_issues_accepts_valid_and_absent() -> None:
+    assert _dataset_stamp_issues({}, "x") == []
+    assert _dataset_stamp_issues({"task_digest": _DIGEST}, "x") == []  # dev run
+    assert (
+        _dataset_stamp_issues(
+            {
+                "dataset_name": "skillsbench",
+                "dataset_version": "1.1",
+                "task_digest": _DIGEST,
+            },
+            "x",
+        )
+        == []
+    )
+
+
+def test_dataset_stamp_issues_flags_malformed() -> None:
+    split = _dataset_stamp_issues({"dataset_name": "skillsbench"}, "x")
+    assert any("travel together" in i for i in split)
+    assert any("missing task_digest" in i for i in split)
+
+    bad_digest = _dataset_stamp_issues(
+        {
+            "dataset_name": "skillsbench",
+            "dataset_version": "1.1",
+            "task_digest": "deadbeef",
+        },
+        "x",
+    )
+    assert any("sha256" in i for i in bad_digest)
+
+    empty_name = _dataset_stamp_issues(
+        {"dataset_name": "", "dataset_version": "1.1", "task_digest": _DIGEST}, "x"
+    )
+    assert any("non-empty string" in i for i in empty_name)
+
+
+def test_task_digest_truth_check_recomputes_from_local_path(tmp_path: Path) -> None:
+    from benchflow._utils.task_authoring import task_digest
+
+    task_dir = tmp_path / "task-a"
+    task_dir.mkdir()
+    (task_dir / "task.toml").write_text('version = "1.1"\n')
+    (task_dir / "instruction.md").write_text("Solve it.\n")
+    result = {
+        "task_digest": task_digest(task_dir),
+        "source": {"local_path": str(task_dir)},
+    }
+    assert _task_digest_truth_issues(result, "x") == []
+
+    (task_dir / "instruction.md").write_text("tampered\n")
+    issues = _task_digest_truth_issues(result, "x")
+    assert issues and "does not match local_path content" in issues[0]
+
+
+def test_check_results_flags_config_result_dataset_mismatch(tmp_path: Path) -> None:
+    """config.json and result.json must carry the same dataset stamp."""
+    from benchflow._utils.task_authoring import task_digest
+
+    real_digest = task_digest(Path(_source()["local_path"]))
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-06-12__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "dataset_name": "skillsbench",
+                "dataset_version": "1.1",
+                "task_digest": real_digest,
+                "source": _source(),
+            }
+        )
+    )
+    config = {
+        "task_path": "/tmp/tasks/task-a",
+        "agent": "agentA",
+        "model": "test-model",
+        "environment": "daytona",
+        "concurrency": 64,
+        "agent_idle_timeout_sec": 600,
+        "skills_dir": "/tmp/skills",
+        "include_task_skills": False,
+        "source": _source(),
+        "dataset_name": "skillsbench",
+        "dataset_version": "1.0",
+        "task_digest": real_digest,
+    }
+    (run_dir / "config.json").write_text(json.dumps(config))
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "100.0%",
+                "source": _source(),
+                "dataset_name": "skillsbench",
+                "dataset_version": "1.1",
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "config.json dataset stamp does not match result.json" in issue
+        for issue in findings["issues"]
+    )
+
+
+def test_check_results_flags_summary_dataset_disagreement(tmp_path: Path) -> None:
+    """summary.json dataset identity must agree with every result.json."""
+    from benchflow._utils.task_authoring import task_digest
+
+    real_digest = task_digest(Path(_source()["local_path"]))
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-06-12__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    stamp = {
+        "dataset_name": "skillsbench",
+        "dataset_version": "1.1",
+        "task_digest": real_digest,
+    }
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "source": _source(),
+                **stamp,
+            }
+        )
+    )
+    config = {
+        "task_path": "/tmp/tasks/task-a",
+        "agent": "agentA",
+        "model": "test-model",
+        "environment": "daytona",
+        "concurrency": 64,
+        "agent_idle_timeout_sec": 600,
+        "skills_dir": "/tmp/skills",
+        "include_task_skills": False,
+        "source": _source(),
+        **stamp,
+    }
+    (run_dir / "config.json").write_text(json.dumps(config))
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "100.0%",
+                "source": _source(),
+                "dataset_name": "skillsbench",
+                "dataset_version": "1.0",
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "dataset_version does not agree" in issue for issue in findings["issues"]
+    )
+
+
+def test_check_results_accepts_consistent_dataset_stamp(tmp_path: Path) -> None:
+    """A consistently stamped dataset run adds no dataset issues."""
+    from benchflow._utils.task_authoring import task_digest
+
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-06-12__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    stamp = {
+        "dataset_name": "skillsbench",
+        "dataset_version": "1.1",
+        "task_digest": task_digest(Path(_source()["local_path"])),
+    }
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "source": _source(),
+                **stamp,
+            }
+        )
+    )
+    config = {
+        "task_path": "/tmp/tasks/task-a",
+        "agent": "agentA",
+        "model": "test-model",
+        "environment": "daytona",
+        "concurrency": 64,
+        "agent_idle_timeout_sec": 600,
+        "skills_dir": "/tmp/skills",
+        "include_task_skills": False,
+        "source": _source(),
+        **stamp,
+    }
+    (run_dir / "config.json").write_text(json.dumps(config))
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "100.0%",
+                "source": _source(),
+                "dataset_name": "skillsbench",
+                "dataset_version": "1.1",
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert not any(
+        "dataset" in issue or "task_digest" in issue for issue in findings["issues"]
+    )

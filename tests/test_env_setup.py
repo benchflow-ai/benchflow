@@ -286,6 +286,43 @@ class TestCreateEnvironment:
         )
         assert result is modal_env.return_value
 
+    def test_daytona_without_sdk_fails_fast_with_install_hint(self, tmp_path):
+        """BF-1: selecting the Daytona env without the ``[sandbox-daytona]`` extra
+        fails at env selection with the actionable install hint, not a raw
+        ImportError deep inside DaytonaSandbox.__init__.
+
+        Guards the fix from benchflow-ai/benchflow PR #670 (BF-1).
+
+        ``benchflow.sandbox.daytona`` is import-safe without the SDK (#358), so the
+        factory's import guard alone never trips; the SDK only fails when
+        ``_load_daytona_sdk`` runs. Here we simulate the absent SDK and assert the
+        friendly RuntimeError fires *before* the sandbox is constructed.
+        """
+        env_config = MagicMock()
+        rollout_paths = MagicMock()
+        task = SimpleNamespace(
+            paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
+            config=SimpleNamespace(environment=env_config),
+        )
+
+        with (
+            patch("benchflow.sandbox.daytona.DaytonaSandbox") as daytona_env,
+            patch(
+                "benchflow.sandbox.daytona._load_daytona_sdk",
+                side_effect=ModuleNotFoundError("No module named 'daytona'"),
+            ),
+            patch("benchflow.sandbox._sdk_ops.apply") as apply_patches,
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            _create_environment("daytona", task, tmp_path, "trial", rollout_paths)
+
+        message = str(exc_info.value)
+        assert "uv sync --extra sandbox-daytona" in message
+        assert "benchflow[sandbox-daytona]" in message
+        # Failed at selection — never reached SDK patching or construction.
+        daytona_env.assert_not_called()
+        apply_patches.assert_not_called()
+
     @pytest.mark.parametrize(
         ("sandbox_type", "extra"),
         [

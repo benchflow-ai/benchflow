@@ -13,53 +13,72 @@
 
 BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Single-agent, multi-agent, and multi-round patterns share one Scene-based lifecycle.
 
-- **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, OpenClaw, Pi, or your own
+- **Run any benchmark** — three-layer routing runs supported frameworks natively, translates unknown formats and proves equivalence with a parity gate, or runs a bespoke harness as-is; every layer emits one scored-trajectory contract. See [Run any benchmark](./docs/running-any-benchmark.md)
+- **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, Pi, or your own
 - **Single + multi + progressive** — single-agent / multi-agent (coder + reviewer, simulated user) / multi-round with a Python `BaseUser` callback
-- **Sandboxes** — Docker locally, Daytona for parallel cloud runs, Modal for serverless/GPU-backed task environments
+- **`task.md` tasks** — one file (YAML frontmatter + prompt body) replaces the split `task.toml` + `instruction.md` layout; author with `bench tasks init` / `check` / `migrate` / `export`
+- **Hosted environments** — run external PrimeIntellect / Verifiers environments through `--source-env`, without converting them to BenchFlow tasks
+- **Sandboxes** — Docker locally, Daytona for parallel cloud runs (orphaned sandboxes auto-reaped at eval start), Modal for serverless/GPU-backed task environments
 - **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
+- **Training-ready output** — every scored rollout emits ATIF (`trainer/atif.json`) and ADP (`trainer/adp.jsonl`) trajectory records next to the Verifiers/ORS (OpenReward) reward record
 
 ## Install
 
-BenchFlow's current public release is `0.5.2`:
+`0.6.0` is in **release-candidate** testing and is **not on PyPI yet** — the
+newest build published there is still `0.5.x`. While 0.6 is RC, install the
+latest `0.6.0-rc.*` wheel from the
+[GitHub releases page](https://github.com/benchflow-ai/benchflow/releases)
+(open it, pick the newest `0.6.0-rc.*` prerelease, and install its `.whl`
+asset):
 
 ```bash
-pip install --upgrade benchflow
+uv tool install --prerelease allow \
+  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.3/benchflow-0.6.0rc3-py3-none-any.whl'
 ```
 
-For a `uv`-managed CLI install or upgrade of the public release:
+The URL above pins `0.6.0-rc.3` (the newest at time of writing); if a later
+`0.6.0-rc.*` prerelease exists, use that tag and filename instead. Confirm with
+`bench --version`.
+
+The `--prerelease allow` flag is required for BenchFlow's pinned LiteLLM
+release-candidate dependency. If the command reports `Executables already
+exist: bench, benchflow`, the machine has old entrypoints from a previous
+install; rerun the same command with `--force` to let `uv` replace them.
+
+**Once `0.6.0` ships to PyPI**, the plain install commands will work:
 
 ```bash
-uv tool install --prerelease allow --upgrade 'benchflow==0.5.2'
+pip install --upgrade benchflow                                  # once 0.6.0 is on PyPI
+uv tool install --prerelease allow --upgrade 'benchflow==0.6.0'  # once 0.6.0 is on PyPI
 ```
 
-Use the exact `benchflow==0.5.2` pin for the public CLI. The
-`--prerelease allow` flag is currently needed for BenchFlow's pinned LiteLLM
-release-candidate dependency; the exact BenchFlow pin keeps you off internal
-preview builds.
+Until then, `pip install --upgrade benchflow` resolves only to `0.5.x`, and
+`benchflow==0.6.0` does not resolve at all.
 
-Internal users who want the newest preview published from `main` should omit
-the exact public pin:
+Internal users who want the newest preview published from `main` can install
+the internal preview channel (currently a `0.5.3.dev<N>` build; it becomes
+`0.6.1.dev<N>` once `0.6.0` is tagged):
 
 ```bash
 uv tool install --prerelease allow --upgrade benchflow
 ```
 
-That installs the latest internal preview, such as `0.5.3.dev<N>`. If either
-command reports `Executables already exist: bench, benchflow`, the machine has
-old entrypoints from a previous install; rerun the same command with `--force`
-to let `uv` replace them.
-
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona runs or configure Modal auth for Modal runs; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth. Provider-prefixed models may use provider-specific credentials; Azure Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
 
 ## Documentation
 
-Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/concepts.md) for the mental model. Then by goal:
+Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/concepts.md) for the mental model. Prefer to have an AI coding agent run the whole quickstart for you? Paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code, Codex CLI, or Gemini CLI. Then by goal:
 
 | If you want to… | Read |
 |------------------|------|
 | Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
+| Understand how BenchFlow runs *any* benchmark (the three-layer model) | [Run any benchmark](./docs/running-any-benchmark.md) |
+| Have an AI agent install + run the quickstart end to end | [Agent quickstart prompt](./docs/agent-quickstart.md) |
 | Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |
+| Author a task in the native `task.md` format | [Native task.md authoring](./docs/task-authoring-task-md.md) |
+| Adopt an upstream benchmark into BenchFlow | [Benchmark adoption](./docs/benchmark-adoption.md) |
+| Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
 | Skill evaluation (when the artifact is a skill, not a workspace) | [Skill eval](./docs/skill-eval.md) |
@@ -69,6 +88,13 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Python API surface | [Python API reference](./docs/reference/python-api.md) |
 
 Notebooks and runnable example scripts live under [`docs/examples/`](./docs/examples/) so examples stay versioned with the docs that explain them.
+
+> **Heads-up on `bench agent`.** Two different nouns share this command group:
+> `bench agent list` / `bench agent show` inspect **registered AI agents** (the
+> solver programs like Claude Code or Gemini CLI), while `bench agent create` /
+> `run` / `verify` drive **benchmark adoptions** (onboarding a third-party
+> benchmark into `benchmarks/<name>/`). See the
+> [CLI reference](./docs/reference/cli.md#bench-agent) for details.
 
 ## Benchmark task sources
 
@@ -98,9 +124,37 @@ bench eval create \
 
 Repos are cloned and cached locally under `.cache/datasets/` on first use.
 
+Hosted environments are another source type. Instead of a repo, pass
+`--source-env` to run an external PrimeIntellect / Verifiers environment on its
+own native harness — BenchFlow preserves the hosted identity (`env_uid`,
+`hub_url`) and still writes the shared rollout output contract:
+
+```bash
+bench eval create \
+    --source-env primeintellect/general-agent \
+    --source-env-version 0.1.1 \
+    --model google/gemini-2.5-flash-lite
+```
+
 Downstream projects should depend on the public PyPI release by default. For
 internal validation before the next public release, install or lock the internal
 preview channel with prereleases enabled; see [Release channels](./docs/release.md).
+
+## Authoring tasks
+
+A task is one `task.md` (YAML frontmatter for config + a markdown prompt body)
+plus `environment/` and `verifier/` sidecars. The `bench tasks` commands cover
+the authoring lifecycle:
+
+```bash
+bench tasks init my-task                 # scaffold a task.md package under tasks/
+bench tasks check tasks/my-task          # validate (default --level structural)
+bench tasks migrate legacy-task/         # convert task.toml + instruction.md → task.md
+bench tasks export tasks/my-task out/    # write a Harbor/Pier split layout + loss report
+```
+
+See [Native task.md authoring](./docs/task-authoring-task-md.md) and the
+[task standard](./docs/task-standard.md).
 
 ## Featured
 
@@ -108,10 +162,10 @@ preview channel with prereleases enabled; see [Release channels](./docs/release.
 
 ## Research artifacts
 
-Two runnable labs validate the security story:
+Two runnable labs validate the security story (historical, 0.2.x-era — archived under [`docs/labs/`](./docs/labs/)):
 
-- [`labs/benchjack-sandbox-hardening/`](./labs/benchjack-sandbox-hardening/) — end-to-end demo that 0.2.1+ blocks three [BenchJack](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/) exploits that flip 0.2.0's reward from 0.0 to 1.0.
-- [`labs/reward-hack-matrix/`](./labs/reward-hack-matrix/) — full reward-hack sweep across real benchmarks comparing 0.2.0 vs 0.2.2.
+- [`docs/labs/benchjack-sandbox-hardening/`](./docs/labs/benchjack-sandbox-hardening/) — end-to-end demo that 0.2.1+ blocks three [BenchJack](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/) exploits that flip 0.2.0's reward from 0.0 to 1.0.
+- [`docs/labs/reward-hack-matrix/`](./docs/labs/reward-hack-matrix/) — full reward-hack sweep across real benchmarks comparing 0.2.0 vs 0.2.2.
 
 ## Audience
 
