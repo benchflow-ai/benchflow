@@ -367,7 +367,7 @@ bench eval create \
 ## SkillsBench skill-toggle matrix (Opus-4.8 + Gemini) on Daytona
 
 A self-contained recipe for the four-cell matrix of
-**{Opus-4.8 via Bedrock, Gemini-3.5-flash} × {with-skills, without-skills}**,
+**`{Opus-4.8 via Bedrock, Gemini-3.5-flash}` × `{with-skills, without-skills}`**,
 agent `openhands`, sandbox `daytona`. Each cell produces a complete trajectory
 (`trajectory/{acp,llm}_trajectory.jsonl`) plus a verifier reward — but treat a
 cell as done only after the audit in [Verifying the batch](#verifying-the-batch)
