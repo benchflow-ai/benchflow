@@ -14,12 +14,8 @@ file, generates benchmark tasks from it, runs them with and without the
 skill installed, and reports the "lift" — how much the skill improves
 agent performance.
 
-v0.5 release evidence is archived in
-[`docs/archive/v05-integration-evidence.md`](./archive/v05-integration-evidence.md);
 0.6 task-standard validation is in
 [`docs/reports/2026-06-09-task-standard-validation.md`](./reports/2026-06-09-task-standard-validation.md).
-Historical skill-eval dogfood notes from the v0.4 refactor remain archived in
-[`docs/archive/reports/2026-05-19-skill-eval-v04.md`](./archive/reports/2026-05-19-skill-eval-v04.md).
 
 ## Quick start
 

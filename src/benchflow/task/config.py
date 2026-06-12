@@ -356,7 +356,15 @@ class VerifierConfig(TaskConfigModel):
 class AgentConfig(TaskConfigModel):
     """Agent harness ($H$) configuration."""
 
-    timeout_sec: float | None = None
+    timeout_sec: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description="Wall-clock budget in seconds for the agent harness. "
+        "Omitting the field leaves it unset (the task default applies); zero, "
+        "negative, and non-finite budgets are rejected at validation time, "
+        "matching verifier.timeout_sec.",
+    )
     user: str | int | None = Field(
         default=None,
         description="Username or UID to run the agent as.",

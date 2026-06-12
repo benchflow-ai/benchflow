@@ -18,19 +18,14 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.table import Table
 
 from benchflow import __version__
 from benchflow._dotenv import load_dotenv_env
-from benchflow._utils.config import (
-    DEFAULT_AGENT_IDLE_TIMEOUT_SEC,
-    normalize_agent_idle_timeout,
-    normalize_reasoning_effort,
-    normalize_sandbox_user,
-)
+from benchflow._utils.config import normalize_sandbox_user
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli._options import ModelOption, SkillModeOption
 from benchflow.cli._shared import (
@@ -46,9 +41,13 @@ from benchflow.cli.legacy import register_legacy
 from benchflow.cli.monitor import register_monitor
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
+from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
-from benchflow.usage_tracking import UsageTrackingConfig
+
+if TYPE_CHECKING:
+    from benchflow.eval_plan import EvalPlan
+    from benchflow.evaluation import EvaluationConfig
 
 # Public surface that tests and downstream callers import from
 # ``benchflow.cli.main``. The Daytona helpers are defined here (not in a sibling
@@ -406,298 +405,277 @@ def eval_create(
 
     Sandbox: docker, daytona, or modal.
     """
-    from benchflow.evaluation import (
-        EmptyTaskSelectionError,
-        Evaluation,
-        EvaluationConfig,
-    )
-
     _apply_dotenv_to_process_env()
-    parsed_env = _parse_agent_env(agent_env)
-    include_tasks = set(include) if include else set()
-    exclude_tasks = set(exclude) if exclude else set()
-    sources = [bool(config_file), bool(tasks_dir), bool(source_repo), bool(source_env)]
-    if sum(sources) > 1:
-        console.print(
-            "[red]Choose only one source: --config, --tasks-dir, --source-repo, or --source-env[/red]"
-        )
-        raise typer.Exit(1)
-    if worker_concurrency is not None and not (tasks_dir or source_repo):
-        console.print(
-            "[red]--worker-concurrency is supported for --tasks-dir and --source-repo batch runs[/red]"
-        )
-        raise typer.Exit(1)
-    if worker_retries < 0:
-        console.print("[red]--worker-retries must be >= 0[/red]")
-        raise typer.Exit(1)
-    if worker_start_stagger_sec < 0:
-        console.print("[red]--worker-start-stagger-sec must be >= 0[/red]")
-        raise typer.Exit(1)
-    eval_agent = (
-        _normalize_eval_agent_or_exit(agent) if agent is not None else DEFAULT_AGENT
+
+    request = EvalCreateRequest(
+        config_file=config_file,
+        tasks_dir=tasks_dir,
+        source_repo=source_repo,
+        source_env=source_env,
+        agent=agent,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        environment=environment,
+        usage_tracking=usage_tracking,
+        environment_manifest=environment_manifest,
+        prompt=prompt,
+        concurrency=concurrency,
+        build_concurrency=build_concurrency,
+        worker_concurrency=worker_concurrency,
+        worker_retries=worker_retries,
+        worker_start_stagger_sec=worker_start_stagger_sec,
+        agent_idle_timeout=agent_idle_timeout,
+        jobs_dir=jobs_dir,
+        sandbox_user=sandbox_user,
+        sandbox_setup_timeout=sandbox_setup_timeout,
+        context_root=context_root,
+        skills_dir=skills_dir,
+        skill_mode=skill_mode,
+        skill_creator_dir=skill_creator_dir,
+        self_gen_no_internet=self_gen_no_internet,
+        agent_env=_parse_agent_env(agent_env),
+        include=include,
+        exclude=exclude,
     )
-    eval_environment = environment or "docker"
-    eval_prompts = cast("list[str | None] | None", prompt)
-    sandbox_user = normalize_sandbox_user(sandbox_user)
-    eval_concurrency = concurrency if concurrency is not None else 4
-    usage_tracking_overridden = usage_tracking is not None
     try:
-        eval_usage_tracking = UsageTrackingConfig(mode=usage_tracking)
-    except (TypeError, ValueError) as exc:
-        console.print(f"[red]Invalid usage tracking config: {exc}[/red]")
+        plan = build_eval_plan(request)
+    except EvalPlanError as exc:
+        console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from None
-    try:
-        eval_agent_idle_timeout = normalize_agent_idle_timeout(
-            agent_idle_timeout
-            if agent_idle_timeout is not None
-            else DEFAULT_AGENT_IDLE_TIMEOUT_SEC
-        )
-    except ValueError as exc:
-        console.print(
-            f"[red]Invalid --agent-idle-timeout {agent_idle_timeout!r}: {exc}[/red]"
-        )
-        raise typer.Exit(1) from None
-    try:
-        eval_reasoning_effort = normalize_reasoning_effort(reasoning_effort)
-    except ValueError as exc:
-        console.print(
-            f"[red]Invalid --reasoning-effort {reasoning_effort!r}: {exc}[/red]"
-        )
-        raise typer.Exit(1) from None
-    output_jobs_dir = jobs_dir or "jobs"
-
-    # Resolve the optional Environment-plane manifest once and reuse across
-    # every source branch (config / source_repo / tasks_dir / source_env).
-    eval_env_manifest = None
-    if environment_manifest is not None:
-        from benchflow.environment.manifest import load_manifest
-
-        try:
-            eval_env_manifest = load_manifest(environment_manifest)
-        except (OSError, ValueError) as exc:
-            console.print(
-                f"[red]Could not load --environment-manifest {environment_manifest}: {exc}[/red]"
-            )
-            raise typer.Exit(1) from None
-
-    def _make_eval_config(
-        source_provenance: dict[str, Any] | None = None,
-    ) -> EvaluationConfig:
-        """Build the EvaluationConfig shared by the source-repo and tasks-dir paths."""
-        return EvaluationConfig(
-            agent=eval_agent,
-            model=effective_model(eval_agent, model),
-            reasoning_effort=eval_reasoning_effort,
-            environment=eval_environment,
-            concurrency=eval_concurrency,
-            build_concurrency=build_concurrency,
-            prompts=eval_prompts,
-            agent_idle_timeout=eval_agent_idle_timeout,
-            agent_env=parsed_env,
-            sandbox_user=sandbox_user,
-            sandbox_setup_timeout=sandbox_setup_timeout,
-            context_root=str(context_root) if context_root else None,
-            skills_dir=str(skills_dir) if skills_dir else None,
-            skill_mode=skill_mode,
-            skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
-            self_gen_no_internet=self_gen_no_internet,
-            source_provenance=source_provenance,
-            include_tasks=include_tasks,
-            exclude_tasks=exclude_tasks,
-            usage_tracking=eval_usage_tracking,
-            environment_manifest=eval_env_manifest,
-        )
-
-    def _run_batch_eval(
-        resolved_tasks_dir: Path,
-        eval_config: EvaluationConfig,
-    ):
-        from benchflow.eval_sharding import ShardWorkerError
-
-        try:
-            if worker_concurrency is None:
-                result = asyncio.run(
-                    Evaluation(
-                        tasks_dir=str(resolved_tasks_dir),
-                        jobs_dir=output_jobs_dir,
-                        config=eval_config,
-                    ).run()
-                )
-            else:
-                from benchflow.eval_sharding import run_sharded_evaluation
-
-                result = asyncio.run(
-                    run_sharded_evaluation(
-                        tasks_dir=resolved_tasks_dir,
-                        jobs_dir=Path(output_jobs_dir),
-                        config=eval_config,
-                        worker_concurrency=worker_concurrency,
-                        worker_retries=worker_retries,
-                        worker_start_stagger_sec=worker_start_stagger_sec,
-                        environment_manifest_path=environment_manifest,
-                    )
-                )
-        except EmptyTaskSelectionError as e:
-            console.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from None
-        except (ValueError, RuntimeError, ShardWorkerError) as e:
-            console.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from None
-
-        _report_eval_result(result)
-        _exit_if_evaluation_had_errors(result)
-        return result
 
     if config_file:
-        j = Evaluation.from_yaml(config_file)
-        if agent is not None:
-            j._config.agent = eval_agent
-        else:
-            j._config.agent = _normalize_eval_agent_or_exit(j._config.agent)
-        if model is not None:
-            j._config.model = effective_model(j._config.agent, model)
-        else:
-            j._config.model = effective_model(j._config.agent, j._config.model)
-        if reasoning_effort is not None:
-            j._config.reasoning_effort = eval_reasoning_effort
-        if environment is not None:
-            j._config.environment = eval_environment
-        j._config.agent_env = {**j._config.agent_env, **parsed_env}
-        j._config.sandbox_user = normalize_sandbox_user(j._config.sandbox_user)
-        if jobs_dir is not None:
-            j._jobs_dir = Path(jobs_dir)
-        if concurrency is not None:
-            j._config.concurrency = concurrency
-        if build_concurrency is not None:
-            j._config.build_concurrency = build_concurrency
-        if prompt is not None:
-            j._config.prompts = eval_prompts
-        if agent_idle_timeout is not None:
-            j._config.agent_idle_timeout = eval_agent_idle_timeout
-        if context_root is not None:
-            j._config.context_root = str(context_root)
-        if usage_tracking_overridden:
-            j._config.usage_tracking = j._config.usage_tracking.overlay(
-                eval_usage_tracking
-            )
-        if include_tasks:
-            j._config.include_tasks = include_tasks
-        if exclude_tasks:
-            j._config.exclude_tasks = exclude_tasks
-        # CLI --environment-manifest wins over whatever the YAML carried
-        # so an operator can override a baseline manifest without editing
-        # the config file.
-        if eval_env_manifest is not None:
-            j._config.environment_manifest = eval_env_manifest
-        try:
-            result = asyncio.run(j.run())
-        except (EmptyTaskSelectionError, ValueError) as e:
-            console.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from None
-        _report_eval_result(result)
-        _exit_if_evaluation_had_errors(result)
+        _run_config_file_eval(plan)
     elif source_env:
-        from benchflow.hosted_env import (
-            HostedEnvError,
-            HostedEnvRef,
-            HostedEnvRunConfig,
-            parse_sampling_args,
-            parse_source_env_args,
-            run_hosted_env,
+        _run_source_env_eval(
+            plan,
+            source_env_version=source_env_version,
+            source_env_arg=source_env_arg,
+            source_env_num_examples=source_env_num_examples,
+            source_env_rollouts_per_example=source_env_rollouts_per_example,
+            source_env_max_tokens=source_env_max_tokens,
+            source_env_temperature=source_env_temperature,
+            source_env_sampling_arg=source_env_sampling_arg,
         )
-
-        if parsed_env:
-            console.print(
-                "[yellow]--agent-env is for BenchFlow ACP agents; source-env runs inherit the process environment.[/yellow]"
-            )
-        if eval_environment != "docker":
-            console.print(
-                f"[yellow]--sandbox {eval_environment!r} is not used by source-env runs; "
-                "the hosted Verifiers environment owns its harness/sandbox.[/yellow]"
-            )
-        if eval_agent != DEFAULT_AGENT:
-            console.print(
-                f"[dim]source-env records --agent {eval_agent!r}, but executes the model endpoint through Verifiers.[/dim]"
-            )
-        if eval_env_manifest is not None:
-            console.print(
-                "[yellow]--environment-manifest is for benchflow Environment-plane rollouts; "
-                "the hosted Verifiers environment owns its own provisioning. Ignoring.[/yellow]"
-            )
-        if usage_tracking_overridden:
-            console.print(
-                "[yellow]--usage-tracking is for BenchFlow ACP rollouts; "
-                "source-env runs own their provider calls. Ignoring.[/yellow]"
-            )
-        if prompt is not None:
-            console.print(
-                "[yellow]--prompt is for BenchFlow ACP rollouts; "
-                "source-env runs own their prompts. Ignoring.[/yellow]"
-            )
-
-        try:
-            ref = HostedEnvRef.parse(source_env, version=source_env_version)
-            run_result = run_hosted_env(
-                HostedEnvRunConfig(
-                    source_env=ref,
-                    model=model or "",
-                    env_args=parse_source_env_args(source_env_arg),
-                    agent=eval_agent,
-                    jobs_dir=Path(output_jobs_dir),
-                    concurrency=eval_concurrency,
-                    num_examples=source_env_num_examples,
-                    rollouts_per_example=source_env_rollouts_per_example,
-                    max_tokens=source_env_max_tokens,
-                    temperature=source_env_temperature,
-                    sampling_args=parse_sampling_args(source_env_sampling_arg),
-                )
-            )
-        except HostedEnvError as e:
-            console.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from None
-
-        console.print(f"\n[bold]Environment:[/bold] {run_result.source_env.env_uid}")
-        console.print(f"[bold]Hub:[/bold] {run_result.source_env.hub_url}")
-        console.print(
-            f"[bold]Model:[/bold] {run_result.normalized_model}"
-            + (
-                f" [dim](from {run_result.model})[/dim]"
-                if run_result.normalized_model != run_result.model
-                else ""
-            )
-        )
-        console.print(f"[bold]Run dir:[/bold] {run_result.run_dir}")
-        console.print(f"[bold]Reward:[/bold] {run_result.reward}")
-        if run_result.total_tool_calls is not None:
-            console.print(f"[bold]Tool calls:[/bold] {run_result.total_tool_calls}")
-        if run_result.error:
-            console.print(f"[red]Error:[/red] {run_result.error}")
-            raise typer.Exit(1)
     elif source_repo:
         from benchflow._utils.benchmark_repos import resolve_source_with_metadata
 
         resolved = resolve_source_with_metadata(
             source_repo, path=source_path, ref=source_ref
         )
-        resolved_tasks_dir = resolved.path
-        _run_batch_eval(
-            resolved_tasks_dir,
-            _make_eval_config(source_provenance=resolved.provenance),
+        run_batch_eval(
+            plan,
+            resolved.path,
+            plan.make_eval_config(source_provenance=resolved.provenance),
         )
     elif tasks_dir:
-        resolved_tasks_dir = tasks_dir
         # Single-task and batch share one orchestration path. Evaluation
         # handles both layouts (Evaluation._get_task_dirs detects when
         # tasks_dir itself contains task.toml) and applies include/exclude
         # filters uniformly (#400, #401, #407).
-        _run_batch_eval(
-            resolved_tasks_dir,
-            _make_eval_config(),
-        )
+        run_batch_eval(plan, tasks_dir, plan.make_eval_config())
     else:
         console.print(
             "[red]Provide --config, --tasks-dir, --source-repo, or --source-env[/red]"
         )
+        raise typer.Exit(1)
+
+
+def run_batch_eval(
+    plan: "EvalPlan",
+    resolved_tasks_dir: Path,
+    eval_config: "EvaluationConfig",
+):
+    """Run the source-repo / tasks-dir batch path and report its result.
+
+    Promoted from the ``eval_create`` ``_run_batch_eval`` closure: the worker /
+    jobs-dir / manifest knobs it used to capture now ride in on ``plan``.
+    """
+    from benchflow.eval_sharding import ShardWorkerError
+    from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
+
+    try:
+        if plan.request.worker_concurrency is None:
+            result = asyncio.run(
+                Evaluation(
+                    tasks_dir=str(resolved_tasks_dir),
+                    jobs_dir=plan.output_jobs_dir,
+                    config=eval_config,
+                ).run()
+            )
+        else:
+            from benchflow.eval_sharding import run_sharded_evaluation
+
+            result = asyncio.run(
+                run_sharded_evaluation(
+                    tasks_dir=resolved_tasks_dir,
+                    jobs_dir=Path(plan.output_jobs_dir),
+                    config=eval_config,
+                    worker_concurrency=plan.request.worker_concurrency,
+                    worker_retries=plan.request.worker_retries,
+                    worker_start_stagger_sec=plan.request.worker_start_stagger_sec,
+                    environment_manifest_path=plan.request.environment_manifest,
+                )
+            )
+    except EmptyTaskSelectionError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    except (ValueError, RuntimeError, ShardWorkerError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    _report_eval_result(result)
+    _exit_if_evaluation_had_errors(result)
+    return result
+
+
+def _run_config_file_eval(plan: "EvalPlan") -> None:
+    """Apply CLI overrides onto a YAML-loaded Evaluation, then run and report it."""
+    from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
+
+    req = plan.request
+    config_file = req.config_file
+    assert (
+        config_file is not None
+    )  # config-file source: build_eval_plan guarantees this
+    j = Evaluation.from_yaml(config_file)
+    if req.agent is not None:
+        j._config.agent = plan.eval_agent
+    else:
+        j._config.agent = _normalize_eval_agent_or_exit(j._config.agent)
+    if req.model is not None:
+        j._config.model = effective_model(j._config.agent, req.model)
+    else:
+        j._config.model = effective_model(j._config.agent, j._config.model)
+    if req.reasoning_effort is not None:
+        j._config.reasoning_effort = plan.eval_reasoning_effort
+    if req.environment is not None:
+        j._config.environment = plan.eval_environment
+    j._config.agent_env = {**j._config.agent_env, **plan.parsed_env}
+    j._config.sandbox_user = normalize_sandbox_user(j._config.sandbox_user)
+    if req.jobs_dir is not None:
+        j._jobs_dir = Path(req.jobs_dir)
+    if req.concurrency is not None:
+        j._config.concurrency = req.concurrency
+    if req.build_concurrency is not None:
+        j._config.build_concurrency = req.build_concurrency
+    if req.prompt is not None:
+        j._config.prompts = plan.eval_prompts
+    if req.agent_idle_timeout is not None:
+        j._config.agent_idle_timeout = plan.eval_agent_idle_timeout
+    if req.context_root is not None:
+        j._config.context_root = str(req.context_root)
+    if plan.usage_tracking_overridden:
+        j._config.usage_tracking = j._config.usage_tracking.overlay(
+            plan.eval_usage_tracking
+        )
+    if plan.include_tasks:
+        j._config.include_tasks = plan.include_tasks
+    if plan.exclude_tasks:
+        j._config.exclude_tasks = plan.exclude_tasks
+    # CLI --environment-manifest wins over whatever the YAML carried
+    # so an operator can override a baseline manifest without editing
+    # the config file.
+    if plan.eval_env_manifest is not None:
+        j._config.environment_manifest = plan.eval_env_manifest
+    try:
+        result = asyncio.run(j.run())
+    except (EmptyTaskSelectionError, ValueError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    _report_eval_result(result)
+    _exit_if_evaluation_had_errors(result)
+
+
+def _run_source_env_eval(
+    plan: "EvalPlan",
+    *,
+    source_env_version: str | None,
+    source_env_arg: list[str] | None,
+    source_env_num_examples: int,
+    source_env_rollouts_per_example: int,
+    source_env_max_tokens: int,
+    source_env_temperature: float,
+    source_env_sampling_arg: list[str] | None,
+) -> None:
+    """Warn about ignored ACP-only flags, then run a hosted Verifiers env."""
+    from benchflow.hosted_env import (
+        HostedEnvError,
+        HostedEnvRef,
+        HostedEnvRunConfig,
+        parse_sampling_args,
+        parse_source_env_args,
+        run_hosted_env,
+    )
+
+    req = plan.request
+    if plan.parsed_env:
+        console.print(
+            "[yellow]--agent-env is for BenchFlow ACP agents; source-env runs inherit the process environment.[/yellow]"
+        )
+    if plan.eval_environment != "docker":
+        console.print(
+            f"[yellow]--sandbox {plan.eval_environment!r} is not used by source-env runs; "
+            "the hosted Verifiers environment owns its harness/sandbox.[/yellow]"
+        )
+    if plan.eval_agent != DEFAULT_AGENT:
+        console.print(
+            f"[dim]source-env records --agent {plan.eval_agent!r}, but executes the model endpoint through Verifiers.[/dim]"
+        )
+    if plan.eval_env_manifest is not None:
+        console.print(
+            "[yellow]--environment-manifest is for benchflow Environment-plane rollouts; "
+            "the hosted Verifiers environment owns its own provisioning. Ignoring.[/yellow]"
+        )
+    if plan.usage_tracking_overridden:
+        console.print(
+            "[yellow]--usage-tracking is for BenchFlow ACP rollouts; "
+            "source-env runs own their provider calls. Ignoring.[/yellow]"
+        )
+    if req.prompt is not None:
+        console.print(
+            "[yellow]--prompt is for BenchFlow ACP rollouts; "
+            "source-env runs own their prompts. Ignoring.[/yellow]"
+        )
+
+    source_env = req.source_env
+    assert source_env is not None  # source-env source: build_eval_plan guarantees this
+    try:
+        ref = HostedEnvRef.parse(source_env, version=source_env_version)
+        run_result = run_hosted_env(
+            HostedEnvRunConfig(
+                source_env=ref,
+                model=req.model or "",
+                env_args=parse_source_env_args(source_env_arg),
+                agent=plan.eval_agent,
+                jobs_dir=Path(plan.output_jobs_dir),
+                concurrency=plan.eval_concurrency,
+                num_examples=source_env_num_examples,
+                rollouts_per_example=source_env_rollouts_per_example,
+                max_tokens=source_env_max_tokens,
+                temperature=source_env_temperature,
+                sampling_args=parse_sampling_args(source_env_sampling_arg),
+            )
+        )
+    except HostedEnvError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    console.print(f"\n[bold]Environment:[/bold] {run_result.source_env.env_uid}")
+    console.print(f"[bold]Hub:[/bold] {run_result.source_env.hub_url}")
+    console.print(
+        f"[bold]Model:[/bold] {run_result.normalized_model}"
+        + (
+            f" [dim](from {run_result.model})[/dim]"
+            if run_result.normalized_model != run_result.model
+            else ""
+        )
+    )
+    console.print(f"[bold]Run dir:[/bold] {run_result.run_dir}")
+    console.print(f"[bold]Reward:[/bold] {run_result.reward}")
+    if run_result.total_tool_calls is not None:
+        console.print(f"[bold]Tool calls:[/bold] {run_result.total_tool_calls}")
+    if run_result.error:
+        console.print(f"[red]Error:[/red] {run_result.error}")
         raise typer.Exit(1)
 
 

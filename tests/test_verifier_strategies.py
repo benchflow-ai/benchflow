@@ -426,6 +426,48 @@ class TestORSEpisodeStrategy:
         assert details["inputs"][0]["records"] == 3
 
     @pytest.mark.asyncio
+    async def test_finished_step_record_does_not_override_genuine_terminal(
+        self, tmp_path: Path
+    ) -> None:
+        """A later finished step/dense record must not demote a real terminal.
+
+        The old last-write-wins logic let any ``finished:true`` record overwrite
+        an earlier genuine terminal's reward and granularity.
+        """
+        records = [
+            {"type": "terminal", "reward": 0.9, "finished": True},
+            {
+                "type": "dense",
+                "reward": 0.1,
+                "step": 2,
+                "granularity": "step",
+                "finished": True,
+            },
+        ]
+        verifier, _ = _ors_verifier(tmp_path, records)
+
+        result = await verifier.verify()
+
+        assert result.rewards["reward"] == 0.9
+        ors = result.rewards["metadata"]["ors"]
+        assert ors["metadata"]["granularity"] == "terminal"
+
+    @pytest.mark.asyncio
+    async def test_conflicting_genuine_terminals_fail_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """Two genuinely-terminal records with different rewards must error."""
+        records = [
+            {"type": "terminal", "reward": 0.9},
+            {"type": "terminal", "reward": 0.1},
+        ]
+        verifier, rollout_paths = _ors_verifier(tmp_path, records)
+
+        with pytest.raises(VerifierOutputParseError, match="conflicting terminal"):
+            await verifier.verify()
+        assert not rollout_paths.reward_json_path.exists()
+
+    @pytest.mark.asyncio
     async def test_dense_only_episode_is_a_parse_error(self, tmp_path: Path) -> None:
         """Step events alone never aggregate into a reward — that is an error."""
         records = [

@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.6.0rc4"
+version = "0.6.0rc6"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -67,6 +67,13 @@ judge = [
     "anthropic>=0.40",
     "openai>=1.40",
     "google-genai>=1.0",
+]
+# The deepagents (LangChain) harness used as an agent-under-test in the
+# integration suite's agent-as-judge robustness scenarios. Optional: only the
+# deepagents integration test needs it.
+deepagents = [
+    "deepagents>=0.6",
+    "langchain-openai>=0.2",
 ]
 
 [project.scripts]
@@ -155,6 +162,8 @@ include = ["src", "tools"]
 # produce cascading type errors when those packages aren't installed.
 exclude = [
     "src/benchflow/sandbox/daytona.py",
+    "src/benchflow/sandbox/daytona_strategies.py",
+    "src/benchflow/sandbox/daytona_dind.py",
     "src/benchflow/sandbox/modal_impl.py",
     "src/benchflow/sandbox/docker.py",
     "src/benchflow/sandbox/_base.py",

@@ -27,8 +27,9 @@
   verifier strategy is recognized. (The hosted-environment episode runner that
   executes ORS environments end-to-end is in progress, not in this release.)
 - **Daytona sandbox auto-reap** — orphaned sandboxes are cleaned at eval start
-  (TTL-tiered; failure states reaped sooner), gated by
-  `BENCHFLOW_DAYTONA_AUTO_REAP`.
+  (TTL-tiered; failure states reaped sooner; an idle-activity guard protects
+  live runs), gated by `BENCHFLOW_DAYTONA_AUTO_REAP` (any of `0`/`false`/`no`/
+  `off`, case-insensitive, disables it).
 - **`benchflow continue <run-folder>`** — resume a previous, unfinished
   (timed-out) `openhands` run to completion. A standalone tool (it does not
   touch the normal run path) that reconstructs the run's exact workspace and
@@ -56,6 +57,13 @@
   misleading "Missing OPENAI_API_KEY" fall-through.
 - `bench tasks check` recognizes a rubric-backed `llm-judge` verifier as a valid
   entrypoint and no longer demands a `test.sh`.
+- Pre-verifier disk reclaim is workspace-aware and symlink-safe: it rejects
+  symlinked cache candidates and realpath-guards every deletion against the
+  workspace and `/logs`, so an agent-planted `~/.cache` symlink cannot steer the
+  reclaim into workspace or output state (#601).
+- Bedrock Claude 4.8+ routes fail closed when LiteLLM's adaptive-thinking patch
+  is inactive, instead of silently sending a request the proxy cannot satisfy
+  (#602).
 
 ### Changed
 
