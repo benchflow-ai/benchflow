@@ -251,6 +251,25 @@ List completed evaluations from a jobs directory.
 bench eval list jobs/
 ```
 
+### bench eval metrics
+
+Collect and display metrics (pass/fail/score, memory score, tool calls, duration)
+from a jobs directory. Use `--json` for machine-readable output.
+
+```bash
+bench eval metrics jobs/
+bench eval metrics jobs/ --json
+```
+
+### bench eval view
+
+Serve a trial trajectory viewer in the browser for a rollout or job directory.
+
+```bash
+bench eval view jobs/run/task__abc123
+bench eval view jobs/ --port 9000
+```
+
 ## bench skills
 
 ### bench skills list

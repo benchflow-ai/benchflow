@@ -12,9 +12,15 @@
   package re-export aliases (submodule definitions unchanged).
 - Removed the deprecated, hidden `benchflow skills install` CLI command. The
   SDK function `benchflow.skills.install_skill` is unchanged.
-- Removed the dead 0.3-era legacy CLI commands `job`, `agents`, and the legacy
-  `eval` (shadowed by the `eval` subgroup). The `metrics`, `view`, and
-  `cleanup` legacy commands are retained.
+- Retired the deprecated top-level legacy CLI (`cli/legacy.py`). The dead
+  0.3-era `job`/`agents`/`eval` commands are removed; `metrics` and `view` are
+  promoted to first-class `bench eval metrics` / `bench eval view`; and the
+  redundant `cleanup` command is dropped in favor of the existing
+  `bench environment cleanup`.
+
+### Changed
+- `bench metrics` → `bench eval metrics` and `bench view` → `bench eval view`
+  (the deprecated hidden top-level forms are gone; use the `eval` subgroup).
 
 ## 0.6.0 — 2026-06-10
 

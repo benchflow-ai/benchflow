@@ -67,9 +67,9 @@ def test_environment_cleanup_dry_run_lists_old_daytona_sandboxes(monkeypatch):
     assert fake_daytona.instances[0].deleted == []
 
 
-def test_legacy_cleanup_delegates_to_daytona_cleanup(monkeypatch):
-    """Guards PR #605: `bench cleanup` deletes age-eligible sandboxes while
-    iterating Daytona.list()'s Iterator[Sandbox] (SDK >=0.18)."""
+def test_environment_cleanup_deletes_age_eligible_sandboxes(monkeypatch):
+    """Guards PR #605: `bench environment cleanup` deletes age-eligible sandboxes
+    while iterating Daytona.list()'s Iterator[Sandbox] (SDK >=0.18)."""
     sandboxes = [
         SimpleNamespace(
             id="old-sandbox",
@@ -86,7 +86,7 @@ def test_legacy_cleanup_delegates_to_daytona_cleanup(monkeypatch):
     ]
     fake_daytona = _install_fake_daytona(monkeypatch, sandboxes)
 
-    result = CliRunner().invoke(app, ["cleanup", "--max-age", "60"])
+    result = CliRunner().invoke(app, ["environment", "cleanup", "--max-age", "60"])
 
     assert result.exit_code == 0
     assert "1 sandboxes deleted" in result.output
