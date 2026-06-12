@@ -10,7 +10,7 @@ format picks it for you:
 
 | If the benchmark is… | Layer | What BenchFlow does |
 |----------------------|-------|---------------------|
-| In a framework BenchFlow speaks *inbound* — Harbor / Terminal-Bench (task-dir adapter) or PrimeIntellect / Verifiers (hosted) | **1 — native** | Runs it in its supported form; correctness is inherited from the original format |
+| In a framework BenchFlow speaks *inbound* — Harbor (task-dir adapter) or PrimeIntellect / Verifiers (hosted) | **1 — native** | Runs it in its supported form; correctness is inherited from the original format |
 | In a variant of a known format, or a format BenchFlow has never seen | **2 — translated** | Translates it to the native `task.md` format, then *proves* equivalence with a parity gate |
 | A one-off harness with its own runner and scoring, no reusable adapter | **3 — as-is** | Runs the benchmark under its own harness and interfaces with its output only |
 
@@ -41,12 +41,9 @@ directory by its signature file and returns the matching adapter:
 - A `task.toml` → [`HarborAdapter`](../src/benchflow/adapters/harbor.py). Harbor
   is the upstream framework BenchFlow's own `TaskConfig` was internalized from, so
   a Harbor task directory is *already* in native shape; the adapter is a thin
-  normalizer. This is also what keeps Terminal-Bench tasks backward-compatible.
-- A `task.yaml` → [`TerminalBenchAdapter`](../src/benchflow/adapters/terminal_bench.py),
-  a pure `task.yaml` → native `TaskConfig` translation that lifts the embedded
-  instruction out, flattens the metadata, and remaps the foreign file layout.
+  normalizer.
 
-Each adapter returns an `InboundTask`; the benchmark then runs on BenchFlow's
+The adapter returns an `InboundTask`; the benchmark then runs on BenchFlow's
 native runtime exactly like a first-party task.
 
 **Hosted environments (run on their own native surface).** External

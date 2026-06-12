@@ -531,7 +531,7 @@ class Evaluation:
         print(result.score)
 
     Or from YAML:
-        evaluation = Evaluation.from_yaml("experiments/tb2.yaml")
+        evaluation = Evaluation.from_yaml("tb2.yaml")
         result = await evaluation.run()
     """
 

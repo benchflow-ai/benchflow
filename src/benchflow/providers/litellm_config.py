@@ -50,7 +50,8 @@ def custom_cost_per_token(model: str) -> tuple[float, float] | None:
 
 
 _BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
-    r"claude-(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)", re.IGNORECASE
+    r"claude-(?:(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)|fable-5(?!\d))",
+    re.IGNORECASE,
 )
 _BEDROCK_THINKING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"}
 

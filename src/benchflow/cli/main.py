@@ -27,7 +27,7 @@ from benchflow import __version__
 from benchflow._dotenv import load_dotenv_env
 from benchflow._utils.config import normalize_sandbox_user
 from benchflow.agents.registry import parse_agent_spec
-from benchflow.cli._options import ModelOption, SkillModeOption
+from benchflow.cli._options import AgentOption, ModelOption, SkillModeOption
 from benchflow.cli._shared import (
     _exit_if_evaluation_had_errors,
     _report_eval_result,
@@ -37,7 +37,6 @@ from benchflow.cli.agent import register_agent
 from benchflow.cli.compat import register_compat
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.environment import register_environment
-from benchflow.cli.legacy import register_legacy
 from benchflow.cli.monitor import register_monitor
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
@@ -812,6 +811,82 @@ def eval_list(
     console.print(table)
 
 
+@eval_app.command("metrics")
+def eval_metrics(
+    jobs_dir: Annotated[
+        Path,
+        typer.Argument(help="Jobs directory to analyze"),
+    ],
+    benchmark: Annotated[
+        str,
+        typer.Option("--benchmark", help="Benchmark name"),
+    ] = "",
+    agent: AgentOption = "",
+    model: Annotated[
+        str,
+        typer.Option("--model", help="Model name"),
+    ] = "",
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", help="Output as JSON"),
+    ] = False,
+) -> None:
+    """Collect and display metrics from a jobs directory."""
+    from benchflow.metrics import collect_metrics
+
+    m = collect_metrics(str(jobs_dir), benchmark=benchmark, agent=agent, model=model)
+    summary = m.summary()
+
+    if output_json:
+        console.print(json.dumps(summary, indent=2))
+        return
+
+    table = Table(title=f"Results: {jobs_dir}")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="bold")
+
+    table.add_row("Total", str(summary["total"]))
+    table.add_row("Passed", f"[green]{summary['passed']}[/green]")
+    table.add_row("Failed", f"[red]{summary['failed']}[/red]")
+    table.add_row("Errored", f"[yellow]{summary['errored']}[/yellow]")
+    table.add_row("Score", f"[bold]{summary['score']}[/bold]")
+    if summary.get("memory_score") is not None:
+        scored = (summary.get("memory") or {}).get("scored", 0)
+        table.add_row(
+            "Memory score",
+            f"{summary['memory_score']:.1%} ({scored}/{summary['total']})",
+        )
+    table.add_row("Avg tool calls", f"{summary['avg_tool_calls']:.1f}")
+    table.add_row("Avg duration", f"{summary['avg_duration_sec']:.0f}s")
+
+    console.print(table)
+
+    if summary["passed_tasks"]:
+        console.print(f"\n[green]Passed:[/green] {', '.join(summary['passed_tasks'])}")
+    if summary["errored_tasks"]:
+        console.print(
+            f"[yellow]Errors:[/yellow] {', '.join(summary['errored_tasks'])}"
+        )
+    if summary["error_breakdown"]:
+        console.print(
+            f"[yellow]Error breakdown:[/yellow] {summary['error_breakdown']}"
+        )
+
+
+@eval_app.command("view")
+def eval_view(
+    rollout_dir: Annotated[
+        Path,
+        typer.Argument(help="Rollout or job directory with trajectories"),
+    ],
+    port: Annotated[int, typer.Option(help="Server port")] = 8888,
+) -> None:
+    """View a trial trajectory in the browser."""
+    from benchflow.trajectories.viewer import serve
+
+    serve(str(rollout_dir), port)
+
+
 # ── Command-group wiring ──────────────────────────────────────────────
 #
 # Each ``register_<group>(app)`` attaches one command group defined in a sibling
@@ -819,7 +894,6 @@ def eval_list(
 # ``register_tasks_generate`` / ``register_agent_router`` precedent. Order does
 # not affect behavior; it follows the historical top-level help ordering.
 register_continue(app)
-register_legacy(app)
 register_skills(app)
 register_tasks(app)
 register_compat(app)

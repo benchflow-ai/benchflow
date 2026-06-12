@@ -13,9 +13,6 @@ Two directions, both pure format translators (no external SDK required):
 native task format so the foreign benchmark runs natively:
 
 * **Harbor** — ``HarborAdapter`` / ``from_harbor_task``
-* **Terminal-Bench** — ``TerminalBenchAdapter`` / ``from_terminal_bench_task``
-  (Terminal-Bench is also backward-compatible through the Harbor adapter,
-  since Harbor is itself terminal-bench-derived).
 
 ``detect_adapter`` sniffs a task directory and returns the matching inbound
 adapter; every inbound adapter returns an :class:`InboundTask`.
@@ -39,10 +36,6 @@ from benchflow.adapters.ors import (
     to_ors_reward,
     write_ors_tool_outputs_jsonl,
 )
-from benchflow.adapters.terminal_bench import (
-    TerminalBenchAdapter,
-    from_terminal_bench_task,
-)
 
 __all__ = [
     "HarborAdapter",
@@ -50,10 +43,8 @@ __all__ = [
     "InboundTask",
     "InspectAdapter",
     "ORSAdapter",
-    "TerminalBenchAdapter",
     "detect_adapter",
     "from_harbor_task",
-    "from_terminal_bench_task",
     "materialize_inbound_task_md",
     "manifest_from_task_config",
     "ors_tool_outputs_to_reward_events",

@@ -88,39 +88,23 @@ from benchflow.loop_strategies import (
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
-from benchflow.rollout._config import _task_document_scenes as _task_document_scenes
-from benchflow.rollout._config import (
-    _task_document_user_runtime as _task_document_user_runtime,
-)
 from benchflow.rollout._results import _DIAG_TRUNCATE as _DIAG_TRUNCATE
 from benchflow.rollout._results import _build_rollout_result as _build_rollout_result
 from benchflow.rollout._results import (
-    _compose_scene_user_prompt as _compose_scene_user_prompt,
-)
-from benchflow.rollout._results import (
     _environment_manifest_metadata as _environment_manifest_metadata,
 )
-from benchflow.rollout._results import _is_document_user as _is_document_user
 from benchflow.rollout._results import _is_secret_env_key as _is_secret_env_key
-from benchflow.rollout._results import _is_secret_env_value as _is_secret_env_value
 from benchflow.rollout._results import (
     _least_permissive_option_id as _least_permissive_option_id,
-)
-from benchflow.rollout._results import _role_metadata as _role_metadata
-from benchflow.rollout._results import _scene_metadata as _scene_metadata
-from benchflow.rollout._results import (
-    _should_record_env_entry as _should_record_env_entry,
 )
 from benchflow.rollout._results import (
     _user_confirmation_policy as _user_confirmation_policy,
 )
-from benchflow.rollout._results import _user_handoff_kind as _user_handoff_kind
 from benchflow.rollout._results import _write_config as _write_config
 from benchflow.rollout._results import _write_rewards_jsonl as _write_rewards_jsonl
 from benchflow.rollout._results import (
     _write_trainer_artifact as _write_trainer_artifact,
 )
-from benchflow.rollout._setup import _DISALLOW_WEB_TOOLS_ENV as _DISALLOW_WEB_TOOLS_ENV
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
 )
@@ -143,7 +127,6 @@ from benchflow.rollout._setup import _install_docker_compat as _install_docker_c
 from benchflow.rollout._setup import (
     _publish_trajectory_for_verifier as _publish_trajectory_for_verifier,
 )
-from benchflow.rollout._setup import _read_task_instruction as _read_task_instruction
 from benchflow.rollout._setup import _resolve_agent_cwd as _resolve_agent_cwd
 from benchflow.rollout._setup import _resolve_prompts as _resolve_prompts
 from benchflow.rollout._setup import _run_oracle as _run_oracle
@@ -152,7 +135,6 @@ from benchflow.rollout._setup import _start_env_and_upload as _start_env_and_upl
 from benchflow.rollout._setup import (
     _task_disallows_internet as _task_disallows_internet,
 )
-from benchflow.rollout._setup import _validate_agent_workdir as _validate_agent_workdir
 from benchflow.rollout._setup import _verify_rollout as _verify_rollout
 from benchflow.rollout._skills import (
     _resolve_skill_creator_root as _resolve_skill_creator_root,

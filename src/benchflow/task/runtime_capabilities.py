@@ -12,7 +12,7 @@ import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import cast
 
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
 from benchflow.task.config import (
@@ -30,7 +30,6 @@ from benchflow.task.prompts import (
 )
 from benchflow.task.verifier_document import load_verifier_document
 
-SandboxBackend = Literal["docker", "daytona", "modal"]
 SUPPORTED_SANDBOX_BACKENDS = {"docker", "daytona", "modal"}
 
 

@@ -70,12 +70,6 @@ def parse_verdict(text: str) -> dict[str, Any]:
     raise ValueError(f"Could not parse verdict from: {text[:300]}")
 
 
-def parse_binary_verdict(text: str) -> bool:
-    """Coerce common LLM outputs to a boolean pass/fail."""
-    lowered = text.strip().lower()
-    return lowered in {"yes", "true", "1", "pass", "passed"}
-
-
 # Provider routing
 
 

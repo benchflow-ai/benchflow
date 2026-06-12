@@ -168,7 +168,7 @@ The MCP reviewer server (`benchflow.experimental.mcp.reviewer_server`) runs as a
 
 ### Results
 
-Use `experiments/reviewer_ablation.py` to compare reviewer variants on your task set. The experiment template covers three conditions:
+Compare reviewer variants on your task set across three conditions:
 
 | Condition | Description |
 |-----------|-------------|

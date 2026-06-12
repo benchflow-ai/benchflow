@@ -62,9 +62,8 @@ def carry_native_subtrees(
 
     A native task directory's ``environment`` / ``tests`` / ``solution``
     subtrees are *already* in BenchFlow-native shape, so every file under
-    them carries straight through under its own relative path. Both inbound
-    adapters share this rglob-and-carry walk — harbor.py over all
-    :data:`NATIVE_SUBTREES`, terminal_bench.py over ``tests`` alone.
+    them carries straight through under its own relative path. harbor.py
+    uses this rglob-and-carry walk over all :data:`NATIVE_SUBTREES`.
 
     Files are visited in a stable, sorted order so the caller's collision
     handling is deterministic. The ``place`` callback owns the collision
@@ -106,11 +105,10 @@ def manifest_from_task_config(
 ) -> EnvironmentManifest:
     """Derive a baseline :class:`EnvironmentManifest` from a foreign task.
 
-    A Harbor- or Terminal-Bench-style foreign task does not ship an
-    ``environment.toml``; its environment is described by the
-    ``[environment]`` (now ``sandbox``) section of its ``task.toml`` /
-    ``task.yaml`` plus a buildable ``environment/Dockerfile``. This helper
-    folds that legacy shape into the Environment-plane seam:
+    A Harbor-style foreign task does not ship an ``environment.toml``; its
+    environment is described by the ``[environment]`` (now ``sandbox``)
+    section of its ``task.toml`` plus a buildable ``environment/Dockerfile``.
+    This helper folds that legacy shape into the Environment-plane seam:
 
     * ``manifest.image`` is the task's prebuilt ``docker_image`` when set,
       otherwise the ``bf__<name>:latest`` tag the framework's Dockerfile
@@ -118,8 +116,7 @@ def manifest_from_task_config(
       either way.
     * ``owns_lifecycle`` is true (no framework-started services) so the
       manifest validates without a ``[[services]]`` array — legacy
-      single-container Harbor/Terminal-Bench tasks have no separate
-      service plane.
+      single-container Harbor tasks have no separate service plane.
     * ``forward_env`` carries the foreign task's ``sandbox.env`` keys so
       the manifest's host-env forwarding surface stays honest to what the
       legacy path forwarded.
@@ -271,15 +268,14 @@ class InboundTask:
     Attributes:
         name: The task identity (BenchFlow ``org/name`` form when the source
             provides one; otherwise derived from the source).
-        source: The foreign format this came from (e.g. ``"harbor"``,
-            ``"terminal-bench"``) — recorded so downstream tooling can trace
-            provenance.
+        source: The foreign format this came from (e.g. ``"harbor"``) —
+            recorded so downstream tooling can trace provenance.
         instruction: The task instruction, as it belongs in ``instruction.md``.
         manifest: The validated :class:`EnvironmentManifest` for this task
             — the Environment-plane integration seam. Either loaded from a
             sibling ``environment.toml`` (when the foreign task ships one)
             or derived from :func:`manifest_from_task_config` (the common
-            single-container Harbor / Terminal-Bench case).
+            single-container Harbor case).
         config: A validated native :class:`TaskConfig` — the legacy
             ``task.toml`` equivalent, kept for backward compatibility with
             file-materialization paths.
@@ -303,21 +299,17 @@ class InboundTask:
 
 if TYPE_CHECKING:
     from benchflow.adapters.harbor import HarborAdapter
-    from benchflow.adapters.terminal_bench import TerminalBenchAdapter
 
     # An inbound adapter is just a class with a ``from_task_dir(Path) ->
-    # InboundTask`` classmethod — the two concrete ones. No standalone
-    # Protocol: InboundTask is the real contract, the adapter is its producer.
-    InboundAdapterType = type[HarborAdapter] | type[TerminalBenchAdapter]
+    # InboundTask`` classmethod. No standalone Protocol: InboundTask is the
+    # real contract, the adapter is its producer.
+    InboundAdapterType = type[HarborAdapter]
 
 
 def detect_adapter(task_dir: Path | str) -> InboundAdapterType:
     """Return the inbound adapter whose format ``task_dir`` matches.
 
-    Detection is by signature file: Harbor task dirs carry a ``task.toml``,
-    Terminal-Bench task dirs carry a ``task.yaml``. ``task.toml`` is checked
-    first so a directory carrying both is treated as Harbor (the native
-    superset format).
+    Detection is by signature file: Harbor task dirs carry a ``task.toml``.
 
     Raises:
         ValueError: if the directory matches no known foreign format.
@@ -325,14 +317,10 @@ def detect_adapter(task_dir: Path | str) -> InboundAdapterType:
     # Imported here to avoid a module-load cycle: the concrete adapters
     # import InboundTask from this module.
     from benchflow.adapters.harbor import HarborAdapter
-    from benchflow.adapters.terminal_bench import TerminalBenchAdapter
 
     root = Path(task_dir)
     if (root / "task.toml").is_file():
         return HarborAdapter
-    if (root / "task.yaml").is_file() or (root / "task.yml").is_file():
-        return TerminalBenchAdapter
     raise ValueError(
-        f"Unrecognized task format in {root}: expected a Harbor 'task.toml' "
-        f"or a Terminal-Bench 'task.yaml'."
+        f"Unrecognized task format in {root}: expected a Harbor 'task.toml'."
     )

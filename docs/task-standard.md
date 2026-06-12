@@ -754,11 +754,6 @@ benchflow:
       losses:
         - benchflow.teams
         - benchflow.nudges
-    terminal_bench:
-      export: degraded
-      losses:
-        - scenes
-        - separate_verifier_environment
 ```
 
 Target compatibility rules:

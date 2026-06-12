@@ -168,23 +168,3 @@ def _parse_turn(raw: dict) -> Turn:
         role=raw["role"],
         prompt=raw.get("prompt"),
     )
-
-
-def job_config_from_yaml(path: str | Path) -> dict:
-    """Parse a YAML file and return both job-level and trial-level config.
-
-    Returns a dict with keys: task_dir, concurrency, max_retries,
-    trial_config (RolloutConfig), and any other job-level fields.
-    """
-    raw = load_rollout_yaml(path)
-    task_dir = Path(raw.get("task_dir", raw.get("tasks_dir", ".")))
-    concurrency = raw.get("concurrency", 4)
-    max_retries = raw.get("max_retries", 2)
-
-    return {
-        "task_dir": task_dir,
-        "concurrency": concurrency,
-        "max_retries": max_retries,
-        "trial_config": rollout_config_from_dict(raw, task_path=task_dir),
-        "raw": raw,
-    }

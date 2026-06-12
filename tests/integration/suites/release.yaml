@@ -55,7 +55,6 @@ execution_profiles:
       - shared-sandbox-smoke
       - skillsbench-agent-matrix
       - adapter-release-set
-      - terminal-bench-smoke
       - decoupling-checks
     notes:
       - Firecracker and Kubernetes are future hard-isolation targets, not current CLI-supported sandboxes.
@@ -70,7 +69,6 @@ execution_profiles:
       - skillsbench-harbor-parity
       - adapter-release-set
       - hosted-env-compatibility-board
-      - terminal-bench-smoke
       - trace-to-task-e2e
       - decoupling-checks
   hosted-envs:
@@ -139,11 +137,6 @@ axes:
         kind: local_task
         path: tests/examples/hello-world-task
       scope: current release-gated sandbox smoke
-    terminal_bench_smoke:
-      source:
-        kind: local_task
-        path: tests/examples/terminal-bench-smoke-task
-      scope: terminal-style shell verifier smoke
     security_dind_smoke:
       source:
         kind: hosted_env
@@ -441,22 +434,6 @@ lanes:
       - Each hub entry has a canonical hub_url and env_uid pattern.
       - Exact env_uid selections are recorded before claiming agent-smoke or parity.
       - Harbor inventory can emit env_uid and hub_url evidence through bench compat harbor-registry.
-
-  - id: terminal-bench-smoke
-    release_blocker: true
-    purpose: Prove Terminal-Bench-style packaging and shell verifier compatibility.
-    matrix:
-      agents: cheap_representative
-      models: default
-      sandboxes:
-        - docker
-        - daytona
-      task_sets:
-        - terminal_bench_smoke
-    acceptance:
-      - bench eval create succeeds on both sandboxes.
-      - Shell verifier executes from task tests.
-      - Sandbox hardening does not break normal task execution.
 
   - id: trace-to-task-e2e
     release_blocker: true
