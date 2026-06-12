@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from benchflow._utils.config import normalize_reasoning_effort
 from benchflow.cli.main import app
+from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
 from benchflow.evaluation import Evaluation
 from benchflow.task.config import AgentConfig
 
@@ -149,6 +150,45 @@ def test_normalize_reasoning_effort_accepts_known(value: str, expected):
 def test_agent_timeout_sec_rejects_nonpositive(bad):
     with pytest.raises(pydantic.ValidationError):
         AgentConfig(timeout_sec=bad)
+
+
+def test_config_file_with_no_default_model_agent_not_rejected(tmp_path: Path):
+    # Regression: --config supplies the model from YAML, so build_eval_plan must
+    # NOT pre-reject a no-default-model agent (e.g. codex) when --model is omitted.
+    plan = build_eval_plan(
+        EvalCreateRequest(config_file=tmp_path / "cfg.yaml", agent="codex")
+    )
+    assert plan is not None
+
+
+def test_no_source_no_default_model_agent_not_rejected():
+    # Regression: with no source the CLI reports "provide a source"; build_eval_plan
+    # must not pre-empt that with a "no default model" error for codex.
+    plan = build_eval_plan(EvalCreateRequest(agent="codex"))
+    assert plan is not None
+
+
+def test_sandbox_modal_missing_extra_rejected_even_when_installed(
+    tmp_path, monkeypatch
+):
+    # Covers the missing-extra preflight in CI, where the modal extra IS installed
+    # (so test_sandbox_modal_without_extra_fails_fast skips). Force `import modal`
+    # to fail and assert the actionable EvalPlanError fires.
+    import builtins
+
+    task = _task_dir(tmp_path)
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "modal":
+            raise ModuleNotFoundError("No module named 'modal'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(EvalPlanError, match="sandbox-modal"):
+        build_eval_plan(
+            EvalCreateRequest(tasks_dir=task, environment="modal", agent="oracle")
+        )
 
 
 @pytest.mark.parametrize("ok", [None, 1, 900.0])

@@ -246,13 +246,18 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
             f"Invalid --skill-mode {request.skill_mode!r}: "
             "choose no-skill, with-skill, or self-gen"
         )
-    try:
+    if request.tasks_dir or request.source_repo:
         # Validate the agent/model pairing up front so an agent with no default
         # model (e.g. codex) reports a clean error instead of an uncaught
-        # ValueError once the rollout starts.
-        effective_model(eval_agent, request.model)
-    except ValueError as exc:
-        raise EvalPlanError(str(exc)) from None
+        # ValueError once the rollout starts. Only the --tasks-dir / --source-repo
+        # paths take the model from --model here; --config and --source-env resolve
+        # it from the YAML / hosted source later, so pre-validating those would
+        # falsely reject a legitimately model-bearing config. The no-source case
+        # is left to the CLI's "provide a source" error.
+        try:
+            effective_model(eval_agent, request.model)
+        except ValueError as exc:
+            raise EvalPlanError(str(exc)) from None
 
     usage_tracking_overridden = request.usage_tracking is not None
     try:
