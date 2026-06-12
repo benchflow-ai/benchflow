@@ -459,8 +459,11 @@ class TestEvalCreateRouting:
                     str(task),
                     "--agent",
                     "oracle",
+                    # docker (not modal) — Evaluation.run is patched, so the
+                    # sandbox is never used; modal would now fail the CLI's
+                    # upfront missing-extra preflight before run is reached.
                     "--sandbox",
-                    "modal",
+                    "docker",
                     "--jobs-dir",
                     str(tmp_path / "jobs"),
                 ],

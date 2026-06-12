@@ -23,6 +23,10 @@ AGENT_LOG_DIR = Path(os.environ.get("BENCHFLOW_AGENT_LOG_DIR", "/logs/agent"))
 APP_DIR = Path(os.environ.get("BENCHFLOW_WORKSPACE", "/app"))
 
 
+class JudgeUnavailableError(RuntimeError):
+    """No LLM judge could be reached (infra failure, not a 0.0 verdict)."""
+
+
 def build_judge_prompt(trajectory_text: str, case: dict) -> str:
     rubric = "\n".join(f"- {b}" for b in case["expected_behavior"])
     ground_truth = case.get("ground_truth", "N/A")
@@ -134,7 +138,9 @@ def call_llm(prompt: str) -> str:
         print(f"WARNING: OpenAI API error: {e}", file=sys.stderr)
 
     print("ERROR: No LLM SDK available (tried google-genai, anthropic, openai)", file=sys.stderr)
-    return '{"items": [], "score": 0.0, "reasoning": "No LLM SDK available"}'
+    raise JudgeUnavailableError(
+        "No LLM judge available (tried google-genai, anthropic, openai)"
+    )
 
 
 def judge_with_llm(trajectory_text: str) -> float:
@@ -185,10 +191,16 @@ def main():
     trajectory_text = read_trajectory()
 
     # Use LLM judge if expected_behavior is provided, else exact match
-    if CASE.get("expected_behavior"):
-        score = judge_with_llm(trajectory_text)
-    else:
-        score = judge_exact_match()
+    try:
+        if CASE.get("expected_behavior"):
+            score = judge_with_llm(trajectory_text)
+        else:
+            score = judge_exact_match()
+    except JudgeUnavailableError as exc:
+        # No LLM judge could run (missing SDK/key or API failure). Exit non-zero
+        # so the harness records a verifier-infra error rather than a real 0.0.
+        print(f"ERROR: judge could not run: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     (VERIFIER_DIR / "reward.txt").write_text(str(score))
     (VERIFIER_DIR / "reward.json").write_text(
