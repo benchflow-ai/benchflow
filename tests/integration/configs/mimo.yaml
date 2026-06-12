@@ -6,7 +6,11 @@ source:
 
 jobs_dir: jobs/integration/mimo
 agent: mimo
-model: mimo/mimo-auto
+# MiMo Code runs the Xiaomi MiMo models via the registered `xiaomi` provider
+# (set XIAOMI_BASE_URL + XIAOMI_API_KEY). The old `mimo/mimo-auto` did not
+# resolve — there is no `mimo` provider, and `mimo-auto` is not a served model
+# (the endpoint returns 400). `mimo-v2.5-pro` is the current coding model.
+model: xiaomi/mimo-v2.5-pro
 environment: daytona
 concurrency: 64
 max_retries: 1
