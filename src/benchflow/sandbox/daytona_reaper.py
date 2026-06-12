@@ -201,8 +201,7 @@ def reap_stale_sandboxes(
         # Failed sandboxes ignore the guard so they still reap on the short TTL.
         if will_delete and not is_failed:
             last_activity = _parse_sandbox_timestamp(
-                getattr(sb, "last_activity_at", None)
-                or getattr(sb, "updated_at", None)
+                getattr(sb, "last_activity_at", None) or getattr(sb, "updated_at", None)
             )
             if last_activity is not None:
                 idle_minutes = (now - last_activity).total_seconds() / 60
