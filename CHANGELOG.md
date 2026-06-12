@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Removed
+- Dead-code purge (no public-API impact unless noted): removed the unused
+  `job_config_from_yaml` helper, the nominal `TASK_REPOS` back-compat dict
+  (use `TASK_ALIASES`), the `_looks_like_verifier_dep_install_error` shim
+  (use `contains_verifier_dep_install_marker`), the unused `parse_binary_verdict`
+  reward helper (use `parse_verdict`), the dead `SandboxBackend` type alias,
+  an unused `StdioTransport._read_buffer` field, and 12 redundant `rollout`
+  package re-export aliases (submodule definitions unchanged).
+- Removed the deprecated, hidden `benchflow skills install` CLI command. The
+  SDK function `benchflow.skills.install_skill` is unchanged.
+- Removed the dead 0.3-era legacy CLI commands `job`, `agents`, and the legacy
+  `eval` (shadowed by the `eval` subgroup). The `metrics`, `view`, and
+  `cleanup` legacy commands are retained.
+
 ## 0.6.0 — 2026-06-10
 
 ### Added
