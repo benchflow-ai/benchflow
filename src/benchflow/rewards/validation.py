@@ -10,6 +10,12 @@ from typing import Any
 
 RewardValue = float | int
 RewardMap = dict[str, Any]
+RewardRange = tuple[float, float]
+
+# BenchFlow's canonical reward contract. A task may WIDEN it (never narrow or
+# shift it) by declaring ``[verifier] reward_range`` — see
+# :func:`validate_declared_reward_range`.
+DEFAULT_REWARD_RANGE: RewardRange = (0.0, 1.0)
 
 # Operator toggle for the lenient reward-map path. Default (unset/empty/``0``)
 # keeps the strict contract; any truthy value opts the classic
@@ -43,14 +49,77 @@ _STRUCTURED_REWARD_KEYS = {
 }
 
 
-def is_valid_reward_number(value: Any) -> bool:
-    """Return True for finite scalar rewards in BenchFlow's [0, 1] range."""
+def is_valid_reward_number(
+    value: Any,
+    *,
+    reward_range: RewardRange | None = None,
+) -> bool:
+    """Return True for finite scalar rewards within the task's reward range.
+
+    The default range is BenchFlow's canonical [0, 1]; a task that declares
+    ``[verifier] reward_range`` (validated at config parse by
+    :func:`validate_declared_reward_range`) widens the accepted bounds.
+    """
+    lo, hi = reward_range or DEFAULT_REWARD_RANGE
     return (
         isinstance(value, int | float)
         and not isinstance(value, bool)
         and math.isfinite(float(value))
-        and 0.0 <= float(value) <= 1.0
+        and lo <= float(value) <= hi
     )
+
+
+def validate_declared_reward_range(value: Any) -> RewardRange:
+    """Validate a task-declared ``[verifier] reward_range`` at config parse.
+
+    A declared range may only WIDEN the canonical [0, 1] contract: it must be
+    a ``[lo, hi]`` pair of finite numbers with ``lo < hi``, ``lo <= 0.0`` and
+    ``hi >= 1.0``. Widen-only keeps the canonical anchors meaningful for every
+    task — 0 ("did nothing") and 1 ("solved") stay valid rewards, so no-op and
+    oracle baselines keep scoring and a range can never silently shift or
+    narrow the contract. Safety-floor benchmarks, whose deliberate-violation
+    floor sits *below* doing nothing, declare ``reward_range = [-1.0, 1.0]``.
+    """
+    if (
+        not isinstance(value, list | tuple)
+        or len(value) != 2
+        or any(
+            isinstance(item, bool) or not isinstance(item, int | float)
+            for item in value
+        )
+    ):
+        raise ValueError("reward_range must be a [lo, hi] pair of numbers")
+    lo, hi = float(value[0]), float(value[1])
+    if not (math.isfinite(lo) and math.isfinite(hi)) or lo >= hi:
+        raise ValueError("reward_range must be finite with lo < hi")
+    if lo > 0.0 or hi < 1.0:
+        raise ValueError(
+            "reward_range may only widen the canonical [0.0, 1.0] contract "
+            "(lo <= 0.0 and hi >= 1.0)"
+        )
+    return (lo, hi)
+
+
+def reward_range_phrase(reward_range: RewardRange | None) -> str:
+    """Render the accepted bounds for error messages (default: canonical)."""
+    lo, hi = reward_range or DEFAULT_REWARD_RANGE
+    return f"between {lo} and {hi}"
+
+
+def declared_reward_range(task: Any) -> RewardRange | None:
+    """Return ``task.config.verifier.reward_range`` as a tuple, or None.
+
+    The config layer (``VerifierConfig.reward_range``) already validated a
+    real task's declaration via :func:`validate_declared_reward_range`; this
+    accessor only recognizes that validated 2-sequence shape, so Any-typed
+    task fakes (e.g. MagicMock in tests) and legacy task objects without the
+    field read as "undeclared" → the canonical [0, 1] contract.
+    """
+    verifier = getattr(getattr(task, "config", None), "verifier", None)
+    raw = getattr(verifier, "reward_range", None)
+    if isinstance(raw, list | tuple) and len(raw) == 2:
+        return (float(raw[0]), float(raw[1]))
+    return None
 
 
 def reward_lenient_from_env() -> bool:
@@ -68,10 +137,16 @@ def reward_lenient_from_env() -> bool:
     return os.environ.get(_REWARD_LENIENT_ENV, "").strip().lower() in _TRUTHY
 
 
-def _lenient_reward_alias(rewards: Mapping[str, Any]) -> str | None:
+def _lenient_reward_alias(
+    rewards: Mapping[str, Any],
+    *,
+    reward_range: RewardRange | None,
+) -> str | None:
     """Return the first legacy alias key holding a usable scalar reward."""
     for alias in _LENIENT_REWARD_ALIASES:
-        if alias in rewards and is_valid_reward_number(rewards[alias]):
+        if alias in rewards and is_valid_reward_number(
+            rewards[alias], reward_range=reward_range
+        ):
             return alias
     return None
 
@@ -106,6 +181,7 @@ def validate_reward_map(
     source: str = "verifier",
     aggregate_policy: Mapping[str, Any] | None = None,
     lenient: bool = False,
+    reward_range: RewardRange | None = None,
 ) -> RewardMap:
     """Validate and normalize a verifier reward mapping.
 
@@ -128,6 +204,13 @@ def validate_reward_map(
     ``score``/``rewards`` alias, otherwise from numeric metrics plus a declared
     aggregate policy. The operator opts in via ``BENCHFLOW_REWARD_LENIENT=1``
     (see :func:`reward_lenient_from_env`).
+
+    ``reward_range`` is the task's declared reward contract (see
+    :func:`validate_declared_reward_range`); ``None`` keeps the canonical
+    strict [0, 1]. The range applies to every reward-valued number in the map
+    — the scalar ``reward``, top-level numeric metrics, and ``metrics``
+    entries — but NOT to ``rubric`` item scores, which are normalized
+    judge-criterion scores and always stay in [0, 1].
     """
     if rewards is None:
         raise ValueError(f"{source} returned no rewards")
@@ -139,21 +222,25 @@ def validate_reward_map(
         # Operate on a copy so we can re-home a legacy alias onto ``reward``
         # and drop an unusable scalar without mutating the caller's mapping.
         mutable = dict(rewards)
-        if "reward" in mutable and not is_valid_reward_number(mutable["reward"]):
+        if "reward" in mutable and not is_valid_reward_number(
+            mutable["reward"], reward_range=reward_range
+        ):
             dropped.append("reward")
             del mutable["reward"]
         if "reward" not in mutable:
-            alias = _lenient_reward_alias(mutable)
+            alias = _lenient_reward_alias(mutable, reward_range=reward_range)
             if alias is not None:
                 mutable["reward"] = mutable.pop(alias)
         working = mutable
 
     reward = working.get("reward")
-    if "reward" in working and not is_valid_reward_number(reward):
+    if "reward" in working and not is_valid_reward_number(
+        reward, reward_range=reward_range
+    ):
         # Unreachable in lenient mode (an unusable ``reward`` is dropped above).
         raise ValueError(
             f"{source} returned rewards without numeric 'reward': "
-            "missing numeric 'reward' between 0.0 and 1.0"
+            f"missing numeric 'reward' {reward_range_phrase(reward_range)}"
         )
 
     parsed: RewardMap = {}
@@ -176,12 +263,16 @@ def validate_reward_map(
             continue
         if key == "metrics":
             if lenient:
-                metrics = _lenient_metrics(value, dropped=dropped)
+                metrics = _lenient_metrics(
+                    value, dropped=dropped, reward_range=reward_range
+                )
                 if metrics is not None:
                     parsed[key] = metrics
                     has_numeric_metric = has_numeric_metric or bool(metrics)
                 continue
-            parsed[key] = _validate_metrics(value, source=source)
+            parsed[key] = _validate_metrics(
+                value, source=source, reward_range=reward_range
+            )
             has_numeric_metric = bool(parsed[key])
             continue
         if key == "space":
@@ -220,7 +311,7 @@ def validate_reward_map(
         if key in _STRUCTURED_REWARD_KEYS:
             parsed[key] = value
             continue
-        if not is_valid_reward_number(value):
+        if not is_valid_reward_number(value, reward_range=reward_range):
             if lenient:
                 dropped.append(key)
                 continue
@@ -252,6 +343,7 @@ def _lenient_metrics(
     value: Any,
     *,
     dropped: list[str],
+    reward_range: RewardRange | None,
 ) -> dict[str, RewardValue] | None:
     """Prune a ``metrics`` mapping to numeric entries for lenient parsing.
 
@@ -265,7 +357,7 @@ def _lenient_metrics(
         return None
     kept: dict[str, RewardValue] = {}
     for key, metric in value.items():
-        if is_valid_reward_number(metric):
+        if is_valid_reward_number(metric, reward_range=reward_range):
             kept[str(key)] = metric
         else:
             dropped.append(f"metrics.{key}")
@@ -278,14 +370,20 @@ def apply_aggregate_policy(
     aggregate_policy: Mapping[str, Any] | None = None,
     source: str = "verifier",
     strict: bool = False,
+    reward_range: RewardRange | None = None,
 ) -> RewardMap:
-    """Compute canonical ``reward`` from metrics and a declared aggregate policy."""
+    """Compute canonical ``reward`` from metrics and a declared aggregate policy.
+
+    ``reward_range`` widens which metric values are aggregable and which
+    computed rewards are acceptable (default: canonical [0, 1]); see
+    :func:`validate_reward_map`.
+    """
 
     parsed = dict(rewards)
     if "reward" in parsed and not strict:
         return parsed
 
-    metrics = _aggregate_metrics(parsed)
+    metrics = _aggregate_metrics(parsed, reward_range=reward_range)
     if not metrics:
         raise ValueError(f"{source} has no metrics to aggregate into reward")
 
@@ -336,16 +434,16 @@ def apply_aggregate_policy(
         threshold=threshold,
         source=source,
     )
-    if not is_valid_reward_number(reward):
+    if not is_valid_reward_number(reward, reward_range=reward_range):
         raise ValueError(
             f"{source} aggregate policy produced invalid reward {reward!r}"
         )
     if "reward" in parsed and strict:
         existing = parsed["reward"]
-        if not is_valid_reward_number(existing):
+        if not is_valid_reward_number(existing, reward_range=reward_range):
             raise ValueError(
                 f"{source} returned rewards without numeric 'reward': "
-                "missing numeric 'reward' between 0.0 and 1.0"
+                f"missing numeric 'reward' {reward_range_phrase(reward_range)}"
             )
         if not math.isclose(float(existing), reward, abs_tol=1e-9):
             raise ValueError(
@@ -375,13 +473,18 @@ def _validate_rubric(value: Any, *, source: str) -> list[dict[str, Any]]:
     return parsed
 
 
-def _validate_metrics(value: Any, *, source: str) -> dict[str, RewardValue]:
+def _validate_metrics(
+    value: Any,
+    *,
+    source: str,
+    reward_range: RewardRange | None = None,
+) -> dict[str, RewardValue]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{source} returned rewards with invalid value for 'metrics'")
 
     parsed: dict[str, RewardValue] = {}
     for key, metric in value.items():
-        if not is_valid_reward_number(metric):
+        if not is_valid_reward_number(metric, reward_range=reward_range):
             raise ValueError(
                 f"{source} returned rewards with invalid metric value for {str(key)!r}"
             )
@@ -428,19 +531,23 @@ def _validate_weight(value: Any, *, source: str, key: str) -> float | int:
     return value
 
 
-def _aggregate_metrics(rewards: Mapping[str, Any]) -> dict[str, RewardValue]:
+def _aggregate_metrics(
+    rewards: Mapping[str, Any],
+    *,
+    reward_range: RewardRange | None = None,
+) -> dict[str, RewardValue]:
     raw_metrics = rewards.get("metrics")
     if isinstance(raw_metrics, Mapping):
         return {
             str(key): metric
             for key, metric in raw_metrics.items()
-            if is_valid_reward_number(metric)
+            if is_valid_reward_number(metric, reward_range=reward_range)
         }
     metrics: dict[str, RewardValue] = {}
     for key, value in rewards.items():
         if key in {"aggregate", "reward"} | _STRUCTURED_REWARD_KEYS:
             continue
-        if is_valid_reward_number(value):
+        if is_valid_reward_number(value, reward_range=reward_range):
             metrics[str(key)] = value
     return metrics
 
