@@ -848,7 +848,11 @@ def test_cli_verify_malformed_json_prints_clean_message(tmp_path: Path) -> None:
     result = CliRunner().invoke(
         app, ["agent", "verify", "my-bench", "--benchmarks-dir", str(tmp_path)]
     )
-    out = click.unstyle(result.output)
+    # Collapse rich's line-wrapping before substring checks: CI's long tmp path
+    # pushes the message wide enough that "not valid JSON" wraps across a newline
+    # ("is not\nvalid JSON"), which broke the contiguous-substring assert in CI
+    # while passing locally on shorter paths.
+    out = " ".join(click.unstyle(result.output).split())
     # Fail-closed: a clean actionable message, no uncaught JSONDecodeError.
     assert "not valid JSON" in out
     assert "JSONDecodeError" not in out
