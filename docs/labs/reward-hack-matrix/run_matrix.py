@@ -51,7 +51,9 @@ DAYTONA_MAX_CPUS = 4
 _CPUS_RE = re.compile(r"^(\s*cpus\s*=\s*)(\d+)\s*$", re.MULTILINE)
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[1]
+# Walk up to the repo root (the dir holding pyproject.toml) so the lab
+# keeps working regardless of how deep it is filed under the tree.
+REPO_ROOT = next(p for p in HERE.parents if (p / "pyproject.toml").is_file())
 VENVS_DIR = HERE / ".venvs"
 JOBS_DIR = HERE / ".jobs"
 CELLS_DIR = HERE / ".cells"
@@ -146,7 +148,7 @@ VERSIONS: list[tuple[str, list[str]]] = [
 
 
 # ---------------------------------------------------------------------------
-# venv setup (mirrors labs/benchjack-sandbox-hardening/run_comparison.py)
+# venv setup (mirrors docs/labs/benchjack-sandbox-hardening/run_comparison.py)
 
 
 def _have_uv() -> bool:

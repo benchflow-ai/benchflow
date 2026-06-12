@@ -79,7 +79,7 @@ This lab tests two of BenchJack's seven patterns end-to-end on real tasks: **P1 
 and **P7 (path-trojan / pth-injection)**. The others:
 
 - **P2 (answer-lookup)** — addressed architecturally by `chmod 700 /solution`. Demonstrated
-  synthetically in [`labs/benchjack-sandbox-hardening/pattern2_answer_lookup`](../benchjack-sandbox-hardening/pattern2_answer_lookup/);
+  synthetically in [`docs/labs/benchjack-sandbox-hardening/pattern2_answer_lookup`](../benchjack-sandbox-hardening/pattern2_answer_lookup/);
   not yet swept against real benchmarks (per-benchmark answer-file shape varies).
 - **P3 / P4 / P5** — verifier-code-quality issues, not runtime-hardening issues. benchflow doesn't
   `eval()` agent input, doesn't ship an in-tree LLM judge, and uses reward-based scoring rather
