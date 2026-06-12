@@ -15,7 +15,7 @@ from typing import Any
 
 BEDROCK_THINKING_EFFORT_ENV = "BENCHFLOW_BEDROCK_THINKING_EFFORT"
 BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
-    r"claude-(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)"
+    r"claude-(?:(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)|fable-5(?!\d))"
 )
 
 _VALID_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"}
