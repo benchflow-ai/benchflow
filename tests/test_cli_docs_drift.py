@@ -96,6 +96,8 @@ def test_documented_subcommands_exist() -> None:
     for cmd in (
         ["eval", "create"],
         ["eval", "list"],
+        ["eval", "metrics"],
+        ["eval", "view"],
         ["agent", "list"],
         ["agent", "show"],
         ["tasks", "init"],
