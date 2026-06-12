@@ -544,6 +544,7 @@ class Rollout:
             agent_idle_timeout=cfg.agent_idle_timeout,
             scenes=cfg.effective_scenes,
             source_provenance=cfg.source_provenance,
+            dataset=cfg.dataset,
         )
 
         self._phase = "setup"
@@ -1794,6 +1795,7 @@ class Rollout:
             scenes=self._config.effective_scenes,
             evolved_skills=self._evolved_skills,
             source_provenance=self._config.source_provenance,
+            dataset=self._config.dataset,
             diagnostics=self._diagnostics,
             usage_tracking=self._usage_tracking_metadata(),
             skill_policy=getattr(self, "_task_skill_policy", None)

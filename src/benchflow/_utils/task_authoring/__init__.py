@@ -14,7 +14,9 @@ path is re-exported below so callers, tests, and ``monkeypatch`` sites keep
 resolving unchanged.
 """
 
+import hashlib
 import logging
+import os
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -106,6 +108,36 @@ _VALIDATION_LEVELS: set[str] = {
     "acceptance",
     "acceptance-live",
 }
+
+
+def task_digest(task_dir: Path) -> str:
+    """Content digest pinning a task's files, independent of git.
+
+    sha256 over every regular file under ``task_dir``, sorted by POSIX
+    relative path; each file contributes
+    ``path_utf8 + b"\\x00" + sha256(file_bytes).digest()``. Symlinks and
+    file modes are excluded, so the digest is reproducible from a plain
+    checkout. Must byte-match the reference digests in the skillsbench
+    dataset registry (``registry.json`` / ``docs/dataset-versioning.md``,
+    skillsbench PR #922).
+    """
+    if not task_dir.is_dir():
+        raise NotADirectoryError(f"Not a directory: {task_dir}")
+    files: list[tuple[str, Path]] = []
+    # os.walk never descends into symlinked directories (unlike pre-3.13
+    # Path.rglob), keeping "symlinks are excluded" true for whole subtrees.
+    for dirpath, _dirnames, filenames in os.walk(task_dir):
+        for filename in filenames:
+            path = Path(dirpath) / filename
+            if path.is_symlink() or not path.is_file():
+                continue
+            files.append((path.relative_to(task_dir).as_posix(), path))
+    digest = hashlib.sha256()
+    for rel, path in sorted(files):
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return f"sha256:{digest.hexdigest()}"
 
 
 def check_task(

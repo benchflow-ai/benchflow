@@ -766,7 +766,14 @@ class TestVerifierNonzeroExitRewardAcceptance:
             target_dir="/verifier",
             service="main",
         )
-        assert "/verifier/test.sh" in sandbox.exec.await_args_list[0].args[0]
+        # test.sh runs at the native /verifier mount. The first exec may be the
+        # /tests->/verifier compat symlink (#686), and the command is passed
+        # positionally (chmod/symlink) or as command= (the test run), so scan all.
+        verifier_cmds = [
+            (c.args[0] if c.args else c.kwargs.get("command", ""))
+            for c in sandbox.exec.await_args_list
+        ]
+        assert any("/verifier/test.sh" in c for c in verifier_cmds), verifier_cmds
 
     @pytest.mark.asyncio
     async def test_nonzero_exit_reward_zero_accepted_by_verifier(self, tmp_path: Path):

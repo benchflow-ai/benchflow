@@ -139,6 +139,9 @@ class RolloutConfig:
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
     source_provenance: dict[str, Any] | None = None
+    # Registry dataset identity ({"name","version","task_digest"}) for the
+    # `bench eval create -d` path; stamped into config.json/result.json.
+    dataset: dict[str, Any] | None = None
     planes: RolloutPlanes | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:

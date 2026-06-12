@@ -91,6 +91,8 @@ class EvalCreateRequest:
     agent_env: dict[str, str] = field(default_factory=dict)
     include: list[str] | None = None
     exclude: list[str] | None = None
+    dataset: str | None = None
+    registry: str | None = None
 
 
 @dataclass
@@ -124,6 +126,10 @@ class EvalPlan:
     def make_eval_config(
         self,
         source_provenance: dict[str, Any] | None = None,
+        dataset_name: str | None = None,
+        dataset_version: str | None = None,
+        dataset_task_digests: dict[str, str] | None = None,
+        include_tasks: set[str] | None = None,
     ) -> EvaluationConfig:
         """Build the ``EvaluationConfig`` shared by the source-repo / tasks-dir paths.
 
@@ -131,6 +137,10 @@ class EvalPlan:
         planning so that, exactly as before, the no-source path can fall through
         to its "provide a source" error without an agent-without-default-model
         first raising ``ValueError``.
+
+        ``dataset_*`` are set only by the ``--dataset`` registry path, so every
+        result.json/config.json from a pinned run carries its dataset identity
+        and per-task content digest.
         """
         req = self.request
         return EvaluationConfig(
@@ -152,7 +162,12 @@ class EvalPlan:
             ),
             self_gen_no_internet=req.self_gen_no_internet,
             source_provenance=source_provenance,
-            include_tasks=self.include_tasks,
+            dataset_name=dataset_name,
+            dataset_version=dataset_version,
+            dataset_task_digests=dataset_task_digests or {},
+            include_tasks=(
+                include_tasks if include_tasks is not None else self.include_tasks
+            ),
             exclude_tasks=self.exclude_tasks,
             usage_tracking=self.eval_usage_tracking,
             environment_manifest=self.eval_env_manifest,
@@ -189,11 +204,15 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         bool(request.tasks_dir),
         bool(request.source_repo),
         bool(request.source_env),
+        bool(request.dataset),
     ]
     if sum(sources) > 1:
         raise EvalPlanError(
-            "Choose only one source: --config, --tasks-dir, --source-repo, or --source-env"
+            "Choose only one source: --config, --tasks-dir, --source-repo, "
+            "--source-env, or --dataset"
         )
+    if request.registry and not request.dataset:
+        raise EvalPlanError("--registry requires --dataset")
     if request.tasks_dir and not Path(request.tasks_dir).exists():
         raise EvalPlanError(f"--tasks-dir not found: {request.tasks_dir}")
     if request.worker_concurrency is not None and not (

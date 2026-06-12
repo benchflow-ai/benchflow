@@ -152,6 +152,7 @@ def _write_config(
     agent_idle_timeout: int | None = None,
     scenes: list[Scene] | None = None,
     source_provenance: dict[str, Any] | None = None,
+    dataset: dict[str, Any] | None = None,
     environment_manifest: EnvironmentManifest | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
@@ -186,6 +187,10 @@ def _write_config(
         config_data["usage_tracking"] = usage_tracking.to_config_artifact()
     if source_provenance is not None:
         config_data["source"] = source_provenance
+    if dataset is not None:
+        config_data["dataset_name"] = dataset.get("name")
+        config_data["dataset_version"] = dataset.get("version")
+        config_data["task_digest"] = dataset.get("task_digest")
     (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
 
@@ -250,6 +255,7 @@ def _build_rollout_result(
     usage_tracking: dict[str, Any] | None = None,
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
+    dataset: dict[str, Any] | None = None,
     diagnostics: RolloutDiagnostics | None = None,
     skill_policy: TaskSkillPolicy | None = None,
     sandbox_id: str | None = None,
@@ -375,6 +381,15 @@ def _build_rollout_result(
                 **(
                     {"source": source_provenance}
                     if source_provenance is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "dataset_name": dataset.get("name"),
+                        "dataset_version": dataset.get("version"),
+                        "task_digest": dataset.get("task_digest"),
+                    }
+                    if dataset is not None
                     else {}
                 ),
                 "sandbox_id": sandbox_id,
