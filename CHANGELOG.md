@@ -17,6 +17,10 @@
   promoted to first-class `bench eval metrics` / `bench eval view`; and the
   redundant `cleanup` command is dropped in favor of the existing
   `bench environment cleanup`.
+- Removed the `experiments/` research/dev tooling tree (never shipped in the
+  wheel) and its 6 dependent test modules, completing the dev-tree cleanup
+  alongside the earlier `dashboard/` removal and `labs/` → `docs/labs`
+  migration. Benchmark result files were preserved out-of-tree, not deleted.
 
 ### Changed
 - `bench metrics` → `bench eval metrics` and `bench view` → `bench eval view`
