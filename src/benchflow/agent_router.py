@@ -35,10 +35,28 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 import typer
 
+# The parity gate (parsers, scoring, verdict) lives in agent_router_parity to
+# keep this module focused on create/run/verify CLI wiring. Re-exported here
+# (see __all__) so the public API is unchanged, e.g.
+# ``from benchflow.agent_router import build_verify_report``.
+from benchflow.agent_router_parity import (  # noqa: F401
+    DEFAULT_REWARD_TOLERANCE,
+    ConversionParity,
+    CriterionComparison,
+    RewardDistributionParity,
+    RewardSample,
+    Verdict,
+    VerifyReport,
+    build_verify_report,
+    confidence_line,
+    extract_criterion_comparisons,
+    extract_reward_samples,
+    render_divergence_issue,
+)
 from benchflow.agent_router_scaffold import (
     BENCHMARK_YAML_TEMPLATE,
     CONVERTER_TEMPLATE,
@@ -398,307 +416,7 @@ def run_agent_adoption(
     return exec_fn(launch.command, cwd=launch.cwd, env=resolved_env)
 
 
-# ── verify: parity gate + confidence verdict ──────────────────────────
-
-DEFAULT_REWARD_TOLERANCE = 0.02
-
-Verdict = Literal["parity-confirmed", "parity-divergent", "insufficient-evidence"]
-
-
-@dataclass(frozen=True)
-class CriterionComparison:
-    """One per-criterion verdict pair from the deterministic parity floor."""
-
-    task_id: str
-    criterion_id: str
-    original_verdict: str
-    adapted_verdict: str
-    agreement: bool
-
-
-@dataclass(frozen=True)
-class RewardSample:
-    """One legacy-vs-converted reward delta from the statistical layer."""
-
-    task_id: str
-    legacy_reward: float | None
-    converted_reward: float | None
-    delta: float
-
-
-def _as_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
-
-
-def extract_criterion_comparisons(data: Any) -> list[CriterionComparison]:
-    """Pull per-criterion verdict pairs from a parity_experiment.json payload.
-
-    Tolerant of the scaffold shape (``conversion_parity.tasks``) and the
-    CONVERT.md example shape (top-level ``tasks``). A non-mapping top level
-    (e.g. a JSON array of experiment summaries, as some adopted benchmarks
-    ship) is not a supported parity schema: return no comparisons so the
-    caller reports ``insufficient-evidence`` instead of crashing on ``.get``.
-    """
-    if not isinstance(data, Mapping):
-        return []
-    task_lists: list[Any] = []
-    conv = data.get("conversion_parity")
-    if isinstance(conv, Mapping):
-        task_lists.extend(_as_list(conv.get("tasks")))
-    task_lists.extend(_as_list(data.get("tasks")))
-
-    out: list[CriterionComparison] = []
-    for task in task_lists:
-        if not isinstance(task, Mapping):
-            continue
-        task_id = str(task.get("task_id", ""))
-        for crit in _as_list(task.get("criteria_results")):
-            if not isinstance(crit, Mapping):
-                continue
-            original = str(crit.get("original_verdict", ""))
-            adapted = str(crit.get("adapted_verdict", ""))
-            agreement = bool(crit.get("agreement", original == adapted))
-            out.append(
-                CriterionComparison(
-                    task_id=task_id,
-                    criterion_id=str(crit.get("criterion_id", "")),
-                    original_verdict=original,
-                    adapted_verdict=adapted,
-                    agreement=agreement,
-                )
-            )
-    return out
-
-
-def _reward_pair(result: Mapping[str, Any]) -> tuple[float | None, float | None, float]:
-    legacy = result.get("legacy_reward", result.get("pb_reward"))
-    converted = result.get("converted_reward", result.get("bf_reward"))
-    if legacy is None and isinstance(result.get("programbench"), Mapping):
-        legacy = result["programbench"].get("reward")
-    if converted is None and isinstance(result.get("benchflow"), Mapping):
-        converted = result["benchflow"].get("reward")
-
-    if legacy is not None and converted is not None:
-        delta = abs(float(converted) - float(legacy))
-    else:
-        delta = abs(float(result.get("reward_delta", 0.0)))
-    legacy_f = float(legacy) if legacy is not None else None
-    converted_f = float(converted) if converted is not None else None
-    return legacy_f, converted_f, delta
-
-
-def extract_reward_samples(data: Any) -> list[RewardSample]:
-    """Pull legacy-vs-converted reward deltas (the statistical parity layer).
-
-    Tolerant of the scaffold shape (``reward_distribution_parity.samples``) and
-    the reference ``agent_parity.results`` (programbench/benchflow rewards). A
-    non-mapping top level is not a supported parity schema: return no samples
-    so the caller reports ``insufficient-evidence`` rather than crashing (and
-    never fabricates phantom zero-delta samples from summary records).
-    """
-    if not isinstance(data, Mapping):
-        return []
-    result_lists: list[Any] = []
-    rdp = data.get("reward_distribution_parity")
-    if isinstance(rdp, Mapping):
-        result_lists.extend(_as_list(rdp.get("samples")))
-    agent = data.get("agent_parity")
-    if isinstance(agent, Mapping):
-        result_lists.extend(_as_list(agent.get("results")))
-
-    out: list[RewardSample] = []
-    for result in result_lists:
-        if not isinstance(result, Mapping):
-            continue
-        legacy, converted, delta = _reward_pair(result)
-        out.append(
-            RewardSample(
-                task_id=str(result.get("task_id", "")),
-                legacy_reward=legacy,
-                converted_reward=converted,
-                delta=delta,
-            )
-        )
-    return out
-
-
-@dataclass(frozen=True)
-class ConversionParity:
-    """Deterministic conversion-faithfulness floor."""
-
-    comparisons: list[CriterionComparison]
-
-    @property
-    def compared(self) -> int:
-        return len(self.comparisons)
-
-    @property
-    def agreed(self) -> int:
-        return sum(1 for c in self.comparisons if c.agreement)
-
-    @property
-    def all_agree(self) -> bool:
-        return self.compared > 0 and self.agreed == self.compared
-
-    @property
-    def agreement_rate(self) -> float:
-        return self.agreed / self.compared if self.compared else 0.0
-
-    @property
-    def disagreements(self) -> list[CriterionComparison]:
-        return [c for c in self.comparisons if not c.agreement]
-
-
-@dataclass(frozen=True)
-class RewardDistributionParity:
-    """Statistical legacy-vs-converted reward parity layer."""
-
-    samples: list[RewardSample]
-    tolerance: float
-
-    @property
-    def max_abs_delta(self) -> float:
-        return max((s.delta for s in self.samples), default=0.0)
-
-    @property
-    def within_tolerance(self) -> bool:
-        return self.max_abs_delta <= self.tolerance
-
-    @property
-    def exceeding(self) -> list[RewardSample]:
-        return [s for s in self.samples if s.delta > self.tolerance]
-
-
-@dataclass(frozen=True)
-class VerifyReport:
-    """Parity verdict for an adopted benchmark."""
-
-    name: str
-    conversion: ConversionParity
-    reward: RewardDistributionParity | None
-    verdict: Verdict
-    tolerance: float = DEFAULT_REWARD_TOLERANCE
-
-    @property
-    def passed(self) -> bool:
-        return self.verdict == "parity-confirmed"
-
-
-def build_verify_report(
-    name: str,
-    data: Any,
-    *,
-    tolerance: float = DEFAULT_REWARD_TOLERANCE,
-) -> VerifyReport:
-    """Score parity and assign a confidence verdict.
-
-    Parity-only gate over two layers:
-
-    * deterministic floor — every compared criterion's converted verdict must
-      match the original's verdict on identical inputs;
-    * statistical layer — every legacy-vs-converted reward delta must sit within
-      ``tolerance``.
-
-    A layer that has no data does not block the verdict. With no data at all the
-    verdict is ``insufficient-evidence`` (the support path). The gate never
-    "improves" the source: a faithful conversion reproduces the original's
-    behavior, including any reward-hackability it has.
-    """
-    conversion = ConversionParity(extract_criterion_comparisons(data))
-    samples = extract_reward_samples(data)
-    reward = RewardDistributionParity(samples, tolerance=tolerance) if samples else None
-
-    has_conversion = conversion.compared > 0
-    has_reward = reward is not None
-
-    if not has_conversion and not has_reward:
-        verdict: Verdict = "insufficient-evidence"
-    else:
-        conversion_ok = (not has_conversion) or conversion.all_agree
-        reward_ok = (reward is None) or reward.within_tolerance
-        verdict = (
-            "parity-confirmed" if conversion_ok and reward_ok else ("parity-divergent")
-        )
-
-    return VerifyReport(
-        name=name,
-        conversion=conversion,
-        reward=reward,
-        verdict=verdict,
-        tolerance=tolerance,
-    )
-
-
-def confidence_line(report: VerifyReport) -> str:
-    """User-facing confidence framing (correctness/parity-based, no fixed %)."""
-    if report.verdict == "parity-confirmed":
-        if report.conversion.compared:
-            return (
-                "High-confidence: the converted evaluation reproduces the "
-                "original's verdicts on every compared criterion and stays "
-                "within reward tolerance."
-            )
-        return (
-            "High-confidence: the converted evaluation's rewards stay within "
-            "tolerance of the original across every recorded sample."
-        )
-    if report.verdict == "parity-divergent":
-        return (
-            "Divergence found: the conversion does not yet reproduce the "
-            "original's behavior — iterate, then open an issue for support."
-        )
-    return (
-        "Insufficient evidence: no recorded parity comparisons. Run "
-        "parity_test.py and record results before trusting the conversion."
-    )
-
-
-def render_divergence_issue(report: VerifyReport) -> str:
-    """Render a draft GitHub issue body for a non-confirmed verdict.
-
-    Printed/saved for a human to file — never auto-filed.
-    """
-    lines = [
-        f"## Benchmark adoption parity: {report.name}",
-        "",
-        f"**Verdict:** {report.verdict}",
-        "",
-        confidence_line(report),
-        "",
-        "### Conversion parity (deterministic floor)",
-        f"- criteria compared: {report.conversion.compared}",
-        f"- agreed: {report.conversion.agreed}",
-        f"- agreement rate: {report.conversion.agreement_rate:.4f}",
-    ]
-    for c in report.conversion.disagreements:
-        lines.append(
-            f"  - {c.task_id}/{c.criterion_id}: original={c.original_verdict} "
-            f"converted={c.adapted_verdict}"
-        )
-
-    lines.append("")
-    lines.append("### Reward-distribution parity (statistical layer)")
-    if report.reward is None:
-        lines.append("- no reward samples recorded")
-    else:
-        lines.append(f"- samples: {len(report.reward.samples)}")
-        lines.append(f"- max abs delta: {report.reward.max_abs_delta:.4f}")
-        lines.append(f"- tolerance: {report.reward.tolerance:.4f}")
-        for s in report.reward.exceeding:
-            lines.append(
-                f"  - {s.task_id}: legacy={s.legacy_reward} "
-                f"converted={s.converted_reward} delta={s.delta:.4f}"
-            )
-
-    lines += [
-        "",
-        "### Ask",
-        "Parity could not be closed for this conversion. The translation must",
-        "reproduce the original's behavior on identical inputs (including any",
-        "reward-hackability it has). This draft has NOT been filed — review it,",
-        "iterate on the converter, and open it manually if you need support.",
-    ]
-    return "\n".join(lines)
+# ── verify: parity gate (parsers/scoring re-exported from _parity above) ──
 
 
 def load_parity_experiment(benchmarks_root: Path, name: str) -> Any:
@@ -720,7 +438,12 @@ def load_parity_experiment(benchmarks_root: Path, name: str) -> Any:
         raise ParityExperimentMissing(
             f"no parity_experiment.json in {benchmark_dir} — run parity_test.py first"
         )
-    return json.loads(parity_file.read_text())
+    try:
+        return json.loads(parity_file.read_text())
+    except json.JSONDecodeError as exc:
+        raise ParityExperimentMissing(
+            f"parity_experiment.json in {benchmark_dir} is not valid JSON: {exc}"
+        ) from exc
 
 
 def roundtrip_conformance_status(
@@ -878,7 +601,20 @@ def register_agent_router(agent_app: typer.Typer) -> None:
         console.print(confidence_line(report))
 
         if roundtrip_task is not None:
-            status, reasons = roundtrip_conformance_status(roundtrip_task)
+            if not roundtrip_task.is_dir():
+                console.print(
+                    f"[red]  round-trip: error: task dir not found: "
+                    f"{roundtrip_task}[/red]"
+                )
+                raise typer.Exit(1)
+            try:
+                status, reasons = roundtrip_conformance_status(roundtrip_task)
+            except OSError as exc:
+                console.print(
+                    f"[red]  round-trip: error: could not check "
+                    f"{roundtrip_task}: {exc}[/red]"
+                )
+                raise typer.Exit(1) from exc
             console.print(f"  round-trip: {status}")
             for reason in reasons:
                 console.print(f"    [yellow]- {reason}[/yellow]")

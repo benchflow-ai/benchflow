@@ -119,9 +119,39 @@ class ORSAdapter:
             finished = bool(
                 output.get("finished") is True or output.get("done") is True
             )
-            record_type = str(
-                output.get("type") or ("terminal" if finished else "dense")
+            explicit_type = (
+                str(output["type"]) if output.get("type") is not None else None
             )
+            explicit_granularity = (
+                str(output["granularity"])
+                if output.get("granularity") is not None
+                else None
+            )
+            # A ``finished``/``done`` record is the episode's terminal: force its
+            # type/granularity to terminal so it is never emitted as an
+            # internally-contradictory ``{type:'dense', granularity:'terminal'}``.
+            # Reject the contradiction where the caller explicitly marks the same
+            # record step-level (or non-terminal) yet also finished.
+            if finished:
+                if explicit_type is not None and explicit_type != "terminal":
+                    raise ValueError(
+                        f"outputs[{index}] is finished but has non-terminal "
+                        f"type {explicit_type!r}; a finished record is terminal"
+                    )
+                if (
+                    explicit_granularity is not None
+                    and explicit_granularity != "terminal"
+                ):
+                    raise ValueError(
+                        f"outputs[{index}] is finished but has non-terminal "
+                        f"granularity {explicit_granularity!r}; "
+                        "a finished record is terminal"
+                    )
+                record_type = "terminal"
+                granularity = "terminal"
+            else:
+                record_type = explicit_type or "dense"
+                granularity = explicit_granularity or "step"
             record: dict[str, Any] = {
                 "type": record_type,
                 "reward": reward,
@@ -135,9 +165,7 @@ class ORSAdapter:
                 "space": str(
                     output.get("space") or ("output" if finished else "action")
                 ),
-                "granularity": str(
-                    output.get("granularity") or ("terminal" if finished else "step")
-                ),
+                "granularity": granularity,
             }
             timestamp = output.get("timestamp") or output.get("ts")
             if timestamp is not None:

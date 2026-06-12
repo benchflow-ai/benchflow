@@ -370,6 +370,47 @@ def test_build_rollout_result_emits_atif_and_adp(tmp_path):
     )
 
 
+def test_build_rollout_result_forwards_token_metrics_to_atif(tmp_path):
+    """Usage metrics in scope at result-building must reach ATIF final_metrics.
+
+    ATIF's token/cost capability is implemented in export_atif, but the
+    production seam (_build_rollout_result -> _write_trainer_artifact ->
+    write_rollout_atif_json) used to drop the four usage fields, so every live
+    atif.json carried only total_steps. This pins the live wiring with the exact
+    forwarded values (note the n_cache_read -> total_cached mapping).
+    """
+    rollout_dir = tmp_path / "rollout-usage"
+    rollout_dir.mkdir()
+    _build_rollout_result(
+        rollout_dir,
+        task_name="archive-alice",
+        rollout_name="r1",
+        agent="claude-agent-acp",
+        agent_name="claude-agent-acp",
+        model="claude-haiku-4-5",
+        n_tool_calls=1,
+        prompts=["Archive the email from Alice."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+        n_input_tokens=1234,
+        n_output_tokens=567,
+        n_cache_read_tokens=89,
+        cost_usd=0.0421,
+    )
+    atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
+    metrics = atif["final_metrics"]
+    assert metrics["total_prompt_tokens"] == 1234
+    assert metrics["total_completion_tokens"] == 567
+    assert metrics["total_cached_tokens"] == 89
+    assert metrics["total_cost_usd"] == 0.0421
+
+
 def test_build_rollout_result_atif_for_empty_trajectory_is_prompt_only(tmp_path):
     """Oracle runs (no agent events) emit a prompts-only ATIF, never agent steps.
 

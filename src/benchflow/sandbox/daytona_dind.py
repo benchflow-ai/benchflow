@@ -27,9 +27,11 @@ from benchflow.sandbox._compose import (
     COMPOSE_BUILD_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
+    COMPOSE_UP_RETRY_DELAYS_SEC,
     compose_cp_destination,
     compose_mkdir_p_command,
     compose_parent_mkdir_p_command,
+    is_compose_up_network_race_error,
 )
 from benchflow.sandbox.daytona_pty import (
     _exec_failure_output,
@@ -170,6 +172,34 @@ class _DaytonaDinD(_DaytonaStrategy):
             timeout_sec=timeout_sec,
         )
 
+    async def _compose_up_with_retry(self, env: DaytonaSandbox) -> None:
+        """Run ``compose up -d`` honouring the author's build budget and retrying
+        a fresh-daemon network create/attach race (mirrors the host docker path).
+
+        The ``up`` timeout is derived from ``build_timeout_sec`` (floored at the
+        historical 120s) so a prebuilt-image pull gets the full author budget,
+        rather than a hardcoded 120s.
+        """
+        timeout_sec = max(120, round(env.task_env_config.build_timeout_sec))
+        max_attempts = len(COMPOSE_UP_RETRY_DELAYS_SEC) + 1
+        for attempt in range(1, max_attempts + 1):
+            result = await self._compose_exec(["up", "-d"], timeout_sec=timeout_sec)
+            if result.return_code == 0:
+                return
+            message = f"{result.stdout} {result.stderr}"
+            if attempt == max_attempts or not is_compose_up_network_race_error(message):
+                raise RuntimeError(f"docker compose up failed: {message}")
+            delay = COMPOSE_UP_RETRY_DELAYS_SEC[attempt - 1]
+            env.logger.warning(
+                "Retrying docker compose up inside DinD after network "
+                "create/attach race (attempt %s/%s, retrying in %.1fs): %s",
+                attempt,
+                max_attempts,
+                delay,
+                message,
+            )
+            await asyncio.sleep(delay)
+
     async def _wait_for_docker_daemon(self) -> None:
         self._env.logger.debug("Waiting for Docker daemon inside DinD sandbox...")
         last_output = ""
@@ -287,11 +317,7 @@ class _DaytonaDinD(_DaytonaStrategy):
             )
 
         env.logger.debug("Starting compose services inside DinD sandbox...")
-        result = await self._compose_exec(["up", "-d"], timeout_sec=120)
-        if result.return_code != 0:
-            raise RuntimeError(
-                f"docker compose up failed: {result.stdout} {result.stderr}"
-            )
+        await self._compose_up_with_retry(env)
 
         await self._wait_for_main_container()
 

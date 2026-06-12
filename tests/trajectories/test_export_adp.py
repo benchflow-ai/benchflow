@@ -261,3 +261,84 @@ def test_write_job_adp_jsonl_aggregates_rollouts(tmp_path):
 def test_write_job_adp_jsonl_returns_none_without_rollouts(tmp_path):
     assert write_job_adp_jsonl(tmp_path) is None
     assert write_job_adp_jsonl(tmp_path / "missing") is None
+
+
+def test_write_skips_empty_trajectory(tmp_path):
+    # No events and no prompts -> empty content, no score -> no artifact, mirror
+    # ATIF's empty-record contract so the job aggregate never sees content==[].
+    for prompts in (None, [""]):
+        rec = write_rollout_adp_jsonl(
+            tmp_path,
+            trajectory_id="empty",
+            task_id="t",
+            prompts=prompts,
+            trajectory=[],
+            model=None,
+            environment="demo",
+        )
+        assert rec is None
+        assert not (tmp_path / "trainer" / "adp.jsonl").exists()
+
+
+def test_write_job_adp_jsonl_excludes_empty_rollout(tmp_path):
+    write_rollout_adp_jsonl(
+        tmp_path / "real",
+        trajectory_id="real",
+        task_id="t",
+        prompts=None,
+        trajectory=[{"type": "agent_message", "text": "did the work"}],
+        model="m",
+        environment="demo",
+    )
+    write_rollout_adp_jsonl(
+        tmp_path / "empty",
+        trajectory_id="empty",
+        task_id="t",
+        prompts=None,
+        trajectory=[],
+        model="m",
+        environment="demo",
+    )
+    out = write_job_adp_jsonl(tmp_path)
+    ids = [json.loads(line)["id"] for line in out.read_text().splitlines()]
+    assert ids == ["real"]
+
+
+def test_reward_with_no_action_is_surfaced(caplog):
+    # An agent that crashes after consuming the prompt (no action) but is still
+    # scored: the reward must not vanish — it lands in details.terminal_reward.
+    import logging
+
+    for reward in (0.0, 1.0):
+        with caplog.at_level(logging.WARNING):
+            caplog.clear()
+            rec = trajectory_to_adp_record(
+                trajectory_id="crashed",
+                events=[],
+                prompts=["do the task"],
+                reward=reward,
+            )
+        # No action carries a reward...
+        assert all("reward" not in item for item in rec["content"])
+        # ...so the exact score is surfaced in details, with a warning.
+        assert rec["details"]["terminal_reward"] == reward
+        assert any("terminal reward" in r.message for r in caplog.records)
+
+
+def test_write_path_no_action_keeps_score(tmp_path):
+    # The write seam must still emit a scored crash rollout (content empty but a
+    # terminal reward present), carrying the score in details.terminal_reward.
+    rec = write_rollout_adp_jsonl(
+        tmp_path,
+        trajectory_id="crashed",
+        task_id="t",
+        prompts=None,
+        trajectory=[],
+        model="m",
+        environment="demo",
+        reward=1.0,
+    )
+    assert rec is not None
+    assert rec["details"]["terminal_reward"] == 1.0
+    line = json.loads((tmp_path / "trainer" / "adp.jsonl").read_text().strip())
+    assert line["details"]["terminal_reward"] == 1.0
