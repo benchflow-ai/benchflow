@@ -394,7 +394,7 @@ Real sandbox + provider runs, each skipping cleanly when its prerequisites
 |---|---|---|
 | `oracle_determinism_docker` | every oracle `solve.sh` self-scores reward 1.0 | the broken `3d-scan-calc` example oracle (ENG-256) |
 | `sandbox_parity_docker_daytona` | the same oracle task scores identically on Docker and Daytona | the rollout/daytona package split |
-| `agent_rollout_passes_gate` | a real openhands + deepseek-v4-flash run is REAL and passes the agent judge | resumed/empty/idle-timeout shells |
+| `agent_rollout_is_real_and_judged` | a real openhands + deepseek-v4-flash run is REAL and the agent judge runs over it; the verdict is recorded, not gated, since model success is stochastic | resumed/empty/idle-timeout shells |
 | `reaper_dryrun_is_safe` | `environment cleanup --dry-run` deletes nothing; foreign sandboxes are never reaped | destructive-reaper scoping |
 
 ```bash
