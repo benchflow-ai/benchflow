@@ -1,9 +1,76 @@
 """Trajectory types — raw LLM API request/response pairs captured by proxy."""
 
+import re
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+_REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"sk-ant-[a-zA-Z0-9_-]{12,}"), "***REDACTED***"),
+    (re.compile(r"sk-proj-[a-zA-Z0-9_-]{12,}"), "***REDACTED***"),
+    (re.compile(r"sk-[a-zA-Z0-9]{12,}"), "***REDACTED***"),
+    (re.compile(r"AIzaSy[A-Za-z0-9_-]{20,}"), "***REDACTED***"),
+    (re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"), "***REDACTED***"),
+    (re.compile(r"dtn_[A-Za-z0-9_]{16,}"), "***REDACTED***"),
+    (re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"), "***REDACTED***"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "***REDACTED***"),
+    (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "***REDACTED***"),
+    (
+        re.compile(
+            r'((?:"?(?:x-api-key|x-goog-api-key|api-key)"?)\s*[:=]\s*"?)'
+            r'[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+    (
+        re.compile(r'("?api_key"?\s*[:=]\s*"?)[^"\s,}\\*]+', re.IGNORECASE),
+        r"\1***REDACTED***",
+    ),
+    (
+        re.compile(
+            r'("?[A-Za-z0-9_]*(?:TOKEN|SECRET)"?\s*[:=]\s*"?)[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_-])"
+            r'("?authorization"?\s*[:=]\s*"?(?:Bearer|Token|Basic|ApiKey)\s+)'
+            r'[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_-])"
+            r'("?authorization"?\s*[:=]\s*"?)'
+            r"(?!(?:Bearer|Token|Basic|ApiKey)\b)"
+            r'[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+]
+
+
+def redact_trajectory_text(text: str) -> str:
+    """Apply trajectory secret-redaction patterns to raw text."""
+    for pattern, replacement in _REDACTION_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def redact_acp_trajectory_jsonl(trajectory: list[dict[str, Any]]) -> str:
+    """Serialize an ACP trajectory list to redacted JSONL."""
+    import json
+
+    return "\n".join(
+        redact_trajectory_text(json.dumps(event, default=str)) for event in trajectory
+    )
 
 
 class LLMRequest(BaseModel):
@@ -152,28 +219,12 @@ class Trajectory(BaseModel):
     def to_jsonl(self, *, redact_keys: bool = True) -> str:
         """Export as JSONL (one exchange per line)."""
         import json
-        import re
 
         lines = []
         for ex in self.exchanges:
             data = ex.model_dump(mode="json")
             raw = json.dumps(data, default=str)
             if redact_keys:
-                raw = re.sub(
-                    r"(sk-ant-[a-zA-Z0-9_-]{10})[a-zA-Z0-9_-]+",
-                    r"\1***REDACTED***",
-                    raw,
-                )
-                raw = re.sub(
-                    r"(sk-[a-zA-Z0-9]{10})[a-zA-Z0-9]+",
-                    r"\1***REDACTED***",
-                    raw,
-                )
-                raw = re.sub(
-                    r'("authorization"\s*:\s*"Bearer\s+)[^"]+(")',
-                    r"\1***REDACTED***\2",
-                    raw,
-                    flags=re.IGNORECASE,
-                )
+                raw = redact_trajectory_text(raw)
             lines.append(raw)
         return "\n".join(lines)

@@ -14,6 +14,7 @@ dependencies = [
     "rich>=13.0",
     "tomli-w>=1.0",
     "typer>=0.9",
+    "openreward>=0.1.126",
 ]
 authors = [
     { name = "Xiangyi Li", email = "xiangyi@benchflow.ai" },

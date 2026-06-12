@@ -15,8 +15,9 @@ Prime's hub, it drives an OpenReward environment directly through the
         # loop until out.finished; final reward is out.reward
 
 The reward of the loop is ``ToolOutput.reward`` (NOT a ``RunResult`` /
-``ToolResult``). ``client.rollout.create(...)`` is telemetry-only and is **not**
-used here — it is not the env-interaction handle.
+``ToolResult``). ``client.rollout.create(...)`` is telemetry/reporting, not the
+env-interaction handle; when a live OpenReward client is available we also
+create a rollout recording so the run appears in OpenReward's runs UI.
 
 The loop is driven by a :class:`Policy`. We ship a :class:`ScriptedPolicy`
 (schema-driven, no LLM) so the path is fully exercisable offline with a fake
@@ -42,6 +43,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -101,6 +103,26 @@ class Policy(Protocol):
     ) -> tuple[str, dict[str, Any]] | None: ...
 
 
+@dataclass(frozen=True)
+class ToolAction:
+    """A model-selected OpenReward tool call."""
+
+    name: str
+    input: dict[str, Any]
+    call_id: str | None = None
+    raw_response: Any | None = None
+
+
+@dataclass(frozen=True)
+class OpenRewardSessionContext:
+    """Live OpenReward handles opened together for one hosted-env task."""
+
+    session: Any
+    client: Any | None = None
+    task: Any | None = None
+    environment: Any | None = None
+
+
 class ScriptedPolicy:
     """Deterministic, schema-driven policy — no LLM in the loop.
 
@@ -153,18 +175,30 @@ class ScriptedPolicy:
 
 
 class ModelPolicy:
-    """Seam for a real LLM-driven policy (PR3+).
+    """LLM-driven OpenReward policy.
 
-    Not implemented offline. A future change wires a BenchFlow agent / model
-    endpoint here: read ``prompt_text`` + ``tools`` (already provider-formatted
-    via ``session.list_tools(format=...)``), ask the model for a tool call, and
-    map its response to ``(tool_name, input)``. Kept as an explicit class so the
-    driver's policy seam is visible and the scripted path stays the only thing
-    shipped in PR2.
+    The policy owns model-side tool selection only. The driver still owns
+    environment execution: this class returns ``(tool_name, input)`` and the
+    run loop calls ``session.call_tool(...)``.
     """
 
-    def __init__(self, model: str) -> None:
+    def __init__(
+        self,
+        model: str,
+        *,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> None:
+        if not model:
+            raise HostedEnvError("--model is required for OpenReward ModelPolicy")
         self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.tool_format = _tool_format_for_model(model)
+        self._transcript: list[str] = []
+        self._last_observation_step: int | None = None
+        self.last_action: ToolAction | None = None
+        self.last_model_response: Any | None = None
 
     def act(
         self,
@@ -173,10 +207,47 @@ class ModelPolicy:
         last_output: Any | None,
         step: int,
     ) -> tuple[str, dict[str, Any]] | None:
-        raise NotImplementedError(
-            "ModelPolicy is a seam for a real LLM agent and is not wired yet "
-            "(PR3+). Use ScriptedPolicy for offline runs."
+        if not tools:
+            return None
+        self._update_transcript(prompt_text, last_output, step)
+        action = _call_model_for_tool_action(
+            model=self.model,
+            prompt="\n\n".join(self._transcript),
+            tools=tools,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
         )
+        self.last_action = action
+        self.last_model_response = action.raw_response
+        self._transcript.append(
+            f"Action {step + 1}: call {action.name} with "
+            f"{json.dumps(action.input, sort_keys=True)}"
+        )
+        return action.name, action.input
+
+    def _update_transcript(
+        self,
+        prompt_text: str,
+        last_output: Any | None,
+        step: int,
+    ) -> None:
+        if not self._transcript:
+            self._transcript.append(f"Task:\n{prompt_text}")
+            self._transcript.append(
+                "You are controlling an OpenReward environment. Select exactly "
+                "one available tool call for the next step. Do not answer in prose."
+            )
+        if last_output is None or self._last_observation_step == step:
+            return
+        observation = _tool_output_to_text(last_output)
+        reward = _read_attr(last_output, "reward")
+        finished = _read_attr(last_output, "finished", False)
+        self._transcript.append(
+            "Observation from previous tool call:\n"
+            f"{observation or '<no text output>'}\n"
+            f"reward={reward!r}, finished={finished!r}"
+        )
+        self._last_observation_step = step
 
 
 def _prompt_to_text(prompt: Any) -> str:
@@ -219,6 +290,399 @@ def _read_attr(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
+def _strip_known_provider_prefix(model: str) -> str:
+    if "/" not in model:
+        return model
+    provider, bare = model.split("/", 1)
+    if provider in {"openai", "anthropic", "google", "gemini", "openrouter"}:
+        return bare
+    return model
+
+
+def _is_openai_model(model: str) -> bool:
+    return model.startswith(("openai/", "gpt-", "o1", "o3", "o4"))
+
+
+def _tool_format_for_model(model: str) -> str:
+    if _is_openai_model(model):
+        return "openai"
+    if model.startswith(("anthropic/", "claude-")):
+        raise HostedEnvError(
+            "OpenReward ModelPolicy currently supports OpenAI Responses models "
+            f"only; got {model!r}."
+        )
+    if model.startswith(("google/", "gemini/", "gemini")):
+        raise HostedEnvError(
+            "OpenReward ModelPolicy currently supports OpenAI Responses models "
+            f"only; got {model!r}."
+        )
+    raise HostedEnvError(
+        "OpenReward ModelPolicy could not infer a supported provider for "
+        f"model {model!r}; use an OpenAI model such as gpt-5.4-mini."
+    )
+
+
+def _openreward_tool_name(tool: Any) -> str:
+    if isinstance(tool, dict):
+        function = tool.get("function")
+        if isinstance(function, dict) and function.get("name") is not None:
+            return str(function["name"])
+        return str(tool.get("name") or "")
+    return str(getattr(tool, "name", ""))
+
+
+def _openreward_tool_description(tool: Any) -> str:
+    if isinstance(tool, dict):
+        function = tool.get("function")
+        if isinstance(function, dict) and function.get("description") is not None:
+            return str(function["description"])
+        return str(tool.get("description") or "")
+    return str(getattr(tool, "description", "") or "")
+
+
+def _openreward_tool_parameters(tool: Any) -> dict[str, Any]:
+    schema: Any
+    if isinstance(tool, dict):
+        function = tool.get("function")
+        if isinstance(function, dict):
+            schema = function.get("parameters") or function.get("input_schema")
+        else:
+            schema = tool.get("parameters") or tool.get("input_schema")
+    else:
+        schema = getattr(tool, "parameters", None) or getattr(tool, "input_schema", None)
+    if isinstance(schema, dict):
+        return schema
+    return {"type": "object", "properties": {}, "additionalProperties": True}
+
+
+def _tools_to_openai_responses(tools: list[Any]) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for tool in tools:
+        name = _openreward_tool_name(tool)
+        if not name:
+            continue
+        converted.append(
+            {
+                "type": "function",
+                "name": name,
+                "description": _openreward_tool_description(tool),
+                "parameters": _openreward_tool_parameters(tool),
+            }
+        )
+    if not converted:
+        raise HostedEnvError("OpenReward environment did not expose any named tools")
+    return converted
+
+
+def _call_model_for_tool_action(
+    *,
+    model: str,
+    prompt: str,
+    tools: list[Any],
+    max_tokens: int,
+    temperature: float,
+) -> ToolAction:
+    if _is_openai_model(model):
+        return _call_openai_responses_tool_action(
+            model=model,
+            prompt=prompt,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    raise HostedEnvError(f"Unsupported OpenReward ModelPolicy model: {model}")
+
+
+def _call_openai_responses_tool_action(
+    *,
+    model: str,
+    prompt: str,
+    tools: list[Any],
+    max_tokens: int,
+    temperature: float,
+) -> ToolAction:
+    try:
+        import openai
+    except ImportError as exc:
+        raise HostedEnvError(
+            "OpenAI SDK is required for OpenReward ModelPolicy with "
+            f"model {model!r}. Install the OpenAI dependency."
+        ) from exc
+
+    client = openai.OpenAI()
+    response = client.responses.create(
+        model=_strip_known_provider_prefix(model),
+        instructions=(
+            "You are an agent inside an OpenReward environment. Use exactly one "
+            "tool call. Do not return a plain text answer."
+        ),
+        input=prompt,
+        tools=_tools_to_openai_responses(tools),
+        tool_choice="required",
+        max_output_tokens=max_tokens,
+        temperature=temperature,
+        parallel_tool_calls=False,
+    )
+    action = _parse_openai_responses_tool_action(response)
+    return ToolAction(
+        name=action.name,
+        input=action.input,
+        call_id=action.call_id,
+        raw_response=response,
+    )
+
+
+def _parse_openai_responses_tool_action(response: Any) -> ToolAction:
+    output = _read_attr(response, "output", [])
+    if not isinstance(output, list):
+        raise HostedEnvError("OpenAI response did not contain an output list")
+    for item in output:
+        item_type = _read_attr(item, "type")
+        if item_type != "function_call":
+            continue
+        name = _read_attr(item, "name")
+        raw_arguments = _read_attr(item, "arguments", "{}")
+        call_id = _read_attr(item, "call_id")
+        if not isinstance(name, str) or not name:
+            raise HostedEnvError("OpenAI function_call output is missing a tool name")
+        try:
+            arguments = json.loads(raw_arguments or "{}")
+        except json.JSONDecodeError as exc:
+            raise HostedEnvError(
+                f"OpenAI function_call arguments for {name!r} were not valid JSON"
+            ) from exc
+        if not isinstance(arguments, dict):
+            raise HostedEnvError(
+                f"OpenAI function_call arguments for {name!r} must be a JSON object"
+            )
+        return ToolAction(
+            name=name,
+            input=arguments,
+            call_id=str(call_id) if call_id else None,
+        )
+    raise HostedEnvError("OpenAI model did not return a function_call tool action")
+
+
+def _policy_tool_format(policy: Policy) -> str | None:
+    value = getattr(policy, "tool_format", None)
+    return str(value) if value else None
+
+
+class _NoopOpenRewardRolloutRecorder:
+    recording_info: dict[str, Any] | None = None
+
+    def log_prompt(self, prompt_text: str) -> None:
+        return
+
+    def log_model_response(self, response: Any, *, step: int) -> bool:
+        return False
+
+    def log_tool_call(
+        self,
+        *,
+        name: str,
+        tool_input: dict[str, Any],
+        call_id: str,
+        step: int,
+    ) -> None:
+        return
+
+    def log_tool_output(
+        self,
+        output: Any,
+        *,
+        call_id: str,
+        step: int,
+    ) -> None:
+        return
+
+
+class _OpenRewardRolloutRecorder:
+    """Best-effort mirror of the BenchFlow loop into OpenReward runs."""
+
+    def __init__(self, rollout: Any) -> None:
+        self._rollout = rollout
+        rollout_id = str(getattr(rollout, "event_id", "") or "")
+        web_base_url = str(getattr(rollout, "web_base_url", "") or "")
+        if not web_base_url:
+            web_base_url = "https://openreward.ai"
+        self.recording_info = {
+            "rollout_id": rollout_id or None,
+            "url": f"{web_base_url.rstrip('/')}/rollout/{rollout_id}"
+            if rollout_id
+            else None,
+        }
+
+    @classmethod
+    def create(
+        cls,
+        opened: Any,
+        *,
+        config: HostedEnvRunConfig,
+        run_dir: Path,
+        split: str,
+        index: int,
+        normalized_model: str,
+    ) -> _OpenRewardRolloutRecorder | _NoopOpenRewardRolloutRecorder:
+        client = getattr(opened, "client", None)
+        rollout_api = getattr(client, "rollout", None)
+        create = getattr(rollout_api, "create", None)
+        if not callable(create):
+            return _NoopOpenRewardRolloutRecorder()
+
+        run_info = _openreward_run_info(
+            normalized_model=normalized_model,
+            model=config.model,
+        )
+        metadata = {
+            "benchflow_run_dir": str(run_dir),
+            "benchflow_model": config.model,
+            "benchflow_normalized_model": normalized_model,
+            "benchflow_source_env": config.source_env.env_uid,
+            "benchflow_task_index": index,
+        }
+        rollout = create(
+            run_name=str(
+                config.env_args.get("openreward_run_name")
+                or config.env_args.get("run_name")
+                or "benchflow-openreward"
+            ),
+            rollout_name=str(config.env_args.get("rollout_name") or run_dir.name),
+            environment=config.source_env.env_id,
+            variant=_openreward_variant(config.source_env),
+            split=split,
+            metadata=metadata,
+            task_spec=_openreward_task_spec(getattr(opened, "task", None)),
+            run_info=run_info,
+            print_messages=True,
+        )
+        recorder = cls(rollout)
+        if getattr(rollout, "_rollouts_disabled", False):
+            logger.warning(
+                "openreward rollout recording is disabled; run may not appear in UI"
+            )
+        return recorder
+
+    def log_prompt(self, prompt_text: str) -> None:
+        if not prompt_text:
+            return
+        self._safe_log({"type": "user_message", "content": prompt_text})
+
+    def log_model_response(self, response: Any, *, step: int) -> bool:
+        if response is None:
+            return False
+        try:
+            self._rollout.log_openai_response(
+                response,
+                metadata={"benchflow_step": step, "benchflow_source": "model"},
+            )
+            return True
+        except Exception:
+            logger.warning("openreward rollout model log failed", exc_info=True)
+            return False
+
+    def log_tool_call(
+        self,
+        *,
+        name: str,
+        tool_input: dict[str, Any],
+        call_id: str,
+        step: int,
+    ) -> None:
+        self._safe_log(
+            {
+                "type": "tool_call",
+                "name": name,
+                "call_id": call_id,
+                "content": json.dumps(tool_input, sort_keys=True),
+            },
+            metadata={"benchflow_step": step, "benchflow_source": "benchflow"},
+        )
+
+    def log_tool_output(
+        self,
+        output: Any,
+        *,
+        call_id: str,
+        step: int,
+    ) -> None:
+        reward = _read_attr(output, "reward")
+        finished = bool(_read_attr(output, "finished", False))
+        payload = {
+            "text": _tool_output_to_text(output),
+            "reward": reward,
+            "finished": finished,
+        }
+        self._safe_log(
+            {
+                "type": "tool_result",
+                "call_id": call_id,
+                "content": json.dumps(payload, sort_keys=True),
+            },
+            reward=float(reward)
+            if isinstance(reward, (int, float)) and not isinstance(reward, bool)
+            else None,
+            is_finished=finished,
+            metadata={"benchflow_step": step, "benchflow_source": "openreward_env"},
+        )
+
+    def _safe_log(self, message: Any, **kwargs: Any) -> None:
+        try:
+            self._rollout.log(message, **kwargs)
+        except Exception:
+            logger.warning("openreward rollout log failed", exc_info=True)
+
+
+def _openreward_run_info(
+    *,
+    normalized_model: str,
+    model: str,
+) -> Any | None:
+    try:
+        from openreward.models import RunInfo
+    except ImportError:
+        return None
+    return RunInfo(
+        model_name=normalized_model or model,
+        run_type="eval",
+        framework="benchflow",
+    )
+
+
+def _openreward_variant(ref: Any) -> str | None:
+    version = getattr(ref, "version", None)
+    if version and version != "latest":
+        return str(version)
+    return None
+
+
+def _openreward_task_spec(task: Any) -> dict[str, Any] | None:
+    if task is None:
+        return None
+    if isinstance(task, dict):
+        candidate = task.get("task_spec") or task.get("spec") or task
+        return candidate if isinstance(candidate, dict) else None
+    for attr in ("task_spec", "spec", "data"):
+        candidate = getattr(task, attr, None)
+        if isinstance(candidate, dict):
+            return candidate
+    model_dump = getattr(task, "model_dump", None)
+    if callable(model_dump):
+        candidate = model_dump()
+        if isinstance(candidate, dict):
+            return candidate
+    return None
+
+
+def _opened_session(opened: Any) -> Any:
+    return getattr(opened, "session", opened)
+
+
+def _policy_last_action(policy: Any) -> ToolAction | None:
+    action = getattr(policy, "last_action", None)
+    return action if isinstance(action, ToolAction) else None
+
+
 def run_hosted_env_openreward(
     config: HostedEnvRunConfig,
     *,
@@ -257,7 +721,27 @@ def run_hosted_env_openreward(
             "name is rejected by the platform."
         )
 
-    policy = policy or ScriptedPolicy()
+    split = str(config.env_args.get("split", split))
+    try:
+        index = int(config.env_args.get("index", index))
+    except (TypeError, ValueError) as exc:
+        raise HostedEnvError(
+            f"OpenReward source-env arg 'index' must be an integer, got "
+            f"{config.env_args.get('index')!r}"
+        ) from exc
+
+    scripted_answer = config.env_args.get("answer")
+    if policy is None:
+        if scripted_answer is not None or config.env_args.get("policy") == "scripted":
+            policy = ScriptedPolicy(
+                answer=str(scripted_answer) if scripted_answer is not None else None
+            )
+        else:
+            policy = ModelPolicy(
+                config.model,
+                max_tokens=config.max_tokens,
+                temperature=config.temperature,
+            )
     run_dir = _make_run_dir(config)
     normalized_model = normalize_verifiers_model(config.model) if config.model else ""
 
@@ -267,14 +751,26 @@ def run_hosted_env_openreward(
     final_reward: float | None = None
     n_tool_calls = 0
     error: str | None = None
+    recording_info: dict[str, Any] | None = None
 
     factory = session_factory or _open_openreward_session
     try:
-        with factory(config, split, index) as session:
+        with factory(config, split, index) as opened:
+            session = _opened_session(opened)
+            recorder = _OpenRewardRolloutRecorder.create(
+                opened,
+                config=config,
+                run_dir=run_dir,
+                split=split,
+                index=index,
+                normalized_model=normalized_model,
+            )
+            recording_info = recorder.recording_info
             prompt = session.get_prompt()
             prompt_text = _prompt_to_text(prompt)
             if prompt_text:
                 prompts.append(prompt_text)
+                recorder.log_prompt(prompt_text)
                 trajectory.append(
                     {
                         "type": "user_message",
@@ -282,7 +778,7 @@ def run_hosted_env_openreward(
                         "content": prompt_text,
                     }
                 )
-            tools = list(session.list_tools())
+            tools = list(session.list_tools(format=_policy_tool_format(policy)))
 
             last_output: Any | None = None
             for step in range(max_steps):
@@ -290,9 +786,26 @@ def run_hosted_env_openreward(
                 if action is None:
                     break
                 tool_name, tool_input = action
+                last_action = _policy_last_action(policy)
+                call_id = (
+                    last_action.call_id
+                    if last_action is not None and last_action.call_id
+                    else f"benchflow-step-{step}"
+                )
+                if not recorder.log_model_response(
+                    getattr(policy, "last_model_response", None),
+                    step=step,
+                ):
+                    recorder.log_tool_call(
+                        name=tool_name,
+                        tool_input=tool_input,
+                        call_id=call_id,
+                        step=step,
+                    )
                 output = session.call_tool(tool_name, tool_input)
                 n_tool_calls += 1
                 last_output = output
+                recorder.log_tool_output(output, call_id=call_id, step=step)
 
                 ts = datetime.now(UTC).isoformat()
                 trajectory.append(
@@ -351,6 +864,7 @@ def run_hosted_env_openreward(
         split=split,
         index=index,
         error=error,
+        recording_info=recording_info,
     )
     return result
 
@@ -392,8 +906,10 @@ class _OpenRewardSessionCtx:
         self._index = index
         self._client: Any = None
         self._session_cm: Any = None
+        self._environment: Any = None
+        self._task: Any = None
 
-    def __enter__(self) -> Any:
+    def __enter__(self) -> OpenRewardSessionContext:
         import openreward
 
         api_key = next(
@@ -406,10 +922,17 @@ class _OpenRewardSessionCtx:
             )
         self._client = openreward.OpenReward(api_key=api_key)
         try:
-            env = self._client.environments.get(self._config.source_env.env_id)
-            task = env.get_task(self._split, self._index)
-            self._session_cm = env.session(task=task)
-            return self._session_cm.__enter__()
+            self._environment = self._client.environments.get(
+                self._config.source_env.env_id
+            )
+            self._task = self._environment.get_task(self._split, self._index)
+            self._session_cm = self._environment.session(task=self._task)
+            return OpenRewardSessionContext(
+                session=self._session_cm.__enter__(),
+                client=self._client,
+                task=self._task,
+                environment=self._environment,
+            )
         except Exception:
             self._close_client()
             raise
@@ -477,6 +1000,7 @@ def _write_openreward_artifacts(
     split: str,
     index: int,
     error: str | None,
+    recording_info: dict[str, Any] | None = None,
 ) -> None:
     """Write the BenchFlow rollout artifact contract for an openreward run.
 
@@ -547,6 +1071,10 @@ def _write_openreward_artifacts(
 
     if rewards:
         _write_hosted_rewards_jsonl(run_dir, rewards, finished_at)
+    if recording_info:
+        (run_dir / "artifacts" / "openreward_rollout.json").write_text(
+            json.dumps(recording_info, indent=2)
+        )
 
     # Canonical Reward-plane artifacts — reuse the shared writers so the schema
     # never drifts from native rollouts.

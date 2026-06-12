@@ -19,8 +19,13 @@ import pytest
 
 from benchflow.hosted_env import HostedEnvError, HostedEnvRef, HostedEnvRunConfig
 from benchflow.openreward_env import (
+    ModelPolicy,
+    OpenRewardSessionContext,
     ScriptedPolicy,
+    ToolAction,
+    _parse_openai_responses_tool_action,
     _prompt_to_text,
+    _tools_to_openai_responses,
     run_hosted_env_openreward,
 )
 
@@ -64,11 +69,13 @@ class FakeSession:
         self._outputs = outputs
         self._prompt = prompt
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.list_tool_formats: list[Any] = []
 
     def get_prompt(self) -> list[FakeBlock]:
         return [FakeBlock(text=self._prompt)]
 
     def list_tools(self, format: Any = None) -> list[FakeToolSpec]:
+        self.list_tool_formats.append(format)
         return list(self._tools)
 
     def call_tool(
@@ -77,6 +84,34 @@ class FakeSession:
         self.calls.append((tool_name, dict(input or {})))
         idx = min(len(self.calls) - 1, len(self._outputs) - 1)
         return self._outputs[idx]
+
+
+class FakeRollout:
+    def __init__(self) -> None:
+        self.event_id = "rollout-test-id"
+        self.logs: list[tuple[Any, dict[str, Any]]] = []
+        self.openai_responses: list[tuple[Any, dict[str, Any]]] = []
+
+    def log(self, message, **kwargs):
+        self.logs.append((message, kwargs))
+
+    def log_openai_response(self, response, **kwargs):
+        self.openai_responses.append((response, kwargs))
+
+
+class FakeRolloutAPI:
+    def __init__(self) -> None:
+        self.rollout = FakeRollout()
+        self.create_calls: list[dict[str, Any]] = []
+
+    def create(self, **kwargs):
+        self.create_calls.append(kwargs)
+        return self.rollout
+
+
+class FakeOpenRewardClient:
+    def __init__(self) -> None:
+        self.rollout = FakeRolloutAPI()
 
 
 def _factory(session: FakeSession):
@@ -93,6 +128,129 @@ def _config(tmp_path: Path) -> HostedEnvRunConfig:
         model="claude-haiku-4-5",
         jobs_dir=tmp_path,
     )
+
+
+def test_openai_tool_schema_normalizes_openreward_tools() -> None:
+    """Milestone 2: OpenReward tools become OpenAI Responses tools."""
+    tools = _tools_to_openai_responses(
+        [
+            FakeToolSpec(
+                name="submit_answer",
+                description="Submit a flag",
+                input_schema={
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                },
+            ),
+            {
+                "type": "function",
+                "function": {
+                    "name": "inspect_file",
+                    "description": "Read a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                    },
+                },
+            },
+        ]
+    )
+
+    assert tools == [
+        {
+            "type": "function",
+            "name": "submit_answer",
+            "description": "Submit a flag",
+            "parameters": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+        },
+        {
+            "type": "function",
+            "name": "inspect_file",
+            "description": "Read a file",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+            },
+        },
+    ]
+
+
+def test_parse_openai_responses_function_call() -> None:
+    """Milestone 2: OpenAI Responses function_call becomes a ToolAction."""
+
+    @dataclass
+    class FakeOutput:
+        type: str
+        name: str
+        arguments: str
+
+    @dataclass
+    class FakeResponse:
+        output: list[FakeOutput]
+
+    action = _parse_openai_responses_tool_action(
+        FakeResponse(
+            output=[
+                FakeOutput(
+                    type="function_call",
+                    name="submit_answer",
+                    arguments='{"answer": "flag{ok}"}',
+                )
+            ]
+        )
+    )
+
+    assert action == ToolAction("submit_answer", {"answer": "flag{ok}"})
+
+
+def test_parse_openai_responses_rejects_bad_arguments() -> None:
+    """Milestone 2: invalid model tool-call JSON is actionable."""
+
+    @dataclass
+    class FakeOutput:
+        type: str = "function_call"
+        name: str = "submit_answer"
+        arguments: str = "{not-json"
+
+    @dataclass
+    class FakeResponse:
+        output: list[FakeOutput]
+
+    with pytest.raises(HostedEnvError, match="not valid JSON"):
+        _parse_openai_responses_tool_action(FakeResponse(output=[FakeOutput()]))
+
+
+def test_model_policy_uses_model_action_helper(monkeypatch) -> None:
+    """Milestone 2: ModelPolicy returns the model-selected tool action."""
+    seen: dict[str, object] = {}
+
+    def fake_call_model_for_tool_action(**kwargs):
+        seen.update(kwargs)
+        return ToolAction("submit_answer", {"answer": "flag{model}"})
+
+    monkeypatch.setattr(
+        "benchflow.openreward_env._call_model_for_tool_action",
+        fake_call_model_for_tool_action,
+    )
+
+    policy = ModelPolicy("gpt-5.4-mini", max_tokens=17, temperature=0.2)
+    action = policy.act(
+        "Find the flag.",
+        [FakeToolSpec(name="submit_answer")],
+        None,
+        0,
+    )
+
+    assert action == ("submit_answer", {"answer": "flag{model}"})
+    assert seen["model"] == "gpt-5.4-mini"
+    assert seen["max_tokens"] == 17
+    assert seen["temperature"] == 0.2
+    assert "Find the flag." in str(seen["prompt"])
 
 
 def test_loop_drives_to_finished_and_maps_reward(tmp_path):
@@ -112,6 +270,129 @@ def test_loop_drives_to_finished_and_maps_reward(tmp_path):
     assert result.reward == 1.0
     assert result.total_tool_calls == 1
     assert result.error is None
+
+
+def test_env_args_can_drive_scripted_smoke_answer_and_task_selector(tmp_path):
+    session = FakeSession(
+        tools=[FakeToolSpec(name="submit_answer")],
+        outputs=[
+            FakeToolOutput(blocks=[FakeBlock("submitted")], reward=0.0, finished=True)
+        ],
+    )
+    seen: dict[str, object] = {}
+
+    @contextmanager
+    def factory(config, split, index):
+        seen["split"] = split
+        seen["index"] = index
+        yield session
+
+    config = _config(tmp_path)
+    config.env_args.update({"split": "validation", "index": 3, "answer": "dummy"})
+    result = run_hosted_env_openreward(config, session_factory=factory)
+
+    assert seen == {"split": "validation", "index": 3}
+    assert session.calls == [("submit_answer", {"answer": "dummy"})]
+    assert result.reward == 0.0
+
+
+def test_default_policy_is_model_policy_and_requests_openai_tools(
+    tmp_path, monkeypatch
+):
+    """Milestone 3: default OpenReward execution uses ModelPolicy."""
+    session = FakeSession(
+        tools=[FakeToolSpec(name="submit_answer")],
+        outputs=[
+            FakeToolOutput(blocks=[FakeBlock("submitted")], reward=1.0, finished=True)
+        ],
+    )
+
+    def fake_call_model_for_tool_action(**kwargs):
+        assert kwargs["model"] == "gpt-5.4-mini"
+        assert kwargs["tools"]
+        return ToolAction("submit_answer", {"answer": "flag{model}"})
+
+    monkeypatch.setattr(
+        "benchflow.openreward_env._call_model_for_tool_action",
+        fake_call_model_for_tool_action,
+    )
+    config = HostedEnvRunConfig(
+        source_env=HostedEnvRef.parse("openreward:GeneralReasoning/KellyBench"),
+        model="gpt-5.4-mini",
+        jobs_dir=tmp_path,
+    )
+
+    result = run_hosted_env_openreward(config, session_factory=_factory(session))
+
+    assert session.list_tool_formats == ["openai"]
+    assert session.calls == [("submit_answer", {"answer": "flag{model}"})]
+    assert result.reward == 1.0
+    assert result.total_tool_calls == 1
+
+
+def test_live_context_creates_openreward_rollout_recording(tmp_path, monkeypatch):
+    """Milestone 3: OpenReward platform rollout recording is created."""
+    session = FakeSession(
+        tools=[FakeToolSpec(name="submit_answer")],
+        outputs=[
+            FakeToolOutput(blocks=[FakeBlock("submitted")], reward=1.0, finished=True)
+        ],
+    )
+    client = FakeOpenRewardClient()
+
+    @dataclass
+    class FakeModelResponse:
+        output: list[Any] = field(default_factory=list)
+
+    response = FakeModelResponse()
+
+    def fake_call_model_for_tool_action(**kwargs):
+        return ToolAction(
+            "submit_answer",
+            {"answer": "flag{model}"},
+            call_id="call_123",
+            raw_response=response,
+        )
+
+    @contextmanager
+    def factory(config, split, index):
+        yield OpenRewardSessionContext(
+            session=session,
+            client=client,
+            task={"task_spec": {"id": "task-0"}},
+        )
+
+    monkeypatch.setattr(
+        "benchflow.openreward_env._call_model_for_tool_action",
+        fake_call_model_for_tool_action,
+    )
+    config = HostedEnvRunConfig(
+        source_env=HostedEnvRef.parse("openreward:GeneralReasoning/KellyBench"),
+        model="gpt-5.4-mini",
+        jobs_dir=tmp_path,
+    )
+
+    result = run_hosted_env_openreward(config, session_factory=factory)
+
+    assert result.reward == 1.0
+    assert client.rollout.create_calls
+    create_call = client.rollout.create_calls[0]
+    assert create_call["run_name"] == "benchflow-openreward"
+    assert create_call["environment"] == "GeneralReasoning/KellyBench"
+    assert create_call["split"] == "train"
+    assert create_call["task_spec"] == {"id": "task-0"}
+    assert client.rollout.rollout.openai_responses == [
+        (response, {"metadata": {"benchflow_step": 0, "benchflow_source": "model"}})
+    ]
+    assert any(
+        message.get("type") == "tool_result"
+        and message.get("call_id") == "call_123"
+        for message, _kwargs in client.rollout.rollout.logs
+    )
+    recording = json.loads(
+        (result.run_dir / "artifacts" / "openreward_rollout.json").read_text()
+    )
+    assert recording["rollout_id"] == "rollout-test-id"
 
 
 def test_loop_continues_until_finished(tmp_path):
