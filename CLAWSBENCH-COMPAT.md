@@ -329,6 +329,41 @@ needs; validate the `/testbed_verify` lockdown before any bump.
   emit the identical detached shape, bounded timeout recorded, per-service log path →
   27 passed; sweep `-k "manifest or environment or service"` → 163 passed / 23 skipped.
   ruff check + format clean.
+- **2026-06-12 resync vs `origin/release/v0.6.0`** · release advanced ~10 commits (19 bug-hunt
+  fixes, agent-as-judge CI, ty/format gates) and **refactored two files the compat set touches**.
+  Reconciled on `compat/clawsbench-v06-fixes-resync` (off the PR branch), then merged that into
+  `clawsbench-compat` (merge `9d08a57b`) and fast-forwarded `env0-compat` to the same tip so the
+  smolclaws pin stays consistent (`env0-compat` == `clawsbench-compat`). **What moved & how it was
+  re-homed (logic unchanged, just relocated into release's new module homes):**
+  - `src/benchflow/rollout.py` was **deleted**, replaced by the `rollout/` package. The canonical
+    reward-finalization gate `_ensure_canonical_rewards` now lives in `rollout/_setup.py`
+    (re-exported by `rollout/__init__.py`). **BF-3** lenient threading (`lenient=reward_lenient_from_env()`)
+    and **BF-8** range threading (`task=` param → `reward_range=declared_reward_range(task)`) were
+    re-applied there; both call sites (`_verify_rollout` in `_setup.py`, `Rollout.verify` in
+    `__init__.py`) pass `task=`.
+  - `src/benchflow/task/verifier.py` was split into a thin re-export shim; the real `Verifier`
+    (incl. `_parse_reward_text` / `_parse_reward_json` / aggregate compat) moved to
+    `task/verifier_core.py`. **BF-3** (lenient `_parse_reward_json`) and **BF-8** (`self._reward_range`
+    in `__init__`, threaded into `is_valid_reward_number`, `validate_reward_map`, all three
+    `apply_aggregate_policy` calls, and `reward_range_phrase` error text) were re-homed into
+    `verifier_core.py`. The shim took release's side verbatim (no stray re-exports).
+  - **BF-7** (`--context-root`) was embedded in `eval_create`'s inline config-building, which
+    release extracted into `EvalCreateRequest` → `build_eval_plan` → `EvalPlan.make_eval_config` /
+    `_run_config_file_eval`. Re-homed by adding the `context_root` field to `EvalCreateRequest`
+    (`eval_plan.py`), threading it through `make_eval_config`'s `EvaluationConfig(...)`, passing it
+    in the `EvalCreateRequest(...)` construction (`cli/main.py`), and re-adding the CLI-wins override
+    on the config-file path (`_run_config_file_eval`). The `--context-root` CLI option auto-merged.
+  - **BF-1/2/4/6/9/10** auto-merged clean (no conflicts); the BF-3 core in `rewards/validation.py`
+    and BF-8's `declared_reward_range`/`reward_range`/`reward_range_phrase` helpers carried over
+    untouched (release didn't modify them).
+  Verified on `clawsbench-compat`/`env0-compat`: full suite **3763 passed, 49 skipped, 1 failed**;
+  the lone failure (`test_oracle_chokepoint.py::…::test_native_verifier_dir_uploads_to_verifier_mount`)
+  is **pre-existing on release/v0.6.0** — release's `/tests`→`/verifier` alias (commit `e66f6aef`)
+  added a new first `exec` call but left that test's `await_args_list[0]` assertion stale; reproduces
+  on pristine release with the compat changes reverted, so not caused by this reconciliation.
+  All 349 compat-specific tests (BF-1..10 incl. `test_reward_range.py` + `test_context_root_cli.py`)
+  pass against the new structure. `ruff check`/`format` + `ty check src/` clean; import smoke OK.
+  PR #670 (head `compat/clawsbench-v06-fixes`, fast-forwarded to the resync) re-synced + MERGEABLE.
 
 ## BF-10 — JS-agent bootstrap pins Node 22.14 but installs openclaw@latest (needs >=22.19)
 **Severity:** high · **Status:** FIXED · **Upstream:** filing pending
