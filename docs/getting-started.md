@@ -10,9 +10,32 @@ A 5-minute path from install to first eval.
 
 ## Install
 
+`0.6.0` is in **release-candidate** testing and is **not on PyPI yet** (the
+newest build there is still `0.5.x`). While 0.6 is RC, install the latest
+`0.6.0-rc.*` wheel from the
+[GitHub releases page](https://github.com/benchflow-ai/benchflow/releases) —
+open it, pick the newest `0.6.0-rc.*` prerelease, and install its `.whl` asset:
+
 ```bash
-uv tool install benchflow
+uv tool install --prerelease allow \
+  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.3/benchflow-0.6.0rc3-py3-none-any.whl'
 ```
+
+The URL pins `0.6.0-rc.3` (newest at time of writing); if a later `0.6.0-rc.*`
+prerelease exists, use that tag and filename instead. The `--prerelease allow`
+flag is required for BenchFlow's pinned LiteLLM release-candidate dependency. If
+`uv` reports `Executables already exist: bench, benchflow`, rerun the same
+command with `--force` to replace older non-`uv` entrypoints.
+
+**Once `0.6.0` ships to PyPI**, the plain commands will work:
+
+```bash
+pip install --upgrade benchflow                                  # once 0.6.0 is on PyPI
+uv tool install --prerelease allow --upgrade 'benchflow==0.6.0'  # once 0.6.0 is on PyPI
+```
+
+Until then, `pip install --upgrade benchflow` resolves only to `0.5.x`. See
+[Release channels](./release.md) for the full command matrix.
 
 This gives you the `benchflow` (alias `bench`) CLI plus the Python SDK. To install for editable development:
 
@@ -77,6 +100,32 @@ native default auth. For Azure Foundry, use models such as
 from `AZURE_API_ENDPOINT` and routes the selected agent through a generated
 LiteLLM gateway config.
 
+Several providers with user-supplied endpoints — `deepseek`, `glm`, `kimi`,
+`minimax`, `hunyuan`, and others — follow the `<PROVIDER>_API_KEY` +
+`<PROVIDER>_BASE_URL` convention; providers with fixed endpoints (such as
+`zai` or `openai`) need only the API key. For example, `deepseek/<model>`
+reads:
+
+```bash
+export DEEPSEEK_API_KEY=...
+export DEEPSEEK_BASE_URL=https://api.deepseek.com
+```
+
+If the base URL is missing, the run fails with
+`Provider 'deepseek' for model 'deepseek/<model>' requires DEEPSEEK_BASE_URL to build the provider base URL.`
+
+These variables must be **exported** to reach the benchflow runtime — a plain
+shell assignment or a `source .env` without `export` stays local to your shell
+and never reaches the `bench` process. The portable pattern for a `.env` file:
+
+```bash
+set -a; source .env; set +a
+bench eval create ...
+```
+
+(benchflow also picks up well-known credential keys from a `.env` file in the
+current directory; exporting works from any directory.)
+
 ### Precedence
 
 If multiple credentials are set, benchflow / the agent CLI uses provider-specific
@@ -89,15 +138,14 @@ option, unset the higher one in your shell before running.
 ## Run your first eval
 
 ```bash
-# Single task from a remote repo
+# Single task from a local directory
 GEMINI_API_KEY=... bench eval create \
-  --source-repo benchflow-ai/skillsbench \
-  --source-path tasks/edit-pdf \
+  --tasks-dir tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --sandbox docker
 
-# Single task from local path
+# Single task with mounted skills
 GEMINI_API_KEY=... bench eval create \
   --tasks-dir tasks/edit-pdf \
   --agent gemini \
@@ -110,9 +158,9 @@ GEMINI_API_KEY=... bench eval create \
 # A whole batch from YAML config
 bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
-# Batch from remote repo with concurrency
+# Batch over a local tasks directory with concurrency
 GEMINI_API_KEY=... bench eval create \
-    --source-repo benchflow-ai/skillsbench --source-path tasks \
+    --tasks-dir tasks \
     --agent gemini --model gemini-3.1-pro-preview --sandbox daytona --concurrency 32
 
 # List the registered agents
@@ -120,16 +168,67 @@ bench agent list
 ```
 
 `bench eval create` is the primary command for running evaluations — it works for
-single tasks, batch runs, and remote repos. Use `--source-repo <org/repo>
---source-path <subpath>` to fetch from a remote repo, `--tasks-dir <dir>` for a
-local directory, or `--config <config.yaml>` for a YAML config. Results land under
-`jobs/<eval-name>/<rollout-name>/` — `result.json` for the verifier output,
-`trajectory/acp_trajectory.jsonl` for the full agent trace.
+single tasks, batch runs, and remote repos. Use `--tasks-dir <dir>` for a local
+directory or `--config <config.yaml>` for a YAML config.
+
+You can also fetch tasks straight from a remote repo with
+`--source-repo <org/repo> --source-path <subpath>`, but note that this clones
+the full repository (`git clone --depth 1` into `.cache/datasets/<org>/<repo>/`
+under the enclosing git repo root, or the current directory when you run
+outside one) — large for big task repos. To download only the task you need,
+use a sparse checkout and point `--tasks-dir` at it:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse https://github.com/benchflow-ai/skillsbench
+cd skillsbench && git sparse-checkout set tasks/edit-pdf
+bench eval create --tasks-dir tasks/edit-pdf --agent gemini --model gemini-3.1-pro-preview
+```
 
 When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
 option. See [Architecture: skill loading](./architecture.md#skill-loading) for
 how mounted skills reach the agent and how `name`, `description`, and `full`
 differ.
+
+### Where results land
+
+Each run writes under `--jobs-dir` (default `jobs/`):
+
+```
+<jobs-dir>/
+  summary.json                      # copy of the latest job summary (overwritten by the next run)
+  <YYYY-MM-DD__HH-MM-SS>/           # job directory, named by start time
+    summary.json                    # job-level aggregate
+    <task>__<hash8>/                # one rollout: task name + 8-char id
+      result.json                   # rollout summary: rewards, errors, token usage/cost
+      rewards.jsonl                 # reward record for this rollout
+      timing.json                   # per-phase timing breakdown
+      prompts.json                  # prompts sent to the agent
+      trajectory/
+        acp_trajectory.jsonl        # full agent trace (ACP events)
+        llm_trajectory.jsonl        # raw provider requests/responses (when the usage-tracking proxy captured exchanges)
+      trainer/
+        verifiers.jsonl             # trainer-ready scored trajectory (Verifiers/ORS record)
+        atif.json                   # ATIF trajectory record (omitted if the trajectory is empty)
+        adp.jsonl                   # ADP trajectory record
+      verifier/
+        ctrf.json                   # CTRF test report (when test.sh emits one)
+        reward.txt                  # raw verifier reward (0.0-1.0)
+        test-stdout.txt             # verifier stdout
+```
+
+### Reading results
+
+Exit code 0 means the pipeline completed — it is not a pass/fail signal. A
+rollout whose reward is below the pass threshold still exits 0 and prints
+`[FAIL]` with `Score: 0/1`: `Score` is pass-threshold aggregation (a task
+counts as passed only at reward 1.0), while `reward` — in `result.json` and
+`verifier/reward.txt` — is the raw verifier value. Config errors (unknown
+agents, missing credentials) exit 1, and so do runs with agent or verifier
+errors. CLI usage errors (bad flags) exit 2.
+
+The Docker sandbox needs the Docker daemon running. There is no up-front
+check — if the daemon is down the run fails partway through rather than at
+startup, so start Docker before `bench eval create --sandbox docker`.
 
 ## Run from Python
 
@@ -156,6 +255,7 @@ print(result.n_tool_calls)
 
 | If you want to… | Read |
 |------------------|------|
+| Understand how BenchFlow runs *any* benchmark (the three-layer model) | [Run any benchmark](./running-any-benchmark.md) |
 | Understand the model — Rollout, Scene, Role, Verifier | [Concepts](./concepts.md) |
 | Author a task | [Task authoring](./task-authoring.md) |
 | Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [Use cases](./use-cases.md) |

@@ -80,12 +80,16 @@ class AskUserRequest:
     Attributes:
         prompt:  The question the agent is asking the client/user.
         options: Enumerated answers, when the agent offers a choice.
+        option_kinds: ACP option kind by option id, when the agent provides
+                      it. This preserves the finite branch set's semantics
+                      without forcing handlers to parse raw ACP payloads.
         request_id: Correlates the request with the answer the handler
                     returns.
     """
 
     prompt: str
     options: list[str] = field(default_factory=list)
+    option_kinds: dict[str, str] = field(default_factory=dict)
     request_id: str = ""
 
 
@@ -212,16 +216,19 @@ class ACPSessionAdapter:
 
         async def _bridge(params: dict[str, Any]) -> str:
             options_raw = params.get("options", []) or []
-            # Surface the enumerated option IDs as the branchable set. The
-            # raw ACP payload also carries ``kind`` / ``name`` per option,
-            # but the architecture-level ``AskUserRequest`` is intentionally
-            # minimal — handlers that need richer context can read the raw
-            # params via ``ACPClient.on_ask_user`` directly.
-            options = [
-                str(o.get("optionId", ""))
-                for o in options_raw
-                if isinstance(o, dict) and o.get("optionId")
-            ]
+            # Surface the enumerated option IDs as the branchable set, plus
+            # their ACP kinds so policy handlers can distinguish reject from
+            # allow-always even when option ids are provider-specific.
+            options: list[str] = []
+            option_kinds: dict[str, str] = {}
+            for option in options_raw:
+                if not isinstance(option, dict) or not option.get("optionId"):
+                    continue
+                option_id = str(option.get("optionId", ""))
+                options.append(option_id)
+                kind = option.get("kind")
+                if isinstance(kind, str) and kind:
+                    option_kinds[option_id] = kind
             tool_call = params.get("toolCall") or {}
             prompt = (
                 str(tool_call.get("title", "")) if isinstance(tool_call, dict) else ""
@@ -229,6 +236,7 @@ class ACPSessionAdapter:
             request = AskUserRequest(
                 prompt=prompt,
                 options=options,
+                option_kinds=option_kinds,
                 request_id=str(params.get("sessionId", "")),
             )
             return await handler(request)

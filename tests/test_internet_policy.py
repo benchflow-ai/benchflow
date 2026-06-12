@@ -284,7 +284,7 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
     )
 
 
-# ── Shell-command verification: setup_cmd produces valid agent config ──────
+# Shell-command verification: setup_cmd produces valid agent config
 
 
 def test_task_allows_internet_when_explicitly_true():

@@ -82,6 +82,18 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
             )
         elif event["type"] in ("user_message", "agent_message", "agent_thought"):
             out.append({"type": event["type"], "text": event["text"]})
+        elif event["type"] == "agent_timeout":
+            out.append(
+                {
+                    "type": "agent_timeout",
+                    "reason": event["reason"],
+                    "timeout_sec": event["timeout_sec"],
+                    "pending_tool_call_ids": event["pending_tool_call_ids"],
+                    "terminal_trajectory_complete": event[
+                        "terminal_trajectory_complete"
+                    ],
+                }
+            )
     return out
 
 

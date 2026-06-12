@@ -145,8 +145,17 @@ class DefaultRolloutPlanes:
     async def lockdown_paths(self, env: Any, locked_paths: list[str]) -> None:
         await lockdown_paths(env, locked_paths)
 
-    async def install_agent(self, env: Any, agent: str, rollout_dir: Path) -> Any:
-        return await install_agent(env, agent, rollout_dir)
+    async def install_agent(
+        self,
+        env: Any,
+        agent: str,
+        rollout_dir: Path,
+        *,
+        sandbox_setup_timeout: int = 120,
+    ) -> Any:
+        return await install_agent(
+            env, agent, rollout_dir, sandbox_setup_timeout=sandbox_setup_timeout
+        )
 
     async def write_credential_files(self, *args: Any, **kwargs: Any) -> None:
         await write_credential_files(*args, **kwargs)

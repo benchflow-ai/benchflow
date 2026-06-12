@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.5.0"
+version = "0.6.0rc6"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,6 +12,8 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "rich>=13.0",
+    # Dataset registry bench_version checks (PEP 440 specifier sets).
+    "packaging>=24",
     "litellm[proxy]==1.88.0rc1",
     "tomli-w>=1.0",
     "typer>=0.9",
@@ -38,7 +40,6 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = [
-    "packaging>=24",
     "pre-commit>=3.7",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
@@ -49,8 +50,8 @@ sandbox-daytona = [
     # >=0.183: list() returns an auto-paginating Iterator[Sandbox] (the older
     # paged list(page=, limit=) -> .items API was removed).
     # >=0.184: the top-level sync `Daytona` export is present (0.176-0.183 only
-    # shipped `AsyncDaytona`); the dashboard's daytona_status.snapshot() uses the
-    # sync client, so this floor is required for that panel to import.
+    # shipped `AsyncDaytona`); `sandbox/daytona.py` uses the sync client, so this
+    # floor is required for it to import.
     "daytona>=0.184.0",
     "tenacity>=8.0",
 ]
@@ -67,6 +68,13 @@ judge = [
     "anthropic>=0.40",
     "openai>=1.40",
     "google-genai>=1.0",
+]
+# The deepagents (LangChain) harness used as an agent-under-test in the
+# integration suite's agent-as-judge robustness scenarios. Optional: only the
+# deepagents integration test needs it.
+deepagents = [
+    "deepagents>=0.6",
+    "langchain-openai>=0.2",
 ]
 
 [project.scripts]
@@ -112,6 +120,7 @@ target-version = "py312"
 extend-exclude = [
     ".claude/skills/skill-creator",
     "benchmarks/**/tasks/**/environment/claw-*",
+    "tests/fixtures/skillsbench_slice",
 ]
 
 [tool.ruff.lint]
@@ -154,6 +163,8 @@ include = ["src", "tools"]
 # produce cascading type errors when those packages aren't installed.
 exclude = [
     "src/benchflow/sandbox/daytona.py",
+    "src/benchflow/sandbox/daytona_strategies.py",
+    "src/benchflow/sandbox/daytona_dind.py",
     "src/benchflow/sandbox/modal_impl.py",
     "src/benchflow/sandbox/docker.py",
     "src/benchflow/sandbox/_base.py",

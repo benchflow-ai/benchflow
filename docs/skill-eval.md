@@ -4,7 +4,7 @@ Test whether your agent skill actually helps agents perform better.
 ## Install
 
 ```bash
-uv tool install benchflow
+uv tool install --prerelease allow 'benchflow==0.6.0'
 ```
 
 ## Overview
@@ -14,8 +14,8 @@ file, generates benchmark tasks from it, runs them with and without the
 skill installed, and reports the "lift" — how much the skill improves
 agent performance.
 
-Current v0.4 dogfood notes are tracked in
-[`docs/reports/2026-05-19-skill-eval-v04.md`](./reports/2026-05-19-skill-eval-v04.md).
+0.6 task-standard validation is in
+[`docs/reports/2026-06-09-task-standard-validation.md`](./reports/2026-06-09-task-standard-validation.md).
 
 ## Quick start
 
@@ -436,7 +436,7 @@ BenchFlow generates everything ephemeral — only results persist.
 **CI integration:**
 ```bash
 # In your skill's CI pipeline
-uv tool install benchflow
+uv tool install --prerelease allow 'benchflow==0.6.0'
 bench skills eval . --agent claude-agent-acp --no-baseline
 ```
 

@@ -1,12 +1,14 @@
 # Authoring tasks
 A BenchFlow task packages an instruction, a sandboxed environment, and a verifier into a directory that BenchFlow runs and scores automatically.
 
+This page covers the Harbor-compatible split layout (`task.toml` + `instruction.md`). For the native single-document format, see [Authoring native task.md tasks](./task-authoring-task-md.md).
+
 ---
 
 ## Directory layout
 
 > [!NOTE]
-> BenchFlow will provide first-party support for Kaggle, Verifiers, and OpenReward Standard.
+> BenchFlow will provide first-party support for hosted competition platforms, Verifiers, and OpenReward Standard.
 
 You can create [Harbor-format tasks](https://www.harborframework.com/docs/tasks) in BenchFlow with a `task.toml` config file, separate `instruction.md`, sandbox assets under `environment/`, verifier files under `tests/`, and an optional `solution/` oracle.
 
@@ -38,7 +40,7 @@ category    = "programming"
 tags        = ["bash", "files"]
 
 [agent]
-timeout_sec = 300            # optional — seconds before agent is killed (unset = no wall-clock cap)
+timeout_sec = 300            # strongly recommended — unset means no wall-clock cap
 # user = "agent"             # optional — run agent as this user/UID
 
 [verifier]
@@ -215,7 +217,7 @@ python3 -c "print($PASSED / $TOTAL)" > /logs/verifier/reward.txt
 
 ## solution/ (optional)
 
-Include when you want to verify the task is solvable or provide a reference implementation. When BenchFlow runs with `-a oracle`, it copies `solution/` to `/solution/` and runs `solution/solve.sh` instead of an ACP agent.
+Include when you want to verify the task is solvable or provide a reference implementation. When BenchFlow runs with `--agent oracle`, it copies `solution/` to `/solution/` and runs `solution/solve.sh` instead of an ACP agent.
 
 `solve.sh` has the same filesystem access as the agent — write only to `/app/`, not to `/logs/verifier/`.
 
@@ -229,9 +231,10 @@ echo "Hello, world!" > /app/hello.txt
 ## CLI
 
 ```bash
-# Scaffold a new task from scratch
-bench tasks init my-task
-bench tasks init my-task --no-pytest --no-solution
+# Scaffold a new task in this legacy split layout
+# (without --format legacy, init scaffolds the native task.md format)
+bench tasks init my-task --format legacy
+bench tasks init my-task --format legacy --no-pytest --no-solution
 
 # Generate tasks from agent traces (personal benchmark curation)
 bench tasks generate --from-local                          # from local Claude Code sessions
@@ -263,7 +266,7 @@ canonical loading semantics and nudge modes.
 
 `bench tasks generate` converts agent traces (Claude Code sessions, opentraces records, or HuggingFace datasets) into task directories with `task.toml`, `instruction.md`, and a file-existence `test.sh`. Use `--dry-run` to preview traces before generating. See [CLI reference](./reference/cli.md#bench-tasks-generate) for all flags.
 
-`bench tasks check` validates that `task.toml` (parses), `instruction.md` (non-empty), `environment/Dockerfile`, and `tests/` (non-empty) all exist. `[agent].timeout_sec` is optional and is not required by the check. Exits with code 1 on failure (CI-friendly).
+`bench tasks check` validates task definition presence (`task.md` or legacy `task.toml` + `instruction.md`), a non-empty instruction, `environment/Dockerfile`, and a runnable verifier entrypoint (`verifier/` or legacy `tests/`). It surfaces `task.toml` parse errors but does not require `[agent].timeout_sec` (unset means no wall-clock cap). Exits with code 1 on failure (CI-friendly).
 
 ---
 

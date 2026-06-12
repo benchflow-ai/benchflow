@@ -33,7 +33,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-# ── Segment validation ───────────────────────────────────────────────
+# Segment validation
 
 
 def safe_path_segment(name: str, *, kind: str = "name") -> str:
@@ -117,7 +117,7 @@ def assert_within(child: Path, root: Path) -> Path:
     return resolved_child
 
 
-# ── Symlink defense ──────────────────────────────────────────────────
+# Symlink defense
 
 
 def is_safe_regular_file(path: Path) -> bool:

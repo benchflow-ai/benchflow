@@ -23,6 +23,9 @@ from benchflow.skill_eval import (
     generate_tasks,
     load_eval_dataset,
 )
+from benchflow.task import Task
+from benchflow.task.document import TaskDocument
+from benchflow.task.paths import TaskPaths
 
 
 @pytest.fixture
@@ -123,19 +126,18 @@ class TestSkillEvalIntegration:
         assert len(tasks) == 3
 
         for task_dir in tasks:
-            assert (task_dir / "instruction.md").exists()
-            assert (task_dir / "task.toml").exists()
+            assert (task_dir / "task.md").exists()
             assert (task_dir / "environment" / "Dockerfile").exists()
-            assert (task_dir / "tests" / "case.json").exists()
-            assert (task_dir / "tests" / "judge.py").exists()
-            assert (task_dir / "tests" / "test.sh").exists()
+            assert (task_dir / "verifier" / "case.json").exists()
+            assert (task_dir / "verifier" / "judge.py").exists()
+            assert (task_dir / "verifier" / "test.sh").exists()
 
             # Skill should be copied in
             skill_dst = task_dir / "environment" / "skills" / "mock-audit-skill"
             assert skill_dst.exists()
             assert (skill_dst / "SKILL.md").exists()
             assert (skill_dst / "scripts" / "check_claim.py").exists()
-            assert 'skills_dir = "/skills"' in (task_dir / "task.toml").read_text()
+            assert Task(task_dir).config.environment.skills_dir == "/skills"
 
         cleanup_tasks([with_dir])
         assert not with_dir.exists()
@@ -148,7 +150,7 @@ class TestSkillEvalIntegration:
         assert len(tasks) == 3
 
         for task_dir in tasks:
-            assert (task_dir / "instruction.md").exists()
+            assert (task_dir / "task.md").exists()
             # Skill should NOT be present
             skill_dst = task_dir / "environment" / "skills" / "mock-audit-skill"
             assert not skill_dst.exists()
@@ -164,10 +166,10 @@ class TestSkillEvalIntegration:
         out = Path(tempfile.mkdtemp()) / "tasks"
         tasks = generate_tasks(dataset, out, with_skill=True)
 
-        instruction = (tasks[0] / "instruction.md").read_text()
+        instruction = TaskDocument.from_path(tasks[0] / "task.md").instruction
         assert "Cross-Domain=True" in instruction
 
-        instruction2 = (tasks[1] / "instruction.md").read_text()
+        instruction2 = TaskDocument.from_path(tasks[1] / "task.md").instruction
         assert "Dynamic=False" in instruction2
 
         cleanup_tasks([out])
@@ -177,7 +179,9 @@ class TestSkillEvalIntegration:
         out = Path(tempfile.mkdtemp()) / "tasks"
         tasks = generate_tasks(dataset, out, with_skill=True)
 
-        case_data = json.loads((tasks[0] / "tests" / "case.json").read_text())
+        case_data = json.loads(
+            (TaskPaths(tasks[0]).tests_dir / "case.json").read_text()
+        )
         assert case_data["id"] == "detect-overclaim"
         assert "overclaim" in case_data["ground_truth"].lower()
         assert len(case_data["expected_behavior"]) == 2
@@ -202,8 +206,7 @@ class TestSkillEvalIntegration:
         out = Path(tempfile.mkdtemp()) / "tasks"
         tasks = generate_tasks(dataset, out, with_skill=True)
 
-        toml_content = (tasks[0] / "task.toml").read_text()
-        assert "timeout_sec = 120" in toml_content
+        assert Task(tasks[0]).config.agent.timeout_sec == 120
 
         cleanup_tasks([out])
 

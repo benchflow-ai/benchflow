@@ -28,12 +28,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from benchflow.adapters.inbound import (
+    InboundCompatibility,
     InboundTask,
     carry_native_subtrees,
     manifest_from_task_config,
 )
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.task.config import TaskConfig
+from benchflow.task.imports import import_task_config_toml
 
 # Foreign files carried straight through, keyed by their native location.
 # Harbor's layout already matches BenchFlow's, so each key equals its source.
@@ -77,9 +79,11 @@ class HarborAdapter:
                 f"Harbor task is missing instruction.md: {instruction_path}"
             )
 
-        # TaskConfig was internalized from Harbor — the validator already
-        # accepts the foreign task.toml verbatim.
-        config = TaskConfig.model_validate_toml(config_path.read_text())
+        # The native schema stays strict. Harbor forks sometimes add extension
+        # keys; preserve those in adapter compatibility metadata instead of
+        # pretending BenchFlow can execute them.
+        imported = import_task_config_toml(config_path.read_text(), source=cls.source)
+        config = imported.config
         instruction = instruction_path.read_text()
 
         name = config.task.name if config.task is not None else root.name
@@ -112,6 +116,11 @@ class HarborAdapter:
             manifest=manifest,
             config=config,
             files=files,
+            compatibility=InboundCompatibility(
+                source=cls.source,
+                config_extra=imported.report.extra,
+                config_extra_paths=imported.report.extra_paths,
+            ),
         )
 
     @staticmethod

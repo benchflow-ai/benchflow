@@ -9,11 +9,19 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from benchflow.agents.protocol import AskUserRequest
 from benchflow.rollout import Role, Rollout, RolloutConfig, Scene, Turn
-from benchflow.sandbox.user import BaseUser, FunctionUser, PassthroughUser, RoundResult
+from benchflow.sandbox.user import (
+    BaseUser,
+    DocumentNudgeUser,
+    FunctionUser,
+    ModelDocumentNudgeUser,
+    PassthroughUser,
+    RoundResult,
+)
 from benchflow.task.verifier import VerifierResult
 
-# ── Unit tests for User types ──
+# Unit tests for User types
 
 
 class TestPassthroughUser:
@@ -67,6 +75,95 @@ class TestFunctionUser:
         assert await user.run(2, "task", passing) is None
 
 
+class TestDocumentNudgeUser:
+    @pytest.mark.asyncio
+    async def test_private_facts_reveal_only_after_targeted_question(self):
+        user = DocumentNudgeUser(
+            persona="Ask clarifying questions.",
+            private_facts={"hidden_need": "Use the quarterly file."},
+        )
+
+        assert await user.run(0, "Solve safely.") == "Solve safely."
+        vague = RoundResult(
+            round=0,
+            trajectory=[{"type": "agent_message", "text": "I need more info."}],
+        )
+        assert await user.run(1, "Solve safely.", vague) is None
+
+        natural = RoundResult(
+            round=1,
+            trajectory=[{"type": "agent_message", "text": "Which file should I use?"}],
+        )
+        assert await user.run(2, "Solve safely.", natural) == (
+            "Additional user detail for hidden need: Use the quarterly file."
+        )
+
+        targeted = RoundResult(
+            round=2,
+            trajectory=[
+                {
+                    "type": "agent_message",
+                    "text": "What is the hidden need for this task?",
+                }
+            ],
+        )
+        assert await user.run(3, "Solve safely.", targeted) is None
+
+
+class TestModelDocumentNudgeUser:
+    @pytest.mark.asyncio
+    async def test_model_user_receives_private_context_but_initial_prompt_is_public(
+        self,
+    ):
+        calls: list[tuple[str, str]] = []
+
+        async def call_model(model: str, prompt: str) -> str:
+            calls.append((model, prompt))
+            return "Please use the quarterly file."
+
+        user = ModelDocumentNudgeUser(
+            model="claude-haiku",
+            persona="Only reveal facts after clarification.",
+            private_facts={"hidden_need": "Use the quarterly file."},
+            call_model=call_model,
+        )
+
+        assert await user.run(0, "Solve safely.") == "Solve safely."
+        result = await user.run(
+            1,
+            "Solve safely.",
+            RoundResult(
+                round=0,
+                rewards={"reward": 0.25},
+                scene="shared-work",
+                role="planner",
+                handoff_from="planner",
+                handoff_to="implementer",
+                trajectory=[
+                    {"type": "agent_message", "text": "Which file should I use?"}
+                ],
+            ),
+        )
+
+        assert result == "Please use the quarterly file."
+        assert calls[0][0] == "claude-haiku"
+        assert "Use the quarterly file." in calls[0][1]
+        assert "Previous scene: shared-work" in calls[0][1]
+        assert "Previous role: planner" in calls[0][1]
+        assert "Previous handoff: planner -> implementer" in calls[0][1]
+        assert "which file should i use?" in calls[0][1]
+
+    @pytest.mark.asyncio
+    async def test_model_user_stop_token_stops_loop(self):
+        user = ModelDocumentNudgeUser(
+            model="gemini-2.5-flash",
+            private_facts={"hidden_need": "Use the quarterly file."},
+            call_model=lambda _model, _prompt: "STOP",
+        )
+
+        assert await user.run(1, "Solve safely.", RoundResult(round=0)) is None
+
+
 class TestBaseUser:
     @pytest.mark.asyncio
     async def test_not_implemented(self):
@@ -75,7 +172,7 @@ class TestBaseUser:
             await user.run(0, "task")
 
 
-# ── Integration tests for user loop in Rollout ──
+# Integration tests for user loop in Rollout
 
 
 @dataclass
@@ -177,6 +274,68 @@ class RecordingUser(BaseUser):
 
 class TestUserLoop:
     @pytest.mark.asyncio
+    async def test_document_confirmation_policy_installs_fail_closed_handler(self):
+        user = DocumentNudgeUser(
+            private_facts={"hidden_need": "Use the quarterly file."},
+            confirmation_policy="human",
+        )
+        trial = _make_user_trial(user)
+
+        installed = trial._install_document_confirmation_handler(user)
+
+        assert installed is True
+        assert trial._ask_user_handler is not None
+        answer = await trial._ask_user_handler(
+            AskUserRequest(
+                prompt="May I change files?",
+                options=["choice_a", "choice_b", "choice_c"],
+                option_kinds={
+                    "choice_a": "allow_once",
+                    "choice_b": "reject",
+                    "choice_c": "allow_always",
+                },
+                request_id="req-1",
+            )
+        )
+        assert answer == "choice_b"
+
+    @pytest.mark.asyncio
+    async def test_document_confirmation_policy_preserves_explicit_handler(self):
+        user = DocumentNudgeUser(
+            private_facts={"hidden_need": "Use the quarterly file."},
+            confirmation_policy="human",
+        )
+        trial = _make_user_trial(user)
+
+        async def explicit_handler(_request: AskUserRequest) -> str:
+            return "allow_once"
+
+        trial.on_ask_user(explicit_handler)
+        installed = trial._install_document_confirmation_handler(user)
+
+        assert installed is False
+        assert trial._ask_user_handler is explicit_handler
+
+    @pytest.mark.asyncio
+    async def test_document_confirmation_policy_handler_clears_on_user_loop_error(
+        self,
+    ):
+        class FailingSetupUser(DocumentNudgeUser):
+            async def setup(self, instruction: str, solution: str | None = None):
+                raise RuntimeError("setup exploded")
+
+        user = FailingSetupUser(
+            private_facts={"hidden_need": "Use the quarterly file."},
+            confirmation_policy="human",
+        )
+        trial = _make_user_trial(user)
+
+        with pytest.raises(RuntimeError, match="setup exploded"):
+            await trial._run_user_loop()
+
+        assert trial._ask_user_handler is None
+
+    @pytest.mark.asyncio
     async def test_user_loop_calls_setup_and_run(self):
         user = RecordingUser(max_rounds=1)
         trial = _make_user_trial(user, max_rounds=3)
@@ -232,6 +391,125 @@ class TestUserLoop:
         assert rr.round == 0
         assert rr.rewards == {"exact_match": 0.5}
         assert rr.verifier_output == "1 failed"
+
+    @pytest.mark.asyncio
+    async def test_document_user_loop_runs_multi_scene_single_role_sequence(self):
+        user = DocumentNudgeUser(
+            persona="Reveal private facts only after clarification.",
+            private_facts={"hidden_need": "Use the quarterly file."},
+        )
+        config = RolloutConfig(
+            task_path=Path("tasks/fake"),
+            scenes=[
+                Scene(
+                    name="plan",
+                    roles=[Role("planner", "gemini")],
+                    turns=[Turn("planner", "Plan the work.")],
+                ),
+                Scene(
+                    name="implement",
+                    roles=[Role("implementer", "gemini")],
+                    turns=[Turn("implementer", "Apply the plan.")],
+                ),
+            ],
+            user=user,
+            max_user_rounds=2,
+        )
+        trial = Rollout(config)
+        trial._env = FakeEnv()
+        trial._resolved_prompts = ["Base instruction."]
+        rollout_dir = Path(tempfile.mkdtemp(prefix="benchflow-test-"))
+        trial._rollout_dir = rollout_dir
+        verifier_dir = rollout_dir / "verifier"
+        verifier_dir.mkdir(parents=True, exist_ok=True)
+        trial._rollout_paths = type("P", (), {"verifier_dir": verifier_dir})()
+
+        executed_prompts: list[str] = []
+
+        async def mock_execute(prompts=None):
+            executed_prompts.extend(prompts or [])
+            return [], 0
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock) as connect_as,
+            patch.object(trial, "execute", side_effect=mock_execute),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=({"exact_match": 0.0}, None, None),
+            ),
+        ):
+            await trial._run_user_loop()
+
+        assert [call.args[0].name for call in connect_as.await_args_list] == [
+            "planner",
+            "implementer",
+        ]
+        assert executed_prompts == ["Plan the work.", "Apply the plan."]
+
+    @pytest.mark.asyncio
+    async def test_document_user_loop_runs_sequential_team_handoff_scene(self):
+        user = DocumentNudgeUser(
+            persona="Reveal private facts only after clarification.",
+            private_facts={"hidden_need": "Use the quarterly file."},
+            handoff_kind="sequential-shared",
+            handoff_team="build_review",
+        )
+        config = RolloutConfig(
+            task_path=Path("tasks/fake"),
+            scenes=[
+                Scene(
+                    name="shared-work",
+                    roles=[Role("planner", "gemini"), Role("implementer", "gemini")],
+                    turns=[
+                        Turn("planner", "Plan the work."),
+                        Turn("implementer", "Apply the plan."),
+                    ],
+                ),
+            ],
+            user=user,
+            max_user_rounds=2,
+        )
+        trial = Rollout(config)
+        trial._env = FakeEnv()
+        trial._resolved_prompts = ["Base instruction."]
+        rollout_dir = Path(tempfile.mkdtemp(prefix="benchflow-test-"))
+        trial._rollout_dir = rollout_dir
+        verifier_dir = rollout_dir / "verifier"
+        verifier_dir.mkdir(parents=True, exist_ok=True)
+        trial._rollout_paths = type("P", (), {"verifier_dir": verifier_dir})()
+
+        executed_prompts: list[str] = []
+
+        async def mock_execute(prompts=None):
+            executed_prompts.extend(prompts or [])
+            return [], 0
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock) as connect_as,
+            patch.object(trial, "execute", side_effect=mock_execute),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=({"exact_match": 0.0}, None, None),
+            ),
+        ):
+            await trial._run_user_loop()
+
+        assert [call.args[0].name for call in connect_as.await_args_list] == [
+            "planner",
+            "implementer",
+        ]
+        assert executed_prompts == ["Plan the work.", "Apply the plan."]
+        log_lines = (rollout_dir / "user_rounds.jsonl").read_text().splitlines()
+        assert '"handoff_from": null' in log_lines[0]
+        assert '"handoff_to": null' in log_lines[0]
+        assert '"handoff_from": "planner"' in log_lines[1]
+        assert '"handoff_to": "implementer"' in log_lines[1]
 
     @pytest.mark.asyncio
     async def test_user_loop_respects_max_rounds(self):
@@ -305,7 +583,7 @@ class TestUserLoop:
         trial._env = FakeEnv()
         trial._resolved_prompts = ["task"]
 
-        with pytest.raises(ValueError, match="single-role"):
+        with pytest.raises(ValueError, match="exactly one role"):
             await trial._run_user_loop()
 
     @pytest.mark.asyncio
@@ -332,6 +610,106 @@ class TestUserLoop:
             await trial._run_user_loop()
 
         assert "user.run() failed" in trial._error
+
+    @pytest.mark.asyncio
+    async def test_explicit_stop_does_not_resurrect_user(self):
+        """A classic user that stops (returns None) in the scene-step loop must
+        not be re-invoked by the free-round loop.
+
+        Counts user.run() invocations and agent rounds. The user returns a live
+        prompt on any call after the first, so if the free-round loop wrongly
+        re-invokes run(), the user is resurrected and extra agent rounds fire —
+        which these counts catch. Regression guard for the break fall-through.
+        """
+
+        class StopThenResurrectUser(BaseUser):
+            def __init__(self) -> None:
+                self.run_calls = 0
+
+            async def run(self, round, instruction, round_result=None):
+                self.run_calls += 1
+                if self.run_calls == 1:
+                    return None  # explicit stop on the single scene step
+                return "resurrected prompt"
+
+        user = StopThenResurrectUser()
+        trial = _make_user_trial(user, max_rounds=5)
+
+        agent_rounds = 0
+
+        async def mock_execute(prompts=None):
+            nonlocal agent_rounds
+            agent_rounds += 1
+            return [], 0
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock),
+            patch.object(trial, "execute", side_effect=mock_execute),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=(None, None, None),
+            ),
+        ):
+            await trial._run_user_loop()
+
+        # Stopped at the first (and only) scene step: run() called exactly once,
+        # zero agent rounds executed, and no spurious error recorded.
+        assert user.run_calls == 1
+        assert agent_rounds == 0
+        assert trial._error is None
+
+    @pytest.mark.asyncio
+    async def test_raise_terminates_loop_without_retry(self):
+        """When user.run() raises in the scene-step loop, the loop terminates
+        with the error set and must not retry run() or run further agent rounds.
+
+        The user succeeds on a retry, so a fall-through into the free-round loop
+        would execute extra rounds while self._error stays set — a half-script
+        rollout reported as errored. The call/round counts make that visible.
+        """
+
+        class RaiseThenSucceedUser(BaseUser):
+            def __init__(self) -> None:
+                self.run_calls = 0
+
+            async def run(self, round, instruction, round_result=None):
+                self.run_calls += 1
+                if self.run_calls == 1:
+                    raise RuntimeError("transient user error")
+                return "retry prompt"
+
+        user = RaiseThenSucceedUser()
+        trial = _make_user_trial(user, max_rounds=5)
+
+        agent_rounds = 0
+
+        async def mock_execute(prompts=None):
+            nonlocal agent_rounds
+            agent_rounds += 1
+            return [], 0
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock),
+            patch.object(trial, "execute", side_effect=mock_execute),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=(None, None, None),
+            ),
+        ):
+            await trial._run_user_loop()
+
+        # The raise terminates the loop: run() called exactly once, no agent
+        # rounds executed, and the error is recorded for round 0.
+        assert user.run_calls == 1
+        assert agent_rounds == 0
+        assert trial._error is not None
+        assert "user.run() failed at round 0" in trial._error
 
 
 class TestSoftVerify:
@@ -424,7 +802,7 @@ class TestSoftVerify:
 
         assert rewards is None
         assert "soft verifier crashed" in error
-        assert "without numeric 'reward'" in error
+        assert "numeric 'reward' or aggregate policy" in error
 
     @pytest.mark.asyncio
     async def test_soft_verify_runs_cleanup_cmd(self):

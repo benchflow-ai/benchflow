@@ -48,9 +48,7 @@ class TestRewardFunc:
             return 0.0
 
 
-# ---------------------------------------------------------------------------
 # LLM-as-judge prompt templates
-# ---------------------------------------------------------------------------
 
 _VERDICT_PROMPT = string.Template(
     """You are evaluating an AI agent's work product against a specific quality criterion.
@@ -141,9 +139,7 @@ Respond with JSON only:
 )
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc
-# ---------------------------------------------------------------------------
 
 
 class LLMJudgeRewardFunc:
@@ -259,8 +255,6 @@ class LLMJudgeRewardFunc:
 
         return await self._rubric_score(rubric, rollout_dir)
 
-    # -- legacy path -------------------------------------------------------
-
     @staticmethod
     def _legacy_score(rollout_dir: Path) -> float:
         """Read a pre-computed judge score (backward compat)."""
@@ -272,8 +266,6 @@ class LLMJudgeRewardFunc:
             return float(text.splitlines()[0].strip())
         except (ValueError, IndexError):
             return 0.0
-
-    # -- rubric path --------------------------------------------------------
 
     async def _rubric_score(self, rubric: RubricConfig, rollout_dir: Path) -> float:
         from benchflow.rewards.file_readers import find_deliverables
@@ -369,8 +361,6 @@ class LLMJudgeRewardFunc:
         self._write_details(rollout_dir, results, aggregate_score)
 
         return aggregate_score
-
-    # -- helpers ------------------------------------------------------------
 
     @staticmethod
     def _gather_agent_output(

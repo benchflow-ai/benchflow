@@ -12,7 +12,7 @@ import pytest
 
 from benchflow.learner_store import Generation, LearnerState, LearnerStore
 
-# --- LearnerState: the (memory + skills) payload ---
+# LearnerState: the (memory + skills) payload
 
 
 def test_learner_state_starts_empty():
@@ -31,7 +31,7 @@ def test_learner_state_copy_is_independent():
     assert state.skills == {"s": "body"}
 
 
-# --- the empty store ---
+# the empty store
 
 
 def test_store_starts_at_generation_zero():
@@ -49,7 +49,7 @@ def test_store_current_is_a_copy_not_the_live_state():
     assert store.current().memory == {}
 
 
-# --- commit: stamp a generation ---
+# commit: stamp a generation
 
 
 def test_commit_advances_the_generation_counter():
@@ -100,7 +100,7 @@ def test_commit_snapshots_state_defensively():
     assert store.current().memory == {"x": 1}
 
 
-# --- revert: roll back a generation on regression ---
+# revert: roll back a generation on regression
 
 
 def test_revert_restores_a_prior_generation():
@@ -181,7 +181,7 @@ def test_revert_forward_raises():
         store._revert(2)
 
 
-# --- the learning curve / regression helper ---
+# the learning curve / regression helper
 
 
 def test_learning_curve_is_metric_per_generation_in_order():
@@ -220,7 +220,7 @@ def test_regressed_respects_a_tolerance():
     assert store._regressed(0.70, tolerance=0.05) is True
 
 
-# --- commit_or_revert: the continual-learning step ---
+# commit_or_revert: the continual-learning step
 
 
 def test_commit_or_revert_keeps_an_improvement():

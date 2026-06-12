@@ -25,7 +25,15 @@ import httpx
 import yaml
 
 from benchflow.agents.codex_config import apply_codex_provider_config
+from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
+from benchflow.providers.litellm_bedrock_preflight import (
+    BEDROCK_PATCH_PREFLIGHT_SOURCE,
+    BedrockPatchPreflightError,
+    preflight_host_bedrock_patch,
+    preflight_sandbox_bedrock_patch,
+    route_requires_bedrock_patch,
+)
 from benchflow.providers.litellm_config import (
     LITELLM_MASTER_KEY_ENV,
     LITELLM_MODEL_ALIAS_ENV,
@@ -38,10 +46,9 @@ from benchflow.providers.litellm_logging import (
     callback_module_source,
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
-    usage_unavailable,
 )
 from benchflow.trajectories.types import Trajectory
-from benchflow.usage_tracking import UsageTrackingConfig
+from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
 logger = logging.getLogger(__name__)
 
@@ -447,12 +454,13 @@ async def _start_host_litellm(
             "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
         }
     )
+    litellm_executable = _host_litellm_executable()
     stdout = stdout_path.open("ab")
     stderr = stderr_path.open("ab")
     try:
         process = subprocess.Popen(
             [
-                _host_litellm_executable(),
+                litellm_executable,
                 "--config",
                 str(config_path),
                 "--host",
@@ -481,6 +489,14 @@ async def _start_host_litellm(
     )
     try:
         await _poll_host_health(runner)
+        if route_requires_bedrock_patch(route):
+            # Fail closed before the agent launches when the Bedrock 4.8+
+            # thinking patch did not activate (#602).
+            await asyncio.to_thread(
+                preflight_host_bedrock_patch,
+                env=env,
+                litellm_executable=litellm_executable,
+            )
     except BaseException:
         # A proxy that never became healthy still holds provider credentials and
         # an on-disk config with the master key — tear it down, don't leak it.
@@ -573,6 +589,7 @@ async def _upload_runtime_files_to_sandbox(
         "state": f"{runtime_dir}/state.json",
         "venv": f"{runtime_dir}/venv",
         "launch_config": f"{runtime_dir}/launch_config.json",
+        "preflight": f"{runtime_dir}/bedrock_patch_preflight.py",
     }
     result = await sandbox.exec(f"mkdir -p {shlex.quote(runtime_dir)}", timeout_sec=20)
     if result.return_code != 0:
@@ -591,6 +608,9 @@ async def _upload_runtime_files_to_sandbox(
         sandbox, f"import {_PATCH_MODULE}\n", paths["sitecustomize"], ".py"
     )
     await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
+    await _upload_text(
+        sandbox, BEDROCK_PATCH_PREFLIGHT_SOURCE, paths["preflight"], ".py"
+    )
     return paths
 
 
@@ -765,6 +785,16 @@ async def _start_sandbox_litellm(
             port=port,
             stderr_path=paths["stderr"],
         )
+        if route_requires_bedrock_patch(route):
+            # Fail closed before the agent launches when the Bedrock 4.8+
+            # thinking patch did not activate (#602). On Daytona this proxy is
+            # the only protection — there is no host proxy to fall back to.
+            await preflight_sandbox_bedrock_patch(
+                sandbox,
+                python=python,
+                runtime_dir=runtime_dir,
+                preflight_path=paths["preflight"],
+            )
     except BaseException:
         # Never leak a half-started proxy (provider keys + master_key on disk).
         await _terminate_sandbox_litellm(
@@ -961,6 +991,13 @@ async def ensure_litellm_runtime(
             reason="usage_tracking=off leaves provider traffic untouched",
         )
 
+    if uses_native_subscription_auth(agent, model, agent_env):
+        return await _skip_litellm_runtime(
+            agent_env,
+            runtime,
+            reason="native subscription auth will use agent ACP usage telemetry",
+        )
+
     if not needs_litellm_runtime(agent, model):
         if usage_cfg.mode == "required" and agent != "oracle":
             raise RuntimeError(
@@ -1047,6 +1084,8 @@ async def ensure_litellm_runtime(
                 session_id=session_id,
                 agent_name=agent,
             )
+    except BedrockPatchPreflightError:
+        raise
     except Exception as exc:
         return await _fallback_or_raise_for_unavailable_litellm(
             usage_cfg=usage_cfg,
