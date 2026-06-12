@@ -32,7 +32,11 @@ from benchflow._utils.scoring import (
     classify_verifier_error,
     count_result_outcomes,
 )
-from benchflow._utils.source_provenance import source_issues, source_matches_parent
+from benchflow._utils.source_provenance import (
+    is_sha256_digest,
+    source_issues,
+    source_matches_parent,
+)
 from benchflow.trajectories.metrics import (
     count_skill_invocations,
     result_skill_invocations,
@@ -304,6 +308,73 @@ def _source_hash_truth_issues(source: object, label: str) -> list[str]:
     return _source_git_truth_issues(source_dict, local_path, label)
 
 
+# Dataset identity stamp (dataset-versioning plan: benchflow #690 + dev-run
+# digest stamping follow-up). dataset_name/dataset_version mark registry
+# dataset runs; task_digest pins the exact task content for every run.
+_DATASET_STAMP_KEYS = ("dataset_name", "dataset_version", "task_digest")
+
+
+def _dataset_stamp_issues(artifact: object, label: str) -> list[str]:
+    """Audit the dataset identity stamp on one result.json/config.json.
+
+    Rules: dataset_name and dataset_version travel together; a dataset run
+    must carry a task_digest; any task_digest must be ``sha256:<64 hex>``.
+    A bare task_digest without dataset fields is a dev run — allowed.
+    """
+    if not isinstance(artifact, dict):
+        return []
+    artifact_dict = cast(dict[str, Any], artifact)
+    name = artifact_dict.get("dataset_name")
+    version = artifact_dict.get("dataset_version")
+    digest = artifact_dict.get("task_digest")
+    if name is None and version is None and digest is None:
+        return []
+    issues: list[str] = []
+    if (name is None) != (version is None):
+        issues.append(f"{label}: dataset_name and dataset_version must travel together")
+    for field_name, value in (("dataset_name", name), ("dataset_version", version)):
+        if value is not None and (not isinstance(value, str) or not value):
+            issues.append(f"{label}: {field_name} must be a non-empty string")
+    if name is not None and digest is None:
+        issues.append(f"{label}: dataset-stamped artifact missing task_digest")
+    if digest is not None and not is_sha256_digest(digest):
+        issues.append(f"{label}: task_digest must be 'sha256:<64 hex>'")
+    return issues
+
+
+def _task_digest_truth_issues(result: object, label: str) -> list[str]:
+    """Recompute the task content digest when the task dir is still on disk.
+
+    Complements ``_source_hash_truth_issues``: ``source.file_hashes`` audits
+    per-file hashes, this audits the single registry-algorithm digest the
+    leaderboard pipeline keys on.
+    """
+    if not isinstance(result, dict):
+        return []
+    result_dict = cast(dict[str, Any], result)
+    digest = result_dict.get("task_digest")
+    if not is_sha256_digest(digest):
+        return []  # absent or malformed — format issues reported elsewhere
+    source = result_dict.get("source")
+    if not isinstance(source, dict):
+        return []
+    local_path_raw = source.get("local_path")
+    if not isinstance(local_path_raw, str):
+        return []
+    local_path = Path(local_path_raw)
+    if not (local_path / "task.toml").exists():
+        return []
+    try:
+        from benchflow._utils.task_authoring import task_digest
+
+        actual = task_digest(local_path)
+    except Exception as e:
+        return [f"{label}: task_digest could not be recomputed: {e}"]
+    if actual != digest:
+        return [f"{label}: task_digest does not match local_path content"]
+    return []
+
+
 def _git_stdout(cwd: Path, *args: str) -> str | None:
     completed = subprocess.run(
         ["git", "-C", str(cwd), *args],
@@ -535,6 +606,18 @@ def check_agent(agent_dir: Path) -> dict:
         if source_truth_issues:
             findings["issues"].extend(source_truth_issues)
             findings["ok"] = False
+        dataset_stamp_issues = _dataset_stamp_issues(
+            r, f"{r.get('task_name', '?')}: result.json"
+        )
+        if dataset_stamp_issues:
+            findings["issues"].extend(dataset_stamp_issues)
+            findings["ok"] = False
+        digest_truth_issues = _task_digest_truth_issues(
+            r, f"{r.get('task_name', '?')}: result.json"
+        )
+        if digest_truth_issues:
+            findings["issues"].extend(digest_truth_issues)
+            findings["ok"] = False
         _config_path, config, config_error = _load_config(result_file)
         if config_error:
             findings["issues"].append(f"{r.get('task_name', '?')}: {config_error}")
@@ -637,6 +720,18 @@ def check_agent(agent_dir: Path) -> dict:
             if config.get("source") != r.get("source"):
                 findings["issues"].append(
                     f"{r.get('task_name', '?')}: config.json source does not match result.json"
+                )
+                findings["ok"] = False
+            config_dataset_issues = _dataset_stamp_issues(
+                config, f"{r.get('task_name', '?')}: config.json"
+            )
+            if config_dataset_issues:
+                findings["issues"].extend(config_dataset_issues)
+                findings["ok"] = False
+            if any(config.get(k) != r.get(k) for k in _DATASET_STAMP_KEYS):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: config.json dataset stamp "
+                    f"does not match result.json"
                 )
                 findings["ok"] = False
 
@@ -768,6 +863,17 @@ def check_agent(agent_dir: Path) -> dict:
                     "summary.json missing source provenance and not all results have source"
                 )
                 findings["ok"] = False
+            # Dataset identity must agree across summary.json and every
+            # result.json — one leaderboard namespace per dataset version.
+            for dataset_key in ("dataset_name", "dataset_version"):
+                dataset_values = {r.get(dataset_key) for r in results}
+                dataset_values.add(summary.get(dataset_key))
+                if len(dataset_values) > 1:
+                    findings["issues"].append(
+                        f"summary.json {dataset_key} does not agree across "
+                        f"summary and results: {sorted(map(repr, dataset_values))}"
+                    )
+                    findings["ok"] = False
             expected_model = _expected(agent, "model")
             expected_environment = _expected(agent, "environment")
             expected_concurrency = _expected(agent, "concurrency")
