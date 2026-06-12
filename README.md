@@ -37,6 +37,12 @@ Use the exact `benchflow==0.5.2` pin for the public CLI. The
 release-candidate dependency; the exact BenchFlow pin keeps you off internal
 preview builds.
 
+> **Previewing v0.6?** v0.6 (the task.md task standard, the `bench agent`
+> adoption router, ATIF/ADP trajectory artifacts, OpenReward interop) is in
+> release-candidate testing. See [docs/v0.6-preview.md](docs/v0.6-preview.md)
+> for how to install the RC and which v0.6 docs to read. `pip install benchflow`
+> stays on `0.5.2` until v0.6 ships.
+
 Internal users who want the newest preview published from `main` should omit
 the exact public pin:
 
