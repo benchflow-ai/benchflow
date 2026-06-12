@@ -151,11 +151,6 @@ def contains_verifier_dep_install_marker(text: str) -> bool:
     return any(marker in lower for marker in VERIFIER_DEP_INSTALL_MARKERS)
 
 
-def _looks_like_verifier_dep_install_error(error: str) -> bool:
-    """Backward-compatible internal alias for dep-install marker matching."""
-    return contains_verifier_dep_install_marker(error)
-
-
 def _looks_like_verifier_infra_error(error: str) -> bool:
     return any(
         marker in error

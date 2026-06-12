@@ -72,7 +72,6 @@ class StdioTransport(Transport):
         self._env = env
         self._cwd = cwd
         self._process: asyncio.subprocess.Process | None = None
-        self._read_buffer = ""
 
     async def start(self) -> None:
         import os
