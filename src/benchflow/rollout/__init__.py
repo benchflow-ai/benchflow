@@ -73,7 +73,11 @@ from benchflow.contracts import (
     default_rollout_planes,
 )
 from benchflow.contracts import RoundResult as RoundResult
-from benchflow.diagnostics import RolloutDiagnostics
+from benchflow.diagnostics import (
+    ProviderApiErrorDiagnostic,
+    RolloutDiagnostics,
+    SuspectedApiErrorDiagnostic,
+)
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
@@ -155,11 +159,15 @@ from benchflow.rollout._usage import (
 from benchflow.rollout._usage import _as_nonnegative_int as _as_nonnegative_int
 from benchflow.rollout._usage import _native_acp_usage_delta as _native_acp_usage_delta
 from benchflow.rollout._usage import (
+    _provider_api_failure_summary_from_runtime as _provider_api_failure_summary_from_runtime,
+)
+from benchflow.rollout._usage import (
     _provider_auth_status_from_runtime as _provider_auth_status_from_runtime,
 )
 from benchflow.rollout._usage import (
     _zero_native_acp_usage_metrics as _zero_native_acp_usage_metrics,
 )
+from benchflow.rollout._usage import classify_api_failure as classify_api_failure
 
 # Step / user-loop drivers live in ``_user_loop`` as free functions taking the
 # Rollout; the thin methods below delegate to these engine aliases.
@@ -252,6 +260,10 @@ class Rollout:
         # trajectory on stop()). Read by _provider_auth_status() so ACP-error
         # classification can fail fast on auth failures (#546/#564).
         self._provider_auth_status_cached: int | None = None
+        # Provider API failure summary (all statuses >= 400), snapshotted in
+        # cleanup() alongside the auth status — consumed by the post-rollout
+        # silent-API-failure classifier in _build_result().
+        self._api_failure_summary_cached: dict[str, Any] | None = None
 
         # Populated by start()
         self._sandbox_id: str | None = None
@@ -1245,6 +1257,9 @@ class Rollout:
             self._provider_auth_status_cached = _provider_auth_status_from_runtime(
                 usage_runtime
             )
+            self._api_failure_summary_cached = (
+                _provider_api_failure_summary_from_runtime(usage_runtime)
+            )
             try:
                 self._write_llm_trajectory(usage_runtime)
             except Exception as e:
@@ -1682,8 +1697,75 @@ class Rollout:
         env_sandbox_id = getattr(getattr(self, "_env", None), "sandbox_id", None)
         return env_sandbox_id if isinstance(env_sandbox_id, str) else None
 
+    def _maybe_classify_api_error(self) -> None:
+        """Detect a silent provider API failure after the rollout finished.
+
+        Runs only when no other error was recorded. Layer 1 (proxy-proven):
+        every captured provider request failed and the agent produced zero
+        tokens -> error_category "api_error". Layer 2 (zero-signal): no proxy
+        failure evidence, but the agent ended with zero tokens AND zero tool
+        calls -> "suspected_api_error" (e.g. the agent rejected the model id
+        against its own catalog and never issued a request). Both null the
+        reward so the slot is excluded from score denominators instead of
+        polluting them as a fake healthy fail; the slot stays rerun-able and
+        the batch is never interrupted.
+        """
+        if self._error is not None:
+            return
+        # Only judge rollouts where the agent actually ran: when no execute()
+        # recorded a prompt, this is a setup/export failure path that owns its
+        # own error channels (#389) — zero activity there is expected, not a
+        # silent API failure.
+        if not getattr(self, "_executed_prompts", None):
+            return
+        # getattr-defensive: tests construct partial Rollout doubles that
+        # bypass __init__ (same pattern as _task_skill_policy below).
+        usage_metrics = getattr(self, "_usage_metrics", None) or {}
+        total_tokens = _as_nonnegative_int(usage_metrics.get("total_tokens"))
+        verdict, info = classify_api_failure(
+            getattr(self, "_api_failure_summary_cached", None),
+            total_tokens=total_tokens,
+            n_tool_calls=getattr(self, "_n_tool_calls", 0),
+        )
+        if verdict is None:
+            return
+        if verdict == "api_error":
+            subcategory = info.get("subcategory") or "provider_error"
+            kind = "transient" if info.get("transient") else "permanent"
+            diag = ProviderApiErrorDiagnostic(
+                subcategory=subcategory,
+                transient=bool(info.get("transient")),
+                dominant_status=info.get("dominant_status"),
+                status_counts=info.get("status_counts"),
+                total_requests=info.get("total_requests") or 0,
+                failed_requests=info.get("failed_requests") or 0,
+                fingerprint=info.get("fingerprint") or "",
+            )
+            self._diagnostics.set(diag)
+            self._error = (
+                f"provider api error [{subcategory}/{kind}] "
+                f"HTTP {info.get('dominant_status')} on "
+                f"{diag.failed_requests}/{diag.total_requests} requests"
+            )
+        else:
+            diag = SuspectedApiErrorDiagnostic(
+                total_tokens=total_tokens,
+                n_tool_calls=self._n_tool_calls,
+                total_requests=info.get("total_requests") or 0,
+                failed_requests=info.get("failed_requests") or 0,
+            )
+            self._diagnostics.set(diag)
+            self._error = (
+                "suspected provider api error: agent ended with zero tokens "
+                "and zero tool calls (no scoreable model activity)"
+            )
+        # Unhealthy by definition: drop any verifier reward so the slot is
+        # excluded from score denominators (rerun-able, never counted).
+        self._rewards = None
+
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
+        self._maybe_classify_api_error()
         # For Scene/multi-turn rollouts, each execute() call records the
         # prompt(s) it sent into self._executed_prompts. Use that as the
         # authoritative prompt list so n_prompts and prompts.json reflect
