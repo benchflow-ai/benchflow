@@ -17,6 +17,13 @@ from benchflow.trajectories.types import (
     redact_trajectory_text,
 )
 
+# Fake token fixtures assembled from split literals so the full token string
+# never appears verbatim in source (GitHub secret-scanning push protection
+# scans raw text). The runtime value still matches the redaction patterns.
+_FAKE_GHP = "ghp" + "_" + "16C7e42F292c6912E7710c838347Ae178B4abcde"
+_FAKE_GH_PAT = "github" + "_pat_" + "11ABCDE0Y0abcdefghij_klmnopqrstuvwxyz0123456789"
+_FAKE_XOXB = "xox" + "b-" + "1234567890-0987654321-abcDEFghiJKLmnoPQR"
+
 
 def _jsonl_for_request_body(body: dict) -> str:
     traj = Trajectory(
@@ -88,6 +95,30 @@ def _jsonl_for_request_body(body: dict) -> str:
             '{"api-key": "abc123secret456value"}',
             "abc123secret456value",
             id="api-key-azure",
+        ),
+        pytest.param(
+            "github classic PAT ghp_",
+            '{"key": "' + _FAKE_GHP + '"}',
+            "16C7e42F292c6912E7710c838347Ae178B4abcde",
+            id="github-ghp",
+        ),
+        pytest.param(
+            "github fine-grained PAT",
+            '{"key": "' + _FAKE_GH_PAT + '"}',
+            "11ABCDE0Y0abcdefghij_klmnopqrstuvwxyz0123456789",
+            id="github-pat",
+        ),
+        pytest.param(
+            "slack bot token xoxb-",
+            '{"key": "' + _FAKE_XOXB + '"}',
+            "1234567890-0987654321-abcDEFghiJKLmnoPQR",
+            id="slack-xoxb",
+        ),
+        pytest.param(
+            "generic TOKEN carrier",
+            "GITHUB_TOKEN=plainvaluewithnoprefix12345",
+            "plainvaluewithnoprefix12345",
+            id="generic-token",
         ),
     ],
 )
@@ -217,6 +248,8 @@ def test_to_jsonl_redacts_raw_env_dump_in_message():
                 "content": (
                     "GEMINI_API_KEY=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx\n"
                     "DAYTONA_API_KEY=dtn_FAKEFAKEFAKEFAKEFAKE12345678\n"
+                    "GITHUB_TOKEN=" + _FAKE_GHP + "\n"
+                    "SLACK_TOKEN=" + _FAKE_XOXB + "\n"
                     "x-api-key: abc123secret456value"
                 ),
             }
@@ -227,6 +260,11 @@ def test_to_jsonl_redacts_raw_env_dump_in_message():
     assert "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx" not in jsonl
     assert "dtn_FAKEFAKEFAKEFAKEFAKE12345678" not in jsonl
     assert "abc123secret456value" not in jsonl
+    assert _FAKE_GHP not in jsonl
+    assert _FAKE_XOXB not in jsonl
+    # Env var names are preserved so the dump stays readable/auditable.
+    assert "GITHUB_TOKEN" in jsonl
+    assert "SLACK_TOKEN" in jsonl
 
 
 # PR #585 finding 2: audit-sensitive tokens redacted whole (no live prefix)
@@ -289,7 +327,9 @@ def test_acp_trajectory_jsonl_redacts_event_content(tmp_path):
             "content": (
                 "Here is the environment:\n"
                 "GEMINI_API_KEY=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx\n"
-                "export DAYTONA_API_KEY=dtn_FAKEFAKEFAKEFAKEFAKE12345678"
+                "export DAYTONA_API_KEY=dtn_FAKEFAKEFAKEFAKEFAKE12345678\n"
+                "export GITHUB_TOKEN=" + _FAKE_GHP + "\n"
+                "export SLACK_TOKEN=" + _FAKE_XOXB
             ),
         },
         {"type": "tool_call", "command": "env | grep API"},
@@ -302,10 +342,17 @@ def test_acp_trajectory_jsonl_redacts_event_content(tmp_path):
 
     written = out.read_text()
     assert "***REDACTED***" in written
-    # The live-key *values* and any AIzaSy/dtn_ token shape must be gone.
+    # The live-key *values* and any AIzaSy/dtn_/ghp_/xoxb- token shape must be gone.
     assert "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx" not in written
     assert "dtn_FAKEFAKEFAKEFAKEFAKE12345678" not in written
-    residual = re.findall(r"AIzaSy[A-Za-z0-9_-]+|dtn_[A-Za-z0-9_]+", written)
+    assert _FAKE_GHP not in written
+    assert _FAKE_XOXB not in written
+    assert "GITHUB_TOKEN" in written  # var name preserved
+    residual = re.findall(
+        r"AIzaSy[A-Za-z0-9_-]+|dtn_[A-Za-z0-9_]+"
+        r"|ghp_[A-Za-z0-9]+|xox[baprs]-[A-Za-z0-9-]+",
+        written,
+    )
     assert residual == [], f"live key shapes survived: {residual}"
     # Non-secret event structure is preserved (one line per event).
     assert len(written.splitlines()) == 2

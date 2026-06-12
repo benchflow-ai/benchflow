@@ -1238,14 +1238,18 @@ class Evaluation:
     def _maybe_start_daytona_reap(self) -> None:
         """Fire-and-forget auto-reap of orphaned Daytona sandboxes (issue: leakage at scale).
 
-        Gated by ``BENCHFLOW_DAYTONA_AUTO_REAP`` (default on). Conservative
-        TTLs (24h general / 2h failed states) mean concurrent live runs are
-        never touched. Runs in a daemon thread so eval startup never blocks
-        or fails on reaping.
+        Gated by ``BENCHFLOW_DAYTONA_AUTO_REAP`` (default on; any of
+        ``0``/``false``/``no``/``off`` case-insensitively disables it).
+        Conservative TTLs (24h general / 2h failed states) plus an idle-activity
+        guard mean concurrent live runs are never reaped. Runs in a daemon
+        thread so eval startup never blocks or fails on reaping.
         """
         if self._config.environment != "daytona":
             return
-        if os.environ.get("BENCHFLOW_DAYTONA_AUTO_REAP", "1") == "0":
+        if (
+            os.environ.get("BENCHFLOW_DAYTONA_AUTO_REAP", "1").strip().lower()
+            in {"0", "false", "no", "off"}
+        ):
             return
 
         def _reap() -> None:

@@ -18,6 +18,11 @@ logger = logging.getLogger("benchflow")
 _REAP_DEFAULT_MAX_AGE_MIN = 1440
 _REAP_FAILED_MAX_AGE_MIN = 120
 _REAP_FAILED_STATE_MARKERS = ("FAILED", "ERROR")
+# Minimum idle window before the general (non-failed) tier may reap an owned
+# sandbox that is old by creation time. The SDK returns ``last_activity_at`` on
+# list results, so a genuinely live, recently-active run older than the TTL is
+# protected without an extra API call. Well under the 1440-min creation TTL.
+_REAP_MIN_IDLE_MIN = 30
 
 # Ownership scoping for the auto-reaper. Every sandbox benchflow creates is
 # stamped with this label so :func:`reap_stale_sandboxes` can restrict its
@@ -85,11 +90,33 @@ def _is_benchflow_label_orphan(sb: Any) -> bool:
     )
 
 
+def _parse_sandbox_timestamp(raw: Any) -> Any | None:
+    """Parse a Daytona timestamp string to a tz-aware datetime, or ``None``.
+
+    A naive (no ``Z``/offset) value is coerced to UTC rather than dropped, so a
+    server that omits the offset doesn't silently leak a stale sandbox. Returns
+    ``None`` for a non-string or unparseable value; the caller decides whether
+    absence is protective (activity guard) or skip-worthy (created_at).
+    """
+    from datetime import UTC, datetime
+
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
 def reap_stale_sandboxes(
     client: Any | None = None,
     *,
     max_age_minutes: int = _REAP_DEFAULT_MAX_AGE_MIN,
     failed_max_age_minutes: int = _REAP_FAILED_MAX_AGE_MIN,
+    min_idle_minutes: int = _REAP_MIN_IDLE_MIN,
     dry_run: bool = False,
     on_decision: Any | None = None,
 ) -> dict[str, int]:
@@ -103,9 +130,15 @@ def reap_stale_sandboxes(
 
     Two tiers: sandboxes whose state contains a failure marker (e.g.
     ``BUILD_FAILED``) are reaped after *failed_max_age_minutes*; everything
-    else after *max_age_minutes*. Defaults are deliberately conservative so
-    concurrent live runs are never touched — only multi-hour orphans from
-    crashed or interrupted sessions.
+    else after *max_age_minutes*. The general (non-failed) tier additionally
+    honours an activity guard: an owned sandbox whose ``last_activity_at`` is
+    within *min_idle_minutes* is skipped even when old by creation time, so a
+    genuinely live run is never reaped. Absent/unparseable activity is not
+    protective (it falls through to age-only), or nothing old would ever reap.
+    The failed tier ignores the activity guard so a crashed sandbox still reaps
+    on its short TTL. Defaults are deliberately conservative so concurrent live
+    runs are never touched — only multi-hour idle orphans from crashed or
+    interrupted sessions.
 
     *on_decision* (sandbox, age_minutes, will_delete) is called per *owned*
     sandbox when provided — the CLI uses it for per-row display; foreign
@@ -145,12 +178,36 @@ def reap_stale_sandboxes(
         if not getattr(sb, "created_at", None):
             counts["skipped"] += 1
             continue
-        created_at = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
+        # Guard the age parse per-sandbox (mirror the delete guard below): one
+        # odd timestamp must warn + skip, never abort the sweep and leak every
+        # sandbox after it.
+        created_at = _parse_sandbox_timestamp(sb.created_at)
+        if created_at is None:
+            logger.warning(
+                "Daytona sandbox %s has unparseable created_at %r; skipping "
+                "(possible leak)",
+                getattr(sb, "id", "?"),
+                sb.created_at,
+            )
+            counts["skipped"] += 1
+            continue
         age_minutes = (now - created_at).total_seconds() / 60
         state = str(getattr(sb, "state", "") or "").upper()
         is_failed = any(marker in state for marker in _REAP_FAILED_STATE_MARKERS)
         ttl = failed_max_age_minutes if is_failed else max_age_minutes
         will_delete = age_minutes >= ttl
+        # Activity guard (general tier only): protect a genuinely live run whose
+        # last activity is within the idle window, even when old by creation.
+        # Failed sandboxes ignore the guard so they still reap on the short TTL.
+        if will_delete and not is_failed:
+            last_activity = _parse_sandbox_timestamp(
+                getattr(sb, "last_activity_at", None)
+                or getattr(sb, "updated_at", None)
+            )
+            if last_activity is not None:
+                idle_minutes = (now - last_activity).total_seconds() / 60
+                if idle_minutes < min_idle_minutes:
+                    will_delete = False
         if on_decision is not None:
             on_decision(sb, age_minutes, will_delete)
         if not will_delete:

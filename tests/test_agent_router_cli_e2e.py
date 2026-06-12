@@ -83,6 +83,19 @@ def test_cli_create_writes_full_scaffold_that_compiles_and_parses(
     job = yaml.safe_load((target / "my-bench.yaml").read_text())
     assert job["tasks_dir"] == "benchmarks/my-bench/tasks"
 
+    # The generated job yaml must load through the same Evaluation.from_yaml the
+    # runner uses, with no ValueError from model resolution. A safe_load alone
+    # never exercises effective_model, so we assert the *resolved* model equals
+    # the default agent's default — the agent/model pair in the template has to
+    # be self-consistent or the runner crashes at job-load time before any task
+    # runs (regression guard for the codex-acp + empty-model scaffold).
+    from benchflow.evaluation import DEFAULT_AGENT, DEFAULT_MODEL, Evaluation
+
+    evaluation = Evaluation.from_yaml(str(target / "my-bench.yaml"))
+    assert job["agent"] == DEFAULT_AGENT
+    assert evaluation._config.agent == DEFAULT_AGENT
+    assert evaluation._config.model == DEFAULT_MODEL
+
     # The scaffolded parity record is valid JSON in the template state.
     parity = json.loads((target / "parity_experiment.json").read_text())
     assert parity["benchmark"] == "my-bench"

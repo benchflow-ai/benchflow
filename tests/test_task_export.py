@@ -162,6 +162,50 @@ def test_export_native_task_to_split_layout_with_loss_report(tmp_path: Path) -> 
     assert "verifier.verifier_md" in losses
 
 
+def test_export_onto_source_dir_is_rejected_and_preserves_source(
+    tmp_path: Path,
+) -> None:
+    """Exporting onto the source must raise and leave the source intact.
+
+    The destructive bug: with ``overwrite=True`` and dest == source, the rmtree
+    deleted task.md / oracle / verifier / environment before they were copied,
+    yet still reported status='lossless'. Assert the specific source files
+    survive and no report landed.
+    """
+    task_dir = tmp_path / "native"
+    _write_native_task(task_dir)
+
+    with pytest.raises(ValueError, match="overlaps the source task directory"):
+        export_task_to_split_layout(task_dir, task_dir, overwrite=True)
+
+    # The source is untouched (mutation-killer: assert specific surviving files).
+    assert (task_dir / "task.md").exists()
+    assert (task_dir / "oracle" / "solve.md").read_text() == "native oracle\n"
+    assert (task_dir / "verifier" / "verifier.md").exists()
+    assert (task_dir / "environment" / "Dockerfile").exists()
+    # No export report was produced inside the source.
+    assert not (task_dir / "compatibility").exists()
+
+
+def test_export_into_subdir_of_source_is_rejected(tmp_path: Path) -> None:
+    task_dir = tmp_path / "native"
+    _write_native_task(task_dir)
+    with pytest.raises(ValueError, match="overlaps the source task directory"):
+        export_task_to_split_layout(task_dir, task_dir / "sub", overwrite=True)
+    assert (task_dir / "task.md").exists()
+
+
+def test_export_into_parent_of_source_is_rejected(tmp_path: Path) -> None:
+    parent = tmp_path / "container"
+    task_dir = parent / "native"
+    parent.mkdir()
+    _write_native_task(task_dir)
+    # dest (parent) contains source: rejected in the other is_relative_to direction.
+    with pytest.raises(ValueError, match="overlaps the source task directory"):
+        export_task_to_split_layout(task_dir, parent, overwrite=True)
+    assert (task_dir / "task.md").exists()
+
+
 @pytest.mark.parametrize("task_name", REAL_SKILLSBENCH_TASK_MD_EXAMPLES)
 def test_export_real_skillsbench_native_examples_to_harbor_split(
     tmp_path: Path,

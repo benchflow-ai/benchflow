@@ -158,27 +158,30 @@ def _ors_records_to_verify_result(
 
         event = _ors_event(record, strategy=strategy, path=path)
         events.append(event)
-        if (
-            event.type == "terminal"
-            or event.granularity == "terminal"
-            or record.get("finished") is True
-            or record.get("done") is True
-        ):
-            reward = event.reward
-            headline_space = event.space
-            headline_granularity = event.granularity
 
+    # Headline selection from the plain-event stream. Only a *genuinely*
+    # terminal event (explicit ``type == "terminal"`` or
+    # ``granularity == "terminal"``) may set the headline reward — a
+    # ``finished``/``done`` marker on a step/dense record must never demote an
+    # earlier real terminal (the last-write-wins bug). Conflicting genuine
+    # terminals fail closed rather than silently picking the last.
     if reward is None:
         terminal_events = [
             event
             for event in events
             if event.type == "terminal" or event.granularity == "terminal"
         ]
+        distinct_rewards = {event.reward for event in terminal_events}
+        if len(distinct_rewards) > 1:
+            raise VerifierOutputParseError(
+                f"ors-episode strategy {strategy.name!r} has conflicting terminal "
+                f"rewards {sorted(distinct_rewards)}; expected exactly one headline"
+            )
         if terminal_events:
-            last_terminal = terminal_events[-1]
-            reward = last_terminal.reward
-            headline_space = last_terminal.space
-            headline_granularity = last_terminal.granularity
+            chosen = terminal_events[0]
+            reward = chosen.reward
+            headline_space = chosen.space
+            headline_granularity = chosen.granularity
     if reward is None:
         raise VerifierOutputParseError(
             f"ors-episode strategy {strategy.name!r} did not include a terminal reward"

@@ -25,6 +25,7 @@ from benchflow._utils.result_metadata import (
     final_metrics_from_agent_result,
     trajectory_summary_from_events,
 )
+from benchflow._utils.reward_events import build_rewards_jsonl_events
 from benchflow._utils.scoring import classify_error, classify_verifier_error
 from benchflow.contracts import (
     BaseUser,
@@ -56,56 +57,14 @@ def _write_rewards_jsonl(
     """Write rewards.jsonl — one JSON line per reward event.
 
     Architecture (``docs/architecture.md``, "Evaluation — the five spaces"):
-    every reward record is tagged ``(space, granularity, value)``. Promote
-    those tags from any verifier-supplied per-item dict to first-class
-    fields on each line, falling back to the ``RewardEvent`` defaults
-    (``space="output"``; ``granularity="step"`` for rubric items,
-    ``"terminal"`` for the scalar reward) when the verifier omits them.
+    every reward record is tagged ``(space, granularity, value)``. The shared
+    :func:`build_rewards_jsonl_events` helper promotes those tags from any
+    verifier-supplied per-item dict to first-class fields, falling back to the
+    ``RewardEvent`` defaults (``space="output"``; ``granularity="step"`` for
+    rubric items, ``"terminal"`` for the scalar reward) — the hosted-env writer
+    uses the same helper so the two paths can't drift.
     """
-    from typing import cast
-
-    if not rewards:
-        return
-    events: list[dict[str, Any]] = []
-    rubric = rewards.get("rubric")
-    if isinstance(rubric, list):
-        for i, item in enumerate(rubric):
-            if not isinstance(item, dict):
-                continue
-            rubric_item = cast(dict[str, Any], item)
-            events.append(
-                {
-                    "ts": finished_at.isoformat(),
-                    "type": "process",
-                    "source": "verifier_rubric",
-                    "value": rubric_item.get("score", 0.0),
-                    "tag": rubric_item.get("name", f"rubric_{i}"),
-                    "step_index": i,
-                    "space": rubric_item.get("space", "output"),
-                    "granularity": rubric_item.get("granularity", "step"),
-                    "meta": {
-                        k: v
-                        for k, v in rubric_item.items()
-                        if k not in ("score", "name", "space", "granularity")
-                    },
-                }
-            )
-    scalar = rewards.get("reward")
-    if scalar is not None:
-        non_event_keys = {"reward", "rubric", "space", "granularity"}
-        events.append(
-            {
-                "ts": finished_at.isoformat(),
-                "type": "terminal",
-                "source": "verifier",
-                "value": scalar,
-                "tag": "reward",
-                "step_index": None,
-                "space": rewards.get("space", "output"),
-                "granularity": rewards.get("granularity", "terminal"),
-                "meta": {k: v for k, v in rewards.items() if k not in non_event_keys},
-            }
-        )
+    events = build_rewards_jsonl_events(rewards, finished_at)
     if events:
         path = rollout_dir / "rewards.jsonl"
         path.write_text("\n".join(json.dumps(e, default=str) for e in events) + "\n")
@@ -436,6 +395,10 @@ def _build_rollout_result(
         rewards=rewards,
         model=model,
         verifier_error=verifier_error,
+        total_prompt_tokens=n_input_tokens,
+        total_completion_tokens=n_output_tokens,
+        total_cached_tokens=n_cache_read_tokens,
+        total_cost_usd=cost_usd,
     )
     return result
 
@@ -451,6 +414,10 @@ def _write_trainer_artifact(
     rewards: dict | None,
     model: str | None,
     verifier_error: str | None,
+    total_prompt_tokens: int | None = None,
+    total_completion_tokens: int | None = None,
+    total_cached_tokens: int | None = None,
+    total_cost_usd: float | None = None,
 ) -> None:
     """Emit the trainer-format artifacts for this scored rollout.
 
@@ -493,6 +460,10 @@ def _write_trainer_artifact(
             prompts=prompts,
             trajectory=trajectory,
             model=model,
+            total_prompt_tokens=total_prompt_tokens,
+            total_completion_tokens=total_completion_tokens,
+            total_cached_tokens=total_cached_tokens,
+            total_cost_usd=total_cost_usd,
         )
     except Exception as e:  # pragma: no cover - defensive
         logger.warning("ATIF artifact write failed: %s", e)

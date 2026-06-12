@@ -40,6 +40,7 @@ Mapping from BenchFlow ACP trajectory events (see
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, cast
 
@@ -50,6 +51,8 @@ from benchflow.trajectories._export_common import (
     content_blocks_to_text,
 )
 from benchflow.trajectories.types import redact_trajectory_text
+
+logger = logging.getLogger(__name__)
 
 ADP_SCHEMA_VERSION = "1.3.1"
 
@@ -174,21 +177,35 @@ def trajectory_to_adp_record(
 
     *reward*, when given, is attached to the trajectory's final action as
     ADP's per-step ``reward`` field — the terminal-reward convention for
-    RL training data. *details* passes through as the dataset-specific
-    metadata dict. ``available_apis`` is omitted: BenchFlow does not know
-    the agent's full tool universe, and the field is optional.
+    RL training data. When the trajectory has no action to carry it (e.g. an
+    agent that crashed after consuming the prompt but before acting), the
+    reward is surfaced as ``details['terminal_reward']`` and a warning is
+    logged rather than silently dropped. *details* passes through as the
+    dataset-specific metadata dict. ``available_apis`` is omitted: BenchFlow
+    does not know the agent's full tool universe, and the field is optional.
     """
     content = acp_events_to_adp_content(events, prompts)
+    out_details = dict(details or {})
     if reward is not None:
+        placed = False
         for item in reversed(content):
             if item["class_"] in _ACTION_CLASSES:
                 item["reward"] = reward
+                placed = True
                 break
+        if not placed:
+            out_details["terminal_reward"] = reward
+            logger.warning(
+                "ADP trajectory %s has terminal reward %r but no action to "
+                "carry it; recorded under details.terminal_reward",
+                trajectory_id,
+                reward,
+            )
     return {
         "schema_version": ADP_SCHEMA_VERSION,
         "id": trajectory_id,
         "content": content,
-        "details": dict(details or {}),
+        "details": out_details,
     }
 
 
@@ -207,11 +224,16 @@ def write_rollout_adp_jsonl(
     model: str | None,
     environment: str,
     reward: float | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Write one rollout's ADP record to ``rollout_dir/trainer/adp.jsonl``.
 
     One record per line, matching the verifiers.jsonl seam. Returns the
-    redacted record so callers can aggregate across a job.
+    redacted record so callers can aggregate across a job, or ``None`` when an
+    empty-content trajectory carries no score — mirroring ATIF's empty-record
+    contract so a meaningless ``content == []`` line never reaches the job
+    aggregate. An empty-content trajectory that still has a terminal reward is
+    written (the score lands in ``details.terminal_reward``) so a scored crash
+    rollout is not lost.
     """
     record = trajectory_to_adp_record(
         trajectory_id=trajectory_id,
@@ -220,6 +242,8 @@ def write_rollout_adp_jsonl(
         reward=reward,
         details={"task_id": task_id, "environment": environment, "model": model or ""},
     )
+    if not record["content"] and "terminal_reward" not in record["details"]:
+        return None
     out = Path(rollout_dir) / ROLLOUT_ADP_RELPATH
     out.parent.mkdir(parents=True, exist_ok=True)
     redacted = _record_to_redacted_json_line(record)

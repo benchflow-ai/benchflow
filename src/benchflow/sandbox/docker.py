@@ -33,6 +33,8 @@ from benchflow.sandbox._compose import (
     COMPOSE_BUILD_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
+    COMPOSE_UP_RETRY_DELAYS_SEC,
+    is_compose_up_network_race_error,
 )
 from benchflow.sandbox.protocol import SandboxImage
 from benchflow.task.config import SandboxConfig
@@ -51,16 +53,9 @@ _DOCKER_BUILD_RETRYABLE_ERRORS = (
     re.compile(r"connection (?:timed out|reset by peer)", re.IGNORECASE),
 )
 
-_COMPOSE_UP_RETRY_DELAYS_SEC = (2.0, 5.0)
-# Daemon-side create/attach race seen on Docker 29.x: `compose up` prints
-# "Network ... Created" but the container create/start that follows fails with
-# "network <project>_default not found". Older daemons emit the same race
-# without the "failed to set up container networking" wrapper.
-_COMPOSE_UP_NETWORK_RACE_ERROR = re.compile(
-    r"error response from daemon: "
-    r"(?:failed to set up container networking: )?network \S+ not found",
-    re.IGNORECASE,
-)
+# Compose-up network-race retry config lives in _compose so the host docker
+# path and the Daytona DinD path share the exact same race detection + back-off.
+_COMPOSE_UP_RETRY_DELAYS_SEC = COMPOSE_UP_RETRY_DELAYS_SEC
 
 
 def _sanitize_docker_image_name(name: str) -> str:
@@ -84,7 +79,7 @@ def _is_retryable_docker_build_error(message: str) -> bool:
 
 
 def _is_compose_up_network_race_error(message: str) -> bool:
-    return bool(_COMPOSE_UP_NETWORK_RACE_ERROR.search(message))
+    return is_compose_up_network_race_error(message)
 
 
 class DockerSandboxEnvVars(BaseModel):

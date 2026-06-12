@@ -27,8 +27,9 @@
   verifier strategy is recognized. (The hosted-environment episode runner that
   executes ORS environments end-to-end is in progress, not in this release.)
 - **Daytona sandbox auto-reap** — orphaned sandboxes are cleaned at eval start
-  (TTL-tiered; failure states reaped sooner), gated by
-  `BENCHFLOW_DAYTONA_AUTO_REAP`.
+  (TTL-tiered; failure states reaped sooner; an idle-activity guard protects
+  live runs), gated by `BENCHFLOW_DAYTONA_AUTO_REAP` (any of `0`/`false`/`no`/
+  `off`, case-insensitive, disables it).
 - **`benchflow continue <run-folder>`** — resume a previous, unfinished
   (timed-out) `openhands` run to completion. A standalone tool (it does not
   touch the normal run path) that reconstructs the run's exact workspace and
