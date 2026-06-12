@@ -525,6 +525,7 @@ def _write_config(
     agent_idle_timeout: int | None = None,
     scenes: list[Scene] | None = None,
     source_provenance: dict[str, Any] | None = None,
+    dataset: dict[str, Any] | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     recorded_env = {
@@ -552,6 +553,10 @@ def _write_config(
         config_data["usage_tracking"] = usage_tracking.to_config_artifact()
     if source_provenance is not None:
         config_data["source"] = source_provenance
+    if dataset is not None:
+        config_data["dataset_name"] = dataset.get("name")
+        config_data["dataset_version"] = dataset.get("version")
+        config_data["task_digest"] = dataset.get("task_digest")
     (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
 
@@ -616,6 +621,7 @@ def _build_rollout_result(
     usage_tracking: dict[str, Any] | None = None,
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
+    dataset: dict[str, Any] | None = None,
     diagnostics: RolloutDiagnostics | None = None,
     skill_policy: TaskSkillPolicy | None = None,
     sandbox_id: str | None = None,
@@ -741,6 +747,15 @@ def _build_rollout_result(
                 **(
                     {"source": source_provenance}
                     if source_provenance is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "dataset_name": dataset.get("name"),
+                        "dataset_version": dataset.get("version"),
+                        "task_digest": dataset.get("task_digest"),
+                    }
+                    if dataset is not None
                     else {}
                 ),
                 "sandbox_id": sandbox_id,
@@ -1092,6 +1107,10 @@ class RolloutConfig:
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
     source_provenance: dict[str, Any] | None = None
+    # Registry dataset identity for this task: {"name", "version",
+    # "task_digest"} — stamped into config.json/result.json so published
+    # runs declare the dataset version they ran (dataset-versioning plan).
+    dataset: dict[str, Any] | None = None
     planes: RolloutPlanes | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -1540,6 +1559,7 @@ class Rollout:
             agent_idle_timeout=cfg.agent_idle_timeout,
             scenes=cfg.effective_scenes,
             source_provenance=cfg.source_provenance,
+            dataset=cfg.dataset,
         )
 
         self._phase = "setup"
@@ -2906,6 +2926,7 @@ class Rollout:
             scenes=self._config.effective_scenes,
             evolved_skills=self._evolved_skills,
             source_provenance=self._config.source_provenance,
+            dataset=self._config.dataset,
             diagnostics=self._diagnostics,
             usage_tracking=self._usage_tracking_metadata(),
             skill_policy=getattr(self, "_task_skill_policy", None)

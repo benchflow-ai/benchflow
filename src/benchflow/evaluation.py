@@ -267,6 +267,13 @@ class EvaluationConfig:
     self_gen_no_internet: bool = False
     job_mode: str = DEFAULT_JOB_MODE
     source_provenance: dict[str, Any] | None = None
+    # Registry dataset identity (`bench eval create -d name@version`). When
+    # set, every result.json/config.json is stamped with dataset_name,
+    # dataset_version, and the task's registry content digest — see
+    # docs/dataset-versioning.md in benchflow-ai/skillsbench.
+    dataset_name: str | None = None
+    dataset_version: str | None = None
+    dataset_task_digests: dict[str, str] = field(default_factory=dict)
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
     # Environment-plane manifest applied to every rollout in the batch.
     # When set, each task's RolloutConfig.environment_manifest is populated
@@ -817,6 +824,13 @@ class Evaluation:
         from benchflow._utils.benchmark_repos import task_source_provenance
         from benchflow.rollout import Rollout, RolloutConfig
 
+        dataset = None
+        if cfg.dataset_name:
+            dataset = {
+                "name": cfg.dataset_name,
+                "version": cfg.dataset_version,
+                "task_digest": cfg.dataset_task_digests.get(task_dir.name),
+            }
         skills_dir = (
             str(self._learner_skills_dir)
             if self._learner_skills_dir is not None
@@ -855,6 +869,7 @@ class Evaluation:
             self_gen_no_internet=cfg.self_gen_no_internet,
             export_generated_skills_to=export_to,
             source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
+            dataset=dataset,
             usage_tracking=cfg.usage_tracking,
         )
         if skill_mode == SKILL_MODE_SELF_GEN:
@@ -1383,6 +1398,14 @@ class Evaluation:
             **trajectory_step_summary(all_results),
             **phase_timing_summary(all_results),
             **summary_source_fields(cfg.source_provenance, all_results),
+            **(
+                {
+                    "dataset_name": cfg.dataset_name,
+                    "dataset_version": cfg.dataset_version,
+                }
+                if cfg.dataset_name
+                else {}
+            ),
         }
         # Surface continual-learning provenance — generation, curve — so a
         # resumed run can be audited end-to-end (#394).

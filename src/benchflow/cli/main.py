@@ -1092,6 +1092,23 @@ def eval_create(
             help="Skip these task names; repeatable (e.g. --exclude quantum-numerical-simulation)",
         ),
     ] = None,
+    dataset: Annotated[
+        str | None,
+        typer.Option(
+            "--dataset",
+            "-d",
+            help="Registry dataset to run, as <name>@<version> (e.g. skillsbench@1.1). "
+            "Resolves the pinned snapshot and verifies task content digests.",
+        ),
+    ] = None,
+    registry: Annotated[
+        str | None,
+        typer.Option(
+            "--registry",
+            help="Dataset registry JSON URL or local file "
+            "(default: the skillsbench registry). Only valid with --dataset.",
+        ),
+    ] = None,
 ) -> None:
     """Run an evaluation — single task or batch.
 
@@ -1107,11 +1124,21 @@ def eval_create(
     parsed_env = _parse_agent_env(agent_env)
     include_tasks = set(include) if include else set()
     exclude_tasks = set(exclude) if exclude else set()
-    sources = [bool(config_file), bool(tasks_dir), bool(source_repo), bool(source_env)]
+    sources = [
+        bool(config_file),
+        bool(tasks_dir),
+        bool(source_repo),
+        bool(source_env),
+        bool(dataset),
+    ]
     if sum(sources) > 1:
         console.print(
-            "[red]Choose only one source: --config, --tasks-dir, --source-repo, or --source-env[/red]"
+            "[red]Choose only one source: --config, --tasks-dir, --source-repo, "
+            "--source-env, or --dataset[/red]"
         )
+        raise typer.Exit(1)
+    if registry and not dataset:
+        console.print("[red]--registry requires --dataset[/red]")
         raise typer.Exit(1)
     if worker_concurrency is not None and not (tasks_dir or source_repo):
         console.print(
@@ -1340,6 +1367,63 @@ def eval_create(
         if run_result.error:
             console.print(f"[red]Error:[/red] {run_result.error}")
             raise typer.Exit(1)
+    elif dataset:
+        from benchflow._utils.dataset_registry import (
+            DEFAULT_REGISTRY_SOURCE,
+            DatasetResolutionError,
+            bench_version_issue,
+            resolve_dataset,
+        )
+
+        registry_source = registry or DEFAULT_REGISTRY_SOURCE
+        try:
+            with console.status(f"Resolving dataset {dataset}…"):
+                resolved_dataset = resolve_dataset(dataset, registry=registry_source)
+        except DatasetResolutionError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+        version_issue = bench_version_issue(resolved_dataset.bench_version)
+        if version_issue:
+            console.print(f"[yellow]Warning:[/yellow] {version_issue}")
+        console.print(
+            f"[green]✓[/green] {resolved_dataset.spec}: "
+            f"{len(resolved_dataset.task_names)} tasks, digests verified "
+            f"({str(resolved_dataset.provenance.get('resolved_sha', ''))[:12]})"
+        )
+        dataset_include = (
+            resolved_dataset.task_names & include_tasks
+            if include_tasks
+            else resolved_dataset.task_names
+        )
+        eff_model = effective_model(eval_agent, model)
+        _run_batch_eval(
+            resolved_dataset.tasks_dir,
+            EvaluationConfig(
+                agent=eval_agent,
+                model=eff_model,
+                reasoning_effort=eval_reasoning_effort,
+                environment=eval_environment,
+                concurrency=eval_concurrency,
+                build_concurrency=build_concurrency,
+                prompts=eval_prompts,
+                agent_idle_timeout=eval_agent_idle_timeout,
+                agent_env=parsed_env,
+                sandbox_user=sandbox_user,
+                sandbox_setup_timeout=sandbox_setup_timeout,
+                skills_dir=str(skills_dir) if skills_dir else None,
+                skill_mode=skill_mode,
+                skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
+                self_gen_no_internet=self_gen_no_internet,
+                source_provenance=resolved_dataset.provenance,
+                include_tasks=dataset_include,
+                exclude_tasks=exclude_tasks,
+                usage_tracking=eval_usage_tracking,
+                environment_manifest=eval_env_manifest,
+                dataset_name=resolved_dataset.name,
+                dataset_version=resolved_dataset.version,
+                dataset_task_digests=resolved_dataset.task_digests,
+            ),
+        )
     elif source_repo:
         from benchflow._utils.benchmark_repos import resolve_source_with_metadata
 
@@ -1408,7 +1492,8 @@ def eval_create(
         )
     else:
         console.print(
-            "[red]Provide --config, --tasks-dir, --source-repo, or --source-env[/red]"
+            "[red]Provide --config, --tasks-dir, --source-repo, --source-env, "
+            "or --dataset[/red]"
         )
         raise typer.Exit(1)
 
