@@ -324,3 +324,81 @@ uv run bench eval create --config tests/integration/configs/gemini.yaml
 # Run validator standalone
 uv run python tests/integration/check_results.py jobs/integration gemini pi-acp
 ```
+
+## Agent-as-Judge Verification
+
+`agent_judge.py` adds a second, model-based signal on top of the mechanical
+schema checks. Given a completed rollout directory, it reuses BenchFlow's own
+`call_judge` primitive (default model `gemini-3.1-flash-lite`) to grade whether
+the run is a trustworthy measurement: the agent genuinely attempted the task,
+the trajectory is coherent, and there is no obvious reward-hacking. The judge
+reads `result.json` plus the recorded `trajectory/acp_trajectory.jsonl`, and
+treats the trajectory as untrusted evidence rather than as instructions.
+
+The gate combines two requirements:
+
+1. **Realness** — the run is REAL only when `n_tool_calls > 0`, token usage
+   `> 0`, and the reward is non-null. These mechanical invariants hold
+   independently of the judge: a judge pass cannot rescue an unreal run.
+2. **Agent judge** — the judge must return a `pass` verdict. It is
+   fail-closed: a missing provider SDK, an API error, or an unparseable or
+   fieldless verdict all read as FAIL, never a silent pass.
+
+```bash
+# Judge a rollout dir (or a jobs root to search for the latest rollout)
+uv run python tests/integration/agent_judge.py jobs/integration-eval --json
+```
+
+The lightweight `.github/workflows/integration-eval.yml` workflow runs one
+small task through `bench eval create --agent openhands --model
+deepseek/deepseek-v4-flash --sandbox docker`, then runs the agent judge over
+the rollout and fails the job if the run is not REAL or the judge fails. It
+triggers on `workflow_dispatch` and nightly, and is capped at one task to keep
+the check cheap. It references the `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and
+`GEMINI_API_KEY` repository secrets; the judge SDKs come from the `judge`
+extra (`uv sync --extra judge`).
+
+## Robust integration suite (`tests/test_integration_suite.py`)
+
+The agent-judge gate above is the seed; `tests/test_integration_suite.py` grows
+it into a scenario suite whose checks are each grounded in a v0.6 dogfooding
+finding. Reusable building blocks live in `tests/integration/scenarios.py`
+(`run_eval`, `reward_of`, `synth_rollout`, the ATIF/ADP/secret-leak validators,
+`reaper_dryrun_issues`). The suite has two tiers.
+
+### Deterministic integrity gates (run in the normal suite, no credentials)
+
+These exercise the gate over **synthetic rollout fixtures**, so they are fast,
+deterministic, and run in regular CI — closing the gaps a single happy-path
+live check leaves open:
+
+| Gate | What it pins | Dogfooding origin |
+|---|---|---|
+| Realness gate | rejects a run that was scored but did no work (`n_tool_calls=0`), had no telemetry, was never scored, or errored | a "passed" run that is really resumed/empty results |
+| Fail-closed judge | a missing SDK, API error, or unparseable verdict reads FAIL, never a silent pass | judge infra error silently recorded as reward 0.0 |
+| Reward-hacking caught | a mechanically-REAL rollout (tool calls, tokens, reward 1.0) still fails when the judge flags verifier tampering | reward-hacking only the judge can see |
+| Example `judge.py` fail-closed | the shipped generated-skill-eval judge exits non-zero (writes no reward) when no LLM judge can run | ENG-254 reward-integrity fix |
+| Artifact integrity | ATIF is `ATIF-v1.x` with recognized step sources; ADP lines parse; no provider key leaks into any artifact | ATIF/ADP schema + secret-redaction findings |
+
+```bash
+# Runs with the normal test job; no keys, no sandbox.
+uv run pytest tests/test_integration_suite.py -m "not integration"
+```
+
+### Live scenarios (`@pytest.mark.integration`, nightly / on demand)
+
+Real sandbox + provider runs, each skipping cleanly when its prerequisites
+(Docker daemon, `DAYTONA_API_KEY`, DeepSeek / Gemini keys) are absent:
+
+| Scenario | Assertion | Dogfooding origin |
+|---|---|---|
+| `oracle_determinism_docker` | every oracle `solve.sh` self-scores reward 1.0 | the broken `3d-scan-calc` example oracle (ENG-256) |
+| `sandbox_parity_docker_daytona` | the same oracle task scores identically on Docker and Daytona | the rollout/daytona package split |
+| `agent_rollout_is_real_and_judged` | a real openhands + deepseek-v4-flash run is REAL and the agent judge runs over it; the verdict is recorded, not gated, since model success is stochastic | resumed/empty/idle-timeout shells |
+| `reaper_dryrun_is_safe` | `environment cleanup --dry-run` deletes nothing; foreign sandboxes are never reaped | destructive-reaper scoping |
+
+```bash
+export DEEPSEEK_API_KEY=... DEEPSEEK_BASE_URL=https://api.deepseek.com \
+       GEMINI_API_KEY=... DAYTONA_API_KEY=...
+uv run pytest tests/test_integration_suite.py -m integration
+```

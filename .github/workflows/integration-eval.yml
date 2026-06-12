@@ -1,0 +1,99 @@
+# BenchFlow integration eval: one real rollout, gated by BenchFlow's own
+# agent-as-judge check. This workflow runs a single small task end to end
+# through `bench eval create` on Docker, then has BenchFlow's agent judge
+# (tests/integration/agent_judge.py) grade the resulting rollout. The job
+# fails if the run is not REAL (no tool calls / no tokens / null reward) or
+# if the judge fails the trajectory. It is kept to one task so the check
+# stays cheap; trigger it on demand or nightly.
+name: integration-eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: SkillsBench task to run.
+        type: string
+        default: jax-computing-basics
+  schedule:
+    # Nightly at 07:00 UTC. Disabled automatically on forks by the job guard.
+    - cron: "0 7 * * *"
+
+# Least-privilege default. This job only reads the repo.
+permissions:
+  contents: read
+
+# One in-flight integration run at a time; newer dispatches supersede older.
+concurrency:
+  group: integration-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval-and-judge:
+    runs-on: ubuntu-latest
+    # Only run on the canonical repo. Forks lack the eval/judge secrets, so
+    # the scheduled and dispatched runs would otherwise fail-closed there.
+    if: github.repository == 'benchflow-ai/benchflow'
+    timeout-minutes: 45
+    env:
+      # Agent (run) model. Keys are referenced from repo secrets; their
+      # values never appear in logs or files.
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+      # Judge model key (gemini-3.1-flash-lite). call_judge reads GEMINI_API_KEY.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      # Daytona key for the parity + reaper scenarios; scenarios that need it
+      # skip cleanly when it is absent.
+      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      TASK: ${{ github.event.inputs.task || 'jax-computing-basics' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra judge --extra sandbox-daytona --locked
+
+      - name: Run one real rollout on Docker
+        run: |
+          uv run bench eval create \
+            --source-repo benchflow-ai/skillsbench \
+            --source-path tasks \
+            --source-ref main \
+            --include "$TASK" \
+            --agent openhands \
+            --model deepseek/deepseek-v4-flash \
+            --sandbox docker \
+            --concurrency 1 \
+            --jobs-dir jobs/integration-eval
+
+      - name: Agent-judge the rollout and enforce the gate
+        run: |
+          uv run python tests/integration/agent_judge.py \
+            jobs/integration-eval \
+            --model gemini-3.1-flash-lite \
+            --json
+
+      - name: Run the live integration scenarios
+        # Oracle determinism, docker<->daytona parity, and reaper safety. The
+        # agent-rollout scenario is skipped here because the step above already
+        # runs a real agent + judge; scenarios needing a key absent from secrets
+        # skip cleanly.
+        run: |
+          uv run pytest tests/test_integration_suite.py \
+            -m integration -k "not agent_rollout" \
+            -p no:cacheprovider -v
+
+      - name: Upload rollout artifacts
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: integration-eval-jobs
+          path: jobs/integration-eval
+          if-no-files-found: ignore
+          retention-days: 14
