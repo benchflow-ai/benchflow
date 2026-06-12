@@ -25,10 +25,13 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
+from benchflow._utils.reward_events import build_rewards_jsonl_events
 from benchflow.diagnostics import RolloutDiagnostics
+from benchflow.rewards.validation import is_valid_reward_number
+from benchflow.trajectories.types import redact_acp_trajectory_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +217,7 @@ class HostedEnvRunResult:
     reward: float | None = None
     total_tool_calls: int | None = None
     verifiers_error: str | None = None
+    raw_reward: float | None = None
 
     @property
     def error(self) -> str | None:
@@ -339,6 +343,33 @@ def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
         check=False,
     )
     finished_at = datetime.now(UTC)
+    parsed_reward = _extract_metric(proc.stdout, "reward")
+    verifiers_error = _extract_verifiers_error(proc.stdout + "\n" + proc.stderr)
+    reward = parsed_reward
+
+    # Fail closed so hosted evidence stays equivalent to native rollouts:
+    # 1. A headline reward outside the [0, 1] contract is recorded raw for
+    #    forensics but never persisted as a terminal reward (mirrors native
+    #    verifier_core / ors.ORSAdapter bounds enforcement).
+    if reward is not None and not is_valid_reward_number(reward):
+        verifiers_error = (
+            verifiers_error
+            or f"hosted reward out of [0,1] contract: {reward!r}"
+        )
+        reward = None
+    # 2. returncode 0 but no parseable reward and no abort marker means the
+    #    vf-eval summary format drifted — surface it as an error rather than a
+    #    clean run with no rewards artifact.
+    elif (
+        reward is None
+        and proc.returncode == 0
+        and not verifiers_error
+    ):
+        verifiers_error = (
+            "could not parse reward from vf-eval output "
+            "(vf-eval summary format may have changed)"
+        )
+
     result = HostedEnvRunResult(
         source_env=config.source_env,
         run_dir=run_dir,
@@ -348,9 +379,10 @@ def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
         stderr=proc.stderr,
         model=config.model,
         normalized_model=normalized_model,
-        reward=_extract_metric(proc.stdout, "reward"),
+        reward=reward,
         total_tool_calls=_extract_int_metric(proc.stdout, "total_tool_calls"),
-        verifiers_error=_extract_verifiers_error(proc.stdout + "\n" + proc.stderr),
+        verifiers_error=verifiers_error,
+        raw_reward=parsed_reward,
     )
     _write_run_artifacts(
         result,
@@ -612,7 +644,11 @@ def _write_run_artifacts(
         "normalized_model": result.normalized_model,
         "env_args": config.env_args,
         "returncode": result.returncode,
-        "rewards": {"reward": result.reward} if result.reward is not None else None,
+        "rewards": (
+            {"reward": result.reward}
+            if result.reward is not None and not result.verifiers_error
+            else None
+        ),
         "total_tool_calls": result.total_tool_calls,
         "verifiers_error": result.verifiers_error,
         "error": result.error,
@@ -634,8 +670,7 @@ def _write_run_artifacts(
     )
 
     (result.run_dir / "trajectory" / "acp_trajectory.jsonl").write_text(
-        "\n".join(json.dumps(e, default=str) for e in trajectory)
-        + ("\n" if trajectory else "")
+        redact_acp_trajectory_jsonl(trajectory) + ("\n" if trajectory else "")
     )
 
     result_payload = build_hosted_result_payload(
@@ -650,12 +685,9 @@ def _write_run_artifacts(
         agent_name="verifiers",
         trajectory_source="hosted_env",
         has_trajectory=bool(trajectory),
-        # vf-eval distinguishes a process crash (returncode != 0) from a
-        # verifier-level error: a clean run that reported a verifier error
-        # leaves ``error`` None and surfaces it under ``verifier_error``.
-        error=result.error
-        if result.returncode != 0 or not result.verifiers_error
-        else None,
+        # Surface aborts/parse-misses in top-level error so hosted errored
+        # rollouts match native errored-rollout semantics.
+        error=result.error,
         verifier_error=result.verifiers_error,
     )
     (result.run_dir / "result.json").write_text(json.dumps(result_payload, indent=2))
@@ -884,8 +916,14 @@ def _build_rewards_dict(
     Hosted runs report a single average reward from vf-eval's stdout
     summary, optionally augmented by per-example rubric items reconstructed
     from ``results.jsonl``.
+
+    Fails closed (returns ``None``) when the headline reward is absent or an
+    abort marker (``verifiers_error``) is set, so an aborted run is never
+    persisted as a legitimate 0.0-reward episode. Per-example rubric scores are
+    bounds-checked the same way the headline is, so an out-of-contract score
+    (e.g. ``1e9``) is never written as a process reward event.
     """
-    if result.reward is None:
+    if result.reward is None or result.verifiers_error:
         return None
     rubric: list[dict[str, Any]] = []
     results_path = _find_results_jsonl(output_dir)
@@ -903,13 +941,30 @@ def _build_rewards_dict(
                     if not isinstance(row, dict):
                         continue
                     reward = row.get("reward")
-                    if isinstance(reward, int | float):
-                        rubric.append(
-                            {
-                                "name": f"example_{example_idx}",
-                                "score": float(reward),
-                            }
-                        )
+                    if not is_valid_reward_number(reward):
+                        # Out-of-contract / non-numeric: keep the raw value for
+                        # forensics but do not write it as a rubric score.
+                        if isinstance(reward, int | float) and not isinstance(
+                            reward, bool
+                        ):
+                            rubric.append(
+                                {
+                                    "name": f"example_{example_idx}",
+                                    "score": None,
+                                    "raw_score": float(reward),
+                                }
+                            )
+                        continue
+                    item: dict[str, Any] = {
+                        "name": f"example_{example_idx}",
+                        "score": float(reward),
+                    }
+                    # Carry any verifier-supplied space/granularity through so the
+                    # writer can promote them to first-class rewards.jsonl fields.
+                    for tag in ("space", "granularity"):
+                        if isinstance(row.get(tag), str):
+                            item[tag] = row[tag]
+                    rubric.append(item)
         except OSError:
             pass
     payload: dict[str, Any] = {"reward": float(result.reward)}
@@ -925,43 +980,13 @@ def _write_hosted_rewards_jsonl(
 ) -> None:
     """Mirror ``rollout._write_rewards_jsonl`` for hosted-env rewards.
 
-    Kept in this module to avoid importing from ``benchflow.rollout`` (which
-    pulls heavy ACP/sandbox deps at import time).
+    Builds the events through the shared :func:`build_rewards_jsonl_events`
+    helper so hosted lines carry the same first-class ``space``/``granularity``
+    tags as native ones (Memory-space aggregation depends on them). The helper
+    lives in ``_utils.reward_events`` — a light module — so hosted_env still
+    avoids importing ``benchflow.rollout`` (heavy ACP/sandbox deps).
     """
-    events: list[dict[str, Any]] = []
-    rubric = rewards.get("rubric")
-    if isinstance(rubric, list):
-        for i, item in enumerate(rubric):
-            if not isinstance(item, dict):
-                continue
-            rubric_item = cast(dict[str, Any], item)
-            events.append(
-                {
-                    "ts": finished_at.isoformat(),
-                    "type": "process",
-                    "source": "verifier_rubric",
-                    "value": rubric_item.get("score", 0.0),
-                    "tag": rubric_item.get("name", f"rubric_{i}"),
-                    "step_index": i,
-                    "meta": {
-                        k: v for k, v in item.items() if k not in ("score", "name")
-                    },
-                }
-            )
-    scalar = rewards.get("reward")
-    if scalar is not None:
-        non_event_keys = {"reward", "rubric"}
-        events.append(
-            {
-                "ts": finished_at.isoformat(),
-                "type": "terminal",
-                "source": "verifier",
-                "value": scalar,
-                "tag": "reward",
-                "step_index": None,
-                "meta": {k: v for k, v in rewards.items() if k not in non_event_keys},
-            }
-        )
+    events = build_rewards_jsonl_events(rewards, finished_at)
     if events:
         path = rollout_dir / "rewards.jsonl"
         path.write_text("\n".join(json.dumps(e, default=str) for e in events) + "\n")
