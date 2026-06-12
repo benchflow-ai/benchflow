@@ -301,18 +301,13 @@ def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
     #    verifier_core / ors.ORSAdapter bounds enforcement).
     if reward is not None and not is_valid_reward_number(reward):
         verifiers_error = (
-            verifiers_error
-            or f"hosted reward out of [0,1] contract: {reward!r}"
+            verifiers_error or f"hosted reward out of [0,1] contract: {reward!r}"
         )
         reward = None
     # 2. returncode 0 but no parseable reward and no abort marker means the
     #    vf-eval summary format drifted — surface it as an error rather than a
     #    clean run with no rewards artifact.
-    elif (
-        reward is None
-        and proc.returncode == 0
-        and not verifiers_error
-    ):
+    elif reward is None and proc.returncode == 0 and not verifiers_error:
         verifiers_error = (
             "could not parse reward from vf-eval output "
             "(vf-eval summary format may have changed)"

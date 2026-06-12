@@ -1341,10 +1341,12 @@ class Evaluation:
         """
         if self._config.environment != "daytona":
             return
-        if (
-            os.environ.get("BENCHFLOW_DAYTONA_AUTO_REAP", "1").strip().lower()
-            in {"0", "false", "no", "off"}
-        ):
+        if os.environ.get("BENCHFLOW_DAYTONA_AUTO_REAP", "1").strip().lower() in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
             return
 
         def _reap() -> None:
