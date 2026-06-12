@@ -147,6 +147,49 @@ print(result.rewards)
 
 ---
 
+## Versioned dataset runs (`--dataset`)
+
+For runs whose results should be attributable to a published, immutable
+dataset version (leaderboards, papers, release evidence), resolve the task
+set from a dataset registry instead of pointing at a directory or branch:
+
+```bash
+# Resolve skillsbench@1.1 from the registry, verify every task's content
+# digest against the pinned snapshot, then run.
+bench eval create -d skillsbench@1.1 \
+  --agent claude-agent-acp --model claude-haiku-4-5-20251001
+
+# Versions are immutable, so the version is always explicit — there is no
+# floating "latest". --include/--exclude filter the registry roster.
+bench eval create -d skillsbench@1.1 --include xlsx-recover-data ...
+```
+
+A registry (`registry.json` at a dataset repo's root — see skillsbench's
+[`docs/dataset-versioning.md`](https://github.com/benchflow-ai/skillsbench/blob/main/docs/dataset-versioning.md))
+pins each dataset version to an exact `git_commit_id` and per-task sha256
+content digests. Resolution clones the pinned commit into
+`.cache/datasets`, materializes an immutable per-commit snapshot,
+recomputes every task's digest, and **fails before running anything** on
+any mismatch. Snapshot directories that are not part of the registry entry
+are excluded from the run. The entry's `bench_version` range is checked
+against the installed benchflow; running outside the range the dataset was
+validated against prints a warning — results may not be comparable with
+published runs.
+
+The registry is fetched from the skillsbench repo by default; point
+`--registry` at another URL or a local `registry.json` to override.
+
+Every `result.json`/`config.json` is stamped with `dataset_name`,
+`dataset_version`, and the per-task `task_digest` (`summary.json` carries
+the name/version), so downstream tooling can group results by
+`dataset@version`. `--tasks-dir` stays as the visibly distinct dev mode:
+its artifacts carry no dataset fields — but they still stamp a
+live-computed `task_digest`, so even dev trajectories remain attributable
+to exact task content. `bench tasks digest <task-dir>` prints the same
+digest for any task directory.
+
+---
+
 ## Running a subset of tasks
 
 ### Single task

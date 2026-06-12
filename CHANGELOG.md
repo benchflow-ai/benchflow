@@ -4,6 +4,23 @@
 
 ### Added
 
+- **Registry-pinned dataset runs** — `bench eval create -d name@version`
+  (e.g. `-d skillsbench@1.1`) resolves a dataset from a git-backed
+  `registry.json` (see skillsbench `docs/dataset-versioning.md`): tasks are
+  cloned at their pinned `git_commit_id` into `.cache/datasets` and every
+  task directory is verified against its sha256 content digest before
+  anything runs; the entry's `bench_version` range is checked against the
+  installed benchflow. `--registry` overrides the default (skillsbench)
+  registry. `result.json`/`config.json` are stamped with `dataset_name`,
+  `dataset_version`, and a per-task `task_digest` (`summary.json` carries
+  the name/version); `--tasks-dir` dev runs carry no dataset fields but
+  still stamp a live-computed `task_digest`, so every trajectory stays
+  attributable to exact task content. `bench tasks digest <dir>` prints
+  the digest for task authoring, and `check_results.py` audits the stamps.
+  See [`docs/running-benchmarks.md`](docs/running-benchmarks.md). (#689,
+  #690, #691; `packaging` promoted to a core dependency for the
+  `bench_version` check.)
+
 - **`benchflow continue <run-folder>`** — resume a previous, unfinished
   (timed-out) `openhands` run to completion. A standalone tool (it does not
   touch the normal run path) that reconstructs the run's exact workspace and
