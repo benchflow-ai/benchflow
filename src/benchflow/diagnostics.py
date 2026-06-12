@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar
 
-# ── Diagnostic value objects ──────────────────────────────────────────────
+# Diagnostic value objects
 
 
 class AgentPromptTimeoutError(TimeoutError):
@@ -66,7 +66,7 @@ class Diagnostic:
     invalidation lines.
     """
 
-    # ── Class-level metadata (overridden by subclasses) ──
+    # Class-level metadata (overridden by subclasses)
     # Field name under which to_dict() lands in result.json.
     field: ClassVar[str] = ""
     # error_category (from _utils.scoring) that this diagnostic backs.
@@ -266,6 +266,62 @@ class VerifierTimeoutDiagnostic(Diagnostic):
         )
 
 
+@dataclass
+class ProviderApiErrorDiagnostic(Diagnostic):
+    """Every captured provider API request failed — no model response ever
+    reached the agent (rate limit, auth rejection, quota, model-not-found,
+    5xx). Proxy-proven: built from the usage proxy's captured exchange status
+    codes only (#546/#564 — bodies/headers are never read)."""
+
+    subcategory: str = "provider_error"
+    transient: bool = False
+    dominant_status: int | None = None
+    status_counts: dict[str, int] | None = None
+    total_requests: int = 0
+    failed_requests: int = 0
+    fingerprint: str = ""
+
+    field: ClassVar[str] = "api_error_info"
+    category: ClassVar[str | None] = "api_error"
+    summary_description: ClassVar[str] = "failed on provider API errors"
+
+    def format_issue(self, task_name: str) -> str:
+        kind = "transient" if self.transient else "permanent"
+        return (
+            f"{task_name}: provider api error [{self.subcategory}/{kind}] "
+            f"HTTP {self.dominant_status} on "
+            f"{self.failed_requests}/{self.total_requests} requests — "
+            f"measurement invalid (agent never got a model response)"
+        )
+
+
+@dataclass
+class SuspectedApiErrorDiagnostic(Diagnostic):
+    """Zero-signal rollout: the agent ended its turn with zero tokens AND
+    zero tool calls and no error — the signature of a provider API failure
+    swallowed inside the agent (e.g. a model id rejected against the agent's
+    own catalog before any request is issued)."""
+
+    total_tokens: int = 0
+    n_tool_calls: int = 0
+    total_requests: int = 0
+    failed_requests: int = 0
+
+    field: ClassVar[str] = "suspected_api_error_info"
+    category: ClassVar[str | None] = "suspected_api_error"
+    summary_description: ClassVar[str] = (
+        "ended with zero model/tool activity (suspected provider api error)"
+    )
+
+    def format_issue(self, task_name: str) -> str:
+        return (
+            f"{task_name}: suspected provider api error — agent ended with "
+            f"{self.total_tokens} tokens and {self.n_tool_calls} tool calls "
+            f"({self.failed_requests}/{self.total_requests} captured requests "
+            f"failed) — measurement suspect"
+        )
+
+
 # Public registry — every diagnostic kind goes here exactly once.
 DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     IdleTimeoutDiagnostic,
@@ -273,6 +329,8 @@ DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     SandboxStartupDiagnostic,
     TransportClosedDiagnostic,
     VerifierTimeoutDiagnostic,
+    ProviderApiErrorDiagnostic,
+    SuspectedApiErrorDiagnostic,
 )
 
 # field_name → Diagnostic class, for check_results lookup.
@@ -281,7 +339,7 @@ DIAGNOSTIC_BY_FIELD: dict[str, type[Diagnostic]] = {
 }
 
 
-# ── Diagnostic-carrying exceptions ────────────────────────────────────────
+# Diagnostic-carrying exceptions
 
 
 class IdleTimeoutError(TimeoutError):
@@ -317,7 +375,7 @@ class TransportClosedError(ConnectionError):
 # :class:`SandboxStartupDiagnostic` via its ``.diagnostic`` attribute.
 
 
-# ── Collector — replaces 4 parallel _*_info slots on Rollout ──────────────
+# Collector — replaces 4 parallel _*_info slots on Rollout
 
 
 class RolloutDiagnostics:
@@ -407,7 +465,7 @@ class RolloutDiagnostics:
         return d if isinstance(d, TransportClosedDiagnostic) else None
 
 
-# ── Summary / check_results helpers driven by the registry ────────────────
+# Summary / check_results helpers driven by the registry
 
 
 def summary_warning(diagnostic_cls: type[Diagnostic], count: int, total: int) -> str:

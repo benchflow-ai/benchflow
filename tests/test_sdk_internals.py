@@ -13,7 +13,7 @@ import pytest
 
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL, resolve_task_skill_policy
 
-# ── _resolve_agent_env ──
+# _resolve_agent_env
 
 
 class TestResolveAgentEnv:
@@ -263,7 +263,7 @@ class TestResolveAgentEnv:
             )
 
 
-# ── _resolve_prompts ──
+# _resolve_prompts
 
 
 class TestResolvePrompts:
@@ -308,7 +308,7 @@ class TestResolvePrompts:
         assert "Internet access is disabled" not in result[0]
 
 
-# ── _init_trial ──
+# _init_trial
 
 
 class TestInitTrial:
@@ -368,7 +368,7 @@ class TestInitTrial:
         assert isinstance(started_at, datetime)
 
 
-# ── _write_config ──
+# _write_config
 
 
 class TestWriteConfig:
@@ -625,7 +625,7 @@ def test_rollout_result_json_preserves_null_model(tmp_path):
     assert data["model"] is None
 
 
-# ── run wiring ──
+# run wiring
 
 
 class TestRunWiring:
@@ -745,7 +745,7 @@ class TestRunWiring:
         assert seen["config"].agent_idle_timeout == 45
 
 
-# ── _build_result ──
+# _build_result
 
 
 class TestBuildResult:

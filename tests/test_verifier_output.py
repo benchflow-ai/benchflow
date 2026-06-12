@@ -12,6 +12,7 @@ hit, appends only a FIXED secret-free diagnostic. The raw resolver output
 stays in the downloaded ``verifier/test-stdout.txt`` artifact.
 """
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -23,6 +24,7 @@ from benchflow._utils.scoring import (
     classify_verifier_error,
     contains_verifier_dep_install_marker,
 )
+from benchflow.task.paths import RolloutPaths
 from benchflow.task.verifier import (
     _DEP_INSTALL_DIAGNOSTIC,
     RewardFileNotFoundError,
@@ -30,9 +32,7 @@ from benchflow.task.verifier import (
     _has_dep_install_failure,
 )
 
-# ---------------------------------------------------------------------------
 # Classifier recognises the fixed diagnostic (PR #540 / #572)
-# ---------------------------------------------------------------------------
 
 
 def test_fixed_diagnostic_classifies_as_dep_install():
@@ -65,9 +65,7 @@ def test_canonical_markers_drive_classifier_and_stdout_scan(tmp_path):
         assert _has_dep_install_failure(p) is True
 
 
-# ---------------------------------------------------------------------------
 # _has_dep_install_failure: boolean verdict only, never returns stdout
-# ---------------------------------------------------------------------------
 
 
 class TestHasDepInstallFailure:
@@ -78,10 +76,20 @@ class TestHasDepInstallFailure:
             "Could not find a version that satisfies the requirement foo==9.9\n",
             "ERROR: dependency install failed\n",
             "resolution impossible for package bar\n",
+            (
+                "  x Failed to download `azure-identity==1.25.3`\n"
+                "  +- Request failed after 3 retries\n"
+                "  +- Failed to fetch:\n"
+                "  |  `https://files.pythonhosted.org/packages/example.whl`\n"
+                "  +- error sending request for url\n"
+                "  +- dns error\n"
+                "  `- failed to lookup address information: Try again\n"
+            ),
             "NO SOLUTION FOUND\n",  # case-insensitive
         ],
     )
     def test_detects_marker(self, tmp_path, stdout):
+        """Guards PR #1's no-network uv resolver diagnostic."""
         p = tmp_path / "test-stdout.txt"
         p.write_text(stdout)
         assert _has_dep_install_failure(p) is True
@@ -126,10 +134,8 @@ class TestHasDepInstallFailure:
         assert _has_dep_install_failure(p) is True
 
 
-# ---------------------------------------------------------------------------
 # Production wiring: _verify_test_script raises a redacted, classifiable error
 # (PR #572 finding 2 — exercise the real verifier, not synthesized strings)
-# ---------------------------------------------------------------------------
 
 
 def _make_verifier(tmp_path, *, stdout_text):
@@ -212,3 +218,138 @@ async def test_verify_test_script_non_dep_failure_is_not_dep_install(tmp_path):
     wrapped = f"verifier crashed: {exc.value}"
     assert classify_verifier_error(wrapped) == VERIFIER_FAILED
     assert _DEP_INSTALL_DIAGNOSTIC not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_verify_test_script_recovers_reward_when_dir_download_fails(tmp_path):
+    """Guards private PR #1's paratransit Daytona verifier export regression."""
+    rollout_paths = RolloutPaths(tmp_path / "rollout")
+    rollout_paths.mkdir()
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    test_path = tests_dir / "test.sh"
+    test_path.write_text("#!/bin/sh\nexit 0\n")
+
+    task = MagicMock()
+    task.config.verifier.type = "test-script"
+    task.config.verifier.service = "main"
+    task.config.verifier.user = "root"
+    task.config.verifier.env = None
+    task.config.verifier.timeout_sec = 60
+    task.paths.tests_dir = tests_dir
+    task.paths.test_path = test_path
+
+    sandbox = MagicMock()
+    sandbox.is_mounted = False
+    sandbox.upload_dir = AsyncMock()
+    sandbox.exec = AsyncMock(return_value=MagicMock(exit_code=0, returncode=0))
+    sandbox.download_dir = AsyncMock(side_effect=RuntimeError("provider export failed"))
+
+    async def download_file(source: str, target: str | Path) -> None:
+        path = Path(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if source.endswith("/reward.txt"):
+            path.write_text("0")
+        elif source.endswith("/test-stdout.txt"):
+            path.write_text("pytest output")
+        elif source.endswith("/ctrf.json"):
+            path.write_text("{}")
+        else:
+            raise FileNotFoundError(source)
+
+    sandbox.download_file = AsyncMock(side_effect=download_file)
+    verifier = Verifier(task=task, rollout_paths=rollout_paths, sandbox=sandbox)
+
+    result = await verifier._verify_test_script()
+
+    assert result.rewards == {"reward": 0.0}
+    sandbox.download_dir.assert_awaited_once()
+    assert rollout_paths.reward_text_path.read_text() == "0"
+    assert rollout_paths.test_stdout_path.read_text() == "pytest output"
+
+
+# Legacy verifier-mount compat (family-2 / opaquetoolsbench parity finding)
+#
+# ``bench tasks migrate`` mounts a task.md verifier at /verifier instead of the
+# legacy /tests. Verifier scripts carried over from a legacy benchmark often
+# hardcode ``python3 /tests/evaluate.py``; without a /tests -> /verifier alias
+# every converted verifier crashes rc=2 "no reward file" while the legacy
+# variant passes. These guard the alias that keeps such conversions working.
+
+
+def _make_script_verifier(tmp_path, *, uses_native_verifier_dir):
+    """Verifier over a mounted sandbox driving the default test.sh path, with a
+    captured exec log. test.sh writes a passing reward so verify() completes."""
+    verifier_dir = tmp_path / "verifier"
+    verifier_dir.mkdir(parents=True, exist_ok=True)
+
+    rollout_paths = MagicMock()
+    rollout_paths.verifier_dir = verifier_dir
+    rollout_paths.test_stdout_path = verifier_dir / "test-stdout.txt"
+    rollout_paths.reward_text_path = verifier_dir / "reward.txt"
+    rollout_paths.reward_json_path = verifier_dir / "reward.json"
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    (tests_dir / "test.sh").write_text("#!/bin/sh\npython3 /tests/evaluate.py\n")
+
+    task = MagicMock()
+    task.config.verifier.type = "test-script"
+    task.config.verifier.service = "main"
+    task.config.verifier.user = "root"
+    task.config.verifier.env = None
+    task.config.verifier.timeout_sec = 60
+    task.paths.tests_dir = tests_dir
+    task.paths.test_path = tests_dir / "test.sh"
+    task.paths.uses_native_verifier_dir = uses_native_verifier_dir
+
+    calls: list[dict] = []
+
+    async def fake_exec(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("command", "")
+        calls.append({"command": cmd, "user": kwargs.get("user")})
+        if "ln -s" in cmd or "chmod" in cmd or cmd.startswith("mkdir") or "[ -e" in cmd:
+            return MagicMock(exit_code=0, returncode=0)
+        # The test.sh run: a passing reward + stdout, mounted in place.
+        rollout_paths.test_stdout_path.write_text("ok")
+        rollout_paths.reward_text_path.write_text("1")
+        return MagicMock(exit_code=0, returncode=0)
+
+    sandbox = MagicMock()
+    sandbox.is_mounted = True
+    sandbox.upload_dir = AsyncMock()
+    sandbox.exec = AsyncMock(side_effect=fake_exec)
+    verifier = Verifier(task=task, rollout_paths=rollout_paths, sandbox=sandbox)
+    return verifier, calls
+
+
+@pytest.mark.asyncio
+async def test_native_verifier_aliases_legacy_tests_mount(tmp_path):
+    """A native (task.md) verifier mounts at /verifier and must alias /tests so
+    legacy-convention verifier scripts (hardcoded /tests/...) still resolve."""
+    verifier, calls = _make_script_verifier(tmp_path, uses_native_verifier_dir=True)
+
+    result = await verifier._verify_test_script()
+
+    assert result.rewards == {"reward": 1.0}
+    link = [c for c in calls if "ln -s" in c["command"]]
+    assert link, (
+        f"expected a /tests->/verifier alias; got {[c['command'] for c in calls]}"
+    )
+    cmd = link[0]["command"]
+    assert "ln -s /verifier /tests" in cmd
+    # Guarded so real /tests content is never clobbered.
+    assert "[ -e /tests ]" in cmd
+    # Created as root so the verifier user (any) can traverse it.
+    assert link[0]["user"] == "root"
+
+
+@pytest.mark.asyncio
+async def test_legacy_verifier_does_not_alias_tests_mount(tmp_path):
+    """A legacy verifier already mounts at /tests, so no alias is created."""
+    verifier, calls = _make_script_verifier(tmp_path, uses_native_verifier_dir=False)
+
+    result = await verifier._verify_test_script()
+
+    assert result.rewards == {"reward": 1.0}
+    assert not [c for c in calls if "ln -s" in c["command"]]

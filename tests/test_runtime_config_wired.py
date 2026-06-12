@@ -72,9 +72,7 @@ def _stub_run_result(rollout_name: str = "rt") -> Any:
     )
 
 
-# ---------------------------------------------------------------------------
 # RuntimeResult.rollout_dir
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -103,9 +101,7 @@ async def test_runtime_result_rollout_dir_set_from_rollout(
     )
 
 
-# ---------------------------------------------------------------------------
 # RuntimeConfig.rollout_name
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -147,9 +143,7 @@ async def test_runtime_config_rollout_name_threaded_into_rollout_config(
     assert captured["timeout"] == 123
 
 
-# ---------------------------------------------------------------------------
 # RolloutConfig.timeout overrides task default
-# ---------------------------------------------------------------------------
 
 
 def test_rollout_config_timeout_field_defaults_to_none() -> None:

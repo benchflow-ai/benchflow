@@ -61,7 +61,7 @@ def test_nanofirm_perfect_analysis_reaches_full_reward(tmp_path, monkeypatch):
     assert module.evaluate() == 1.0
 
 
-# ── Issue #368 guards ────────────────────────────────────────────────
+# Issue #368 guards
 # Example scripts under docs/examples/ must import from real, public
 # modules. ModuleNotFoundError on import is a hard regression.
 

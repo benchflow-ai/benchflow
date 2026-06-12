@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 import typer
 from rich.console import Console
@@ -55,7 +55,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             Path,
             typer.Option("--output", help="Output directory for generated tasks"),
         ] = Path("tasks"),
-        # ── source-specific options ──────────────────────────────────
+        # source-specific options
         projects_dir: Annotated[
             Path | None,
             typer.Option(
@@ -85,7 +85,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             int,
             typer.Option("--max-rows", help="Max rows to download from HuggingFace"),
         ] = 100,
-        # ── shared filtering / output options ────────────────────────
+        # shared filtering / output options
         limit: Annotated[
             int,
             typer.Option("--limit", help="Max traces to process"),
@@ -104,6 +104,13 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             str,
             typer.Option("--author", help="Author name for task.toml"),
         ] = "benchflow-traces",
+        task_format: Annotated[
+            str,
+            typer.Option(
+                "--task-format",
+                help="Generated task package format: task-md or legacy",
+            ),
+        ] = "task-md",
         dry_run: Annotated[
             bool,
             typer.Option("--dry-run", help="Preview traces without generating tasks"),
@@ -171,12 +178,17 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
 
         from benchflow.traces.task_gen import generate_tasks_from_traces
 
+        if task_format not in ("task-md", "legacy"):
+            console.print("[red]--task-format must be task-md or legacy[/red]")
+            raise typer.Exit(1)
+
         results = generate_tasks_from_traces(
             traces,
             output_dir,
             author=author,
             min_steps=min_steps,
             outcome_filter=outcome,
+            output_format=cast(Literal["task-md", "legacy"], task_format),
         )
 
         console.print(f"\n[green]Generated {len(results)} tasks[/green] → {output_dir}")
@@ -202,9 +214,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         console.print(table)
 
 
-# ---------------------------------------------------------------------------
 # Source loaders
-# ---------------------------------------------------------------------------
 
 
 def _load_local(
@@ -271,11 +281,6 @@ def _load_hf(dataset: str, format: str | None, split: str, max_rows: int) -> lis
         )
 
     return load_hf_dataset(dataset, format=fmt, split=split, max_rows=max_rows)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _parse_hf_messages_file(path: Path) -> list:

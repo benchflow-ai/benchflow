@@ -141,6 +141,31 @@ async def test_run_steps_reuses_session_for_same_role(self_review_scene: Scene) 
     assert prompts_received == ["Solve", "Review your solution and fix edge cases."]
 
 
+async def test_run_steps_restarts_same_role_at_scene_boundary() -> None:
+    """Guards commit 67378ddd's 2026-06-04 task.md multi-scene context."""
+    role = Role("solver", "gemini", "flash")
+    scenes = [
+        Scene(name="prep", roles=[role], turns=[Turn("solver", "Prepare.")]),
+        Scene(name="solve", roles=[role], turns=[Turn("solver", "Solve.")]),
+    ]
+    trial = _make_trial(scenes[0])
+    prompts_received: list[str] = []
+
+    async def fake_execute(prompts=None):
+        prompts_received.extend(prompts or [])
+        return [], 0
+
+    trial.connect_as = AsyncMock()
+    trial.disconnect = AsyncMock()
+    trial.execute = fake_execute  # type: ignore[method-assign,assignment]
+
+    await trial._run_steps(compile_scenes_to_steps(scenes, default_prompt="Fallback"))
+
+    assert trial.connect_as.await_count == 2
+    assert trial.disconnect.await_count == 2
+    assert prompts_received == ["Prepare.", "Solve."]
+
+
 async def test_run_steps_disconnects_active_agent_when_execute_times_out(
     self_review_scene: Scene,
 ) -> None:

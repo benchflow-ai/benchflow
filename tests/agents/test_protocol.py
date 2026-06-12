@@ -78,6 +78,7 @@ def test_ask_user_request_carries_enumerated_options():
     )
     assert req.prompt == "Which branch?"
     assert req.options == ["main", "dev"]
+    assert req.option_kinds == {}
     assert req.request_id == "r1"
 
 
@@ -85,6 +86,17 @@ def test_ask_user_request_options_default_empty():
     """A free-text ask carries no enumerated options."""
     req = AskUserRequest(prompt="What now?")
     assert req.options == []
+    assert req.option_kinds == {}
+
+
+def test_ask_user_request_carries_option_kinds():
+    """ACP option kinds preserve branch semantics without exposing raw params."""
+    req = AskUserRequest(
+        prompt="May I edit files?",
+        options=["choice_a", "choice_b"],
+        option_kinds={"choice_a": "allow_always", "choice_b": "reject"},
+    )
+    assert req.option_kinds == {"choice_a": "allow_always", "choice_b": "reject"}
 
 
 def test_acp_session_adapter_satisfies_session_protocol():

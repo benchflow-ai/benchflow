@@ -12,6 +12,13 @@ INFRA_ERROR = "infra_failure"
 SANDBOX_SETUP = "sandbox_setup"
 PROVIDER_AUTH = "provider_auth"
 TIMED_OUT = "timeout"
+# Provider API failures detected post-rollout (rate limit, quota, rejected
+# request, 5xx). "api_error" is proxy-proven (every captured provider request
+# failed); "suspected_api_error" is the zero-signal heuristic (no proxy
+# evidence, but the agent ended with zero tokens AND zero tool calls). Both
+# null the reward so the slot is excluded from score denominators.
+API_ERROR = "api_error"
+SUSPECTED_API_ERROR = "suspected_api_error"
 
 # Matched case-insensitively against the error string. Covers the
 # human-authored markers plus the sanitized "provider auth failed (HTTP 401)"
@@ -41,6 +48,10 @@ VERIFIER_DEP_INSTALL = "verifier_dep_install"
 # performs case-insensitive matching.
 VERIFIER_DEP_INSTALL_MARKERS: tuple[str, ...] = (
     "dependency install failed",
+    "failed to download `",
+    "failed to fetch:",
+    "error sending request for url",
+    "failed to lookup address information",
     "no solution found",
     "could not find a version",
     "resolution impossible",
@@ -69,6 +80,12 @@ def classify_error(error: str | None) -> str | None:
         return INSTALL_FAILED
     if "closed stdout" in lower:
         return PIPE_CLOSED
+    # Order matters: "suspected provider api error" contains "provider api
+    # error", so the heuristic marker must be checked first.
+    if "suspected provider api error" in lower:
+        return SUSPECTED_API_ERROR
+    if "provider api error" in lower:
+        return API_ERROR
     if "ACP error" in error or "was rejected as invalid" in error:
         if any(m in lower for m in _PROVIDER_AUTH_MARKERS):
             return PROVIDER_AUTH
@@ -82,6 +99,17 @@ def classify_error(error: str | None) -> str | None:
     if "timed out" in lower:
         return TIMED_OUT
     return "other"
+
+
+def api_error_is_transient(error: str | None) -> bool:
+    """True when an api_error string carries the transient marker.
+
+    Provider-api-error strings are formatted by the rollout classifier as
+    ``provider api error [<subcategory>/transient] ...`` or ``[.../permanent]``
+    — transient (rate limit, 5xx) is retryable, permanent (auth, quota,
+    model-not-found, rejected request) is not.
+    """
+    return bool(error) and "/transient]" in error
 
 
 def _looks_like_infra_error(error: str) -> bool:

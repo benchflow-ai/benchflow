@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from benchflow.task.paths import TaskPaths
 from tests.integration import check_trace_to_task_evidence
 from tests.integration.check_trace_to_task_evidence import generate_trace_evidence, main
 
@@ -29,7 +30,7 @@ def test_trace_evidence_generates_checked_tasks(tmp_path: Path) -> None:
         task_path = Path(task["path"])
         assert task["check_status"] == "pass"
         assert task["issues"] == []
-        assert (task_path / "solution" / "solve.sh").exists()
+        assert (TaskPaths(task_path).solution_dir / "solve.sh").exists()
 
     summary_path = tmp_path / "trace-evidence.json"
     assert summary_path.exists()

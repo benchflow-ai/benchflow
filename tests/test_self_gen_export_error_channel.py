@@ -28,7 +28,7 @@ from benchflow._utils.scoring import classify_error
 from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 from benchflow.models import RunResult
 
-# --- Issue 1: classify_error must not mis-tag export-time infra failures ---
+# Issue 1: classify_error must not mis-tag export-time infra failures
 
 
 def test_classify_error_on_export_failure_message_would_say_infra():
@@ -74,7 +74,7 @@ def test_rollout_result_success_requires_no_export_error():
     assert failed.success is False
 
 
-# --- Issue 2: evolved_skills_for_result must short-circuit on export_error ---
+# Issue 2: evolved_skills_for_result must short-circuit on export_error
 
 
 def test_evolved_skills_for_result_returns_empty_when_export_failed(tmp_path: Path):
@@ -114,7 +114,7 @@ def test_evolved_skills_for_result_prefers_result_payload_when_no_error(
     assert evolved_skills_for_result(result, tmp_path / "exports") == {"a": "# A\n"}
 
 
-# --- Issue 2: _commit_learner_generation must skip on export_error ---
+# Issue 2: _commit_learner_generation must skip on export_error
 
 
 def _make_job(tmp_path: Path, n_tasks: int):

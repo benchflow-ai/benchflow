@@ -10,7 +10,7 @@ BenchFlow is the **environment-and-rollout engine for agentic RL** — it turns 
 
 **One engine, three modes.** There is one thing — a *scored rollout*. **Eval** = score it and stop. **Train** = score it and hand the trajectory to a trainer. **Monitor** = score it in production. (Han Lee: *"evaluation, reward and monitoring … it's really all the same thing under different circumstances."*)
 
-**The bet.** A complete RL environment is **E = {T, H, V, S, C}** — Tasks, Harness, Verifier, **State**, Config (Han Lee, *RL Environments for LLM Agents*). BenchFlow targets the complete E. **State management** — stateful, multi-service environments that can **roll out, roll back, and branch** — is the frontier of agentic RL and the surface BenchFlow is built around.
+**The bet.** A complete RL environment is **E = `{T, H, V, S, C}`** — Tasks, Harness, Verifier, **State**, Config (Han Lee, *RL Environments for LLM Agents*). BenchFlow targets the complete E. **State management** — stateful, multi-service environments that can **roll out, roll back, and branch** — is the frontier of agentic RL and the surface BenchFlow is built around.
 
 **The boundary.** BenchFlow owns **environment + rollout + reward**. Trainers own **weights + gradients + optimizer**. The **trajectory is the seam** — every RL trainer can consume BenchFlow output without coupling.
 

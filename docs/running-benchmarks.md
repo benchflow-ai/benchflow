@@ -147,6 +147,51 @@ print(result.rewards)
 
 ---
 
+## Versioned dataset runs (`--dataset`)
+
+For runs whose results should be attributable to a published, immutable
+dataset version (leaderboards, papers, release evidence), resolve the task
+set from a dataset registry instead of pointing at a directory or branch:
+
+```bash
+# Resolve skillsbench@1.1 from the registry, verify every task's content
+# digest against the pinned snapshot, then run.
+bench eval create -d skillsbench@1.1 \
+  --agent claude-agent-acp --model claude-haiku-4-5-20251001
+
+# Versions are immutable, so the version is always explicit — there is no
+# floating "latest". --include/--exclude filter the registry roster.
+bench eval create -d skillsbench@1.1 --include xlsx-recover-data ...
+```
+
+A registry (`registry.json` at a dataset repo's root — see skillsbench's
+[`docs/dataset-versioning.md`](https://github.com/benchflow-ai/skillsbench/blob/main/docs/dataset-versioning.md))
+pins each dataset version to an exact `git_commit_id` and per-task sha256
+content digests. Resolution clones the pinned commit into
+`.cache/datasets`, materializes an immutable per-commit snapshot,
+recomputes every task's digest, and **fails before running anything** on
+any mismatch. Snapshot directories that are not part of the registry entry
+are excluded from the run. The entry's `bench_version` range is a hard
+gate: running on a benchflow outside the range the dataset was validated
+against fails before anything runs, because the results may not be
+comparable with published runs. `--ignore-bench-version` overrides the
+gate for local experimentation — the run then proceeds with a visible
+warning on the record.
+
+The registry is fetched from the skillsbench repo by default; point
+`--registry` at another URL or a local `registry.json` to override.
+
+Every `result.json`/`config.json` is stamped with `dataset_name`,
+`dataset_version`, and the per-task `task_digest` (`summary.json` carries
+the name/version), so downstream tooling can group results by
+`dataset@version`. `--tasks-dir` stays as the visibly distinct dev mode:
+its artifacts carry no dataset fields — but they still stamp a
+live-computed `task_digest`, so even dev trajectories remain attributable
+to exact task content. `bench tasks digest <task-dir>` prints the same
+digest for any task directory.
+
+---
+
 ## Running a subset of tasks
 
 ### Single task
@@ -322,7 +367,7 @@ bench eval create \
 ## SkillsBench skill-toggle matrix (Opus-4.8 + Gemini) on Daytona
 
 A self-contained recipe for the four-cell matrix of
-**{Opus-4.8 via Bedrock, Gemini-3.5-flash} × {with-skills, without-skills}**,
+**`{Opus-4.8 via Bedrock, Gemini-3.5-flash}` × `{with-skills, without-skills}`**,
 agent `openhands`, sandbox `daytona`. Each cell produces a complete trajectory
 (`trajectory/{acp,llm}_trajectory.jsonl`) plus a verifier reward — but treat a
 cell as done only after the audit in [Verifying the batch](#verifying-the-batch)
@@ -530,16 +575,36 @@ jobs/
     └── ...
 ```
 
-The `result.json` contains:
+The `result.json` contains (abridged):
 ```json
 {
   "rewards": {"reward": 0.48},
   "n_tool_calls": 12,
   "n_skill_invocations": 2,
-  "passed": true,
-  "verifier_output": "..."
+  "agent_result": {"total_tokens": 23993, "cost_usd": 0.07, "usage_source": "provider_response"},
+  "final_metrics": {"total_prompt_tokens": 18000, "total_completion_tokens": 5993},
+  "error": null,
+  "verifier_error": null
 }
 ```
+
+**Canonical fields — read these, not invented top-level ones.** The reward,
+token totals, and outcome each live in exactly one place:
+
+| You want | Read | Notes |
+| --- | --- | --- |
+| reward | `rewards.reward` | scalar 0.0–1.0, or `null` if unscored |
+| token total | `agent_result.total_tokens` | `null` when no provider usage was captured (e.g. hosted runs) |
+| outcome / status | derived from `rewards.reward` + `error`/`verifier_error` | not stored as a field; see below |
+
+There is intentionally **no top-level `reward`, `total_tokens`, or `status`
+key** — those names are absent, not `null`. A naive consumer doing
+`result["reward"]` or `result.get("total_tokens")` gets `None` because the key
+does not exist, never because the value is null. Pass/fail is a *derived*
+classification (only `reward == 1.0` passes); BenchFlow computes it from
+`rewards.reward` plus the error channels rather than persisting a redundant
+`status`. The same nested shape is produced for both native rollouts and
+hosted-env runs, so one reader handles both.
 
 `n_skill_invocations` is derived from structured ACP trajectory events: BenchFlow
 counts only `tool_call` events whose `kind` is `skill`. Job `summary.json`

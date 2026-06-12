@@ -1,0 +1,1 @@
+Not a task — no task.toml. Multi-task digest mode must skip this directory.

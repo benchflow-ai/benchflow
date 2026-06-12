@@ -11,19 +11,27 @@
         "group": "Start here",
         "pages": [
           "docs/getting-started",
-          "docs/concepts"
+          "docs/agent-quickstart",
+          "docs/concepts",
+          "docs/task-standard",
+          "docs/task-standard-roadmap"
         ]
       },
       {
         "group": "Guides",
         "pages": [
           "docs/running-benchmarks",
+          "docs/benchmark-adoption",
+          "docs/continue-runs",
           "docs/task-authoring",
+          "docs/task-authoring-task-md",
           "docs/use-cases",
           "docs/progressive-disclosure",
           "docs/skill-eval",
           "docs/llm-judge",
-          "docs/sandbox-hardening"
+          "docs/sandbox-hardening",
+          "docs/architecture",
+          "docs/environment-plane"
         ]
       },
       {
@@ -32,7 +40,8 @@
           "docs/reference/cli",
           "docs/reference/python-api",
           "docs/release",
-          "docs/integration-tests"
+          "docs/integration-tests",
+          "docs/reports/2026-06-09-task-standard-validation"
         ]
       }
     ]

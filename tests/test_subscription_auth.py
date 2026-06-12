@@ -95,8 +95,19 @@ class TestResolveAgentEnvSubscription:
         )
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
-    def test_claude_oauth_alias_satisfies_anthropic_key_requirement(self):
+    def test_claude_oauth_alias_satisfies_anthropic_key_requirement(
+        self, monkeypatch, tmp_path
+    ):
         """Guards PR #587: CLAUDE_OAUTH_TOKEN is accepted as a Claude Code alias."""
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_OAUTH_TOKEN",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        _patch_expanduser(monkeypatch, tmp_path)
+
         result = self._resolve(
             model="claude-haiku-4-5-20251001",
             agent_env={"CLAUDE_OAUTH_TOKEN": "oauth-test"},
