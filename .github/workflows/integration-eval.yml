@@ -33,7 +33,7 @@ jobs:
     # Only run on the canonical repo. Forks lack the eval/judge secrets, so
     # the scheduled and dispatched runs would otherwise fail-closed there.
     if: github.repository == 'benchflow-ai/benchflow'
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       # Agent (run) model. Keys are referenced from repo secrets; their
       # values never appear in logs or files.
@@ -41,6 +41,9 @@ jobs:
       DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
       # Judge model key (gemini-3.1-flash-lite). call_judge reads GEMINI_API_KEY.
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      # Daytona key for the parity + reaper scenarios; scenarios that need it
+      # skip cleanly when it is absent.
+      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
       TASK: ${{ github.event.inputs.task || 'jax-computing-basics' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -54,7 +57,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra dev --extra judge --locked
+        run: uv sync --extra dev --extra judge --extra sandbox-daytona --locked
 
       - name: Run one real rollout on Docker
         run: |
@@ -75,6 +78,16 @@ jobs:
             jobs/integration-eval \
             --model gemini-3.1-flash-lite \
             --json
+
+      - name: Run the live integration scenarios
+        # Oracle determinism, docker<->daytona parity, and reaper safety. The
+        # agent-rollout scenario is skipped here because the step above already
+        # runs a real agent + judge; scenarios needing a key absent from secrets
+        # skip cleanly.
+        run: |
+          uv run pytest tests/test_integration_suite.py \
+            -m integration -k "not agent_rollout" \
+            -p no:cacheprovider -v
 
       - name: Upload rollout artifacts
         if: always()
