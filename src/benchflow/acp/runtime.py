@@ -73,6 +73,11 @@ _MODELSDEV_PROVIDER_HEURISTICS: list[tuple[str, str]] = [
     ("opus", "anthropic"),
     ("mistral", "mistral"),
     ("codestral", "mistral"),
+    # MiMo Code (OpenCode fork): its models.dev catalog serves the Xiaomi
+    # models as "xiaomi/<model>"; without this entry a registered-provider
+    # model like xiaomi/mimo-v2.5-pro is stripped to a bare name and falls
+    # to the anthropic/ default — a nonexistent route (#679).
+    ("mimo", "xiaomi"),
 ]
 
 
