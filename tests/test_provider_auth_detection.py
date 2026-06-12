@@ -20,7 +20,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from benchflow.providers.litellm_logging import trajectory_from_litellm_callback_log
-from benchflow.rollout import _provider_auth_status_from_runtime
+from benchflow.rollout import (
+    _provider_auth_status_from_runtime,
+    _provider_failure_from_runtime,
+)
 
 
 def _runtime_with_statuses(statuses):
@@ -139,6 +142,99 @@ def test_litellm_non_auth_failure_import_remains_generic_500():
     assert trajectory.exchanges[0].response.status_code == 500
     assert (
         _provider_auth_status_from_runtime(_runtime_with_trajectory(trajectory)) is None
+    )
+
+
+def test_litellm_daily_cap_failure_import_drives_sanitized_provider_marker(
+    tmp_path,
+):
+    """Guards PR #653: surface Bedrock daily-token caps hidden behind
+    ACP ``-32603 Internal error`` as provider_rate_limit instead of acp_error."""
+    from benchflow.agents.errors import AgentProtocolError
+
+    record = {
+        "event": "failure",
+        "request_model": "benchflow-opus",
+        "provider_model": "aws-bedrock/us.anthropic.claude-opus-4-8",
+        "request": {"method": "POST", "path": "/v1/messages", "body": {}},
+        "response": {},
+        "error": {
+            "type": "RateLimitError",
+            "message": (
+                "litellm.RateLimitError: BedrockException - "
+                '{"message":"Too many tokens per day, please wait before trying again."}'
+            ),
+            "traceback": (
+                "MaskedHTTPStatusError: Client error '429 Too Many Requests' "
+                "for url 'https://bedrock-runtime.us-east-2.amazonaws.com/model/x/converse'"
+            ),
+        },
+        "start_time": "2026-06-09T22:00:00",
+        "end_time": "2026-06-09T22:00:00",
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="session",
+        agent_name="openhands",
+    )
+    failure = _provider_failure_from_runtime(_runtime_with_trajectory(trajectory))
+
+    assert trajectory.exchanges[0].response.status_code == 429
+    assert failure is not None
+    assert failure.status == 429
+    assert failure.error_suffix == "provider rate limited (HTTP 429)"
+
+    rollout = _auth_rollout(tmp_path)
+    rollout._provider_failure_cached = failure
+
+    classified = rollout._classify_acp_error(
+        AgentProtocolError("ACP error -32603: Internal error")
+    )
+
+    assert classified == (
+        "ACP error -32603: Internal error | provider rate limited (HTTP 429)"
+    )
+    assert "Too many tokens per day" not in classified
+
+
+def test_litellm_503_failure_import_drives_sanitized_provider_marker(tmp_path):
+    """Guards PR #653: surface provider 503s hidden behind ACP errors."""
+    from benchflow.agents.errors import AgentProtocolError
+
+    record = {
+        "event": "failure",
+        "request_model": "benchflow-opus",
+        "provider_model": "aws-bedrock/us.anthropic.claude-opus-4-8",
+        "request": {"method": "POST", "path": "/v1/messages", "body": {}},
+        "response": {},
+        "error": {
+            "type": "APIError",
+            "message": "BedrockException - 503 Service Unavailable",
+        },
+        "start_time": "2026-06-09T22:00:00",
+        "end_time": "2026-06-09T22:00:00",
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="session",
+        agent_name="openhands",
+    )
+    failure = _provider_failure_from_runtime(_runtime_with_trajectory(trajectory))
+
+    assert trajectory.exchanges[0].response.status_code == 503
+    assert failure is not None
+    assert failure.error_suffix == "provider unavailable (HTTP 503)"
+
+    rollout = _auth_rollout(tmp_path)
+    rollout._provider_failure_cached = failure
+
+    assert (
+        rollout._classify_acp_error(
+            AgentProtocolError("ACP error -32603: Internal error")
+        )
+        == "ACP error -32603: Internal error | provider unavailable (HTTP 503)"
     )
 
 
