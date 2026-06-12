@@ -289,6 +289,49 @@ class Verifier:
             return None
         return load_verifier_document(verifier_dir)
 
+    async def _link_legacy_verifier_mount(
+        self,
+        *,
+        verifier_code_dir: PurePosixPath,
+        sandbox_paths: SandboxPaths,
+        service: str,
+    ) -> None:
+        """Alias the legacy ``/tests`` mount onto a native verifier dir.
+
+        ``bench tasks migrate`` mounts a task.md (native) verifier at
+        ``/verifier`` rather than the legacy ``/tests``. Verifier scripts carried
+        over from a legacy benchmark commonly hardcode ``/tests/...`` paths
+        (e.g. ``python3 /tests/evaluate.py``), so a faithful conversion must keep
+        those resolvable. When the native mount differs from ``/tests``, symlink
+        ``/tests`` → the native dir — but only when ``/tests`` is absent, so real
+        content is never clobbered. No-op for legacy tasks (already mounted at
+        ``/tests``) and harmless for native verifiers that reference
+        ``$BENCHFLOW_VERIFIER_DIR`` instead of a hardcoded path.
+        """
+        legacy_dir = sandbox_paths.tests_dir
+        if str(verifier_code_dir) == str(legacy_dir):
+            return
+        src = shlex.quote(str(verifier_code_dir))
+        dst = shlex.quote(str(legacy_dir))
+        try:
+            result = await self._sandbox.exec(
+                f"[ -e {dst} ] || ln -s {src} {dst}",
+                user="root",
+                service=service,
+                timeout_sec=10,
+            )
+        except Exception as e:  # best-effort; native verifiers may not need it
+            self._logger.debug("legacy verifier-mount symlink skipped: %s", e)
+            return
+        if _exec_return_code(result) != 0:
+            self._logger.debug(
+                "legacy verifier-mount symlink (%s -> %s) returned nonzero; "
+                "verifier scripts hardcoding %s may fail",
+                legacy_dir,
+                verifier_code_dir,
+                legacy_dir,
+            )
+
     # test-script verifier (default — Harbor-compatible)
 
     async def _verify_test_script(
@@ -339,6 +382,12 @@ class Verifier:
             raise AddTestsDirError(
                 "Failed to add verifier directory to sandbox."
             ) from e
+
+        await self._link_legacy_verifier_mount(
+            verifier_code_dir=verifier_code_dir,
+            sandbox_paths=sandbox_paths,
+            service=service,
+        )
 
         self._rollout_paths.test_stdout_path.touch()
 
@@ -719,6 +768,12 @@ class Verifier:
             raise AddTestsDirError(
                 "Failed to add verifier directory to sandbox."
             ) from e
+
+        await self._link_legacy_verifier_mount(
+            verifier_code_dir=verifier_code_dir,
+            sandbox_paths=sandbox_paths,
+            service=service,
+        )
 
         self._rollout_paths.test_stdout_path.touch()
         if service != "main":
