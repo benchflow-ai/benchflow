@@ -113,10 +113,13 @@ _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
 )
+# Node >=22.19 is required by current openclaw (the JS agents install
+# @latest); keep this pin at or above that floor or the openclaw ACP
+# bootstrap aborts at its runtime version check (BF-10).
 _NODE_INSTALL = (
     "export DEBIAN_FRONTEND=noninteractive; "
     f"BF_NODE_DIR={_BENCHFLOW_NODE_PREFIX}; "
-    "BF_NODE_VERSION=22.14.0; "
+    "BF_NODE_VERSION=22.20.0; "
     'if [ ! -x "$BF_NODE_DIR/bin/node" ]; then '
     "  if ! command -v curl >/dev/null 2>&1 || "
     "     ! command -v tar >/dev/null 2>&1 || "
