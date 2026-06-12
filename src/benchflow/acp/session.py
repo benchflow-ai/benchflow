@@ -201,6 +201,36 @@ class ACPSession:
         self._flush_agent_text()
         self._notify_change()
 
+    def pending_tool_call_ids(self) -> list[str]:
+        """Return tool calls that have not reached a terminal status."""
+        pending_statuses = {ToolCallStatus.PENDING, ToolCallStatus.IN_PROGRESS}
+        return [
+            record.tool_call_id
+            for record in self.tool_calls
+            if record.status in pending_statuses
+        ]
+
+    def record_agent_timeout(
+        self,
+        *,
+        timeout_sec: float,
+        pending_tool_call_ids: list[str],
+        terminal_trajectory_complete: bool,
+    ) -> None:
+        """Append BenchFlow's terminal timeout marker to the ACP event stream."""
+        self._events_active = True
+        self._flush_agent_text()
+        self.events.append(
+            {
+                "type": "agent_timeout",
+                "reason": "wall_clock_timeout",
+                "timeout_sec": timeout_sec,
+                "pending_tool_call_ids": list(pending_tool_call_ids),
+                "terminal_trajectory_complete": terminal_trajectory_complete,
+            }
+        )
+        self._notify_change()
+
     def record_prompt_usage(self, usage: object | None) -> None:
         """Record cumulative ACP token usage returned by session/prompt."""
         snapshot = normalize_acp_usage(usage)

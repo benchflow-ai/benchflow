@@ -75,6 +75,7 @@ from benchflow.contracts import (
 )
 from benchflow.contracts import RoundResult as RoundResult
 from benchflow.diagnostics import (
+    AgentPromptTimeoutError,
     ProviderApiErrorDiagnostic,
     RolloutDiagnostics,
     SuspectedApiErrorDiagnostic,
@@ -338,6 +339,10 @@ class Rollout:
         self._n_tool_calls: int = 0
         self._trajectory_source: TrajectorySource | None = None
         self._partial_trajectory: bool = False
+        # Set when a clean wall-clock prompt timeout (AgentPromptTimeoutError
+        # with no pending tool calls) fired — its captured trajectory is a
+        # complete terminal one, not a rerunnable partial (#640).
+        self._terminal_timeout: bool = False
         # Every prompt actually sent to the agent across all execute() calls —
         # this is what `n_prompts` and `prompts.json` should reflect for Scene
         # rollouts where each turn issues its own prompt. The original
@@ -920,8 +925,13 @@ class Rollout:
             return
         self._trajectory.extend(delta)
         self._session_traj_count = len(captured)
-        self._partial_trajectory = True
-        self._trajectory_source = "partial_acp"
+        if getattr(self, "_terminal_timeout", False):
+            # Clean wall-clock terminal timeout (#640): the captured tail is the
+            # complete trajectory, so leave _partial_trajectory False.
+            self._trajectory_source = "acp"
+        else:
+            self._partial_trajectory = True
+            self._trajectory_source = "partial_acp"
         prior_session_tools = getattr(self, "_session_tool_count", 0)
         new_tools = len(session.tool_calls) - prior_session_tools
         if new_tools > 0:
@@ -962,13 +972,49 @@ class Rollout:
             else self._config.agent_idle_timeout
         )
 
-        trajectory, n_tool_calls = await self._planes.execute_prompts(
-            self._acp_client,
-            self._session,
-            effective_prompts,
-            timeout,
-            idle_timeout=idle_timeout,
+        try:
+            trajectory, n_tool_calls = await self._planes.execute_prompts(
+                self._acp_client,
+                self._session,
+                effective_prompts,
+                timeout,
+                idle_timeout=idle_timeout,
+            )
+        except AgentPromptTimeoutError as e:
+            self._diagnostics.set(e.diagnostic)
+            self._commit_acp_execution(
+                trajectory=e.trajectory,
+                n_tool_calls=e.n_tool_calls,
+                prev_session_tools=prev_session_tools,
+                effective_prompts=e.executed_prompts or effective_prompts,
+                started_at=t0,
+                node=node,
+                partial_trajectory=not e.terminal_trajectory_complete,
+            )
+            raise
+
+        self._commit_acp_execution(
+            trajectory=trajectory,
+            n_tool_calls=n_tool_calls,
+            prev_session_tools=prev_session_tools,
+            effective_prompts=effective_prompts,
+            started_at=t0,
+            node=node,
         )
+        return trajectory, n_tool_calls
+
+    def _commit_acp_execution(
+        self,
+        *,
+        trajectory: list[dict],
+        n_tool_calls: int,
+        prev_session_tools: int,
+        effective_prompts: list[str],
+        started_at: datetime,
+        node: RolloutNode | None,
+        partial_trajectory: bool = False,
+    ) -> None:
+        """Commit a finalized ACP snapshot into rollout state."""
 
         # trajectory and n_tool_calls are cumulative for this session.
         # Compute the delta since last execute() on this session.
@@ -980,7 +1026,11 @@ class Rollout:
         self._trajectory.extend(new_events)
         self._n_tool_calls += new_tools
         self._executed_prompts.extend(effective_prompts)
-        self._trajectory_source = "acp"
+        if partial_trajectory:
+            self._partial_trajectory = True
+            self._trajectory_source = "partial_acp"
+        elif not self._partial_trajectory:
+            self._trajectory_source = "acp"
         self._collect_native_acp_usage()
 
         # Grow the tree at Step-level granularity — one Step per ACP event
@@ -1006,13 +1056,12 @@ class Rollout:
         # Accumulate execution time across all execute() calls — Scene rollouts
         # invoke execute() once per turn, and the previous "set only on first
         # call" behaviour undercounted multi-turn agent time.
-        elapsed = (datetime.now() - t0).total_seconds()
+        elapsed = (datetime.now() - started_at).total_seconds()
         self._timing["agent_execution"] = (
             self._timing.get("agent_execution", 0.0) + elapsed
         )
 
         self._phase = "executed"
-        return trajectory, n_tool_calls
 
     def _collect_native_acp_usage(self) -> None:
         """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
@@ -1362,10 +1411,19 @@ class Rollout:
         handler. Preserves the watchdog's diagnostic message ("Agent idle
         for 600s with no new tool call ...") when it raised one, falling
         back to the generic wall-clock message only when there's no detail.
+
+        A BenchFlow-owned wall-clock prompt timeout (``AgentPromptTimeoutError``)
+        that fired with no pending tool calls is a *clean terminal* timeout:
+        the trajectory is complete, not a rerunnable partial. Record that so
+        the partial-capture path leaves ``_partial_trajectory`` False (#640).
         """
         detail = str(e).strip()
         self._error = detail or f"Agent timed out after {self._timeout}s"
         self._diagnostics.capture_idle(e)
+        if isinstance(e, AgentPromptTimeoutError) and getattr(
+            e, "terminal_trajectory_complete", False
+        ):
+            self._terminal_timeout = True
         logger.error(self._error)
 
     async def run(self) -> RolloutResult:
