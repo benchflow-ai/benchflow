@@ -19,6 +19,7 @@ import pytest
 from benchflow.agents.providers import (
     PROVIDERS,
     find_provider,
+    find_provider_for_bare_model,
     resolve_auth_env,
 )
 from benchflow.agents.registry import (
@@ -71,6 +72,8 @@ def test_agent_field_shapes(name, cfg):
     )
     assert isinstance(cfg.install_timeout, int) and cfg.install_timeout > 0
     assert isinstance(cfg.supports_acp_set_model, bool)
+    assert isinstance(cfg.acp_model_config_id, str)
+    assert isinstance(cfg.acp_effort_config_id, str)
 
 
 @pytest.mark.parametrize("name,cfg", AGENTS.items(), ids=list(AGENTS.keys()))
@@ -386,6 +389,48 @@ def test_provider_models_and_credentials(name, cfg):
     for cf in cfg.credential_files:
         assert cf.get("path"), f"credential_files entry missing path: {cf}"
         assert cf.get("env_source"), f"credential_files entry missing env_source: {cf}"
+
+
+@pytest.mark.parametrize("name,cfg", PROVIDERS.items(), ids=list(PROVIDERS.keys()))
+def test_provider_model_prefixes_shape(name, cfg):
+    """model_prefixes tokens are non-empty, lowercase, stripped, and prefix-free.
+
+    ``find_provider_for_bare_model`` matches tokens against bare (already
+    prefix-stripped) model ids, so a token containing ``/`` could never match.
+    """
+    for token in cfg.model_prefixes:
+        assert token and isinstance(token, str), (
+            f"{name!r}: model_prefixes entry must be a non-empty string: {token!r}"
+        )
+        assert token == token.strip().lower(), (
+            f"{name!r}: model_prefixes token {token!r} must be lowercase/stripped"
+        )
+        assert "/" not in token, (
+            f"{name!r}: model_prefixes token {token!r} must be a bare id family, "
+            "not a provider/ prefix"
+        )
+
+
+def test_provider_model_prefixes_unique_and_resolvable():
+    """Tokens are unique across providers and round-trip to their owner.
+
+    Uniqueness keeps ``find_provider_for_bare_model``'s longest-token-wins
+    resolution independent of registry declaration order; the round-trip
+    check pins that every declared token actually routes to its provider.
+    """
+    owners: dict[str, str] = {}
+    for name, cfg in PROVIDERS.items():
+        for token in cfg.model_prefixes:
+            assert token not in owners, (
+                f"model_prefixes token {token!r} declared by both "
+                f"{owners[token]!r} and {name!r}; resolution would depend on "
+                "registry order"
+            )
+            owners[token] = name
+            result = find_provider_for_bare_model(token)
+            assert result is not None and result[0] == name, (
+                f"token {token!r} does not resolve back to provider {name!r}"
+            )
 
 
 # ── Cross-cutting derived contracts ─────────────────────────────────────────

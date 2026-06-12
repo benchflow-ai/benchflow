@@ -3,7 +3,7 @@
 Public API surface:
 - Sandbox protocol for isolated execution environments
 - ACP client for multi-turn agent communication
-- Trajectory capture (HTTP proxy, OTel collector, ACP native)
+- Trajectory capture (LiteLLM callbacks, OTel collector, ACP native)
 - Rollout lifecycle for single-task execution
 - Evaluation orchestration with retries and concurrency
 - Rewards protocol (composable Rubric + RewardFunc)
@@ -18,7 +18,6 @@ try:
 except PackageNotFoundError:
     __version__ = "0+unknown"
 
-# Core types
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.yaml_loader import rollout_config_from_yaml
 from benchflow.acp.client import ACPClient
@@ -26,8 +25,10 @@ from benchflow.acp.session import ACPSession
 from benchflow.adapters import (
     InspectAdapter,
     ORSAdapter,
+    ors_tool_outputs_to_reward_events,
     to_inspect_task,
     to_ors_reward,
+    write_ors_tool_outputs_jsonl,
 )
 from benchflow.agents.registry import (
     AGENTS,
@@ -39,7 +40,9 @@ from benchflow.agents.registry import (
 )
 from benchflow.contracts.user import (
     BaseUser,
+    DocumentNudgeUser,
     FunctionUser,
+    ModelDocumentNudgeUser,
     PassthroughUser,
     RoundResult,
 )
@@ -118,20 +121,22 @@ from benchflow.scenes import compile_scenes_to_steps
 from benchflow.sdk import SDK
 from benchflow.skills import SkillInfo, discover_skills, install_skill, parse_skill
 from benchflow.task import (
+    TASK_DOCUMENT_FILENAME,
     Task,
     TaskConfig,
+    TaskDocument,
+    TaskDocumentParseError,
     Verifier,
     VerifierResult,
+    render_task_md_from_legacy,
 )
 from benchflow.trajectories.otel import OTelCollector
-from benchflow.trajectories.proxy import TrajectoryProxy
 from benchflow.trajectories.types import Trajectory
 
 # Public API surface. Anything not in this list is implementation detail and
 # may change without notice.
 __all__ = [
     "__version__",
-    # Rewards plane
     "Reward",
     "Rubric",
     "RewardFunc",
@@ -149,7 +154,6 @@ __all__ = [
     "load_rubric",
     "load_rubric_json",
     "load_rubric_toml",
-    # Sandbox protocol
     "Sandbox",
     "SandboxExecResult",
     "SandboxImage",
@@ -160,27 +164,26 @@ __all__ = [
     "ExecResult",
     "Task",
     "TaskConfig",
+    "TASK_DOCUMENT_FILENAME",
+    "TaskDocument",
+    "TaskDocumentParseError",
+    "render_task_md_from_legacy",
     "Verifier",
     "VerifierResult",
-    # ACP
     "ACPClient",
     "ACPSession",
-    # Agent registry
     "AGENTS",
     "get_agent",
     "infer_env_key_for_model",
     "is_vertex_model",
     "list_agents",
     "register_agent",
-    # Evaluation orchestration
     "Evaluation",
     "EvaluationConfig",
     "EvaluationResult",
     "RetryConfig",
-    # Metrics
     "BenchmarkMetrics",
     "collect_metrics",
-    # Models / errors
     "AgentInstallError",
     "AgentTimeoutError",
     "RolloutResult",
@@ -189,19 +192,15 @@ __all__ = [
     "MonitorConfig",
     "MonitorResult",
     "MonitorNotImplementedError",
-    # Runtime
     "Agent",
     "Environment",
     "Runtime",
     "RuntimeConfig",
     "RuntimeResult",
-    # Single entry point
     "run",
-    # Declarative types
     "Role",
     "Scene",
     "Turn",
-    # Scene authoring desugaring
     "compile_scenes_to_steps",
     # Workspace snapshots (filesystem helper — NOT the Sandbox primitive, #384)
     "workspace_snapshot",
@@ -211,37 +210,33 @@ __all__ = [
     "snapshot",
     "restore",
     "list_snapshots",
-    # Rollout
     "Rollout",
     "RolloutConfig",
     "rollout_config_from_yaml",
-    # User abstraction (progressive disclosure)
     "BaseUser",
+    "DocumentNudgeUser",
     "FunctionUser",
+    "ModelDocumentNudgeUser",
     "PassthroughUser",
     "RoundResult",
-    # SDK
     "SDK",
-    # Sandbox services
     "SERVICES",
     "build_service_hooks",
     "detect_services_from_dockerfile",
     "register_service",
     "stage_dockerfile_deps",
-    # Skills
     "SkillInfo",
     "discover_skills",
     "install_skill",
     "parse_skill",
-    # Trajectories
     "OTelCollector",
-    "TrajectoryProxy",
     "Trajectory",
-    # External adapters
     "InspectAdapter",
     "ORSAdapter",
+    "ors_tool_outputs_to_reward_events",
     "to_inspect_task",
     "to_ors_reward",
+    "write_ors_tool_outputs_jsonl",
 ]
 
 

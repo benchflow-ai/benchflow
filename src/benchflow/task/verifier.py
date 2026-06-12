@@ -7,387 +7,161 @@ selected by ``[verifier].type`` in ``task.toml``:
   parse ``reward.txt`` / ``reward.json``.
 - ``"llm-judge"``: download the agent's deliverables and grade them against a
   human-authored rubric using an LLM judge (see #270).
+
+This module is a thin façade. The implementation now lives in sibling
+``verifier_*`` modules:
+
+- ``verifier_core`` — the ``Verifier`` class (kept whole).
+- ``verifier_errors`` — ``VerifierResult`` and the exception hierarchy.
+- ``verifier_scan`` — dep-install failure scanning.
+- ``verifier_script_strategy`` — script-strategy command building.
+- ``verifier_reward_kit`` — Reward Kit resolution and manifest building.
+- ``verifier_ors_episode`` — ORS-episode reward evidence parsing.
+- ``verifier_judge_inputs`` — agent-judge input reading and scoring.
+
+Every public and underscore symbol previously importable from
+``benchflow.task.verifier`` (including patch targets like
+``benchflow.task.verifier.Verifier``) is re-exported here so the import and
+monkeypatch surface is byte-identical.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-import shlex
-import shutil
-from pathlib import Path
-from typing import Any
+import json as json
+import logging as logging
+import math as math
+import shlex as shlex
+import shutil as shutil
+from dataclasses import asdict as asdict
+from pathlib import Path as Path
+from pathlib import PurePosixPath as PurePosixPath
+from typing import Any as Any
+from typing import cast as cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel as BaseModel
 
-from benchflow.rewards.validation import is_valid_reward_number, validate_reward_map
-from benchflow.sandbox.lockdown import _exec_return_code, clear_verifier_output_dir
-from benchflow.task.env import resolve_env_vars
-from benchflow.task.paths import RolloutPaths, SandboxPaths
-
-logger = logging.getLogger(__name__)
-
-
-class VerifierResult(BaseModel):
-    """Result from the verifier — reward dict."""
-
-    model_config = {"strict": True}
-
-    rewards: dict[str, Any] | None = None
-
-
-class RewardFileEmptyError(Exception):
-    pass
-
-
-class RewardFileNotFoundError(Exception):
-    pass
-
-
-class VerifierOutputParseError(Exception):
-    pass
-
-
-class AddTestsDirError(Exception):
-    pass
-
-
-class DownloadVerifierDirError(Exception):
-    pass
-
-
-class RubricNotFoundError(Exception):
-    """Raised when an llm-judge verifier cannot locate its rubric file."""
-
-
-class Verifier:
-    """Runs the task's verifier and parses rewards.
-
-    Two verification methods are supported (selected by ``verifier.type``):
-
-    1. ``test-script`` — uploads the task's ``tests/`` directory into the
-       sandbox at ``/tests``, runs ``test.sh`` with configured env vars/user,
-       and parses the reward from ``reward.txt`` or ``reward.json``.
-    2. ``llm-judge`` — downloads the agent's deliverables from the sandbox and
-       grades them against a rubric using an LLM judge, writing the aggregate
-       reward to ``reward.json``.
-    """
-
-    def __init__(
-        self,
-        task: Any,
-        rollout_paths: RolloutPaths,
-        sandbox: Any,
-        _logger: logging.Logger | None = None,
-    ) -> None:
-        self._task = task
-        self._rollout_paths = rollout_paths
-        self._sandbox = sandbox
-        self._logger = (_logger or logger).getChild("verifier")
-
-    def _parse_reward_text(self) -> dict[str, float | int]:
-        if self._rollout_paths.reward_text_path.stat().st_size == 0:
-            raise RewardFileEmptyError(
-                f"Reward file is empty at {self._rollout_paths.reward_text_path}"
-            )
-        try:
-            reward = float(self._rollout_paths.reward_text_path.read_text())
-        except (ValueError, TypeError) as e:
-            raise VerifierOutputParseError(
-                f"Failed to parse rewards from text file {self._rollout_paths.reward_text_path}"
-            ) from e
-        if not is_valid_reward_number(reward):
-            raise VerifierOutputParseError(
-                f"Reward text file {self._rollout_paths.reward_text_path} "
-                "must contain a finite numeric reward between 0.0 and 1.0"
-            )
-        return {"reward": reward}
-
-    def _parse_reward_json(self) -> dict[str, Any]:
-        if self._rollout_paths.reward_json_path.stat().st_size == 0:
-            raise RewardFileEmptyError(
-                f"Reward file is empty at {self._rollout_paths.reward_json_path}"
-            )
-        try:
-            rewards = json.loads(self._rollout_paths.reward_json_path.read_text())
-        except (ValueError, TypeError) as e:
-            raise VerifierOutputParseError(
-                f"Failed to parse rewards from JSON file {self._rollout_paths.reward_json_path}"
-            ) from e
-
-        if not isinstance(rewards, dict):
-            raise VerifierOutputParseError(
-                f"Reward JSON file {self._rollout_paths.reward_json_path} "
-                "must contain an object with numeric rewards"
-            )
-
-        canonical_reward = rewards.get("reward")
-        if not is_valid_reward_number(canonical_reward):
-            raise VerifierOutputParseError(
-                f"Reward JSON file {self._rollout_paths.reward_json_path} "
-                "is missing numeric 'reward' between 0.0 and 1.0"
-            )
-
-        try:
-            return validate_reward_map(rewards, source="reward JSON")
-        except ValueError as e:
-            raise VerifierOutputParseError(
-                f"Reward JSON file {self._rollout_paths.reward_json_path} {e}"
-            ) from e
-
-    def _clear_reward_outputs(self) -> None:
-        for path in (
-            self._rollout_paths.reward_text_path,
-            self._rollout_paths.reward_json_path,
-        ):
-            path.unlink(missing_ok=True)
-
-    async def verify(self) -> VerifierResult:
-        """Run the configured verifier and return the reward result."""
-        self._clear_reward_outputs()
-        if self._task.config.verifier.type == "llm-judge":
-            return await self._verify_llm_judge()
-        return await self._verify_test_script()
-
-    # ------------------------------------------------------------------
-    # test-script verifier (default — Harbor-compatible)
-    # ------------------------------------------------------------------
-
-    async def _verify_test_script(self) -> VerifierResult:
-        """Run the task's ``test.sh`` verifier and return the reward result.
-
-        ``[verifier].service`` selects which compose service ``test.sh`` runs
-        in. The default ``"main"`` is the agent container (Harbor-compatible).
-        Multi-container (vulhub-style) tasks set it to a target/database
-        service so the verifier can inspect *target-side* state — RCE markers,
-        DB modifications — instead of only the agent workspace (#248).
-        """
-        service = self._task.config.verifier.service
-        verifier_outputs_are_mounted = service == "main" and getattr(
-            self._sandbox, "is_mounted", False
-        )
-        if not verifier_outputs_are_mounted:
-            try:
-                await clear_verifier_output_dir(
-                    self._sandbox,
-                    user="root",
-                    service=service,
-                    timeout_sec=10,
-                )
-            except RuntimeError as e:
-                raise VerifierOutputParseError(str(e)) from e
-
-        try:
-            await self._sandbox.upload_dir(
-                source_dir=self._task.paths.tests_dir,
-                target_dir="/tests",
-                service=service,
-            )
-        except Exception as e:
-            raise AddTestsDirError("Failed to add tests directory to sandbox.") from e
-
-        self._rollout_paths.test_stdout_path.touch()
-
-        env = None
-        if self._task.config.verifier.env:
-            for key in self._task.config.verifier.env:
-                if "api_key" in key.lower():
-                    self._logger.debug(
-                        "The verifier.env contains an API key (often the case for LLM-"
-                        "based verifiers). You will incur costs associated with the "
-                        "API calls."
-                    )
-            env = resolve_env_vars(self._task.config.verifier.env)
-
-        sandbox_paths = SandboxPaths()
-        test_script_path = shlex.quote(
-            str(
-                sandbox_paths.tests_dir
-                / self._task.paths.test_path.relative_to(
-                    self._task.paths.tests_dir
-                ).as_posix()
-            )
-        )
-        test_stdout_path = shlex.quote(
-            str(
-                sandbox_paths.verifier_dir
-                / self._rollout_paths.test_stdout_path.relative_to(
-                    self._rollout_paths.verifier_dir
-                ).as_posix()
-            )
-        )
-        chmod_result = await self._sandbox.exec(
-            f"chmod +x {test_script_path}",
-            user="root",
-            service=service,
-            timeout_sec=10,
-        )
-        chmod_return_code = _exec_return_code(chmod_result)
-        if chmod_return_code != 0:
-            raise VerifierOutputParseError(
-                f"Verifier setup failed: chmod exited with rc={chmod_return_code}"
-            )
-
-        if service != "main":
-            verifier_dir = shlex.quote(str(sandbox_paths.verifier_dir))
-            mkdir_result = await self._sandbox.exec(
-                f"mkdir -p {verifier_dir} && chmod 777 {verifier_dir}",
-                user="root",
-                service=service,
-                timeout_sec=10,
-            )
-            mkdir_return_code = _exec_return_code(mkdir_result)
-            if mkdir_return_code != 0:
-                raise VerifierOutputParseError(
-                    "Verifier setup failed: target verifier dir exited with "
-                    f"rc={mkdir_return_code}"
-                )
-
-        test_result = await self._sandbox.exec(
-            command=f"{test_script_path} > {test_stdout_path} 2>&1",
-            env=env,
-            user=self._task.config.verifier.user,
-            service=service,
-            timeout_sec=self._task.config.verifier.timeout_sec,
-        )
-        test_return_code = _exec_return_code(test_result)
-
-        # Download verifier output if it is not host-mounted. Only the agent's
-        # ``main`` container has the rollout dir bind-mounted; a target service
-        # never does, so target-side rewards (#248) are always downloaded.
-        if not verifier_outputs_are_mounted:
-            try:
-                await self._sandbox.download_dir(
-                    source_dir=str(sandbox_paths.verifier_dir),
-                    target_dir=self._rollout_paths.verifier_dir,
-                    service=service,
-                )
-            except Exception as e:
-                raise DownloadVerifierDirError(
-                    "Failed to download verifier directory from sandbox"
-                ) from e
-
-        if test_return_code != 0 and (
-            self._rollout_paths.reward_text_path.exists()
-            or self._rollout_paths.reward_json_path.exists()
-        ):
-            # ENG-150: Verifier produced a reward file but exited nonzero.
-            # This is common when test frameworks exit with the count of
-            # failures (e.g. pytest exits 1 when all tests fail → reward 0).
-            # Since _clear_reward_outputs() wiped stale files before this run,
-            # any reward file present was written by THIS invocation. Accept
-            # the reward so the result is classified as "failed" (honest model
-            # failure) instead of "verifier_errored" (infrastructure problem).
-            self._logger.warning(
-                "Verifier exited with rc=%d but produced reward output; "
-                "accepting reward (reward files were cleared before this run)",
-                test_return_code,
-            )
-
-        if self._rollout_paths.reward_text_path.exists():
-            rewards = self._parse_reward_text()
-        elif self._rollout_paths.reward_json_path.exists():
-            rewards = self._parse_reward_json()
-        else:
-            if test_return_code != 0:
-                raise RewardFileNotFoundError(
-                    f"verifier exited with rc={test_return_code}; no reward file "
-                    f"found at {self._rollout_paths.reward_text_path} or "
-                    f"{self._rollout_paths.reward_json_path}"
-                )
-            raise RewardFileNotFoundError(
-                f"No reward file found at {self._rollout_paths.reward_text_path} or "
-                f"{self._rollout_paths.reward_json_path}"
-            )
-
-        return VerifierResult(rewards=rewards)
-
-    # ------------------------------------------------------------------
-    # llm-judge verifier (#270)
-    # ------------------------------------------------------------------
-
-    def _resolve_rubric_path(self) -> Path:
-        """Locate the rubric file relative to the task directory."""
-        judge = self._task.config.verifier.judge
-        rubric_path = Path(judge.rubric_path)
-        if not rubric_path.is_absolute():
-            rubric_path = Path(self._task.paths.task_dir) / rubric_path
-        if not rubric_path.exists():
-            raise RubricNotFoundError(
-                f"llm-judge rubric not found at {rubric_path}. Set "
-                f"[verifier.judge].rubric_path in task.toml."
-            )
-        return rubric_path
-
-    async def _download_deliverables(self) -> Path:
-        """Download the agent's deliverables from the sandbox.
-
-        Returns the local directory the judge should read from.
-        """
-        judge = self._task.config.verifier.judge
-        dest = self._rollout_paths.verifier_dir / "deliverables"
-        if dest.exists():
-            if dest.is_dir() and not dest.is_symlink():
-                shutil.rmtree(dest)
-            else:
-                dest.unlink()
-        dest.mkdir(parents=True, exist_ok=True)
-        try:
-            await self._sandbox.download_dir(
-                source_dir=judge.input_dir,
-                target_dir=dest,
-            )
-        except Exception as e:
-            raise DownloadVerifierDirError(
-                f"Failed to download llm-judge input from {judge.input_dir}"
-            ) from e
-        return dest
-
-    async def _verify_llm_judge(self) -> VerifierResult:
-        """Score agent deliverables against a rubric with an LLM judge.
-
-        A missing provider SDK raises ``JudgeEnvironmentError``, which is left
-        to propagate: the judge could not run, so the rollout is marked as a
-        verifier error rather than silently scored ``0.0`` (which would be
-        indistinguishable from a genuine judge verdict of fail).
-        """
-        from benchflow.rewards.builtins import LLMJudgeRewardFunc
-
-        judge = self._task.config.verifier.judge
-
-        # API keys for the judge come from [verifier.env]. They are threaded
-        # explicitly into the judge call (and on into the provider clients)
-        # rather than written to the process-global ``os.environ``. Mutating
-        # the shared environment is not concurrency-safe: ``evaluation.py``
-        # runs verifications via ``asyncio.gather`` with concurrency > 1, so
-        # two judge runs in the same process would race on the env and see
-        # each other's (or missing) credentials.
-        judge_env: dict[str, str] = {}
-        if self._task.config.verifier.env:
-            judge_env = resolve_env_vars(self._task.config.verifier.env)
-
-        rubric_path = self._resolve_rubric_path()
-        deliverables_dir = await self._download_deliverables()
-
-        context = judge.context or self._task.instruction or ""
-
-        reward_func = LLMJudgeRewardFunc(
-            prompt=context,
-            rubric_path=rubric_path,
-            judge_model=judge.model,
-            judge_env=judge_env,
-            judge_errors_are_infra=True,
-        )
-        score = await reward_func.score(deliverables_dir)
-
-        self._logger.info(
-            "llm-judge verifier: %d criteria → reward %.4f",
-            len(reward_func.events),
-            score,
-        )
-
-        # Persist the reward in the standard location for downstream tooling.
-        self._rollout_paths.reward_json_path.write_text(
-            json.dumps({"reward": score}, indent=2, allow_nan=False)
-        )
-        return VerifierResult(rewards={"reward": score})
+from benchflow._utils.scoring import (
+    VERIFIER_DEP_INSTALL_MARKERS as VERIFIER_DEP_INSTALL_MARKERS,
+)
+from benchflow._utils.scoring import (
+    contains_verifier_dep_install_marker as contains_verifier_dep_install_marker,
+)
+from benchflow.rewards.events import Granularity as Granularity
+from benchflow.rewards.events import RewardEvent as RewardEvent
+from benchflow.rewards.events import Space as Space
+from benchflow.rewards.protocol import VerifyResult as VerifyResult
+from benchflow.rewards.rubric_config import (
+    criteria_aggregate_policy_from_rubric as criteria_aggregate_policy_from_rubric,
+)
+from benchflow.rewards.validation import (
+    apply_aggregate_policy as apply_aggregate_policy,
+)
+from benchflow.rewards.validation import (
+    is_valid_reward_number as is_valid_reward_number,
+)
+from benchflow.rewards.validation import validate_reward_map as validate_reward_map
+from benchflow.sandbox.lockdown import _exec_return_code as _exec_return_code
+from benchflow.sandbox.lockdown import (
+    clear_verifier_output_dir as clear_verifier_output_dir,
+)
+from benchflow.task.env import resolve_env_vars as resolve_env_vars
+from benchflow.task.paths import RolloutPaths as RolloutPaths
+from benchflow.task.paths import SandboxPaths as SandboxPaths
+from benchflow.task.verifier_core import Verifier as Verifier
+from benchflow.task.verifier_core import logger as logger
+from benchflow.task.verifier_document import VerifierDocument as VerifierDocument
+from benchflow.task.verifier_document import VerifierStrategy as VerifierStrategy
+from benchflow.task.verifier_document import (
+    load_verifier_document as load_verifier_document,
+)
+from benchflow.task.verifier_errors import AddTestsDirError as AddTestsDirError
+from benchflow.task.verifier_errors import AgentJudgeInputError as AgentJudgeInputError
+from benchflow.task.verifier_errors import (
+    DownloadVerifierDirError as DownloadVerifierDirError,
+)
+from benchflow.task.verifier_errors import ORSEpisodeInputError as ORSEpisodeInputError
+from benchflow.task.verifier_errors import RewardFileEmptyError as RewardFileEmptyError
+from benchflow.task.verifier_errors import (
+    RewardFileNotFoundError as RewardFileNotFoundError,
+)
+from benchflow.task.verifier_errors import RubricNotFoundError as RubricNotFoundError
+from benchflow.task.verifier_errors import (
+    UnsupportedVerifierStrategyError as UnsupportedVerifierStrategyError,
+)
+from benchflow.task.verifier_errors import (
+    VerifierOutputParseError as VerifierOutputParseError,
+)
+from benchflow.task.verifier_errors import VerifierResult as VerifierResult
+from benchflow.task.verifier_judge_inputs import (
+    _AGENT_JUDGE_INPUT_CHAR_LIMIT as _AGENT_JUDGE_INPUT_CHAR_LIMIT,
+)
+from benchflow.task.verifier_judge_inputs import (
+    _agent_judge_score as _agent_judge_score,
+)
+from benchflow.task.verifier_judge_inputs import (
+    _local_rollout_input_path as _local_rollout_input_path,
+)
+from benchflow.task.verifier_judge_inputs import (
+    _read_agent_judge_input as _read_agent_judge_input,
+)
+from benchflow.task.verifier_judge_inputs import (
+    _safe_input_filename as _safe_input_filename,
+)
+from benchflow.task.verifier_ors_episode import (
+    _bounded_ors_reward as _bounded_ors_reward,
+)
+from benchflow.task.verifier_ors_episode import (
+    _count_ors_episode_records as _count_ors_episode_records,
+)
+from benchflow.task.verifier_ors_episode import _is_ors_response as _is_ors_response
+from benchflow.task.verifier_ors_episode import (
+    _load_ors_episode_records as _load_ors_episode_records,
+)
+from benchflow.task.verifier_ors_episode import _ors_event as _ors_event
+from benchflow.task.verifier_ors_episode import _ors_events as _ors_events
+from benchflow.task.verifier_ors_episode import _ors_granularity as _ors_granularity
+from benchflow.task.verifier_ors_episode import _ors_items as _ors_items
+from benchflow.task.verifier_ors_episode import (
+    _ors_records_to_verify_result as _ors_records_to_verify_result,
+)
+from benchflow.task.verifier_ors_episode import _ors_space as _ors_space
+from benchflow.task.verifier_reward_kit import _jsonable as _jsonable
+from benchflow.task.verifier_reward_kit import (
+    _llm_judge_input_dir as _llm_judge_input_dir,
+)
+from benchflow.task.verifier_reward_kit import (
+    _reward_kit_criteria as _reward_kit_criteria,
+)
+from benchflow.task.verifier_reward_kit import (
+    _reward_kit_criteria_policy as _reward_kit_criteria_policy,
+)
+from benchflow.task.verifier_reward_kit import (
+    _reward_kit_manifest_json as _reward_kit_manifest_json,
+)
+from benchflow.task.verifier_reward_kit import _reward_kit_root as _reward_kit_root
+from benchflow.task.verifier_reward_kit import _reward_kit_runner as _reward_kit_runner
+from benchflow.task.verifier_reward_kit import (
+    _safe_strategy_relative_path as _safe_strategy_relative_path,
+)
+from benchflow.task.verifier_scan import (
+    _DEP_INSTALL_DIAGNOSTIC as _DEP_INSTALL_DIAGNOSTIC,
+)
+from benchflow.task.verifier_scan import _SCAN_CHUNK_BYTES as _SCAN_CHUNK_BYTES
+from benchflow.task.verifier_scan import (
+    _has_dep_install_failure as _has_dep_install_failure,
+)
+from benchflow.task.verifier_script_strategy import (
+    _has_aggregate_declaration as _has_aggregate_declaration,
+)
+from benchflow.task.verifier_script_strategy import (
+    _relative_posix_path as _relative_posix_path,
+)
+from benchflow.task.verifier_script_strategy import (
+    _script_strategy_chmod_command as _script_strategy_chmod_command,
+)
+from benchflow.task.verifier_script_strategy import (
+    _script_strategy_command as _script_strategy_command,
+)
+from benchflow.task.verifier_script_strategy import (
+    _script_strategy_first_token as _script_strategy_first_token,
+)

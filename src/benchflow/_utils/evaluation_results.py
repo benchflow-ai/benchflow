@@ -4,6 +4,10 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._utils.benchmark_repos import task_source_provenance
+from benchflow._utils.result_metadata import (
+    final_metrics_from_rollout,
+    trajectory_summary_from_events,
+)
 from benchflow._utils.reward_events import (
     memory_score_from_events,
     reward_event_to_dict,
@@ -13,6 +17,7 @@ from benchflow.trajectories.metrics import (
     count_skill_invocations,
     result_skill_invocations,
 )
+from benchflow.usage_tracking import is_trusted_usage_source
 
 # Phase keys produced by Rollout (see rollout.py — environment_setup,
 # agent_setup, agent_execution, verifier, total). Kept here so summary
@@ -31,7 +36,7 @@ def agent_result_from_rollout(result: RolloutResult) -> dict[str, Any]:
     n_skill_invocations = result.n_skill_invocations or count_skill_invocations(
         result.trajectory
     )
-    return {
+    agent_result = {
         "n_tool_calls": result.n_tool_calls,
         "n_skill_invocations": n_skill_invocations,
         "n_prompts": result.n_prompts,
@@ -44,6 +49,9 @@ def agent_result_from_rollout(result: RolloutResult) -> dict[str, Any]:
         "usage_source": result.usage_source,
         "price_source": result.price_source,
     }
+    if getattr(result, "usage_details", None) is not None:
+        agent_result["usage_details"] = result.usage_details
+    return agent_result
 
 
 def rollout_result_payload(
@@ -73,6 +81,12 @@ def rollout_result_payload(
         "n_tool_calls": result.n_tool_calls,
         "n_skill_invocations": n_skill_invocations,
         "agent_result": agent_result_from_rollout(result),
+        "final_metrics": final_metrics_from_rollout(result),
+        "trajectory_summary": trajectory_summary_from_events(
+            result.trajectory,
+            partial_trajectory=result.partial_trajectory,
+            trajectory_source=result.trajectory_source,
+        ),
         **(
             {"reward_events": [reward_event_to_dict(event) for event in reward_events]}
             if reward_events
@@ -95,7 +109,7 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
     covered = [
         r
         for r in completed
-        if (r.get("agent_result") or {}).get("usage_source") == "provider_response"
+        if is_trusted_usage_source((r.get("agent_result") or {}).get("usage_source"))
     ]
 
     def total(field: str) -> int:
@@ -116,6 +130,37 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
             round(total_cost / len(covered), 10) if covered else None
         ),
         "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
+    }
+
+
+def trajectory_step_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """Aggregate Harbor-style trajectory step counts for summary.json."""
+    summaries: list[dict[str, Any]] = []
+    for result in results.values():
+        summary = result.get("trajectory_summary")
+        if isinstance(summary, dict):
+            summaries.append(summary)
+    step_counts = [int(s.get("steps") or 0) for s in summaries]
+    tool_step_counts = [int(s.get("tool_call_steps") or 0) for s in summaries]
+    total_steps = sum(step_counts)
+    total_tool_steps = sum(tool_step_counts)
+
+    return {
+        "total_trajectory_steps": total_steps,
+        "avg_trajectory_steps_per_task": (
+            total_steps / len(step_counts) if step_counts else 0.0
+        ),
+        "max_trajectory_steps_per_task": max(step_counts) if step_counts else 0,
+        "total_trajectory_tool_call_steps": total_tool_steps,
+        "avg_trajectory_tool_call_steps_per_task": (
+            total_tool_steps / len(tool_step_counts) if tool_step_counts else 0.0
+        ),
+        "max_trajectory_tool_call_steps_per_task": (
+            max(tool_step_counts) if tool_step_counts else 0
+        ),
+        "trajectory_summary_coverage": (
+            len(summaries) / len(results) if results else 0.0
+        ),
     }
 
 

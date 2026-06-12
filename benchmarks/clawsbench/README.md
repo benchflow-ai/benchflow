@@ -21,8 +21,8 @@ for the hard-coded `SERVICES` dict in `benchflow/sandbox/services.py`.
 ## Run it
 
 ```bash
-bench run benchmarks/clawsbench/tasks/<task> \
-  --environment benchmarks/clawsbench/environment.toml \
+bench eval create --tasks-dir benchmarks/clawsbench/tasks/<task> \
+  --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 ```
 

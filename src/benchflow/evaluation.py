@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -30,6 +31,7 @@ from benchflow._utils.evaluation_results import (
     rollout_result_payload,
     skill_invocation_summary,
     tool_call_summary,
+    trajectory_step_summary,
     usage_summary,
 )
 from benchflow._utils.learner_memory import (
@@ -42,13 +44,17 @@ from benchflow._utils.learner_memory import (
 from benchflow._utils.reward_events import memory_summary
 from benchflow._utils.scoring import (
     ACP_ERROR,
+    API_ERROR,
     IDLE_TIMEOUT,
     INFRA_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
+    PROVIDER_AUTH,
+    SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
+    api_error_is_transient,
     classify_error,
     classify_verifier_error,
     count_audit_outcomes,
@@ -57,10 +63,17 @@ from benchflow._utils.scoring import (
     pass_rate_excl_errors,
 )
 from benchflow._utils.source_provenance import summary_source_fields
+from benchflow._utils.text import truncate_end
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.models import RolloutResult
+from benchflow.skill_policy import (
+    SKILL_MODE_NO_SKILL,
+    SKILL_MODE_SELF_GEN,
+    SKILL_MODE_WITH_SKILL,
+    normalize_skill_mode,
+)
 from benchflow.trajectories.tree import RolloutNode
 from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -81,7 +94,44 @@ BENCHFLOW_OWNED_LABEL = "benchflow.owned=true"
 # flight, skip — there's nothing new to clean since the in-flight one started.
 _PRUNE_LOCK = threading.Lock()
 
+
+def _environment_manifest_from_task_document(
+    task_dir: Path,
+) -> EnvironmentManifest | None:
+    task_md = task_dir / "task.md"
+    if not task_md.is_file():
+        return None
+
+    from benchflow.environment.manifest import load_manifest
+    from benchflow.task.document import TaskDocument
+
+    document = TaskDocument.from_path(task_md)
+    environment = document.benchflow.get("environment")
+    if environment is None:
+        return None
+    if not isinstance(environment, dict):
+        raise ValueError("task.md benchflow.environment must be a mapping")
+    manifest = environment.get("manifest")
+    if manifest is None:
+        return None
+    if not isinstance(manifest, str) or not manifest.strip():
+        raise ValueError("task.md benchflow.environment.manifest must be a path")
+
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = task_dir / manifest_path
+    return load_manifest(manifest_path)
+
+
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
+
+
+def _is_task_dir(path: Path) -> bool:
+    if not (path / "task.md").exists():
+        return (path / "task.toml").exists()
+    from benchflow._utils.task_authoring import check_task
+
+    return check_task(path) == []
 
 
 class EmptyTaskSelectionError(ValueError):
@@ -109,10 +159,52 @@ class RetryConfig:
     retry_on_idle_timeout: bool = True
     retry_on_infra: bool = True
     retry_on_verifier_infra: bool = True
+    # Provider API errors: only TRANSIENT ones (rate limit, 5xx) are
+    # retryable — auth/quota/model-not-found are permanent until a human
+    # fixes the credential or model id, so retrying only burns wall-clock.
+    retry_on_api_error: bool = True
     wait_multiplier: float = 2.0
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
-    exclude_categories: set[str] = field(default_factory=lambda: {"timeout"})
+    exclude_categories: set[str] = field(
+        default_factory=lambda: {"timeout", PROVIDER_AUTH}
+    )
+
+    @classmethod
+    def from_mapping(cls, raw: dict | None) -> RetryConfig:
+        """Build from a serialized ``retry`` payload (e.g. a worker config).
+
+        Any omitted field falls back to this dataclass's own default — never a
+        hard-coded literal — so a partial/older payload that drops, say,
+        ``exclude_categories`` still excludes ``provider_auth`` (#564 finding 2).
+        """
+        raw = raw or {}
+        defaults = cls()
+        exclude = raw.get("exclude_categories")
+        return cls(
+            max_retries=int(raw.get("max_retries", defaults.max_retries)),
+            retry_on_install=bool(
+                raw.get("retry_on_install", defaults.retry_on_install)
+            ),
+            retry_on_pipe=bool(raw.get("retry_on_pipe", defaults.retry_on_pipe)),
+            retry_on_acp=bool(raw.get("retry_on_acp", defaults.retry_on_acp)),
+            retry_on_idle_timeout=bool(
+                raw.get("retry_on_idle_timeout", defaults.retry_on_idle_timeout)
+            ),
+            retry_on_infra=bool(raw.get("retry_on_infra", defaults.retry_on_infra)),
+            retry_on_api_error=bool(
+                raw.get("retry_on_api_error", defaults.retry_on_api_error)
+            ),
+            retry_on_verifier_infra=bool(
+                raw.get("retry_on_verifier_infra", defaults.retry_on_verifier_infra)
+            ),
+            wait_multiplier=float(raw.get("wait_multiplier", defaults.wait_multiplier)),
+            min_wait_sec=float(raw.get("min_wait_sec", defaults.min_wait_sec)),
+            max_wait_sec=float(raw.get("max_wait_sec", defaults.max_wait_sec)),
+            exclude_categories=(
+                set(exclude) if exclude is not None else defaults.exclude_categories
+            ),
+        )
 
     def should_retry(
         self,
@@ -134,6 +226,14 @@ class RetryConfig:
             return True
         if self.retry_on_infra and category == INFRA_ERROR:
             return True
+        if category == API_ERROR:
+            # Transient-only: rate limit / provider 5xx self-heal on backoff;
+            # permanent (auth, quota, model_not_found, rejected_request) do not.
+            return self.retry_on_api_error and api_error_is_transient(error)
+        if category == SUSPECTED_API_ERROR:
+            # Zero-signal verdicts have an unknown subcategory — never provably
+            # transient, so never auto-retried (rerun is an operator action).
+            return False
         return bool(self.retry_on_acp and category == ACP_ERROR)
 
     def should_retry_verifier_error(self, verifier_error: str | None) -> bool:
@@ -149,6 +249,75 @@ class RetryConfig:
         """Exponential backoff delay for retry attempt."""
         delay = self.min_wait_sec * (self.wait_multiplier**attempt)
         return min(delay, self.max_wait_sec)
+
+
+class ApiErrorCircuitBreaker:
+    """Trip after N consecutive permanent provider-API failures with the SAME
+    fingerprint (classic dead key / wrong model id), so a doomed batch stops
+    burning sandbox-hours producing all-unhealthy artifacts.
+
+    Isolated api_errors never interrupt the batch — any completion that is not
+    a permanent api_error resets the streak. Threshold comes from
+    ``BENCHFLOW_API_ERROR_BREAKER_THRESHOLD`` (default 5; ``0`` disables).
+    Already-running tasks finish; only not-yet-started tasks are skipped.
+    """
+
+    ENV_VAR = "BENCHFLOW_API_ERROR_BREAKER_THRESHOLD"
+    DEFAULT_THRESHOLD = 5
+
+    def __init__(self, threshold: int | None = None) -> None:
+        if threshold is None:
+            raw = os.environ.get(self.ENV_VAR, "")
+            try:
+                threshold = int(raw) if raw.strip() else self.DEFAULT_THRESHOLD
+            except ValueError:
+                threshold = self.DEFAULT_THRESHOLD
+        self.threshold = max(threshold, 0)
+        self._fingerprint: str | None = None
+        self._streak = 0
+        self.tripped = False
+
+    @staticmethod
+    def _fingerprint_of(result: RunResult) -> str | None:
+        """Permanent-api-error fingerprint, or None when not breaker-relevant."""
+        category = result.error_category or classify_error(result.error)
+        if category == SUSPECTED_API_ERROR:
+            return "suspected:zero_signal"
+        if category == API_ERROR and not api_error_is_transient(result.error):
+            match = re.search(r"\[([a-z_]+)/permanent\] HTTP (\d+)", result.error or "")
+            return (
+                f"{match.group(1)}:{match.group(2)}" if match else "api_error:unknown"
+            )
+        return None
+
+    def record(self, result: RunResult) -> None:
+        """Track one completed task; trip when the same-fingerprint streak hits
+        the threshold."""
+        if self.threshold == 0 or self.tripped:
+            return
+        fingerprint = self._fingerprint_of(result)
+        if fingerprint is None:
+            self._fingerprint = None
+            self._streak = 0
+            return
+        if fingerprint == self._fingerprint:
+            self._streak += 1
+        else:
+            self._fingerprint = fingerprint
+            self._streak = 1
+        if self._streak >= self.threshold:
+            self.tripped = True
+            logger.error(
+                f"API-error circuit breaker OPEN: {self._streak} consecutive "
+                f"permanent provider failures [{fingerprint}] — skipping "
+                f"remaining unstarted tasks (set {self.ENV_VAR}=0 to disable)"
+            )
+
+    def skip_error(self) -> str:
+        return (
+            f"skipped: api-error circuit breaker open "
+            f"([{self._fingerprint}] x{self._streak} consecutive)"
+        )
 
 
 # Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
@@ -204,6 +373,7 @@ class EvaluationConfig:
 
     agent: str = DEFAULT_AGENT
     model: str | None = None
+    reasoning_effort: str | None = None
     environment: str = "docker"
     concurrency: int = 4
     build_concurrency: int | None = None
@@ -211,7 +381,6 @@ class EvaluationConfig:
     agent_env: dict[str, str] = field(default_factory=dict)
     retry: RetryConfig = field(default_factory=RetryConfig)
     skills_dir: str | None = None
-    include_task_skills: bool = False
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
@@ -219,11 +388,18 @@ class EvaluationConfig:
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
-    skill_mode: str = "default"
+    skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: str | None = None
     self_gen_no_internet: bool = False
     job_mode: str = DEFAULT_JOB_MODE
     source_provenance: dict[str, Any] | None = None
+    # Registry dataset identity (`bench eval create -d name@version`). When
+    # set, every result.json/config.json is stamped with dataset_name,
+    # dataset_version, and the task's registry content digest — see
+    # docs/dataset-versioning.md in benchflow-ai/skillsbench.
+    dataset_name: str | None = None
+    dataset_version: str | None = None
+    dataset_task_digests: dict[str, str] = field(default_factory=dict)
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
     # Environment-plane manifest applied to every rollout in the batch.
     # When set, each task's RolloutConfig.environment_manifest is populated
@@ -236,20 +412,25 @@ class EvaluationConfig:
         from benchflow._utils.config import (
             normalize_agent_idle_timeout,
             normalize_agent_name,
+            normalize_reasoning_effort,
             normalize_sandbox_user,
         )
         from benchflow.agents.registry import AGENTS
 
         self.agent = normalize_agent_name(self.agent)
+        self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
+        self.skill_mode = normalize_skill_mode(self.skill_mode)
+        if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
+            raise ValueError("skills_dir requires skill_mode='with-skill'")
         if self.job_mode not in JOB_MODES:
             raise ValueError(
                 f"unknown job_mode {self.job_mode!r} — "
                 f"expected one of {', '.join(JOB_MODES)}"
             )
-        if self.agent not in AGENTS:
+        if self.agent != "oracle" and self.agent not in AGENTS:
             available = ", ".join(sorted(AGENTS.keys()))
             logger.warning(
                 f"Unknown agent {self.agent!r} — not in registry. "
@@ -507,6 +688,7 @@ class Evaluation:
         config = EvaluationConfig(
             agent=agent_name,
             model=effective_model(agent_name, raw.get("model")),
+            reasoning_effort=raw.get("reasoning_effort"),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             build_concurrency=raw.get("build_concurrency"),
@@ -514,7 +696,6 @@ class Evaluation:
             agent_env=agent_env_raw,
             retry=RetryConfig(max_retries=raw.get("max_retries", 2)),
             skills_dir=str(Path(raw["skills_dir"])) if raw.get("skills_dir") else None,
-            include_task_skills=bool(raw.get("include_task_skills", False)),
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
@@ -523,7 +704,7 @@ class Evaluation:
             ),
             exclude_tasks=exclude,
             include_tasks=include,
-            skill_mode=raw.get("skill_mode", "default"),
+            skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
             skill_creator_dir=(
                 str(Path(raw["skill_creator_dir"]))
                 if raw.get("skill_creator_dir")
@@ -598,12 +779,14 @@ class Evaluation:
         config = EvaluationConfig(
             agent=agent_name,
             model=model,
+            reasoning_effort=agent_cfg.get(
+                "reasoning_effort", raw.get("reasoning_effort")
+            ),
             environment=environment,
             concurrency=concurrency,
             agent_env=agent_env,
             retry=RetryConfig(max_retries=max(0, max_retries)),
             skills_dir=skills_dir,
-            include_task_skills=bool(raw.get("include_task_skills", False)),
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
@@ -612,7 +795,7 @@ class Evaluation:
             ),
             include_tasks=include,
             exclude_tasks=exclude,
-            skill_mode=raw.get("skill_mode", "default"),
+            skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
             skill_creator_dir=(
                 str(Path(raw["skill_creator_dir"]))
                 if raw.get("skill_creator_dir")
@@ -625,7 +808,7 @@ class Evaluation:
 
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories."""
-        if (self._tasks_dir / "task.toml").exists():
+        if _is_task_dir(self._tasks_dir):
             if self._tasks_dir.name in self._config.exclude_tasks:
                 return []
             if (
@@ -638,7 +821,7 @@ class Evaluation:
             d
             for d in self._tasks_dir.iterdir()
             if d.is_dir()
-            and (d / "task.toml").exists()
+            and _is_task_dir(d)
             and d.name not in self._config.exclude_tasks
             and (not self._config.include_tasks or d.name in self._config.include_tasks)
         )
@@ -672,7 +855,8 @@ class Evaluation:
         for task, (_mt, r) in best.items():
             if r.get("verifier_error"):
                 logger.info(
-                    f"Skipping verifier-errored task on resume: {task} ({r['verifier_error'][:80]})"
+                    f"Skipping verifier-errored task on resume: {task} "
+                    f"({truncate_end(r['verifier_error'], 80)})"
                 )
             completed[task] = r
         return completed
@@ -725,13 +909,6 @@ class Evaluation:
         finally:
             _PRUNE_LOCK.release()
 
-    def _resolve_skills_dir(self, task_dir: Path, skills_dir: str | None) -> str | None:
-        """Resolve skills_dir — 'auto' means per-task environment/skills/."""
-        from benchflow.skill_policy import resolve_runtime_skills_dir
-
-        resolved = resolve_runtime_skills_dir(task_dir, skills_dir)
-        return str(resolved) if resolved is not None else None
-
     def _enrich_payload_with_persisted_timing(
         self, payload: dict, result: RolloutResult
     ) -> None:
@@ -774,42 +951,68 @@ class Evaluation:
         from benchflow._utils.benchmark_repos import task_source_provenance
         from benchflow.rollout import Rollout, RolloutConfig
 
+        dataset = None
+        if cfg.dataset_name:
+            dataset = {"name": cfg.dataset_name, "version": cfg.dataset_version}
+        task_digest_value = (
+            cfg.dataset_task_digests.get(task_dir.name) if cfg.dataset_name else None
+        )
+        if task_digest_value is None:
+            # Dev runs (--tasks-dir / --source-repo) stamp a live-computed
+            # digest so every trajectory stays attributable to the exact
+            # task content it ran, not just a directory name.
+            from benchflow._utils.task_authoring import task_digest
+
+            try:
+                task_digest_value = task_digest(task_dir)
+            except (OSError, ValueError, UnicodeError) as e:
+                logger.debug("Could not compute task digest for %s: %s", task_dir, e)
         skills_dir = (
             str(self._learner_skills_dir)
             if self._learner_skills_dir is not None
-            else self._resolve_skills_dir(task_dir, cfg.skills_dir)
+            else cfg.skills_dir
+        )
+        skill_mode = (
+            SKILL_MODE_WITH_SKILL
+            if self._learner_skills_dir is not None
+            else cfg.skill_mode
         )
         export_to = (
             str(self._learner_export_dir)
             if self._learner_export_dir is not None
             else None
         )
+        environment_manifest = cfg.environment_manifest
+        if environment_manifest is None:
+            environment_manifest = _environment_manifest_from_task_document(task_dir)
         rollout_config = RolloutConfig.from_legacy(
             task_path=task_dir,
             agent=cfg.agent,
             model=cfg.model,
+            reasoning_effort=cfg.reasoning_effort,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             concurrency=cfg.concurrency,
             environment=cfg.environment,
-            environment_manifest=cfg.environment_manifest,
+            environment_manifest=environment_manifest,
             skills_dir=skills_dir,
-            include_task_skills=cfg.include_task_skills,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
-            skill_mode=cfg.skill_mode,
+            skill_mode=skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
             export_generated_skills_to=export_to,
             source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
+            dataset=dataset,
+            task_digest=task_digest_value,
             usage_tracking=cfg.usage_tracking,
         )
-        if cfg.skill_mode == "self-gen":
+        if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen
 
             return await run_self_gen(rollout_config)
@@ -832,13 +1035,14 @@ class Evaluation:
             task_path=task_dir,
             agent=cfg.agent,
             model=cfg.model,
+            reasoning_effort=cfg.reasoning_effort,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
             job_name=self._job_name,
             jobs_dir=str(self._jobs_dir),
             concurrency=cfg.concurrency,
             environment=cfg.environment,
-            skills_dir=self._resolve_skills_dir(task_dir, cfg.skills_dir),
+            skills_dir=cfg.skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
@@ -886,7 +1090,9 @@ class Evaluation:
                 break
 
             if attempt <= cfg.retry.max_retries:
-                err_preview = (result.error or result.verifier_error or "")[:60]
+                err_preview = truncate_end(
+                    result.error or result.verifier_error or "", 60
+                )
                 logger.info(
                     f"Retrying {task_dir.name} (attempt {attempt + 1}): {err_preview}"
                 )
@@ -901,30 +1107,10 @@ class Evaluation:
         reward = result.rewards.get("reward") if result.rewards else None
         status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
         err_msg = result.error or result.verifier_error
-        err = f" ({err_msg[:50]})" if err_msg else ""
+        err = f" ({truncate_end(err_msg, 50)})" if err_msg else ""
         logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
         if self._on_result:
             self._on_result(td.name, result)
-
-    def _preflight_usage_tracking(self) -> None:
-        from benchflow.providers.runtime import validate_usage_proxy_preconditions
-
-        cfg = self._config
-        usage = cfg.usage_tracking.with_env_defaults()
-        failure = validate_usage_proxy_preconditions(
-            usage,
-            environment=cfg.environment,
-            model=cfg.model,
-        )
-        if failure is None:
-            return
-        if usage.mode == "required":
-            raise RuntimeError(failure.required_message)
-        logger.log(
-            failure.log_level,
-            "%s Results will report usage_source='unavailable'.",
-            failure.skip_message,
-        )
 
     async def _run_parallel_independent(
         self, remaining: list[Path]
@@ -933,8 +1119,14 @@ class Evaluation:
         cfg = self._config
         sem = asyncio.Semaphore(cfg.concurrency)
 
+        breaker = ApiErrorCircuitBreaker()
+
         async def bounded(td: Path) -> tuple[str, RunResult]:
             async with sem:
+                if breaker.tripped:
+                    result = RunResult(task_name=td.name, error=breaker.skip_error())
+                    self._log_and_report(td, result)
+                    return td.name, result
                 # Jitter start to avoid SSH/docker-daemon storms at high
                 # concurrency. The window scales linearly with --concurrency so
                 # the average start rate stays around 2 tasks/sec; the previous
@@ -946,6 +1138,7 @@ class Evaluation:
                     jitter_max = max(cfg.concurrency / 2, 8.0)
                     await asyncio.sleep(random.uniform(0, jitter_max))
                 result = await self._run_task(td)
+                breaker.record(result)
                 self._log_and_report(td, result)
                 return td.name, result
 
@@ -1162,7 +1355,43 @@ class Evaluation:
         self.learner_nodes.append(node)
         return node
 
+    def _maybe_start_daytona_reap(self) -> None:
+        """Fire-and-forget auto-reap of orphaned Daytona sandboxes (issue: leakage at scale).
+
+        Gated by ``BENCHFLOW_DAYTONA_AUTO_REAP`` (default on; any of
+        ``0``/``false``/``no``/``off`` case-insensitively disables it).
+        Conservative TTLs (24h general / 2h failed states) plus an idle-activity
+        guard mean concurrent live runs are never reaped. Runs in a daemon
+        thread so eval startup never blocks or fails on reaping.
+        """
+        if self._config.environment != "daytona":
+            return
+        if os.environ.get("BENCHFLOW_DAYTONA_AUTO_REAP", "1").strip().lower() in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            return
+
+        def _reap() -> None:
+            try:
+                from benchflow.sandbox.daytona import reap_stale_sandboxes
+
+                counts = reap_stale_sandboxes()
+                if counts["deleted"] or counts["failed"]:
+                    logger.info(
+                        "Daytona auto-reap: %s stale sandboxes deleted (%s failed)",
+                        counts["deleted"],
+                        counts["failed"],
+                    )
+            except Exception as e:
+                logger.debug("Daytona auto-reap skipped: %s", e)
+
+        threading.Thread(target=_reap, name="daytona-auto-reap", daemon=True).start()
+
     async def run(self) -> EvaluationResult:
+        self._maybe_start_daytona_reap()
         """Execute the job."""
         task_dirs = self._get_task_dirs()
         if not task_dirs:
@@ -1182,8 +1411,6 @@ class Evaluation:
             )
         completed = self._get_completed_tasks()
         remaining = [d for d in task_dirs if d.name not in completed]
-        if remaining:
-            self._preflight_usage_tracking()
 
         # A resumed sequential-shared job rebuilds the LearnerStore from the
         # per-job snapshot under ``<job>/learner_store.json``. If that file
@@ -1288,7 +1515,11 @@ class Evaluation:
         job_result = EvaluationResult(
             job_name=self._job_name,
             config=cfg,
-            total=len(task_dirs),
+            # Score counts cover one entry per scored rollout. Skill-eval expands
+            # a single task into multiple rollouts (baseline/skill x trials), so
+            # the denominator must be the number of results, not task dirs, or the
+            # invariant below (and every pass-rate/percentage) is wrong.
+            total=len(all_results),
             passed=score_counts["passed"],
             failed=score_counts["failed"],
             errored=score_counts["errored"],
@@ -1353,8 +1584,17 @@ class Evaluation:
             **skill_invocation_summary(all_results),
             **usage_summary(all_results),
             **tool_call_summary(all_results),
+            **trajectory_step_summary(all_results),
             **phase_timing_summary(all_results),
             **summary_source_fields(cfg.source_provenance, all_results),
+            **(
+                {
+                    "dataset_name": cfg.dataset_name,
+                    "dataset_version": cfg.dataset_version,
+                }
+                if cfg.dataset_name
+                else {}
+            ),
         }
         # Surface continual-learning provenance — generation, curve — so a
         # resumed run can be audited end-to-end (#394).
@@ -1383,6 +1623,12 @@ class Evaluation:
             write_job_verifiers_jsonl(job_dir)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Job-level trainer artifact aggregation failed: %s", e)
+        try:
+            from benchflow.trajectories.export_adp import write_job_adp_jsonl
+
+            write_job_adp_jsonl(job_dir)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Job-level ADP aggregation failed: %s", e)
 
         # Per-diagnostic summary warnings — driven by the registry so a
         # new diagnostic class adds its warning automatically (issue #503).

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess
-import base64
 import contextlib
 import json
 import logging
@@ -27,12 +26,15 @@ from benchflow.sandbox._base import (
     BaseSandbox,
     ExecResult,
     _filter_compose_service_names,
+    wrap_command_with_env_file,
 )
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
+    COMPOSE_UP_RETRY_DELAYS_SEC,
+    is_compose_up_network_race_error,
 )
 from benchflow.sandbox.protocol import SandboxImage
 from benchflow.task.config import SandboxConfig
@@ -50,6 +52,10 @@ _DOCKER_BUILD_RETRYABLE_ERRORS = (
     re.compile(r"read timed out", re.IGNORECASE),
     re.compile(r"connection (?:timed out|reset by peer)", re.IGNORECASE),
 )
+
+# Compose-up network-race retry config lives in _compose so the host docker
+# path and the Daytona DinD path share the exact same race detection + back-off.
+_COMPOSE_UP_RETRY_DELAYS_SEC = COMPOSE_UP_RETRY_DELAYS_SEC
 
 
 def _sanitize_docker_image_name(name: str) -> str:
@@ -70,6 +76,10 @@ def _sanitize_docker_compose_project_name(name: str) -> str:
 
 def _is_retryable_docker_build_error(message: str) -> bool:
     return any(pattern.search(message) for pattern in _DOCKER_BUILD_RETRYABLE_ERRORS)
+
+
+def _is_compose_up_network_race_error(message: str) -> bool:
+    return is_compose_up_network_race_error(message)
 
 
 class DockerSandboxEnvVars(BaseModel):
@@ -362,6 +372,30 @@ class DockerSandbox(BaseSandbox):
                 )
                 await asyncio.sleep(delay)
 
+    async def _run_docker_compose_up(self) -> None:
+        max_attempts = len(_COMPOSE_UP_RETRY_DELAYS_SEC) + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await self._run_docker_compose_command(["up", "--detach", "--wait"])
+                return
+            except RuntimeError as exc:
+                if attempt == max_attempts or not _is_compose_up_network_race_error(
+                    str(exc)
+                ):
+                    raise
+
+                delay = _COMPOSE_UP_RETRY_DELAYS_SEC[attempt - 1]
+                self.logger.warning(
+                    "Retrying docker compose up for %s after network "
+                    "create/attach race (attempt %s/%s, retrying in %.1fs): %s",
+                    self.environment_name,
+                    attempt,
+                    max_attempts,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+
     async def start(self, force_build: bool) -> None:
         if self._mounts_json:
             self._mounts_compose_path = self._write_mounts_compose_file()
@@ -386,7 +420,7 @@ class DockerSandbox(BaseSandbox):
             with contextlib.suppress(RuntimeError):
                 await self._run_docker_compose_command(["down", "--remove-orphans"])
 
-            await self._run_docker_compose_command(["up", "--detach", "--wait"])
+            await self._run_docker_compose_up()
         finally:
             if build_sem is not None:
                 build_sem.release()
@@ -564,7 +598,7 @@ class DockerSandbox(BaseSandbox):
             check=True,
         )
 
-    # ── Container snapshot/restore (Branch substrate) ────────────────────
+    # Container snapshot/restore (Branch substrate)
     #
     # ``docker commit`` captures the ``main`` container's filesystem into a
     # local image; restore re-creates ``main`` from that image. Snapshots
@@ -763,60 +797,23 @@ class DockerSandbox(BaseSandbox):
             exec_command, check=False, timeout_sec=timeout_sec
         )
 
-    # A POSIX shell identifier: a name the shell can `export`. Keys outside
-    # this grammar (e.g. containing `.` or `-`) are valid process env keys but
-    # cannot be assigned via `export NAME=...`; sourcing such a line aborts the
-    # whole `. {env_path}` step, so the user command would never run (PR #323).
-    _SHELL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    # Prefix for the decoded env file inside the container. A unique 16-hex
+    # suffix is appended by the shared wrapper so concurrent exec() calls in one
+    # container can't clobber each other's env file.
+    _ENV_FILE_PREFIX = "/tmp/.benchflow_exec_env_"
 
     @classmethod
     def _wrap_command_with_env_file(cls, env: dict[str, str], command: str) -> str:
         """Return *command* prefixed to materialize *env* from a file.
 
-        The env vars are base64-encoded into the command string (not visible
-        as individual ``KEY=VALUE`` args in ``ps aux``), decoded to a
-        mode-0600 file inside the container, and sourced before the real
-        command runs. A ``trap ... EXIT`` deletes the temp file
-        unconditionally — even if the decode/source step fails — so a failed
-        ``&&`` chain can never leave the env file behind.
-
-        Only keys that are valid POSIX shell identifiers are emitted as
-        ``export`` lines. Keys that are not (e.g. containing ``.`` or ``-``)
-        cannot be assigned by the shell — emitting them would make
-        ``. {env_path}`` fail and the user command would never run — so they
-        are skipped with a warning rather than silently breaking exec
-        (regression guarded — PR #323).
-
-        The ``umask 077`` that protects the env file is scoped to a subshell
-        so it does not leak into the user's command — otherwise files the
-        command creates would get mode-0600 unexpectedly (PR #323).
+        Thin wrapper over the canonical :func:`wrap_command_with_env_file` so
+        the secret-redaction logic lives in exactly one place (shared with the
+        Daytona backend). See that function for the full contract — base64
+        argv-hiding, mode-0600 file, ``trap ... EXIT`` cleanup, non-identifier
+        key skipping (PR #323), and subshell-scoped ``umask 077`` (PR #323).
         """
-        exportable: dict[str, str] = {}
-        skipped: list[str] = []
-        for k, v in env.items():
-            if cls._SHELL_IDENTIFIER_RE.match(k):
-                exportable[k] = v
-            else:
-                skipped.append(k)
-        if skipped:
-            logger.warning(
-                "Skipping env var(s) with non-identifier names (cannot be "
-                "exported by the shell): %s",
-                ", ".join(sorted(skipped)),
-            )
-
-        env_body = "".join(
-            f"export {k}={shlex.quote(v)}\n" for k, v in exportable.items()
-        )
-        encoded = base64.b64encode(env_body.encode()).decode()
-        # Unique suffix so concurrent exec() calls in one container can't
-        # clobber each other's env file.
-        env_path = f"/tmp/.benchflow_exec_env_{uuid.uuid4().hex[:16]}"
-        return (
-            f"trap 'rm -f {env_path}' EXIT && "
-            f"(umask 077 && printf %s {shlex.quote(encoded)} | base64 -d > "
-            f"{env_path}) && set -a && . {env_path} && set +a && "
-            f"{command}"
+        return wrap_command_with_env_file(
+            env, command, env_path_prefix=cls._ENV_FILE_PREFIX
         )
 
     async def attach(self) -> None:

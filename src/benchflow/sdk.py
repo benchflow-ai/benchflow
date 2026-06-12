@@ -7,6 +7,7 @@ New code should use ``bf.run()`` or ``Rollout`` directly.
 from __future__ import annotations
 
 import logging
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from benchflow.rollout import (
     _write_config,
     _write_rewards_jsonl,
 )
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +164,11 @@ class SDK:
         prompts: list[str | None] | None = None,
         *,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         agent_env: dict[str, str] | None = None,
         job_name: str | None = None,
         rollout_name: str | None = None,
+        trial_name: str | None = None,
         jobs_dir: str | Path = "jobs",
         concurrency: int = 1,
         agent_idle_timeout: int | None = 600,
@@ -176,21 +180,41 @@ class SDK:
         sandbox_setup_timeout: int = 120,
         pre_agent_hooks: list | None = None,
         context_root: str | Path | None = None,
-        skill_mode: str = "default",
+        skill_mode: str = SKILL_MODE_NO_SKILL,
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
         source_provenance: dict[str, Any] | None = None,
         usage_tracking: Any = None,
     ) -> RolloutResult:
-        """Run a task — delegates to :func:`benchflow.run`."""
+        """Run a task — delegates to :func:`benchflow.run`.
+
+        ``trial_name`` is a deprecated alias for ``rollout_name``, retained for
+        backward compatibility with pre-v0.6 callers. Passing it emits a
+        :class:`DeprecationWarning` and maps to ``rollout_name``. Passing both
+        ``trial_name`` and ``rollout_name`` raises :class:`TypeError`.
+        """
         from benchflow.rollout import RolloutConfig
         from benchflow.runtime import run
+
+        if trial_name is not None:
+            if rollout_name is not None:
+                raise TypeError(
+                    "Pass only one of 'rollout_name' or 'trial_name'; "
+                    "'trial_name' is a deprecated alias for 'rollout_name'."
+                )
+            warnings.warn(
+                "The 'trial_name' argument is deprecated. Use 'rollout_name' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            rollout_name = trial_name
 
         config = RolloutConfig(
             task_path=Path(task_path),
             agent=agent,
             prompts=prompts,
             model=model,
+            reasoning_effort=reasoning_effort,
             agent_env=agent_env,
             job_name=job_name,
             rollout_name=rollout_name,

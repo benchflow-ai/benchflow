@@ -2,7 +2,7 @@
 
 Owns the live agent-side of a run:
     - connect_acp: spawn the agent process inside the container, wrap it in
-      the ACP stdio transport, run initialize → session_new → set_model
+      the ACP stdio transport, run initialize → session_new → model/effort config
     - execute_prompts: send each prompt through the session, capture the
       ACP-native trajectory, and report tool-call counts
 
@@ -147,6 +147,12 @@ def _format_acp_model(model: str, agent: str) -> str:
     # Already has a slash — assume it's provider/model already
     if "/" in bare:
         return bare
+    # BenchFlow's LiteLLM proxy registers every model under "openai/<alias>"
+    # (aliases are always "benchflow-…"). Send that so provider/model agents
+    # (e.g. opencode) hit a registered route instead of a guessed provider that
+    # the proxy never serves (the heuristic would default to anthropic/).
+    if bare.startswith("benchflow-"):
+        return f"openai/{bare}"
     # Infer the models.dev provider from the bare model name
     m = bare.lower()
     for substring, provider in _MODELSDEV_PROVIDER_HEURISTICS:
@@ -170,7 +176,7 @@ def _select_acp_model_id(
     return formatted
 
 
-def _should_skip_acp_set_model(
+def _model_selection_owned_by_env(
     agent: str,
     model: str | None,
     agent_env: dict[str, str],
@@ -179,17 +185,24 @@ def _should_skip_acp_set_model(
 
     Custom provider runtimes such as Bedrock can expose a model ID through
     agent-native env vars (for Claude ACP this is ``ANTHROPIC_MODEL``).
-    In that case ACP ``session/set_model`` can be actively harmful because the
-    agent validates the model ID against its native catalog before it ever hits
-    the custom provider endpoint.
+    In that case ACP model configuration can be actively harmful because the
+    agent may validate the model ID against its native catalog before it ever
+    hits the custom provider endpoint.
     """
     if not model:
         return False
     agent_cfg = AGENTS.get(agent)
     if not agent_cfg:
         return False
-    if not agent_cfg.supports_acp_set_model:
+    # LiteLLM routing: when the model is delivered purely through env
+    # (LLM_MODEL/ANTHROPIC_MODEL + BENCHFLOW_LITELLM_MODEL_VIA_ENV) the agent
+    # must not also receive ACP model config. An alias present WITHOUT VIA_ENV
+    # (e.g. opencode) means ACP model config still runs — _format_acp_model maps
+    # it to the proxy's registered openai/<alias> route.
+    if agent_env.get("BENCHFLOW_LITELLM_MODEL_VIA_ENV") in {"1", "true", "True"}:
         return True
+    if agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
+        return False
     provider = find_provider(model)
     if provider is None:
         return False
@@ -208,7 +221,10 @@ def _should_skip_acp_set_model(
 
 
 def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) -> str:
-    """Pick the model string that should be sent through ACP set_model."""
+    """Pick the model string that should be sent through ACP model config."""
+    litellm_alias = agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS")
+    if litellm_alias:
+        return litellm_alias
     agent_cfg = AGENTS.get(agent)
     if not agent_cfg:
         return model
@@ -224,6 +240,154 @@ def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) 
     return agent_env.get(mapped_model_env, model)
 
 
+def _session_config_option_ids(session: object | None) -> set[str]:
+    options = getattr(session, "config_options", None)
+    if not isinstance(options, (list, tuple)):
+        return set()
+    ids: set[str] = set()
+    for option in options:
+        if isinstance(option, dict) and isinstance(option.get("id"), str):
+            ids.add(option["id"])
+    return ids
+
+
+def _resolve_acp_model_option_id(
+    agent_cfg: object | None, session: object | None
+) -> str | None:
+    """Config option id to drive model selection — capability-first.
+
+    The running agent's advertised ``session/new`` config options are the source
+    of truth; the registry's ``acp_model_config_id`` is an override/hint. Returns
+    ``None`` when no model config option applies, in which case the caller falls
+    back to ``session/set_model``.
+
+    This is what lets the ``@agentclientprotocol`` family migrate from
+    ``session/set_model`` to a ``"model"`` config option with no registry
+    change: a member that advertises a model option is configured through it
+    automatically, while a member that does not (e.g. current ``codex-acp``,
+    which advertises only ``fast-mode``) keeps using ``session/set_model``.
+    """
+    declared = getattr(agent_cfg, "acp_model_config_id", "") or ""
+    if declared:
+        return declared
+    if "model" in _session_config_option_ids(session):
+        return "model"
+    return None
+
+
+async def _set_acp_model(
+    acp_client: ACPClient,
+    *,
+    agent: str,
+    model_id: str,
+) -> None:
+    try:
+        await asyncio.wait_for(acp_client.set_model(model_id), timeout=60)
+        logger.info(f"Model set to: {model_id}")
+    except Exception as e:
+        logger.error(
+            "ACP session/set_model failed for agent=%s model=%s: %s",
+            agent,
+            model_id,
+            e,
+        )
+        raise RuntimeError(
+            f"Failed to set model {model_id!r} via ACP for agent {agent!r}: {e}"
+        ) from e
+
+
+async def _set_acp_config_option(
+    acp_client: ACPClient,
+    session: object | None,
+    *,
+    agent: str,
+    config_id: str,
+    value: str,
+    label: str,
+) -> None:
+    option_ids = _session_config_option_ids(session)
+    if option_ids and config_id not in option_ids:
+        raise RuntimeError(
+            f"ACP agent {agent!r} does not expose {label} config option "
+            f"{config_id!r}; available options: {sorted(option_ids)!r}"
+        )
+    try:
+        await asyncio.wait_for(
+            acp_client.set_config_option(config_id, value), timeout=60
+        )
+        logger.info(f"ACP {label} config option {config_id!r} set to: {value}")
+    except Exception as e:
+        logger.error(
+            "ACP session/set_config_option failed for agent=%s config=%s value=%s: %s",
+            agent,
+            config_id,
+            value,
+            e,
+        )
+        raise RuntimeError(
+            f"Failed to set ACP {label} config option {config_id!r}="
+            f"{value!r} for agent {agent!r}: {e}"
+        ) from e
+
+
+async def _configure_acp_session(
+    acp_client: ACPClient,
+    session: object | None,
+    *,
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+    reasoning_effort: str | None,
+) -> None:
+    agent_cfg = AGENTS.get(agent)
+
+    if model and _model_selection_owned_by_env(agent, model, agent_env):
+        logger.info(
+            f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
+        )
+    elif model:
+        acp_model_input = _resolve_acp_model_input(agent, model, agent_env)
+        acp_model_id = _select_acp_model_id(acp_model_input, agent, session)
+        model_option_id = _resolve_acp_model_option_id(agent_cfg, session)
+        if model_option_id:
+            # Capability-first: the agent advertises a model config option (or
+            # the registry declares one), so configure the model through it —
+            # this is how the @agentclientprotocol family is replacing
+            # session/set_model, and it needs no per-agent registry change.
+            await _set_acp_config_option(
+                acp_client,
+                session,
+                agent=agent,
+                config_id=model_option_id,
+                value=acp_model_id,
+                label="model",
+            )
+        elif not agent_cfg or agent_cfg.supports_acp_set_model:
+            # No model config option advertised/declared — use the legacy
+            # session/set_model path. Fails closed if the agent rejects it.
+            await _set_acp_model(acp_client, agent=agent, model_id=acp_model_id)
+        else:
+            logger.info(
+                f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
+            )
+
+    if not reasoning_effort:
+        return
+    if not agent_cfg or not agent_cfg.acp_effort_config_id:
+        raise RuntimeError(
+            f"reasoning_effort={reasoning_effort!r} was requested for agent "
+            f"{agent!r}, but that agent does not declare an ACP effort config option"
+        )
+    await _set_acp_config_option(
+        acp_client,
+        session,
+        agent=agent,
+        config_id=agent_cfg.acp_effort_config_id,
+        value=reasoning_effort,
+        label="reasoning effort",
+    )
+
+
 async def connect_acp(
     env,
     agent: str,
@@ -234,9 +398,10 @@ async def connect_acp(
     rollout_dir: Path,
     environment: str,
     agent_cwd: str,
+    reasoning_effort: str | None = None,
     mcp_servers: list[McpServerSpec] | None = None,
 ) -> tuple[ACPClient, object, ACPSessionAdapter, str]:
-    """Create ACP transport, connect, init session, set model.
+    """Create ACP transport, connect, init session, and configure model/effort.
 
     Returns ``(client, session, session_adapter, agent_name)``. ``session`` is
     the raw :class:`~benchflow.acp.session.ACPSession` (still passed to
@@ -336,35 +501,19 @@ async def connect_acp(
     if acp_client is None or session is None:
         raise RuntimeError("ACP connection did not initialize")
 
-    if model and not _should_skip_acp_set_model(agent, model, agent_env):
-        acp_model_input = _resolve_acp_model_input(agent, model, agent_env)
-        acp_model_id = _select_acp_model_id(acp_model_input, agent, session)
-        try:
-            await asyncio.wait_for(acp_client.set_model(acp_model_id), timeout=60)
-            logger.info(f"Model set to: {acp_model_id} (from {acp_model_input})")
-        except Exception as e:
-            # Fail closed — silently continuing leaves the run on the agent's
-            # default/previous model while result metadata claims ``model`` was
-            # honored. That mis-attributes the entire trajectory. The caller
-            # asked for a specific model; if ACP can't honor it we abort the
-            # rollout. Agents that genuinely don't support ``session/set_model``
-            # should set ``supports_acp_set_model=False`` in the registry so
-            # ``_should_skip_acp_set_model`` short-circuits this branch.
-            logger.error(
-                "ACP session/set_model failed for agent=%s model=%s: %s",
-                agent,
-                acp_model_id,
-                e,
-            )
-            with contextlib.suppress(Exception):
-                await acp_client.close()
-            raise RuntimeError(
-                f"Failed to set model {acp_model_id!r} via ACP for agent {agent!r}: {e}"
-            ) from e
-    elif model:
-        logger.info(
-            f"Skipping ACP set_model for {agent} — launch/env config owns model selection"
+    try:
+        await _configure_acp_session(
+            acp_client,
+            session,
+            agent=agent,
+            model=model,
+            agent_env=agent_env,
+            reasoning_effort=reasoning_effort,
         )
+    except Exception:
+        with contextlib.suppress(Exception):
+            await acp_client.close()
+        raise
 
     session_adapter = ACPSessionAdapter(acp_client)
     return acp_client, session, session_adapter, agent_name

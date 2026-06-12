@@ -2,9 +2,9 @@
 
 Trace file paths flow into three generated artifacts:
 
-* ``instruction.md`` — the task description shown to the agent
-* ``tests/test.sh`` — the verifier that decides task reward
-* ``solution/solve.sh`` — the oracle that replays trace writes
+* ``task.md`` — the task description shown to the agent
+* ``verifier/test.sh`` — the verifier that decides task reward
+* ``oracle/solve.sh`` — the oracle that replays trace writes
 
 If trace paths contain ``..`` segments or are absolute, the generated
 artifacts encode writes and verification outside the task workspace,
@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from benchflow.task.document import TaskDocument
+from benchflow.task.paths import TaskPaths
 from benchflow.traces.models import GitContext, ParsedTrace, ToolCall, TraceStep
 from benchflow.traces.task_gen import generate_task
 
@@ -55,9 +57,7 @@ def _trace_with_paths(paths: list[str]) -> ParsedTrace:
     )
 
 
-# ---------------------------------------------------------------------------
 # All-unsafe trace — every consumer drops the path
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -79,13 +79,14 @@ def test_unsafe_paths_dropped_from_generated_artifacts(
     with caplog.at_level("WARNING"):
         task_dir = generate_task(trace, out)
 
-    instruction = (task_dir / "instruction.md").read_text()
-    test_sh = (task_dir / "tests" / "test.sh").read_text()
-    solve_sh = (task_dir / "solution" / "solve.sh").read_text()
+    instruction = TaskDocument.from_path(task_dir / "task.md").instruction
+    paths = TaskPaths(task_dir)
+    test_sh = paths.test_path.read_text()
+    solve_sh = (paths.solution_dir / "solve.sh").read_text()
 
     # No artifact still encodes a workspace-escape (``..`` segment).
     for artifact, label in (
-        (instruction, "instruction.md"),
+        (instruction, "task.md"),
         (test_sh, "test.sh"),
         (solve_sh, "solve.sh"),
     ):
@@ -99,18 +100,17 @@ def test_unsafe_paths_dropped_from_generated_artifacts(
     assert any("escape" in r.message.lower() for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # Mixed trace — unsafe dropped, safe retained
-# ---------------------------------------------------------------------------
 
 
 def test_safe_path_kept_unsafe_dropped(tmp_path: Path) -> None:
     trace = _trace_with_paths(["src/keep_me.py", "../../tmp/drop_me.txt"])
     task_dir = generate_task(trace, tmp_path / "tasks")
 
-    instruction = (task_dir / "instruction.md").read_text()
-    test_sh = (task_dir / "tests" / "test.sh").read_text()
-    solve_sh = (task_dir / "solution" / "solve.sh").read_text()
+    instruction = TaskDocument.from_path(task_dir / "task.md").instruction
+    paths = TaskPaths(task_dir)
+    test_sh = paths.test_path.read_text()
+    solve_sh = (paths.solution_dir / "solve.sh").read_text()
 
     # Safe path survives every artifact.
     assert "src/keep_me.py" in instruction

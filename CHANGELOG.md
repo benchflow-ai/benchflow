@@ -2,15 +2,136 @@
 
 ## [Unreleased]
 
+## 0.6.0 — 2026-06-10
+
+### Added
+
+- **The `task.md` task standard** — a single-file unified task format (parser,
+  verifier planes, prompt sidecars, round-trip export with a machine-readable
+  loss report) plus the authoring CLI: `bench tasks init / check / migrate /
+  export`, with a layered `check --level` ladder up to a leaderboard-grade
+  acceptance gate. See [`docs/task-standard.md`](docs/task-standard.md) and the
+  [native authoring guide](docs/task-authoring-task-md.md).
+- **`bench agent` benchmark-adoption router** — `create` scaffolds a benchmark
+  conversion per [`benchmarks/CONVERT.md`](benchmarks/CONVERT.md), `run` drives
+  the host `codex` CLI through the conversion workflow, and `verify` runs the
+  parity gate (deterministic per-criterion conversion parity plus the
+  agent-scale reward-distribution layer) and emits a confidence verdict, with a
+  drafted support issue on divergence.
+- **ATIF and ADP trajectory artifacts** — every scored rollout now emits
+  `trainer/atif.json` and `trainer/adp.jsonl` (alongside the existing
+  `verifiers.jsonl`), with job-level ADP aggregation. One canonical raw
+  trajectory, multiple ecosystem formats out of the box.
+- **OpenReward (ORS) reward-format interop** — export BenchFlow rewards in the
+  Open Reward Standard shape (`benchflow.adapters.ors`) and the `ors-episode`
+  verifier strategy is recognized. (The hosted-environment episode runner that
+  executes ORS environments end-to-end is in progress, not in this release.)
+- **Daytona sandbox auto-reap** — orphaned sandboxes are cleaned at eval start
+  (TTL-tiered; failure states reaped sooner; an idle-activity guard protects
+  live runs), gated by `BENCHFLOW_DAYTONA_AUTO_REAP` (any of `0`/`false`/`no`/
+  `off`, case-insensitive, disables it).
+- **Registry-pinned dataset runs** — `bench eval create -d name@version`
+  (e.g. `-d skillsbench@1.1`) resolves a dataset from a git-backed
+  `registry.json` (see skillsbench `docs/dataset-versioning.md`): tasks are
+  cloned at their pinned `git_commit_id` into `.cache/datasets` and every
+  task directory is verified against its sha256 content digest before
+  anything runs; the entry's `bench_version` range is checked against the
+  installed benchflow. `--registry` overrides the default (skillsbench)
+  registry. `result.json`/`config.json` are stamped with `dataset_name`,
+  `dataset_version`, and a per-task `task_digest` (`summary.json` carries
+  the name/version); `--tasks-dir` dev runs carry no dataset fields but
+  still stamp a live-computed `task_digest`, so every trajectory stays
+  attributable to exact task content. `bench tasks digest <dir>` prints
+  the digest for task authoring, and `check_results.py` audits the stamps.
+  See [`docs/running-benchmarks.md`](docs/running-benchmarks.md). (#689,
+  #690, #691; `packaging` promoted to a core dependency for the
+  `bench_version` check.)
+- **`benchflow continue <run-folder>`** — resume a previous, unfinished
+  (timed-out) `openhands` run to completion. A standalone tool (it does not
+  touch the normal run path) that reconstructs the run's exact workspace and
+  agent memory from the recorded `llm_trajectory.jsonl` via record-replay,
+  then continues with the live model — no injected prompt — and writes a new
+  HF-compatible folder with `continued_from` provenance. See
+  [`docs/continue-runs.md`](docs/continue-runs.md).
+
+### Fixed
+
+- `bench tasks migrate` emits minimal, canonical (`schema_version`) front
+  matter instead of a full defaults dump.
+- Verifier `timeout_sec` is validated as a positive, finite budget
+  (fail-closed at parse time; omission inherits the documented default).
+- Docker `compose up` retries on the daemon network create/attach race.
+- Console error messages truncate at word boundaries instead of mid-token.
+- Recorded sandbox-setup timeouts and trajectory artifacts are consistent
+  across the Docker and Daytona backends.
+- The `task.md` init scaffold is agent-neutral, so `--agent oracle` works on a
+  freshly scaffolded task.
+- `gemini/`-prefixed judge/simulated-user models now resolve to the Google
+  backend instead of passing the slashed name through and 404-ing.
+- Model-backed judges raise a clear error naming the provider and pointing at
+  `pip install benchflow[judge]` when the judge SDK is missing, instead of the
+  misleading "Missing OPENAI_API_KEY" fall-through.
+- `bench tasks check` recognizes a rubric-backed `llm-judge` verifier as a valid
+  entrypoint and no longer demands a `test.sh`.
+- Pre-verifier disk reclaim is workspace-aware and symlink-safe: it rejects
+  symlinked cache candidates and realpath-guards every deletion against the
+  workspace and `/logs`, so an agent-planted `~/.cache` symlink cannot steer the
+  reclaim into workspace or output state (#601).
+- Bedrock Claude 4.8+ routes fail closed when LiteLLM's adaptive-thinking patch
+  is inactive, instead of silently sending a request the proxy cannot satisfy
+  (#602).
+
+### Changed
+
+- Quickstart and CLI reference now match observed run behavior — the real jobs
+  directory layout and artifact map, the `<PROVIDER>_API_KEY` /
+  `<PROVIDER>_BASE_URL` convention, and exit-code semantics.
+- Document the public vs internal preview install/upgrade command matrix,
+  including `uv tool` exact pins, internal preview upgrades, and the
+  `--force` path for replacing stale entrypoint scripts.
+
+## 0.5.2 — 2026-06-05
+
+### Changed
+
+- **PyPI project README badge** — replace the dynamic PyPI version badge with
+  a stable package badge so the rendered project description cannot show a
+  stale external version image after a public release.
+- **Release documentation refresh** — update public install snippets,
+  release-channel docs, examples, and citation metadata to `0.5.2`.
+
+## 0.5.1 — 2026-06-05
+
 ### Added
 
 - **Daytona usage telemetry by default** — Daytona runs now start a sandbox-local provider usage proxy so token/cost telemetry works without an external tunnel; use `--usage-tracking off` to bypass proxying when needed.
 - **Azure AI Foundry providers** — new `azure-foundry-openai/` and `azure-foundry-anthropic/` prefixes routing through Foundry's unified resource. Export `AZURE_API_KEY` plus `AZURE_API_ENDPOINT` (e.g. `https://<resource>.openai.azure.com/`); benchflow derives the resource name from the endpoint host, builds the per-surface base URL, and maps the key onto the agent-native auth env automatically. Missing/unrecognized endpoints and unsupported agent/provider protocol pairings fail fast with clear errors instead of falling through to the wrong endpoint.
 - **Azure Foundry auth guidance** — agent discovery output and docs now call out that provider-prefixed models can use provider-specific credentials instead of the agent's native/default API key.
 
+### Changed
+
+- **PyPI project documentation refresh** — the public package README, install snippets, release-channel docs, examples, and citation metadata now point at `0.5.1`.
+
 ### Fixed
 
 - Inherit `BENCHFLOW_PROVIDER_BASE_URL` / `BENCHFLOW_PROVIDER_API_KEY` from the host environment so self-hosted / OpenAI-compatible endpoints route correctly instead of falling back to `api.openai.com`; empty or whitespace-only host values are skipped so they cannot shadow the resolved provider URL (benchflow-ai/skillsbench#817).
+
+## 0.5.0 — 2026-06-04
+
+### Added
+
+- **Public/internal preview release channels** — tag-driven public releases publish stable PyPI packages and GitHub Releases; merges to `main` publish internal preview `.devN` packages after CI passes.
+- **v0.5 integration evidence** — release validation docs now cover urgent blocker closure, SkillsBench infra-fix validation, adapter evidence, trace-to-task evidence, hosted env compatibility, and diagnostic fields.
+- **Release automation guardrails** — public release tags must point at commits contained in `main`, version tags must match `pyproject.toml`, and PyPI publishing uses Trusted Publishing/OIDC instead of stored tokens.
+
+### Changed
+
+- `main` now tracks the next public version as `0.5.1.dev0`; the published public SDK is `0.5.0`, and internal previews are emitted as `0.5.1.dev<N>`.
+- Documentation now directs downstream users to depend on public PyPI releases by default and use prerelease-enabled internal previews only for validation before the next public cut.
+
+### Fixed
+
+- Closed the v0.5 release blocker set covering structured sandbox/verifier diagnostics, Daytona startup/export retries, verifier dependency classification, CTRF path consistency, and SkillsBench task compatibility evidence.
 
 ## 0.3.3 — 2026-05-15
 

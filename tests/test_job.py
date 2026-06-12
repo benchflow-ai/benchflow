@@ -31,7 +31,33 @@ class TestRetryConfig:
 
     def test_should_retry_acp_error(self):
         cfg = RetryConfig()
-        assert cfg.should_retry("ACP error -32000: Authentication required")
+        assert cfg.should_retry("ACP error -32000: connection refused")
+
+    def test_should_not_retry_provider_auth_gemini_403(self):
+        """Guards the fix from PR #564 for issue #546: provider auth failures
+        should not be retried — they waste Daytona sandbox quota."""
+        cfg = RetryConfig()
+        assert not cfg.should_retry(
+            "ACP error 403: PERMISSION_DENIED: Your API key was reported as leaked."
+        )
+
+    def test_should_not_retry_provider_auth_claude_401(self):
+        """Guards the fix from PR #564 for issue #546: Claude 401 auth failures
+        must not be retried — they waste Daytona sandbox quota."""
+        cfg = RetryConfig()
+        assert not cfg.should_retry(
+            "ACP error -32603: Internal error: Failed to authenticate. "
+            "API Error: 401 Invalid bearer token"
+        )
+
+    def test_should_not_retry_sanitized_proxy_auth_marker(self):
+        """Guards PR #564: the sanitized "provider auth failed (HTTP 401)"
+        marker injected from the proxy trajectory must fail fast, even when the
+        top-level ACP error is only a generic internal error."""
+        cfg = RetryConfig()
+        assert not cfg.should_retry(
+            "ACP error -32603: Internal error | provider auth failed (HTTP 401)"
+        )
 
     def test_should_not_retry_timeout(self):
         cfg = RetryConfig()
@@ -649,6 +675,7 @@ class TestJobRunOrchestration:
             {
                 "task_name": "task-0",
                 "n_tool_calls": 4,
+                "trajectory_summary": {"steps": 9, "tool_call_steps": 4},
                 "timing": {
                     "environment_setup": 1.0,
                     "agent_setup": 2.0,
@@ -660,6 +687,7 @@ class TestJobRunOrchestration:
             {
                 "task_name": "task-1",
                 "n_tool_calls": 6,
+                "trajectory_summary": {"steps": 13, "tool_call_steps": 6},
                 "timing": {
                     "environment_setup": 1.5,
                     "agent_setup": 2.5,
@@ -671,6 +699,7 @@ class TestJobRunOrchestration:
             {
                 "task_name": "task-2",
                 "n_tool_calls": 2,
+                "trajectory_summary": {"steps": 5, "tool_call_steps": 2},
                 "timing": {
                     "environment_setup": 0.5,
                     "agent_setup": 1.0,
@@ -694,6 +723,15 @@ class TestJobRunOrchestration:
         assert summary["total_tool_calls"] == 12
         assert summary["avg_tool_calls_per_task"] == pytest.approx(4.0)
         assert summary["max_tool_calls_per_task"] == 6
+        # Harbor-style trajectory aggregates track every ACP event and the
+        # subset of events that carried tool calls.
+        assert summary["total_trajectory_steps"] == 27
+        assert summary["avg_trajectory_steps_per_task"] == pytest.approx(9.0)
+        assert summary["max_trajectory_steps_per_task"] == 13
+        assert summary["total_trajectory_tool_call_steps"] == 12
+        assert summary["avg_trajectory_tool_call_steps_per_task"] == pytest.approx(4.0)
+        assert summary["max_trajectory_tool_call_steps_per_task"] == 6
+        assert summary["trajectory_summary_coverage"] == 1.0
         # Phase totals (sums) — hand-computed from the seeded timing blocks.
         assert summary["environment_setup_time_sec"] == 3.0
         assert summary["agent_setup_time_sec"] == 5.5

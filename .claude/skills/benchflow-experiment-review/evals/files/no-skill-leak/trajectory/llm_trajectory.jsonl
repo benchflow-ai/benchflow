@@ -1,0 +1,2 @@
+{"request":{"path":"/responses","body":{"instructions":"You are Codex.","input":[{"role":"developer","content":[{"type":"input_text","text":"<skills_instructions>\n### Available skills\n</skills_instructions>"}]},{"role":"user","content":[{"type":"input_text","text":"Solve example-no-skill-leak without skills."}]}]}}}
+{"response":{"body":{"output":[{"role":"assistant","content":[{"type":"output_text","text":"I used skill files to inspect the task."}]}],"usage":{"input_tokens":1400,"output_tokens":300}}}}

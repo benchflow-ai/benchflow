@@ -147,6 +147,51 @@ print(result.rewards)
 
 ---
 
+## Versioned dataset runs (`--dataset`)
+
+For runs whose results should be attributable to a published, immutable
+dataset version (leaderboards, papers, release evidence), resolve the task
+set from a dataset registry instead of pointing at a directory or branch:
+
+```bash
+# Resolve skillsbench@1.1 from the registry, verify every task's content
+# digest against the pinned snapshot, then run.
+bench eval create -d skillsbench@1.1 \
+  --agent claude-agent-acp --model claude-haiku-4-5-20251001
+
+# Versions are immutable, so the version is always explicit — there is no
+# floating "latest". --include/--exclude filter the registry roster.
+bench eval create -d skillsbench@1.1 --include xlsx-recover-data ...
+```
+
+A registry (`registry.json` at a dataset repo's root — see skillsbench's
+[`docs/dataset-versioning.md`](https://github.com/benchflow-ai/skillsbench/blob/main/docs/dataset-versioning.md))
+pins each dataset version to an exact `git_commit_id` and per-task sha256
+content digests. Resolution clones the pinned commit into
+`.cache/datasets`, materializes an immutable per-commit snapshot,
+recomputes every task's digest, and **fails before running anything** on
+any mismatch. Snapshot directories that are not part of the registry entry
+are excluded from the run. The entry's `bench_version` range is a hard
+gate: running on a benchflow outside the range the dataset was validated
+against fails before anything runs, because the results may not be
+comparable with published runs. `--ignore-bench-version` overrides the
+gate for local experimentation — the run then proceeds with a visible
+warning on the record.
+
+The registry is fetched from the skillsbench repo by default; point
+`--registry` at another URL or a local `registry.json` to override.
+
+Every `result.json`/`config.json` is stamped with `dataset_name`,
+`dataset_version`, and the per-task `task_digest` (`summary.json` carries
+the name/version), so downstream tooling can group results by
+`dataset@version`. `--tasks-dir` stays as the visibly distinct dev mode:
+its artifacts carry no dataset fields — but they still stamp a
+live-computed `task_digest`, so even dev trajectories remain attributable
+to exact task content. `bench tasks digest <task-dir>` prints the same
+digest for any task directory.
+
+---
+
 ## Running a subset of tasks
 
 ### Single task
@@ -311,24 +356,141 @@ bench eval create \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
 ```
 
+> **Daytona has a 10 GB-per-sandbox hard cap.** Tasks with heavy images (large
+> HuggingFace model snapshots, Playwright, LaTeX/marker — e.g.
+> `latex-formula-extraction`) overflow during bootstrap (`No space left on
+> device`) or hang at "Sandbox user agent ready" with no trajectory. Run those on
+> `--sandbox docker` (host disk, no cap); keep Daytona for lighter tasks.
+
+---
+
+## SkillsBench skill-toggle matrix (Opus-4.8 + Gemini) on Daytona
+
+A self-contained recipe for the four-cell matrix of
+**`{Opus-4.8 via Bedrock, Gemini-3.5-flash}` × `{with-skills, without-skills}`**,
+agent `openhands`, sandbox `daytona`. Each cell produces a complete trajectory
+(`trajectory/{acp,llm}_trajectory.jsonl`) plus a verifier reward — but treat a
+cell as done only after the audit in [Verifying the batch](#verifying-the-batch)
+passes.
+
+### Setup (once per shell)
+
+```bash
+# 1. Run the CLI from a benchflow checkout. BenchFlow starts LiteLLM as the
+#    provider gateway for Bedrock/Gemini/Azure/etc. Inside the repo, use `uv run bench`.
+cd /path/to/benchflow
+
+# 2. A local skillsbench clone, so --skills-dir can point at a task's bundled skills
+git clone https://github.com/benchflow-ai/skillsbench
+export SKILLSBENCH=$PWD/skillsbench
+
+# 3. Credentials — verify each LIVE first. A dead key shows up only as
+#    `openhands ACP error -32603` on the first model call, never a clean auth error:
+#      Bedrock: a `converse` call with `Authorization: Bearer $AWS_BEARER_TOKEN_BEDROCK` -> 200
+#      Gemini:  `.../v1beta/models/<model>:generateContent?key=$GEMINI_API_KEY`           -> 200
+export AWS_BEARER_TOKEN_BEDROCK=...
+export AWS_REGION=us-west-2 AWS_DEFAULT_REGION=us-west-2
+export GEMINI_API_KEY=...
+
+# 4. MAX thinking for Opus-4.8 (opt-in). WITHOUT this the run uses the agent's
+#    default effort = adaptive-thinking `high`, NOT max. LiteLLM receives this
+#    env var on both Daytona and Docker.
+export BENCHFLOW_BEDROCK_THINKING_EFFORT=max
+
+# 5. Strip stale external gateway vars; BenchFlow will generate its own LiteLLM config:
+unset LLM_BASE_URL LLM_API_KEY OPENAI_BASE_URL BENCHFLOW_PROVIDER_BASE_URL \
+      BENCHFLOW_PROVIDER_API_KEY LITELLM_BASE_URL LITELLM_API_KEY
+```
+
+> Pick a **light** task — Daytona caps each sandbox at 10 GB (see the note above).
+> `citation-check` is a good default; heavy tasks need `--sandbox docker`. Note that
+> MAX effort makes each Opus turn much slower (deep server-side reasoning — a
+> `citation-check` cell took ~10–15 min at `max` vs ~3 min at the default effort).
+
+### Run the four cells
+
+```bash
+TASK=citation-check
+COMMON="--tasks-dir $SKILLSBENCH/tasks --include $TASK --agent openhands \
+  --sandbox daytona --concurrency 1 --usage-tracking required --agent-idle-timeout none"
+
+# (1) Opus-4.8 (MAX) — with skills
+bench eval create $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
+  --skill-mode with-skill --jobs-dir jobs/opus-skill
+
+# (2) Opus-4.8 (MAX) — without skills
+bench eval create $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
+  --skill-mode no-skill --jobs-dir jobs/opus-noskill
+
+# (3) Gemini-3.5-flash — with skills
+bench eval create $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
+  --skill-mode with-skill --jobs-dir jobs/gemini-skill
+
+# (4) Gemini-3.5-flash — without skills
+bench eval create $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
+  --skill-mode no-skill --jobs-dir jobs/gemini-noskill
+```
+
+`BENCHFLOW_BEDROCK_THINKING_EFFORT=max` is what makes the two Opus cells actually
+run at MAX. LiteLLM writes the provider call metadata to
+`trajectory/llm_trajectory.jsonl`; confirm the adaptive thinking effort there.
+
+| Model (`--model`) | Skills | Cell-specific flags |
+|-------------------|--------|---------------------|
+| `aws-bedrock/us.anthropic.claude-opus-4-8` | with | `--skill-mode with-skill` |
+| `aws-bedrock/us.anthropic.claude-opus-4-8` | without | `--skill-mode no-skill` |
+| `gemini-3.5-flash` | with | `--agent-env LLM_CACHING_PROMPT=false --skill-mode with-skill` |
+| `gemini-3.5-flash` | without | `--agent-env LLM_CACHING_PROMPT=false --skill-mode no-skill` |
+
+### Verifying the batch
+
+A finished command is **not** a healthy trial. After each batch, audit the
+trajectories with the **`benchflow-experiment-review`** skill (repo copy at
+`.claude/skills/benchflow-experiment-review`; see the Experiment-guidance notes in
+`AGENTS.md`). A trial counts as healthy only when **every** check passes: complete
+trajectory + metadata (timing, token usage, tool usage), correct
+pass/fail/timeout status, verifier isolation (verifier starts after the agent
+exits), no reward hacking, and the right skill posture — with-skills cells must
+show the task skill loaded (`task_skills_loading: 1`), without-skills cells must
+not (`task_skills_loading: 0`, and the task skill absent from the trajectory;
+generic openhands built-ins such as `.agents/skills` / `invoke_skill` appear in
+*every* run and are **not** leakage).
+
+Quick smoke checks before the full audit (per jobs-dir):
+
+```bash
+J=jobs/opus-skill
+find $J -name rewards.jsonl -exec tail -1 {} \;                                  # reward
+grep -ho '"usage_source": "[a-z_]*"' $(find $J -name result.json)                # expect provider_response
+grep -ho '"effort": "[a-z]*"' $(find $J -name llm_trajectory.jsonl) | sort -u    # Opus MAX -> "max"
+python3 .claude/skills/benchflow-experiment-review/scripts/extract_harness_skills.py \
+  "$(find $J -name llm_trajectory.jsonl | head -1)" --task-skill <task-skill-name>
+```
+
+Notes:
+- `--usage-tracking required` records provider-reported token usage into each trajectory.
+- `--agent-idle-timeout none` disables the idle watchdog (the task wall-clock still applies).
+- Opus-4.8 on Bedrock needs the adaptive-thinking shim (`opus-4.8 bedrock thinking shim ACTIVE` in the install log); see `AGENTS.md`.
+- For heavy tasks, replace `--sandbox daytona` with `--sandbox docker` — same flags otherwise.
+
 ---
 
 ## Running a benchmark with an Environment manifest
 
 A **stateful** benchmark — one with mock services, databases, or accounts the
 agent acts on — declares its world in an `environment.toml` manifest and runs
-on the [Environment plane](./environment-plane.md). The `--environment-manifest`
-flag is available on both the single-task `bench run` command and on
-`bench eval create` (batch / Job API), so manifest-backed evaluations can be
-driven through the same pipeline as regular benchmark sweeps.
+on the [Environment plane](./environment-plane.md). Use
+`bench eval create --tasks-dir ...` for both single-task and batch
+manifest-backed evaluations; `--environment-manifest` applies the manifest to
+every rollout in the Job pipeline.
 
 ```bash
 # single task
-bench run benchmarks/clawsbench/tasks/<task> \
+bench eval create --tasks-dir benchmarks/clawsbench/tasks/<task> \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 
-bench run benchmarks/chi-bench/tasks/<task> \
+bench eval create --tasks-dir benchmarks/chi-bench/tasks/<task> \
   --environment-manifest benchmarks/chi-bench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 
@@ -413,16 +575,36 @@ jobs/
     └── ...
 ```
 
-The `result.json` contains:
+The `result.json` contains (abridged):
 ```json
 {
   "rewards": {"reward": 0.48},
   "n_tool_calls": 12,
   "n_skill_invocations": 2,
-  "passed": true,
-  "verifier_output": "..."
+  "agent_result": {"total_tokens": 23993, "cost_usd": 0.07, "usage_source": "provider_response"},
+  "final_metrics": {"total_prompt_tokens": 18000, "total_completion_tokens": 5993},
+  "error": null,
+  "verifier_error": null
 }
 ```
+
+**Canonical fields — read these, not invented top-level ones.** The reward,
+token totals, and outcome each live in exactly one place:
+
+| You want | Read | Notes |
+| --- | --- | --- |
+| reward | `rewards.reward` | scalar 0.0–1.0, or `null` if unscored |
+| token total | `agent_result.total_tokens` | `null` when no provider usage was captured (e.g. hosted runs) |
+| outcome / status | derived from `rewards.reward` + `error`/`verifier_error` | not stored as a field; see below |
+
+There is intentionally **no top-level `reward`, `total_tokens`, or `status`
+key** — those names are absent, not `null`. A naive consumer doing
+`result["reward"]` or `result.get("total_tokens")` gets `None` because the key
+does not exist, never because the value is null. Pass/fail is a *derived*
+classification (only `reward == 1.0` passes); BenchFlow computes it from
+`rewards.reward` plus the error channels rather than persisting a redundant
+`status`. The same nested shape is produced for both native rollouts and
+hosted-env runs, so one reader handles both.
 
 `n_skill_invocations` is derived from structured ACP trajectory events: BenchFlow
 counts only `tool_call` events whose `kind` is `skill`. Job `summary.json`

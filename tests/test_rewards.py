@@ -15,10 +15,7 @@ from benchflow.rewards.builtins import (
 from benchflow.rewards.events import RewardEvent
 from benchflow.rewards.protocol import RewardFunc, VerifyResult
 from benchflow.rewards.rubric import Rubric
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+from benchflow.rewards.validation import apply_aggregate_policy, validate_reward_map
 
 
 class ConstRewardFunc:
@@ -38,9 +35,7 @@ class FailingRewardFunc:
         raise RuntimeError("deliberate failure")
 
 
-# ---------------------------------------------------------------------------
 # RewardEvent construction
-# ---------------------------------------------------------------------------
 
 
 class TestRewardEventConstruction:
@@ -58,9 +53,7 @@ class TestRewardEventConstruction:
         assert ev.type == "dense"
 
 
-# ---------------------------------------------------------------------------
 # VerifyResult construction
-# ---------------------------------------------------------------------------
 
 
 class TestVerifyResultConstruction:
@@ -87,9 +80,141 @@ class TestVerifyResultConstruction:
         assert vr.error == "scoring failed"
 
 
-# ---------------------------------------------------------------------------
+# Structured reward map aggregation
+
+
+class TestStructuredRewardAggregation:
+    def test_document_policy_allows_metrics_without_inline_aggregate(self) -> None:
+        rewards = validate_reward_map(
+            {"metrics": {"correctness": 1.0, "quality": 0.5}},
+            source="reward JSON",
+            aggregate_policy={
+                "field": "reward",
+                "method": "weighted_sum",
+                "weights": {"correctness": 0.7, "quality": 0.3},
+            },
+        )
+
+        assert rewards == {"metrics": {"correctness": 1.0, "quality": 0.5}}
+
+    def test_apply_aggregate_policy_computes_weighted_sum(self) -> None:
+        rewards = apply_aggregate_policy(
+            {"metrics": {"correctness": 1.0, "quality": 0.5}},
+            aggregate_policy={
+                "field": "reward",
+                "method": "weighted_sum",
+                "weights": {"correctness": 0.7, "quality": 0.3},
+            },
+            source="reward JSON",
+        )
+
+        assert rewards == {
+            "reward": 0.85,
+            "metrics": {"correctness": 1.0, "quality": 0.5},
+        }
+
+    def test_strict_aggregate_recomputes_existing_reward(self) -> None:
+        rewards = apply_aggregate_policy(
+            {"reward": 0.85, "metrics": {"correctness": 1.0, "quality": 0.5}},
+            aggregate_policy={
+                "field": "reward",
+                "method": "weighted_sum",
+                "criteria": ["correctness", "quality"],
+                "weights": {"correctness": 0.7, "quality": 0.3},
+            },
+            source="reward JSON",
+            strict=True,
+        )
+
+        assert rewards["reward"] == pytest.approx(0.85)
+
+    def test_strict_aggregate_rejects_existing_reward_mismatch(self) -> None:
+        with pytest.raises(ValueError, match="does not match criteria aggregate"):
+            apply_aggregate_policy(
+                {
+                    "reward": 0.5,
+                    "metrics": {"correctness": 1.0, "quality": 0.5},
+                },
+                aggregate_policy={
+                    "field": "reward",
+                    "method": "weighted_sum",
+                    "criteria": ["correctness", "quality"],
+                    "weights": {"correctness": 0.7, "quality": 0.3},
+                },
+                source="reward JSON",
+                strict=True,
+            )
+
+    def test_declared_criteria_require_exact_metric_keys(self) -> None:
+        with pytest.raises(ValueError, match="missing metrics: quality"):
+            apply_aggregate_policy(
+                {"metrics": {"correctness": 1.0, "extra": 0.5}},
+                aggregate_policy={
+                    "field": "reward",
+                    "method": "weighted_mean",
+                    "criteria": ["correctness", "quality"],
+                    "weights": {"correctness": 0.7, "quality": 0.3},
+                },
+                source="reward JSON",
+                strict=True,
+            )
+
+    @pytest.mark.parametrize(
+        ("method", "metrics", "expected"),
+        [
+            ("all_pass", {"a": 0.5, "b": 1.0}, 1.0),
+            ("all_pass", {"a": 0.49, "b": 1.0}, 0.0),
+            ("any_pass", {"a": 0.1, "b": 0.5}, 1.0),
+            ("any_pass", {"a": 0.1, "b": 0.49}, 0.0),
+            ("threshold", {"a": 1.0, "b": 0.5}, 1.0),
+        ],
+    )
+    def test_aggregate_policy_matches_judge_scoring_modes(
+        self, method: str, metrics: dict[str, float], expected: float
+    ) -> None:
+        rewards = apply_aggregate_policy(
+            {"metrics": metrics},
+            aggregate_policy={
+                "field": "reward",
+                "method": method,
+                "threshold": 0.7,
+                "weights": {"a": 0.7, "b": 0.3},
+            },
+            source="reward JSON",
+        )
+
+        assert rewards["reward"] == expected
+
+    def test_apply_aggregate_policy_rejects_unsupported_method(self) -> None:
+        with pytest.raises(ValueError, match="unsupported"):
+            apply_aggregate_policy(
+                {"metrics": {"correctness": 1.0}},
+                aggregate_policy={"field": "reward", "method": "median"},
+                source="reward JSON",
+            )
+
+    def test_weighted_sum_requires_explicit_weights(self) -> None:
+        with pytest.raises(ValueError, match="requires weights"):
+            apply_aggregate_policy(
+                {"metrics": {"correctness": 1.0}},
+                aggregate_policy={"field": "reward", "method": "weighted_sum"},
+                source="reward JSON",
+            )
+
+    def test_aggregate_policy_rejects_unknown_weight_keys(self) -> None:
+        with pytest.raises(ValueError, match="unknown metrics"):
+            apply_aggregate_policy(
+                {"metrics": {"correctness": 1.0}},
+                aggregate_policy={
+                    "field": "reward",
+                    "method": "weighted_mean",
+                    "weights": {"correctness": 1.0, "extra": 0.5},
+                },
+                source="reward JSON",
+            )
+
+
 # Rubric: equal weights
-# ---------------------------------------------------------------------------
 
 
 class TestRubricEqualWeights:
@@ -114,9 +239,7 @@ class TestRubricEqualWeights:
         assert result.reward == 0.0
 
 
-# ---------------------------------------------------------------------------
 # Rubric: custom weights
-# ---------------------------------------------------------------------------
 
 
 class TestRubricCustomWeights:
@@ -136,9 +259,7 @@ class TestRubricCustomWeights:
             )
 
 
-# ---------------------------------------------------------------------------
 # Rubric: error handling
-# ---------------------------------------------------------------------------
 
 
 class TestRubricErrorHandling:
@@ -159,9 +280,7 @@ class TestRubricErrorHandling:
         assert result.error is not None
 
 
-# ---------------------------------------------------------------------------
 # Rubric: events collection
-# ---------------------------------------------------------------------------
 
 
 class TestRubricEvents:
@@ -176,9 +295,7 @@ class TestRubricEvents:
         assert "ConstRewardFunc" in sources
 
 
-# ---------------------------------------------------------------------------
 # TestRewardFunc (backward compat)
-# ---------------------------------------------------------------------------
 
 
 class TestTestRewardFunc:
@@ -212,9 +329,7 @@ class TestTestRewardFunc:
         assert score == pytest.approx(1.0)
 
 
-# ---------------------------------------------------------------------------
 # StringMatchRewardFunc
-# ---------------------------------------------------------------------------
 
 
 class TestStringMatchRewardFunc:
@@ -243,9 +358,7 @@ class TestStringMatchRewardFunc:
         assert await func.score(tmp_path) == 0.0
 
 
-# ---------------------------------------------------------------------------
 # CodeExecRewardFunc
-# ---------------------------------------------------------------------------
 
 
 class TestCodeExecRewardFunc:
@@ -263,9 +376,7 @@ class TestCodeExecRewardFunc:
         assert await func.score(tmp_path) == 0.0
 
 
-# ---------------------------------------------------------------------------
 # RewardFunc protocol conformance
-# ---------------------------------------------------------------------------
 
 
 class TestProtocolConformance:
@@ -279,9 +390,7 @@ class TestProtocolConformance:
         assert isinstance(ConstRewardFunc(0.5), RewardFunc)
 
 
-# ---------------------------------------------------------------------------
 # Backward compatibility: default Rubric wraps TestRewardFunc
-# ---------------------------------------------------------------------------
 
 
 class TestBackwardCompat:
@@ -294,9 +403,7 @@ class TestBackwardCompat:
         assert "TestRewardFunc" in result.items
 
 
-# ---------------------------------------------------------------------------
 # RunResult.reward_events field
-# ---------------------------------------------------------------------------
 
 
 class TestRunResultRewardEvents:
@@ -316,9 +423,7 @@ class TestRunResultRewardEvents:
         assert rr.reward_events[0].reward == 1.0
 
 
-# ---------------------------------------------------------------------------
 # Top-level re-exports
-# ---------------------------------------------------------------------------
 
 
 class TestReexports:

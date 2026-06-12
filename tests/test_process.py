@@ -712,6 +712,56 @@ class TestDaytonaPtyProcessSecretTransport:
         assert "secret" not in calls[1].args[0]
 
     @pytest.mark.asyncio
+    async def test_pty_readline_timeout_uses_default_when_env_is_missing(
+        self, monkeypatch
+    ):
+        """Guards the fix for the Daytona PTY timeout issue seen at cb65fe8."""
+        from benchflow.diagnostics import TransportClosedError
+
+        monkeypatch.delenv("BENCHFLOW_DAYTONA_PTY_READLINE_TIMEOUT", raising=False)
+        sandbox, _ptys = _make_daytona_pty_sandbox()
+        proc = DaytonaPtyProcess(
+            sandbox=sandbox,
+            compose_cmd_prefix="",
+            compose_cmd_base="docker compose -p test",
+        )
+
+        async def fake_wait_for(awaitable, *, timeout):
+            awaitable.close()
+            raise TimeoutError
+
+        with (
+            patch("asyncio.wait_for", side_effect=fake_wait_for) as wait_for,
+            pytest.raises(TransportClosedError) as exc_info,
+        ):
+            await proc.readline()
+
+        assert wait_for.call_args.kwargs["timeout"] == 900.0
+        assert exc_info.value.diagnostic.raw_message == "PTY readline timeout (900s)"
+        assert exc_info.value.diagnostic.transport_diagnosis == "pty_error"
+
+    @pytest.mark.asyncio
+    async def test_pty_readline_timeout_can_be_extended_for_long_agent_thinking(
+        self, monkeypatch
+    ):
+        """Guards the fix for the Daytona PTY timeout issue seen at cb65fe8."""
+        from benchflow.diagnostics import TransportClosedError
+
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_PTY_READLINE_TIMEOUT", "0.01")
+        sandbox, _ptys = _make_daytona_pty_sandbox()
+        proc = DaytonaPtyProcess(
+            sandbox=sandbox,
+            compose_cmd_prefix="",
+            compose_cmd_base="docker compose -p test",
+        )
+
+        with pytest.raises(TransportClosedError) as exc_info:
+            await proc.readline()
+
+        assert exc_info.value.diagnostic.raw_message == "PTY readline timeout (0.01s)"
+        assert exc_info.value.diagnostic.transport_diagnosis == "pty_error"
+
+    @pytest.mark.asyncio
     async def test_bootstrapped_env_file_is_removed_when_pty_bootstrap_marker_missing(
         self,
     ):

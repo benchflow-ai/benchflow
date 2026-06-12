@@ -12,16 +12,6 @@ from benchflow.agents.registry import AGENTS, AgentConfig
 from benchflow.models import AgentInstallError
 
 
-def _make_task(skills_dir: str | None):
-    return SimpleNamespace(
-        config=SimpleNamespace(
-            environment=SimpleNamespace(
-                skills_dir=skills_dir,
-            )
-        )
-    )
-
-
 @pytest.mark.asyncio
 async def test_deploy_skills_symlinks_agent_skill_paths_instead_of_copying(tmp_path):
     env = MagicMock()
@@ -41,8 +31,7 @@ async def test_deploy_skills_symlinks_agent_skill_paths_instead_of_copying(tmp_p
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/app",
-        task=_make_task("/opt/benchflow/skills"),
-        include_task_skills=True,
+        skills_sandbox_dir="/opt/benchflow/skills",
     )
 
     env.upload_dir.assert_not_called()
@@ -76,8 +65,6 @@ async def test_deploy_skills_can_skip_task_declared_skills(tmp_path):
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/app",
-        task=_make_task("/opt/benchflow/skills"),
-        include_task_skills=False,
     )
 
     env.upload_dir.assert_not_called()
@@ -105,8 +92,6 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/workspace",
-        task=_make_task("/opt/benchflow/skills"),
-        include_task_skills=True,
     )
 
     env.upload_dir.assert_awaited_once_with(skills_dir, "/skills")
@@ -143,7 +128,6 @@ async def test_deploy_skills_uses_policy_sandbox_dir(tmp_path):
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/workspace",
-        task=_make_task(None),
         skills_sandbox_dir="/opt/benchflow/skill-eval",
     )
 
@@ -169,7 +153,6 @@ async def test_deploy_skills_rejects_unsafe_policy_sandbox_dir(tmp_path):
             agent_cfg=None,
             sandbox_user=None,
             agent_cwd="/app",
-            task=_make_task(None),
             skills_sandbox_dir="/opt/skills; touch /tmp/PWNED",
         )
 
@@ -213,7 +196,6 @@ async def test_deploy_skills_skips_runtime_upload_when_dockerfile_already_inject
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/workspace",
-        task=_make_task(None),
     )
 
     env.upload_dir.assert_not_called()
@@ -246,8 +228,7 @@ async def test_deploy_skills_chowns_full_dir_chain_for_pi_acp_layout(tmp_path):
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/workspace",
-        task=_make_task("/opt/benchflow/skills"),
-        include_task_skills=True,
+        skills_sandbox_dir="/opt/benchflow/skills",
     )
 
     cmd = env.exec.await_args.args[0]
@@ -284,8 +265,7 @@ async def test_deploy_skills_skips_chown_when_no_sandbox_user(tmp_path):
         agent_cfg=agent_cfg,
         sandbox_user=None,
         agent_cwd="/workspace",
-        task=_make_task("/opt/benchflow/skills"),
-        include_task_skills=True,
+        skills_sandbox_dir="/opt/benchflow/skills",
     )
 
     cmd = env.exec.await_args.args[0]
@@ -312,8 +292,7 @@ async def test_deploy_skills_falls_back_when_local_skills_dir_is_missing(tmp_pat
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/workspace",
-        task=_make_task("/opt/benchflow/skills"),
-        include_task_skills=True,
+        skills_sandbox_dir="/opt/benchflow/skills",
     )
 
     env.upload_dir.assert_not_called()
@@ -347,7 +326,6 @@ async def test_deploy_skills_oracle_uses_default_paths_and_root_home(tmp_path):
         agent_cfg=None,
         sandbox_user="agent",
         agent_cwd="/app",
-        task=_make_task(None),
     )
 
     env.upload_dir.assert_awaited_once()
@@ -381,7 +359,6 @@ async def test_deploy_skills_agent_with_empty_skill_paths_does_not_use_oracle_pa
         agent_cfg=agent_cfg,
         sandbox_user=None,
         agent_cwd="/app",
-        task=_make_task("/skills"),
     )
 
     for call in env.exec.await_args_list:
@@ -408,7 +385,6 @@ async def test_deploy_skills_does_not_autodiscover_bundled_skills(tmp_path):
         agent_cfg=None,
         sandbox_user=None,
         agent_cwd="/app",
-        task=_make_task(None),
     )
 
     env.upload_dir.assert_not_called()
@@ -434,8 +410,7 @@ async def test_deploy_skills_links_declared_task_skills_when_enabled(tmp_path):
         agent_cfg=None,
         sandbox_user=None,
         agent_cwd="/app",
-        task=_make_task("/skills"),
-        include_task_skills=True,
+        skills_sandbox_dir="/skills",
     )
 
     env.upload_dir.assert_not_called()
@@ -445,10 +420,10 @@ async def test_deploy_skills_links_declared_task_skills_when_enabled(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_deploy_skills_autodiscovery_skipped_when_include_task_skills_false(
+async def test_deploy_skills_does_not_link_without_sandbox_dir(
     tmp_path,
 ):
-    """Guards PR #586 so include_task_skills=False never links task bundles."""
+    """Guards PR #586 so no-skill mode never links task bundles."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
     env.upload_dir = AsyncMock()
@@ -465,8 +440,6 @@ async def test_deploy_skills_autodiscovery_skipped_when_include_task_skills_fals
         agent_cfg=None,
         sandbox_user=None,
         agent_cwd="/app",
-        task=_make_task(None),
-        include_task_skills=False,
     )
 
     env.upload_dir.assert_not_called()
@@ -493,8 +466,7 @@ async def test_deploy_skills_raises_when_skill_linking_fails(tmp_path):
             agent_cfg=agent_cfg,
             sandbox_user="agent",
             agent_cwd="/app",
-            task=_make_task("/opt/benchflow/skills"),
-            include_task_skills=True,
+            skills_sandbox_dir="/opt/benchflow/skills",
         )
 
 
@@ -665,8 +637,9 @@ async def test_install_agent_writes_command_stdout_and_stderr_on_failure(
     assert log_text.startswith("$ ")
     assert (
         "uv tool install --force --refresh "
-        "--with 'boto3>=1.40' "
-        "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
+        "--overrides /tmp/oh-sdk-overrides.txt "
+        "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@"
+        "3ca17446c5d9c1e35e054803478a3501ec251ecf' "
         "openhands --python 3.12" in log_text
     )
     assert "=== stderr ===" in log_text

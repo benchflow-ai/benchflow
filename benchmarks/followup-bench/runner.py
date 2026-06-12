@@ -1,4 +1,4 @@
-"""Followup-bench runner — Scene-based two-agent code review benchmark.
+"""Followup-bench orchestrator — Scene-based two-agent code review benchmark.
 
 Uses the Scene runtime to orchestrate coder + reviewer in a SHARED sandbox:
   1. Coder agent attempts the task (in shared /app/)

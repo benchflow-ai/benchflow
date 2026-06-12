@@ -87,6 +87,106 @@ class TestEvalCreateRouting:
         result = CliRunner().invoke(app, ["tasks", "generate", "--help"])
         assert result.exit_code == 0
         assert "--from-local" in _plain_cli_output(result.stdout)
+        assert "--task-format" in _plain_cli_output(result.stdout)
+
+    def test_tasks_generate_defaults_to_task_md(self, tmp_path, monkeypatch):
+        """Generated trace tasks should start life in the native task.md layout."""
+        from benchflow.cli.main import app
+        from benchflow.traces.models import ParsedTrace, ToolCall, TraceStep
+
+        trace = ParsedTrace(
+            trace_id="cli-trace",
+            session_id="session",
+            steps=[
+                TraceStep(role="user", content="Create hello.txt"),
+                TraceStep(
+                    role="assistant",
+                    content="done",
+                    tool_calls=[
+                        ToolCall(
+                            name="Write",
+                            input={"file_path": "hello.txt", "content": "hello"},
+                        )
+                    ],
+                ),
+            ],
+            outcome="success",
+        )
+        monkeypatch.setattr(
+            "benchflow.cli.trace_import._load_file",
+            lambda _path, _format: [trace],
+        )
+
+        output = tmp_path / "tasks"
+        result = CliRunner().invoke(
+            app,
+            [
+                "tasks",
+                "generate",
+                "--from-file",
+                str(tmp_path / "trace.jsonl"),
+                "--output",
+                str(output),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        task_dir = next(output.iterdir())
+        assert (task_dir / "task.md").exists()
+        assert (task_dir / "verifier" / "test.sh").exists()
+        assert (task_dir / "oracle" / "solve.sh").exists()
+        assert not (task_dir / "task.toml").exists()
+
+    def test_tasks_generate_legacy_format_flag(self, tmp_path, monkeypatch):
+        """The CLI keeps an explicit split-layout escape hatch."""
+        from benchflow.cli.main import app
+        from benchflow.traces.models import ParsedTrace, ToolCall, TraceStep
+
+        trace = ParsedTrace(
+            trace_id="cli-legacy-trace",
+            session_id="session",
+            steps=[
+                TraceStep(role="user", content="Create hello.txt"),
+                TraceStep(
+                    role="assistant",
+                    content="done",
+                    tool_calls=[
+                        ToolCall(
+                            name="Write",
+                            input={"file_path": "hello.txt", "content": "hello"},
+                        )
+                    ],
+                ),
+            ],
+            outcome="success",
+        )
+        monkeypatch.setattr(
+            "benchflow.cli.trace_import._load_file",
+            lambda _path, _format: [trace],
+        )
+
+        output = tmp_path / "tasks"
+        result = CliRunner().invoke(
+            app,
+            [
+                "tasks",
+                "generate",
+                "--from-file",
+                str(tmp_path / "trace.jsonl"),
+                "--output",
+                str(output),
+                "--task-format",
+                "legacy",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        task_dir = next(output.iterdir())
+        assert (task_dir / "task.toml").exists()
+        assert (task_dir / "instruction.md").exists()
+        assert (task_dir / "tests" / "test.sh").exists()
+        assert (task_dir / "solution" / "solve.sh").exists()
+        assert not (task_dir / "task.md").exists()
 
     def test_eval_create_normalizes_agent_alias(self, tmp_path: Path):
         """Guards ENG-86: eval create normalizes aliases before launch."""
@@ -122,7 +222,7 @@ class TestEvalCreateRouting:
                 sandbox_user="agent",
                 sandbox_setup_timeout=120,
                 skills_dir=None,
-                skill_mode="default",
+                skill_mode="no-skill",
                 skill_creator_dir=None,
                 self_gen_no_internet=False,
                 agent_env=None,
@@ -164,7 +264,7 @@ class TestEvalCreateRouting:
                 sandbox_user="none",
                 sandbox_setup_timeout=120,
                 skills_dir=None,
-                skill_mode="default",
+                skill_mode="no-skill",
                 skill_creator_dir=None,
                 self_gen_no_internet=False,
                 agent_env=None,
@@ -257,7 +357,7 @@ class TestEvalCreateRouting:
                 sandbox_user="agent",
                 sandbox_setup_timeout=120,
                 skills_dir=None,
-                skill_mode="default",
+                skill_mode="no-skill",
                 skill_creator_dir=None,
                 self_gen_no_internet=False,
                 agent_env=None,
@@ -316,7 +416,7 @@ class TestEvalCreateRouting:
                 sandbox_user="agent",
                 sandbox_setup_timeout=120,
                 skills_dir=None,
-                skill_mode="default",
+                skill_mode="no-skill",
                 skill_creator_dir=None,
                 self_gen_no_internet=False,
                 agent_env=None,
@@ -359,8 +459,11 @@ class TestEvalCreateRouting:
                     str(task),
                     "--agent",
                     "oracle",
+                    # docker (not modal) — Evaluation.run is patched, so the
+                    # sandbox is never used; modal would now fail the CLI's
+                    # upfront missing-extra preflight before run is reached.
                     "--sandbox",
-                    "modal",
+                    "docker",
                     "--jobs-dir",
                     str(tmp_path / "jobs"),
                 ],
@@ -511,7 +614,7 @@ class TestEvalCreateIncludeExclude:
                 sandbox_user="agent",
                 sandbox_setup_timeout=120,
                 skills_dir=None,
-                skill_mode="default",
+                skill_mode="no-skill",
                 skill_creator_dir=None,
                 self_gen_no_internet=False,
                 agent_env=None,
@@ -621,6 +724,56 @@ class TestVerifierNonzeroExitRewardAcceptance:
 
         outcome = classify_result(reward=0.0, error=None, verifier_error=None)
         assert outcome == "failed"
+
+    @pytest.mark.asyncio
+    async def test_native_verifier_dir_uploads_to_verifier_mount(self, tmp_path: Path):
+        """Guards task.md native verifier/ layout against /tests coupling."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from benchflow.task import RolloutPaths, Verifier
+        from benchflow.task.config import TaskConfig
+        from benchflow.task.paths import TaskPaths
+
+        task_dir = tmp_path / "task"
+        verifier_dir = task_dir / "verifier"
+        verifier_dir.mkdir(parents=True)
+        (verifier_dir / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+        task = SimpleNamespace(
+            config=TaskConfig.model_validate_toml('version = "1.0"\n[verifier]\n'),
+            paths=TaskPaths(task_dir),
+        )
+
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.is_mounted = True
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        async def exec_writes_reward(*_args: object, **_kwargs: object) -> MagicMock:
+            if sandbox.exec.await_count == 1:
+                return MagicMock(return_code=0, stdout="")
+            rollout_paths.reward_text_path.write_text("1.0")
+            return MagicMock(return_code=0, stdout="ok")
+
+        sandbox.exec = AsyncMock(side_effect=exec_writes_reward)
+
+        result = await Verifier(task, rollout_paths, sandbox).verify()
+
+        assert result.rewards == {"reward": 1.0}
+        sandbox.upload_dir.assert_awaited_once_with(
+            source_dir=verifier_dir,
+            target_dir="/verifier",
+            service="main",
+        )
+        # test.sh runs at the native /verifier mount. The first exec may be the
+        # /tests->/verifier compat symlink (#686), and the command is passed
+        # positionally (chmod/symlink) or as command= (the test run), so scan all.
+        verifier_cmds = [
+            (c.args[0] if c.args else c.kwargs.get("command", ""))
+            for c in sandbox.exec.await_args_list
+        ]
+        assert any("/verifier/test.sh" in c for c in verifier_cmds), verifier_cmds
 
     @pytest.mark.asyncio
     async def test_nonzero_exit_reward_zero_accepted_by_verifier(self, tmp_path: Path):
@@ -758,6 +911,20 @@ class TestEffectiveModel:
         assert effective_model("claude-agent-acp", "") == DEFAULT_MODEL
 
 
+class TestEvaluationConfigOracleWarnings:
+    """Oracle is a built-in execution mode, not an unknown raw-command agent."""
+
+    def test_oracle_config_does_not_warn_as_unknown_agent(self, caplog):
+        from benchflow.evaluation import EvaluationConfig
+
+        caplog.set_level("WARNING")
+
+        cfg = EvaluationConfig(agent="oracle")
+
+        assert cfg.agent == "oracle"
+        assert not any("Unknown agent 'oracle'" in r.message for r in caplog.records)
+
+
 class TestOracleYamlLoaders:
     """YAML configs for oracle must produce EvaluationConfig.model is None.
 
@@ -886,7 +1053,7 @@ class TestEvalCreateOracleCLI:
         assert "BENCHFLOW_PROVIDER_MODEL" not in captured["agent_env"]
 
 
-# ── ENG-149: idle timeout diagnostics in result.json ──
+# ENG-149: idle timeout diagnostics in result.json
 
 
 class TestIdleTimeoutResultDiagnostics:

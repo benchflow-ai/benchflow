@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.5.0.dev0"
+version = "0.6.0rc6"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,6 +12,9 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "rich>=13.0",
+    # Dataset registry bench_version checks (PEP 440 specifier sets).
+    "packaging>=24",
+    "litellm[proxy]==1.88.0rc1",
     "tomli-w>=1.0",
     "typer>=0.9",
 ]
@@ -44,7 +47,12 @@ dev = [
     "ty>=0.0.1a1",
 ]
 sandbox-daytona = [
-    "daytona>=0.153.0",
+    # >=0.183: list() returns an auto-paginating Iterator[Sandbox] (the older
+    # paged list(page=, limit=) -> .items API was removed).
+    # >=0.184: the top-level sync `Daytona` export is present (0.176-0.183 only
+    # shipped `AsyncDaytona`); `sandbox/daytona.py` uses the sync client, so this
+    # floor is required for it to import.
+    "daytona>=0.184.0",
     "tenacity>=8.0",
 ]
 sandbox-modal = [
@@ -60,6 +68,13 @@ judge = [
     "anthropic>=0.40",
     "openai>=1.40",
     "google-genai>=1.0",
+]
+# The deepagents (LangChain) harness used as an agent-under-test in the
+# integration suite's agent-as-judge robustness scenarios. Optional: only the
+# deepagents integration test needs it.
+deepagents = [
+    "deepagents>=0.6",
+    "langchain-openai>=0.2",
 ]
 
 [project.scripts]
@@ -105,6 +120,7 @@ target-version = "py312"
 extend-exclude = [
     ".claude/skills/skill-creator",
     "benchmarks/**/tasks/**/environment/claw-*",
+    "tests/fixtures/skillsbench_slice",
 ]
 
 [tool.ruff.lint]
@@ -142,11 +158,13 @@ python-version = "3.12"
 unresolved-import = "ignore"
 
 [tool.ty.src]
-include = ["src"]
+include = ["src", "tools"]
 # Modules that heavily use optional-dep types (daytona, modal, openai, boto3, …)
 # produce cascading type errors when those packages aren't installed.
 exclude = [
     "src/benchflow/sandbox/daytona.py",
+    "src/benchflow/sandbox/daytona_strategies.py",
+    "src/benchflow/sandbox/daytona_dind.py",
     "src/benchflow/sandbox/modal_impl.py",
     "src/benchflow/sandbox/docker.py",
     "src/benchflow/sandbox/_base.py",
@@ -154,6 +172,5 @@ exclude = [
     "src/benchflow/rewards/llm.py",
     "src/benchflow/rewards/file_readers.py",
     "src/benchflow/rewards/rubric_config.py",
-    "src/benchflow/providers/bedrock_runtime.py",
     "src/benchflow/experimental/mcp/reviewer_server.py",
 ]

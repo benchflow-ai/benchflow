@@ -21,12 +21,12 @@ async def run(config: RolloutConfig | None = None, **kwargs: Any) -> RolloutResu
     If *config* is None, a :class:`RolloutConfig` is built from *kwargs*
     via :meth:`RolloutConfig.from_legacy`.
     """
-    from benchflow.rollout import Rollout
+    from benchflow.rollout import SKILL_MODE_SELF_GEN, Rollout
     from benchflow.rollout import RolloutConfig as _RolloutConfig
 
     if config is None:
         config = _RolloutConfig.from_legacy(**kwargs)
-    if config.skill_mode == "self-gen":
+    if config.skill_mode == SKILL_MODE_SELF_GEN:
         from benchflow.self_gen import run_self_gen
 
         return await run_self_gen(config)

@@ -27,6 +27,32 @@ def normalize_sandbox_user(sandbox_user: str | None) -> str | None:
     return sandbox_user
 
 
+# Documented effort levels accepted across vendors (none → minimal → … → max).
+# Vendors that expose a reasoning/thinking effort map these onto their own
+# scales; values outside the set are rejected so a typo cannot silently launch
+# a run with no effort applied.
+_REASONING_EFFORT_VALUES = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
+
+
+def normalize_reasoning_effort(effort: object) -> str | None:
+    """Normalize model reasoning/thinking effort at config boundaries."""
+    if effort is None:
+        return None
+    if not isinstance(effort, str):
+        raise ValueError("reasoning_effort must be a string")
+    normalized = effort.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in _REASONING_EFFORT_VALUES:
+        raise ValueError(
+            "reasoning_effort must be one of: "
+            + ", ".join(sorted(_REASONING_EFFORT_VALUES))
+        )
+    return normalized
+
+
 DEFAULT_AGENT_IDLE_TIMEOUT_SEC = 600
 
 

@@ -1,0 +1,11 @@
+{
+  "task_id": "example-no-skill-leak",
+  "harness": "codex",
+  "model": "sample-model",
+  "skill_mode": "no_skills",
+  "trial_id": 1,
+  "sandbox": "daytona",
+  "source_ref": "eval-fixture",
+  "timeout_seconds": 900,
+  "task_skills": ["task-helper"]
+}

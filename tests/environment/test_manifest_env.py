@@ -332,7 +332,7 @@ async def test_reset_is_idempotent_across_multiple_calls():
     assert len(restarts) == 2
 
 
-# --- #387: snapshot/restore must surface sandbox-command failures ----------
+# #387: snapshot/restore must surface sandbox-command failures
 
 
 class _FailingSandbox:

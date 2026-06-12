@@ -181,10 +181,10 @@ async def test_session_load_attaches_configured_mcp_servers() -> None:
 
 def _fake_planes() -> MagicMock:
     planes = MagicMock()
-    planes.ensure_bedrock_proxy_runtime = AsyncMock(
-        side_effect=lambda **kwargs: (kwargs["agent_env"], None)
-    )
-    planes.ensure_usage_proxy_runtime = AsyncMock(
+    # release/v0.6.0 (#613) replaced the per-provider proxies with one LiteLLM
+    # runtime — connect() awaits ensure_litellm_runtime, returning
+    # (agent_env, usage_runtime).
+    planes.ensure_litellm_runtime = AsyncMock(
         side_effect=lambda **kwargs: (kwargs["agent_env"], None)
     )
     planes.connect_acp = AsyncMock(

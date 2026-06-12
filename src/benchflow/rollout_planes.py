@@ -27,8 +27,7 @@ from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.providers.runtime import (
-    ensure_bedrock_proxy_runtime,
-    ensure_usage_proxy_runtime,
+    ensure_litellm_runtime,
     extract_usage,
     stop_provider_runtime,
 )
@@ -146,8 +145,17 @@ class DefaultRolloutPlanes:
     async def lockdown_paths(self, env: Any, locked_paths: list[str]) -> None:
         await lockdown_paths(env, locked_paths)
 
-    async def install_agent(self, env: Any, agent: str, rollout_dir: Path) -> Any:
-        return await install_agent(env, agent, rollout_dir)
+    async def install_agent(
+        self,
+        env: Any,
+        agent: str,
+        rollout_dir: Path,
+        *,
+        sandbox_setup_timeout: int = 120,
+    ) -> Any:
+        return await install_agent(
+            env, agent, rollout_dir, sandbox_setup_timeout=sandbox_setup_timeout
+        )
 
     async def write_credential_files(self, *args: Any, **kwargs: Any) -> None:
         await write_credential_files(*args, **kwargs)
@@ -161,11 +169,8 @@ class DefaultRolloutPlanes:
     async def link_skill_paths(self, *args: Any, **kwargs: Any) -> None:
         await _link_skill_paths(*args, **kwargs)
 
-    async def ensure_bedrock_proxy_runtime(self, *args: Any, **kwargs: Any) -> Any:
-        return await ensure_bedrock_proxy_runtime(*args, **kwargs)
-
-    async def ensure_usage_proxy_runtime(self, *args: Any, **kwargs: Any) -> Any:
-        return await ensure_usage_proxy_runtime(*args, **kwargs)
+    async def ensure_litellm_runtime(self, *args: Any, **kwargs: Any) -> Any:
+        return await ensure_litellm_runtime(*args, **kwargs)
 
     async def stop_provider_runtime(self, runtime: Any) -> None:
         await stop_provider_runtime(runtime)

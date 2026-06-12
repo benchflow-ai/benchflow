@@ -17,15 +17,14 @@ from benchflow.rewards.llm import (
     JudgeEnvironmentError,
     _call_anthropic,
     _call_google,
+    _strip_provider_prefix,
     call_judge,
     parse_verdict,
 )
 from benchflow.rewards.protocol import RewardFunc
 from benchflow.rewards.rubric_config import ScoringConfig
 
-# ---------------------------------------------------------------------------
 # Verdict parsing
-# ---------------------------------------------------------------------------
 
 
 class TestParseVerdict:
@@ -49,9 +48,48 @@ class TestParseVerdict:
             parse_verdict("no json here at all")
 
 
-# ---------------------------------------------------------------------------
+# Provider-prefix stripping
+
+
+class TestStripProviderPrefix:
+    def test_anthropic_prefix_stripped(self) -> None:
+        assert (
+            _strip_provider_prefix("anthropic/claude-haiku-4-5") == "claude-haiku-4-5"
+        )
+
+    def test_openai_prefix_stripped(self) -> None:
+        assert _strip_provider_prefix("openai/gpt-4o") == "gpt-4o"
+
+    def test_google_prefix_stripped(self) -> None:
+        assert _strip_provider_prefix("google/gemini-2.0-flash") == "gemini-2.0-flash"
+
+    def test_gemini_prefix_stripped_to_bare_google_form(self) -> None:
+        """Dogfood bug (1): ``gemini/<model>`` validates clean (startswith
+        ``gemini`` => supported) but, before this fix, was passed verbatim to
+        google-genai and 404'd because the SDK does not accept the slashed
+        name. The prefix must resolve to the same bare form ``google/`` does."""
+        assert (
+            _strip_provider_prefix("gemini/gemini-3.1-flash-lite")
+            == "gemini-3.1-flash-lite"
+        )
+        # And it lands on the same bare model the google/ spelling produces.
+        assert _strip_provider_prefix(
+            "gemini/gemini-3.1-flash-lite"
+        ) == _strip_provider_prefix("google/gemini-3.1-flash-lite")
+
+    def test_unprefixed_gemini_model_unchanged(self) -> None:
+        """A bare ``gemini-...`` (no slash) is already the working form."""
+        assert (
+            _strip_provider_prefix("gemini-3.1-flash-lite") == "gemini-3.1-flash-lite"
+        )
+
+    def test_unknown_prefix_left_intact(self) -> None:
+        assert (
+            _strip_provider_prefix("deepseek/deepseek-chat") == "deepseek/deepseek-chat"
+        )
+
+
 # call_judge: provider routing and fallback
-# ---------------------------------------------------------------------------
 
 
 class TestCallJudgeProviderFallback:
@@ -86,8 +124,11 @@ class TestCallJudgeProviderFallback:
         openai_mock.assert_not_awaited()
         google_mock.assert_not_awaited()
 
-    async def test_import_error_falls_through_to_next_provider(self) -> None:
-        """A missing SDK (ImportError) still falls through to the next provider."""
+    async def test_unknown_prefix_import_error_falls_through_to_next_provider(
+        self,
+    ) -> None:
+        """For an *unknown-prefix* model, a missing SDK (ImportError) falls
+        through to the next provider — any provider might serve it."""
         anthropic_mock = AsyncMock(side_effect=ImportError("no anthropic SDK"))
         openai_mock = AsyncMock(return_value="ok from openai")
 
@@ -95,11 +136,59 @@ class TestCallJudgeProviderFallback:
             patch("benchflow.rewards.llm._call_anthropic", anthropic_mock),
             patch("benchflow.rewards.llm._call_openai", openai_mock),
         ):
-            result = await call_judge("claude-haiku-4-5", "prompt", retries=2)
+            result = await call_judge("deepseek-chat", "prompt", retries=2)
 
         assert result == "ok from openai"
         # ImportError is not retried.
         assert anthropic_mock.await_count == 1
+
+    async def test_matched_provider_missing_sdk_raises_clear_error(self) -> None:
+        """Dogfood bug (2): when the model name confidently selects a provider
+        whose judge SDK is not installed, ``call_judge`` raises a CLEAR,
+        provider-named error pointing at ``benchflow[judge]`` — it does NOT
+        fall through to another provider, which would surface a misleading
+        "Missing OPENAI_API_KEY" instead.
+        """
+        anthropic_mock = AsyncMock(side_effect=ImportError("no anthropic SDK"))
+        # OpenAI would have produced the misleading missing-key error.
+        openai_mock = AsyncMock(side_effect=RuntimeError("Missing OPENAI_API_KEY"))
+        google_mock = AsyncMock(return_value="should not be reached")
+
+        with (
+            patch("benchflow.rewards.llm._call_anthropic", anthropic_mock),
+            patch("benchflow.rewards.llm._call_openai", openai_mock),
+            patch("benchflow.rewards.llm._call_google", google_mock),
+            pytest.raises(JudgeEnvironmentError) as exc_info,
+        ):
+            await call_judge("claude-haiku-4-5", "prompt", retries=2)
+
+        msg = str(exc_info.value)
+        assert "anthropic" in msg  # names the actual provider
+        assert "benchflow[judge]" in msg  # actionable install fix
+        # ImportError is not retried, and no fallback provider is consulted.
+        assert anthropic_mock.await_count == 1
+        openai_mock.assert_not_awaited()
+        google_mock.assert_not_awaited()
+
+    async def test_gemini_provider_missing_sdk_raises_clear_error(self) -> None:
+        """Dogfood bugs (1)+(2): a ``gemini/`` model whose google SDK is
+        missing raises a clear google-named error rather than falling through
+        to anthropic/openai."""
+        google_mock = AsyncMock(side_effect=ImportError("no google-genai SDK"))
+        anthropic_mock = AsyncMock(return_value="should not be reached")
+        openai_mock = AsyncMock(return_value="should not be reached")
+
+        with (
+            patch("benchflow.rewards.llm._call_google", google_mock),
+            patch("benchflow.rewards.llm._call_anthropic", anthropic_mock),
+            patch("benchflow.rewards.llm._call_openai", openai_mock),
+            pytest.raises(JudgeEnvironmentError, match="google") as exc_info,
+        ):
+            await call_judge("gemini/gemini-3.1-flash-lite", "prompt", retries=2)
+
+        assert "benchflow[judge]" in str(exc_info.value)
+        anthropic_mock.assert_not_awaited()
+        openai_mock.assert_not_awaited()
 
     async def test_all_sdks_missing_raises_judge_environment_error(self) -> None:
         """When *every* provider SDK is missing, call_judge raises a
@@ -276,9 +365,7 @@ class TestCallJudgeEnvThreading:
         assert set(observed) == {"A", "B"}
 
 
-# ---------------------------------------------------------------------------
 # _call_anthropic: content block handling
-# ---------------------------------------------------------------------------
 
 
 class _FakeTextBlock:
@@ -331,9 +418,7 @@ class TestCallAnthropicContent:
         assert result == "hello"
 
 
-# ---------------------------------------------------------------------------
 # _call_google: text-part handling
-# ---------------------------------------------------------------------------
 
 
 class _FakeGoogleResponse:
@@ -374,9 +459,7 @@ class TestCallGoogleContent:
         assert result == "the verdict"
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: legacy mode
-# ---------------------------------------------------------------------------
 
 
 class TestLLMJudgeLegacy:
@@ -398,9 +481,7 @@ class TestLLMJudgeLegacy:
         assert score == 0.0
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: protocol conformance
-# ---------------------------------------------------------------------------
 
 
 class TestProtocol:
@@ -412,9 +493,7 @@ class TestProtocol:
         assert isinstance(func, RewardFunc)
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: rubric mode (mocked LLM)
-# ---------------------------------------------------------------------------
 
 _MOCK_PASS_RESPONSE = '```json\n{"verdict": "pass", "reasoning": "good"}\n```'
 _MOCK_FAIL_RESPONSE = '```json\n{"verdict": "fail", "reasoning": "bad"}\n```'
@@ -599,9 +678,7 @@ max = 100
         assert score == pytest.approx(0.7)
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: inline criteria
-# ---------------------------------------------------------------------------
 
 
 class TestLLMJudgeInlineCriteria:
@@ -642,9 +719,7 @@ class TestLLMJudgeInlineCriteria:
         assert func.events[0].source == "criterion:criterion-1"
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: auto-discovery
-# ---------------------------------------------------------------------------
 
 
 class TestLLMJudgeAutoDiscovery:
@@ -667,9 +742,7 @@ description = "Works?"
         assert score == pytest.approx(1.0)
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: error handling
-# ---------------------------------------------------------------------------
 
 
 class TestLLMJudgeErrors:
@@ -709,9 +782,7 @@ class TestLLMJudgeErrors:
             await func.score(tmp_path)
 
 
-# ---------------------------------------------------------------------------
 # LLMJudgeRewardFunc: evaluation details output
-# ---------------------------------------------------------------------------
 
 
 class TestEvaluationDetails:
@@ -738,9 +809,7 @@ class TestEvaluationDetails:
         assert len(details["results"]) == 2
 
 
-# ---------------------------------------------------------------------------
 # Dense reward events
-# ---------------------------------------------------------------------------
 
 
 class TestDenseRewardEvents:
@@ -793,9 +862,7 @@ class TestDenseRewardEvents:
         assert len(func.events) == 1  # Not accumulated
 
 
-# ---------------------------------------------------------------------------
 # Aggregation helpers (unit tests)
-# ---------------------------------------------------------------------------
 
 
 class TestAggregation:

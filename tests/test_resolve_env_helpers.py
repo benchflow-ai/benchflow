@@ -19,7 +19,7 @@ from benchflow.agents.env import (
     validate_aws_bedrock_env,
 )
 
-# ── auto_inherit_env ──
+# auto_inherit_env
 
 
 class TestAutoInheritEnv:
@@ -47,117 +47,115 @@ class TestAutoInheritEnv:
             ),
         ],
     )
-    def test_inherits_key(self, monkeypatch, env_name, env_value):
-        monkeypatch.setenv(env_name, env_value)
+    def test_inherits_key(self, env_name, env_value):
         env = {}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={env_name: env_value})
         assert env[env_name] == env_value
 
-    def test_does_not_overwrite_explicit(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-host")
+    def test_does_not_overwrite_explicit(self):
         env = {"ANTHROPIC_API_KEY": "sk-explicit"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={"ANTHROPIC_API_KEY": "sk-host"})
         assert env["ANTHROPIC_API_KEY"] == "sk-explicit"
 
     def test_gemini_mirrored_to_google(self):
         env = {"GEMINI_API_KEY": "gk-test"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["GOOGLE_API_KEY"] == "gk-test"
 
     def test_gemini_mirror_no_overwrite(self):
         env = {"GEMINI_API_KEY": "gk-test", "GOOGLE_API_KEY": "gk-explicit"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["GOOGLE_API_KEY"] == "gk-explicit"
 
-    def test_missing_host_key_not_added(self, monkeypatch):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    def test_missing_host_key_not_added(self):
         env = {}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert "ANTHROPIC_API_KEY" not in env
 
     def test_aws_default_region_mirrored_to_aws_region(self):
         env = {"AWS_DEFAULT_REGION": "us-east-1"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["AWS_REGION"] == "us-east-1"
 
     def test_aws_region_mirrored_to_aws_default_region(self):
         env = {"AWS_REGION": "us-east-1"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["AWS_DEFAULT_REGION"] == "us-east-1"
 
     def test_claude_oauth_alias_mirrored_to_claude_code_token(self):
         """Guards PR #587: pasted Claude Code OAuth vars use both common names."""
         env = {"CLAUDE_OAUTH_TOKEN": "oauth-token"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-token"
 
-    def test_inherits_openai_base_url(self, monkeypatch):
+    def test_inherits_openai_base_url(self):
         """Guards fix from PR #255: OPENAI_BASE_URL must be inherited.
 
         codex-acp and opencode map BENCHFLOW_PROVIDER_BASE_URL → OPENAI_BASE_URL,
         but OPENAI_BASE_URL was missing from auto_inherit_env's key set, so
         users setting OPENAI_BASE_URL on the host had it silently dropped.
         """
-        monkeypatch.setenv("OPENAI_BASE_URL", "https://custom.openai.example/v1")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(
+            env, source_env={"OPENAI_BASE_URL": "https://custom.openai.example/v1"}
+        )
         assert env["OPENAI_BASE_URL"] == "https://custom.openai.example/v1"
 
-    def test_inherits_benchflow_provider_api_key(self, monkeypatch):
+    def test_inherits_benchflow_provider_api_key(self):
         """Guards issue #817: host BENCHFLOW_PROVIDER_API_KEY must be inherited.
 
         Users on self-hosted / proxy endpoints export BENCHFLOW_PROVIDER_API_KEY
         directly; without it on the allowlist the host value is silently dropped.
         """
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "sk-provider-host")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(
+            env, source_env={"BENCHFLOW_PROVIDER_API_KEY": "sk-provider-host"}
+        )
         assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-provider-host"
 
-    def test_inherits_benchflow_provider_base_url(self, monkeypatch):
+    def test_inherits_benchflow_provider_base_url(self):
         """Guards issue #817: host BENCHFLOW_PROVIDER_BASE_URL must be inherited."""
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://my-vllm-host:8000/v1")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(
+            env,
+            source_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://my-vllm-host:8000/v1"},
+        )
         assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "http://my-vllm-host:8000/v1"
 
-    def test_empty_string_host_value_not_inherited(self, monkeypatch):
+    def test_empty_string_host_value_not_inherited(self):
         """An exported-but-empty host var ('export X=') must not be inherited.
 
         Copying '' would shadow a real value resolved downstream — an empty
         BENCHFLOW_PROVIDER_BASE_URL would block resolve_provider_env's
         setdefault from filling the provider's real endpoint.
         """
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={"BENCHFLOW_PROVIDER_BASE_URL": ""})
         assert "BENCHFLOW_PROVIDER_BASE_URL" not in env
 
-    def test_whitespace_only_host_value_not_inherited(self, monkeypatch):
+    def test_whitespace_only_host_value_not_inherited(self):
         """A whitespace-only host var ('export X=" "') is also effectively unset.
 
         '   ' is truthy, so a bare `if value:` guard would still copy it and
         shadow downstream resolution exactly like an empty string does.
         """
-        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "   ")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={"BENCHFLOW_PROVIDER_BASE_URL": "   "})
         assert "BENCHFLOW_PROVIDER_BASE_URL" not in env
 
-    def test_empty_openai_base_url_not_inherited(self, monkeypatch):
+    def test_empty_openai_base_url_not_inherited(self):
         """Empty-skip applies to every allowlisted key, not just the #817 keys.
 
         OPENAI_BASE_URL has always been on the allowlist, so this pins the
         empty-skip guard itself — independent of the #817 allowlist additions.
         """
-        monkeypatch.setenv("OPENAI_BASE_URL", "")
         env: dict[str, str] = {}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={"OPENAI_BASE_URL": ""})
         assert "OPENAI_BASE_URL" not in env
 
     def test_azure_endpoint_derives_resource(self):
         env = {"AZURE_API_ENDPOINT": "https://example-resource.openai.azure.com/"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["AZURE_RESOURCE"] == "example-resource"
 
     def test_azure_resource_takes_precedence_over_endpoint(self):
@@ -165,17 +163,17 @@ class TestAutoInheritEnv:
             "AZURE_RESOURCE": "explicit-resource",
             "AZURE_API_ENDPOINT": "https://endpoint-resource.openai.azure.com/",
         }
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["AZURE_RESOURCE"] == "explicit-resource"
 
     def test_azure_anthropic_endpoint_alias_derives_resource(self):
         """AZURE_API_ENDPOINT also derives resource from the Anthropic-surface host."""
         env = {"AZURE_API_ENDPOINT": "https://example-resource.services.ai.azure.com/"}
-        auto_inherit_env(env)
+        auto_inherit_env(env, source_env={})
         assert env["AZURE_RESOURCE"] == "example-resource"
 
 
-# ── inject_vertex_credentials ──
+# inject_vertex_credentials
 
 
 class TestInjectVertexCredentials:
@@ -214,7 +212,7 @@ class TestInjectVertexCredentials:
         assert env["GOOGLE_CLOUD_LOCATION"] == "global"
 
 
-# ── resolve_provider_env ──
+# resolve_provider_env
 
 
 class TestResolveProviderEnv:
@@ -242,7 +240,7 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_API_KEY"] == "zk-test"
 
     def test_openai_compatible_provider_maps_to_openhands_env(self):
-        """Guards PR #587: direct provider envs reach OpenHands and usage proxy."""
+        """Guards PR #587: direct provider envs reach OpenHands before LiteLLM rewrite."""
         env = {
             "KIMI_API_KEY": "sk-kimi",
             "KIMI_BASE_URL": "https://api.moonshot.ai/v1",
@@ -281,6 +279,32 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
         assert env["OPENAI_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+
+    def test_openai_provider_sets_pi_openai_completions_env(self):
+        """Guards PR #158 follow-up: pi-acp must not fallback to Anthropic for openai/...."""
+        env = {"OPENAI_API_KEY": "sk-test"}
+
+        resolve_provider_env(env, "openai/gpt-5.4-mini", "pi-acp")
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "openai"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "gpt-5.4-mini"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-completions"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.openai.com/v1"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-test"
+
+    def test_openai_provider_sets_codex_responses_env(self):
+        """Guards PR #158 follow-up: codex-acp must use Responses for openai/... models."""
+        env = {"OPENAI_API_KEY": "sk-test"}
+
+        resolve_provider_env(env, "openai/gpt-5.4-mini", "codex-acp")
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "openai"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "gpt-5.4-mini"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.openai.com/v1"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-test"
+        assert env["OPENAI_BASE_URL"] == "https://api.openai.com/v1"
+        assert env["OPENAI_API_KEY"] == "sk-test"
 
     def test_azure_foundry_openai_maps_to_codex_env(self):
         env = {
@@ -333,8 +357,8 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_NAME"] == "aws-bedrock"
         assert env["BENCHFLOW_PROVIDER_MODEL"] == "openai.gpt-oss-20b-1:0"
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
-        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "bedrock-proxy"
-        assert env["OPENAI_API_KEY"] == "bedrock-proxy"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "benchflow-litellm"
+        assert env["OPENAI_API_KEY"] == "benchflow-litellm"
 
     def test_aws_bedrock_sets_placeholder_provider_key_for_claude(self):
         env = {
@@ -347,7 +371,7 @@ class TestResolveProviderEnv:
             "claude-agent-acp",
         )
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
-        assert env["ANTHROPIC_AUTH_TOKEN"] == "bedrock-proxy"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "benchflow-litellm"
 
     def test_explicit_base_url_not_overwritten(self):
         """User-supplied ANTHROPIC_BASE_URL must win over derived value."""
@@ -366,7 +390,7 @@ class TestResolveProviderEnv:
         assert env["ANTHROPIC_MODEL"] == "claude-sonnet-4-6"
 
 
-# ── check_subscription_auth ──
+# check_subscription_auth
 
 
 class TestCheckSubscriptionAuth:
@@ -420,7 +444,7 @@ class TestCheckSubscriptionAuth:
         assert check_subscription_auth("codex-acp", "OPENAI_API_KEY") is True
 
 
-# ── validate_aws_bedrock_env ──
+# validate_aws_bedrock_env
 
 
 class TestValidateAwsBedrockEnv:
@@ -447,7 +471,7 @@ class TestValidateAwsBedrockEnv:
         assert env["AWS_DEFAULT_REGION"] == "us-east-1"
 
 
-# ── resolve_agent_env: no-model subscription auth ──
+# resolve_agent_env: no-model subscription auth
 
 
 class TestResolveAgentEnvNoModel:
@@ -795,6 +819,10 @@ class TestResolveAgentEnvHostProviderEndpoint:
         for k in (
             "BENCHFLOW_PROVIDER_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "LLM_API_KEY",
+            "LLM_BASE_URL",
             "OPENAI_API_KEY",
             "OPENAI_BASE_URL",
             "ZAI_API_KEY",
@@ -849,6 +877,26 @@ class TestResolveAgentEnvHostProviderEndpoint:
         assert result["BENCHFLOW_PROVIDER_API_KEY"] == "sk-kimi"
         assert result["LLM_BASE_URL"] == "https://api.moonshot.ai/v1"
         assert result["LLM_API_KEY"] == "sk-kimi"
+
+    def test_inherited_provider_proxy_does_not_shadow_bare_gemini_model(
+        self, monkeypatch
+    ):
+        """Guards this PR: a global LiteLLM proxy must not hijack Gemini direct runs."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+        monkeypatch.setenv(
+            "BENCHFLOW_PROVIDER_BASE_URL", "https://llm-proxy.example.test"
+        )
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "sk-proxy")
+        monkeypatch.setenv("LLM_BASE_URL", "https://llm-proxy.example.test")
+        monkeypatch.setenv("LLM_API_KEY", "sk-proxy")
+
+        result = resolve_agent_env("openhands", "gemini-3.5-flash", {})
+
+        assert "BENCHFLOW_PROVIDER_BASE_URL" not in result
+        assert "LLM_BASE_URL" not in result
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "test-gemini-key"
+        assert result["LLM_API_KEY"] == "test-gemini-key"
+        assert result["LLM_MODEL"] == "gemini/gemini-3.5-flash"
 
     def test_explicit_provider_base_url_can_override_registered_provider(self):
         """An explicit --agent-env generic endpoint remains a valid override."""
@@ -940,3 +988,102 @@ class TestResolveAgentEnvHostProviderEndpoint:
 
         assert result["BENCHFLOW_PROVIDER_API_KEY"] == "zk-test"
         assert result["OPENAI_API_KEY"] == "zk-test"
+
+
+class TestResolveAgentEnvCodexOpenAIPrefix:
+    """Registering the first-party ``openai`` provider must not regress Codex auth.
+
+    Codex-acp historically accepts four auth modes against api.openai.com:
+    OPENAI_API_KEY / CODEX_API_KEY (alias) / CODEX_ACCESS_TOKEN /
+    host ``~/.codex/auth.json`` subscription auth. The first three are also
+    valid for bare ``gpt-*`` model IDs. After registering ``openai`` as a
+    provider, ``find_provider("openai/...")`` returns a match and the native-
+    OpenAI gate must still treat the canonical endpoint as native — otherwise
+    the alias/access-token/subscription paths silently break for users who
+    switch from ``gpt-5.4-mini`` to ``openai/gpt-5.4-mini``.
+
+    Custom proxies (``vllm/``, ``us-openai/``, etc.) must keep requiring an
+    explicit OPENAI_API_KEY — subscription/access-token auth does not apply.
+    """
+
+    def _patch_expanduser(self, monkeypatch, tmp_path):
+        orig = Path.expanduser
+
+        def fake(self):
+            s = str(self)
+            if s.startswith("~"):
+                return tmp_path / s[2:]
+            return orig(self)
+
+        monkeypatch.setattr(Path, "expanduser", fake)
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for k in (
+            "OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_AUTH_JSON",
+            "ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+    def test_codex_api_key_alias_works_for_openai_prefix(self, monkeypatch, tmp_path):
+        self._patch_expanduser(monkeypatch, tmp_path)
+        result = resolve_agent_env(
+            "codex-acp",
+            "openai/gpt-5.4-mini",
+            {"CODEX_API_KEY": "codex-key"},
+        )
+        assert result["CODEX_API_KEY"] == "codex-key"
+        assert result["OPENAI_API_KEY"] == "codex-key"
+
+    def test_codex_access_token_works_for_openai_prefix(self, monkeypatch, tmp_path):
+        self._patch_expanduser(monkeypatch, tmp_path)
+        result = resolve_agent_env(
+            "codex-acp",
+            "openai/gpt-5.4-mini",
+            {"CODEX_ACCESS_TOKEN": "access-token"},
+        )
+        assert result["CODEX_ACCESS_TOKEN"] == "access-token"
+
+    def test_codex_auth_json_works_for_openai_prefix(self, monkeypatch, tmp_path):
+        self._patch_expanduser(monkeypatch, tmp_path)
+        result = resolve_agent_env(
+            "codex-acp",
+            "openai/gpt-5.4-mini",
+            {"CODEX_AUTH_JSON": '{"tokens": {}}'},
+        )
+        assert result["CODEX_AUTH_JSON"] == '{"tokens": {}}'
+
+    def test_codex_host_subscription_auth_works_for_openai_prefix(
+        self, monkeypatch, tmp_path
+    ):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text("{}")
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        result = resolve_agent_env("codex-acp", "openai/gpt-5.4-mini", {})
+
+        assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
+
+    def test_us_openai_prefix_still_requires_explicit_key(self, monkeypatch, tmp_path):
+        """Regional endpoint is not the canonical api.openai.com — host auth must not apply."""
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text("{}")
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            resolve_agent_env("codex-acp", "us-openai/gpt-5.4-mini", {})
+
+    def test_vllm_prefix_still_requires_explicit_key(self, monkeypatch, tmp_path):
+        """Custom OpenAI-compatible endpoints keep rejecting subscription auth."""
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text("{}")
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            resolve_agent_env("codex-acp", "vllm/Qwen-test", {})

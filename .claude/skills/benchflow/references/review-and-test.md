@@ -57,9 +57,9 @@ After fixes pass unit tests, run a real smoke test:
 source .env
 
 # Pick 5 diverse tasks (cross-env if available)
-benchflow run --tasks-dir benchflow-ai/skillsbench/task-1 --agent claude-agent-acp --sandbox daytona --skills-dir skills/ --model claude-haiku-4-5-20251001
-benchflow run --tasks-dir benchflow-ai/skillsbench/task-2 --agent pi-acp --sandbox daytona --skills-dir skills/ --model claude-haiku-4-5-20251001
-benchflow run --tasks-dir benchflow-ai/skillsbench/task-3 --agent openclaw --sandbox daytona --skills-dir skills/ --model claude-haiku-4-5-20251001
+bench eval create --tasks-dir benchflow-ai/skillsbench/task-1 --agent claude-agent-acp --sandbox daytona --skills-dir skills/ --model claude-haiku-4-5-20251001
+bench eval create --tasks-dir benchflow-ai/skillsbench/task-2 --agent pi-acp --sandbox daytona --skills-dir skills/ --model claude-haiku-4-5-20251001
+bench eval create --tasks-dir benchflow-ai/skillsbench/task-3 --agent openclaw --sandbox daytona --skills-dir skills/ --model claude-haiku-4-5-20251001
 ```
 
 Verify for each agent:

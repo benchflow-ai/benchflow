@@ -4,7 +4,7 @@ Regression for #368.2 (ENG-166): passing ``task_path='tasks/foo'`` used to
 leave ``self.task_path`` as ``str``, then downstream callers that access
 ``task_path.name`` raised ``AttributeError: 'str' object has no attribute
 'name'``. ``RolloutConfig.__post_init__`` now normalises ``task_path``,
-``context_root``, ``skills_dir``, and ``jobs_dir`` to ``Path``.
+    ``context_root``, ``skills_dir``, and ``jobs_dir`` to ``Path``.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from benchflow.rollout import RolloutConfig, Scene
+from benchflow.skill_policy import SKILL_MODE_WITH_SKILL
 
 
 def test_rollout_config_coerces_task_path_string() -> None:
@@ -32,6 +33,7 @@ def test_rollout_config_coerces_optional_paths() -> None:
         scenes=[Scene.single(agent="claude-agent-acp")],
         context_root="ctx/root",
         skills_dir="skills",
+        skill_mode=SKILL_MODE_WITH_SKILL,
         jobs_dir="custom-jobs",
     )
 
@@ -54,6 +56,7 @@ def test_rollout_config_keeps_path_when_already_path() -> None:
         scenes=[Scene.single(agent="claude-agent-acp")],
         context_root=context_root,
         skills_dir=skills_dir,
+        skill_mode=SKILL_MODE_WITH_SKILL,
         jobs_dir=jobs_dir,
     )
 
@@ -76,17 +79,18 @@ def test_rollout_config_context_root_none_stays_none() -> None:
     assert cfg.skills_dir is None
 
 
-def test_rollout_config_resolves_skills_dir_auto(tmp_path: Path) -> None:
-    """Guards PR #586 so SDK.run and bench run share eval's skills auto mode."""
+def test_rollout_config_keeps_custom_skills_dir_as_path(tmp_path: Path) -> None:
+    """Guards PR #586 so custom skills paths stay explicit."""
     task = tmp_path / "task"
-    skills = task / "environment" / "skills" / "alpha"
-    skills.mkdir(parents=True)
-    (skills / "SKILL.md").write_text("# Alpha\n")
+    task.mkdir()
+    skills = tmp_path / "skills"
+    skills.mkdir()
 
     cfg = RolloutConfig(
         task_path=task,
         scenes=[Scene.single(agent="claude-agent-acp")],
-        skills_dir="auto",
+        skills_dir=str(skills),
+        skill_mode=SKILL_MODE_WITH_SKILL,
     )
 
-    assert cfg.skills_dir == task / "environment" / "skills"
+    assert cfg.skills_dir == skills

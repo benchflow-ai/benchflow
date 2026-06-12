@@ -45,6 +45,11 @@ Common optional fields
 - ``models``           Optional list of model metadata dicts (id, name,
                        contextWindow, etc.) consumed by agent shims. ``id``
                        is required and must be unique within the provider.
+- ``model_prefixes``   Bare-model-name family tokens this provider owns
+                       (e.g. ``["deepseek"]``), used by
+                       ``find_provider_for_bare_model()`` to route
+                       prefix-stripped ids. Tokens must be lowercase and
+                       unique across providers (longest token wins).
 - ``credential_files`` List of dicts with ``"path"`` and ``"env_source"``
                        (and optional ``"post_env"``) — used by ADC providers
                        to write the credential blob into the container.
@@ -70,6 +75,14 @@ class ProviderConfig:
     auth_env: str | None = None  # env var holding the API key (None for ADC)
     url_params: dict[str, str] = field(default_factory=dict)  # {placeholder: ENV_VAR}
     models: list[dict] = field(default_factory=list)  # model metadata for agents
+    # Bare-model-name family tokens this provider owns (e.g. ["deepseek"],
+    # ["qwen"]). Used by find_provider_for_bare_model() to route a *prefix-less*
+    # model id (after strip_provider_prefix) — e.g. "deepseek-v4-flash" or
+    # "qwen3.6-max" — back to its provider when no "provider/" prefix is present.
+    # A token matches when the model id equals it or continues with a
+    # non-letter (version digit / "-" / "."), so "glm" matches "glm-4.6" and
+    # "glm5" but not "glmnext". Longest token wins across providers.
+    model_prefixes: list[str] = field(default_factory=list)
     # Multi-protocol support: {protocol: base_url} for providers with multiple APIs.
     # base_url + api_protocol is the primary; endpoints adds alternatives.
     endpoints: dict[str, str] = field(default_factory=dict)
@@ -155,6 +168,31 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_env="AZURE_API_KEY",
         url_params={"resource": "AZURE_RESOURCE"},
     ),
+    # ── OpenAI first-party API ──
+    "openai": ProviderConfig(
+        name="openai",
+        base_url="https://api.openai.com/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="OPENAI_API_KEY",
+        endpoints={
+            "openai-completions": "https://api.openai.com/v1",
+            "openai-responses": "https://api.openai.com/v1",
+        },
+    ),
+    # OpenAI US data-residency endpoint. Same key, regional URL.
+    "us-openai": ProviderConfig(
+        name="us-openai",
+        base_url="https://us.api.openai.com/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="OPENAI_API_KEY",
+        endpoints={
+            "openai-completions": "https://us.api.openai.com/v1",
+            "openai-responses": "https://us.api.openai.com/v1",
+        },
+    ),
+    # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(
         name="vllm",
@@ -173,7 +211,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
     ),
     "aws-bedrock": ProviderConfig(
         name="aws-bedrock",
-        base_url="",  # local Bedrock proxy supplies the runtime URL later
+        base_url="",  # LiteLLM supplies the runtime URL later
         api_protocol="openai-responses",
         auth_type="aws",
         endpoints={
@@ -220,6 +258,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="KIMI_API_KEY",
         url_params={"base_url": "KIMI_BASE_URL"},
+        model_prefixes=["kimi", "moonshot"],
     ),
     "minimax": ProviderConfig(
         name="minimax",
@@ -228,6 +267,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="MINIMAX_API_KEY",
         url_params={"base_url": "MINIMAX_BASE_URL"},
+        model_prefixes=["minimax"],
     ),
     "qwen-dashscope": ProviderConfig(
         name="qwen-dashscope",
@@ -236,6 +276,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="QWEN_API_KEY",
         url_params={"base_url": "QWEN_BASE_URL"},
+        model_prefixes=["qwen"],
     ),
     "glm": ProviderConfig(
         name="glm",
@@ -244,6 +285,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="GLM_API_KEY",
         url_params={"base_url": "GLM_BASE_URL"},
+        model_prefixes=["glm"],
         models=[
             {
                 "id": "glm-5.1",
@@ -263,6 +305,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="DEEPSEEK_API_KEY",
         url_params={"base_url": "DEEPSEEK_BASE_URL"},
+        model_prefixes=["deepseek"],
     ),
     "xiaomi": ProviderConfig(
         name="xiaomi",
@@ -271,6 +314,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="XIAOMI_API_KEY",
         url_params={"base_url": "XIAOMI_BASE_URL"},
+        model_prefixes=["xiaomi", "mimo"],
     ),
     "doubao-seed-2-lite": ProviderConfig(
         name="doubao-seed-2-lite",
@@ -279,6 +323,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="DOUBAO_SEED_2_LITE_API_KEY",
         url_params={"base_url": "DOUBAO_VOLCES_BASE_URL"},
+        model_prefixes=["doubao-seed-2-lite"],
     ),
     "doubao-seed-2-pro": ProviderConfig(
         name="doubao-seed-2-pro",
@@ -287,6 +332,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="DOUBAO_SEED_2_PRO_API_KEY",
         url_params={"base_url": "DOUBAO_VOLCES_BASE_URL"},
+        model_prefixes=["doubao-seed-2-pro"],
     ),
     "hunyuan": ProviderConfig(
         name="hunyuan",
@@ -295,6 +341,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="HUNYUAN_API_KEY",
         url_params={"base_url": "HUNYUAN_BASE_URL"},
+        model_prefixes=["hunyuan"],
     ),
 }
 
@@ -317,6 +364,67 @@ def find_provider(model: str) -> tuple[str, ProviderConfig] | None:
     candidates.sort(reverse=True, key=lambda x: x[0])
     _, name, cfg = candidates[0]
     return name, cfg
+
+
+def _bare_model_matches_token(model: str, token: str) -> bool:
+    """True if a bare model id belongs to the family named by *token*.
+
+    Matches when the (lower-cased) model id equals the token, or starts with
+    it and the next character is *not* a letter — i.e. a version digit, "-",
+    or "." continues the same family. This routes both hyphen-style ids
+    (``deepseek-v4-flash`` → ``deepseek``, ``glm-4.6`` → ``glm``) and
+    version-suffixed ids (``qwen3.6-max`` → ``qwen``), while refusing
+    different words (``glmnext`` does NOT match ``glm``).
+    """
+    if model == token:
+        return True
+    if model.startswith(token):
+        return not model[len(token)].isalpha()
+    return False
+
+
+def find_provider_for_bare_model(model: str) -> tuple[str, ProviderConfig] | None:
+    """Map a BARE (prefix-stripped) model id to a registered provider.
+
+    ``find_provider`` only matches an explicit ``provider/`` prefix, so once
+    ``strip_provider_prefix`` has run (ACP set_model, BENCHFLOW_PROVIDER_MODEL,
+    Harbor YAML) a bare id like ``deepseek-v4-flash`` no longer resolves and
+    callers wrongly default it to anthropic. This consults each provider's
+    declared ``model_prefixes`` (the registry owns that knowledge) so any
+    registered provider routes correctly without the prefix.
+
+    Resolution (deterministic):
+      1. Longest ``model_prefixes`` token match wins across all providers
+         (e.g. ``doubao-seed-2-pro`` beats a hypothetical ``doubao``).
+      2. If no token matches, an exact ``models[].id`` declared by exactly
+         one provider is used as a fallback (ambiguous ids are skipped).
+
+    Returns ``(provider_name, config)`` or ``None``. Inputs that still carry a
+    registered ``provider/`` prefix return ``None`` (use ``find_provider``).
+    """
+    m = model.lower().strip()
+    if not m or find_provider(m) is not None:
+        return None
+
+    # 1. Longest model-family-token match.
+    best: tuple[int, str, ProviderConfig] | None = None
+    for name, cfg in PROVIDERS.items():
+        for token in cfg.model_prefixes:
+            t = token.lower()
+            if _bare_model_matches_token(m, t) and (best is None or len(t) > best[0]):
+                best = (len(t), name, cfg)
+    if best is not None:
+        return best[1], best[2]
+
+    # 2. Exact declared-model-id fallback (only when unambiguous).
+    matches = [
+        (name, cfg)
+        for name, cfg in PROVIDERS.items()
+        if any(str(meta.get("id", "")).lower() == m for meta in cfg.models)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def resolve_base_url(

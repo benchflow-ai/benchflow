@@ -26,15 +26,14 @@ This module also provides the live wiring used by ``Rollout`` and
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.adapters.ors import ORSAdapter
 from benchflow.rewards.protocol import VerifyResult
-
-logger = logging.getLogger(__name__)
+from benchflow.trajectories._export_common import aggregate_rollout_jsonl
+from benchflow.trajectories.types import redact_trajectory_text
 
 # Canonical artifact locations (see issue #385).
 ROLLOUT_ARTIFACT_RELPATH = "trainer/verifiers.jsonl"
@@ -92,6 +91,16 @@ def trajectory_to_verifiers_record(
     }
 
 
+def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
+    clean = scrub_non_finite(record)
+    raw = json.dumps(clean, default=str, allow_nan=False)
+    return redact_trajectory_text(raw)
+
+
+def _redact_verifiers_record(record: dict[str, Any]) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(_record_to_redacted_json_line(record)))
+
+
 def export_trajectories_to_jsonl(
     records: list[dict[str, Any]], path: str | Path
 ) -> None:
@@ -107,8 +116,7 @@ def export_trajectories_to_jsonl(
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w") as f:
         for rec in records:
-            clean = scrub_non_finite(rec)
-            f.write(json.dumps(clean, default=str, allow_nan=False) + "\n")
+            f.write(_record_to_redacted_json_line(rec) + "\n")
 
 
 def _tool_call_to_content(event: dict[str, Any]) -> str:
@@ -261,8 +269,9 @@ def write_rollout_verifiers_jsonl(
         is_truncated=is_truncated,
     )
     out = Path(rollout_dir) / ROLLOUT_ARTIFACT_RELPATH
-    export_trajectories_to_jsonl([record], out)
-    return record
+    redacted_record = _redact_verifiers_record(record)
+    export_trajectories_to_jsonl([redacted_record], out)
+    return redacted_record
 
 
 def write_job_verifiers_jsonl(job_dir: str | Path) -> Path | None:
@@ -273,21 +282,8 @@ def write_job_verifiers_jsonl(job_dir: str | Path) -> Path | None:
     dataset. Returns the artifact path, or ``None`` when no rollouts have
     emitted records yet.
     """
-    job_path = Path(job_dir)
-    if not job_path.is_dir():
-        return None
-    rollout_files = sorted(job_path.glob(f"*/{ROLLOUT_ARTIFACT_RELPATH}"))
-    if not rollout_files:
-        return None
-    out = job_path / JOB_ARTIFACT_FILENAME
-    with out.open("w") as fout:
-        for src in rollout_files:
-            try:
-                text = src.read_text()
-            except OSError as e:
-                logger.warning("Skipping unreadable trainer artifact %s: %s", src, e)
-                continue
-            if not text.endswith("\n"):
-                text = text + "\n"
-            fout.write(text)
-    return out
+    return aggregate_rollout_jsonl(
+        job_dir,
+        rollout_relpath=ROLLOUT_ARTIFACT_RELPATH,
+        out_filename=JOB_ARTIFACT_FILENAME,
+    )

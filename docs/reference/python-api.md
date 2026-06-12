@@ -4,7 +4,7 @@ The Rollout/Scene API is the primary way to run agent benchmarks programmaticall
 ## Install
 
 ```bash
-uv tool install benchflow
+uv tool install --prerelease allow 'benchflow==0.6.0'
 ```
 
 ## Quick Start
@@ -276,7 +276,8 @@ The Auth column shows each agent's native/default credentials. Provider-prefixed
 models can use provider-specific credentials instead; for example, Azure
 Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT` with prefixes such
 as `azure-foundry-openai/gpt-5.5` or
-`azure-foundry-anthropic/claude-opus-4-5`.
+`azure-foundry-anthropic/claude-opus-4-5`. BenchFlow routes these providers
+through LiteLLM on both Docker and Daytona.
 
 Any agent can be prefixed with `acpx/` to run via [ACPX](https://acpx.sh/) (e.g. `acpx/gemini`, `acpx/claude`). ACPX is a headless ACP client with persistent sessions and crash recovery. The underlying agent's install, env, credentials, and skill paths are preserved.
 
@@ -303,7 +304,7 @@ config = EvaluationConfig(
 
 ---
 
-## v0.4 Types
+## Sandbox and Reward Types
 
 ### Sandbox Protocol
 

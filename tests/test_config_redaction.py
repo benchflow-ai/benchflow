@@ -20,6 +20,16 @@ from pathlib import Path
 import pytest
 
 from benchflow.rollout import _is_secret_env_key, _write_config
+from benchflow.skill_policy import SKILL_MODE_NO_SKILL, resolve_task_skill_policy
+
+
+def _no_skill_policy(task_path: Path):
+    return resolve_task_skill_policy(
+        task_path=task_path,
+        skill_mode=SKILL_MODE_NO_SKILL,
+        runtime_skills_dir=None,
+        declared_sandbox_skills_dir=None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -89,7 +99,7 @@ def test_write_config_drops_secret_env_vars(tmp_path: Path) -> None:
         agent="claude",
         model="claude-haiku-4-5",
         environment="docker",
-        skills_dir=None,
+        skill_policy=_no_skill_policy(tmp_path / "task"),
         sandbox_user=None,
         context_root=None,
         timeout=300,
@@ -118,9 +128,9 @@ def test_write_config_drops_secret_env_vars(tmp_path: Path) -> None:
     assert recorded["PATH"] == "/usr/bin:/bin"
 
 
-def test_write_config_drops_usage_proxy_secret_base_urls(tmp_path: Path) -> None:
-    """Provider proxy URLs with BenchFlow secret path segments must be redacted."""
-    secret_base = "https://usage.example.test/__benchflow/secret-prefix"
+def test_write_config_drops_litellm_secret_base_urls(tmp_path: Path) -> None:
+    """LiteLLM URLs with BenchFlow secret path segments must be redacted."""
+    secret_base = "https://litellm.example.test/__benchflow/secret-prefix"
     agent_env = {
         "BENCHFLOW_PROVIDER_BASE_URL": secret_base,
         "OPENAI_BASE_URL": secret_base,
@@ -133,7 +143,7 @@ def test_write_config_drops_usage_proxy_secret_base_urls(tmp_path: Path) -> None
         agent="codex-acp",
         model="gpt-4.1-mini",
         environment="daytona",
-        skills_dir=None,
+        skill_policy=_no_skill_policy(tmp_path / "task"),
         sandbox_user=None,
         context_root=None,
         timeout=300,

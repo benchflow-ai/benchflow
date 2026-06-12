@@ -151,6 +151,9 @@ def _write_config(
     agent: str = "agentA",
     model: str = "test-model",
     idle_timeout: object = 600,
+    skills_dir: object = "/tmp/skills",
+    include_task_skills: bool = False,
+    skill_mode: object = None,
 ) -> None:
     config = {
         "task_path": "/tmp/tasks/task-a",
@@ -159,8 +162,12 @@ def _write_config(
         "environment": "daytona",
         "concurrency": 64,
         "agent_idle_timeout_sec": idle_timeout,
+        "skills_dir": skills_dir,
+        "include_task_skills": include_task_skills,
         "source": source or _source(),
     }
+    if skill_mode is not None:
+        config["skill_mode"] = skill_mode
     (path / "config.json").write_text(json.dumps(config))
 
 
@@ -269,6 +276,239 @@ def test_check_results_flags_skill_invocation_mismatch(tmp_path: Path) -> None:
     assert any(
         "n_skill_invocations=0 but trajectory implies 1" in issue
         for issue in findings["issues"]
+    )
+
+
+def test_check_results_flags_openhands_legacy_skill_invocation_mismatch(
+    tmp_path: Path,
+) -> None:
+    """Guards issue #507: OpenHands invoke_skill artifacts are rescannable."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "openhands",
+                "model": "test-model",
+                "rewards": {"reward": 0.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": 0,
+                "agent_result": {"n_skill_invocations": 0},
+                "source": _source(),
+            }
+        )
+    )
+    traj_dir = run_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "acp_trajectory.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "tool_call",
+                "kind": "other",
+                "title": "Load PDF skill for processing",
+                "content": [
+                    {
+                        "content": {
+                            "type": "text",
+                            "text": "Tool: invoke_skill\nResult:\n[skill: pdf]",
+                        },
+                        "type": "content",
+                    }
+                ],
+            }
+        )
+        + "\n"
+    )
+    _write_config(run_dir)
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": "openhands",
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 0,
+                "failed": 1,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "0.0%",
+                "total_skill_invocations": 0,
+                "avg_skill_invocations": 0.0,
+                "source": _source(),
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "n_skill_invocations=0 but trajectory implies 1" in issue
+        for issue in findings["issues"]
+    )
+
+
+def _write_skill_summary(agent_dir: Path, *, agent: str, total: int) -> None:
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": agent,
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "100.0%",
+                "total_skill_invocations": total,
+                "avg_skill_invocations": float(total),
+                "source": _source(),
+            }
+        )
+    )
+
+
+def test_check_results_flags_no_skill_trial_with_skill_invocation(
+    tmp_path: Path,
+) -> None:
+    """Guards #507: a trial provisioning no skills must not invoke skills."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": 1,
+                "agent_result": {"n_skill_invocations": 1},
+                "source": _source(),
+            }
+        )
+    )
+    traj_dir = run_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "acp_trajectory.jsonl").write_text(
+        json.dumps({"type": "tool_call", "kind": "skill", "title": "pdf"}) + "\n"
+    )
+    # No-skill trial: no skills_dir, no task-bundled skills.
+    _write_config(run_dir, skills_dir=None, include_task_skills=False)
+    _write_skill_summary(agent_dir, agent="agentA", total=1)
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any("config provisions no skills" in issue for issue in findings["issues"])
+
+
+def test_check_results_allows_skill_invocation_when_skills_provisioned(
+    tmp_path: Path,
+) -> None:
+    """Guards #507: the no-skill invariant must not flag with-skill trials."""
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": 1,
+                "agent_result": {"n_skill_invocations": 1},
+                "source": _source(),
+            }
+        )
+    )
+    traj_dir = run_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "acp_trajectory.jsonl").write_text(
+        json.dumps({"type": "tool_call", "kind": "skill", "title": "pdf"}) + "\n"
+    )
+    # With-skill trial: task-bundled skills were mounted.
+    _write_config(run_dir, skills_dir=None, include_task_skills=True)
+    _write_skill_summary(agent_dir, agent="agentA", total=1)
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is True
+    assert not any(
+        "config provisions no skills" in issue for issue in findings["issues"]
+    )
+
+
+def _write_skill_trial(
+    tmp_path: Path, *, skill_mode: str, n_skill_invocations: int = 1
+) -> Path:
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-05-24__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "model": "test-model",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "n_skill_invocations": n_skill_invocations,
+                "agent_result": {"n_skill_invocations": n_skill_invocations},
+                "source": _source(),
+            }
+        )
+    )
+    traj_dir = run_dir / "trajectory"
+    traj_dir.mkdir()
+    traj = "".join(
+        json.dumps({"type": "tool_call", "kind": "skill", "title": "pdf"}) + "\n"
+        for _ in range(n_skill_invocations)
+    )
+    (traj_dir / "acp_trajectory.jsonl").write_text(traj)
+    # Canonical skill_mode field with no legacy skills_dir/include_task_skills.
+    _write_config(
+        run_dir, skills_dir=None, include_task_skills=False, skill_mode=skill_mode
+    )
+    _write_skill_summary(agent_dir, agent="agentA", total=n_skill_invocations)
+    return agent_dir
+
+
+def test_check_results_skill_mode_no_skill_flags_invocation(tmp_path: Path) -> None:
+    """Guards #507: skill_mode=no-skill is a no-skill trial; invocations flag."""
+    agent_dir = _write_skill_trial(tmp_path, skill_mode="no-skill")
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any("config provisions no skills" in issue for issue in findings["issues"])
+
+
+def test_check_results_skill_mode_with_skill_allows_invocation(
+    tmp_path: Path,
+) -> None:
+    """Guards #507: skill_mode=with-skill provisions skills; no false flag."""
+    agent_dir = _write_skill_trial(tmp_path, skill_mode="with-skill")
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is True
+    assert not any(
+        "config provisions no skills" in issue for issue in findings["issues"]
     )
 
 
@@ -2102,4 +2342,258 @@ def test_check_results_flags_verifier_timeout(tmp_path: Path) -> None:
         and "verifier" in issue.lower()
         and "timeout" in issue.lower()
         for issue in findings["issues"]
+    )
+
+
+# ── Dataset identity stamp validation (dataset-versioning plan) ──────────────
+# Guards the stamp contract introduced by #690 (dataset_name/dataset_version/
+# task_digest in result.json/config.json) and the dev-run digest follow-up.
+
+from tests.integration.check_results import (  # noqa: E402
+    _dataset_stamp_issues,
+    _task_digest_truth_issues,
+)
+
+_DIGEST = "sha256:" + "f" * 64
+
+
+def test_dataset_stamp_issues_accepts_valid_and_absent() -> None:
+    assert _dataset_stamp_issues({}, "x") == []
+    assert _dataset_stamp_issues({"task_digest": _DIGEST}, "x") == []  # dev run
+    assert (
+        _dataset_stamp_issues(
+            {
+                "dataset_name": "skillsbench",
+                "dataset_version": "1.1",
+                "task_digest": _DIGEST,
+            },
+            "x",
+        )
+        == []
+    )
+
+
+def test_dataset_stamp_issues_flags_malformed() -> None:
+    split = _dataset_stamp_issues({"dataset_name": "skillsbench"}, "x")
+    assert any("travel together" in i for i in split)
+    assert any("missing task_digest" in i for i in split)
+
+    bad_digest = _dataset_stamp_issues(
+        {
+            "dataset_name": "skillsbench",
+            "dataset_version": "1.1",
+            "task_digest": "deadbeef",
+        },
+        "x",
+    )
+    assert any("sha256" in i for i in bad_digest)
+
+    empty_name = _dataset_stamp_issues(
+        {"dataset_name": "", "dataset_version": "1.1", "task_digest": _DIGEST}, "x"
+    )
+    assert any("non-empty string" in i for i in empty_name)
+
+
+def test_task_digest_truth_check_recomputes_from_local_path(tmp_path: Path) -> None:
+    from benchflow._utils.task_authoring import task_digest
+
+    task_dir = tmp_path / "task-a"
+    task_dir.mkdir()
+    (task_dir / "task.toml").write_text('version = "1.1"\n')
+    (task_dir / "instruction.md").write_text("Solve it.\n")
+    result = {
+        "task_digest": task_digest(task_dir),
+        "source": {"local_path": str(task_dir)},
+    }
+    assert _task_digest_truth_issues(result, "x") == []
+
+    (task_dir / "instruction.md").write_text("tampered\n")
+    issues = _task_digest_truth_issues(result, "x")
+    assert issues and "does not match local_path content" in issues[0]
+
+
+def test_check_results_flags_config_result_dataset_mismatch(tmp_path: Path) -> None:
+    """config.json and result.json must carry the same dataset stamp."""
+    from benchflow._utils.task_authoring import task_digest
+
+    real_digest = task_digest(Path(_source()["local_path"]))
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-06-12__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "dataset_name": "skillsbench",
+                "dataset_version": "1.1",
+                "task_digest": real_digest,
+                "source": _source(),
+            }
+        )
+    )
+    config = {
+        "task_path": "/tmp/tasks/task-a",
+        "agent": "agentA",
+        "model": "test-model",
+        "environment": "daytona",
+        "concurrency": 64,
+        "agent_idle_timeout_sec": 600,
+        "skills_dir": "/tmp/skills",
+        "include_task_skills": False,
+        "source": _source(),
+        "dataset_name": "skillsbench",
+        "dataset_version": "1.0",
+        "task_digest": real_digest,
+    }
+    (run_dir / "config.json").write_text(json.dumps(config))
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "100.0%",
+                "source": _source(),
+                "dataset_name": "skillsbench",
+                "dataset_version": "1.1",
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "config.json dataset stamp does not match result.json" in issue
+        for issue in findings["issues"]
+    )
+
+
+def test_check_results_flags_summary_dataset_disagreement(tmp_path: Path) -> None:
+    """summary.json dataset identity must agree with every result.json."""
+    from benchflow._utils.task_authoring import task_digest
+
+    real_digest = task_digest(Path(_source()["local_path"]))
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-06-12__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    stamp = {
+        "dataset_name": "skillsbench",
+        "dataset_version": "1.1",
+        "task_digest": real_digest,
+    }
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "source": _source(),
+                **stamp,
+            }
+        )
+    )
+    config = {
+        "task_path": "/tmp/tasks/task-a",
+        "agent": "agentA",
+        "model": "test-model",
+        "environment": "daytona",
+        "concurrency": 64,
+        "agent_idle_timeout_sec": 600,
+        "skills_dir": "/tmp/skills",
+        "include_task_skills": False,
+        "source": _source(),
+        **stamp,
+    }
+    (run_dir / "config.json").write_text(json.dumps(config))
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "100.0%",
+                "source": _source(),
+                "dataset_name": "skillsbench",
+                "dataset_version": "1.0",
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert findings["ok"] is False
+    assert any(
+        "dataset_version does not agree" in issue for issue in findings["issues"]
+    )
+
+
+def test_check_results_accepts_consistent_dataset_stamp(tmp_path: Path) -> None:
+    """A consistently stamped dataset run adds no dataset issues."""
+    from benchflow._utils.task_authoring import task_digest
+
+    agent_dir = tmp_path / "agentA"
+    run_dir = agent_dir / "2026-06-12__00-00-00" / "task-a"
+    run_dir.mkdir(parents=True)
+    stamp = {
+        "dataset_name": "skillsbench",
+        "dataset_version": "1.1",
+        "task_digest": task_digest(Path(_source()["local_path"])),
+    }
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "task-a",
+                "agent": "agentA",
+                "rewards": {"reward": 1.0},
+                "error": None,
+                "verifier_error": None,
+                "source": _source(),
+                **stamp,
+            }
+        )
+    )
+    config = {
+        "task_path": "/tmp/tasks/task-a",
+        "agent": "agentA",
+        "model": "test-model",
+        "environment": "daytona",
+        "concurrency": 64,
+        "agent_idle_timeout_sec": 600,
+        "skills_dir": "/tmp/skills",
+        "include_task_skills": False,
+        "source": _source(),
+        **stamp,
+    }
+    (run_dir / "config.json").write_text(json.dumps(config))
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
+                "verifier_errored": 0,
+                "score": "100.0%",
+                "source": _source(),
+                "dataset_name": "skillsbench",
+                "dataset_version": "1.1",
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    assert not any(
+        "dataset" in issue or "task_digest" in issue for issue in findings["issues"]
     )

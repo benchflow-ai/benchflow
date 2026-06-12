@@ -318,3 +318,180 @@ class TestDockerExecEnvSecrecy:
         assert "dashed-key" not in body
         # The user command is still wrapped and reachable.
         assert wrapped.endswith("run-it")
+
+
+class TestDockerComposeUpNetworkRaceRetry:
+    """`compose up` retries the daemon-side network create/attach race.
+
+    On Docker 29.x the daemon can report "Network ... Created" yet fail the
+    container create/start that immediately follows with "network
+    <project>_default not found". Only that signature retries — every other
+    compose up failure must surface unchanged.
+    """
+
+    @pytest.mark.asyncio
+    async def test_compose_up_retries_network_create_attach_race(
+        self, monkeypatch, caplog
+    ):
+        """A 'network ... not found' failure right after compose up is retried."""
+        import logging
+
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.environment_name = "network-race"
+        sandbox.logger = docker_module.logger
+
+        calls: list[list[str]] = []
+        sleeps: list[float] = []
+
+        async def fake_run(command):
+            calls.append(command)
+            if len(calls) == 1:
+                raise RuntimeError(
+                    "Docker compose command failed. Stdout: "
+                    "Network network-race_default Created ... "
+                    "Error response from daemon: failed to set up container "
+                    "networking: network network-race_default not found"
+                )
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(sandbox, "_run_docker_compose_command", fake_run)
+        monkeypatch.setattr(docker_module.asyncio, "sleep", fake_sleep)
+
+        with caplog.at_level(logging.WARNING, logger="benchflow"):
+            await sandbox._run_docker_compose_up()
+
+        assert calls == [["up", "--detach", "--wait"]] * 2
+        assert sleeps == [2.0]
+        retry_logs = [r for r in caplog.records if "compose up" in r.message]
+        assert len(retry_logs) == 1
+        assert "network-race" in retry_logs[0].message
+        assert "network create/attach race" in retry_logs[0].message
+
+    @pytest.mark.asyncio
+    async def test_compose_up_retries_unwrapped_network_not_found(self, monkeypatch):
+        """Older daemons emit the race without the container-networking prefix."""
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.environment_name = "network-race-old"
+        sandbox.logger = docker_module.logger
+
+        calls: list[list[str]] = []
+        sleeps: list[float] = []
+
+        async def fake_run(command):
+            calls.append(command)
+            if len(calls) == 1:
+                raise RuntimeError(
+                    "Docker compose command failed. Stdout: "
+                    "Error response from daemon: network "
+                    "network-race-old_default not found"
+                )
+            return ExecResult(stdout="", stderr="", return_code=0)
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(sandbox, "_run_docker_compose_command", fake_run)
+        monkeypatch.setattr(docker_module.asyncio, "sleep", fake_sleep)
+
+        await sandbox._run_docker_compose_up()
+
+        assert calls == [["up", "--detach", "--wait"]] * 2
+        assert sleeps == [2.0]
+
+    @pytest.mark.asyncio
+    async def test_compose_up_does_not_retry_non_race_failures(self, monkeypatch):
+        """Only the network-race signature retries — not every compose up error."""
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.environment_name = "real-up-bug"
+        sandbox.logger = docker_module.logger
+
+        calls: list[list[str]] = []
+        sleeps: list[float] = []
+
+        async def fake_run(command):
+            calls.append(command)
+            raise RuntimeError(
+                "Docker compose command failed. Stdout: "
+                "container benchflow-main-1 exited (1) before becoming healthy"
+            )
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(sandbox, "_run_docker_compose_command", fake_run)
+        monkeypatch.setattr(docker_module.asyncio, "sleep", fake_sleep)
+
+        with pytest.raises(RuntimeError, match="before becoming healthy"):
+            await sandbox._run_docker_compose_up()
+
+        assert calls == [["up", "--detach", "--wait"]]
+        assert sleeps == []
+
+    @pytest.mark.asyncio
+    async def test_compose_up_retry_is_bounded(self, monkeypatch):
+        """A persistent race signature re-raises after the configured backoffs."""
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.environment_name = "network-race-persistent"
+        sandbox.logger = docker_module.logger
+
+        calls: list[list[str]] = []
+        sleeps: list[float] = []
+
+        async def fake_run(command):
+            calls.append(command)
+            raise RuntimeError(
+                "Docker compose command failed. Stdout: "
+                "Error response from daemon: failed to set up container "
+                "networking: network network-race-persistent_default not found"
+            )
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(sandbox, "_run_docker_compose_command", fake_run)
+        monkeypatch.setattr(docker_module.asyncio, "sleep", fake_sleep)
+
+        with pytest.raises(RuntimeError, match="not found"):
+            await sandbox._run_docker_compose_up()
+
+        assert calls == [["up", "--detach", "--wait"]] * 3
+        assert sleeps == [2.0, 5.0]
+
+    def test_network_race_signature_matching(self):
+        """The race matcher stays anchored to the daemon network-not-found error."""
+        from benchflow.sandbox.docker import _is_compose_up_network_race_error
+
+        assert _is_compose_up_network_race_error(
+            "Error response from daemon: failed to set up container networking: "
+            "network proj_default not found"
+        )
+        assert _is_compose_up_network_race_error(
+            "Error response from daemon: network proj_default not found"
+        )
+        # External-network misconfiguration is a real error, not the race.
+        assert not _is_compose_up_network_race_error(
+            'network "shared" declared as external, but could not be found'
+        )
+        # A bare mention of a missing network without the daemon prefix is
+        # ambiguous (e.g. user output) and must not trigger retries.
+        assert not _is_compose_up_network_race_error("network proj_default not found")
+        assert not _is_compose_up_network_race_error(
+            "Error response from daemon: No such image: missing:latest"
+        )

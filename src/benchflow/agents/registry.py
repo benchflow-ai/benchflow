@@ -106,6 +106,9 @@ def _apt_install(*packages: str) -> str:
 _BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
 _BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
 _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
+_OPENHANDS_CLI_GIT_REV = "3ca17446c5d9c1e35e054803478a3501ec251ecf"
+_OPENHANDS_SDK_VERSION = "1.22.1"
+_OPENHANDS_TOOLS_VERSION = "1.22.1"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -272,9 +275,9 @@ class AgentConfig:
     # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
     # derivable from skill_paths or credential_files, e.g. ".openclaw").
     acp_model_format: str = "bare"
-    # How the agent expects the modelId in session/set_model:
+    # How the agent expects ACP model IDs in session/set_model or config options:
     # "bare"           — just the model name (e.g. "claude-sonnet-4-6").
-    #                    Default; works for claude-agent-acp, codex-acp.
+    #                    Default; works for codex-acp and Claude config options.
     # "provider/model" — models.dev convention (e.g. "google/gemini-3.1-pro-preview").
     #                    Required by opencode, which uses Provider.parseModel()
     #                    to split on "/" and treats the first segment as provider ID.
@@ -287,6 +290,11 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
+    acp_model_config_id: str = ""
+    # ACP session config option id used for model selection when an agent
+    # exposes model as a session option instead of implementing set_model.
+    acp_effort_config_id: str = ""
+    # ACP session config option id used for reasoning/thinking effort.
     disallow_web_tools_setup_cmd: str = ""
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
@@ -305,8 +313,13 @@ AGENTS: dict[str, AgentConfig] = {
         name="claude-agent-acp",
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
+        # Pinned to 0.40.0: the config-option wiring below (set_config_option +
+        # the "model"/"effort" ids) targets this version's ACP protocol (sdk
+        # 0.24, which dropped session/set_model). The option ids are coupled to
+        # this pin — re-verify them when bumping. runtime.py uses
+        # capability-first dispatch for the rest of the family.
         install_cmd=_js_agent_install(
-            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp"
+            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
         ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
@@ -333,6 +346,9 @@ AGENTS: dict[str, AgentConfig] = {
             'if t not in d["permissions"]["deny"]]',
         ),
         disallow_web_tools_owned_paths=["$HOME/.claude"],
+        supports_acp_set_model=False,
+        acp_model_config_id="model",
+        acp_effort_config_id="effort",
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
@@ -382,7 +398,17 @@ AGENTS: dict[str, AgentConfig] = {
         name="codex-acp",
         description="OpenAI Codex agent via ACP",
         skill_paths=["$HOME/.agents/skills"],
-        install_cmd=_js_agent_install("codex-acp", "@agentclientprotocol/codex-acp"),
+        # Pinned for reproducibility: an unpinned @agentclientprotocol install
+        # floats to latest and can silently break agent activation when the ACP
+        # protocol changes (claude-agent-acp above hit exactly this — sdk 0.24
+        # dropped session/set_model). 0.0.45 ships sdk 0.22.x, which still
+        # implements session/set_model. If a future bump advertises a model
+        # config option instead, runtime.py's capability-first dispatch routes
+        # the model through that option — but re-verify model selection when
+        # bumping this pin.
+        install_cmd=_js_agent_install(
+            "codex-acp", "@agentclientprotocol/codex-acp@0.0.45"
+        ),
         launch_cmd=_js_agent_launch(
             "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
         ),
@@ -543,9 +569,17 @@ AGENTS: dict[str, AgentConfig] = {
             "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 && "
             '    export PATH="$HOME/.local/bin:$PATH"; '
             "  fi && "
+            # Pin the OpenHands CLI source so the agent workflow cannot drift
+            # with GitHub main; only override the buggy sdk/tools 1.21.0 pins.
+            # SDK 1.22.x restores default-to-UNKNOWN for the synthetic
+            # `security_risk` tool field without the API drift seen in 1.26.x.
+            f"printf 'openhands-sdk=={_OPENHANDS_SDK_VERSION}\\n"
+            f"openhands-tools=={_OPENHANDS_TOOLS_VERSION}\\n' "
+            "> /tmp/oh-sdk-overrides.txt && "
             "uv tool install --force --refresh "
-            "--with 'boto3>=1.40' "
-            "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
+            "--overrides /tmp/oh-sdk-overrides.txt "
+            "--from "
+            f"'git+https://github.com/OpenHands/OpenHands-CLI.git@{_OPENHANDS_CLI_GIT_REV}' "
             "openhands --python 3.12 && "
             "  uv tool list | grep -q '^openhands\\b' ) && "
             # Let sandbox user traverse to uv-managed Python interpreter path.
@@ -560,8 +594,8 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd=(
             'export PATH="$HOME/.local/bin:$PATH" && '
             "mkdir -p ~/.openhands && "
-            # Write llm settings including base_url so the BenchFlow usage
-            # proxy (LLM_BASE_URL) is honored. OpenHands' --override-with-envs
+            # Write llm settings including base_url so the BenchFlow LiteLLM
+            # gateway (LLM_BASE_URL) is honored. OpenHands' --override-with-envs
             # does not reliably apply base_url; it is omitted when unset.
             '{ printf \'{"llm":{"model":"%s","api_key":"%s"\' '
             '"$LLM_MODEL" "$LLM_API_KEY"; '
@@ -771,6 +805,8 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         acp_model_format=config.acp_model_format,
         subscription_auth=config.subscription_auth,
         supports_acp_set_model=config.supports_acp_set_model,
+        acp_model_config_id=config.acp_model_config_id,
+        acp_effort_config_id=config.acp_effort_config_id,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
@@ -875,6 +911,8 @@ def register_agent(
     subscription_auth: SubscriptionAuth | None = None,
     acp_model_format: str = "bare",
     supports_acp_set_model: bool = True,
+    acp_model_config_id: str = "",
+    acp_effort_config_id: str = "",
     disallow_web_tools_setup_cmd: str = "",
     disallow_web_tools_owned_paths: list[str] | None = None,
     disallow_web_tools_launch_suffix: str = "",
@@ -911,6 +949,8 @@ def register_agent(
         subscription_auth=subscription_auth,
         acp_model_format=acp_model_format,
         supports_acp_set_model=supports_acp_set_model,
+        acp_model_config_id=acp_model_config_id,
+        acp_effort_config_id=acp_effort_config_id,
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,

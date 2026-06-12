@@ -23,10 +23,7 @@ def _wire_fake_planes(trial: Rollout) -> MagicMock:
         f"{agent} --no-web" if disallow_web_tools else agent
     )
     planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
-    planes.ensure_bedrock_proxy_runtime = AsyncMock(
-        side_effect=lambda **kwargs: (kwargs["agent_env"], None)
-    )
-    planes.ensure_usage_proxy_runtime = AsyncMock(
+    planes.ensure_litellm_runtime = AsyncMock(
         side_effect=lambda **kwargs: (kwargs["agent_env"], None)
     )
     planes.install_agent = AsyncMock(return_value=MagicMock())
@@ -287,7 +284,7 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
     )
 
 
-# ── Shell-command verification: setup_cmd produces valid agent config ──────
+# Shell-command verification: setup_cmd produces valid agent config
 
 
 def test_task_allows_internet_when_explicitly_true():

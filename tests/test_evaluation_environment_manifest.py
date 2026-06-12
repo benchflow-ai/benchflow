@@ -6,8 +6,7 @@ rollouts:
 * ``EvaluationConfig`` had no ``environment_manifest`` field;
 * ``Evaluation._run_single_task`` built ``RolloutConfig.from_legacy`` without
   one, so the manifest seam disappeared at the Job layer;
-* ``bench eval create`` exposed no ``--environment-manifest`` option even
-  though ``bench run`` did.
+* ``bench eval create`` exposed no ``--environment-manifest`` option.
 
 These tests assert the full path: dataclass → CLI flag → YAML loader →
 ``RolloutConfig.environment_manifest``.
@@ -40,9 +39,7 @@ def _write_task(task_dir: Path) -> None:
     (task_dir / "task.toml").write_text('version = "1.0"\n')
 
 
-# ---------------------------------------------------------------------------
 # EvaluationConfig dataclass
-# ---------------------------------------------------------------------------
 
 
 def test_evaluation_config_has_environment_manifest_field() -> None:
@@ -57,9 +54,7 @@ def test_evaluation_config_environment_manifest_defaults_to_none() -> None:
     assert cfg.environment_manifest is None
 
 
-# ---------------------------------------------------------------------------
 # Evaluation._run_single_task threads the manifest into RolloutConfig
-# ---------------------------------------------------------------------------
 
 
 async def test_run_single_task_passes_manifest_to_rollout_config(
@@ -110,9 +105,7 @@ async def test_run_single_task_passes_manifest_to_rollout_config(
     assert captured["manifest"] is _MANIFEST
 
 
-# ---------------------------------------------------------------------------
 # bench eval create --environment-manifest
-# ---------------------------------------------------------------------------
 
 
 def test_cli_eval_create_flag_loads_manifest_into_evaluation_config(
@@ -181,9 +174,7 @@ def test_cli_eval_create_missing_manifest_path_exits_nonzero(
     assert result.exit_code != 0
 
 
-# ---------------------------------------------------------------------------
 # YAML config — environment_manifest support
-# ---------------------------------------------------------------------------
 
 
 def test_yaml_loader_parses_environment_manifest(tmp_path: Path) -> None:

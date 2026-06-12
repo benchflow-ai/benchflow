@@ -19,14 +19,10 @@ Does not own:
 import logging
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS, AgentConfig
 from benchflow.models import AgentInstallError
 from benchflow.skill_policy import validate_container_mount_path
-
-if TYPE_CHECKING:
-    from benchflow.task import Task
 
 logger = logging.getLogger(__name__)
 
@@ -164,14 +160,42 @@ async def _link_skill_paths(
     return len(parts)
 
 
-async def install_agent(env, agent: str, rollout_dir: Path) -> AgentConfig | None:
+def effective_install_timeout(
+    agent: str, sandbox_setup_timeout: int = 120
+) -> int | None:
+    """Timeout enforced for the agent install step, or None when no install runs.
+
+    Single source of truth shared by :func:`install_agent` and the
+    ``config.json`` recorder, so the recorded value always equals the enforced
+    one: a per-agent registry ``install_timeout`` overrides the configured
+    ``sandbox_setup_timeout``.
+    """
+    agent_base = agent.split()[0]
+    if agent_base not in AGENT_INSTALLERS:
+        return None
+    agent_cfg = AGENTS.get(agent_base)
+    if agent_cfg is None:
+        # Defensive fallback, not dead code: an installer can live in
+        # AGENT_INSTALLERS without a matching AGENTS entry (e.g. one injected
+        # directly into the derived install table by external tooling). The
+        # built-in registry keeps the two maps in lockstep, but when they
+        # diverge we still bound the install by the configured sandbox setup
+        # timeout rather than leaving it unbounded. Covered by
+        # test_effective_install_timeout_branches / the fake-agent fallback test.
+        return sandbox_setup_timeout
+    return agent_cfg.install_timeout
+
+
+async def install_agent(
+    env, agent: str, rollout_dir: Path, sandbox_setup_timeout: int = 120
+) -> AgentConfig | None:
     """Install agent in sandbox and return its config."""
     agent_base = agent.split()[0]
     agent_cfg = AGENTS.get(agent_base)
     if agent_base not in AGENT_INSTALLERS:
         return agent_cfg
     install_cmd = AGENT_INSTALLERS[agent_base]
-    install_timeout = agent_cfg.install_timeout if agent_cfg else 900
+    install_timeout = effective_install_timeout(agent, sandbox_setup_timeout)
     logger.info(f"Installing {agent_base} in sandbox (timeout={install_timeout}s)...")
     install_result = await env.exec(
         install_cmd,
@@ -259,19 +283,19 @@ async def deploy_skills(
     agent_cfg,
     sandbox_user: str | None,
     agent_cwd: str,
-    task: "Task",
-    include_task_skills: bool = False,
     skills_sandbox_dir: str | None = None,
 ) -> None:
     """Deploy and distribute skills into sandbox."""
-    task_skills_dir = (
-        task.config.environment.skills_dir if include_task_skills else None
+    target_skills_dir = (
+        validate_container_mount_path(skills_sandbox_dir or "/skills")
+        if skills_dir or skills_sandbox_dir
+        else None
     )
-    target_skills_dir = validate_container_mount_path(skills_sandbox_dir or "/skills")
-    effective_skills = None if skills_sandbox_dir else task_skills_dir
+    effective_skills = target_skills_dir if skills_sandbox_dir else None
 
     # Runtime upload (fallback if not baked into Dockerfile)
     if skills_dir:
+        assert target_skills_dir is not None
         dockerfile = task_path / "environment" / "Dockerfile"
         injected_copy = f"COPY _deps/skills {target_skills_dir.rstrip('/')}/"
         already_injected = (

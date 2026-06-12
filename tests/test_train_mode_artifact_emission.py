@@ -14,6 +14,7 @@ architecture says they should.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 
 from benchflow.rollout import _build_rollout_result
@@ -24,6 +25,9 @@ from benchflow.trajectories.export import (
     write_job_verifiers_jsonl,
     write_rollout_verifiers_jsonl,
 )
+
+_FAKE_GEMINI_KEY = "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"
+_FAKE_HEADER_SECRET = "plainSecretNoPrefix123"
 
 
 def _acp_trajectory() -> list[dict]:
@@ -43,7 +47,44 @@ def _acp_trajectory() -> list[dict]:
     ]
 
 
-# ── unit-level helpers ────────────────────────────────────────────────
+def _secret_bearing_acp_trajectory() -> list[dict]:
+    """A trajectory with secrets in user, assistant, and tool-call content."""
+    return [
+        {
+            "type": "user_message",
+            "text": f"User pasted GEMINI_API_KEY={_FAKE_GEMINI_KEY}",
+        },
+        {
+            "type": "agent_message",
+            "text": f"Trying request with x-api-key: {_FAKE_HEADER_SECRET}",
+        },
+        {
+            "type": "tool_call",
+            "tool_call_id": "tc-secret",
+            "kind": "bash",
+            "title": "curl service",
+            "status": "completed",
+            "content": [
+                {
+                    "text": (
+                        f"x-goog-api-key: {_FAKE_GEMINI_KEY}\n"
+                        f"api_key={_FAKE_HEADER_SECRET}"
+                    )
+                }
+            ],
+        },
+    ]
+
+
+def _assert_no_trainer_secret_leak(text: str) -> None:
+    assert "***REDACTED***" in text
+    assert _FAKE_GEMINI_KEY not in text
+    assert _FAKE_HEADER_SECRET not in text
+    residual = re.findall(r"AIzaSy[A-Za-z0-9_-]+", text)
+    assert residual == [], f"live Gemini key shapes survived: {residual}"
+
+
+# unit-level helpers
 
 
 def test_acp_events_to_messages_prepends_prompts_and_keeps_order():
@@ -90,7 +131,7 @@ def test_reward_map_to_verify_result_handles_none():
     assert vr.error == "verifier crashed"
 
 
-# ── rollout-level write ───────────────────────────────────────────────
+# rollout-level write
 
 
 def test_write_rollout_verifiers_jsonl_emits_canonical_path(tmp_path):
@@ -151,7 +192,28 @@ def test_write_rollout_verifiers_jsonl_marks_invalid_when_no_rewards(tmp_path):
     assert parsed["info"]["reward_valid"] is False
 
 
-# ── job-level aggregation ─────────────────────────────────────────────
+def test_write_rollout_verifiers_jsonl_redacts_trajectory_secrets(tmp_path):
+    """Guards the fix from PR #585 against trainer/verifiers.jsonl leaks."""
+    rollout_dir = tmp_path / "rollout-secret"
+    rollout_dir.mkdir()
+    record = write_rollout_verifiers_jsonl(
+        rollout_dir,
+        task_id="t-secret",
+        prompts=[f"Prompt includes {_FAKE_GEMINI_KEY}"],
+        trajectory=_secret_bearing_acp_trajectory(),
+        rewards={"reward": 1.0},
+        model="m",
+        environment="bench",
+    )
+
+    artifact = rollout_dir / ROLLOUT_ARTIFACT_RELPATH
+    text = artifact.read_text()
+    _assert_no_trainer_secret_leak(text)
+    _assert_no_trainer_secret_leak(json.dumps(record))
+    json.loads(text)
+
+
+# job-level aggregation
 
 
 def test_write_job_verifiers_jsonl_aggregates_all_rollouts(tmp_path):
@@ -184,7 +246,49 @@ def test_write_job_verifiers_jsonl_returns_none_when_no_rollouts(tmp_path):
     assert not (empty_job / "verifiers.jsonl").exists()
 
 
-# ── end-to-end: _build_rollout_result wires the seam ─────────────────
+def test_write_job_verifiers_jsonl_redacts_aggregated_records(tmp_path):
+    """Guards the fix from PR #585 against job verifiers.jsonl leaks."""
+    job_dir = tmp_path / "job-secret"
+    rollout_dir = job_dir / "rollout-secret"
+    rollout_dir.mkdir(parents=True)
+    write_rollout_verifiers_jsonl(
+        rollout_dir,
+        task_id="t-secret",
+        prompts=[f"Prompt includes {_FAKE_GEMINI_KEY}"],
+        trajectory=_secret_bearing_acp_trajectory(),
+        rewards={"reward": 1.0},
+        model="m",
+        environment="bench",
+    )
+    # Simulate a legacy/raw per-rollout artifact so the job aggregation boundary
+    # proves it redacts too, instead of merely concatenating already-redacted
+    # rollout output.
+    raw_record = {
+        "example_id": 0,
+        "prompt": [{"role": "user", "content": f"Prompt includes {_FAKE_GEMINI_KEY}"}],
+        "completion": [
+            {
+                "role": "assistant",
+                "content": f"Trying request with x-api-key: {_FAKE_HEADER_SECRET}",
+            }
+        ],
+        "reward": 1.0,
+        "metrics": {},
+        "is_completed": True,
+        "is_truncated": False,
+        "info": {"task_id": "t-secret", "environment": "bench", "model": "m"},
+    }
+    (rollout_dir / ROLLOUT_ARTIFACT_RELPATH).write_text(json.dumps(raw_record) + "\n")
+
+    artifact = write_job_verifiers_jsonl(job_dir)
+    assert artifact == job_dir / "verifiers.jsonl"
+    text = artifact.read_text()
+    _assert_no_trainer_secret_leak(text)
+    assert len(text.splitlines()) == 1
+    json.loads(text)
+
+
+# end-to-end: _build_rollout_result wires the seam
 
 
 def test_build_rollout_result_emits_trainer_artifact(tmp_path):
@@ -222,3 +326,123 @@ def test_build_rollout_result_emits_trainer_artifact(tmp_path):
     assert parsed["reward"] == 1.0
     assert parsed["info"]["task_id"] == "archive-alice"
     assert parsed["info"]["model"] == "claude-haiku-4-5"
+
+
+def test_build_rollout_result_emits_atif_and_adp(tmp_path):
+    """Scored rollouts emit the ecosystem trajectory formats out of the box.
+
+    ATIF (trainer/atif.json) and ADP (trainer/adp.jsonl) must land beside
+    verifiers.jsonl from _build_rollout_result — library-only emitters that
+    no run ever calls are a doc-claim violation, not a feature.
+    """
+    rollout_dir = tmp_path / "rollout-formats"
+    rollout_dir.mkdir()
+    _build_rollout_result(
+        rollout_dir,
+        task_name="archive-alice",
+        rollout_name="r1",
+        agent="claude-agent-acp",
+        agent_name="claude-agent-acp",
+        model="claude-haiku-4-5",
+        n_tool_calls=1,
+        prompts=["Archive the email from Alice."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 0.45},
+        started_at=datetime.now(),
+        timing={},
+    )
+    atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
+    assert atif["session_id"] == "archive-alice__r1"
+    assert atif["agent"]["name"] == "claude-agent-acp"
+    assert atif["steps"], "non-empty trajectory must produce ATIF steps"
+
+    adp_line = (rollout_dir / "trainer/adp.jsonl").read_text().strip()
+    adp = json.loads(adp_line)
+    assert adp["id"] == "archive-alice__r1"
+    assert adp["details"]["task_id"] == "archive-alice"
+    action_rewards = [item["reward"] for item in adp["content"] if "reward" in item]
+    assert action_rewards == [0.45], (
+        "terminal reward must attach to the final action per ADP convention"
+    )
+
+
+def test_build_rollout_result_forwards_token_metrics_to_atif(tmp_path):
+    """Usage metrics in scope at result-building must reach ATIF final_metrics.
+
+    ATIF's token/cost capability is implemented in export_atif, but the
+    production seam (_build_rollout_result -> _write_trainer_artifact ->
+    write_rollout_atif_json) used to drop the four usage fields, so every live
+    atif.json carried only total_steps. This pins the live wiring with the exact
+    forwarded values (note the n_cache_read -> total_cached mapping).
+    """
+    rollout_dir = tmp_path / "rollout-usage"
+    rollout_dir.mkdir()
+    _build_rollout_result(
+        rollout_dir,
+        task_name="archive-alice",
+        rollout_name="r1",
+        agent="claude-agent-acp",
+        agent_name="claude-agent-acp",
+        model="claude-haiku-4-5",
+        n_tool_calls=1,
+        prompts=["Archive the email from Alice."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+        n_input_tokens=1234,
+        n_output_tokens=567,
+        n_cache_read_tokens=89,
+        cost_usd=0.0421,
+    )
+    atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
+    metrics = atif["final_metrics"]
+    assert metrics["total_prompt_tokens"] == 1234
+    assert metrics["total_completion_tokens"] == 567
+    assert metrics["total_cached_tokens"] == 89
+    assert metrics["total_cost_usd"] == 0.0421
+
+
+def test_build_rollout_result_atif_for_empty_trajectory_is_prompt_only(tmp_path):
+    """Oracle runs (no agent events) emit a prompts-only ATIF, never agent steps.
+
+    The emitter folds prompts into user steps by design, so the document
+    stays schema-valid (steps non-empty); what must never happen is a
+    fabricated agent step from an empty trajectory.
+    """
+    rollout_dir = tmp_path / "rollout-oracle"
+    rollout_dir.mkdir()
+    _build_rollout_result(
+        rollout_dir,
+        task_name="archive-alice",
+        rollout_name="oracle",
+        agent="oracle",
+        agent_name="oracle",
+        model=None,
+        n_tool_calls=0,
+        prompts=["Archive the email from Alice."],
+        error=None,
+        verifier_error=None,
+        trajectory=[],
+        partial_trajectory=False,
+        trajectory_source=None,
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+    atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
+    sources = [s.get("source") for s in atif["steps"]]
+    assert sources == ["user"], (
+        f"oracle ATIF must contain only the prompt-derived user step, got {sources}"
+    )
+    assert (rollout_dir / "trainer/adp.jsonl").exists(), (
+        "ADP records prompts even without actions"
+    )

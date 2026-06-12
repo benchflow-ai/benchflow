@@ -41,17 +41,31 @@ _AUTH_CONTEXT_GROUPS = (
     frozenset({"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"}),
 )
 _EXPLICIT_AGENT_NATIVE_BRIDGE_KEYS = frozenset({"LLM_API_KEY"})
-_BEDROCK_PROXY_PLACEHOLDER_API_KEY = "bedrock-proxy"
+_BEDROCK_PROVIDER_PLACEHOLDER_API_KEY = "benchflow-litellm"
 _CODEX_API_KEY_ENV = "CODEX_API_KEY"
 _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
 _CODEX_AUTH_JSON_ENV = "CODEX_AUTH_JSON"
 _CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _CLAUDE_OAUTH_TOKEN_ENV = "CLAUDE_OAUTH_TOKEN"
+_SUBSCRIPTION_AUTH_MARKER = "_BENCHFLOW_SUBSCRIPTION_AUTH"
 _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
 )
+_LITELLM_RUNTIME_MARKER_KEYS = frozenset(
+    {
+        "BENCHFLOW_LITELLM_MASTER_KEY",
+        "BENCHFLOW_LITELLM_MODEL_ALIAS",
+        "BENCHFLOW_LITELLM_MODEL_VIA_ENV",
+    }
+)
+_CANONICAL_OPENAI_URL = "https://api.openai.com/v1"
 _GENERIC_PROVIDER_OVERRIDE_KEYS = frozenset(
-    {"BENCHFLOW_PROVIDER_BASE_URL", "BENCHFLOW_PROVIDER_API_KEY"}
+    {
+        "BENCHFLOW_PROVIDER_BASE_URL",
+        "BENCHFLOW_PROVIDER_API_KEY",
+        "LLM_BASE_URL",
+        "LLM_API_KEY",
+    }
 )
 _AZURE_RESOURCE_ENV = "AZURE_RESOURCE"
 _AZURE_ENDPOINT_ENV = "AZURE_API_ENDPOINT"
@@ -190,12 +204,13 @@ def auto_inherit_env(
         "LLM_BASE_URL",
         "BENCHFLOW_PROVIDER_BASE_URL",
         "BENCHFLOW_PROVIDER_API_KEY",
-        "BENCHFLOW_PROVIDER_PROMPT_CACHE_RETENTION",
+        "BENCHFLOW_BEDROCK_THINKING_EFFORT",
         # AZURE_API_KEY / AZURE_RESOURCE are picked up automatically below via
         # cfg.auth_env / cfg.url_params; only AZURE_API_ENDPOINT is listed
         # explicitly because it is a user-facing convenience input, not a
         # provider-config field.
         _AZURE_ENDPOINT_ENV,
+        "AZURE_API_VERSION",
     }
     for cfg in PROVIDERS.values():
         if cfg.auth_env:
@@ -246,7 +261,14 @@ def _is_codex_native_openai_context(
     model: str | None,
     required_key: str | None,
 ) -> bool:
-    """True when Codex can use its own OpenAI auth mechanisms directly."""
+    """True when Codex can use its own OpenAI auth mechanisms directly.
+
+    Native auth covers bare model IDs (``gpt-*``) and the first-party
+    ``openai/`` provider prefix pointing at ``api.openai.com``. Custom or
+    proxy providers (``vllm/``, ``us-openai/``, etc.) must supply
+    ``OPENAI_API_KEY`` explicitly — subscription/access-token auth does not
+    apply to them.
+    """
     if agent != "codex-acp" or required_key != "OPENAI_API_KEY":
         return False
     if model is None:
@@ -254,12 +276,25 @@ def _is_codex_native_openai_context(
 
     from benchflow.agents.providers import find_provider
 
-    return find_provider(model) is None
+    result = find_provider(model)
+    if result is None:
+        return True
+    name, cfg = result
+    return name == "openai" and cfg.base_url == _CANONICAL_OPENAI_URL
 
 
 def _has_custom_openai_endpoint(agent_env: dict[str, str]) -> bool:
-    """True when Codex is being pointed at an OpenAI-compatible non-OpenAI URL."""
-    return any(agent_env.get(key) for key in _CUSTOM_OPENAI_ENDPOINT_KEYS)
+    """True when Codex is being pointed at an OpenAI-compatible non-OpenAI URL.
+
+    The first-party ``openai/`` provider populates these keys with the
+    canonical ``api.openai.com`` URL — that is the native endpoint, not a
+    custom proxy, so it must not disqualify subscription/access-token auth.
+    """
+    for key in _CUSTOM_OPENAI_ENDPOINT_KEYS:
+        value = agent_env.get(key)
+        if value and value.rstrip("/") != _CANONICAL_OPENAI_URL:
+            return True
+    return False
 
 
 def _can_use_codex_subscription_auth(
@@ -339,6 +374,59 @@ def _has_codex_auth_json_auth(
         required_key,
         agent_env,
     ) and bool(agent_env.get(_CODEX_AUTH_JSON_ENV))
+
+
+def uses_native_subscription_auth(
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+) -> bool:
+    """Return True when an agent should use CLI/subscription auth directly.
+
+    This is the Harbor-style split point: API-key runs can be routed through
+    LiteLLM, while subscription-auth runs stay on the native Codex/Claude ACP
+    path and report usage from the agent protocol response.
+    """
+    if agent_env.get("BENCHFLOW_PROVIDER_NAME") == "litellm" or any(
+        agent_env.get(key) for key in _LITELLM_RUNTIME_MARKER_KEYS
+    ):
+        return False
+
+    if agent == "codex-acp":
+        if agent_env.get("OPENAI_API_KEY"):
+            return False
+        required_key = "OPENAI_API_KEY"
+        if not _can_use_codex_subscription_auth(
+            agent,
+            model,
+            required_key,
+            agent_env,
+        ):
+            return False
+        return (
+            bool(agent_env.get(_CODEX_ACCESS_TOKEN_ENV))
+            or bool(agent_env.get(_CODEX_AUTH_JSON_ENV))
+            or agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1"
+            or check_subscription_auth(agent, required_key)
+        )
+
+    if agent == "claude-agent-acp":
+        if agent_env.get("ANTHROPIC_API_KEY"):
+            return False
+        if model is not None:
+            from benchflow.agents.registry import infer_env_key_for_model
+
+            if infer_env_key_for_model(model) != "ANTHROPIC_API_KEY":
+                return False
+        return (
+            bool(agent_env.get(_CLAUDE_CODE_OAUTH_TOKEN_ENV))
+            or bool(agent_env.get(_CLAUDE_OAUTH_TOKEN_ENV))
+            or bool(agent_env.get("ANTHROPIC_AUTH_TOKEN"))
+            or agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1"
+            or check_subscription_auth(agent, "ANTHROPIC_API_KEY")
+        )
+
+    return False
 
 
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
@@ -425,7 +513,7 @@ def resolve_provider_env(
         elif _prov_cfg.auth_type == "aws":
             agent_env.setdefault(
                 "BENCHFLOW_PROVIDER_API_KEY",
-                _BEDROCK_PROXY_PLACEHOLDER_API_KEY,
+                _BEDROCK_PROVIDER_PLACEHOLDER_API_KEY,
             )
     else:
         # No registered provider prefix — bridge the model's well-known API key
@@ -522,18 +610,20 @@ def _drop_inherited_generic_provider_overrides(
         return
 
     from benchflow.agents.providers import find_provider
+    from benchflow.agents.registry import infer_env_key_for_model
 
     provider = find_provider(model)
     if provider is None:
-        return
-    _, provider_cfg = provider
-    # Providers with an empty base URL (for example vllm/) are explicitly
-    # user-supplied endpoints, so inherited BENCHFLOW_PROVIDER_* is the normal
-    # configuration path. Providers with a registered URL/auth env should not be
-    # shadowed by a global generic proxy from .env unless the caller explicitly
-    # passed that override for this run.
-    if not provider_cfg.base_url:
-        return
+        if infer_env_key_for_model(model) is None:
+            return
+    else:
+        _, provider_cfg = provider
+        # Providers with an empty base URL (for example vllm/) are explicitly
+        # user-supplied endpoints, so inherited BENCHFLOW_PROVIDER_* is the normal
+        # configuration path. Bedrock is the exception: LiteLLM supplies its
+        # runtime URL later, so stale generic provider vars must not shadow it.
+        if not provider_cfg.base_url and provider_cfg.auth_type != "aws":
+            return
     for key in _GENERIC_PROVIDER_OVERRIDE_KEYS - explicit_agent_env_keys:
         agent_env.pop(key, None)
 
@@ -639,7 +729,7 @@ def resolve_agent_env(
                 required_key,
                 agent_env,
             ) and check_subscription_auth(agent, required_key):
-                agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
+                agent_env[_SUBSCRIPTION_AUTH_MARKER] = "1"
                 logger.info(
                     "Using host subscription auth (no %s set)",
                     required_key,
@@ -672,7 +762,7 @@ def resolve_agent_env(
                     and _can_use_subscription_auth(agent, model, req_key, agent_env)
                     and check_subscription_auth(agent, req_key)
                 ):
-                    agent_env["_BENCHFLOW_SUBSCRIPTION_AUTH"] = "1"
+                    agent_env[_SUBSCRIPTION_AUTH_MARKER] = "1"
                     logger.info(
                         "Using host subscription auth (no %s set)",
                         req_key,

@@ -25,6 +25,10 @@ class TestEnvMappingField:
         assert "BENCHFLOW_PROVIDER_BASE_URL" in cfg.env_mapping
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "ANTHROPIC_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "ANTHROPIC_AUTH_TOKEN"
+        assert cfg.supports_acp_set_model is False
+        assert cfg.acp_model_config_id == "model"
+        assert cfg.acp_effort_config_id == "effort"
+        assert "@agentclientprotocol/claude-agent-acp@0.40.0" in cfg.install_cmd
 
     def test_pi_acp_no_static_mapping(self):
         """pi-acp is multi-protocol — launch wrapper handles env translation."""
@@ -38,6 +42,12 @@ class TestEnvMappingField:
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "OPENAI_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "OPENAI_API_KEY"
         assert "openai_base_url=$OPENAI_BASE_URL" in cfg.launch_cmd
+
+    def test_codex_acp_install_is_version_pinned(self):
+        """Same @agentclientprotocol family as claude — pin so a floating latest
+        can't silently break activation when upstream drops session/set_model."""
+        cfg = AGENTS["codex-acp"]
+        assert "@agentclientprotocol/codex-acp@0.0.45" in cfg.install_cmd
 
     def test_gemini_has_mapping(self):
         cfg = AGENTS["gemini"]
@@ -66,8 +76,8 @@ class TestEnvMappingField:
 
         assert env["LLM_MODEL"] == "openai/glm-5"
 
-    def test_openhands_bedrock_anthropic_model_uses_litellm_provider_prefix(self):
-        """Guards v0.5-integration@e55219d against OpenHands receiving a bare Bedrock profile id."""
+    def test_openhands_bedrock_initial_env_marks_registered_provider(self):
+        """Guards the LiteLLM runtime refactor: Bedrock is detected before runtime rewrite."""
         env = {
             "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
             "AWS_REGION": "us-west-2",
@@ -79,7 +89,8 @@ class TestEnvMappingField:
             agent_env=env,
         )
 
-        assert env["LLM_MODEL"] == "anthropic/us.anthropic.claude-opus-4-7"
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "aws-bedrock"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "us.anthropic.claude-opus-4-7"
 
 
 class TestOpenHandsConfig:
@@ -88,21 +99,47 @@ class TestOpenHandsConfig:
         assert "$HOME/.agents/skills" in cfg.skill_paths
         assert "$WORKSPACE/.agents/skills" in cfg.skill_paths
 
-    def test_openhands_install_cmd_forces_github_main(self):
+    def test_openhands_install_cmd_pins_cli_git_revision(self):
         cfg = AGENTS["openhands"]
         assert (
             "apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates git"
             in cfg.install_cmd
         )
-        assert "--with 'boto3>=1.40'" in cfg.install_cmd
         assert (
             "uv tool install --force --refresh "
-            "--with 'boto3>=1.40' "
-            "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@main' "
+            "--overrides /tmp/oh-sdk-overrides.txt "
+            "--from "
+            "'git+https://github.com/OpenHands/OpenHands-CLI.git@"
+            "3ca17446c5d9c1e35e054803478a3501ec251ecf' "
             "openhands --python 3.12" in cfg.install_cmd
         )
+        assert "OpenHands/OpenHands-CLI.git@main" not in cfg.install_cmd
+        assert "openhands==1.16.0" not in cfg.install_cmd
         assert "command -v git" in cfg.install_cmd
         assert "install.openhands.dev/install.sh" not in cfg.install_cmd
+
+    def test_openhands_install_cmd_overrides_buggy_sdk_pin(self):
+        """Guards PR #644 against Opus timeouts from OpenHands SDK 1.21.0."""
+        cfg = AGENTS["openhands"]
+
+        assert "openhands-sdk==1.22.1" in cfg.install_cmd
+        assert "openhands-tools==1.22.1" in cfg.install_cmd
+        assert "openhands-sdk>=1.22.0" not in cfg.install_cmd
+        assert "--overrides /tmp/oh-sdk-overrides.txt" in cfg.install_cmd
+
+    def test_openhands_install_cmd_does_not_deploy_bedrock_shim(self):
+        """Guards the LiteLLM runtime refactor: Bedrock patches live with LiteLLM."""
+        cfg = AGENTS["openhands"]
+        assert "oh_bedrock_opus_patch.py" not in cfg.install_cmd
+        assert "zz_oh_bedrock_opus_patch.pth" not in cfg.install_cmd
+
+    def test_openhands_install_cmd_does_not_self_test_provider_shim(self):
+        """Provider patch self-tests belong to the LiteLLM runtime, not OpenHands."""
+        cfg = AGENTS["openhands"]
+        assert "_is_adaptive_thinking_model" not in cfg.install_cmd
+        assert "us.anthropic.claude-opus-4-8" not in cfg.install_cmd
+        assert "shim ACTIVE" not in cfg.install_cmd
+        assert "shim NOT active" not in cfg.install_cmd
 
     def test_openhands_apt_bootstrap_retries_transient_mirror_failures(self):
         """Guards the local fix on v0.5-integration@e55219d against Ubuntu mirror signature flakiness."""
@@ -114,11 +151,11 @@ class TestOpenHandsConfig:
         assert 'while [ "$attempt" -le 3 ]' in cfg.install_cmd
         assert 'case "$attempt"' in cfg.install_cmd
 
-    def test_openhands_installs_boto3_for_bedrock_provider(self):
-        """Guards v0.5-integration@e55219d against OpenHands Bedrock runs missing boto3."""
+    def test_openhands_no_longer_installs_boto3_for_bedrock_provider(self):
+        """LiteLLM owns Bedrock provider dependencies, so OpenHands stays provider-neutral."""
         cfg = AGENTS["openhands"]
 
-        assert "--with 'boto3>=1.40'" in cfg.install_cmd
+        assert "--with 'boto3>=1.40'" not in cfg.install_cmd
 
     def test_openhands_skips_acp_set_model(self):
         cfg = AGENTS["openhands"]

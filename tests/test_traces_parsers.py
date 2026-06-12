@@ -14,9 +14,7 @@ from benchflow.traces.parsers import (
     parse_opentraces_record,
 )
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -132,9 +130,7 @@ def opentraces_file(tmp_path: Path, opentraces_record: dict) -> Path:
     return path
 
 
-# ---------------------------------------------------------------------------
 # Claude Code parser tests
-# ---------------------------------------------------------------------------
 
 
 class TestClaudeCodeParser:
@@ -267,9 +263,7 @@ class TestClaudeCodeParser:
         assert trace.outcome == "success"
 
 
-# ---------------------------------------------------------------------------
 # Multi-session file parser tests
-# ---------------------------------------------------------------------------
 
 
 class TestClaudeCodeFileParser:
@@ -397,9 +391,7 @@ class TestClaudeCodeFileParser:
         assert len(traces) == 1
 
 
-# ---------------------------------------------------------------------------
 # opentraces parser tests
-# ---------------------------------------------------------------------------
 
 
 class TestOpentracesParser:

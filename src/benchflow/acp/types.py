@@ -51,7 +51,7 @@ from pydantic import BaseModel, Field
 ACP_PROTOCOL_VERSION: int = _acp_meta.PROTOCOL_VERSION
 
 
-# --- Enums (vendored — SDK exposes these as typing.Literal, not enums) ---
+# Enums (vendored — SDK exposes these as typing.Literal, not enums)
 
 
 class StopReason(StrEnum):
@@ -95,7 +95,7 @@ class ToolCallStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-# --- Content blocks (SDK-backed) ---
+# Content blocks (SDK-backed)
 #
 # BenchFlow's content-block names map to the SDK's discriminated ``*ContentBlock``
 # variants (which carry the ``type`` discriminator field).
@@ -107,7 +107,7 @@ ResourceLink = ResourceContentBlock
 ContentBlock = TextContentBlock | ImageContentBlock | ResourceContentBlock
 
 
-# --- Capabilities & identity (SDK-backed) ---
+# Capabilities & identity (SDK-backed)
 
 FsCapabilities = FileSystemCapabilities
 ClientInfo = Implementation
@@ -118,7 +118,7 @@ AgentInfo = Implementation
 # original names (imported at module top, listed in ``__all__``).
 
 
-# --- Requests / Responses (SDK-backed) ---
+# Requests / Responses (SDK-backed)
 #
 # BenchFlow historically named these ``*Params`` / ``*Result``; the SDK names
 # them ``*Request`` / ``*Response``. Keep both working.
@@ -179,7 +179,7 @@ class CancelParams(BaseModel):
     session_id: str = Field(alias="sessionId")
 
 
-# --- Session update notifications (vendored) ---
+# Session update notifications (vendored)
 #
 # Kept vendored: the SDK models session updates as ``ToolCallStart`` /
 # ``ToolCallProgress``, structurally different from BenchFlow's pair below.
@@ -225,7 +225,7 @@ SessionUpdate = (
 )
 
 
-# --- JSON-RPC envelope (vendored — BenchFlow transport framing) ---
+# JSON-RPC envelope (vendored — BenchFlow transport framing)
 
 
 class JsonRpcRequest(BaseModel):
@@ -254,7 +254,7 @@ class JsonRpcNotification(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
-# --- File system / Terminal requests from agent (vendored) ---
+# File system / Terminal requests from agent (vendored)
 #
 # Kept vendored: these mirror requests the agent makes to BenchFlow's
 # framework transport, which proxies them to the sandbox. The SDK's

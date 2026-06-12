@@ -7,12 +7,13 @@ Covers three tiers of reward-forge mitigations:
 """
 
 import json
+import logging
 import shlex
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ── Shared helpers ────────────────────────────────────────────────────────────
+# Shared helpers
 
 _ALL_BUILD_FILES = (
     "setup.py",
@@ -61,6 +62,9 @@ def _make_task(user=None):
     # pytest_plugins is a guaranteed list[str] field on VerifierConfig.
     task.config.verifier.pytest_plugins = []
     task.task_dir = None
+    # Default to a legacy split layout so --confcutdir resolves to /tests; native
+    # task.md packages set this True to bound conftest walk-up at /verifier.
+    task.paths.uses_native_verifier_dir = False
     return task
 
 
@@ -100,7 +104,7 @@ def _restore_side_effect(manifest: dict[str, bool]) -> list:
     ]
 
 
-# ── TestHardenSequence ────────────────────────────────────────────────────────
+# TestHardenSequence
 
 
 class TestHardenSequence:
@@ -152,6 +156,7 @@ class TestHardenSequence:
         assert any(c == "mkdir -p /app" for c in cmds)
         cleanup_cmd = next(c for c in cmds if "conftest.py" in c)
         assert "sitecustomize.py" in cleanup_cmd and ".pth" in cleanup_cmd
+        assert "-not -path '/verifier/*'" in cleanup_cmd
         assert "-not -path '/tests/*'" in cleanup_cmd
         injected = task.config.verifier.env
         assert "--rootdir=/testbed" in injected["PYTEST_ADDOPTS"]
@@ -193,7 +198,7 @@ class TestHardenSequence:
         assert injected["PYTHONPATH"] == ""  # non-overridden defaults kept
 
 
-# ── TestVerifierDirWipe ───────────────────────────────────────────────────────
+# TestVerifierDirWipe
 
 
 class TestVerifierDirWipe:
@@ -276,8 +281,150 @@ class TestVerifierDirWipe:
         assert cleanup is not None
         assert cleanup.kwargs.get("user") == "root"
 
+    @pytest.mark.asyncio
+    async def test_reclaims_redownloadable_caches_before_verify(self):
+        """Frees uv/pip/apt download caches so the verifier's own deps fit on
+        disk-constrained sandboxes (e.g. Daytona's 10GB cap), without ever
+        touching the workspace, agent outputs, installed tools, or task assets.
+        Guards PR #669."""
+        from benchflow.sandbox.lockdown import harden_before_verify
 
-# ── TestBuildConfigSnapshot ───────────────────────────────────────────────────
+        env = _make_env()
+        await harden_before_verify(env, _make_task(), sandbox_user=None)
+
+        reclaim = next(
+            (c for c in env.exec.call_args_list if "/.cache/" in c.args[0]),
+            None,
+        )
+        assert reclaim is not None, "expected a pre-verifier disk reclaim exec"
+        cmd = reclaim.args[0]
+        # clears only re-downloadable caches (uv/pip/apt) ...
+        assert "uv_build" in cmd and "pip" in cmd and "apt/archives" in cmd
+        # ... guarded against symlinks and the workspace/output roots (#601)
+        assert "islink" in cmd and "realpath" in cmd and "/logs" in cmd
+        # no active workspace -> the guard placeholder is plumbed through
+        assert "/nonexistent" in cmd
+        # best-effort: swallows errors and never aborts hardening
+        assert "2>/dev/null" in cmd and cmd.rstrip().endswith("true")
+        # runs as root so it can clear every user's cache
+        assert reclaim.kwargs.get("user") == "root"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("workspace", ["/root", "/home/agent", "/app"])
+    async def test_reclaim_plumbs_workspace_into_guard(self, workspace):
+        """The active workspace is passed to the reclaim snippet as argv[1] so
+        the realpath overlap guard can protect it. Guards PR #669."""
+        import shlex
+
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        env = _make_env()
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, workspace=workspace
+        )
+
+        reclaim = next(
+            (c for c in env.exec.call_args_list if "/.cache/" in c.args[0]), None
+        )
+        assert reclaim is not None
+        assert (
+            reclaim.args[0]
+            .rstrip()
+            .endswith(f"{shlex.quote(workspace)} 2>/dev/null; true")
+        )
+
+    # ── Behavior tests: run the REAL reclaim snippet against a temp root ──────
+    # (#601 regression suite — the old string-shape tests passed while the
+    # shell command deleted agent state through symlinks and /tmp globs.)
+
+    @staticmethod
+    def _run_reclaim(workspace: str, prefix) -> None:
+        """Execute the production reclaim snippet hermetically under
+        ``prefix`` - the same code, same interpreter contract as the sandbox."""
+        import subprocess
+        import sys
+
+        from benchflow.sandbox._cache_reclaim import RECLAIM_CACHES_PY
+
+        result = subprocess.run(
+            [sys.executable, "-c", RECLAIM_CACHES_PY, workspace, str(prefix)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_reclaim_does_not_traverse_cache_symlink_into_workspace(self, tmp_path):
+        """Guards PR #669 for issue #601 (repro 1): an agent-planted
+        ``~/.cache -> /app`` must not turn the cache delete into
+        ``rm -rf /app/uv`` — the old shell form did exactly that."""
+        (tmp_path / "app" / "uv").mkdir(parents=True)
+        (tmp_path / "app" / "uv" / "state.txt").write_text("agent state")
+        (tmp_path / "root").mkdir()
+        (tmp_path / "root" / ".cache").symlink_to(tmp_path / "app")
+
+        self._run_reclaim(str(tmp_path / "app"), tmp_path)
+
+        assert (tmp_path / "app" / "uv" / "state.txt").exists()
+
+    def test_reclaim_does_not_traverse_symlink_into_artifacts(self, tmp_path):
+        """Guards PR #669 for issue #601 (repro 2): ``.cache -> /logs/artifacts``
+        must not delete artifact state — /logs is a protected root even when it
+        is not the workspace."""
+        (tmp_path / "logs" / "artifacts" / "uv").mkdir(parents=True)
+        (tmp_path / "logs" / "artifacts" / "uv" / "state.txt").write_text("x")
+        (tmp_path / "home" / "agent").mkdir(parents=True)
+        (tmp_path / "home" / "agent" / ".cache").symlink_to(
+            tmp_path / "logs" / "artifacts"
+        )
+
+        self._run_reclaim("/nonexistent", tmp_path)
+
+        assert (tmp_path / "logs" / "artifacts" / "uv" / "state.txt").exists()
+
+    def test_reclaim_spares_tmp_workspace_matching_glob(self, tmp_path):
+        """Guards PR #669 for issue #601 (repro 3): a legitimate
+        ``/tmp/uv-workspace`` workspace must survive the ``/tmp/uv-*`` glob —
+        the old form deleted it unconditionally."""
+        ws = tmp_path / "tmp" / "uv-workspace"
+        ws.mkdir(parents=True)
+        (ws / "state.txt").write_text("answer")
+
+        self._run_reclaim(str(ws), tmp_path)
+
+        assert (ws / "state.txt").exists()
+
+    def test_reclaim_still_clears_real_caches_outside_workspace(self, tmp_path):
+        """Guards PR #669 for issue #601 (repro 4): real, non-symlinked caches
+        outside the workspace are still reclaimed, so the ENOSPC mitigation
+        the reclaim exists for stays effective."""
+        (tmp_path / "root" / ".cache" / "uv" / "blob").mkdir(parents=True)
+        (tmp_path / "home" / "u1" / ".cache" / "pip").mkdir(parents=True)
+        (tmp_path / "tmp" / "uv-build123").mkdir(parents=True)
+        (tmp_path / "var" / "cache" / "apt" / "archives").mkdir(parents=True)
+        (tmp_path / "var" / "cache" / "apt" / "archives" / "x.deb").write_text("d")
+
+        self._run_reclaim(str(tmp_path / "app"), tmp_path)
+
+        assert not (tmp_path / "root" / ".cache" / "uv").exists()
+        assert not (tmp_path / "home" / "u1" / ".cache" / "pip").exists()
+        assert not (tmp_path / "tmp" / "uv-build123").exists()
+        assert not (tmp_path / "var" / "cache" / "apt" / "archives" / "x.deb").exists()
+
+    def test_reclaim_skips_caches_inside_the_workspace(self, tmp_path):
+        """When a task uses /root as its workspace, "$ws/.cache" is workspace
+        state the verifier must see untouched (the pre-#601 guarantee, now
+        enforced by realpath overlap instead of string comparison). Guards PR #669."""
+        cache = tmp_path / "root" / ".cache" / "uv"
+        cache.mkdir(parents=True)
+        (cache / "state.txt").write_text("workspace state")
+
+        self._run_reclaim(str(tmp_path / "root"), tmp_path)
+
+        assert (cache / "state.txt").exists()
+
+
+# TestBuildConfigSnapshot
 
 
 class TestBuildConfigSnapshot:
@@ -557,7 +704,7 @@ class TestBuildConfigSnapshot:
         assert any("chmod 700" in c and ".benchflow_build_snapshot" in c for c in calls)
 
 
-# ── TestVerifierUserHarden ────────────────────────────────────────────────────
+# TestVerifierUserHarden
 
 
 class TestVerifierUserHarden:
@@ -620,7 +767,7 @@ class TestVerifierUserHarden:
         assert any("conftest.py" in c for c in calls)
 
 
-# ── TestVerifierEnv ───────────────────────────────────────────────────────────
+# TestVerifierEnv
 
 
 class TestVerifierEnv:
@@ -729,6 +876,39 @@ class TestVerifierEnv:
 
         assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
             workspace=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_pythonless_image_hardening_fallbacks_are_quiet(self, caplog):
+        """Guards commit 67378ddd's 2026-06-04 task.md warning cleanup."""
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        def side_effect(cmd, **kwargs):
+            text = str(cmd)
+            if text == "printenv PATH":
+                return MagicMock(
+                    stdout="/usr/local/bin:/usr/bin:/bin\n",
+                    stderr="",
+                    exit_code=0,
+                )
+            if "python3 -c" in text:
+                return MagicMock(
+                    stdout="",
+                    stderr="/bin/sh: python3: not found",
+                    exit_code=127,
+                )
+            return MagicMock(stdout="", stderr="", exit_code=0)
+
+        env = _make_env(side_effect=side_effect)
+        task = _make_task()
+
+        caplog.set_level(logging.WARNING)
+        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+
+        messages = [record.message for record in caplog.records]
+        assert not any("task.toml fallback" in message for message in messages)
+        assert not any(
+            "trusted verifier PATH extras" in message for message in messages
         )
 
     @pytest.mark.asyncio
@@ -959,6 +1139,24 @@ class TestVerifierEnv:
         assert "--confcutdir=/tests" in task.config.verifier.env["PYTEST_ADDOPTS"]
 
     @pytest.mark.asyncio
+    async def test_pytest_addopts_confcutdir_tracks_native_verifier_dir(self):
+        """Native task.md packages bound conftest walk-up at /verifier, not /tests.
+
+        The hardened base hardcodes --confcutdir=/tests, which does not exist in
+        native packages and makes pytest exit before any test runs.
+        """
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        task.paths.uses_native_verifier_dir = True
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/root")
+
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "--confcutdir=/verifier" in addopts
+        assert "--confcutdir=/tests" not in addopts
+
+    @pytest.mark.asyncio
     async def test_pytest_addopts_not_overridable_by_task_env(self):
         """A task that sets PYTEST_ADDOPTS in verifier.env must not win.
 
@@ -1017,6 +1215,29 @@ class TestVerifierEnv:
         assert task.config.verifier.env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
 
     @pytest.mark.asyncio
+    async def test_native_ctrf_plugin_inferred_from_verifier_script(self, tmp_path):
+        """Guards PR #9's native verifier/test.sh CTRF plugin inference fix."""
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        verifier_dir = tmp_path / "verifier"
+        verifier_dir.mkdir()
+        (verifier_dir / "test.sh").write_text(
+            "uvx --with pytest-json-ctrf pytest "
+            "--ctrf /logs/verifier/ctrf.json /verifier/test_outputs.py\n"
+        )
+
+        env = _make_env()
+        task = _make_task()
+        task.task_dir = tmp_path
+        task.paths.uses_native_verifier_dir = True
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "-p ctrf" in addopts
+        assert "--confcutdir=/verifier" in addopts
+        assert "--confcutdir=/tests" not in addopts
+
+    @pytest.mark.asyncio
     async def test_ctrf_plugin_inference_ignores_comments(self, tmp_path):
         """Commented --ctrf text does not opt a task into the plugin."""
         from benchflow.sandbox.lockdown import harden_before_verify
@@ -1032,6 +1253,20 @@ class TestVerifierEnv:
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "-p ctrf" not in addopts
+
+    @pytest.mark.asyncio
+    async def test_native_verifier_confcutdir_tracks_verifier_mount(self):
+        """Guards PR #9's native verifier lockdown path regression."""
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        env = _make_env()
+        task = _make_task()
+        task.paths.uses_native_verifier_dir = True
+        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+
+        addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
+        assert "--confcutdir=/verifier" in addopts
+        assert "--confcutdir=/tests" not in addopts
 
     @pytest.mark.asyncio
     async def test_rootdir_follows_workspace(self):
@@ -1345,7 +1580,7 @@ class TestVerifierEnv:
 
 
 class TestHardeningOptOuts:
-    """Per-task [verifier.hardening] opt-outs from task.toml."""
+    """Per-task [verifier.hardening] opt-outs from task config."""
 
     def test_defaults_when_no_task_dir(self):
         from benchflow.sandbox.lockdown import (
@@ -1371,6 +1606,51 @@ class TestHardeningOptOuts:
             "[verifier.hardening]\ncleanup_conftests = false\n"
         )
         cfg = _read_hardening_config(tmp_path)
+        assert cfg["cleanup_conftests"] is False
+
+    def test_opt_out_cleanup_conftests_from_task_md(self, tmp_path):
+        """Guards commit 67378ddd's 2026-06-04 task.md hardening config."""
+        from benchflow.sandbox.lockdown import _read_hardening_config
+
+        (tmp_path / "task.md").write_text(
+            """---
+version: "1.0"
+verifier:
+  hardening:
+    cleanup_conftests: false
+---
+## prompt
+
+Solve it.
+"""
+        )
+
+        cfg = _read_hardening_config(tmp_path)
+
+        assert cfg["cleanup_conftests"] is False
+
+    def test_task_md_hardening_wins_when_legacy_pair_present(self, tmp_path):
+        """Guards commit 67378ddd's 2026-06-04 task.md mixed-format drift."""
+        from benchflow.sandbox.lockdown import _read_hardening_config
+
+        (tmp_path / "task.toml").write_text(
+            "[verifier.hardening]\ncleanup_conftests = true\n"
+        )
+        (tmp_path / "task.md").write_text(
+            """---
+version: "1.0"
+verifier:
+  hardening:
+    cleanup_conftests: false
+---
+## prompt
+
+Use task.md as the canonical task entrypoint.
+"""
+        )
+
+        cfg = _read_hardening_config(tmp_path)
+
         assert cfg["cleanup_conftests"] is False
 
     def test_unknown_key_logged_not_applied(self, tmp_path, caplog):

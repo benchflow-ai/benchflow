@@ -10,7 +10,8 @@ from uuid import uuid4
 
 from benchflow.rollout import (
     GENERATED_SKILLS_ROOT,
-    SKILL_MODE_DEFAULT,
+    SKILL_MODE_NO_SKILL,
+    SKILL_MODE_SELF_GEN,
     Role,
     Rollout,
     RolloutConfig,
@@ -133,13 +134,13 @@ def _single_trial_config(
             _solver_scene(config),
         ],
         skills_dir=None,
-        skill_mode=SKILL_MODE_DEFAULT,
+        skill_mode=SKILL_MODE_NO_SKILL,
+        artifact_skill_mode=config.artifact_skill_mode or SKILL_MODE_SELF_GEN,
         skill_creator_dir=None,
         pre_agent_hooks=[
             *(config.pre_agent_hooks or []),
             _ensure_generated_skills_hook(config),
         ],
-        include_task_skills=False,
         export_generated_skills_to=(
             config.export_generated_skills_to or artifact_root / "generated-skills"
         ),

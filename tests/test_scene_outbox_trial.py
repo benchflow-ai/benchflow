@@ -141,6 +141,31 @@ async def test_run_steps_reuses_session_for_same_role(self_review_scene: Scene) 
     assert prompts_received == ["Solve", "Review your solution and fix edge cases."]
 
 
+async def test_run_steps_restarts_same_role_at_scene_boundary() -> None:
+    """Guards commit 67378ddd's 2026-06-04 task.md multi-scene context."""
+    role = Role("solver", "gemini", "flash")
+    scenes = [
+        Scene(name="prep", roles=[role], turns=[Turn("solver", "Prepare.")]),
+        Scene(name="solve", roles=[role], turns=[Turn("solver", "Solve.")]),
+    ]
+    trial = _make_trial(scenes[0])
+    prompts_received: list[str] = []
+
+    async def fake_execute(prompts=None):
+        prompts_received.extend(prompts or [])
+        return [], 0
+
+    trial.connect_as = AsyncMock()
+    trial.disconnect = AsyncMock()
+    trial.execute = fake_execute  # type: ignore[method-assign,assignment]
+
+    await trial._run_steps(compile_scenes_to_steps(scenes, default_prompt="Fallback"))
+
+    assert trial.connect_as.await_count == 2
+    assert trial.disconnect.await_count == 2
+    assert prompts_received == ["Prepare.", "Solve."]
+
+
 async def test_run_steps_disconnects_active_agent_when_execute_times_out(
     self_review_scene: Scene,
 ) -> None:
@@ -359,3 +384,39 @@ async def test_scene_skills_prefers_remote_string_path_over_matching_host_path(
 
     assert trial._env._uploads == []
     assert not any(cmd.startswith("mkdir -p /skills") for cmd in trial._env._exec_log)
+
+
+async def test_scene_skills_upload_absolute_str_host_dir(tmp_path: Path) -> None:
+    """An absolute *str* skills_dir that exists on the host is uploaded.
+
+    Regression test guarding the OpenHands with-skills delivery fix: a prior
+    change gated the scene-skill upload on ``isinstance(skills_dir, os.PathLike)``,
+    but the SkillsBench entrypoint passes an absolute *str* host path
+    (``EvaluationConfig.skills_dir`` is typed ``str``). The gate skipped the
+    upload, the path fell through to the in-sandbox branch, and
+    ``_link_skill_paths`` produced a dangling symlink -- so deployed task skills
+    never reached the agent's available-skills catalog and the with-skills arm
+    became a no-op. Uploading must key on the directory existing on the host,
+    not on the argument's type.
+    """
+    skills_root = tmp_path / "environment" / "skills"
+    (skills_root / "mesh-analysis").mkdir(parents=True)
+    (skills_root / "mesh-analysis" / "SKILL.md").write_text(
+        "---\nname: mesh-analysis\ndescription: analyze meshes\n---\n# Mesh\n"
+    )
+    scene = Scene(
+        name="solve",
+        roles=[Role("solver", "claude-agent-acp", "haiku")],
+        turns=[Turn("solver")],
+        skills_dir=str(skills_root),  # absolute STR host path, as production passes
+    )
+    trial = _make_trial(scene)
+    trial._agent_cwd = "/app"
+
+    await trial._activate_step_skills(compile_scenes_to_steps([scene])[0])
+
+    assert trial._env._uploads == [(skills_root, "/skills/solve")]
+    assert any(
+        "ln -sfn /skills/solve /home/agent/.claude/skills" in cmd
+        for cmd in trial._env._exec_log
+    )

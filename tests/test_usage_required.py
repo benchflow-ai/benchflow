@@ -51,7 +51,7 @@ async def test_required_usage_tracking_fails_when_provider_usage_missing(tmp_pat
     rollout._env = SimpleNamespace(stop=AsyncMock())
     rollout._environment = None
     rollout._usage_runtime = ProviderRuntime(
-        kind="usage-proxy",
+        kind="litellm",
         agent_base_url="http://host.docker.internal:32124",
         backend_model="gpt-5.5",
         server=FakeServer(),
