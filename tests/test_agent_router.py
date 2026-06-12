@@ -18,6 +18,7 @@ from benchflow.agent_router import (
     CodexLaunchError,
     InvalidBenchmarkName,
     ParityExperimentMissing,
+    ParityRerunError,
     assemble_adoption_context,
     build_codex_launch_command,
     build_scaffold_files,
@@ -31,6 +32,7 @@ from benchflow.agent_router import (
     load_parity_experiment,
     prepare_adoption_launch,
     render_divergence_issue,
+    rerun_parity_experiment,
     roundtrip_conformance_status,
     run_agent_adoption,
     validate_benchmark_name,
@@ -446,6 +448,50 @@ def test_scaffolded_parity_file_is_insufficient_evidence() -> None:
     data = json.loads(build_scaffold_files("my-bench")["parity_experiment.json"])
     report = build_verify_report("my-bench", data)
     assert report.verdict == "insufficient-evidence"
+
+
+# verify --rerun: independently re-execute parity_test.py instead of trusting
+# the recorded parity_experiment.json (the conversion's self-report).
+
+
+def _rerun(tmp_path: Path, runner) -> object:
+    create_benchmark("my-bench", tmp_path)  # ships parity_test.py
+    return rerun_parity_experiment(tmp_path, "my-bench", runner=runner)
+
+
+def test_rerun_parses_fresh_side_by_side_json(tmp_path: Path) -> None:
+    """A clean side-by-side run's JSON is parsed (tolerating log noise around it)."""
+    payload = {"side_by_side": {"criteria_compared": 4, "agreed": 4}}
+
+    def runner(command: list[str], cwd: Path) -> tuple[int, str, str]:
+        assert command[-2:] == ["--mode", "side-by-side"]
+        return 0, f"running parity…\n{json.dumps(payload)}\n[done]", ""
+
+    assert _rerun(tmp_path, runner) == payload
+
+
+def test_rerun_fail_closed_on_nonzero_exit(tmp_path: Path) -> None:
+    with pytest.raises(ParityRerunError, match="exited 2"):
+        _rerun(tmp_path, lambda c, w: (2, "partial", "traceback boom"))
+
+
+def test_rerun_fail_closed_on_unparseable_output(tmp_path: Path) -> None:
+    with pytest.raises(ParityRerunError, match="could not parse"):
+        _rerun(tmp_path, lambda c, w: (0, "no json emitted", ""))
+
+
+def test_rerun_requires_parity_test_script(tmp_path: Path) -> None:
+    create_benchmark("my-bench", tmp_path)
+    (tmp_path / "my-bench" / "parity_test.py").unlink()
+    with pytest.raises(ParityRerunError, match=r"no parity_test\.py"):
+        rerun_parity_experiment(tmp_path, "my-bench", runner=lambda c, w: (0, "{}", ""))
+
+
+def test_rerun_unknown_benchmark_is_not_found(tmp_path: Path) -> None:
+    with pytest.raises(BenchmarkNotFound):
+        rerun_parity_experiment(
+            tmp_path, "never-adopted", runner=lambda c, w: (0, "{}", "")
+        )
 
 
 # An adopted benchmark (harvey-lab) ships a parity_experiment.json whose top

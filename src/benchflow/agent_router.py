@@ -90,6 +90,10 @@ class CodexLaunchError(RuntimeError):
     """Raised when the host codex CLI cannot be launched (e.g. no credentials)."""
 
 
+class ParityRerunError(RuntimeError):
+    """Raised when ``verify --rerun`` cannot independently re-execute parity."""
+
+
 # ── Paths ─────────────────────────────────────────────────────────────
 
 
@@ -446,6 +450,67 @@ def load_parity_experiment(benchmarks_root: Path, name: str) -> Any:
         ) from exc
 
 
+def rerun_parity_experiment(
+    benchmarks_root: Path,
+    name: str,
+    *,
+    runner: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
+) -> Any:
+    """Independently re-execute a benchmark's ``parity_test.py`` and return its
+    fresh side-by-side results, instead of trusting the recorded JSON.
+
+    The default verify gate *scores the recorded* ``parity_experiment.json`` —
+    fast, but it trusts an artifact the conversion produced about itself. This
+    runs ``python <benchmark>/parity_test.py --mode side-by-side`` (the scaffold
+    contract) and parses the JSON it prints, so ``verify --rerun`` validates the
+    conversion independently. Fail-closed: a missing script, a nonzero exit, or
+    unparseable output all raise — ``--rerun`` never silently falls back to
+    stale or absent data.
+
+    ``runner`` is injected in tests; it returns ``(returncode, stdout, stderr)``.
+    """
+    name = validate_benchmark_name(name)
+    benchmark_dir = Path(benchmarks_root) / name
+    if not benchmark_dir.exists():
+        raise BenchmarkNotFound(
+            f"benchmark not adopted: {benchmark_dir} — run "
+            f"`bench agent create {name}` first"
+        )
+    script = benchmark_dir / "parity_test.py"
+    if not script.exists():
+        raise ParityRerunError(
+            f"no parity_test.py in {benchmark_dir} — cannot --rerun "
+            "(scaffold it with `bench agent create` and implement side-by-side)"
+        )
+    command = ["python", str(script), "--mode", "side-by-side"]
+    returncode, stdout, stderr = (runner or _run_parity_script)(command, benchmark_dir)
+    if returncode != 0:
+        raise ParityRerunError(
+            f"parity_test.py --mode side-by-side exited {returncode}: "
+            f"{(stderr or stdout).strip()[-2000:]}"
+        )
+    # Tolerate leading log lines: extract the JSON object the script prints.
+    try:
+        start = stdout.index("{")
+        end = stdout.rindex("}") + 1
+        return json.loads(stdout[start:end])
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ParityRerunError(
+            "could not parse parity_test.py --mode side-by-side output as JSON "
+            f"(expected the recorded parity_experiment.json shape): {exc}"
+        ) from exc
+
+
+def _run_parity_script(command: list[str], cwd: Path) -> tuple[int, str, str]:
+    import subprocess
+    import sys
+
+    # Use the interpreter running benchflow so parity_test.py imports resolve.
+    argv = [sys.executable, *command[1:]] if command[:1] == ["python"] else command
+    proc = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
 def roundtrip_conformance_status(
     task_dir: Path,
     *,
@@ -571,17 +636,35 @@ def register_agent_router(agent_app: typer.Typer) -> None:
                 help="Also run the structural round-trip check on this task dir",
             ),
         ] = None,
+        rerun: Annotated[
+            bool,
+            typer.Option(
+                "--rerun",
+                help="Independently re-execute parity_test.py --mode side-by-side "
+                "and score its fresh output, instead of the recorded "
+                "parity_experiment.json",
+            ),
+        ] = False,
     ) -> None:
         """Run the parity gate for an adopted benchmark; emit a verdict."""
         root = benchmarks_dir or default_benchmarks_dir()
         try:
             name = validate_benchmark_name(name)
-            data: Any = load_parity_experiment(root, name)
+            if rerun:
+                console.print(
+                    "[dim]Re-executing parity_test.py --mode side-by-side…[/dim]"
+                )
+                data: Any = rerun_parity_experiment(root, name)
+            else:
+                data = load_parity_experiment(root, name)
         except InvalidBenchmarkName as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc
         except BenchmarkNotFound as exc:
             console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+        except ParityRerunError as exc:
+            console.print(f"[red]--rerun failed: {exc}[/red]")
             raise typer.Exit(1) from exc
         except ParityExperimentMissing as exc:
             console.print(f"[yellow]{exc}[/yellow]")
