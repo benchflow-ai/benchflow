@@ -674,6 +674,46 @@ def tasks_check(
         raise typer.Exit(1)
 
 
+@tasks_app.command("digest")
+def tasks_digest(
+    path: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to a task directory, or a directory of task directories"
+        ),
+    ],
+) -> None:
+    """Compute the content digest that pins a task's files, independent of git.
+
+    Matches the digests in the skillsbench dataset registry (registry.json).
+    Given a single task directory (contains task.toml), prints the digest;
+    given a directory of tasks, prints one "<name> <digest>" line per task.
+    """
+    from benchflow._utils.task_authoring import task_digest
+
+    if not path.is_dir():
+        console.print(f"[red]Not a directory: {path}[/red]")
+        raise typer.Exit(1)
+
+    if (path / "task.toml").is_file():
+        # typer.echo, not console.print: Rich wraps lines at terminal width,
+        # which would corrupt piped machine-readable output.
+        typer.echo(task_digest(path))
+        return
+
+    task_dirs = sorted(
+        d for d in path.iterdir() if d.is_dir() and (d / "task.toml").is_file()
+    )
+    if not task_dirs:
+        console.print(
+            f"[red]No tasks under {path} — expected task.toml in it "
+            f"or in its immediate subdirectories[/red]"
+        )
+        raise typer.Exit(1)
+    for task_dir in task_dirs:
+        typer.echo(f"{task_dir.name} {task_digest(task_dir)}")
+
+
 compat_app = typer.Typer(help="Third-party framework compatibility checks.")
 app.add_typer(compat_app, name="compat")
 
