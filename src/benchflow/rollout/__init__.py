@@ -1275,7 +1275,9 @@ class Rollout:
                 verifier.verify(),
                 timeout=self._task.config.verifier.timeout_sec,
             )
-            rewards = _ensure_canonical_rewards(verifier_result.rewards)
+            rewards = _ensure_canonical_rewards(
+                verifier_result.rewards, task=self._task
+            )
             # Capture raw verifier output for the user
             cat = await self._env.exec(
                 "cat /logs/verifier/*.log 2>/dev/null || "

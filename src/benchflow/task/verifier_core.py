@@ -27,8 +27,10 @@ from typing import Any
 
 from benchflow.rewards.validation import (
     apply_aggregate_policy,
+    declared_reward_range,
     is_valid_reward_number,
     reward_lenient_from_env,
+    reward_range_phrase,
     validate_reward_map,
 )
 from benchflow.sandbox.lockdown import _exec_return_code, clear_verifier_output_dir
@@ -108,6 +110,10 @@ class Verifier:
         self._rollout_paths = rollout_paths
         self._sandbox = sandbox
         self._logger = (_logger or logger).getChild("verifier")
+        # Task-declared ``[verifier] reward_range`` (BF-8); None keeps the
+        # canonical strict [0, 1]. Applies to the test-script reward contract
+        # (reward.txt / reward.json) — judge and ORS scores stay [0, 1].
+        self._reward_range = declared_reward_range(task)
 
     def _parse_reward_text(self) -> dict[str, float | int]:
         if self._rollout_paths.reward_text_path.stat().st_size == 0:
@@ -120,10 +126,11 @@ class Verifier:
             raise VerifierOutputParseError(
                 f"Failed to parse rewards from text file {self._rollout_paths.reward_text_path}"
             ) from e
-        if not is_valid_reward_number(reward):
+        if not is_valid_reward_number(reward, reward_range=self._reward_range):
             raise VerifierOutputParseError(
                 f"Reward text file {self._rollout_paths.reward_text_path} "
-                "must contain a finite numeric reward between 0.0 and 1.0"
+                "must contain a finite numeric reward "
+                f"{reward_range_phrase(self._reward_range)}"
             )
         return {"reward": reward}
 
@@ -155,6 +162,7 @@ class Verifier:
                 source="reward JSON",
                 aggregate_policy=aggregate_policy,
                 lenient=reward_lenient_from_env(),
+                reward_range=self._reward_range,
             )
         except ValueError as e:
             raise VerifierOutputParseError(
@@ -175,6 +183,7 @@ class Verifier:
                     aggregate_policy=aggregate_policy,
                     source="reward JSON",
                     strict=True,
+                    reward_range=self._reward_range,
                 )
             except ValueError as e:
                 raise VerifierOutputParseError(
@@ -191,6 +200,7 @@ class Verifier:
                         rewards,
                         aggregate_policy=aggregate_policy,
                         source="reward JSON",
+                        reward_range=self._reward_range,
                     )
                 except ValueError as e:
                     raise VerifierOutputParseError(
@@ -210,6 +220,7 @@ class Verifier:
                         rewards,
                         aggregate_policy=aggregate_policy,
                         source="reward JSON",
+                        reward_range=self._reward_range,
                     )
                 except ValueError as e:
                     raise VerifierOutputParseError(
