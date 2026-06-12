@@ -516,20 +516,16 @@ for the full manifest schema, both onboarded benchmarks, and the
 
 BenchFlow runs benchmarks authored in other formats without converting them
 first. An **inbound adapter** translates a foreign task directory into
-BenchFlow-native shape; the rollout then runs natively. Two adapters ship:
+BenchFlow-native shape; the rollout then runs natively:
 
 | Source format | Signature file | Adapter |
 |---------------|----------------|---------|
 | Harbor | `task.toml` | `HarborAdapter` |
-| Terminal-Bench | `task.yaml` | `TerminalBenchAdapter` |
 
 `benchflow.adapters.inbound.detect_adapter()` sniffs a task directory and
-picks the adapter whose format it matches (`task.toml` is checked first, so a
-directory carrying both is treated as Harbor — the native superset). Each
-adapter is a pure `Path -> InboundTask` translation: it reads a directory and
-returns an in-memory native task, building no sandboxes and running nothing.
-Terminal-Bench tasks are backward-compatible this way — old terminal-style
-tasks keep running on BenchFlow unchanged.
+picks the adapter whose format it matches. The adapter is a pure
+`Path -> InboundTask` translation: it reads a directory and returns an
+in-memory native task, building no sandboxes and running nothing.
 
 ---
 

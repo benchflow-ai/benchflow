@@ -26,12 +26,11 @@ from benchflow.adapters.inbound import (
     InboundTask,
     manifest_from_task_config,
 )
-from benchflow.adapters.terminal_bench import TerminalBenchAdapter
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.task.config import TaskConfig
 
-# Foreign task fixtures — minimal Harbor / Terminal-Bench task dirs
+# Foreign task fixtures — minimal Harbor task dirs
 
 
 _HARBOR_TASK_TOML = """\
@@ -61,15 +60,6 @@ docker_image = "ghcr.io/openmoss/abc-widget:1.2.3"
 """
 
 
-_TB_TASK_YAML = """\
-instruction: |-
-  Accelerate the script.
-author_name: Yiqing Liang
-max_agent_timeout_sec: 900.0
-max_test_timeout_sec: 240.0
-"""
-
-
 def _write_harbor_task(root: Path, *, toml: str = _HARBOR_TASK_TOML) -> Path:
     task_dir = root / "harbor-task"
     task_dir.mkdir()
@@ -79,15 +69,6 @@ def _write_harbor_task(root: Path, *, toml: str = _HARBOR_TASK_TOML) -> Path:
     (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
     (task_dir / "tests").mkdir()
     (task_dir / "tests" / "test.sh").write_text("#!/bin/bash\npytest\n")
-    return task_dir
-
-
-def _write_tb_task(root: Path) -> Path:
-    task_dir = root / "tb-task"
-    task_dir.mkdir()
-    (task_dir / "task.yaml").write_text(_TB_TASK_YAML)
-    (task_dir / "Dockerfile").write_text("FROM python:3.12-slim\n")
-    (task_dir / "run-tests.sh").write_text("#!/bin/bash\npytest\n")
     return task_dir
 
 
@@ -173,29 +154,6 @@ class TestHarborManifestSeam:
         result = HarborAdapter.from_task_dir(task_dir)
         assert result.manifest.name == "explicit-env"
         assert result.manifest.image == "ghcr.io/example/explicit:9.9"
-
-
-class TestTerminalBenchManifestSeam:
-    def test_returns_validated_manifest(self, tmp_path: Path) -> None:
-        task_dir = _write_tb_task(tmp_path)
-        result = TerminalBenchAdapter.from_task_dir(task_dir)
-        assert isinstance(result.manifest, EnvironmentManifest)
-
-    def test_manifest_name_is_namespaced(self, tmp_path: Path) -> None:
-        # The Terminal-Bench adapter namespaces the bare task id; the
-        # manifest carries the namespaced form so two benchmarks can't
-        # collide on a bare task name.
-        task_dir = _write_tb_task(tmp_path)
-        result = TerminalBenchAdapter.from_task_dir(task_dir)
-        assert result.manifest.name == "terminal-bench/tb-task"
-
-    def test_manifest_image_is_resolvable(self, tmp_path: Path) -> None:
-        # Terminal-Bench ships only a Dockerfile, so the manifest names
-        # the synthesized local tag — never empty, never None.
-        task_dir = _write_tb_task(tmp_path)
-        result = TerminalBenchAdapter.from_task_dir(task_dir)
-        assert result.manifest.image
-        assert result.manifest.base_image is None
 
 
 # Manifest can be consumed by manifest-backed runtime

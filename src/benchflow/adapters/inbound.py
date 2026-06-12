@@ -303,21 +303,17 @@ class InboundTask:
 
 if TYPE_CHECKING:
     from benchflow.adapters.harbor import HarborAdapter
-    from benchflow.adapters.terminal_bench import TerminalBenchAdapter
 
     # An inbound adapter is just a class with a ``from_task_dir(Path) ->
-    # InboundTask`` classmethod — the two concrete ones. No standalone
-    # Protocol: InboundTask is the real contract, the adapter is its producer.
-    InboundAdapterType = type[HarborAdapter] | type[TerminalBenchAdapter]
+    # InboundTask`` classmethod. No standalone Protocol: InboundTask is the
+    # real contract, the adapter is its producer.
+    InboundAdapterType = type[HarborAdapter]
 
 
 def detect_adapter(task_dir: Path | str) -> InboundAdapterType:
     """Return the inbound adapter whose format ``task_dir`` matches.
 
-    Detection is by signature file: Harbor task dirs carry a ``task.toml``,
-    Terminal-Bench task dirs carry a ``task.yaml``. ``task.toml`` is checked
-    first so a directory carrying both is treated as Harbor (the native
-    superset format).
+    Detection is by signature file: Harbor task dirs carry a ``task.toml``.
 
     Raises:
         ValueError: if the directory matches no known foreign format.
@@ -325,14 +321,10 @@ def detect_adapter(task_dir: Path | str) -> InboundAdapterType:
     # Imported here to avoid a module-load cycle: the concrete adapters
     # import InboundTask from this module.
     from benchflow.adapters.harbor import HarborAdapter
-    from benchflow.adapters.terminal_bench import TerminalBenchAdapter
 
     root = Path(task_dir)
     if (root / "task.toml").is_file():
         return HarborAdapter
-    if (root / "task.yaml").is_file() or (root / "task.yml").is_file():
-        return TerminalBenchAdapter
     raise ValueError(
-        f"Unrecognized task format in {root}: expected a Harbor 'task.toml' "
-        f"or a Terminal-Bench 'task.yaml'."
+        f"Unrecognized task format in {root}: expected a Harbor 'task.toml'."
     )
