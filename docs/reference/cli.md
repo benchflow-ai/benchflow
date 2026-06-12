@@ -84,6 +84,7 @@ bench agent run ./vendor/some-benchmark --name my-bench --model o3
 | `--model` | codex default | Model for the codex driver |
 | `--dry-run` | `false` | Print the launch command, do not run |
 | `--codex-bin` | `codex` | Host codex binary |
+| `-c`, `--codex-config` | — | Codex config override as `key=value`, passed through to codex as `-c key=value`; repeatable. Use it to work around host `~/.codex/config.toml` drift without editing the file — e.g. `-c service_tier=flex` when an installed codex version rejects a stale value. |
 
 ### bench agent verify
 
@@ -102,10 +103,18 @@ a draft GitHub issue body for human support — printed to stdout, or written to
 to also run the structural round-trip conformance check on a concrete task
 directory.
 
+By default the gate **scores the recorded** `parity_experiment.json` — fast, but
+it trusts an artifact the conversion produced about itself. Pass `--rerun` to
+**independently re-execute** `parity_test.py --mode side-by-side` and score its
+fresh output instead. `--rerun` is fail-closed: a missing/failing `parity_test.py`,
+a timeout, or output that is not in the scoreable `parity_experiment.json` shape
+all exit non-zero (rather than silently reporting `insufficient-evidence`).
+
 ```bash
 bench agent verify my-bench
 bench agent verify my-bench --tolerance 0.05 --issue-out divergence.md
 bench agent verify my-bench --roundtrip-task benchmarks/my-bench/tasks/example
+bench agent verify my-bench --rerun   # re-run parity_test.py, score fresh output
 ```
 
 | Flag | Default | Description |
@@ -114,6 +123,7 @@ bench agent verify my-bench --roundtrip-task benchmarks/my-bench/tasks/example
 | `--tolerance` | `0.02` | Max abs reward delta (statistical layer) |
 | `--issue-out` | — | Write the divergence issue draft to this path instead of stdout |
 | `--roundtrip-task` | — | Also run the structural round-trip check on this task dir |
+| `--rerun` | `false` | Re-execute `parity_test.py --mode side-by-side` and score its fresh output instead of the recorded `parity_experiment.json` |
 
 ## bench eval
 
@@ -166,12 +176,18 @@ bench eval create \
   --sandbox daytona \
   --skill-mode with-skill \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
+
+# Pinned registry dataset: resolves skillsbench@1.1, verifies task digests,
+# and stamps dataset identity into every result.json/config.json
+bench eval create -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-preview
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config` | — | YAML config file |
 | `--tasks-dir` | — | Local task dir (single task with task.toml, or parent of many) |
+| `-d`, `--dataset` | — | Registry dataset to run as `<name>@<version>` (e.g. `skillsbench@1.1`). Resolves the pinned snapshot from the registry, clones tasks at their pinned commit, verifies each task's sha256 content digest, and checks the dataset's `bench_version` range against the installed benchflow. Each `result.json`/`config.json` is stamped with `dataset_name`, `dataset_version`, and the task's `task_digest`. |
+| `--registry` | skillsbench registry | Dataset registry JSON URL or local file. Only valid with `--dataset`. |
 | `--source-repo` | — | Remote repo as `org/repo` (e.g. `benchflow-ai/skillsbench`) |
 | `--source-path` | — | Subpath within the repo (e.g. `tasks`) |
 | `--source-ref` | — | Branch or tag to clone (e.g. `main`) |
@@ -343,6 +359,23 @@ Arguments: `TASK_DIR` (task directory to export) and optional `OUTPUT_DIR`
 | `--target` | `harbor` | Compatibility target: `harbor` or `pier` |
 | `--overwrite` | `false` | Replace an existing export directory |
 | `--report-only` | `false` | Print the compatibility loss report without writing files |
+
+### bench tasks digest
+
+Compute the content digest that pins a task's files, independent of git — the
+sha256 the dataset registry keys on (matches the digests `bench eval create -d`
+verifies and the `task_digest` stamped into every `result.json`). Recognizes
+both legacy `task.toml` tasks and native `task.md` tasks. Given a single task
+directory it prints the digest; given a directory of tasks it prints one
+`<name> <digest>` line per task. Output goes to stdout via `echo` (not Rich), so
+it is safe to pipe into machine-readable tooling.
+
+```bash
+bench tasks digest tasks/my-task          # -> sha256:<hex>
+bench tasks digest tasks/                  # one "<name> sha256:<hex>" line per task
+```
+
+Arguments: `PATH` (a task directory, or a directory of task directories).
 
 ### bench tasks generate
 
