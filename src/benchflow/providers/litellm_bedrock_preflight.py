@@ -24,20 +24,24 @@ class BedrockPatchPreflightError(RuntimeError):
 BEDROCK_PATCH_PREFLIGHT_SOURCE = """\
 import sys
 
-# Probe with a versioned Bedrock inference-profile ID: stock litellm 1.88.0rc1
-# resolves the bare alias through its cost map, so only the versioned form
-# discriminates patched from stock (#602).
-PROBE = "us.anthropic.claude-opus-4-8-20251101-v1:0"
+# Probe with versioned/profile-shaped Bedrock IDs: stock litellm 1.88.0rc1
+# resolves the Opus bare alias through its cost map, so only the versioned form
+# discriminates patched from stock (#602). Fable 5 is profile-shaped today.
+PROBES = [
+    "us.anthropic.claude-opus-4-8-20251101-v1:0",
+    "us.anthropic.claude-fable-5",
+]
 
 failures = []
 try:
     from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 
-    if not AnthropicConfig._is_adaptive_thinking_model(PROBE):
-        failures.append(
-            "adaptive-thinking gate inactive: "
-            f"_is_adaptive_thinking_model({PROBE!r}) is False"
-        )
+    for probe in PROBES:
+        if not AnthropicConfig._is_adaptive_thinking_model(probe):
+            failures.append(
+                "adaptive-thinking gate inactive: "
+                f"_is_adaptive_thinking_model({probe!r}) is False"
+            )
 except Exception as exc:  # noqa: BLE001 - report any import/shape drift
     failures.append(f"anthropic transform unavailable: {exc}")
 try:

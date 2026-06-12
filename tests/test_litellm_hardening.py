@@ -434,6 +434,7 @@ _BEDROCK_ENV = {"AWS_BEARER_TOKEN_BEDROCK": "tok", "AWS_REGION": "us-east-1"}
     [
         ("aws-bedrock/us.anthropic.claude-opus-4-8-20251101-v1:0", True),
         ("aws-bedrock/eu.anthropic.claude-sonnet-4-9-20260301-v1:0", True),
+        ("aws-bedrock/us.anthropic.claude-fable-5", True),
         ("aws-bedrock/us.anthropic.claude-opus-4-7-20251101-v1:0", False),
     ],
 )
