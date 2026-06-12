@@ -27,7 +27,9 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[1]
+# Walk up to the repo root (the dir holding pyproject.toml) so the lab
+# keeps working regardless of how deep it is filed under the tree.
+REPO_ROOT = next(p for p in HERE.parents if (p / "pyproject.toml").is_file())
 VENVS_DIR = HERE / ".venvs"
 JOBS_DIR = HERE / ".jobs"
 

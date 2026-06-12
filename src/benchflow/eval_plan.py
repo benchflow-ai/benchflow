@@ -194,6 +194,8 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             "Choose only one source: --config, --tasks-dir, --source-repo, or --source-env"
         )
+    if request.tasks_dir and not Path(request.tasks_dir).exists():
+        raise EvalPlanError(f"--tasks-dir not found: {request.tasks_dir}")
     if request.worker_concurrency is not None and not (
         request.tasks_dir or request.source_repo
     ):
@@ -211,9 +213,56 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         else DEFAULT_AGENT
     )
     eval_environment = request.environment or "docker"
+    # --sandbox is ignored by hosted source-env runs (the hosted Verifiers
+    # environment owns its harness), so only validate / preflight it for the
+    # paths that actually use the local sandbox.
+    if not request.source_env:
+        if eval_environment not in {"docker", "daytona", "modal"}:
+            # Unknown sandbox values otherwise surface as a raw traceback per-task
+            # once the rollout starts — reject them at planning instead.
+            raise EvalPlanError(
+                f"Invalid --sandbox {eval_environment!r}: "
+                "choose docker, daytona, or modal"
+            )
+        if eval_environment == "modal":
+            # Fail fast with the actionable extra hint instead of surfacing a raw
+            # ModuleNotFoundError deep inside the rollout (the in-sandbox guard in
+            # sandbox/setup.py remains as defense-in-depth for programmatic callers).
+            try:
+                import modal  # noqa: F401
+            except ModuleNotFoundError as exc:
+                raise EvalPlanError(
+                    "Missing optional dependency for 'modal' sandbox. "
+                    "Install it with `uv sync --extra sandbox-modal`."
+                ) from exc
     eval_prompts = cast("list[str | None] | None", request.prompt)
     sandbox_user = normalize_sandbox_user(request.sandbox_user)
     eval_concurrency = request.concurrency if request.concurrency is not None else 4
+    if eval_concurrency < 1:
+        # A non-positive concurrency builds asyncio.Semaphore(0), which can never
+        # be acquired and deadlocks the run — reject it up front instead.
+        raise EvalPlanError(f"--concurrency must be >= 1 (got {eval_concurrency})")
+    if request.build_concurrency is not None and request.build_concurrency < 1:
+        raise EvalPlanError(
+            f"--build-concurrency must be >= 1 (got {request.build_concurrency})"
+        )
+    if request.skill_mode not in {"no-skill", "with-skill", "self-gen"}:
+        raise EvalPlanError(
+            f"Invalid --skill-mode {request.skill_mode!r}: "
+            "choose no-skill, with-skill, or self-gen"
+        )
+    if request.tasks_dir or request.source_repo:
+        # Validate the agent/model pairing up front so an agent with no default
+        # model (e.g. codex) reports a clean error instead of an uncaught
+        # ValueError once the rollout starts. Only the --tasks-dir / --source-repo
+        # paths take the model from --model here; --config and --source-env resolve
+        # it from the YAML / hosted source later, so pre-validating those would
+        # falsely reject a legitimately model-bearing config. The no-source case
+        # is left to the CLI's "provide a source" error.
+        try:
+            effective_model(eval_agent, request.model)
+        except ValueError as exc:
+            raise EvalPlanError(str(exc)) from None
 
     usage_tracking_overridden = request.usage_tracking is not None
     try:

@@ -8,7 +8,7 @@ from 0.0 to 1.0. Under HEAD the same exploits are blocked and reward stays 0.0.
 ## One-command repro
 
 ```sh
-python3 labs/benchjack-sandbox-hardening/run_comparison.py
+python3 docs/labs/benchjack-sandbox-hardening/run_comparison.py
 ```
 
 Expected output:
@@ -71,7 +71,7 @@ To test with a real agent, replace `agent="oracle"` with
 ## Layout
 
 ```
-labs/benchjack-sandbox-hardening/
+docs/labs/benchjack-sandbox-hardening/
 ├── README.md
 ├── run_comparison.py
 ├── _attack_runner.py
@@ -128,14 +128,14 @@ audit against the BenchJack seven-pattern threat model.
 code and explanation. Run `run_comparison.py` first (creates `.venvs/`), then:
 
 ```sh
-uv run --with jupyter jupyter notebook labs/benchjack-sandbox-hardening/comparison.ipynb
+uv run --with jupyter jupyter notebook docs/labs/benchjack-sandbox-hardening/comparison.ipynb
 ```
 
 To execute and bake outputs in-place before committing:
 
 ```sh
 uv run --with nbconvert jupyter nbconvert --to notebook --execute --inplace \
-    labs/benchjack-sandbox-hardening/comparison.ipynb
+    docs/labs/benchjack-sandbox-hardening/comparison.ipynb
 ```
 
 ## Caveats
