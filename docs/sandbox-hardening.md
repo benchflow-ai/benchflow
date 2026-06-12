@@ -7,7 +7,7 @@ benchflow's verifier hardening blocks these patterns by default. Tasks opt out i
 
 ## What gets hardened
 
-Between the agent's last action and the verifier's first command, `harden_before_verify()` (in `src/benchflow/_sandbox.py`) runs this sequence:
+Between the agent's last action and the verifier's first command, `harden_before_verify()` (in `src/benchflow/sandbox/lockdown.py`) runs this sequence:
 
 1. **Kill sandbox-user processes** — `pkill -u <sandbox_user>`, twice with a sleep, so the agent can't keep writing during teardown.
 2. **Wipe `/logs/verifier`** — fresh, root-owned, mode 0777 (so a non-root verifier can write its own results).

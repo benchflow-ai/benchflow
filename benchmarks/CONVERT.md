@@ -171,7 +171,7 @@ parity:
 Script that:
 1. Downloads/clones the source benchmark
 2. Runs the converter
-3. Runs the benchmark via BenchFlow `Job`
+3. Runs the benchmark via BenchFlow `Evaluation`
 
 ### 9. Publish
 
