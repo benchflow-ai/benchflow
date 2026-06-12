@@ -287,6 +287,22 @@ requires_judge_sdk = pytest.mark.skipif(
 )
 
 
+def _deepagents_ok() -> bool:
+    try:
+        import deepagents  # noqa: F401
+        import langchain_openai  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+requires_deepagents = pytest.mark.skipif(
+    not _deepagents_ok(),
+    reason="deepagents harness not installed (uv sync --extra deepagents)",
+)
+
+
 @pytest.fixture(scope="module")
 def real_tasks(tmp_path_factory) -> Path:
     """A staged copy of the three runnable real-skillsbench tasks."""
@@ -399,3 +415,44 @@ def test_reaper_dryrun_is_safe():
     if issues and issues[0].startswith("__skip__"):
         pytest.skip(issues[0])
     assert not issues, issues
+
+
+@pytest.mark.integration
+@requires_docker
+@requires_deepseek
+@requires_judge_sdk
+@requires_deepagents
+def test_deepagents_deepseek_rollout_is_real_and_judged(tmp_path: Path):
+    # End to end through the deepagents harness: a deepseek-v4-flash deep agent
+    # solves a small coding task with real shell/file tools in a Docker sandbox,
+    # producing a rollout the same realness gate + agent judge grade. Validates
+    # the harness produces trustworthy measurements; reward-hack detection on
+    # this judge is pinned deterministically in tests/test_judge_robustness.py.
+    import asyncio
+    import os
+
+    from tests.integration import deepagents_harness as dh
+
+    res = dh.run_deepagent(
+        instruction=(
+            "Create /work/solution.py with a function `is_prime(n)` returning a "
+            "bool, then create /work/test.py asserting is_prime(7) and not "
+            "is_prime(8), and run it with python."
+        ),
+        rollout_dir=tmp_path / "rollout",
+        api_key=os.environ["DEEPSEEK_API_KEY"],
+        base_url=os.environ["DEEPSEEK_BASE_URL"],
+        verify_cmd="cd /work && python test.py",
+        max_steps=30,
+        task_name="is-prime",
+    )
+    assert res.error is None, f"harness errored: {res.error}"
+    evidence = agent_judge.load_rollout_evidence(res.rollout_dir)
+    assert not agent_judge.realness_issues(evidence), (
+        f"deepagents rollout not REAL: tool_calls={evidence.n_tool_calls} "
+        f"tokens={evidence.total_tokens} reward={evidence.reward}"
+    )
+    gate = asyncio.run(
+        agent_judge.gate_rollout(res.rollout_dir, model="gemini-3.1-flash-lite")
+    )
+    assert gate.passed, gate.to_dict()
