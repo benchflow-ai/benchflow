@@ -139,9 +139,14 @@ class RolloutConfig:
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
     source_provenance: dict[str, Any] | None = None
-    # Registry dataset identity ({"name","version","task_digest"}) for the
-    # `bench eval create -d` path; stamped into config.json/result.json.
+    # Registry dataset identity: {"name", "version"} — stamped into
+    # config.json/result.json as dataset_name/dataset_version so published
+    # runs declare the dataset version they ran (dataset-versioning plan).
     dataset: dict[str, Any] | None = None
+    # Content digest of the task directory ("sha256:<hex>", the skillsbench
+    # registry algorithm). Registry-pinned for dataset runs, computed live
+    # for dev runs — every result stays attributable to exact task content.
+    task_digest: str | None = None
     planes: RolloutPlanes | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:

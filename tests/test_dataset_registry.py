@@ -324,19 +324,20 @@ class TestEvalCreateDatasetCli:
 
 
 class TestDatasetStamping:
-    DATASET: ClassVar[dict] = {
-        "name": "skillsbench",
-        "version": "1.1",
-        "task_digest": "sha256:" + "f" * 64,
-    }
+    DATASET: ClassVar[dict] = {"name": "skillsbench", "version": "1.1"}
+    TASK_DIGEST = "sha256:" + "f" * 64
 
     def test_rollout_config_threads_dataset_through_from_legacy(self, tmp_path):
         from benchflow.rollout import RolloutConfig
 
         cfg = RolloutConfig.from_legacy(
-            task_path=tmp_path, agent="oracle", dataset=self.DATASET
+            task_path=tmp_path,
+            agent="oracle",
+            dataset=self.DATASET,
+            task_digest=self.TASK_DIGEST,
         )
         assert cfg.dataset == self.DATASET
+        assert cfg.task_digest == self.TASK_DIGEST
 
     def test_config_json_stamped(self, tmp_path):
         from benchflow.rollout import _write_config
@@ -361,11 +362,12 @@ class TestDatasetStamping:
             started_at=datetime(2026, 6, 12),
             agent_env={},
             dataset=self.DATASET,
+            task_digest=self.TASK_DIGEST,
         )
         config = json.loads((tmp_path / "config.json").read_text())
         assert config["dataset_name"] == "skillsbench"
         assert config["dataset_version"] == "1.1"
-        assert config["task_digest"] == self.DATASET["task_digest"]
+        assert config["task_digest"] == self.TASK_DIGEST
 
     def test_config_json_unstamped_without_dataset(self, tmp_path):
         from benchflow.rollout import _write_config
@@ -392,6 +394,7 @@ class TestDatasetStamping:
         )
         config = json.loads((tmp_path / "config.json").read_text())
         assert "dataset_name" not in config
+        assert "task_digest" not in config
 
     def test_result_json_stamped(self, tmp_path):
         from benchflow.rollout import _build_rollout_result
@@ -413,13 +416,57 @@ class TestDatasetStamping:
             started_at=datetime(2026, 6, 12),
             timing={},
             dataset=self.DATASET,
+            task_digest=self.TASK_DIGEST,
         )
         result = json.loads((tmp_path / "result.json").read_text())
         assert result["dataset_name"] == "skillsbench"
         assert result["dataset_version"] == "1.1"
-        assert result["task_digest"] == self.DATASET["task_digest"]
+        assert result["task_digest"] == self.TASK_DIGEST
 
-    async def test_run_single_task_builds_per_task_dataset(self, tmp_path, monkeypatch):
+    def test_result_json_dev_run_stamps_digest_without_dataset(self, tmp_path):
+        """Dev runs carry task_digest but no dataset identity fields."""
+        from benchflow.rollout import _build_rollout_result
+
+        _build_rollout_result(
+            tmp_path,
+            task_name="task-a",
+            rollout_name="task-a__r1",
+            agent="oracle",
+            agent_name="oracle",
+            model=None,
+            n_tool_calls=0,
+            prompts=[],
+            error=None,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=datetime(2026, 6, 12),
+            timing={},
+            task_digest=self.TASK_DIGEST,
+        )
+        result = json.loads((tmp_path / "result.json").read_text())
+        assert result["task_digest"] == self.TASK_DIGEST
+        assert "dataset_name" not in result
+        assert "dataset_version" not in result
+
+    @staticmethod
+    def _capture_rollout_create(monkeypatch):
+        captured = {}
+
+        async def _fake_run():
+            return SimpleNamespace(rewards={"reward": 1.0})
+
+        async def fake_create(rollout_config):
+            captured["config"] = rollout_config
+            return SimpleNamespace(run=_fake_run)
+
+        monkeypatch.setattr("benchflow.rollout.Rollout.create", fake_create)
+        return captured
+
+    async def test_run_single_task_uses_registry_digest_for_dataset_runs(
+        self, tmp_path, monkeypatch
+    ):
         from benchflow.evaluation import Evaluation, EvaluationConfig
 
         task_dir = _make_task(tmp_path / "tasks", "task-a")
@@ -430,24 +477,26 @@ class TestDatasetStamping:
             dataset_version="1.1",
             dataset_task_digests={"task-a": digest},
         )
-        captured = {}
-
-        class FakeRollout:
-            @staticmethod
-            async def create(rollout_config):
-                captured["config"] = rollout_config
-                return SimpleNamespace(run=_fake_run)
-
-        async def _fake_run():
-            return SimpleNamespace(rewards={"reward": 1.0})
-
-        monkeypatch.setattr("benchflow.rollout.Rollout.create", FakeRollout.create)
+        captured = self._capture_rollout_create(monkeypatch)
         evaluation = Evaluation(
             tasks_dir=tmp_path / "tasks", jobs_dir=tmp_path / "jobs", config=cfg
         )
         await evaluation._run_single_task(task_dir, cfg)
-        assert captured["config"].dataset == {
-            "name": "skillsbench",
-            "version": "1.1",
-            "task_digest": digest,
-        }
+        assert captured["config"].dataset == {"name": "skillsbench", "version": "1.1"}
+        assert captured["config"].task_digest == digest
+
+    async def test_run_single_task_computes_digest_for_dev_runs(
+        self, tmp_path, monkeypatch
+    ):
+        """Dev runs (no --dataset) stamp a live-computed content digest."""
+        from benchflow.evaluation import Evaluation, EvaluationConfig
+
+        task_dir = _make_task(tmp_path / "tasks", "task-a")
+        cfg = EvaluationConfig(agent="oracle")
+        captured = self._capture_rollout_create(monkeypatch)
+        evaluation = Evaluation(
+            tasks_dir=tmp_path / "tasks", jobs_dir=tmp_path / "jobs", config=cfg
+        )
+        await evaluation._run_single_task(task_dir, cfg)
+        assert captured["config"].dataset is None
+        assert captured["config"].task_digest == task_digest(task_dir)

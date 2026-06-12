@@ -953,11 +953,20 @@ class Evaluation:
 
         dataset = None
         if cfg.dataset_name:
-            dataset = {
-                "name": cfg.dataset_name,
-                "version": cfg.dataset_version,
-                "task_digest": cfg.dataset_task_digests.get(task_dir.name),
-            }
+            dataset = {"name": cfg.dataset_name, "version": cfg.dataset_version}
+        task_digest_value = (
+            cfg.dataset_task_digests.get(task_dir.name) if cfg.dataset_name else None
+        )
+        if task_digest_value is None:
+            # Dev runs (--tasks-dir / --source-repo) stamp a live-computed
+            # digest so every trajectory stays attributable to the exact
+            # task content it ran, not just a directory name.
+            from benchflow._utils.task_authoring import task_digest
+
+            try:
+                task_digest_value = task_digest(task_dir)
+            except (OSError, ValueError, UnicodeError) as e:
+                logger.debug("Could not compute task digest for %s: %s", task_dir, e)
         skills_dir = (
             str(self._learner_skills_dir)
             if self._learner_skills_dir is not None
@@ -1000,6 +1009,7 @@ class Evaluation:
             export_generated_skills_to=export_to,
             source_provenance=task_source_provenance(cfg.source_provenance, task_dir),
             dataset=dataset,
+            task_digest=task_digest_value,
             usage_tracking=cfg.usage_tracking,
         )
         if skill_mode == SKILL_MODE_SELF_GEN:

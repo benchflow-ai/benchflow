@@ -295,6 +295,7 @@ dependencies = [
     { name = "anyio" },
     { name = "httpx" },
     { name = "litellm", extra = ["proxy"] },
+    { name = "packaging" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -311,7 +312,6 @@ deepagents = [
     { name = "langchain-openai" },
 ]
 dev = [
-    { name = "packaging" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -346,7 +346,7 @@ requires-dist = [
     { name = "litellm", extras = ["proxy"], specifier = "==1.88.0rc1" },
     { name = "modal", marker = "extra == 'sandbox-modal'", specifier = ">=0.73" },
     { name = "openai", marker = "extra == 'judge'", specifier = ">=1.40" },
-    { name = "packaging", marker = "extra == 'dev'", specifier = ">=24" },
+    { name = "packaging", specifier = ">=24" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },

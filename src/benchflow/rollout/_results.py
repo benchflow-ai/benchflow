@@ -153,6 +153,7 @@ def _write_config(
     scenes: list[Scene] | None = None,
     source_provenance: dict[str, Any] | None = None,
     dataset: dict[str, Any] | None = None,
+    task_digest: str | None = None,
     environment_manifest: EnvironmentManifest | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
@@ -190,7 +191,8 @@ def _write_config(
     if dataset is not None:
         config_data["dataset_name"] = dataset.get("name")
         config_data["dataset_version"] = dataset.get("version")
-        config_data["task_digest"] = dataset.get("task_digest")
+    if task_digest is not None:
+        config_data["task_digest"] = task_digest
     (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
 
@@ -256,6 +258,7 @@ def _build_rollout_result(
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
     dataset: dict[str, Any] | None = None,
+    task_digest: str | None = None,
     diagnostics: RolloutDiagnostics | None = None,
     skill_policy: TaskSkillPolicy | None = None,
     sandbox_id: str | None = None,
@@ -387,11 +390,11 @@ def _build_rollout_result(
                     {
                         "dataset_name": dataset.get("name"),
                         "dataset_version": dataset.get("version"),
-                        "task_digest": dataset.get("task_digest"),
                     }
                     if dataset is not None
                     else {}
                 ),
+                **({"task_digest": task_digest} if task_digest is not None else {}),
                 "sandbox_id": sandbox_id,
             },
             indent=2,

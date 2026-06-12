@@ -545,6 +545,7 @@ class Rollout:
             scenes=cfg.effective_scenes,
             source_provenance=cfg.source_provenance,
             dataset=cfg.dataset,
+            task_digest=cfg.task_digest,
         )
 
         self._phase = "setup"
@@ -1796,6 +1797,7 @@ class Rollout:
             evolved_skills=self._evolved_skills,
             source_provenance=self._config.source_provenance,
             dataset=self._config.dataset,
+            task_digest=self._config.task_digest,
             diagnostics=self._diagnostics,
             usage_tracking=self._usage_tracking_metadata(),
             skill_policy=getattr(self, "_task_skill_policy", None)
