@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +46,9 @@ class DockerWorkspace:
     image: str = DEFAULT_IMAGE
     workdir: str = "/work"
     name: str = field(default_factory=lambda: f"deepagent-{uuid.uuid4().hex[:10]}")
+    # Container keep-alive (seconds). Set above the agent's wall-clock budget so
+    # the sandbox outlives the run rather than dying mid-task.
+    ttl: int = 1200
     _started: bool = False
 
     def start(self) -> None:
@@ -66,7 +70,7 @@ class DockerWorkspace:
                 self.workdir,
                 self.image,
                 "sleep",
-                "1200",
+                str(self.ttl),
             ],
             check=True,
             capture_output=True,
@@ -91,16 +95,22 @@ class DockerWorkspace:
         return proc.returncode, (proc.stdout + proc.stderr)
 
     def write_file(self, path: str, content: str) -> None:
-        # base64 round-trip so arbitrary content survives the shell boundary.
+        # base64 round-trip so arbitrary content survives the shell boundary;
+        # shlex.quote the path so spaces / shell metacharacters in it stay inert
+        # (they would otherwise word-split and write to the wrong location).
         import base64
+        import shlex
 
         b64 = base64.b64encode(content.encode()).decode()
         full = path if path.startswith("/") else f"{self.workdir}/{path}"
-        self.exec(f"mkdir -p $(dirname {full}) && echo {b64} | base64 -d > {full}")
+        q = shlex.quote(full)
+        self.exec(f'mkdir -p "$(dirname {q})" && echo {b64} | base64 -d > {q}')
 
     def read_file(self, path: str) -> str:
+        import shlex
+
         full = path if path.startswith("/") else f"{self.workdir}/{path}"
-        _, out = self.exec(f"cat {full}")
+        _, out = self.exec(f"cat {shlex.quote(full)}")
         return out
 
     def stop(self) -> None:
@@ -232,7 +242,9 @@ def run_deepagent(
     ``verify_cmd`` runs in the container after the agent finishes; exit 0 →
     reward 1.0, non-zero → 0.0, absent → reward stays ``None``. ``extra_system``
     is appended to the system prompt so callers can steer genuine vs adversarial
-    behavior for the judge-hardening rounds.
+    behavior for the judge-hardening rounds. ``max_steps`` bounds the step count
+    and ``timeout`` bounds the agent loop's wall-clock seconds — an overrun is
+    recorded as an ``error`` (so the realness gate rejects the rollout).
     """
     from deepagents import create_deep_agent
     from langchain_openai import ChatOpenAI
@@ -249,23 +261,46 @@ def run_deepagent(
         "your tools. When done, stop. " + extra_system
     )
 
-    with DockerWorkspace(image=image) as ws:
+    # Container outlives the agent's wall-clock budget by a buffer so the sandbox
+    # is not torn down from under an in-flight tool call.
+    with DockerWorkspace(image=image, ttl=timeout + 120) as ws:
         for path, content in (workspace_files or {}).items():
             ws.write_file(path, content)
         model_obj = ChatOpenAI(
-            model=model, base_url=base_url, api_key=api_key, temperature=0, timeout=120
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=0,
+            timeout=min(120, timeout),
         )
         agent = create_deep_agent(
             model=model_obj, tools=_make_tools(ws), system_prompt=system_prompt
         )
-        try:
-            result = agent.invoke(
-                {"messages": [{"role": "user", "content": instruction}]},
-                config={"recursion_limit": max_steps},
-            )
-            messages = result.get("messages", [])
-        except Exception as exc:  # agent loop crash / recursion limit / API error
-            error = f"{type(exc).__name__}: {exc}"
+        # Bound the WHOLE agent loop by a hard wall-clock budget. ``max_steps``
+        # caps the step COUNT (recursion_limit); ``timeout`` caps elapsed TIME, so
+        # a stalled or slow run cannot exceed it. The invoke runs in a worker
+        # thread we abandon on overrun; the container teardown below severs its
+        # tools, and the daemon thread dies with the process.
+        holder: dict[str, Any] = {}
+
+        def _invoke() -> None:
+            try:
+                holder["result"] = agent.invoke(
+                    {"messages": [{"role": "user", "content": instruction}]},
+                    config={"recursion_limit": max_steps},
+                )
+            except Exception as exc:  # agent loop crash / recursion limit / API err
+                holder["error"] = f"{type(exc).__name__}: {exc}"
+
+        worker = threading.Thread(target=_invoke, daemon=True)
+        worker.start()
+        worker.join(timeout)
+        if worker.is_alive():
+            error = f"TimeoutError: agent run exceeded {timeout}s wall-clock budget"
+        elif "error" in holder:
+            error = holder["error"]
+        else:
+            messages = holder.get("result", {}).get("messages", [])
 
         if verify_cmd is not None and error is None:
             try:
