@@ -64,6 +64,7 @@ from benchflow._types import Role, Scene, Turn
 # the ``Rollout`` methods that call those names, because those methods stay
 # defined in this module.
 from benchflow._utils.scoring import classify_error as classify_error
+from benchflow.acp.types import McpServerSpec
 from benchflow.contracts import (
     AgentProtocolError,
     AskUserRequest,
@@ -208,6 +209,38 @@ from benchflow.usage_tracking import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_MCP_TRANSPORT_TO_ACP_TYPE = {
+    "stdio": "stdio",
+    "sse": "sse",
+    "streamable-http": "http",
+}
+
+
+def _task_mcp_specs(task: Any) -> list[McpServerSpec]:
+    """Map the task's ``[[environment.mcp_servers]]`` entries to ACP specs.
+
+    This is the composition seam between the task-config layer
+    (``MCPServerConfig``) and the ACP protocol layer (``McpServerSpec``) — kept
+    here, in the rollout, so ``acp/`` stays free of any task-config dependency.
+    The resulting specs are attached to every ACP session the rollout opens
+    (``session/new``), making task-declared MCP servers — e.g. a Playwright MCP
+    — reachable by the agent. Returns ``[]`` when the task declares none,
+    preserving the historical default of attaching no MCP servers.
+    """
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    configs = getattr(env_config, "mcp_servers", None) or []
+    return [
+        McpServerSpec(
+            name=config.name,
+            type=_MCP_TRANSPORT_TO_ACP_TYPE.get(config.transport, config.transport),
+            command=config.command,
+            args=list(config.args),
+            url=config.url,
+        )
+        for config in configs
+    ]
 
 
 class Rollout:
@@ -736,6 +769,7 @@ class Rollout:
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
             reasoning_effort=cfg.primary_reasoning_effort,
+            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
         )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
@@ -1577,6 +1611,7 @@ class Rollout:
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
             reasoning_effort=role.reasoning_effort,
+            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
         )
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
