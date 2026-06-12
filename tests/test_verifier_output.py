@@ -266,3 +266,90 @@ async def test_verify_test_script_recovers_reward_when_dir_download_fails(tmp_pa
     sandbox.download_dir.assert_awaited_once()
     assert rollout_paths.reward_text_path.read_text() == "0"
     assert rollout_paths.test_stdout_path.read_text() == "pytest output"
+
+
+# Legacy verifier-mount compat (family-2 / opaquetoolsbench parity finding)
+#
+# ``bench tasks migrate`` mounts a task.md verifier at /verifier instead of the
+# legacy /tests. Verifier scripts carried over from a legacy benchmark often
+# hardcode ``python3 /tests/evaluate.py``; without a /tests -> /verifier alias
+# every converted verifier crashes rc=2 "no reward file" while the legacy
+# variant passes. These guard the alias that keeps such conversions working.
+
+
+def _make_script_verifier(tmp_path, *, uses_native_verifier_dir):
+    """Verifier over a mounted sandbox driving the default test.sh path, with a
+    captured exec log. test.sh writes a passing reward so verify() completes."""
+    verifier_dir = tmp_path / "verifier"
+    verifier_dir.mkdir(parents=True, exist_ok=True)
+
+    rollout_paths = MagicMock()
+    rollout_paths.verifier_dir = verifier_dir
+    rollout_paths.test_stdout_path = verifier_dir / "test-stdout.txt"
+    rollout_paths.reward_text_path = verifier_dir / "reward.txt"
+    rollout_paths.reward_json_path = verifier_dir / "reward.json"
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    (tests_dir / "test.sh").write_text("#!/bin/sh\npython3 /tests/evaluate.py\n")
+
+    task = MagicMock()
+    task.config.verifier.type = "test-script"
+    task.config.verifier.service = "main"
+    task.config.verifier.user = "root"
+    task.config.verifier.env = None
+    task.config.verifier.timeout_sec = 60
+    task.paths.tests_dir = tests_dir
+    task.paths.test_path = tests_dir / "test.sh"
+    task.paths.uses_native_verifier_dir = uses_native_verifier_dir
+
+    calls: list[dict] = []
+
+    async def fake_exec(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("command", "")
+        calls.append({"command": cmd, "user": kwargs.get("user")})
+        if "ln -s" in cmd or "chmod" in cmd or cmd.startswith("mkdir") or "[ -e" in cmd:
+            return MagicMock(exit_code=0, returncode=0)
+        # The test.sh run: a passing reward + stdout, mounted in place.
+        rollout_paths.test_stdout_path.write_text("ok")
+        rollout_paths.reward_text_path.write_text("1")
+        return MagicMock(exit_code=0, returncode=0)
+
+    sandbox = MagicMock()
+    sandbox.is_mounted = True
+    sandbox.upload_dir = AsyncMock()
+    sandbox.exec = AsyncMock(side_effect=fake_exec)
+    verifier = Verifier(task=task, rollout_paths=rollout_paths, sandbox=sandbox)
+    return verifier, calls
+
+
+@pytest.mark.asyncio
+async def test_native_verifier_aliases_legacy_tests_mount(tmp_path):
+    """A native (task.md) verifier mounts at /verifier and must alias /tests so
+    legacy-convention verifier scripts (hardcoded /tests/...) still resolve."""
+    verifier, calls = _make_script_verifier(tmp_path, uses_native_verifier_dir=True)
+
+    result = await verifier._verify_test_script()
+
+    assert result.rewards == {"reward": 1.0}
+    link = [c for c in calls if "ln -s" in c["command"]]
+    assert link, (
+        f"expected a /tests->/verifier alias; got {[c['command'] for c in calls]}"
+    )
+    cmd = link[0]["command"]
+    assert "ln -s /verifier /tests" in cmd
+    # Guarded so real /tests content is never clobbered.
+    assert "[ -e /tests ]" in cmd
+    # Created as root so the verifier user (any) can traverse it.
+    assert link[0]["user"] == "root"
+
+
+@pytest.mark.asyncio
+async def test_legacy_verifier_does_not_alias_tests_mount(tmp_path):
+    """A legacy verifier already mounts at /tests, so no alias is created."""
+    verifier, calls = _make_script_verifier(tmp_path, uses_native_verifier_dir=False)
+
+    result = await verifier._verify_test_script()
+
+    assert result.rewards == {"reward": 1.0}
+    assert not [c for c in calls if "ln -s" in c["command"]]
