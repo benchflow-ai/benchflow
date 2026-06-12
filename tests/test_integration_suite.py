@@ -421,6 +421,7 @@ def test_reaper_dryrun_is_safe():
 @requires_docker
 @requires_deepseek
 @requires_judge_sdk
+@requires_gemini
 @requires_deepagents
 def test_deepagents_deepseek_rollout_is_real_and_judged(tmp_path: Path):
     # End to end through the deepagents harness: a deepseek-v4-flash deep agent

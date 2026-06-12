@@ -73,8 +73,12 @@ class DockerWorkspace:
             text=True,
             timeout=120,
         )
-        self.exec(f"mkdir -p {self.workdir}")
+        # The container is running the moment ``docker run`` returns, so mark it
+        # started BEFORE any further setup. If the mkdir below raises (exec
+        # timeout/failure), ``__exit__`` -> ``stop()`` must still ``docker rm -f``
+        # it; setting this only after the exec would leak the container.
         self._started = True
+        self.exec(f"mkdir -p {self.workdir}")
 
     def exec(self, command: str, timeout: int = 120) -> tuple[int, str]:
         """Run a shell command in the container; return (exit_code, combined output)."""
