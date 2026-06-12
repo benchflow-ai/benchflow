@@ -59,6 +59,20 @@ class TestRetryConfig:
             "ACP error -32603: Internal error | provider auth failed (HTTP 401)"
         )
 
+    def test_should_not_retry_provider_rate_limit_sanitized_marker(self):
+        """Guards PR #653: Bedrock daily caps must not burn retries."""
+        cfg = RetryConfig()
+        assert not cfg.should_retry(
+            "ACP error -32603: Internal error | provider rate limited (HTTP 429)"
+        )
+
+    def test_should_retry_provider_unavailable_sanitized_marker(self):
+        """Provider 503s are transient infra and remain retryable."""
+        cfg = RetryConfig()
+        assert cfg.should_retry(
+            "ACP error -32603: Internal error | provider unavailable (HTTP 503)"
+        )
+
     def test_should_not_retry_timeout(self):
         cfg = RetryConfig()
         assert not cfg.should_retry("Agent timed out after 900.0s")

@@ -11,6 +11,7 @@ IDLE_TIMEOUT = "idle_timeout"
 INFRA_ERROR = "infra_failure"
 SANDBOX_SETUP = "sandbox_setup"
 PROVIDER_AUTH = "provider_auth"
+PROVIDER_RATE_LIMIT = "provider_rate_limit"
 TIMED_OUT = "timeout"
 # Provider API failures detected post-rollout (rate limit, quota, rejected
 # request, 5xx). "api_error" is proxy-proven (every captured provider request
@@ -35,6 +36,16 @@ _PROVIDER_AUTH_MARKERS = (
     "provider auth failed",
     "http 401",
     "http 403",
+)
+_PROVIDER_RATE_LIMIT_MARKERS = (
+    "provider rate limited",
+    "rate limit",
+    "too many requests",
+    "http 429",
+)
+_PROVIDER_UNAVAILABLE_MARKERS = (
+    "provider unavailable",
+    "http 503",
 )
 
 # Verifier error category constants
@@ -89,6 +100,10 @@ def classify_error(error: str | None) -> str | None:
     if "ACP error" in error or "was rejected as invalid" in error:
         if any(m in lower for m in _PROVIDER_AUTH_MARKERS):
             return PROVIDER_AUTH
+        if any(m in lower for m in _PROVIDER_RATE_LIMIT_MARKERS):
+            return PROVIDER_RATE_LIMIT
+        if any(m in lower for m in _PROVIDER_UNAVAILABLE_MARKERS):
+            return INFRA_ERROR
         return ACP_ERROR
     if "sandbox startup" in lower or "sandbox creation" in lower:
         return SANDBOX_SETUP

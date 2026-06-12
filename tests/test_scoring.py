@@ -120,6 +120,24 @@ class TestClassifyError:
         ):
             assert classify_error(err) == "provider_auth", err
 
+    def test_provider_rate_limit_marker(self):
+        """Guards PR #653: Bedrock daily caps surface as provider_rate_limit."""
+        assert (
+            classify_error(
+                "ACP error -32603: Internal error | provider rate limited (HTTP 429)"
+            )
+            == "provider_rate_limit"
+        )
+
+    def test_provider_unavailable_marker_is_infra(self):
+        """Provider 503s are transient infra, not generic ACP errors."""
+        assert (
+            classify_error(
+                "ACP error -32603: Internal error | provider unavailable (HTTP 503)"
+            )
+            == "infra_failure"
+        )
+
     def test_generic_acp_internal_error_still_retryable(self):
         """Guards PR #564: a bare ACP internal error with no auth signal stays
         acp_error — only a real surfaced 401/403 should flip it to provider_auth."""
