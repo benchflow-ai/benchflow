@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -119,8 +120,6 @@ def _reward_from_result(result: Mapping[str, Any]) -> float | None:
     if not isinstance(rewards, Mapping):
         return None
     value = rewards.get("reward")
-    if value is None:
-        value = next((v for v in rewards.values() if v is not None), None)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
@@ -279,13 +278,34 @@ def realness_issues(evidence: RolloutEvidence) -> list[str]:
 # ------------------------------------------------------------------
 
 
+def _fence_safe(text: str) -> str:
+    """Neutralize delimiters in untrusted content so it cannot break out of the
+    EVIDENCE block (prompt-injection defense).
+
+    Collapses any run of 3+ backticks (which could close a ``` fence) and
+    defangs a forged ``END EVIDENCE`` marker, so an instruction or trajectory
+    carrying ``​```​`` or ``===== END EVIDENCE =====`` cannot escape
+    its fence and inject instructions to the judge.
+    """
+    text = re.sub(r"`{3,}", "``​`", text)
+    return re.sub(
+        r"=====+\s*END EVIDENCE\s*=====+",
+        "[end-evidence-marker]",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
 def build_judge_prompt(evidence: RolloutEvidence) -> str:
     """Compose BenchFlow's own agent-judge prompt for one rollout.
 
     The trajectory and instruction are fenced and explicitly labelled as
-    untrusted evidence so a hostile trajectory cannot redirect the judge.
+    untrusted evidence; embedded fence/marker delimiters are defanged via
+    :func:`_fence_safe` so a hostile trajectory cannot break out and redirect
+    the judge.
     """
-    trajectory_json = json.dumps(evidence.trajectory_excerpt, indent=2)
+    prompt = _fence_safe(evidence.prompt)
+    trajectory_json = _fence_safe(json.dumps(evidence.trajectory_excerpt, indent=2))
     return (
         "You are a verification judge for an AI coding-agent benchmark run.\n"
         "You are given the recorded result and an excerpt of the execution\n"
@@ -317,7 +337,7 @@ def build_judge_prompt(evidence: RolloutEvidence) -> str:
         f"error: {evidence.error}\n"
         f"verifier_error: {evidence.verifier_error}\n\n"
         "instruction:\n"
-        f"```\n{evidence.prompt}\n```\n\n"
+        f"```\n{prompt}\n```\n\n"
         "trajectory_excerpt:\n"
         f"```json\n{trajectory_json}\n```\n"
         "===== END EVIDENCE =====\n"
@@ -438,6 +458,13 @@ def _find_rollout_dir(root: Path) -> Path:
     )
     if not candidates:
         raise FileNotFoundError(f"no result.json found under {root}")
+    if len(candidates) > 1:
+        print(
+            f"WARNING: {len(candidates)} rollouts found under {root}; "
+            f"judging only the most recent ({candidates[0].name}). "
+            "Pass a single rollout dir to judge a specific one.",
+            file=sys.stderr,
+        )
     return candidates[0]
 
 
@@ -468,11 +495,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         rollout_dir = _find_rollout_dir(args.rollout_dir)
+        result = asyncio.run(gate_rollout(rollout_dir, model=args.model))
     except FileNotFoundError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-
-    result = asyncio.run(gate_rollout(rollout_dir, model=args.model))
 
     if args.json:
         print(json.dumps(result.to_dict(), indent=2))
