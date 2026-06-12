@@ -411,7 +411,6 @@ def test_near_term_profile_prints_small_daytona_plan(
     )
     assert "Task budget:" in out
     assert "per_adapter: 1" in out
-    assert "terminal-bench-smoke" not in out
     assert "shared-sandbox-smoke" not in out
 
 

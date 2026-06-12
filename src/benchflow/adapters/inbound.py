@@ -62,9 +62,8 @@ def carry_native_subtrees(
 
     A native task directory's ``environment`` / ``tests`` / ``solution``
     subtrees are *already* in BenchFlow-native shape, so every file under
-    them carries straight through under its own relative path. Both inbound
-    adapters share this rglob-and-carry walk — harbor.py over all
-    :data:`NATIVE_SUBTREES`, terminal_bench.py over ``tests`` alone.
+    them carries straight through under its own relative path. harbor.py
+    uses this rglob-and-carry walk over all :data:`NATIVE_SUBTREES`.
 
     Files are visited in a stable, sorted order so the caller's collision
     handling is deterministic. The ``place`` callback owns the collision
@@ -106,11 +105,10 @@ def manifest_from_task_config(
 ) -> EnvironmentManifest:
     """Derive a baseline :class:`EnvironmentManifest` from a foreign task.
 
-    A Harbor- or Terminal-Bench-style foreign task does not ship an
-    ``environment.toml``; its environment is described by the
-    ``[environment]`` (now ``sandbox``) section of its ``task.toml`` /
-    ``task.yaml`` plus a buildable ``environment/Dockerfile``. This helper
-    folds that legacy shape into the Environment-plane seam:
+    A Harbor-style foreign task does not ship an ``environment.toml``; its
+    environment is described by the ``[environment]`` (now ``sandbox``)
+    section of its ``task.toml`` plus a buildable ``environment/Dockerfile``.
+    This helper folds that legacy shape into the Environment-plane seam:
 
     * ``manifest.image`` is the task's prebuilt ``docker_image`` when set,
       otherwise the ``bf__<name>:latest`` tag the framework's Dockerfile
@@ -118,8 +116,7 @@ def manifest_from_task_config(
       either way.
     * ``owns_lifecycle`` is true (no framework-started services) so the
       manifest validates without a ``[[services]]`` array — legacy
-      single-container Harbor/Terminal-Bench tasks have no separate
-      service plane.
+      single-container Harbor tasks have no separate service plane.
     * ``forward_env`` carries the foreign task's ``sandbox.env`` keys so
       the manifest's host-env forwarding surface stays honest to what the
       legacy path forwarded.
@@ -271,15 +268,14 @@ class InboundTask:
     Attributes:
         name: The task identity (BenchFlow ``org/name`` form when the source
             provides one; otherwise derived from the source).
-        source: The foreign format this came from (e.g. ``"harbor"``,
-            ``"terminal-bench"``) — recorded so downstream tooling can trace
-            provenance.
+        source: The foreign format this came from (e.g. ``"harbor"``) —
+            recorded so downstream tooling can trace provenance.
         instruction: The task instruction, as it belongs in ``instruction.md``.
         manifest: The validated :class:`EnvironmentManifest` for this task
             — the Environment-plane integration seam. Either loaded from a
             sibling ``environment.toml`` (when the foreign task ships one)
             or derived from :func:`manifest_from_task_config` (the common
-            single-container Harbor / Terminal-Bench case).
+            single-container Harbor case).
         config: A validated native :class:`TaskConfig` — the legacy
             ``task.toml`` equivalent, kept for backward compatibility with
             file-materialization paths.
