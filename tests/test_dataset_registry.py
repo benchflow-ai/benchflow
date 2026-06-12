@@ -39,7 +39,11 @@ def _make_task(parent: Path, name: str) -> Path:
 
 
 def _write_registry(
-    tmp_path: Path, tasks_parent: Path, *, digests: dict[str, str] | None = None
+    tmp_path: Path,
+    tasks_parent: Path,
+    *,
+    digests: dict[str, str] | None = None,
+    bench_version: str = ">=0.1,<999",
 ) -> Path:
     """Write a single-entry registry pinning the tasks under tasks_parent."""
     entry_tasks = []
@@ -61,7 +65,7 @@ def _write_registry(
                     "name": "skillsbench",
                     "version": "1.1",
                     "git_tag": "v1.1",
-                    "bench_version": ">=0.1,<999",
+                    "bench_version": bench_version,
                     "tasks": entry_tasks,
                 }
             ]
@@ -321,6 +325,80 @@ class TestEvalCreateDatasetCli:
         )
         assert result.exit_code == 1
         assert "--registry requires --dataset" in result.stdout
+
+    def test_out_of_range_bench_version_blocks(self, tmp_path, snapshot, monkeypatch):
+        """The bench_version range is a hard gate for dataset runs; the
+        registry declares what the version was validated against."""
+        registry = _write_registry(
+            tmp_path, snapshot.tasks_parent, bench_version="<0.0.1"
+        )
+        ran = {}
+
+        async def fake_eval_run(self):
+            ran["ran"] = True
+            return SimpleNamespace(passed=2, total=2, score=1.0, errored=0)
+
+        monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_eval_run)
+
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "create",
+                "--dataset",
+                "skillsbench@1.1",
+                "--registry",
+                str(registry),
+                "--agent",
+                "oracle",
+                "--jobs-dir",
+                str(tmp_path / "jobs"),
+            ],
+        )
+        assert result.exit_code == 1
+        assert "outside the range" in result.stdout
+        assert "--ignore-bench-version" in result.stdout
+        assert not ran
+
+    def test_ignore_bench_version_overrides_gate(self, tmp_path, snapshot, monkeypatch):
+        registry = _write_registry(
+            tmp_path, snapshot.tasks_parent, bench_version="<0.0.1"
+        )
+        ran = {}
+
+        async def fake_eval_run(self):
+            ran["ran"] = True
+            return SimpleNamespace(passed=2, total=2, score=1.0, errored=0)
+
+        monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_eval_run)
+
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "create",
+                "--dataset",
+                "skillsbench@1.1",
+                "--registry",
+                str(registry),
+                "--ignore-bench-version",
+                "--agent",
+                "oracle",
+                "--jobs-dir",
+                str(tmp_path / "jobs"),
+            ],
+        )
+        assert result.exit_code == 0, result.stdout
+        assert ran == {"ran": True}
+        assert "Warning:" in result.stdout
+
+    def test_ignore_bench_version_requires_dataset(self, tmp_path):
+        result = CliRunner().invoke(
+            app,
+            ["eval", "create", "--ignore-bench-version", "--tasks-dir", str(tmp_path)],
+        )
+        assert result.exit_code == 1
+        assert "--ignore-bench-version requires --dataset" in result.stdout
 
     def test_resolution_error_exits_cleanly(self, tmp_path, snapshot):
         registry = _write_registry(tmp_path, snapshot.tasks_parent)

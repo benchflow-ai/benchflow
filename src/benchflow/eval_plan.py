@@ -93,6 +93,7 @@ class EvalCreateRequest:
     exclude: list[str] | None = None
     dataset: str | None = None
     registry: str | None = None
+    ignore_bench_version: bool = False
 
 
 @dataclass
@@ -213,6 +214,8 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         )
     if request.registry and not request.dataset:
         raise EvalPlanError("--registry requires --dataset")
+    if request.ignore_bench_version and not request.dataset:
+        raise EvalPlanError("--ignore-bench-version requires --dataset")
     if request.tasks_dir and not Path(request.tasks_dir).exists():
         raise EvalPlanError(f"--tasks-dir not found: {request.tasks_dir}")
     if request.worker_concurrency is not None and not (
