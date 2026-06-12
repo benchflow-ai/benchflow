@@ -329,3 +329,17 @@ needs; validate the `/testbed_verify` lockdown before any bump.
   emit the identical detached shape, bounded timeout recorded, per-service log path →
   27 passed; sweep `-k "manifest or environment or service"` → 163 passed / 23 skipped.
   ruff check + format clean.
+
+## BF-10 — JS-agent bootstrap pins Node 22.14 but installs openclaw@latest (needs >=22.19)
+**Severity:** high · **Status:** FIXED · **Upstream:** filing pending
+Surfaced running DeepSeek V4 Flash via `benchflow eval create --agent openclaw` on Daytona. The
+openclaw ACP agent bootstrap (`src/benchflow/agents/registry.py` `_NODE_INSTALL`) downloads a
+private Node runtime pinned `BF_NODE_VERSION=22.14.0` into `/opt/benchflow/node`, then `npm install
+-g openclaw@latest` — but current openclaw (2026.6.5+) requires **Node >=22.19**, so openclaw aborts
+at its runtime version check (`openclaw: Node.js v22.19+ is required (current: v22.14.0)`), the agent
+produces zero tool calls, and EVERY openclaw rollout silently scores 0 regardless of model/task.
+Independent of the task image's own Node (the agent uses its isolated `/opt/benchflow/node`).
+**Fix:** bump the pin to `22.20.0` (LTS, >=22.19). Hardened the invariant test to assert the
+`>=22.19` floor instead of a brittle exact literal. Verified live: with the bump, `stripe-idempotent-
+no-double-charge` on `--agent openclaw --model deepseek/deepseek-v4-flash --sandbox daytona` →
+tools=4, reward 1.0 (was the node-error abort, tools=0).
