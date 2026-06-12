@@ -11,6 +11,17 @@ IDLE_TIMEOUT = "idle_timeout"
 INFRA_ERROR = "infra_failure"
 SANDBOX_SETUP = "sandbox_setup"
 PROVIDER_AUTH = "provider_auth"
+# A provider rate-limit/quota failure that surfaced as a *raised*
+# ``AgentProtocolError -32603`` and was sanitized at the ACP boundary
+# (``_classify_acp_error``). This is the manifestation of a Bedrock daily token
+# cap ("Too many tokens per day"), which crashes the agent and is futile to
+# retry in-batch — so it is non-retryable (no retry branch + listed in
+# ``RetryConfig.exclude_categories``). A 429 that instead surfaces *silently*
+# (zero tokens, no raise) is handled by the post-rollout ``_maybe_classify_api_error``
+# path as ``api_error[rate_limit/transient]`` and stays retryable, because a
+# self-surfacing throttle self-heals on backoff. The two paths track genuinely
+# different failure shapes, so the differing retry verdicts are intentional.
+PROVIDER_RATE_LIMIT = "provider_rate_limit"
 TIMED_OUT = "timeout"
 # Provider API failures detected post-rollout (rate limit, quota, rejected
 # request, 5xx). "api_error" is proxy-proven (every captured provider request
@@ -35,6 +46,19 @@ _PROVIDER_AUTH_MARKERS = (
     "provider auth failed",
     "http 401",
     "http 403",
+)
+# Sanitized markers appended by ``_classify_acp_error`` when a raised ACP error
+# hides a provider rate-limit (429) or outage (503). Matched case-insensitively
+# against the lowercased error, same as the auth markers above.
+_PROVIDER_RATE_LIMIT_MARKERS = (
+    "provider rate limited",
+    "rate limit",
+    "too many requests",
+    "http 429",
+)
+_PROVIDER_UNAVAILABLE_MARKERS = (
+    "provider unavailable",
+    "http 503",
 )
 
 # Verifier error category constants
@@ -89,6 +113,10 @@ def classify_error(error: str | None) -> str | None:
     if "ACP error" in error or "was rejected as invalid" in error:
         if any(m in lower for m in _PROVIDER_AUTH_MARKERS):
             return PROVIDER_AUTH
+        if any(m in lower for m in _PROVIDER_RATE_LIMIT_MARKERS):
+            return PROVIDER_RATE_LIMIT
+        if any(m in lower for m in _PROVIDER_UNAVAILABLE_MARKERS):
+            return INFRA_ERROR
         return ACP_ERROR
     if "sandbox startup" in lower or "sandbox creation" in lower:
         return SANDBOX_SETUP
@@ -149,11 +177,6 @@ def contains_verifier_dep_install_marker(text: str) -> bool:
     """Detect verifier dependency installation failures (ENG-151)."""
     lower = text.lower()
     return any(marker in lower for marker in VERIFIER_DEP_INSTALL_MARKERS)
-
-
-def _looks_like_verifier_dep_install_error(error: str) -> bool:
-    """Backward-compatible internal alias for dep-install marker matching."""
-    return contains_verifier_dep_install_marker(error)
 
 
 def _looks_like_verifier_infra_error(error: str) -> bool:

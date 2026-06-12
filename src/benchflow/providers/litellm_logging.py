@@ -16,6 +16,7 @@ from benchflow.trajectories.types import (
 from benchflow.usage_tracking import usage_unavailable
 
 _PROVIDER_AUTH_STATUS_CODES = (401, 403)
+_PROVIDER_FAILURE_STATUS_CODES = (*_PROVIDER_AUTH_STATUS_CODES, 429, 503)
 _STATUS_KEYS = {
     "httpstatus",
     "httpstatuscode",
@@ -28,7 +29,7 @@ _STATUS_KEYS = {
     "response_status",
     "response_status_code",
 }
-_PROVIDER_AUTH_STATUS_RE = re.compile(r"\b(401|403)\b")
+_PROVIDER_FAILURE_STATUS_RE = re.compile(r"\b(401|403|429|503)\b")
 _PROVIDER_AUTH_HINT_RE = re.compile(
     r"\b("
     r"auth(?:entication|orization)?|"
@@ -38,6 +39,25 @@ _PROVIDER_AUTH_HINT_RE = re.compile(
     r"bearer|"
     r"api[-_ ]?key|"
     r"credentials?"
+    r")\b",
+    re.IGNORECASE,
+)
+_PROVIDER_RATE_LIMIT_HINT_RE = re.compile(
+    r"\b("
+    r"rate[-_ ]?limit(?:ed)?|"
+    r"too many requests|"
+    r"too many tokens|"
+    r"tokens per day|"
+    r"quota"
+    r")\b",
+    re.IGNORECASE,
+)
+_PROVIDER_UNAVAILABLE_HINT_RE = re.compile(
+    r"\b("
+    r"service unavailable|"
+    r"temporarily unavailable|"
+    r"overloaded|"
+    r"upstream unavailable"
     r")\b",
     re.IGNORECASE,
 )
@@ -233,32 +253,32 @@ def _record_response_body(record: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
-def _coerce_auth_status(value: Any) -> int | None:
-    if isinstance(value, int) and value in _PROVIDER_AUTH_STATUS_CODES:
+def _coerce_provider_failure_status(value: Any) -> int | None:
+    if isinstance(value, int) and value in _PROVIDER_FAILURE_STATUS_CODES:
         return value
     if isinstance(value, str):
         stripped = value.strip()
         if stripped.isdigit():
             status = int(stripped)
-            if status in _PROVIDER_AUTH_STATUS_CODES:
+            if status in _PROVIDER_FAILURE_STATUS_CODES:
                 return status
     return None
 
 
-def _explicit_auth_status(value: Any) -> int | None:
+def _explicit_provider_failure_status(value: Any) -> int | None:
     if isinstance(value, dict):
         for key, nested in value.items():
             if str(key).lower() in _STATUS_KEYS:
-                status = _coerce_auth_status(nested)
+                status = _coerce_provider_failure_status(nested)
                 if status is not None:
                     return status
         for nested in value.values():
-            status = _explicit_auth_status(nested)
+            status = _explicit_provider_failure_status(nested)
             if status is not None:
                 return status
     elif isinstance(value, list | tuple):
         for nested in value:
-            status = _explicit_auth_status(nested)
+            status = _explicit_provider_failure_status(nested)
             if status is not None:
                 return status
     return None
@@ -280,25 +300,36 @@ def _flatten_failure_text(value: Any) -> str:
     return str(value)
 
 
-def _provider_auth_status_from_failure_record(record: dict[str, Any]) -> int | None:
-    """Return a sanitized provider auth status from a LiteLLM failure record."""
+def _text_provider_failure_status(text: str) -> int | None:
+    match = _PROVIDER_FAILURE_STATUS_RE.search(text)
+    status = int(match.group(1)) if match is not None else None
+    if status in _PROVIDER_AUTH_STATUS_CODES:
+        return status if _PROVIDER_AUTH_HINT_RE.search(text) else None
+    if status == 429:
+        return status if _PROVIDER_RATE_LIMIT_HINT_RE.search(text) else None
+    if status == 503:
+        return status if _PROVIDER_UNAVAILABLE_HINT_RE.search(text) else None
+    if status is None and _PROVIDER_RATE_LIMIT_HINT_RE.search(text):
+        return 429
+    if status is None and _PROVIDER_UNAVAILABLE_HINT_RE.search(text):
+        return 503
+    return None
+
+
+def _provider_failure_status_from_failure_record(record: dict[str, Any]) -> int | None:
+    """Return a sanitized provider failure status from a LiteLLM failure record."""
     if record.get("event") != "failure":
         return None
     failure_payload = {
         "error": record.get("error"),
         "response": record.get("response"),
     }
-    status = _explicit_auth_status(failure_payload)
+    status = _explicit_provider_failure_status(failure_payload)
     if status is not None:
         return status
 
     text = _flatten_failure_text(failure_payload)
-    if not _PROVIDER_AUTH_HINT_RE.search(text):
-        return None
-    match = _PROVIDER_AUTH_STATUS_RE.search(text)
-    if match is None:
-        return None
-    return int(match.group(1))
+    return _text_provider_failure_status(text)
 
 
 def trajectory_from_litellm_callback_log(
@@ -327,7 +358,7 @@ def trajectory_from_litellm_callback_log(
         if record.get("event") == "success":
             status = 200
         else:
-            status = _provider_auth_status_from_failure_record(record) or 500
+            status = _provider_failure_status_from_failure_record(record) or 500
         trajectory.exchanges.append(
             LLMExchange(
                 request=LLMRequest(

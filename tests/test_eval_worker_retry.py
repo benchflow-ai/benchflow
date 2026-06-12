@@ -14,18 +14,23 @@ _PROVIDER_AUTH_ERROR = (
     "ACP error -32603: Internal error: Failed to authenticate. "
     "API Error: 401 Invalid bearer token"
 )
+_PROVIDER_RATE_LIMIT_ERROR = (
+    "ACP error -32603: Internal error | provider rate limited (HTTP 429)"
+)
 
 
 def test_from_mapping_omitted_exclude_keeps_provider_auth():
-    """A payload with no exclude_categories must still exclude provider_auth."""
+    """Guards PR #653: omitted excludes must still exclude provider caps."""
     cfg = RetryConfig.from_mapping({"max_retries": 3})
     assert not cfg.should_retry(_PROVIDER_AUTH_ERROR)
+    assert not cfg.should_retry(_PROVIDER_RATE_LIMIT_ERROR)
     assert cfg.max_retries == 3  # other fields still parsed
 
 
 def test_from_mapping_none_uses_defaults():
     cfg = RetryConfig.from_mapping(None)
     assert not cfg.should_retry(_PROVIDER_AUTH_ERROR)
+    assert not cfg.should_retry(_PROVIDER_RATE_LIMIT_ERROR)
 
 
 def test_from_mapping_explicit_exclude_respected():
@@ -43,11 +48,13 @@ def test_worker_retry_config_omitting_exclude_does_not_retry_provider_auth():
     """Worker payload without retry.exclude_categories must not retry auth."""
     cfg = _retry_config({"retry": {"max_retries": 2}})
     assert not cfg.should_retry(_PROVIDER_AUTH_ERROR)
+    assert not cfg.should_retry(_PROVIDER_RATE_LIMIT_ERROR)
 
 
 def test_worker_retry_config_no_retry_key_at_all():
     cfg = _retry_config({})
     assert not cfg.should_retry(_PROVIDER_AUTH_ERROR)
+    assert not cfg.should_retry(_PROVIDER_RATE_LIMIT_ERROR)
 
 
 def test_evaluation_config_retry_excludes_provider_auth_by_default():
@@ -55,3 +62,4 @@ def test_evaluation_config_retry_excludes_provider_auth_by_default():
     EvaluationConfig whose retry refuses to retry provider_auth (#564)."""
     eval_cfg = _evaluation_config({"tasks_dir": "/tmp/tasks", "agent": "oracle"})
     assert not eval_cfg.retry.should_retry(_PROVIDER_AUTH_ERROR)
+    assert not eval_cfg.retry.should_retry(_PROVIDER_RATE_LIMIT_ERROR)

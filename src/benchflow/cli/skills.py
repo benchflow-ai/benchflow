@@ -44,7 +44,7 @@ def register_skills(app: typer.Typer) -> None:
         found = discover_skills(*search_dirs)
         if not found:
             console.print(
-                "No skills found. Install with: benchflow skills install owner/repo@skill-name"
+                "No skills found. Add skill directories under .claude/skills/ or skills/."
             )
             return
 
@@ -58,28 +58,6 @@ def register_skills(app: typer.Typer) -> None:
             table.add_row(s.name, s.version or "-", s.description[:60], str(s.path))
 
         console.print(table)
-
-    @skills_app.command("install", hidden=True, deprecated=True)
-    def skills_install(
-        spec: Annotated[
-            str,
-            typer.Argument(help="Skill spec (e.g. anthropics/skills@find-skills)"),
-        ],
-        directory: Annotated[
-            Path | None,
-            typer.Option("--dir", help="Target directory"),
-        ] = None,
-    ) -> None:
-        """Install a skill from the registry."""
-        from benchflow.skills import DEFAULT_SKILLS_DIR, install_skill
-
-        target = directory or DEFAULT_SKILLS_DIR
-        result = install_skill(spec, target_dir=target)
-        if result:
-            console.print(f"[green]Installed:[/green] {result}")
-        else:
-            console.print(f"[red]Failed to install {spec}[/red]")
-            raise typer.Exit(1)
 
     @skills_app.command("eval")
     def skills_eval(

@@ -83,39 +83,23 @@ from benchflow.diagnostics import (
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
-from benchflow.rollout._config import _task_document_scenes as _task_document_scenes
-from benchflow.rollout._config import (
-    _task_document_user_runtime as _task_document_user_runtime,
-)
 from benchflow.rollout._results import _DIAG_TRUNCATE as _DIAG_TRUNCATE
 from benchflow.rollout._results import _build_rollout_result as _build_rollout_result
 from benchflow.rollout._results import (
-    _compose_scene_user_prompt as _compose_scene_user_prompt,
-)
-from benchflow.rollout._results import (
     _environment_manifest_metadata as _environment_manifest_metadata,
 )
-from benchflow.rollout._results import _is_document_user as _is_document_user
 from benchflow.rollout._results import _is_secret_env_key as _is_secret_env_key
-from benchflow.rollout._results import _is_secret_env_value as _is_secret_env_value
 from benchflow.rollout._results import (
     _least_permissive_option_id as _least_permissive_option_id,
-)
-from benchflow.rollout._results import _role_metadata as _role_metadata
-from benchflow.rollout._results import _scene_metadata as _scene_metadata
-from benchflow.rollout._results import (
-    _should_record_env_entry as _should_record_env_entry,
 )
 from benchflow.rollout._results import (
     _user_confirmation_policy as _user_confirmation_policy,
 )
-from benchflow.rollout._results import _user_handoff_kind as _user_handoff_kind
 from benchflow.rollout._results import _write_config as _write_config
 from benchflow.rollout._results import _write_rewards_jsonl as _write_rewards_jsonl
 from benchflow.rollout._results import (
     _write_trainer_artifact as _write_trainer_artifact,
 )
-from benchflow.rollout._setup import _DISALLOW_WEB_TOOLS_ENV as _DISALLOW_WEB_TOOLS_ENV
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
 )
@@ -138,7 +122,6 @@ from benchflow.rollout._setup import _install_docker_compat as _install_docker_c
 from benchflow.rollout._setup import (
     _publish_trajectory_for_verifier as _publish_trajectory_for_verifier,
 )
-from benchflow.rollout._setup import _read_task_instruction as _read_task_instruction
 from benchflow.rollout._setup import _resolve_agent_cwd as _resolve_agent_cwd
 from benchflow.rollout._setup import _resolve_prompts as _resolve_prompts
 from benchflow.rollout._setup import _run_oracle as _run_oracle
@@ -147,7 +130,6 @@ from benchflow.rollout._setup import _start_env_and_upload as _start_env_and_upl
 from benchflow.rollout._setup import (
     _task_disallows_internet as _task_disallows_internet,
 )
-from benchflow.rollout._setup import _validate_agent_workdir as _validate_agent_workdir
 from benchflow.rollout._setup import _verify_rollout as _verify_rollout
 from benchflow.rollout._skills import (
     _resolve_skill_creator_root as _resolve_skill_creator_root,
@@ -158,6 +140,9 @@ from benchflow.rollout._skills import _skill_frontmatter_name as _skill_frontmat
 from benchflow.rollout._usage import (
     _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT as _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT,
 )
+from benchflow.rollout._usage import (
+    ProviderFailure as ProviderFailure,
+)
 from benchflow.rollout._usage import _as_nonnegative_int as _as_nonnegative_int
 from benchflow.rollout._usage import _native_acp_usage_delta as _native_acp_usage_delta
 from benchflow.rollout._usage import (
@@ -165,6 +150,12 @@ from benchflow.rollout._usage import (
 )
 from benchflow.rollout._usage import (
     _provider_auth_status_from_runtime as _provider_auth_status_from_runtime,
+)
+from benchflow.rollout._usage import (
+    _provider_failure_from_runtime as _provider_failure_from_runtime,
+)
+from benchflow.rollout._usage import (
+    _provider_failure_from_status as _provider_failure_from_status,
 )
 from benchflow.rollout._usage import (
     _zero_native_acp_usage_metrics as _zero_native_acp_usage_metrics,
@@ -289,10 +280,13 @@ class Rollout:
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
         self._native_usage_metrics: dict[str, Any] = _zero_native_acp_usage_metrics()
         self._native_usage_checkpoint: dict[str, int | None] | None = None
-        # Provider 401/403 status snapshotted during cleanup, after the usage
-        # proxy imports its captures (Daytona's SandboxUsageProxy only fills
-        # trajectory on stop()). Read by _provider_auth_status() so ACP-error
-        # classification can fail fast on auth failures (#546/#564).
+        # Provider failure snapshotted during cleanup, after the usage proxy
+        # imports its captures (Daytona's SandboxUsageProxy only fills trajectory
+        # on stop()). Read by _provider_failure() so ACP-error classification can
+        # expose a provider auth/rate-limit/outage failure (status code only)
+        # instead of a generic ACP internal error (#546/#564).
+        self._provider_failure_cached: ProviderFailure | None = None
+        # Auth-only (401/403) view kept for callers added by PR #564.
         self._provider_auth_status_cached: int | None = None
         # Provider API failure summary (all statuses >= 400), snapshotted in
         # cleanup() alongside the auth status — consumed by the post-rollout
@@ -1275,7 +1269,9 @@ class Rollout:
                 verifier.verify(),
                 timeout=self._task.config.verifier.timeout_sec,
             )
-            rewards = _ensure_canonical_rewards(verifier_result.rewards)
+            rewards = _ensure_canonical_rewards(
+                verifier_result.rewards, task=self._task
+            )
             # Capture raw verifier output for the user
             cat = await self._env.exec(
                 "cat /logs/verifier/*.log 2>/dev/null || "
@@ -1327,11 +1323,11 @@ class Rollout:
             except Exception as e:
                 logger.warning(f"Usage telemetry runtime stop failed: {e}")
                 self._usage_metrics = self._planes.extract_usage(None)
-            # Snapshot any provider 401/403 now that captures are imported
-            # (stop() populated the trajectory). This must happen before we drop
-            # the runtime reference below, and is read later by ACP-error
-            # classification — for Daytona the trajectory is empty until here
-            # (#546/#564).
+            # Snapshot any provider failure (401/403/429/503) now that captures
+            # are imported (stop() populated the trajectory). This must happen
+            # before we drop the runtime reference below, and is read later by
+            # ACP-error classification — for Daytona the trajectory is empty
+            # until here (#546/#564).
             #
             # Coverage gap: only `self._usage_runtime` is scanned here. Bedrock
             # auth failures flow through `self._provider_runtime`, whose server
@@ -1339,8 +1335,14 @@ class Rollout:
             # fallback scan of it would always return None — useless, so it's
             # not implemented. The direct-AWS-Bedrock case (remote sandbox,
             # runtime=None) bypasses both proxies entirely and is out of scope.
-            self._provider_auth_status_cached = _provider_auth_status_from_runtime(
+            self._provider_failure_cached = _provider_failure_from_runtime(
                 usage_runtime
+            )
+            self._provider_auth_status_cached = (
+                self._provider_failure_cached.status
+                if self._provider_failure_cached is not None
+                and self._provider_failure_cached.marker == "provider auth failed"
+                else None
             )
             self._api_failure_summary_cached = (
                 _provider_api_failure_summary_from_runtime(usage_runtime)
@@ -1734,16 +1736,28 @@ class Rollout:
                     f"Subscription auth credentials exist — unset the env var "
                     f"to use them: env -u {key} <command>"
                 )
-        # A real invalid-key failure often surfaces only as a generic
+        # A real provider failure often surfaces only as a generic
         # "ACP error -32603: Internal error" at this layer — the provider's
-        # actual 401/403 is visible only in the proxy-captured trajectory
-        # (#546/#564). Surface a sanitized auth marker (status code only — never
-        # the response body or headers) so RetryConfig.should_retry classifies
-        # it as provider_auth and fails fast instead of burning retries.
-        auth_status = self._provider_auth_status()
-        if auth_status is not None:
-            return f"{e} | provider auth failed (HTTP {auth_status})"
+        # actual 401/403/429/503 is visible only in the proxy-captured
+        # trajectory (#546/#564). Surface a sanitized marker (status code only —
+        # never the response body or headers) so RetryConfig.should_retry can
+        # classify it (auth/rate-limit fail fast; 503 stays retryable infra)
+        # instead of burning retries on a generic ACP error.
+        provider_failure = self._provider_failure()
+        if provider_failure is not None:
+            return f"{e} | {provider_failure.error_suffix}"
         return str(e)
+
+    def _provider_failure(self) -> ProviderFailure | None:
+        """Return the provider failure snapshotted during cleanup.
+
+        Falls back to the auth-only status cache for partial Rollout doubles in
+        tests that set ``_provider_auth_status_cached`` directly (#564).
+        """
+        failure = getattr(self, "_provider_failure_cached", None)
+        if failure is not None:
+            return failure
+        return _provider_failure_from_status(self._provider_auth_status())
 
     def _provider_auth_status(self) -> int | None:
         """Return the provider 401/403 status snapshotted during cleanup.
