@@ -9,26 +9,68 @@ token-accounting math is independently testable; the names are re-exported from
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from benchflow.usage_tracking import usage_unavailable
 
 
-def _provider_auth_status_from_runtime(runtime: Any) -> int | None:
-    """Return a provider 401/403 status from a usage runtime's trajectory.
+@dataclass(frozen=True)
+class ProviderFailure:
+    """Sanitized provider failure recovered from captured LLM exchanges."""
 
-    Scans the captured provider HTTP exchanges for an auth-failure status.
-    Only the integer status code is read — never response bodies or headers —
-    so no credential material can leak into ``result.error`` (#546/#564).
-    Returns ``None`` when there is no runtime, no trajectory, or no 401/403.
+    status: int
+    marker: str
+
+    @property
+    def error_suffix(self) -> str:
+        return f"{self.marker} (HTTP {self.status})"
+
+
+_PROVIDER_FAILURES: dict[int, ProviderFailure] = {
+    401: ProviderFailure(401, "provider auth failed"),
+    403: ProviderFailure(403, "provider auth failed"),
+    429: ProviderFailure(429, "provider rate limited"),
+    503: ProviderFailure(503, "provider unavailable"),
+}
+
+
+def _provider_failure_from_status(status: Any) -> ProviderFailure | None:
+    try:
+        return _PROVIDER_FAILURES.get(int(status))
+    except (TypeError, ValueError):
+        return None
+
+
+def _provider_failure_from_runtime(runtime: Any) -> ProviderFailure | None:
+    """Return the latest provider failure from a usage runtime trajectory.
+
+    Scans the captured provider HTTP exchanges for provider-owned failures that
+    ACP agents often wrap as a generic ``-32603 Internal error``. Only the
+    sanitized status code and category marker are surfaced, never response
+    bodies or headers, so no credential material reaches ``result.error``
+    (#546/#564). Returns ``None`` when there is no runtime, no trajectory, or no
+    recognized provider-failure status.
     """
     server = getattr(runtime, "server", None)
     trajectory = getattr(server, "trajectory", None)
     exchanges = getattr(trajectory, "exchanges", None) or []
     for exchange in reversed(exchanges):
         status = getattr(getattr(exchange, "response", None), "status_code", None)
-        if status in (401, 403):
-            return status
+        failure = _provider_failure_from_status(status)
+        if failure is not None:
+            return failure
+    return None
+
+
+def _provider_auth_status_from_runtime(runtime: Any) -> int | None:
+    """Backward-compatible auth-only view of provider failure extraction.
+
+    Kept for callers added by PR #564 that only care about the 401/403 status.
+    """
+    failure = _provider_failure_from_runtime(runtime)
+    if failure is not None and failure.marker == "provider auth failed":
+        return failure.status
     return None
 
 

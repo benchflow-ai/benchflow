@@ -37,7 +37,13 @@
   the host `codex` CLI through the conversion workflow, and `verify` runs the
   parity gate (deterministic per-criterion conversion parity plus the
   agent-scale reward-distribution layer) and emits a confidence verdict, with a
-  drafted support issue on divergence.
+  drafted support issue on divergence. `bench agent verify --rerun` independently
+  re-executes the benchmark's `parity_test.py` and scores its fresh output
+  (instead of trusting the recorded `parity_experiment.json`), failing closed if
+  the output is not scoreable; `bench agent run -c key=value` passes codex config
+  overrides through to the host codex driver (e.g. to work around `~/.codex`
+  drift). `bench tasks digest` recognizes native `task.md` tasks as well as
+  legacy `task.toml`.
 - **ATIF and ADP trajectory artifacts** — every scored rollout now emits
   `trainer/atif.json` and `trainer/adp.jsonl` (alongside the existing
   `verifiers.jsonl`), with job-level ADP aggregation. One canonical raw

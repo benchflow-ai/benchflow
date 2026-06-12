@@ -678,7 +678,14 @@ def register_agent_router(agent_app: typer.Typer) -> None:
                     model=model,
                     config_overrides=overrides,
                 )
-                console.print(" ".join(shlex.quote(c) for c in launch.command))
+                # Verbatim, copy-pasteable command: no console-width hard
+                # wrapping (which would split tokens like the --cd path) and
+                # no rich-markup interpretation of the prompt text.
+                console.print(
+                    " ".join(shlex.quote(c) for c in launch.command),
+                    soft_wrap=True,
+                    markup=False,
+                )
                 return
             code = run_agent_adoption(
                 source,

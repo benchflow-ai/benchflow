@@ -140,6 +140,9 @@ from benchflow.rollout._skills import _skill_frontmatter_name as _skill_frontmat
 from benchflow.rollout._usage import (
     _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT as _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT,
 )
+from benchflow.rollout._usage import (
+    ProviderFailure as ProviderFailure,
+)
 from benchflow.rollout._usage import _as_nonnegative_int as _as_nonnegative_int
 from benchflow.rollout._usage import _native_acp_usage_delta as _native_acp_usage_delta
 from benchflow.rollout._usage import (
@@ -147,6 +150,12 @@ from benchflow.rollout._usage import (
 )
 from benchflow.rollout._usage import (
     _provider_auth_status_from_runtime as _provider_auth_status_from_runtime,
+)
+from benchflow.rollout._usage import (
+    _provider_failure_from_runtime as _provider_failure_from_runtime,
+)
+from benchflow.rollout._usage import (
+    _provider_failure_from_status as _provider_failure_from_status,
 )
 from benchflow.rollout._usage import (
     _zero_native_acp_usage_metrics as _zero_native_acp_usage_metrics,
@@ -271,10 +280,13 @@ class Rollout:
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
         self._native_usage_metrics: dict[str, Any] = _zero_native_acp_usage_metrics()
         self._native_usage_checkpoint: dict[str, int | None] | None = None
-        # Provider 401/403 status snapshotted during cleanup, after the usage
-        # proxy imports its captures (Daytona's SandboxUsageProxy only fills
-        # trajectory on stop()). Read by _provider_auth_status() so ACP-error
-        # classification can fail fast on auth failures (#546/#564).
+        # Provider failure snapshotted during cleanup, after the usage proxy
+        # imports its captures (Daytona's SandboxUsageProxy only fills trajectory
+        # on stop()). Read by _provider_failure() so ACP-error classification can
+        # expose a provider auth/rate-limit/outage failure (status code only)
+        # instead of a generic ACP internal error (#546/#564).
+        self._provider_failure_cached: ProviderFailure | None = None
+        # Auth-only (401/403) view kept for callers added by PR #564.
         self._provider_auth_status_cached: int | None = None
         # Provider API failure summary (all statuses >= 400), snapshotted in
         # cleanup() alongside the auth status — consumed by the post-rollout
@@ -1257,7 +1269,9 @@ class Rollout:
                 verifier.verify(),
                 timeout=self._task.config.verifier.timeout_sec,
             )
-            rewards = _ensure_canonical_rewards(verifier_result.rewards)
+            rewards = _ensure_canonical_rewards(
+                verifier_result.rewards, task=self._task
+            )
             # Capture raw verifier output for the user
             cat = await self._env.exec(
                 "cat /logs/verifier/*.log 2>/dev/null || "
@@ -1309,11 +1323,11 @@ class Rollout:
             except Exception as e:
                 logger.warning(f"Usage telemetry runtime stop failed: {e}")
                 self._usage_metrics = self._planes.extract_usage(None)
-            # Snapshot any provider 401/403 now that captures are imported
-            # (stop() populated the trajectory). This must happen before we drop
-            # the runtime reference below, and is read later by ACP-error
-            # classification — for Daytona the trajectory is empty until here
-            # (#546/#564).
+            # Snapshot any provider failure (401/403/429/503) now that captures
+            # are imported (stop() populated the trajectory). This must happen
+            # before we drop the runtime reference below, and is read later by
+            # ACP-error classification — for Daytona the trajectory is empty
+            # until here (#546/#564).
             #
             # Coverage gap: only `self._usage_runtime` is scanned here. Bedrock
             # auth failures flow through `self._provider_runtime`, whose server
@@ -1321,8 +1335,14 @@ class Rollout:
             # fallback scan of it would always return None — useless, so it's
             # not implemented. The direct-AWS-Bedrock case (remote sandbox,
             # runtime=None) bypasses both proxies entirely and is out of scope.
-            self._provider_auth_status_cached = _provider_auth_status_from_runtime(
+            self._provider_failure_cached = _provider_failure_from_runtime(
                 usage_runtime
+            )
+            self._provider_auth_status_cached = (
+                self._provider_failure_cached.status
+                if self._provider_failure_cached is not None
+                and self._provider_failure_cached.marker == "provider auth failed"
+                else None
             )
             self._api_failure_summary_cached = (
                 _provider_api_failure_summary_from_runtime(usage_runtime)
@@ -1716,16 +1736,28 @@ class Rollout:
                     f"Subscription auth credentials exist — unset the env var "
                     f"to use them: env -u {key} <command>"
                 )
-        # A real invalid-key failure often surfaces only as a generic
+        # A real provider failure often surfaces only as a generic
         # "ACP error -32603: Internal error" at this layer — the provider's
-        # actual 401/403 is visible only in the proxy-captured trajectory
-        # (#546/#564). Surface a sanitized auth marker (status code only — never
-        # the response body or headers) so RetryConfig.should_retry classifies
-        # it as provider_auth and fails fast instead of burning retries.
-        auth_status = self._provider_auth_status()
-        if auth_status is not None:
-            return f"{e} | provider auth failed (HTTP {auth_status})"
+        # actual 401/403/429/503 is visible only in the proxy-captured
+        # trajectory (#546/#564). Surface a sanitized marker (status code only —
+        # never the response body or headers) so RetryConfig.should_retry can
+        # classify it (auth/rate-limit fail fast; 503 stays retryable infra)
+        # instead of burning retries on a generic ACP error.
+        provider_failure = self._provider_failure()
+        if provider_failure is not None:
+            return f"{e} | {provider_failure.error_suffix}"
         return str(e)
+
+    def _provider_failure(self) -> ProviderFailure | None:
+        """Return the provider failure snapshotted during cleanup.
+
+        Falls back to the auth-only status cache for partial Rollout doubles in
+        tests that set ``_provider_auth_status_cached`` directly (#564).
+        """
+        failure = getattr(self, "_provider_failure_cached", None)
+        if failure is not None:
+            return failure
+        return _provider_failure_from_status(self._provider_auth_status())
 
     def _provider_auth_status(self) -> int | None:
         """Return the provider 401/403 status snapshotted during cleanup.
