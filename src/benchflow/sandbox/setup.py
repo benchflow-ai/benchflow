@@ -178,6 +178,12 @@ def _modal_builder_dockerfile(
 
 def _create_benchflow_modal_environment_class():
     """Create a ModalSandbox subclass with BenchFlow's image-build defaults."""
+    # Import the optional ``modal`` dependency eagerly so a missing
+    # ``sandbox-modal`` extra surfaces here — where the caller wraps this in
+    # ``except ModuleNotFoundError`` and raises the actionable extra hint —
+    # rather than deep inside ``start()`` as a raw traceback.
+    import modal  # noqa: F401
+
     from benchflow.sandbox.modal_impl import ModalSandbox
 
     class BenchFlowModalSandbox(ModalSandbox):

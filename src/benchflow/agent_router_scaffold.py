@@ -236,7 +236,7 @@ JOB_YAML_TEMPLATE = """\
 # BenchFlow job config — how to *run* {{TITLE}} (separate from benchmark.yaml).
 tasks_dir: benchmarks/{{NAME}}/tasks
 jobs_dir: jobs/{{NAME}}
-agent: codex-acp
+agent: claude-agent-acp
 model: ""
 environment: docker
 concurrency: 4

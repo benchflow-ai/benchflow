@@ -14,6 +14,8 @@ import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from benchflow.sandbox.daytona import (
     _is_benchflow_label_orphan,
     _is_benchflow_owned,
@@ -109,6 +111,90 @@ def test_on_decision_sees_every_owned_sandbox():
     client = FakeClient([_sb("old", "STARTED", 1500), _sb("young", "STARTED", 5)])
     reap_stale_sandboxes(client, on_decision=lambda sb, age, d: seen.append((sb.id, d)))
     assert seen == [("old", True), ("young", False)]
+
+
+# --- REAP-01: a bad created_at must not abort the whole sweep -----------------
+
+
+def _naive_ts(age_minutes: float) -> str:
+    """An ISO timestamp with NO Z/offset (tz-naive), the value that used to raise."""
+    return (
+        (datetime.now(UTC) - timedelta(minutes=age_minutes))
+        .replace(tzinfo=None)
+        .isoformat()
+    )
+
+
+def test_naive_created_at_does_not_abort_sweep():
+    # A naive (offset-less) created_at placed BEFORE a clearly-stale owned
+    # sandbox: the stale one must still be reaped (the survivor assertion is the
+    # mutation-killer — a fix that swallows the error but drops the rest fails).
+    naive = SimpleNamespace(
+        id="naive", state="STARTED", created_at=_naive_ts(1500), labels=dict(_OWNED)
+    )
+    client = FakeClient([naive, _sb("stale", "STARTED", 1500)])
+    counts = reap_stale_sandboxes(client)
+    assert client.deleted == ["naive", "stale"]  # naive coerced to UTC, both reaped
+    assert counts["failed"] == 0
+
+
+def test_non_string_created_at_is_skipped_not_raised():
+    bad = SimpleNamespace(
+        id="bad", state="STARTED", created_at=datetime.now(UTC), labels=dict(_OWNED)
+    )
+    client = FakeClient([bad, _sb("stale", "STARTED", 1500)])
+    counts = reap_stale_sandboxes(client)
+    # The non-string record is skipped; the following stale sandbox still reaps.
+    assert client.deleted == ["stale"]
+    assert counts["skipped"] >= 1
+
+
+# --- REAP-03: activity guard protects genuinely live runs --------------------
+
+
+def _sb_with_activity(sb_id: str, state: str, age_minutes: float, idle_minutes: float):
+    created = datetime.now(UTC) - timedelta(minutes=age_minutes)
+    activity = datetime.now(UTC) - timedelta(minutes=idle_minutes)
+    return SimpleNamespace(
+        id=sb_id,
+        state=state,
+        created_at=created.isoformat().replace("+00:00", "Z"),
+        last_activity_at=activity.isoformat().replace("+00:00", "Z"),
+        labels=dict(_OWNED),
+    )
+
+
+def test_old_but_recently_active_sandbox_is_not_reaped():
+    # Old by creation (over TTL) but active 1 min ago -> protected, skipped.
+    client = FakeClient([_sb_with_activity("live", "STARTED", 1500, idle_minutes=1)])
+    counts = reap_stale_sandboxes(client)
+    assert client.deleted == []
+    assert counts["skipped"] == 1
+
+
+def test_old_and_idle_sandbox_is_reaped():
+    # Old by creation and idle well past the guard window -> reaped.
+    client = FakeClient(
+        [_sb_with_activity("orphan", "STARTED", 1500, idle_minutes=600)]
+    )
+    reap_stale_sandboxes(client)
+    assert client.deleted == ["orphan"]
+
+
+def test_old_with_missing_activity_is_reaped():
+    # Absent last_activity_at must NOT be protective, or nothing old ever reaps.
+    client = FakeClient([_sb("old", "STARTED", 1500)])
+    reap_stale_sandboxes(client)
+    assert client.deleted == ["old"]
+
+
+def test_failed_tier_reaps_despite_fresh_activity():
+    # A FAILED sandbox reaps on its short TTL regardless of fresh activity.
+    client = FakeClient(
+        [_sb_with_activity("crashed", "BUILD_FAILED", 180, idle_minutes=1)]
+    )
+    reap_stale_sandboxes(client)
+    assert client.deleted == ["crashed"]
 
 
 # --- Ownership scoping: foreign sandboxes must never be reaped ----------------
@@ -382,12 +468,33 @@ class TestEvaluationAutoReapGate:
         self._eval(tmp_path, "daytona")._maybe_start_daytona_reap()
         assert started == ["daytona-auto-reap"]
 
-    def test_env_gate_disables(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "value", ["0", "false", "False", "FALSE", "no", "off", " off "]
+    )
+    def test_env_gate_disables(self, tmp_path, monkeypatch, value):
         started = []
         monkeypatch.setattr(
             "benchflow.evaluation.threading.Thread",
             lambda *a, **k: started.append(k) or SimpleNamespace(start=lambda: None),
         )
-        monkeypatch.setenv("BENCHFLOW_DAYTONA_AUTO_REAP", "0")
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_AUTO_REAP", value)
         self._eval(tmp_path, "daytona")._maybe_start_daytona_reap()
-        assert started == []
+        assert started == [], f"{value!r} should disable the reaper"
+
+    @pytest.mark.parametrize("value", ["1", "true", "on", "yes", "anything-else"])
+    def test_env_gate_enabled_for_non_disable_tokens(
+        self, tmp_path, monkeypatch, value
+    ):
+        started = []
+
+        class FakeThread:
+            def __init__(self, *a, **k):
+                started.append(k.get("name"))
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr("benchflow.evaluation.threading.Thread", FakeThread)
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_AUTO_REAP", value)
+        self._eval(tmp_path, "daytona")._maybe_start_daytona_reap()
+        assert started == ["daytona-auto-reap"], f"{value!r} should keep reaper on"

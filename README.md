@@ -77,6 +77,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |
 | Author a task in the native `task.md` format | [Native task.md authoring](./docs/task-authoring-task-md.md) |
+| Adopt an upstream benchmark into BenchFlow | [Benchmark adoption](./docs/benchmark-adoption.md) |
 | Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
@@ -161,10 +162,10 @@ See [Native task.md authoring](./docs/task-authoring-task-md.md) and the
 
 ## Research artifacts
 
-Two runnable labs validate the security story (historical, 0.2.x-era — archived under [`labs/archive/`](./labs/archive/)):
+Two runnable labs validate the security story (historical, 0.2.x-era — archived under [`docs/labs/`](./docs/labs/)):
 
-- [`labs/archive/benchjack-sandbox-hardening/`](./labs/archive/benchjack-sandbox-hardening/) — end-to-end demo that 0.2.1+ blocks three [BenchJack](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/) exploits that flip 0.2.0's reward from 0.0 to 1.0.
-- [`labs/archive/reward-hack-matrix/`](./labs/archive/reward-hack-matrix/) — full reward-hack sweep across real benchmarks comparing 0.2.0 vs 0.2.2.
+- [`docs/labs/benchjack-sandbox-hardening/`](./docs/labs/benchjack-sandbox-hardening/) — end-to-end demo that 0.2.1+ blocks three [BenchJack](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/) exploits that flip 0.2.0's reward from 0.0 to 1.0.
+- [`docs/labs/reward-hack-matrix/`](./docs/labs/reward-hack-matrix/) — full reward-hack sweep across real benchmarks comparing 0.2.0 vs 0.2.2.
 
 ## Audience
 

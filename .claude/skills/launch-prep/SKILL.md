@@ -90,10 +90,36 @@ If `ruff format` changed files: `git diff --name-only`, then `git add <those fil
 
 ```bash
 source .env 2>/dev/null || true
-.venv/bin/python -m pytest -m live tests/test_smoke.py -v
+.venv/bin/python -m pytest -m live tests/test_smoke.py -v -ra \
+  --junitxml=/tmp/smoke.xml
+# A skipped live smoke is NOT green — exit 0 on a run that never executed
+# would false-green the e2e gate. pytest puts tests/skipped on the nested
+# <testsuite> elements, so sum over them and fail unless one ran clean.
+.venv/bin/python -c 'import sys,xml.etree.ElementTree as ET; \
+  es=list(ET.parse("/tmp/smoke.xml").getroot().iter("testsuite")); \
+  t=sum(int(e.get("tests",0)) for e in es); \
+  s=sum(int(e.get("skipped",0)) for e in es); \
+  sys.exit(0) if t and not s else (print("LIVE SMOKE SKIPPED OR NOT RUN — gate is RED, not green") or sys.exit(1))'
 ```
 
-If Docker is unavailable, warn and ask to skip or abort — do not skip silently. Expected: `test_hello_world_smoke` passes with reward > 0 and non-empty trajectory.
+The live smoke `skipif`s when Docker is down or the chosen model has no
+credential, and pytest exits `0` on a skip. The JUnit check above turns that
+silent pass into a hard failure so a skipped smoke cannot false-green the gate.
+Expected: `test_hello_world_smoke` passes with reward > 0 and non-empty
+trajectory.
+
+If the only credential on the machine is non-Anthropic, point the smoke at an
+agent/model it can authenticate instead of skipping (proven combo:
+openhands + deepseek):
+
+```bash
+export BENCHFLOW_SMOKE_AGENT=openhands
+export BENCHFLOW_SMOKE_MODEL=deepseek/deepseek-chat
+export DEEPSEEK_API_KEY=...  DEEPSEEK_BASE_URL=https://api.deepseek.com
+```
+
+`BENCHFLOW_SMOKE_AGENT` and `BENCHFLOW_SMOKE_MODEL` must be set together; the
+skip reason names the exact missing credential for whichever model is selected.
 
 ---
 

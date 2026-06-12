@@ -133,7 +133,7 @@ Between agent and verifier, benchflow **hardens** the sandbox to prevent the age
 - Lock the workspace to root, set restrictive PYTHONPATH/PATH for the verifier process
 - Run pytest with plugin auto-discovery off, only allowing plugins declared in the task config (`[verifier] pytest_plugins` in `task.toml`, or auto-discovered root-owned plugins)
 
-This catches the BenchJack and Meerkat exploit families documented in the historical (0.2.x-era) labs [`labs/archive/benchjack-sandbox-hardening/`](../labs/archive/benchjack-sandbox-hardening/) and [`labs/archive/reward-hack-matrix/`](../labs/archive/reward-hack-matrix/).
+This catches the BenchJack and Meerkat exploit families documented in the historical (0.2.x-era) labs [`docs/labs/benchjack-sandbox-hardening/`](../docs/labs/benchjack-sandbox-hardening/) and [`docs/labs/reward-hack-matrix/`](../docs/labs/reward-hack-matrix/).
 
 When a task ships a legitimate `conftest.py` (e.g. qutebrowser uses one to break a real circular import), the task opts out via `task.toml`:
 

@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -43,14 +44,17 @@ from benchflow._utils.learner_memory import (
 from benchflow._utils.reward_events import memory_summary
 from benchflow._utils.scoring import (
     ACP_ERROR,
+    API_ERROR,
     IDLE_TIMEOUT,
     INFRA_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
     PROVIDER_AUTH,
+    SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
+    api_error_is_transient,
     classify_error,
     classify_verifier_error,
     count_audit_outcomes,
@@ -155,6 +159,10 @@ class RetryConfig:
     retry_on_idle_timeout: bool = True
     retry_on_infra: bool = True
     retry_on_verifier_infra: bool = True
+    # Provider API errors: only TRANSIENT ones (rate limit, 5xx) are
+    # retryable — auth/quota/model-not-found are permanent until a human
+    # fixes the credential or model id, so retrying only burns wall-clock.
+    retry_on_api_error: bool = True
     wait_multiplier: float = 2.0
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
@@ -184,6 +192,9 @@ class RetryConfig:
                 raw.get("retry_on_idle_timeout", defaults.retry_on_idle_timeout)
             ),
             retry_on_infra=bool(raw.get("retry_on_infra", defaults.retry_on_infra)),
+            retry_on_api_error=bool(
+                raw.get("retry_on_api_error", defaults.retry_on_api_error)
+            ),
             retry_on_verifier_infra=bool(
                 raw.get("retry_on_verifier_infra", defaults.retry_on_verifier_infra)
             ),
@@ -215,6 +226,14 @@ class RetryConfig:
             return True
         if self.retry_on_infra and category == INFRA_ERROR:
             return True
+        if category == API_ERROR:
+            # Transient-only: rate limit / provider 5xx self-heal on backoff;
+            # permanent (auth, quota, model_not_found, rejected_request) do not.
+            return self.retry_on_api_error and api_error_is_transient(error)
+        if category == SUSPECTED_API_ERROR:
+            # Zero-signal verdicts have an unknown subcategory — never provably
+            # transient, so never auto-retried (rerun is an operator action).
+            return False
         return bool(self.retry_on_acp and category == ACP_ERROR)
 
     def should_retry_verifier_error(self, verifier_error: str | None) -> bool:
@@ -230,6 +249,75 @@ class RetryConfig:
         """Exponential backoff delay for retry attempt."""
         delay = self.min_wait_sec * (self.wait_multiplier**attempt)
         return min(delay, self.max_wait_sec)
+
+
+class ApiErrorCircuitBreaker:
+    """Trip after N consecutive permanent provider-API failures with the SAME
+    fingerprint (classic dead key / wrong model id), so a doomed batch stops
+    burning sandbox-hours producing all-unhealthy artifacts.
+
+    Isolated api_errors never interrupt the batch — any completion that is not
+    a permanent api_error resets the streak. Threshold comes from
+    ``BENCHFLOW_API_ERROR_BREAKER_THRESHOLD`` (default 5; ``0`` disables).
+    Already-running tasks finish; only not-yet-started tasks are skipped.
+    """
+
+    ENV_VAR = "BENCHFLOW_API_ERROR_BREAKER_THRESHOLD"
+    DEFAULT_THRESHOLD = 5
+
+    def __init__(self, threshold: int | None = None) -> None:
+        if threshold is None:
+            raw = os.environ.get(self.ENV_VAR, "")
+            try:
+                threshold = int(raw) if raw.strip() else self.DEFAULT_THRESHOLD
+            except ValueError:
+                threshold = self.DEFAULT_THRESHOLD
+        self.threshold = max(threshold, 0)
+        self._fingerprint: str | None = None
+        self._streak = 0
+        self.tripped = False
+
+    @staticmethod
+    def _fingerprint_of(result: RunResult) -> str | None:
+        """Permanent-api-error fingerprint, or None when not breaker-relevant."""
+        category = result.error_category or classify_error(result.error)
+        if category == SUSPECTED_API_ERROR:
+            return "suspected:zero_signal"
+        if category == API_ERROR and not api_error_is_transient(result.error):
+            match = re.search(r"\[([a-z_]+)/permanent\] HTTP (\d+)", result.error or "")
+            return (
+                f"{match.group(1)}:{match.group(2)}" if match else "api_error:unknown"
+            )
+        return None
+
+    def record(self, result: RunResult) -> None:
+        """Track one completed task; trip when the same-fingerprint streak hits
+        the threshold."""
+        if self.threshold == 0 or self.tripped:
+            return
+        fingerprint = self._fingerprint_of(result)
+        if fingerprint is None:
+            self._fingerprint = None
+            self._streak = 0
+            return
+        if fingerprint == self._fingerprint:
+            self._streak += 1
+        else:
+            self._fingerprint = fingerprint
+            self._streak = 1
+        if self._streak >= self.threshold:
+            self.tripped = True
+            logger.error(
+                f"API-error circuit breaker OPEN: {self._streak} consecutive "
+                f"permanent provider failures [{fingerprint}] — skipping "
+                f"remaining unstarted tasks (set {self.ENV_VAR}=0 to disable)"
+            )
+
+    def skip_error(self) -> str:
+        return (
+            f"skipped: api-error circuit breaker open "
+            f"([{self._fingerprint}] x{self._streak} consecutive)"
+        )
 
 
 # Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
@@ -1006,8 +1094,14 @@ class Evaluation:
         cfg = self._config
         sem = asyncio.Semaphore(cfg.concurrency)
 
+        breaker = ApiErrorCircuitBreaker()
+
         async def bounded(td: Path) -> tuple[str, RunResult]:
             async with sem:
+                if breaker.tripped:
+                    result = RunResult(task_name=td.name, error=breaker.skip_error())
+                    self._log_and_report(td, result)
+                    return td.name, result
                 # Jitter start to avoid SSH/docker-daemon storms at high
                 # concurrency. The window scales linearly with --concurrency so
                 # the average start rate stays around 2 tasks/sec; the previous
@@ -1019,6 +1113,7 @@ class Evaluation:
                     jitter_max = max(cfg.concurrency / 2, 8.0)
                     await asyncio.sleep(random.uniform(0, jitter_max))
                 result = await self._run_task(td)
+                breaker.record(result)
                 self._log_and_report(td, result)
                 return td.name, result
 
@@ -1238,14 +1333,20 @@ class Evaluation:
     def _maybe_start_daytona_reap(self) -> None:
         """Fire-and-forget auto-reap of orphaned Daytona sandboxes (issue: leakage at scale).
 
-        Gated by ``BENCHFLOW_DAYTONA_AUTO_REAP`` (default on). Conservative
-        TTLs (24h general / 2h failed states) mean concurrent live runs are
-        never touched. Runs in a daemon thread so eval startup never blocks
-        or fails on reaping.
+        Gated by ``BENCHFLOW_DAYTONA_AUTO_REAP`` (default on; any of
+        ``0``/``false``/``no``/``off`` case-insensitively disables it).
+        Conservative TTLs (24h general / 2h failed states) plus an idle-activity
+        guard mean concurrent live runs are never reaped. Runs in a daemon
+        thread so eval startup never blocks or fails on reaping.
         """
         if self._config.environment != "daytona":
             return
-        if os.environ.get("BENCHFLOW_DAYTONA_AUTO_REAP", "1") == "0":
+        if os.environ.get("BENCHFLOW_DAYTONA_AUTO_REAP", "1").strip().lower() in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
             return
 
         def _reap() -> None:

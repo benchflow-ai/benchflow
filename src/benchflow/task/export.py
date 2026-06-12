@@ -233,27 +233,52 @@ def export_task_to_split_layout(
     package = TaskPackage.from_task_dir(task_dir)
     view = package.view
     dest = Path(output_dir)
-    if dest.exists():
-        if not overwrite:
-            raise FileExistsError(f"Export destination already exists: {dest}")
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
 
-    (dest / "task.toml").write_text(_export_task_toml(view))
-    (dest / "instruction.md").write_text(view.prompt.strip() + "\n")
+    # Reject a destination that overlaps the source task directory in EITHER
+    # direction. ``TaskPackage`` only loads config/prompt/document into memory;
+    # the environment/oracle/verifier trees are copied from disk *after* the
+    # ``rmtree`` below, so exporting onto (or inside, or above) the source would
+    # delete those files before they are copied — a silent destructive export.
+    src = Path(task_dir).resolve()
+    dst = dest.resolve()
+    if src == dst or dst.is_relative_to(src) or src.is_relative_to(dst):
+        raise ValueError(
+            f"Export destination {dest} overlaps the source task directory "
+            f"{task_dir}; choose a separate output directory"
+        )
 
-    _copy_tree_if_exists(view.environment_dir, dest / "environment")
-    _copy_tree_if_exists(view.oracle_dir, dest / "solution")
-    _copy_tree_if_exists(view.verifier_dir, dest / "tests")
+    if dest.exists() and not overwrite:
+        raise FileExistsError(f"Export destination already exists: {dest}")
 
-    report = build_compatibility_export_report(
-        view.task_dir,
-        target=target,
-        output_dir=dest,
-    )
-    report_dir = dest / "compatibility"
-    report_dir.mkdir(exist_ok=True)
-    (report_dir / "export-report.json").write_text(report.to_json())
+    # Build the export in a sibling temp dir and swap it into place only once it
+    # is fully materialized, so any abort/collision can never leave a
+    # half-deleted destination (and, with the guard above, never the source).
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="benchflow-split-export-", dir=dest.parent
+    ) as staging_root:
+        staged = Path(staging_root) / "export"
+        staged.mkdir()
+
+        (staged / "task.toml").write_text(_export_task_toml(view))
+        (staged / "instruction.md").write_text(view.prompt.strip() + "\n")
+
+        _copy_tree_if_exists(view.environment_dir, staged / "environment")
+        _copy_tree_if_exists(view.oracle_dir, staged / "solution")
+        _copy_tree_if_exists(view.verifier_dir, staged / "tests")
+
+        report = build_compatibility_export_report(
+            view.task_dir,
+            target=target,
+            output_dir=staged,
+        )
+        report_dir = staged / "compatibility"
+        report_dir.mkdir(exist_ok=True)
+        (report_dir / "export-report.json").write_text(report.to_json())
+
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.move(str(staged), str(dest))
     return report
 
 

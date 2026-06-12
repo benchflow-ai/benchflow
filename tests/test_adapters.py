@@ -330,6 +330,32 @@ class TestORSAdapter:
             }
         ]
 
+    def test_finished_record_is_never_dense_terminal_contradiction(self) -> None:
+        """A finished record (no explicit type) is forced terminal/terminal."""
+        records = ORSAdapter.tool_outputs_to_reward_events(
+            [{"tool": "submit", "reward": 0.9, "finished": True}]
+        )
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["type"] == "terminal"
+        assert rec["granularity"] == "terminal"
+        # The forbidden internally-contradictory shape must never be emitted.
+        assert not (rec["type"] == "dense" and rec["granularity"] == "terminal")
+
+    def test_finished_with_explicit_dense_type_is_rejected(self) -> None:
+        """An explicit non-terminal type on a finished record is contradictory."""
+        with pytest.raises(ValueError, match=r"finished.*non-terminal type"):
+            ORSAdapter.tool_outputs_to_reward_events(
+                [{"tool": "submit", "reward": 0.9, "type": "dense", "finished": True}]
+            )
+
+    def test_finished_with_explicit_step_granularity_is_rejected(self) -> None:
+        """An explicit step granularity on a finished record is contradictory."""
+        with pytest.raises(ValueError, match=r"finished.*non-terminal granularity"):
+            ORSAdapter.tool_outputs_to_reward_events(
+                [{"tool": "submit", "reward": 0.9, "granularity": "step", "done": True}]
+            )
+
 
 # Convenience functions
 
