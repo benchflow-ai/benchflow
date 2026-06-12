@@ -105,7 +105,13 @@ def bench_version_issue(declared_range: str | None) -> str | None:
             f"cannot compare bench version {__version__!r} against the "
             f"dataset's validated range {declared_range!r}"
         )
-    if specifier.contains(current, prereleases=True):
+    # Compare on the BASE version (strip pre/post/dev) so a release candidate or
+    # dev build counts as in-range for a spec that includes its release line.
+    # PEP 440 orders 0.6.0rc6 < 0.6.0, so a bare `>=0.6` would otherwise flag the
+    # very release being validated (v0.6 ships as 0.6.0rcN) as out-of-range — and
+    # the planned bench_version hard-gate would then block every RC user from
+    # dataset runs. base_version maps 0.6.0rc6 -> 0.6.0, the line it belongs to.
+    if specifier.contains(Version(current.base_version), prereleases=True):
         return None
     return (
         f"bench {__version__} is outside the range this dataset was "

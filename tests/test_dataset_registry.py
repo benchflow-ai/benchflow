@@ -127,6 +127,22 @@ class TestBenchVersionIssue:
         issue = bench_version_issue("not-a-range")
         assert issue is not None and "unparseable" in issue
 
+    def test_prerelease_counts_as_in_range_for_its_own_line(self, monkeypatch):
+        """A shipping release candidate (v0.6 ships as 0.6.0rcN) must count as
+        in-range for a >=0.6 dataset. PEP 440 orders 0.6.0rc6 < 0.6.0, so the
+        naive `contains(current)` spuriously flagged the very release being
+        validated as out-of-range — and the planned hard-gate would then block
+        every RC user from dataset runs. The base-version comparison fixes it."""
+        monkeypatch.setattr("benchflow.__version__", "0.6.0rc6")
+        assert bench_version_issue(">=0.6,<0.7") is None
+        # dev builds map to their release line too
+        monkeypatch.setattr("benchflow.__version__", "0.6.0.dev3")
+        assert bench_version_issue(">=0.6,<0.7") is None
+        # but a genuinely-different line still warns (no false in-range)
+        monkeypatch.setattr("benchflow.__version__", "0.6.0rc6")
+        assert bench_version_issue(">=0.4,<0.5") is not None
+        assert bench_version_issue(">=0.5,<0.6") is not None
+
 
 class TestResolveDataset:
     def test_resolves_and_verifies_digests(self, tmp_path, snapshot):
