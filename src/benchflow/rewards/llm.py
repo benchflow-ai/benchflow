@@ -24,9 +24,7 @@ class JudgeEnvironmentError(RuntimeError):
     """
 
 
-# ------------------------------------------------------------------
 # Verdict parsing
-# ------------------------------------------------------------------
 
 
 def _reject_json_constant(value: str) -> None:
@@ -78,9 +76,7 @@ def parse_binary_verdict(text: str) -> bool:
     return lowered in {"yes", "true", "1", "pass", "passed"}
 
 
-# ------------------------------------------------------------------
 # Provider routing
-# ------------------------------------------------------------------
 
 
 def _is_anthropic_model(model: str) -> bool:
@@ -96,11 +92,17 @@ def _is_gemini_model(model: str) -> bool:
 
 
 def _strip_provider_prefix(model: str) -> str:
-    """Remove ``provider/`` prefix if present."""
+    """Remove ``provider/`` prefix if present.
+
+    ``gemini/`` is an accepted spelling for Google models (e.g.
+    ``gemini/gemini-3.1-flash-lite``): ``_is_gemini_model`` already routes it
+    to the Google path, so the prefix must be stripped here too — otherwise the
+    google-genai SDK receives a slashed model name and 404s.
+    """
     if "/" in model:
         parts = model.split("/", 1)
         provider = parts[0]
-        if provider in {"anthropic", "openai", "google"}:
+        if provider in {"anthropic", "openai", "google", "gemini"}:
             return parts[1]
     return model
 
@@ -137,8 +139,12 @@ async def call_judge(
     provider is tried in turn. A real API failure from one provider then
     falls through to the next instead of aborting the whole call.
 
-    In both cases a missing SDK (``ImportError``) always falls through to
-    the next provider.
+    A missing SDK (``ImportError``) falls through to the next provider —
+    *except* when the model name confidently matches a single provider whose
+    SDK is absent. In that case there is no other provider that can serve the
+    model, so a clear ``JudgeEnvironmentError`` naming the provider and the
+    ``benchflow[judge]`` install fix is raised rather than masking it with a
+    misleading missing-key error from a fallback provider.
     """
     bare_model = _strip_provider_prefix(model)
     creds: Mapping[str, str] = env or {}
@@ -161,7 +167,7 @@ async def call_judge(
 
     last_error: Exception | None = None
 
-    for provider in providers:
+    for index, provider in enumerate(providers):
         for attempt in range(retries):
             try:
                 if provider == "anthropic":
@@ -172,6 +178,18 @@ async def call_judge(
                     return await _call_google(bare_model, prompt, creds)
             except ImportError:
                 logger.debug("SDK for %s not installed, skipping", provider)
+                if matched_provider and index == 0:
+                    # The model name confidently selects this provider, but its
+                    # SDK is not installed. Falling through to the next provider
+                    # only swaps in a misleading "Missing OPENAI_API_KEY" (or a
+                    # bare missing-SDK) error. Surface a clear, actionable
+                    # message that names the provider and the fix instead.
+                    raise JudgeEnvironmentError(
+                        f"The {provider} judge SDK is required to run model "
+                        f"{model!r} but is not installed. Install the judge "
+                        f"extra: `pip install benchflow[judge]` "
+                        f"(or `uv sync --extra judge`)."
+                    ) from None
                 break  # SDK missing — fall through to the next provider
             except Exception as e:
                 if attempt < retries - 1:
@@ -211,9 +229,7 @@ async def call_judge(
     )
 
 
-# ------------------------------------------------------------------
 # Provider implementations
-# ------------------------------------------------------------------
 
 
 async def _call_anthropic(

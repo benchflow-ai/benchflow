@@ -1,0 +1,15 @@
+{
+  "id": "topo-sort-with-cycle-detection",
+  "question": "Implement a function `topo_sort(graph: dict[str, list[str]]) -> list[str]` that performs topological sorting on a directed graph. The graph is represented as an adjacency list (node \u2192 list of nodes it points to). If the graph contains a cycle, raise a ValueError with the message 'Graph contains a cycle'. The function should be deterministic \u2014 for nodes with equal ordering, sort alphabetically.\n\nExample:\n```python\ngraph = {'a': ['b', 'c'], 'b': ['d'], 'c': ['d'], 'd': []}\ntopo_sort(graph)  # ['a', 'b', 'c', 'd'] or ['a', 'c', 'b', 'd']\n\ncyclic = {'a': ['b'], 'b': ['c'], 'c': ['a']}\ntopo_sort(cyclic)  # raises ValueError('Graph contains a cycle')\n```\n\nWrite tests to verify correctness.",
+  "ground_truth": "Correct implementation using Kahn's algorithm or DFS-based topological sort with cycle detection. Must handle: empty graph, single node, diamond DAG, disconnected components, and cyclic graphs.",
+  "expected_behavior": [
+    "The agent produced a working topo_sort function",
+    "The function correctly detects cycles and raises ValueError",
+    "The function handles edge cases (empty graph, single node)",
+    "The agent wrote tests verifying the implementation",
+    "The implementation is deterministic (alphabetical tiebreaking)"
+  ],
+  "expected_skill": "code-specialist",
+  "expected_script": "",
+  "environment": {}
+}

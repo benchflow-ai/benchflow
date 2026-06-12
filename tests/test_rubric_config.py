@@ -12,14 +12,13 @@ from benchflow.rewards.rubric_config import (
     JudgeConfig,
     RubricConfig,
     ScoringConfig,
+    criteria_aggregate_policy_from_rubric,
     load_rubric,
     load_rubric_json,
     load_rubric_toml,
 )
 
-# ---------------------------------------------------------------------------
 # Criterion normalization
-# ---------------------------------------------------------------------------
 
 
 class TestCriterionNormalize:
@@ -67,9 +66,7 @@ class TestCriterionNormalize:
         assert c.normalize(5) == 0.0
 
 
-# ---------------------------------------------------------------------------
 # Criterion id
-# ---------------------------------------------------------------------------
 
 
 class TestCriterionId:
@@ -82,9 +79,7 @@ class TestCriterionId:
         assert c.id == "a" * 40
 
 
-# ---------------------------------------------------------------------------
 # TOML parsing
-# ---------------------------------------------------------------------------
 
 
 class TestLoadRubricToml:
@@ -154,6 +149,29 @@ description = "Does it work?"
         assert len(cfg.criteria) == 1
         assert cfg.criteria[0].type == "binary"
 
+    def test_plural_criteria_and_method_aliases(self, tmp_path: Path) -> None:
+        """Harbor-ish Reward Kit rubrics can use [[criteria]] and method."""
+        toml_content = """\
+[scoring]
+method = "mean"
+
+[[criteria]]
+id = "contract"
+title = "Reward contract"
+match_criteria = "The verifier writes reward.json."
+weight = 0.4
+"""
+        rubric_file = tmp_path / "rubric.toml"
+        rubric_file.write_text(toml_content)
+
+        cfg = load_rubric_toml(rubric_file)
+
+        assert cfg.scoring.aggregation == "weighted_mean"
+        assert len(cfg.criteria) == 1
+        assert cfg.criteria[0].id == "contract"
+        assert cfg.criteria[0].description == "The verifier writes reward.json."
+        assert cfg.criteria[0].weight == 0.4
+
     def test_empty_rubric(self, tmp_path: Path) -> None:
         rubric_file = tmp_path / "rubric.toml"
         rubric_file.write_text("")
@@ -161,10 +179,85 @@ description = "Does it work?"
         cfg = load_rubric_toml(rubric_file)
         assert len(cfg.criteria) == 0
 
+    def test_reward_kit_criteria_policy_from_harborish_toml(
+        self, tmp_path: Path
+    ) -> None:
+        """Selected Reward Kit criteria become authoritative aggregate policy."""
+        rubric_file = tmp_path / "rubric.toml"
+        rubric_file.write_text(
+            """\
+[scoring]
+method = "weighted_mean"
 
-# ---------------------------------------------------------------------------
+[[criteria]]
+id = "correctness"
+match_criteria = "Correct."
+weight = 0.7
+
+[[criteria]]
+id = "quality"
+match_criteria = "High quality."
+weight = 0.3
+"""
+        )
+
+        assert criteria_aggregate_policy_from_rubric(rubric_file) == {
+            "field": "reward",
+            "method": "weighted_mean",
+            "threshold": 0.7,
+            "criteria": ["correctness", "quality"],
+            "weights": {"correctness": 0.7, "quality": 0.3},
+        }
+
+    @pytest.mark.parametrize(
+        ("content", "match"),
+        [
+            ("", "declares no criteria"),
+            (
+                """\
+[[criteria]]
+id = "same"
+match_criteria = "A."
+
+[[criteria]]
+id = "same"
+match_criteria = "B."
+""",
+                "duplicate id",
+            ),
+            (
+                """\
+[[criteria]]
+id = "score"
+match_criteria = "A."
+weight = -0.1
+""",
+                "invalid weight",
+            ),
+            (
+                """\
+[scoring]
+method = "median"
+
+[[criteria]]
+id = "score"
+match_criteria = "A."
+""",
+                "unsupported scoring method",
+            ),
+        ],
+    )
+    def test_reward_kit_criteria_policy_rejects_invalid_rubrics(
+        self, tmp_path: Path, content: str, match: str
+    ) -> None:
+        rubric_file = tmp_path / "rubric.toml"
+        rubric_file.write_text(content)
+
+        with pytest.raises(ValueError, match=match):
+            criteria_aggregate_policy_from_rubric(rubric_file)
+
+
 # Dataclass defaults
-# ---------------------------------------------------------------------------
 
 
 class TestDefaults:
@@ -186,9 +279,7 @@ class TestDefaults:
         assert r.judge.model == "claude-sonnet-4-6"
 
 
-# ---------------------------------------------------------------------------
 # Harvey LAB style rubric.json parsing (#270)
-# ---------------------------------------------------------------------------
 
 
 class TestLoadRubricJson:

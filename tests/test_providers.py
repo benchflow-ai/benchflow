@@ -15,7 +15,7 @@ from benchflow.agents.providers import (
     strip_provider_prefix,
 )
 
-# ── find_provider: model string → provider config ──
+# find_provider: model string → provider config
 
 
 class TestFindProvider:
@@ -110,7 +110,7 @@ class TestFindProvider:
         assert cfg.auth_env == expected_auth_env
 
 
-# ── resolve_base_url: template expansion ──
+# resolve_base_url: template expansion
 
 
 class TestResolveBaseUrl:
@@ -229,7 +229,7 @@ class TestResolveBaseUrl:
         assert resolve_base_url(p, env) == "https://api.moonshot.ai/v1"
 
 
-# ── resolve_auth_env: which env var does this provider need? ──
+# resolve_auth_env: which env var does this provider need?
 
 
 class TestResolveAuthEnv:
@@ -258,7 +258,7 @@ class TestResolveAuthEnv:
         assert resolve_auth_env("glm/glm-5.1") == "GLM_API_KEY"
 
 
-# ── Integration: backward compat with registry.py ──
+# Integration: backward compat with registry.py
 
 
 class TestRegistryIntegration:
@@ -289,7 +289,7 @@ class TestRegistryIntegration:
         assert is_vertex_model("zai/glm-5") is False
 
 
-# ── Provider model metadata (for openclaw.json generation) ──
+# Provider model metadata (for openclaw.json generation)
 
 
 class TestProviderModels:
@@ -301,7 +301,7 @@ class TestProviderModels:
             assert all("id" in m and "name" in m for m in cfg.models)
 
 
-# ── strip_provider_prefix ──
+# strip_provider_prefix
 
 
 class TestStripProviderPrefix:
@@ -340,7 +340,7 @@ class TestStripProviderPrefix:
         )
 
 
-# ── Shim provider fallback: stripped model + BENCHFLOW_PROVIDER_* env vars ──
+# Shim provider fallback: stripped model + BENCHFLOW_PROVIDER_* env vars
 
 
 class TestShimProviderFallback:
@@ -383,7 +383,7 @@ class TestShimProviderFallback:
         assert cfg.auth_env == "OPENAI_API_KEY"
 
 
-# ── Shim helper functions ──
+# Shim helper functions
 
 
 class TestInferProviderPrefix:
@@ -462,7 +462,7 @@ class TestSetupOpenaiAuth:
         assert auth["openai"]["apiKey"] == "sk-test-456"
 
 
-# ── Shim model generation parameters ──
+# Shim model generation parameters
 
 
 class TestShimModelParams:

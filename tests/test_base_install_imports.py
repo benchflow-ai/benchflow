@@ -60,12 +60,14 @@ def test_rollout_imports_sandbox_startup_error_from_protocol_not_daytona():
     moves the import back."""
     from pathlib import Path
 
-    src = Path(__file__).resolve().parent.parent / "src" / "benchflow" / "rollout.py"
-    text = src.read_text()
+    # ``rollout.py`` was split into the ``benchflow.rollout`` package; the
+    # invariant now spans every module in it.
+    pkg = Path(__file__).resolve().parent.parent / "src" / "benchflow" / "rollout"
+    text = "\n".join(p.read_text() for p in sorted(pkg.glob("*.py")))
     assert (
         "SandboxStartupFailure" in text and "from benchflow.contracts import" in text
     ), (
-        "rollout.py must source sandbox startup failures from contracts (no "
+        "rollout package must source sandbox startup failures from contracts (no "
         "optional deps), not from benchflow.sandbox.daytona (forces tenacity / "
         "daytona-SDK at import time)"
     )

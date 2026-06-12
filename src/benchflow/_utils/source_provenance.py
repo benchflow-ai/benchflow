@@ -68,8 +68,10 @@ def source_issues(
         issues.append(f"{label}: source.file_hashes must be an object")
     elif require_file_hashes and not file_hashes:
         issues.append(f"{label}: source.file_hashes must include task files")
-    elif require_file_hashes and "task.toml" not in file_hashes:
-        issues.append(f"{label}: source.file_hashes must include task.toml")
+    elif require_file_hashes and not (
+        "task.toml" in file_hashes or "task.md" in file_hashes
+    ):
+        issues.append(f"{label}: source.file_hashes must include task.toml or task.md")
     elif isinstance(file_hashes, dict):
         bad_hashes = [
             name

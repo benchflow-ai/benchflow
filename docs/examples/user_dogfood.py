@@ -22,7 +22,8 @@ logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
 def progressive_user(
     round: int, instruction: str, rr: RoundResult | None
 ) -> str | None:
-    # Round 0: give a terse version — first line of instruction.md.
+    # Round 0: give a terse version — first line of the task instruction
+    # (from task.md, or legacy instruction.md).
     if round == 0:
         first_line = instruction.split("\n", 1)[0].strip()
         return (

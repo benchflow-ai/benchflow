@@ -57,7 +57,7 @@ ALL_AGENTS=(
   openhands
 )
 
-# ── Parse args ──────────────────────────────────────────────────────
+# Parse args
 CHECK_ONLY=false
 AGENTS=()
 for arg in "$@"; do
@@ -87,7 +87,7 @@ fi
 LOG_DIR="$JOBS_ROOT/.logs"
 CHECK_AGENTS=("${AGENTS[@]}")
 
-# ── Credential checks ──────────────────────────────────────────────
+# Credential checks
 has_gemini_key() {
   [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GOOGLE_API_KEY:-}" ]
 }
@@ -108,7 +108,7 @@ has_creds_for() {
   esac
 }
 
-# ── Run evals (all agents in parallel) ──────────────────────────────
+# Run evals (all agents in parallel)
 if [ "$CHECK_ONLY" = false ]; then
   if [ -z "${DAYTONA_API_KEY:-}" ]; then
     echo "ERROR: DAYTONA_API_KEY required" >&2
@@ -188,7 +188,7 @@ if [ "$CHECK_ONLY" = false ]; then
   echo "${#LAUNCHED[@]} agents done, $EVAL_WARNINGS exited non-zero."
 fi
 
-# ── Check results ───────────────────────────────────────────────────
+# Check results
 echo ""
 echo "══════ Results ══════"
 EXPECTED_CHECK_ARGS=("environment=daytona" "concurrency=$INTEGRATION_CONCURRENCY")

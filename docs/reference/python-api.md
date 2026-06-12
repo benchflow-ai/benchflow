@@ -4,7 +4,7 @@ The Rollout/Scene API is the primary way to run agent benchmarks programmaticall
 ## Install
 
 ```bash
-uv tool install --prerelease allow 'benchflow==0.5.2'
+uv tool install --prerelease allow 'benchflow==0.6.0'
 ```
 
 ## Quick Start
@@ -304,7 +304,7 @@ config = EvaluationConfig(
 
 ---
 
-## v0.5 Sandbox and Reward Types
+## Sandbox and Reward Types
 
 ### Sandbox Protocol
 
@@ -368,13 +368,16 @@ ors_payload = to_ors_reward(verify_result)
 Batch orchestration with concurrency and retries.
 
 ```python
-from benchflow import Evaluation, EvaluationConfig, EvaluationResult
+from benchflow import Evaluation, EvaluationConfig, EvaluationResult, RetryConfig
 
-# EvaluationConfig wraps multiple RolloutConfigs
+# EvaluationConfig holds the per-job settings (agent/model/environment/...)
+# applied to every task discovered under tasks_dir.
 config = EvaluationConfig(
-    rollouts=[rollout_config_1, rollout_config_2, ...],
+    model="gemini-3.1-flash-lite-preview",
+    environment="daytona",
     concurrency=8,
     retry=RetryConfig(max_retries=2),
 )
-eval_result: EvaluationResult = await Evaluation.run(config)
+evaluation = Evaluation(tasks_dir="tasks", jobs_dir="jobs/my-run", config=config)
+eval_result: EvaluationResult = await evaluation.run()
 ```

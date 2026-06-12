@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from benchflow._utils.task_authoring import check_task
 from benchflow.skill_eval import (
     AgentLift,
     CaseResult,
@@ -14,6 +15,10 @@ from benchflow.skill_eval import (
     generate_tasks,
     load_eval_dataset,
 )
+from benchflow.task import Task
+from benchflow.task.document import TaskDocument
+from benchflow.task.paths import TaskPaths
+from benchflow.task.verifier_document import VerifierDocument
 
 
 @pytest.fixture
@@ -102,9 +107,7 @@ def minimal_skill_dir(tmp_path):
     return skill
 
 
-# ---------------------------------------------------------------------------
 # load_eval_dataset
-# ---------------------------------------------------------------------------
 
 
 class TestLoadEvalDataset:
@@ -234,11 +237,6 @@ class TestLoadEvalDataset:
             _ = ds.skill_mount_dir
 
 
-# ---------------------------------------------------------------------------
-# generate_tasks
-# ---------------------------------------------------------------------------
-
-
 class TestGenerateTasks:
     def test_generates_correct_structure(self, skill_dir, tmp_path):
         ds = load_eval_dataset(skill_dir)
@@ -247,12 +245,52 @@ class TestGenerateTasks:
 
         assert len(task_dirs) == 2
         for td in task_dirs:
+            assert (td / "task.md").exists()
+            assert not (td / "instruction.md").exists()
+            assert not (td / "task.toml").exists()
+            assert (td / "environment" / "Dockerfile").exists()
+            assert (td / "verifier" / "test.sh").exists()
+            assert (td / "verifier" / "judge.py").exists()
+            assert (td / "verifier" / "case.json").exists()
+            assert (td / "verifier" / "verifier.md").exists()
+            assert (td / "verifier" / "rubrics" / "verifier.md").exists()
+            assert (td / "oracle" / "README.md").exists()
+            assert check_task(td, validation_level="publication-grade") == []
+
+            verifier = VerifierDocument.from_verifier_dir(td / "verifier")
+            assert verifier.selected_strategy.command == "./test.sh"
+            assert verifier.outputs.reward_json == "/logs/verifier/reward.json"
+            judge_py = (td / "verifier" / "judge.py").read_text()
+            test_sh = (td / "verifier" / "test.sh").read_text()
+            assert "reward.json" in judge_py
+            assert "BENCHFLOW_VERIFIER_DIR" in judge_py
+            assert "BENCHFLOW_AGENT_LOG_DIR" in judge_py
+            assert "BENCHFLOW_WORKSPACE" in judge_py
+            assert "reward.json" in test_sh
+            assert "BENCHFLOW_VERIFIER_DIR" in test_sh
+            assert "BENCHFLOW_REWARD_TEXT" in test_sh
+            assert "BENCHFLOW_REWARD_JSON" in test_sh
+
+    def test_legacy_output_format_generates_split_structure(self, skill_dir, tmp_path):
+        ds = load_eval_dataset(skill_dir)
+        output = tmp_path / "generated"
+        task_dirs = generate_tasks(
+            ds,
+            output,
+            with_skill=True,
+            output_format="legacy",
+        )
+
+        assert len(task_dirs) == 2
+        for td in task_dirs:
             assert (td / "instruction.md").exists()
             assert (td / "task.toml").exists()
-            assert (td / "environment" / "Dockerfile").exists()
             assert (td / "tests" / "test.sh").exists()
             assert (td / "tests" / "judge.py").exists()
             assert (td / "tests" / "case.json").exists()
+            assert not (td / "tests" / "verifier.md").exists()
+            assert not (td / "oracle").exists()
+            assert not (td / "task.md").exists()
 
     def test_with_skill_copies_skill(self, skill_dir, tmp_path):
         ds = load_eval_dataset(skill_dir)
@@ -279,7 +317,7 @@ class TestGenerateTasks:
         output = tmp_path / "gen"
         task_dirs = generate_tasks(ds, output)
 
-        instr = (task_dirs[0] / "instruction.md").read_text()
+        instr = TaskDocument.from_path(task_dirs[0] / "task.md").instruction
         assert "2 + 3 * 4" in instr
 
     def test_case_json_injected(self, skill_dir, tmp_path):
@@ -287,7 +325,9 @@ class TestGenerateTasks:
         output = tmp_path / "gen"
         task_dirs = generate_tasks(ds, output)
 
-        case_data = json.loads((task_dirs[0] / "tests" / "case.json").read_text())
+        case_data = json.loads(
+            (TaskPaths(task_dirs[0]).tests_dir / "case.json").read_text()
+        )
         assert case_data["id"] == "calc-001"
         assert case_data["ground_truth"] == "14"
         assert len(case_data["expected_behavior"]) == 3
@@ -297,7 +337,7 @@ class TestGenerateTasks:
         output = tmp_path / "gen"
         task_dirs = generate_tasks(ds, output)
 
-        test_sh = task_dirs[0] / "tests" / "test.sh"
+        test_sh = TaskPaths(task_dirs[0]).test_path
         assert test_sh.stat().st_mode & 0o111  # executable
 
     def test_task_toml_has_timeout(self, skill_dir, tmp_path):
@@ -305,8 +345,7 @@ class TestGenerateTasks:
         output = tmp_path / "gen"
         task_dirs = generate_tasks(ds, output)
 
-        toml_text = (task_dirs[0] / "task.toml").read_text()
-        assert "timeout_sec = 120" in toml_text
+        assert Task(task_dirs[0]).config.agent.timeout_sec == 120
 
     def test_with_skill_task_declares_neutral_skill_mount(self, skill_dir, tmp_path):
         from benchflow.task import Task
@@ -314,9 +353,6 @@ class TestGenerateTasks:
         ds = load_eval_dataset(skill_dir)
         output = tmp_path / "with"
         task_dirs = generate_tasks(ds, output, with_skill=True)
-
-        toml_text = (task_dirs[0] / "task.toml").read_text()
-        assert 'skills_dir = "/skills"' in toml_text
 
         task = Task(task_dirs[0])
         assert task.config.environment.skills_dir == "/skills"
@@ -335,9 +371,9 @@ class TestGenerateTasks:
         output = tmp_path / "with"
         task_dirs = generate_tasks(ds, output, with_skill=True)
 
-        toml_text = (task_dirs[0] / "task.toml").read_text()
-        assert 'GEMINI_API_KEY = "${GEMINI_API_KEY}"' in toml_text
-        assert "secret-gemini-key" not in toml_text
+        task_md = (task_dirs[0] / "task.md").read_text()
+        assert "GEMINI_API_KEY" in task_md
+        assert "secret-gemini-key" not in task_md
 
         task = Task(task_dirs[0])
         assert task.config.verifier.env["GEMINI_API_KEY"] == "${GEMINI_API_KEY}"
@@ -348,9 +384,6 @@ class TestGenerateTasks:
         ds = load_eval_dataset(skill_dir)
         output = tmp_path / "without"
         task_dirs = generate_tasks(ds, output, with_skill=False)
-
-        toml_text = (task_dirs[0] / "task.toml").read_text()
-        assert "skills_dir" not in toml_text
 
         task = Task(task_dirs[0])
         assert task.config.environment.skills_dir is None
@@ -396,15 +429,15 @@ class TestGenerateTasks:
         output = tmp_path / "gen"
         task_dirs = generate_tasks(ds, output, with_skill=True)
 
-        toml_text = (task_dirs[0] / "task.toml").read_text()
         dockerfile = (task_dirs[0] / "environment" / "Dockerfile").read_text()
-        assert 'skills_dir = "/opt/benchflow/skill-eval"' in toml_text
+        assert (
+            Task(task_dirs[0]).config.environment.skills_dir
+            == "/opt/benchflow/skill-eval"
+        )
         assert "COPY skills/ /opt/benchflow/skill-eval/" in dockerfile
 
 
-# ---------------------------------------------------------------------------
 # cleanup_tasks
-# ---------------------------------------------------------------------------
 
 
 class TestCleanupTasks:
@@ -420,11 +453,6 @@ class TestCleanupTasks:
 
     def test_handles_missing_dirs(self, tmp_path):
         cleanup_tasks([tmp_path / "nonexistent"])  # should not raise
-
-
-# ---------------------------------------------------------------------------
-# SkillEvalResult
-# ---------------------------------------------------------------------------
 
 
 class TestSkillEvalResult:
@@ -452,11 +480,6 @@ class TestSkillEvalResult:
         assert rows[1]["mode"] == "baseline"
         assert rows[2]["mode"] == "LIFT"
         assert rows[2]["avg_reward"] == "+0.50"
-
-
-# ---------------------------------------------------------------------------
-# SkillEvaluator result collection
-# ---------------------------------------------------------------------------
 
 
 class TestSkillEvaluatorResultCollection:
@@ -570,11 +593,6 @@ class TestSkillEvaluatorResultCollection:
         # case-1 must pick its OWN dir (reward 0.0), not case-10's (reward 1.0).
         assert collected["case-1"].reward == 0.0
         assert collected["case-10"].reward == 1.0
-
-
-# ---------------------------------------------------------------------------
-# GEPA export
-# ---------------------------------------------------------------------------
 
 
 class TestGepaExport:

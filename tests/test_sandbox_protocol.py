@@ -14,7 +14,7 @@ import pytest
 
 from benchflow.sandbox.protocol import ExecResult, ImageConfig, ImageRef
 
-# ── Dataclass tests ───────────────────────────────────────────────────────────
+# Dataclass tests
 
 
 class TestExecResult:
@@ -70,7 +70,7 @@ class TestImageConfig:
         assert cfg.cache_key == "new-key"
 
 
-# ── Protocol conformance ──────────────────────────────────────────────────────
+# Protocol conformance
 
 
 class TestDockerSandboxProtocol:
@@ -195,7 +195,7 @@ class TestDaytonaSandboxProtocol:
         assert issubclass(DaytonaSandbox, BaseSandbox)
 
 
-# ── ExecResult edge cases ────────────────────────────────────────────────────
+# ExecResult edge cases
 
 
 class TestNoneToEmptyString:
@@ -210,7 +210,7 @@ class TestNoneToEmptyString:
         assert r.stdout == "hello"
 
 
-# ── read_file error handling ──────────────────────────────────────────────────
+# read_file error handling
 
 
 class TestReadFileError:

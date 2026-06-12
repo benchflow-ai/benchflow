@@ -32,7 +32,7 @@ def _make_job(tmp_path, n_tasks: int, *, job_mode: str, concurrency: int = 4):
     return Evaluation(tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", config=cfg)
 
 
-# --- config ---
+# config
 
 
 def test_default_job_mode_is_parallel_independent():
@@ -53,7 +53,7 @@ def test_native_yaml_parses_job_mode(tmp_path):
     assert job._config.job_mode == "sequential-shared"
 
 
-# --- sequential-shared: ordering ---
+# sequential-shared: ordering
 
 
 @pytest.mark.asyncio
@@ -139,7 +139,7 @@ async def test_parallel_independent_still_overlaps(tmp_path):
     assert max_in_flight == concurrency
 
 
-# --- sequential-shared: the learner store ---
+# sequential-shared: the learner store
 
 
 @pytest.mark.asyncio
@@ -230,7 +230,7 @@ async def test_sequential_shared_still_aggregates_results(tmp_path):
     assert result.failed == 1
 
 
-# --- sequential-shared: the memory/skills producer (capability 5) ---
+# sequential-shared: the memory/skills producer (capability 5)
 
 
 @pytest.mark.asyncio

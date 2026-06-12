@@ -134,7 +134,7 @@ def test_collect_metrics_best_result_picking(results_dir_with_retries):
     """Test that best result per task is picked (higher reward wins)."""
     base = results_dir_with_retries
 
-    # --- Both errored (no rewards): first seen is kept, counted once as errored ---
+    # Both errored (no rewards): first seen is kept, counted once as errored
     trial_b1 = base / "attempt1" / "task-b__err1"
     trial_b1.mkdir(parents=True)
     (trial_b1 / "result.json").write_text(
@@ -164,7 +164,7 @@ def test_collect_metrics_best_result_picking(results_dir_with_retries):
         )
     )
 
-    # --- Equal rewards: deterministic pick (counted once) ---
+    # Equal rewards: deterministic pick (counted once)
     trial_c1 = base / "attempt1" / "task-c__eq1"
     trial_c1.mkdir(parents=True)
     (trial_c1 / "result.json").write_text(

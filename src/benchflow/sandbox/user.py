@@ -2,9 +2,18 @@
 
 from benchflow.contracts.user import (
     BaseUser,
+    DocumentNudgeUser,
     FunctionUser,
+    ModelDocumentNudgeUser,
     PassthroughUser,
     RoundResult,
 )
 
-__all__ = ["BaseUser", "FunctionUser", "PassthroughUser", "RoundResult"]
+__all__ = [
+    "BaseUser",
+    "DocumentNudgeUser",
+    "FunctionUser",
+    "ModelDocumentNudgeUser",
+    "PassthroughUser",
+    "RoundResult",
+]
