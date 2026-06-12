@@ -68,6 +68,13 @@ judge = [
     "openai>=1.40",
     "google-genai>=1.0",
 ]
+# The deepagents (LangChain) harness used as an agent-under-test in the
+# integration suite's agent-as-judge robustness scenarios. Optional: only the
+# deepagents integration test needs it.
+deepagents = [
+    "deepagents>=0.6",
+    "langchain-openai>=0.2",
+]
 
 [project.scripts]
 benchflow = "benchflow.cli.main:app"
