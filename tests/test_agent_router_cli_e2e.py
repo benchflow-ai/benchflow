@@ -325,6 +325,12 @@ def test_cli_run_dry_run_prints_codex_command_with_context_markers(
     assert "CONVERT.md" in out
     assert "Benchmark adoption" in out
     assert "benchmarks/my-bench/" in out
+    # The command must be printed verbatim (soft_wrap): console-width hard
+    # wrapping would insert newlines mid-token (e.g. inside the --cd path),
+    # making the dry-run output non-copy-pasteable. The command head up to the
+    # prompt's first newline always exceeds 80 columns, so under hard wrapping
+    # this first physical line would be split wherever the repo path puts it.
+    assert out.splitlines()[0].endswith("'# Benchmark adoption: my-bench")
 
 
 def test_cli_run_live_path_fails_closed_without_credentials(
