@@ -31,7 +31,16 @@ from benchflow._utils.config import (
 )
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.evaluation import DEFAULT_AGENT, EvaluationConfig, effective_model
-from benchflow.skill_policy import SKILL_MODE_NO_SKILL
+from benchflow.loop_strategies import (
+    SINGLE_SHOT,
+    LoopStrategySpec,
+    parse_loop_strategy_spec,
+)
+from benchflow.skill_policy import (
+    SKILL_MODE_NO_SKILL,
+    SKILL_MODE_SELF_GEN,
+    SKILL_MODE_WITH_SKILL,
+)
 from benchflow.usage_tracking import UsageTrackingConfig
 
 if TYPE_CHECKING:
@@ -88,6 +97,7 @@ class EvalCreateRequest:
     skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: Path | None = None
     self_gen_no_internet: bool = False
+    loop_strategy: str | None = None
     agent_env: dict[str, str] = field(default_factory=dict)
     include: list[str] | None = None
     exclude: list[str] | None = None
@@ -120,6 +130,7 @@ class EvalPlan:
     sandbox_user: str | None
     output_jobs_dir: str
     eval_env_manifest: EnvironmentManifest | None
+    eval_loop_strategy: LoopStrategySpec | None
     parsed_env: dict[str, str]
     include_tasks: set[str]
     exclude_tasks: set[str]
@@ -172,6 +183,7 @@ class EvalPlan:
             exclude_tasks=self.exclude_tasks,
             usage_tracking=self.eval_usage_tracking,
             environment_manifest=self.eval_env_manifest,
+            loop_strategy=self.eval_loop_strategy,
         )
 
 
@@ -268,11 +280,39 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             f"--build-concurrency must be >= 1 (got {request.build_concurrency})"
         )
-    if request.skill_mode not in {"no-skill", "with-skill", "self-gen"}:
+    if request.skill_mode not in {
+        SKILL_MODE_NO_SKILL,
+        SKILL_MODE_WITH_SKILL,
+        SKILL_MODE_SELF_GEN,
+    }:
         raise EvalPlanError(
             f"Invalid --skill-mode {request.skill_mode!r}: "
             "choose no-skill, with-skill, or self-gen"
         )
+    eval_loop_strategy = None
+    if request.loop_strategy is not None:
+        try:
+            eval_loop_strategy = parse_loop_strategy_spec(request.loop_strategy)
+        except ValueError as exc:
+            raise EvalPlanError(
+                f"Invalid --loop-strategy {request.loop_strategy!r}: {exc}"
+            ) from None
+        k = eval_loop_strategy.params.get("k")
+        if k is not None and not 1 <= k <= 10:
+            raise EvalPlanError(
+                f"Invalid --loop-strategy {request.loop_strategy!r}: "
+                f"k must be between 1 and 10 (got {k})"
+            )
+        if eval_loop_strategy.name != SINGLE_SHOT:
+            if request.prompt and len(request.prompt) > 1:
+                raise EvalPlanError(
+                    "--loop-strategy drives the prompt loop and conflicts "
+                    "with multiple --prompt values"
+                )
+            if request.skill_mode == SKILL_MODE_SELF_GEN:
+                raise EvalPlanError(
+                    "--loop-strategy is not supported with --skill-mode self-gen"
+                )
     if request.tasks_dir or request.source_repo:
         # Validate the agent/model pairing up front so an agent with no default
         # model (e.g. codex) reports a clean error instead of an uncaught
@@ -335,6 +375,7 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         sandbox_user=sandbox_user,
         output_jobs_dir=output_jobs_dir,
         eval_env_manifest=eval_env_manifest,
+        eval_loop_strategy=eval_loop_strategy,
         parsed_env=parsed_env,
         include_tasks=include_tasks,
         exclude_tasks=exclude_tasks,

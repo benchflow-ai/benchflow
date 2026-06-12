@@ -605,3 +605,33 @@ excludes:
     cfg = job._config
     assert cfg.include_tasks == {"alpha"}
     assert cfg.exclude_tasks == {"beta"}
+
+
+def test_native_yaml_reads_loop_strategy(tmp_path):
+    """loop_strategy in native YAML reaches EvaluationConfig parsed."""
+    from benchflow.loop_strategies import LoopStrategySpec
+
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    config = tmp_path / "config.yaml"
+    config.write_text(f"""
+tasks_dir: {tasks}
+loop_strategy: "verify-retry:k=2"
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.loop_strategy == LoopStrategySpec(
+        "verify-retry", {"k": 2, "feedback": "names"}
+    )
+
+
+def test_native_yaml_without_loop_strategy_stays_none(tmp_path):
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    config = tmp_path / "config.yaml"
+    config.write_text(f"tasks_dir: {tasks}\n")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.loop_strategy is None

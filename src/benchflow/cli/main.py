@@ -370,6 +370,18 @@ def eval_create(
             help="Disable web tools for the self-generated run",
         ),
     ] = False,
+    loop_strategy: Annotated[
+        str | None,
+        typer.Option(
+            "--loop-strategy",
+            help=(
+                "Harness loop strategy, e.g. 'verify-retry:k=3,feedback=names' "
+                "or 'single-shot' (default). verify-retry re-prompts the agent "
+                "with filtered soft-verifier feedback until it passes or k "
+                "retries are spent."
+            ),
+        ),
+    ] = None,
     agent_env: Annotated[
         list[str] | None,
         typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
@@ -445,6 +457,7 @@ def eval_create(
         skill_mode=skill_mode,
         skill_creator_dir=skill_creator_dir,
         self_gen_no_internet=self_gen_no_internet,
+        loop_strategy=loop_strategy,
         agent_env=_parse_agent_env(agent_env),
         include=include,
         exclude=exclude,

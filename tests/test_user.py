@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -710,6 +711,291 @@ class TestUserLoop:
         assert agent_rounds == 0
         assert trial._error is not None
         assert "user.run() failed at round 0" in trial._error
+
+
+def _make_loop_trial(
+    loop_strategy: str,
+    tmp_path: Path,
+    *,
+    sandbox_user: str | None = "agent",
+) -> Rollout:
+    config = RolloutConfig(
+        task_path=Path("tasks/fake"),
+        scenes=[Scene.single(agent="gemini", model="flash")],
+        environment="docker",
+        sandbox_user=sandbox_user,
+        loop_strategy=loop_strategy,
+    )
+    trial = Rollout(config)
+    trial._env = FakeEnv()
+    trial._resolved_prompts = ["Solve the task described in /app/instruction.md"]
+    trial._rollout_dir = tmp_path
+    verifier_dir = tmp_path / "verifier"
+    verifier_dir.mkdir(parents=True, exist_ok=True)
+    trial._rollout_paths = type("P", (), {"verifier_dir": verifier_dir})()
+    trial._agent_cwd = "/app"
+    return trial
+
+
+class TestLoopStrategyEngine:
+    @pytest.mark.asyncio
+    async def test_relock_and_clear_between_rounds(self, tmp_path: Path):
+        """After every soft_verify the engine must re-lock the verifier paths
+        and clear /logs/verifier before the next connect_as — otherwise the
+        agent reads verifier code and raw output next round, bypassing the
+        feedback filter."""
+        trial = _make_loop_trial("verify-retry:k=2,feedback=names", tmp_path)
+        trial._effective_locked = ["/tests", "/verifier"]
+
+        events: list[str] = []
+
+        def record(label):
+            events.append(label)
+
+        with (
+            patch.object(
+                trial,
+                "connect_as",
+                new=AsyncMock(side_effect=lambda role: record("connect")),
+            ),
+            patch.object(
+                trial, "execute", new_callable=AsyncMock, return_value=([], 0)
+            ),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new=AsyncMock(
+                    side_effect=lambda: (
+                        record("verify")
+                        or ({"reward": 0.0}, "FAILED tests/test_a.py::test_x", None)
+                    )
+                ),
+            ),
+            patch.object(
+                trial._planes,
+                "lockdown_paths",
+                new=AsyncMock(side_effect=lambda env, paths: record("lockdown")),
+            ) as lockdown,
+            patch.object(
+                trial._planes,
+                "clear_verifier_output_dir",
+                new=AsyncMock(side_effect=lambda *a, **kw: record("clear")),
+            ) as clear,
+        ):
+            await trial._run_user_loop()
+
+        # k=2 → 3 rounds, each re-locking and clearing after its soft verify
+        # and before the next round's connect.
+        assert events == ["connect", "verify", "lockdown", "clear"] * 3
+        assert lockdown.await_count == 3
+        for call in lockdown.await_args_list:
+            assert call.args == (trial._env, ["/tests", "/verifier"])
+        assert clear.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_isolation_noop_without_sandbox_user(self, tmp_path: Path):
+        """sandbox_user=None has no lockdown to restore — the isolation fixes
+        must stay no-ops (the loud setup() warning path is the contract)."""
+        trial = _make_loop_trial("verify-retry:k=1", tmp_path, sandbox_user=None)
+        assert trial._effective_locked == []
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock),
+            patch.object(
+                trial, "execute", new_callable=AsyncMock, return_value=([], 0)
+            ),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=({"reward": 0.0}, None, None),
+            ),
+            patch.object(
+                trial._planes, "lockdown_paths", new_callable=AsyncMock
+            ) as lockdown,
+            patch.object(
+                trial._planes, "clear_verifier_output_dir", new_callable=AsyncMock
+            ) as clear,
+        ):
+            await trial._run_user_loop()
+
+        lockdown.assert_not_awaited()
+        clear.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_iterations_jsonl_and_metadata_on_retries_exhausted(
+        self, tmp_path: Path
+    ):
+        trial = _make_loop_trial("verify-retry:k=2,feedback=names", tmp_path)
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock),
+            patch.object(
+                trial, "execute", new_callable=AsyncMock, return_value=([], 0)
+            ),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=({"reward": 0.0}, "FAILED tests/test_a.py::test_x", None),
+            ),
+        ):
+            await trial._run_user_loop()
+
+        lines = (tmp_path / "loop" / "iterations.jsonl").read_text().splitlines()
+        assert len(lines) == 3
+        first = json.loads(lines[0])
+        assert first["round"] == 0
+        assert first["rewards"] == {"reward": 0.0}
+        assert first["verifier_error"] is None
+        assert first["feedback_level"] == "names"
+        assert isinstance(first["wall_sec"], float)
+        assert trial._loop_strategy_metadata() == {
+            "iterations_run": 3,
+            "stop_reason": "max_iterations",
+            "reward_trajectory": [0.0, 0.0, 0.0],
+            "first_pass_iteration": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_pass_on_final_round_reports_passed_bar(self, tmp_path: Path):
+        """k=2 budget fully spent but the last round passes: stop_reason is
+        passed_bar (checked before the max_iterations fallback)."""
+        trial = _make_loop_trial("verify-retry:k=2,feedback=names", tmp_path)
+        rewards = iter([0.0, 0.0, 1.0])
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock),
+            patch.object(
+                trial, "execute", new_callable=AsyncMock, return_value=([], 0)
+            ),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new=AsyncMock(
+                    side_effect=lambda: (
+                        {"reward": next(rewards)},
+                        "FAILED tests/test_a.py::test_x",
+                        None,
+                    )
+                ),
+            ),
+        ):
+            await trial._run_user_loop()
+
+        assert trial._loop_strategy_metadata() == {
+            "iterations_run": 3,
+            "stop_reason": "passed_bar",
+            "reward_trajectory": [0.0, 0.0, 1.0],
+            "first_pass_iteration": 2,
+        }
+
+    @pytest.mark.asyncio
+    async def test_loop_block_survives_mid_loop_timeout(self, tmp_path: Path):
+        """Round 0 completes, round 1 times out: the completed round must
+        still reach loop/iterations.jsonl and the result.json loop block —
+        the round log is appended in-loop and persisted in a finally, and
+        the loop block is derived at result-build time (B1)."""
+        from datetime import datetime
+
+        trial = _make_loop_trial("verify-retry:k=2,feedback=names", tmp_path)
+        task_dir = tmp_path / "task"
+        task_dir.mkdir()
+        trial._config.task_path = task_dir
+        trial._started_at = datetime.now()
+        trial._timeout = 60
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "execute",
+                new=AsyncMock(side_effect=[([], 0), TimeoutError("agent timed out")]),
+            ),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=({"reward": 0.0}, "FAILED tests/test_a.py::test_x", None),
+            ),
+        ):
+            timed_out = False
+            try:
+                await trial._run_user_loop()
+            except TimeoutError as e:
+                timed_out = True
+                # What Rollout.run()'s except TimeoutError handler does.
+                trial._record_agent_timeout(e)
+        assert timed_out
+
+        result = trial._build_result()
+        assert result.error == "agent timed out"
+
+        loop = json.loads((tmp_path / "result.json").read_text())["loop"]
+        assert loop["strategy"] == "verify-retry"
+        assert loop["iterations_run"] == 1
+        assert loop["reward_trajectory"] == [0.0]
+        assert loop["stop_reason"] == "error"
+        assert loop["first_pass_iteration"] is None
+
+        lines = (tmp_path / "loop" / "iterations.jsonl").read_text().splitlines()
+        assert len(lines) == 1
+        assert json.loads(lines[0])["round"] == 0
+
+    @pytest.mark.asyncio
+    async def test_metadata_on_first_try_pass(self, tmp_path: Path):
+        trial = _make_loop_trial("verify-retry:k=3", tmp_path)
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock) as connect_as,
+            patch.object(
+                trial, "execute", new_callable=AsyncMock, return_value=([], 0)
+            ),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=({"reward": 1.0}, "1 passed", None),
+            ),
+        ):
+            await trial._run_user_loop()
+
+        assert connect_as.await_count == 1
+        assert trial._loop_strategy_metadata() == {
+            "iterations_run": 1,
+            "stop_reason": "passed_bar",
+            "reward_trajectory": [1.0],
+            "first_pass_iteration": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_loop_artifacts_without_strategy(self, tmp_path: Path):
+        user = RecordingUser(max_rounds=1)
+        trial = _make_user_trial(user, max_rounds=3, tmp_path=tmp_path)
+
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock),
+            patch.object(
+                trial, "execute", new_callable=AsyncMock, return_value=([], 0)
+            ),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new_callable=AsyncMock,
+                return_value=({"reward": 1.0}, None, None),
+            ),
+        ):
+            await trial._run_user_loop()
+
+        assert not (tmp_path / "loop").exists()
+        assert trial._loop_strategy_metadata() is None
 
 
 class TestSoftVerify:

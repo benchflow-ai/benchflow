@@ -25,11 +25,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchflow._types import Role
 from benchflow.contracts import RoundResult
+from benchflow.loop_strategies import LoopStrategyUser
 from benchflow.rollout._results import (
     _compose_scene_user_prompt,
     _is_document_user,
@@ -175,6 +177,48 @@ async def _run_steps(rollout: Rollout, steps: list[Step]) -> None:
             await rollout.disconnect()
 
 
+# Per-iteration view of a round-log entry, persisted to loop/iterations.jsonl
+# for loop-strategy runs.
+_ITERATION_RECORD_KEYS = (
+    "round",
+    "rewards",
+    "verifier_error",
+    "feedback_level",
+    "wall_sec",
+)
+
+
+def _persist_round_logs(
+    rollout: Rollout, rounds_log: list[dict], *, loop_active: bool
+) -> None:
+    """Write user_rounds.jsonl (and loop/iterations.jsonl for strategy runs).
+
+    Called from the user-loop ``finally`` so rounds completed before a
+    mid-loop crash (agent timeout, ACP error, isolation failure) still land
+    on disk — the round log is also what the result.json ``loop`` block is
+    derived from at build time.
+    """
+    if not rounds_log or rollout._rollout_dir is None:
+        return
+    log_path = rollout._rollout_dir / "user_rounds.jsonl"
+    with log_path.open("w") as f:
+        for entry in rounds_log:
+            f.write(json.dumps(entry) + "\n")
+    logger.info(f"[User] {len(rounds_log)} rounds → {log_path}")
+    if not loop_active:
+        return
+    loop_dir = rollout._rollout_dir / "loop"
+    loop_dir.mkdir(parents=True, exist_ok=True)
+    iterations_path = loop_dir / "iterations.jsonl"
+    with iterations_path.open("w") as f:
+        for entry in rounds_log:
+            f.write(
+                json.dumps({key: entry.get(key) for key in _ITERATION_RECORD_KEYS})
+                + "\n"
+            )
+    logger.info(f"[Loop] {len(rounds_log)} iterations → {iterations_path}")
+
+
 async def _run_user_loop(rollout: Rollout) -> None:
     """Execute a user-driven progressive-disclosure loop.
 
@@ -231,6 +275,14 @@ async def _run_user_loop(rollout: Rollout) -> None:
         user
     )
 
+    # The engine's authoritative per-round log. Each round is appended as
+    # soon as its soft verify completes — before anything that can raise —
+    # and the list is aliased onto the rollout so _build_result() can derive
+    # the result.json ``loop`` block from whatever rounds finished, on every
+    # path including a mid-loop timeout or ACP error.
+    rounds_log: list[dict] = []
+    rollout._user_rounds_log = rounds_log
+
     try:
         instruction = (
             rollout._resolved_prompts[0]
@@ -261,7 +313,6 @@ async def _run_user_loop(rollout: Rollout) -> None:
             )
 
         round_result: RoundResult | None = None
-        rounds_log: list[dict] = []
         last_role = scene_step_role(steps[0])
         use_scene_prompts = _is_document_user(user)
 
@@ -273,8 +324,7 @@ async def _run_user_loop(rollout: Rollout) -> None:
             scene_name: str | None,
             handoff_from: str | None = None,
         ) -> RoundResult:
-            nonlocal rounds_log
-
+            round_started = time.monotonic()
             logger.info(
                 f"[User] round {round_num}: prompt={prompt[:80]!r}..."
                 if len(prompt) > 80
@@ -322,6 +372,47 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 handoff_from if handoff_from and handoff_from != role.name else None
             )
             handoff_to_role = role.name if handoff_from_role else None
+
+            # Logged BEFORE the isolation re-lock below: everything after
+            # this point can raise (sandbox exec, the next round's agent),
+            # and a completed round must survive into user_rounds.jsonl and
+            # the result.json loop block regardless.
+            entry: dict[str, Any] = {
+                "round": round_num,
+                "scene": scene_name,
+                "role": role.name,
+                "handoff_from": handoff_from_role,
+                "handoff_to": handoff_to_role,
+                "prompt": prompt,
+                "rewards": rewards,
+                "verifier_error": verifier_error,
+                "n_tool_calls": round_tools,
+                "n_trajectory_events": len(round_trajectory),
+                "wall_sec": round(time.monotonic() - round_started, 1),
+            }
+            if isinstance(user, LoopStrategyUser):
+                entry["feedback_level"] = user.feedback_level.value
+            rounds_log.append(entry)
+
+            # Mid-loop verifier isolation. soft_verify() uploads the verifier
+            # tests after the install-time lockdown ran and leaves its raw
+            # stdout under the world-writable /logs/verifier — both readable
+            # by the agent on the next round, bypassing the feedback filter.
+            # Re-lock and clear now that verifier_output is captured, before
+            # the next connect_as. Both are no-ops without a sandbox user
+            # (setup() already warned loudly about that configuration).
+            if rollout._effective_locked:
+                await rollout._planes.lockdown_paths(
+                    rollout._env, rollout._effective_locked
+                )
+            if cfg.sandbox_user:
+                await rollout._planes.clear_verifier_output_dir(
+                    rollout._env,
+                    "User loop isolation failed: clearing verifier output directory",
+                    user="root",
+                    timeout_sec=10,
+                )
+
             result = RoundResult(
                 round=round_num,
                 trajectory=round_trajectory,
@@ -333,21 +424,6 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 role=role.name,
                 handoff_from=handoff_from_role,
                 handoff_to=handoff_to_role,
-            )
-
-            rounds_log.append(
-                {
-                    "round": round_num,
-                    "scene": scene_name,
-                    "role": role.name,
-                    "handoff_from": handoff_from_role,
-                    "handoff_to": handoff_to_role,
-                    "prompt": prompt,
-                    "rewards": rewards,
-                    "verifier_error": verifier_error,
-                    "n_tool_calls": round_tools,
-                    "n_trajectory_events": len(round_trajectory),
-                }
             )
 
             logger.info(
@@ -416,13 +492,9 @@ async def _run_user_loop(rollout: Rollout) -> None:
             )
             round_num += 1
 
-        # Persist round log
-        if rounds_log and rollout._rollout_dir:
-            log_path = rollout._rollout_dir / "user_rounds.jsonl"
-            with log_path.open("w") as f:
-                for entry in rounds_log:
-                    f.write(json.dumps(entry) + "\n")
-            logger.info(f"[User] {len(rounds_log)} rounds → {log_path}")
     finally:
+        _persist_round_logs(
+            rollout, rounds_log, loop_active=cfg.loop_strategy_spec is not None
+        )
         if installed_confirmation_handler:
             rollout.on_ask_user(None)

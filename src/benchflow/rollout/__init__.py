@@ -80,6 +80,11 @@ from benchflow.diagnostics import (
     RolloutDiagnostics,
     SuspectedApiErrorDiagnostic,
 )
+from benchflow.loop_strategies import (
+    LoopStrategyUser,
+    collect_loop_metadata,
+    loop_block,
+)
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
@@ -360,6 +365,11 @@ class Rollout:
         # rollouts where each turn issues its own prompt. The original
         # `_resolved_prompts` is only the static base task prompt set.
         self._executed_prompts: list[str] = []
+        # The user-loop engine's per-round log (aliased by _run_user_loop).
+        # Rounds are appended as soon as their soft verify completes, so
+        # _loop_strategy_metadata() can summarize whatever rounds finished
+        # even when a later round timed out or crashed.
+        self._user_rounds_log: list[dict[str, Any]] = []
 
         # The tree-native execution model (architecture.md, "tree-native").
         # A linear rollout is a degree-1 tree; execute() grows it one Step at a
@@ -596,6 +606,7 @@ class Rollout:
             source_provenance=cfg.source_provenance,
             dataset=cfg.dataset,
             task_digest=cfg.task_digest,
+            loop_strategy=cfg.loop_strategy_spec,
         )
 
         self._phase = "setup"
@@ -1890,6 +1901,27 @@ class Rollout:
         # excluded from score denominators (rerun-able, never counted).
         self._rewards = None
 
+    def _loop_strategy_metadata(self) -> dict[str, Any] | None:
+        """Loop-strategy run summary for the result.json ``loop`` block.
+
+        Computed at result-build time — after run() has finalized
+        ``self._error`` on every path (agent timeout, ACP error, success) —
+        from the engine's in-loop round log, so a mid-round crash still
+        reports the rounds that completed. getattr() keeps tests that bypass
+        __init__ via Rollout.__new__() working.
+        """
+        user = self._config.user
+        if self._config.loop_strategy_spec is None or not isinstance(
+            user, LoopStrategyUser
+        ):
+            return None
+        return collect_loop_metadata(
+            user,
+            getattr(self, "_user_rounds_log", []),
+            max_rounds=self._config.max_user_rounds,
+            error=getattr(self, "_error", None),
+        )
+
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         self._maybe_classify_api_error()
@@ -1933,6 +1965,10 @@ class Rollout:
                 declared_sandbox_skills_dir=None,
             ),
             sandbox_id=self._current_sandbox_id(),
+            loop=loop_block(
+                self._config.loop_strategy_spec,
+                self._loop_strategy_metadata(),
+            ),
             **self._usage_metrics,
         )
 

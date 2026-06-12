@@ -68,6 +68,11 @@ from benchflow._utils.text import truncate_end
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.learner_store import LearnerState, LearnerStore
+from benchflow.loop_strategies import (
+    LoopStrategySpec,
+    loop_block,
+    parse_loop_strategy_spec,
+)
 from benchflow.models import RolloutResult
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
@@ -333,6 +338,46 @@ JOB_MODES = ("parallel-independent", "sequential-shared")
 DEFAULT_JOB_MODE = "parallel-independent"
 
 
+def _warn_on_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
+    """Warn when resuming a jobs_dir whose completed tasks ran differently.
+
+    Reads one completed rollout's config.json (written by SDK.run) and
+    compares its agent and ``loop`` block against the resuming config.
+    Pre-loop-strategy config.json files have no ``loop`` key — they ran
+    single-shot, so they default to ``loop_block(None)`` and still warn
+    when the resume requests a strategy.
+    """
+    sample_dir = (
+        next((d for d in job_dir.iterdir() if d.is_dir()), None)
+        if job_dir.exists()
+        else None
+    )
+    prev_agent = ""
+    prev_loop: dict | None = None
+    if sample_dir:
+        for cfg_file in sample_dir.rglob("config.json"):
+            try:
+                cfg = json.loads(cfg_file.read_text())
+                prev_agent = cfg.get("agent", "")
+                prev_loop = cfg.get("loop") or loop_block(None)
+                break
+            except (json.JSONDecodeError, OSError):
+                logger.debug("Could not read %s", cfg_file)
+    if prev_agent and prev_agent != config.agent:
+        logger.warning(
+            f"Resuming with agent={config.agent!r} but "
+            f"completed tasks used agent={prev_agent!r}. "
+            f"Use a different jobs_dir to avoid mixing results."
+        )
+    current_loop = loop_block(config.loop_strategy)
+    if prev_loop is not None and prev_loop != current_loop:
+        logger.warning(
+            f"Resuming with loop_strategy={current_loop} but "
+            f"completed tasks used loop_strategy={prev_loop}. "
+            f"Use a different jobs_dir to avoid mixing results."
+        )
+
+
 def effective_model(agent: str, model: str | None) -> str | None:
     """Resolve the model an agent should run with.
 
@@ -408,6 +453,10 @@ class EvaluationConfig:
     # readiness gating, teardown) is exercised — closing the gap between
     # single-rollout SDK.run() and the batch Evaluation/Job API (#398).
     environment_manifest: EnvironmentManifest | None = None
+    # Harness loop strategy applied to every rollout (e.g.
+    # "verify-retry:k=3,feedback=names"). Threaded to RolloutConfig.from_legacy
+    # and stamped in summary.json; None = single-shot.
+    loop_strategy: LoopStrategySpec | str | None = None
 
     def __post_init__(self):
         from benchflow._utils.config import (
@@ -424,6 +473,8 @@ class EvaluationConfig:
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
         self.skill_mode = normalize_skill_mode(self.skill_mode)
+        if isinstance(self.loop_strategy, str):
+            self.loop_strategy = parse_loop_strategy_spec(self.loop_strategy)
         if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
             raise ValueError("skills_dir requires skill_mode='with-skill'")
         if self.job_mode not in JOB_MODES:
@@ -716,6 +767,7 @@ class Evaluation:
             source_provenance=source_provenance,
             usage_tracking=UsageTrackingConfig.from_mapping(raw),
             environment_manifest=env_manifest,
+            loop_strategy=raw.get("loop_strategy"),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -1012,6 +1064,7 @@ class Evaluation:
             dataset=dataset,
             task_digest=task_digest_value,
             usage_tracking=cfg.usage_tracking,
+            loop_strategy=cfg.loop_strategy,
         )
         if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen
@@ -1440,31 +1493,7 @@ class Evaluation:
 
         # Warn if resuming with different config than completed tasks
         if completed:
-            # Check config.json (written by SDK.run) for the registry agent name
-            job_dir = self._jobs_dir / self._job_name
-            sample_dir = (
-                next(
-                    (d for d in job_dir.iterdir() if d.is_dir()),
-                    None,
-                )
-                if job_dir.exists()
-                else None
-            )
-            prev_agent = ""
-            if sample_dir:
-                for cfg_file in sample_dir.rglob("config.json"):
-                    try:
-                        cfg = json.loads(cfg_file.read_text())
-                        prev_agent = cfg.get("agent", "")
-                        break
-                    except (json.JSONDecodeError, OSError):
-                        logger.debug("Could not read %s", cfg_file)
-            if prev_agent and prev_agent != self._config.agent:
-                logger.warning(
-                    f"Resuming with agent={self._config.agent!r} but "
-                    f"completed tasks used agent={prev_agent!r}. "
-                    f"Use a different jobs_dir to avoid mixing results."
-                )
+            _warn_on_resume_mismatch(self._jobs_dir / self._job_name, self._config)
 
         self._jobs_dir.mkdir(parents=True, exist_ok=True)
         self._prune_docker()
@@ -1565,6 +1594,7 @@ class Evaluation:
             "concurrency": cfg.concurrency,
             "agent_idle_timeout_sec": cfg.agent_idle_timeout,
             "usage_tracking": cfg.usage_tracking.with_env_defaults().to_config_artifact(),
+            "loop": loop_block(cfg.loop_strategy),
             "total": job_result.total,
             "passed": audit_counts["passed"],
             "failed": audit_counts["failed"],
