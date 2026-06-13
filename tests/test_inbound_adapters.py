@@ -36,6 +36,7 @@ from benchflow.adapters.inbound import (
     materialize_inbound_task_md,
 )
 from benchflow.adapters.iosworld import IOSWorldAdapter
+from benchflow.adapters.macosworld import MacOSWorldAdapter
 from benchflow.adapters.stagehand import (
     StagehandEvalAdapter,
     official_task_descriptor_from_source,
@@ -200,6 +201,28 @@ _IOSWORLD_TASK_JSON = {
     ],
 }
 
+# A real macOSWorld task slice (github.com/showlab/macosworld): the upstream
+# `task` is a per-language mapping and `grading_command` is a list of
+# [command, timeout] pairs producing True/False.
+_MACOSWORLD_TASK_JSON = {
+    "id": "48cf0af3-0612-dbcd-14da-d5202eed6ce9",
+    "snapshot": {"en": "snapshot_used_en", "zh": "snapshot_used_zh"},
+    "force_snapshot_recovery": True,
+    "task": {
+        "en": "Add Ong KC to contact with mobile number 96910380.",
+        "zh": "将Ong KC添加到联系人。",
+    },
+    "before_action_delay_seconds": 10,
+    "before_grading_delay_seconds": 30,
+    "grading_command": [
+        [
+            "osascript -e 'tell application \"Contacts\" to get phones' "
+            '| grep -q "96910380" && echo "True" || echo "False"',
+            100,
+        ],
+    ],
+}
+
 
 def _write_harbor_task(root: Path) -> Path:
     """Create a Harbor-style task dir; return its path."""
@@ -333,6 +356,29 @@ def _write_iosworld_task_slice(root: Path) -> Path:
     task_dir.mkdir()
     (task_dir / "iosworld-task.json").write_text(
         json.dumps(_IOSWORLD_TASK_JSON, indent=2) + "\n"
+    )
+    return task_dir
+
+
+def _write_macosworld_repo(root: Path) -> Path:
+    """Create a macOSWorld repository-shaped source; return its path."""
+    repo = root / "macosworld"
+    (repo / "tasks" / "sys_apps").mkdir(parents=True)
+    (repo / "tasks" / "productivity").mkdir(parents=True)
+    (repo / "testbench.py").write_text("# macOSWorld testbench\n")
+    (repo / "constants.py").write_text("SCREEN_WIDTH = 1024\n")
+    (repo / "tasks" / "sys_apps" / f"{_MACOSWORLD_TASK_JSON['id']}.json").write_text(
+        json.dumps(_MACOSWORLD_TASK_JSON, indent=2) + "\n"
+    )
+    return repo
+
+
+def _write_macosworld_task_slice(root: Path) -> Path:
+    """Create a macOSWorld single-task slice; return its path."""
+    task_dir = root / "macosworld-task"
+    task_dir.mkdir()
+    (task_dir / "macosworld-task.json").write_text(
+        json.dumps(_MACOSWORLD_TASK_JSON, indent=2) + "\n"
     )
     return task_dir
 
@@ -1104,6 +1150,206 @@ class TestIOSWorldAdapterSupported:
         )
 
 
+def _force_macos_caps(monkeypatch: pytest.MonkeyPatch, present: bool) -> None:
+    """Pin the cua macOS-VM host capability probe to a deterministic value.
+
+    The macOSWorld adapter delegates its supported/unsupported decision to
+    ``detect_cua_macos_capabilities``, which reads the real host. Tests pin it
+    so they assert one path regardless of whether the host happens to be an
+    Apple-Silicon Mac with the cua SDK installed.
+    """
+    import benchflow.adapters.macosworld as macosworld
+
+    caps = {"macos": present, "cua-macos-vm": present}
+    monkeypatch.setattr(macosworld, "detect_cua_macos_capabilities", lambda: caps)
+
+
+class TestMacOSWorldAdapter:
+    """The provider-honest *unsupported* path (host lacks the cua macOS VM)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_macos_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _force_macos_caps(monkeypatch, present=False)
+
+    def test_support_report_for_repo_shape(self, tmp_path: Path) -> None:
+        repo = _write_macosworld_repo(tmp_path)
+
+        report = MacOSWorldAdapter.support_report(repo)
+
+        assert report is not None
+        assert report.supported is False
+        assert report.source == "macosworld"
+        assert report.dataset == "macosworld"
+        assert report.reason == (
+            "macOSWorld tasks require a cua macOS VM provider mapping"
+        )
+        assert report.details["shape"] == "repository"
+        assert report.details["required_provider"] == "cua"
+        assert report.details["task_count"] == 1
+        assert report.details["categories"] == {"productivity": 0, "sys_apps": 1}
+        # productivity has no task files in this fixture; sys_apps has one.
+        assert report.details["issue"] == "cua-macos-vm-provider-required"
+        assert report.details["required_capabilities"] == [
+            "macos",
+            "cua-macos-vm",
+            "macos-vm-exec",
+        ]
+
+    def test_support_report_for_task_slice_shape(self, tmp_path: Path) -> None:
+        task_dir = _write_macosworld_task_slice(tmp_path)
+
+        report = MacOSWorldAdapter.support_report(task_dir)
+
+        assert report is not None
+        assert report.supported is False
+        assert report.task_id == "48cf0af3-0612-dbcd-14da-d5202eed6ce9"
+        assert report.details["shape"] == "task-slice"
+        assert report.details["required_provider"] == "cua"
+        assert report.details["languages"] == ["en", "zh"]
+        assert report.details["grading_command_count"] == 1
+
+    def test_support_report_for_invalid_json(self, tmp_path: Path) -> None:
+        task_dir = tmp_path / "macosworld-bad"
+        task_dir.mkdir()
+        (task_dir / "macosworld-task.json").write_text("{not json")
+
+        report = MacOSWorldAdapter.support_report(task_dir)
+
+        assert report is not None
+        assert report.supported is False
+        assert report.details["issue"] == "invalid-macosworld-task-json"
+
+    def test_from_task_dir_reports_provider_requirement(self, tmp_path: Path) -> None:
+        repo = _write_macosworld_repo(tmp_path)
+
+        with pytest.raises(
+            UnsupportedInboundTaskError,
+            match="cua macOS VM provider mapping",
+        ) as exc:
+            MacOSWorldAdapter.from_task_dir(repo)
+
+        assert exc.value.report.source == "macosworld"
+        assert exc.value.report.details["issue"] == "cua-macos-vm-provider-required"
+
+    def test_from_task_dir_unrecognized_raises_file_not_found(
+        self, tmp_path: Path
+    ) -> None:
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        with pytest.raises(FileNotFoundError):
+            MacOSWorldAdapter.from_task_dir(empty)
+
+
+class TestMacOSWorldAdapterSupported:
+    """The provider-honest *supported* path (host advertises the cua macOS VM)."""
+
+    @pytest.fixture(autouse=True)
+    def _macos_host_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _force_macos_caps(monkeypatch, present=True)
+
+    def test_task_slice_reports_supported(self, tmp_path: Path) -> None:
+        task_dir = _write_macosworld_task_slice(tmp_path)
+
+        report = MacOSWorldAdapter.support_report(task_dir)
+
+        assert report is not None
+        assert report.supported is True
+        assert report.task_id == "48cf0af3-0612-dbcd-14da-d5202eed6ce9"
+        assert report.dataset == "macosworld"
+        assert report.reason is None
+        assert report.details["shape"] == "task-slice"
+        assert report.details["provider"] == "cua"
+        assert report.details["languages"] == ["en", "zh"]
+        assert report.details["grading_command_count"] == 1
+        # The macOS exec bridge (#19) is a follow-up step, not a host
+        # capability — it is reported as pending, never silently claimed.
+        assert report.details["pending_capabilities"] == ["macos-vm-exec"]
+
+    def test_from_task_dir_translates_slice(self, tmp_path: Path) -> None:
+        task_dir = _write_macosworld_task_slice(tmp_path)
+
+        task = MacOSWorldAdapter.from_task_dir(task_dir)
+
+        assert isinstance(task, InboundTask)
+        assert task.name == "48cf0af3-0612-dbcd-14da-d5202eed6ce9"
+        assert task.source == "macosworld"
+        # The English instruction is the translated goal.
+        assert task.instruction.startswith("Add Ong KC to contact")
+        # The grading commands map to an LLM-judge verifier, mirroring the
+        # iOSWorld / Browser Use / computer-use criteria reward shape.
+        assert task.config.verifier.type == "llm-judge"
+        assert task.config.verifier.judge.rubric_path == "tests/rubric.md"
+        assert task.config.sandbox.os.value == "macos"
+        assert task.config.task is not None
+        assert (
+            task.config.task.name == "macosworld/48cf0af3-0612-dbcd-14da-d5202eed6ce9"
+        )
+        # The grading commands are materialized as a generated rubric file.
+        rubric = task.generated_files["tests/rubric.md"]
+        assert isinstance(rubric, str)
+        assert "Add Ong KC to contact" in rubric
+        assert "96910380" in rubric
+        # The full upstream descriptor is preserved as compatibility metadata.
+        assert task.compatibility is not None
+        assert task.compatibility.source == "macosworld"
+        assert task.compatibility.config_extra_paths == ("macosworld-task.json",)
+        assert (
+            task.compatibility.config_extra["grading_command"]
+            == (_MACOSWORLD_TASK_JSON["grading_command"])
+        )
+
+    def test_string_task_instruction_is_accepted(self, tmp_path: Path) -> None:
+        task_dir = tmp_path / "macosworld-string-task"
+        task_dir.mkdir()
+        payload = dict(_MACOSWORLD_TASK_JSON)
+        payload["task"] = "Open Stocks and view AAPL."
+        (task_dir / "macosworld-task.json").write_text(json.dumps(payload))
+
+        task = MacOSWorldAdapter.from_task_dir(task_dir)
+
+        assert task.instruction.startswith("Open Stocks and view AAPL.")
+
+    def test_missing_instruction_raises(self, tmp_path: Path) -> None:
+        task_dir = tmp_path / "macosworld-no-task"
+        task_dir.mkdir()
+        payload = dict(_MACOSWORLD_TASK_JSON)
+        payload.pop("task")
+        (task_dir / "macosworld-task.json").write_text(json.dumps(payload))
+
+        with pytest.raises(ValueError, match="instruction"):
+            MacOSWorldAdapter.from_task_dir(task_dir)
+
+    def test_repo_shape_supported_host_is_not_a_single_task(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _write_macosworld_repo(tmp_path)
+
+        report = MacOSWorldAdapter.support_report(repo)
+
+        # A whole-repository source is a suite, not one translatable task —
+        # even on a capable host it is not a single InboundTask.
+        assert report is not None
+        assert report.supported is False
+        assert report.details["issue"] == (
+            "macosworld-repository-suite-not-a-single-task"
+        )
+
+    def test_materialized_task_preserves_macosworld_compatibility(
+        self, tmp_path: Path
+    ) -> None:
+        task_dir = _write_macosworld_task_slice(tmp_path)
+        inbound = MacOSWorldAdapter.from_task_dir(task_dir)
+
+        native_dir = materialize_inbound_task_md(
+            inbound, tmp_path / "native-macosworld"
+        )
+
+        document = TaskDocument.from_path(native_dir / "task.md")
+        compat = document.frontmatter["benchflow"]["compat"]
+        assert compat["source"] == "macosworld"
+        assert compat["config_extra_paths"] == ["macosworld-task.json"]
+
+
 class TestUseComputerCookbookAdapter:
     def test_returns_inbound_task(self, tmp_path: Path) -> None:
         task_dir = _write_use_computer_cookbook_osworld_task(tmp_path)
@@ -1645,6 +1891,14 @@ class TestDetectAdapter:
         task_dir = _write_iosworld_task_slice(tmp_path)
         assert detect_adapter(task_dir) is IOSWorldAdapter
 
+    def test_detects_macosworld_repo(self, tmp_path: Path) -> None:
+        task_dir = _write_macosworld_repo(tmp_path)
+        assert detect_adapter(task_dir) is MacOSWorldAdapter
+
+    def test_detects_macosworld_task_slice(self, tmp_path: Path) -> None:
+        task_dir = _write_macosworld_task_slice(tmp_path)
+        assert detect_adapter(task_dir) is MacOSWorldAdapter
+
     def test_detects_use_computer_cookbook_osworld(self, tmp_path: Path) -> None:
         task_dir = _write_use_computer_cookbook_osworld_task(tmp_path)
         assert detect_adapter(task_dir) is UseComputerCookbookAdapter
@@ -1693,6 +1947,16 @@ class TestDetectAdapter:
         with pytest.raises(UnsupportedInboundTaskError) as exc:
             adapter.from_task_dir(task_dir)
         assert exc.value.report.source == "iosworld"
+
+    def test_detect_then_convert_macosworld_reports_unsupported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _force_macos_caps(monkeypatch, present=False)
+        task_dir = _write_macosworld_repo(tmp_path)
+        adapter = detect_adapter(task_dir)
+        with pytest.raises(UnsupportedInboundTaskError) as exc:
+            adapter.from_task_dir(task_dir)
+        assert exc.value.report.source == "macosworld"
 
     def test_detect_then_convert_use_computer_cookbook(self, tmp_path: Path) -> None:
         task_dir = _write_use_computer_cookbook_osworld_task(tmp_path)

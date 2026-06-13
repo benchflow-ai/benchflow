@@ -155,6 +155,26 @@ def _write_iosworld_repo(root: Path) -> Path:
     return task_dir
 
 
+def _write_macosworld_repo(root: Path) -> Path:
+    task_dir = root / "macosworld"
+    (task_dir / "tasks" / "sys_apps").mkdir(parents=True)
+    (task_dir / "testbench.py").write_text("# macOSWorld testbench\n")
+    (task_dir / "constants.py").write_text("SCREEN_WIDTH = 1024\n")
+    (task_dir / "tasks" / "sys_apps" / "task-001.json").write_text(
+        json.dumps(
+            {
+                "id": "task-001",
+                "snapshot": {"en": "snapshot_used_en"},
+                "task": {"en": "Add Ong KC to contacts with number 96910380."},
+                "grading_command": [["echo True", 100]],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return task_dir
+
+
 def _write_unsupported_cuagym_postconfig_task(root: Path) -> Path:
     task_dir = root / "vscode__postconfig-task"
     original = task_dir / "tests" / "cuagym" / "original"
@@ -415,4 +435,74 @@ def test_tasks_check_json_reports_iosworld_provider_requirement(
         "ios-26-simulator-runtime",
         "appium-xcuitest",
         "iosworld-app-bootstrap",
+    ]
+
+
+def test_tasks_check_reports_macosworld_provider_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOSWorld sources are recognized but blocked on a cua macOS VM provider."""
+    monkeypatch.setenv("BENCHFLOW_MACOSWORLD_FORCE_UNSUPPORTED", "1")
+    task_dir = _write_macosworld_repo(tmp_path)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "tasks",
+            "check",
+            str(task_dir),
+            "--level",
+            "runtime-capability",
+            "--sandbox",
+            "cua",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "unsupported adapter task" in result.output
+    assert "Adapter: macosworld" in result.output
+    assert "Dataset: macosworld" in result.output
+    assert "cua macOS VM provider mapping" in result.output
+    assert "Issue: cua-macos-vm-provider-required" in result.output
+    assert "Task Count: 1" in result.output
+    assert "Traceback (most recent call last)" not in result.output
+
+
+def test_tasks_check_json_reports_macosworld_provider_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOSWorld JSON reports carry provider-honest unsupported metadata."""
+    monkeypatch.setenv("BENCHFLOW_MACOSWORLD_FORCE_UNSUPPORTED", "1")
+    task_dir = _write_macosworld_repo(tmp_path)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "tasks",
+            "check",
+            str(task_dir),
+            "--level",
+            "runtime-capability",
+            "--sandbox",
+            "cua",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "unsupported-adapter-task"
+    assert payload["adapter"] == "macosworld"
+    assert payload["dataset"] == "macosworld"
+    assert payload["reason"] == (
+        "macOSWorld tasks require a cua macOS VM provider mapping"
+    )
+    assert payload["details"]["issue"] == "cua-macos-vm-provider-required"
+    assert payload["details"]["required_provider"] == "cua"
+    assert payload["details"]["shape"] == "repository"
+    assert payload["details"]["task_count"] == 1
+    assert payload["details"]["required_capabilities"] == [
+        "macos",
+        "cua-macos-vm",
+        "macos-vm-exec",
     ]

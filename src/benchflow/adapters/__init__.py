@@ -38,6 +38,7 @@ from benchflow.adapters.inbound import (
 )
 from benchflow.adapters.inspect_ai import InspectAdapter, to_inspect_task
 from benchflow.adapters.iosworld import IOSWorldAdapter, from_iosworld_task
+from benchflow.adapters.macosworld import MacOSWorldAdapter, from_macosworld_task
 from benchflow.adapters.ors import (
     ORSAdapter,
     ors_tool_outputs_to_reward_events,
@@ -59,6 +60,7 @@ __all__ = [
     "InboundTask",
     "InspectAdapter",
     "IOSWorldAdapter",
+    "MacOSWorldAdapter",
     "ORSAdapter",
     "StagehandEvalAdapter",
     "UnsupportedInboundTaskError",
@@ -68,6 +70,7 @@ __all__ = [
     "from_computer_use_task",
     "from_harbor_task",
     "from_iosworld_task",
+    "from_macosworld_task",
     "from_stagehand_task",
     "from_use_computer_cookbook_task",
     "materialize_inbound_task_md",
