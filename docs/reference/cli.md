@@ -484,21 +484,22 @@ an idle-activity guard means concurrent live runs are never reaped). Set
 `BENCHFLOW_DAYTONA_AUTO_REAP` to any of `0`/`false`/`no`/`off` (case-insensitive)
 to disable that automatic pass and rely on the manual command above.
 
-## bench compat
+## bench hub
 
-Third-party framework compatibility checks.
+Compatibility checks for external environment hubs (Harbor today; built to
+extend to other hubs).
 
-### bench compat harbor-registry
+### bench hub check
 
-Inventory or structurally check representative Harbor registry tasks. Defaults
-to running an inventory pass against the public Harbor registry JSON.
+Inventory or structurally check representative tasks from an environment hub's
+registry. Defaults to an inventory pass against the public Harbor registry JSON.
 
 ```bash
-# Inventory the public Harbor registry
-bench compat harbor-registry
+# Inventory the public Harbor hub registry
+bench hub check
 
 # Structural check, two tasks per dataset, JSONL output
-bench compat harbor-registry --level check --tasks-per-dataset 2 --out compat.jsonl
+bench hub check --level check --tasks-per-dataset 2 --out hub.jsonl
 ```
 
 | Flag | Default | Description |

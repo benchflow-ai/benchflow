@@ -40,9 +40,9 @@ from benchflow.cli._shared import (
     console,
 )
 from benchflow.cli.agent import register_agent
-from benchflow.cli.compat import register_compat
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.environment import register_environment
+from benchflow.cli.hub import register_hub
 from benchflow.cli.monitor import register_monitor
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
@@ -937,7 +937,7 @@ def eval_view(
 register_continue(app)
 register_skills(app)
 register_tasks(app)
-register_compat(app)
+register_hub(app)
 register_agent(app)
 register_environment(app)
 register_monitor(app)
