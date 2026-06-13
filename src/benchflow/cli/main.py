@@ -704,7 +704,9 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
     except (EmptyTaskSelectionError, ValueError) as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
-    _report_eval_result(result)
+    job_name = getattr(result, "job_name", None)
+    job_dir = Path(j._jobs_dir) / job_name if job_name else None
+    _report_eval_result(result, job_dir)
     _exit_if_evaluation_had_errors(result)
 
 
