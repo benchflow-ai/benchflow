@@ -25,7 +25,9 @@ __all__ = [
     "FeedbackLevel",
     "LoopStrategySpec",
     "LoopStrategyUser",
+    "SELF_REVIEW",
     "SINGLE_SHOT",
+    "SelfReviewUser",
     "VERIFY_RETRY",
     "VerifyRetryUser",
     "build_loop_user",
@@ -37,8 +39,10 @@ __all__ = [
 
 SINGLE_SHOT = "single-shot"
 VERIFY_RETRY = "verify-retry"
+SELF_REVIEW = "self-review"
 
 DEFAULT_VERIFY_RETRY_K = 3
+DEFAULT_SELF_REVIEW_K = 3
 DEFAULT_PASS_THRESHOLD = 1.0
 DEFAULT_MAX_FEEDBACK_CHARS = 4000
 
@@ -57,6 +61,18 @@ class FeedbackLevel(StrEnum):
     RAW = "raw"
 
 
+def _coerce_k(name: str, k: Any) -> int:
+    """Validate a retry-budget ``k`` (shared by retry-style strategies)."""
+    if isinstance(k, str):
+        try:
+            k = int(k)
+        except ValueError:
+            raise ValueError(f"{name} k must be an integer, got {k!r}") from None
+    if isinstance(k, bool) or not isinstance(k, int) or k < 1:
+        raise ValueError(f"{name} k must be a positive integer, got {k!r}")
+    return k
+
+
 def _normalized_params(name: str, params: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize strategy params, filling strategy defaults."""
     if name == SINGLE_SHOT:
@@ -69,16 +85,7 @@ def _normalized_params(name: str, params: dict[str, Any]) -> dict[str, Any]:
         unknown = set(params) - {"k", "feedback"}
         if unknown:
             raise ValueError(f"unknown verify-retry param(s): {sorted(unknown)}")
-        k = params.get("k", DEFAULT_VERIFY_RETRY_K)
-        if isinstance(k, str):
-            try:
-                k = int(k)
-            except ValueError:
-                raise ValueError(
-                    f"verify-retry k must be an integer, got {k!r}"
-                ) from None
-        if isinstance(k, bool) or not isinstance(k, int) or k < 1:
-            raise ValueError(f"verify-retry k must be a positive integer, got {k!r}")
+        k = _coerce_k(VERIFY_RETRY, params.get("k", DEFAULT_VERIFY_RETRY_K))
         feedback = params.get("feedback", FeedbackLevel.NAMES.value)
         if isinstance(feedback, FeedbackLevel):
             feedback = feedback.value
@@ -90,8 +97,16 @@ def _normalized_params(name: str, params: dict[str, Any]) -> dict[str, Any]:
                 f"verify-retry feedback must be one of {valid}, got {feedback!r}"
             ) from None
         return {"k": k, "feedback": feedback}
+    if name == SELF_REVIEW:
+        # No verifier feedback by design — self-review isolates self-critique as
+        # the feedback source, so its only param is the retry budget k.
+        unknown = set(params) - {"k"}
+        if unknown:
+            raise ValueError(f"unknown self-review param(s): {sorted(unknown)}")
+        return {"k": _coerce_k(SELF_REVIEW, params.get("k", DEFAULT_SELF_REVIEW_K))}
     raise ValueError(
-        f"unknown loop strategy {name!r} (expected {SINGLE_SHOT!r} or {VERIFY_RETRY!r})"
+        f"unknown loop strategy {name!r} "
+        f"(expected {SINGLE_SHOT!r}, {VERIFY_RETRY!r}, or {SELF_REVIEW!r})"
     )
 
 
@@ -313,6 +328,50 @@ class VerifyRetryUser(LoopStrategyUser):
         return "\n\n".join(lines)
 
 
+class SelfReviewUser(LoopStrategyUser):
+    """Retry by asking the agent to self-review its OWN work — no verifier
+    feedback at all.
+
+    The deliberate contrast to ``verify-retry``: it isolates *self-critique* as
+    the feedback source, so loopbench can measure how much weaker an agent
+    grading itself is than a verifier-grounded signal (loop-dev's "measurement
+    beats judgment" — in-thread self-review is the lowest-independence source).
+    The soft verifier still runs each round to record the trajectory, but its
+    output never reaches the agent; the retry prompt is pure self-review.
+    """
+
+    def __init__(
+        self,
+        *,
+        k: int = DEFAULT_SELF_REVIEW_K,
+        pass_threshold: float = DEFAULT_PASS_THRESHOLD,
+    ) -> None:
+        if k < 1:
+            raise ValueError(f"self-review k must be >= 1, got {k}")
+        # FeedbackLevel.NONE is load-bearing: no verifier output is ever piped
+        # back, so the only signal is the agent's own review.
+        super().__init__(pass_threshold=pass_threshold, feedback=FeedbackLevel.NONE)
+        self.k = k
+
+    async def run(
+        self,
+        round: int,
+        instruction: str,
+        round_result: RoundResult | None = None,
+    ) -> str | None:
+        if round == 0:
+            return instruction
+        reward = _soft_reward(round_result.rewards if round_result else None)
+        if reward is not None and reward >= self.pass_threshold:
+            return None
+        return (
+            "Critically review your previous solution in the workspace as if "
+            "reviewing an unfamiliar engineer's code: check correctness, edge "
+            "cases, and whether it fully satisfies the task. Identify any bugs "
+            "or missed requirements, then fix them."
+        )
+
+
 def build_loop_user(spec: LoopStrategySpec) -> tuple[LoopStrategyUser, int] | None:
     """Materialize the runtime user for *spec*.
 
@@ -325,6 +384,9 @@ def build_loop_user(spec: LoopStrategySpec) -> tuple[LoopStrategyUser, int] | No
         k = int(spec.params["k"])
         user = VerifyRetryUser(k=k, feedback=spec.params["feedback"])
         return user, k + 1
+    if spec.name == SELF_REVIEW:
+        k = int(spec.params["k"])
+        return SelfReviewUser(k=k), k + 1
     raise ValueError(f"unknown loop strategy {spec.name!r}")
 
 

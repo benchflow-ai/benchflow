@@ -8,6 +8,7 @@ from benchflow.contracts import RoundResult
 from benchflow.loop_strategies import (
     FeedbackLevel,
     LoopStrategySpec,
+    SelfReviewUser,
     VerifyRetryUser,
     build_loop_user,
     collect_loop_metadata,
@@ -55,7 +56,7 @@ class TestParseLoopStrategySpec:
         "bad",
         [
             "",
-            "self-review",
+            "not-a-strategy",
             "verify-retry:k",
             "verify-retry:k=",
             "verify-retry:k=zero",
@@ -65,6 +66,8 @@ class TestParseLoopStrategySpec:
             "verify-retry:retries=3",
             "verify-retry:k=2,k=3",
             "single-shot:k=3",
+            "self-review:k=0",
+            "self-review:feedback=names",
         ],
     )
     def test_bad_specs_raise(self, bad: str):
@@ -205,6 +208,37 @@ class TestVerifyRetryUser:
             VerifyRetryUser(k=0)
 
 
+class TestSelfReviewUser:
+    @pytest.mark.asyncio
+    async def test_round0_instruction_then_self_review(self):
+        user = SelfReviewUser(k=2)
+        assert await user.run(0, "Fix the bug") == "Fix the bug"
+        prompt = await user.run(1, "Fix the bug", _failing_round(0))
+        assert prompt is not None
+        assert "review" in prompt.lower()
+
+    @pytest.mark.asyncio
+    async def test_self_review_never_leaks_verifier_output(self):
+        """The whole point: self-review uses NO verifier signal, so neither the
+        failing test names nor any ground truth may reach the agent."""
+        user = SelfReviewUser(k=2)
+        await user.run(0, "Fix the bug")
+        prompt = await user.run(1, "Fix the bug", _failing_round(0))
+        assert "tests/test_alpha.py::test_two" not in prompt
+        assert SECRET not in prompt
+        assert user.feedback_level is FeedbackLevel.NONE
+
+    @pytest.mark.asyncio
+    async def test_stops_when_soft_reward_passes(self):
+        user = SelfReviewUser(k=3)
+        passing = RoundResult(round=0, rewards={"reward": 1.0})
+        assert await user.run(1, "Fix the bug", passing) is None
+
+    def test_rejects_nonpositive_k(self):
+        with pytest.raises(ValueError, match="k must be >= 1"):
+            SelfReviewUser(k=0)
+
+
 def _rounds(*rewards: float | None) -> list[dict]:
     return [
         {"round": i, "rewards": None if r is None else {"reward": r}}
@@ -278,6 +312,23 @@ class TestBuildLoopUser:
         assert user.k == 2
         assert user.feedback_level is FeedbackLevel.NAMES
         assert max_rounds == 3
+
+    def test_self_review_materializes_user_and_rounds(self):
+        built = build_loop_user(parse_loop_strategy_spec("self-review:k=2"))
+        assert built is not None
+        user, max_rounds = built
+        assert isinstance(user, SelfReviewUser)
+        assert user.k == 2
+        assert user.feedback_level is FeedbackLevel.NONE
+        assert max_rounds == 3
+
+    def test_self_review_rejects_feedback_param(self):
+        with pytest.raises(ValueError, match="unknown self-review param"):
+            parse_loop_strategy_spec("self-review:feedback=names")
+
+    def test_self_review_round_trips(self):
+        spec = parse_loop_strategy_spec("self-review:k=4")
+        assert LoopStrategySpec.from_mapping(spec.to_mapping()) == spec
 
 
 class TestRolloutConfigLoopStrategy:
