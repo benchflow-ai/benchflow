@@ -244,6 +244,7 @@ class TestLockdownPaths:
         cmd = self._get_lockdown_cmd(mock_env)
         assert cmd.index("chown root:root") < cmd.index("chmod 700")
         assert '[ -L "$d" ]' in cmd
+        assert mock_env.exec.call_args.kwargs["user"] == "root"
 
     async def test_multiple_paths(self, mock_env):
         await lockdown_paths(mock_env, ["/solution", "/tests", "/data"])

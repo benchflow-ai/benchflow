@@ -141,7 +141,7 @@ keys = ["ANTHROPIC_API_KEY"]
 
 This ~25-line manifest is the *entire* framework-integration surface:
 chi-bench's image, Dockerfile, and entrypoint are unmodified, and the ~920
-LOC of Harbor coupling it previously carried collapses into the manifest.
+LOC of external-framework coupling it previously carried collapses into the manifest.
 ClawsBench (`base_image` + framework-started `[[services]]`) and chi-bench
 (`image` + `owns_lifecycle = true`) are the two topologies behind one
 contract. See [`benchmarks/chi-bench/README.md`](../benchmarks/chi-bench/README.md)

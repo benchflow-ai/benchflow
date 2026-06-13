@@ -1,0 +1,124 @@
+{
+  "schema": "benchflow.environment-adapter-evidence.v1",
+  "benchmark": "use-computer-cookbook-smoke",
+  "status": "parity-confirmed",
+  "evidence_kind": "adapter-adoption-loop",
+  "updated_at": "2026-06-12",
+  "source": {
+    "type": "public-cookbook-shape",
+    "task_shape": "use-computer cookbook OSWorld and CUA-Gym desktop tasks"
+  },
+  "slices": [
+    {
+      "id": "osworld-ubuntu-smoke",
+      "task_id": "smoke__ubuntu-osworld",
+      "agent_adapter": "computer-use-smoke",
+      "sandbox_provider": "cua",
+      "sandbox_provider_mode": "local",
+      "environment_adapter": "desktop",
+      "benchmark_adapter": "use-computer-cookbook",
+      "original_runner": {
+        "framework": "cua-sdk-original",
+        "score": 1.0,
+        "trace_steps_min": 2
+      },
+      "benchflow_run": {
+        "reward": 1.0,
+        "trajectory_steps_min": 5,
+        "tool_calls_min": 3,
+        "artifact_steps_min": 3,
+        "screenshots_min": 1,
+        "eval_json": true
+      },
+      "parity": {
+        "criteria_compared": 7,
+        "criteria_agreed": 7,
+        "reward_delta_max": 0.0,
+        "artifact_manifest": true,
+        "eval_run_summary": true,
+        "adoption_report": true,
+        "loop_state": true,
+        "runtime_trace_schema": true
+      },
+      "cleanup": {
+        "cua_containers": 0
+      },
+      "commands": [
+        "BENCHFLOW_CUA_LOCAL=1 BENCHFLOW_CUA_LINUX_KIND=container uv run python benchmarks/use-computer-cookbook-smoke/parity_test.py --parity-out <evidence-root>/use-computer-cookbook-smoke/parity_experiment.json",
+        "uv run bench agent verify use-computer-cookbook-smoke --benchmarks-dir <evidence-root> --json"
+      ]
+    },
+    {
+      "id": "cuagym-python-reward-slice",
+      "task_id": "raw-cuagym-supported-python-reward",
+      "agent_adapter": "computer-use-smoke",
+      "sandbox_provider": "cua",
+      "sandbox_provider_mode": "local",
+      "environment_adapter": "desktop",
+      "benchmark_adapter": "use-computer-cookbook",
+      "original_runner": {
+        "framework": "cua-sdk-original",
+        "score": 0.0,
+        "trace_steps_min": 2
+      },
+      "benchflow_run": {
+        "reward": 0.0,
+        "trajectory_steps_min": 5,
+        "tool_calls_min": 3,
+        "artifact_steps_min": 3,
+        "screenshots_min": 1,
+        "eval_json": true
+      },
+      "parity": {
+        "criteria_compared": 7,
+        "criteria_agreed": 7,
+        "reward_delta_max": 0.0,
+        "artifact_manifest": true,
+        "eval_run_summary": true,
+        "adoption_report": true,
+        "loop_state": true,
+        "runtime_trace_schema": true
+      },
+      "cleanup": {
+        "cua_containers": 0
+      },
+      "commands": [
+        "uv run python benchmarks/use-computer-cookbook-smoke/import_upstream.py --cuagym-tasks-root <raw-cuagym-dataset>/tasks --cuagym-limit 1 --out-dir <tmp>/tasks --overwrite",
+        "BENCHFLOW_CUA_LOCAL=1 BENCHFLOW_CUA_LINUX_KIND=container uv run python benchmarks/use-computer-cookbook-smoke/parity_test.py --task-dir <tmp>/tasks/<adapted-task>"
+      ]
+    }
+  ],
+  "unsupported_summary": {
+    "known_supported_raw_cuagym_tasks": 333,
+    "raw_cuagym_total_tasks": 10910,
+    "support_report": {
+      "schema": "benchflow.cuagym-import-support-report.v1",
+      "unsupported_records_persisted": true,
+      "record_fields": [
+        "task_id",
+        "source_dir",
+        "status",
+        "app_type",
+        "difficulty",
+        "reason",
+        "code"
+      ],
+      "plaintext_policy": "report contains task identity, metadata, and support reasons only; raw instructions, setup files, reward.py, and screenshots are not copied",
+      "commands": [
+        "uv run python benchmarks/use-computer-cookbook-smoke/import_upstream.py --cuagym-tasks-root <raw-cuagym-dataset>/tasks --cuagym-limit 1 --out-dir <tmp>/tasks --support-report-out <tmp>/cuagym-support-report.json --overwrite"
+      ]
+    },
+    "top_remaining_blockers": [
+      "unmapped desktop app launchers",
+      "mock app types",
+      "setup kind open",
+      "invalid original reward.py files",
+      "unmapped reward packages"
+    ]
+  },
+  "gaps": [
+    "raw CUA-Gym support is intentionally narrow and provider-honest",
+    "WindowsAgentArena and macOSWorld slices still need dedicated provider/runtime mappings",
+    "broader scale needs a retained full-dataset support-report bundle, not just the importer contract and smoke dogfood"
+  ]
+}

@@ -18,6 +18,7 @@ uv run ruff check .
 - **Human review before `main`.** PRs only. No force-pushes to `main`. Self-approval doesn't count.
 - **Trunk-based:** branch off `main`, PR back to `main`. No long-lived release branches.
 - **Releases:** current mechanics live in [`docs/release.md`](./docs/release.md). Merges to `main` publish internal preview `.devN` builds after CI passes; public releases require a reviewed stable-version PR, a matching `v<version>` tag on `main`, then a bump back to the next `.dev0`.
+- **CUA / computer-use agent loop uses Gemini 3.5 Flash** (`gemini-3.5-flash`) as the default vision model, driving a prompted screenshot→action schema (click/type/key/scroll/done). The `computer-use-agent` ACP shim is model-pluggable via `session/set_model`, but `gemini-3.5-flash` is the default and the dogfood model for desktop/computer-use slices. Control runs in-sandbox (e.g. `xdotool`) so the Cua sandbox provider stays untouched.
 
 ## Experiment guidance (when using benchflow to run batch tasks experiments)
 

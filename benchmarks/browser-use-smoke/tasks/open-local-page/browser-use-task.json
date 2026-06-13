@@ -1,0 +1,10 @@
+{
+  "task_id": "open-local-page",
+  "benchmark": "browser-use-smoke",
+  "category": "local-browser",
+  "confirmed_task": "Use the browser fixture to report the page status. Final answer must be exactly: browser-use-smoke: ready",
+  "ground_truth": "Final result must be exactly browser-use-smoke: ready",
+  "expected_result": "browser-use-smoke: ready",
+  "url": "file:///app/browser_fixture/index.html",
+  "timeout_sec": 120
+}

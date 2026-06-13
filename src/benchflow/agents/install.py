@@ -200,6 +200,7 @@ async def install_agent(
     install_result = await env.exec(
         install_cmd,
         timeout_sec=install_timeout,
+        user="root",
     )
     install_log = rollout_dir / "agent" / "install-stdout.txt"
     install_log.parent.mkdir(parents=True, exist_ok=True)

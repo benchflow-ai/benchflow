@@ -443,10 +443,14 @@ def eval_create(
             "range it was validated against. Only valid with --dataset.",
         ),
     ] = False,
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit a machine-readable eval run report"),
+    ] = False,
 ) -> None:
     """Run an evaluation — single task or batch.
 
-    Sandbox: docker, daytona, or modal.
+    Sandbox: docker, daytona, modal, or cua.
     """
     _apply_dotenv_to_process_env()
 
@@ -491,11 +495,14 @@ def eval_create(
     try:
         plan = build_eval_plan(request)
     except EvalPlanError as exc:
+        if output_json:
+            typer.echo(json.dumps(_eval_create_error_payload(str(exc))))
+            raise typer.Exit(1) from None
         print_error(f"{exc}")
         raise typer.Exit(1) from None
 
     if config_file:
-        _run_config_file_eval(plan)
+        _run_config_file_eval(plan, output_json=output_json)
     elif source_env:
         _run_source_env_eval(
             plan,
@@ -506,6 +513,7 @@ def eval_create(
             source_env_max_tokens=source_env_max_tokens,
             source_env_temperature=source_env_temperature,
             source_env_sampling_arg=source_env_sampling_arg,
+            output_json=output_json,
         )
     elif source_repo:
         import subprocess
@@ -526,6 +534,7 @@ def eval_create(
             plan,
             resolved.path,
             plan.make_eval_config(source_provenance=resolved.provenance),
+            output_json=output_json,
         )
     elif tasks_dir:
         # Single-task and batch share one orchestration path. Evaluation
@@ -535,9 +544,18 @@ def eval_create(
         if not Path(tasks_dir).is_dir():
             # Without this guard a file (or missing path) reaches iterdir() and
             # dumps a raw NotADirectoryError, unlike sandbox create / eval metrics.
-            print_error(f"Not a directory: {tasks_dir}")
+            if output_json:
+                typer.echo(
+                    json.dumps(
+                        _eval_create_error_payload(f"Not a directory: {tasks_dir}")
+                    )
+                )
+            else:
+                print_error(f"Not a directory: {tasks_dir}")
             raise typer.Exit(1)
-        run_batch_eval(plan, tasks_dir, plan.make_eval_config())
+        run_batch_eval(
+            plan, tasks_dir, plan.make_eval_config(), output_json=output_json
+        )
     elif dataset:
         from benchflow._utils.dataset_registry import (
             DEFAULT_REGISTRY_SOURCE,
@@ -592,8 +610,18 @@ def eval_create(
                 dataset_task_digests=resolved_dataset.task_digests,
                 include_tasks=dataset_include,
             ),
+            output_json=output_json,
         )
     else:
+        if output_json:
+            typer.echo(
+                json.dumps(
+                    _eval_create_error_payload(
+                        "Provide --config, --tasks-dir, --source-repo, or --source-env"
+                    )
+                )
+            )
+            raise typer.Exit(1)
         console.print(
             "[red]Provide --config, --tasks-dir, --source-repo, --source-env, "
             "or --dataset[/red]"
@@ -615,12 +643,16 @@ def run_batch_eval(
     plan: "EvalPlan",
     resolved_tasks_dir: Path,
     eval_config: "EvaluationConfig",
+    *,
+    output_json: bool = False,
 ):
     """Run the source-repo / tasks-dir batch path and report its result.
 
     Promoted from the ``eval_create`` ``_run_batch_eval`` closure: the worker /
     jobs-dir / manifest knobs it used to capture now ride in on ``plan``.
     """
+    from benchflow.adapters.inbound import UnsupportedInboundTaskError
+    from benchflow.cli._adapter_reporting import unsupported_adapter_task_or_exit
     from benchflow.eval_sharding import ShardWorkerError
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
 
@@ -669,20 +701,33 @@ def run_batch_eval(
                 )
             )
     except EmptyTaskSelectionError as e:
+        if output_json:
+            typer.echo(json.dumps(_eval_create_error_payload(str(e))))
+            raise typer.Exit(1) from None
         print_error(f"{e}")
         raise typer.Exit(1) from None
+    except UnsupportedInboundTaskError as e:
+        unsupported_adapter_task_or_exit(resolved_tasks_dir, e, output_json=output_json)
     except (ValueError, RuntimeError, ShardWorkerError) as e:
+        if output_json:
+            typer.echo(json.dumps(_eval_create_error_payload(str(e))))
+            raise typer.Exit(1) from None
         print_error(f"{e}")
         raise typer.Exit(1) from None
 
     job_name = getattr(result, "job_name", None)
     job_dir = Path(plan.output_jobs_dir) / job_name if job_name else None
-    _report_eval_result(result, job_dir)
+    if output_json:
+        typer.echo(
+            json.dumps(_eval_create_result_payload(result, plan.output_jobs_dir))
+        )
+    else:
+        _report_eval_result(result, job_dir)
     _exit_if_evaluation_had_errors(result)
     return result
 
 
-def _run_config_file_eval(plan: "EvalPlan") -> None:
+def _run_config_file_eval(plan: "EvalPlan", *, output_json: bool = False) -> None:
     """Apply CLI overrides onto a YAML-loaded Evaluation, then run and report it."""
     import yaml
 
@@ -751,11 +796,17 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
     try:
         result = asyncio.run(j.run())
     except (EmptyTaskSelectionError, ValueError) as e:
+        if output_json:
+            typer.echo(json.dumps(_eval_create_error_payload(str(e))))
+            raise typer.Exit(1) from None
         print_error(f"{e}")
         raise typer.Exit(1) from None
     job_name = getattr(result, "job_name", None)
     job_dir = Path(j._jobs_dir) / job_name if job_name else None
-    _report_eval_result(result, job_dir)
+    if output_json:
+        typer.echo(json.dumps(_eval_create_result_payload(result, j._jobs_dir)))
+    else:
+        _report_eval_result(result, job_dir)
     _exit_if_evaluation_had_errors(result)
 
 
@@ -769,6 +820,7 @@ def _run_source_env_eval(
     source_env_max_tokens: int,
     source_env_temperature: float,
     source_env_sampling_arg: list[str] | None,
+    output_json: bool = False,
 ) -> None:
     """Warn about ignored ACP-only flags, then run a hosted Verifiers env."""
     from benchflow.hosted_env import (
@@ -781,30 +833,30 @@ def _run_source_env_eval(
     )
 
     req = plan.request
-    if plan.parsed_env:
+    if plan.parsed_env and not output_json:
         console.print(
             "[yellow]--agent-env is for BenchFlow ACP agents; source-env runs inherit the process environment.[/yellow]"
         )
-    if plan.eval_environment != "docker":
+    if plan.eval_environment != "docker" and not output_json:
         console.print(
             f"[yellow]--sandbox {escape(repr(plan.eval_environment))} is not used by source-env runs; "
             "the hosted Verifiers environment owns its harness/sandbox.[/yellow]"
         )
-    if plan.eval_agent != DEFAULT_AGENT:
+    if plan.eval_agent != DEFAULT_AGENT and not output_json:
         console.print(
             f"[dim]source-env records --agent {escape(repr(plan.eval_agent))}, but executes the model endpoint through Verifiers.[/dim]"
         )
-    if plan.eval_env_manifest is not None:
+    if plan.eval_env_manifest is not None and not output_json:
         console.print(
             "[yellow]--environment-manifest is for benchflow Environment-plane rollouts; "
             "the hosted Verifiers environment owns its own provisioning. Ignoring.[/yellow]"
         )
-    if plan.usage_tracking_overridden:
+    if plan.usage_tracking_overridden and not output_json:
         console.print(
             "[yellow]--usage-tracking is for BenchFlow ACP rollouts; "
             "source-env runs own their provider calls. Ignoring.[/yellow]"
         )
-    if req.prompt is not None:
+    if req.prompt is not None and not output_json:
         console.print(
             "[yellow]--prompt is for BenchFlow ACP rollouts; "
             "source-env runs own their prompts. Ignoring.[/yellow]"
@@ -830,8 +882,32 @@ def _run_source_env_eval(
             )
         )
     except HostedEnvError as e:
+        if output_json:
+            typer.echo(json.dumps(_eval_create_error_payload(str(e))))
+            raise typer.Exit(1) from None
         print_error(f"{e}")
         raise typer.Exit(1) from None
+
+    if output_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "completed" if not run_result.error else "error",
+                    "source": "source-env",
+                    "source_env": run_result.source_env.env_uid,
+                    "hub": run_result.source_env.hub_url,
+                    "model": run_result.model,
+                    "normalized_model": run_result.normalized_model,
+                    "run_dir": str(run_result.run_dir),
+                    "reward": run_result.reward,
+                    "total_tool_calls": run_result.total_tool_calls,
+                    "error": run_result.error,
+                }
+            )
+        )
+        if run_result.error:
+            raise typer.Exit(1)
+        return
 
     console.print(f"\n[bold]Environment:[/bold] {run_result.source_env.env_uid}")
     console.print(f"[bold]Hub:[/bold] {escape(str(run_result.source_env.hub_url))}")
@@ -850,6 +926,82 @@ def _run_source_env_eval(
     if run_result.error:
         console.print(f"[red]Error:[/red] {escape(str(run_result.error))}")
         raise typer.Exit(1)
+
+
+def _eval_create_error_payload(reason: str) -> dict[str, object]:
+    """Machine-readable failure payload for eval-adoption automation."""
+    return {
+        "status": "error",
+        "ok": False,
+        "reason": reason,
+    }
+
+
+def _eval_create_result_payload(
+    result: object,
+    jobs_dir: str | Path,
+) -> dict[str, object]:
+    """Return a JSON-safe eval run report backed by the persisted summary."""
+    jobs_path = Path(jobs_dir)
+    summary_path = jobs_path / "summary.json"
+    summary: dict[str, object] | None = None
+    summary_error: str | None = None
+    if summary_path.exists():
+        try:
+            loaded_summary = json.loads(summary_path.read_text())
+            if isinstance(loaded_summary, dict):
+                summary = loaded_summary
+            else:
+                summary_error = "summary.json did not contain a JSON object"
+        except (OSError, json.JSONDecodeError) as exc:
+            summary_error = str(exc)
+
+    errored = _as_int(getattr(result, "errored", 0))
+    verifier_errored = _as_int(getattr(result, "verifier_errored", 0))
+    status = "completed-with-errors" if errored or verifier_errored else "completed"
+    payload: dict[str, object] = {
+        "status": status,
+        "ok": status == "completed",
+        "jobs_dir": str(jobs_path),
+        "summary_path": str(summary_path) if summary_path.exists() else None,
+        "result": {
+            "job_name": getattr(result, "job_name", None),
+            "total": _as_int(getattr(result, "total", 0)),
+            "passed": _as_int(getattr(result, "passed", 0)),
+            "failed": _as_int(getattr(result, "failed", 0)),
+            "errored": errored,
+            "verifier_errored": verifier_errored,
+            "score": _as_float(getattr(result, "score", None)),
+            "score_excl_errors": _as_float(getattr(result, "score_excl_errors", None)),
+            "elapsed_sec": _as_float(getattr(result, "elapsed_sec", None)),
+        },
+        "summary": summary,
+    }
+    if summary_error is not None:
+        payload["summary_error"] = summary_error
+    return payload
+
+
+def _as_int(value: object) -> int:
+    if value is None:
+        return 0
+    if not isinstance(value, int | float | str):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, int | float | str):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @eval_app.command("list")

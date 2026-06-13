@@ -38,7 +38,7 @@ class TaskRuntimeView:
     """Single runtime-facing interpretation of a task package.
 
     The authoring layer can parse both native ``task.md`` packages and legacy
-    Harbor/Pier split packages. Runtime callers should consult this view instead
+    split packages. Runtime callers should consult this view instead
     of re-deciding path precedence at every launch or verifier boundary.
     """
 

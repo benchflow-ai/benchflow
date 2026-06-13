@@ -1,7 +1,7 @@
 """Verifier ($V$) — maps agent completion to a reward signal.
 
-Internalized from Harbor's Verifier class. Supports two verification methods,
-selected by ``[verifier].type`` in ``task.toml``:
+Supports two verification methods, selected by ``[verifier].type`` in
+``task.toml``:
 
 - ``"test-script"`` (default): run ``tests/test.sh`` inside the sandbox and
   parse ``reward.txt`` / ``reward.json``.

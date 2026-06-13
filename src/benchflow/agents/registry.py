@@ -51,12 +51,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-def _install_python_script(container_path: str, source: str) -> str:
-    """Shell snippet that ensures python3 and writes `source` to container_path.
+def _install_text_file(
+    container_path: str,
+    source: str,
+    *,
+    executable: bool = False,
+) -> str:
+    """Shell snippet that writes ``source`` to ``container_path``.
 
     Base64 transport — makes the install shell line content-agnostic so a line
     like `SHIMEOF` or `LAUNCHEREOF` inside the Python source can't collide with
     a heredoc terminator.
+    """
+    encoded = base64.b64encode(source.encode()).decode()
+    parent = shlex.quote(str(Path(container_path).parent))
+    q_path = shlex.quote(container_path)
+    chmod = f"chmod +x {q_path}" if executable else f"chmod a+r {q_path}"
+    return f"mkdir -p {parent} && echo {encoded} | base64 -d > {q_path} && {chmod}"
+
+
+def _install_python_script(container_path: str, source: str) -> str:
+    """Shell snippet that ensures python3 and writes `source` to container_path.
 
     Used by pi-acp, openclaw, and harvey-lab-harness — all three ship a Python
     launcher/shim baked into install_cmd. Semantics differ intentionally:
@@ -65,16 +80,28 @@ def _install_python_script(container_path: str, source: str) -> str:
     read provider env vars directly. A shared base is not yet justified —
     divergence is cheap, premature abstraction isn't.
     """
-    encoded = base64.b64encode(source.encode()).decode()
-    parent = shlex.quote(str(Path(container_path).parent))
-    q_path = shlex.quote(container_path)
     return (
         "( command -v python3 >/dev/null 2>&1 || "
         "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
-        f"mkdir -p {parent} && "
-        f"echo {encoded} | base64 -d > {q_path} && "
-        f"chmod +x {q_path}"
+        + _install_text_file(container_path, source, executable=True)
     )
+
+
+def _install_python_module(module_name: str, source: str) -> str:
+    """Install a small BenchFlow helper module into the sandbox package path."""
+    parts = module_name.split(".")
+    if len(parts) < 2 or any(not part.isidentifier() for part in parts):
+        raise ValueError(f"invalid module name: {module_name!r}")
+    module_path = Path("/opt/benchflow").joinpath(*parts).with_suffix(".py")
+    package_dirs: list[Path] = []
+    package_dir = Path("/opt/benchflow")
+    for part in parts[:-1]:
+        package_dir /= part
+        package_dirs.append(package_dir)
+    init_files = " ".join(
+        shlex.quote(str(path / "__init__.py")) for path in package_dirs
+    )
+    return _install_text_file(str(module_path), source) + f" && touch {init_files}"
 
 
 def _apt_install(*packages: str) -> str:
@@ -106,12 +133,30 @@ def _apt_install(*packages: str) -> str:
 _BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
 _BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
 _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
+_BENCHFLOW_PYTHONPATH = "/opt/benchflow"
 _OPENHANDS_CLI_GIT_REV = "3ca17446c5d9c1e35e054803478a3501ec251ecf"
 _OPENHANDS_SDK_VERSION = "1.22.1"
 _OPENHANDS_TOOLS_VERSION = "1.22.1"
+_BROWSER_USE_CLI_VERSION = "0.13.1"
+_BROWSER_USE_CLI_VENV = "/opt/benchflow/browser-use-cli-venv"
+_BROWSER_USE_CLI_BROWSERS = "/opt/benchflow/ms-playwright"
+
+# Computer Use Agent: a venv with the Gemini SDK for the real CUA model loop.
+# Desktop control (xdotool) and capture (gnome-screenshot) run in-sandbox, so
+# the Cua sandbox provider stays untouched.
+_CUA_AGENT_VENV = "/opt/benchflow/computer-use-agent-venv"
+_GOOGLE_GENAI_SPEC = "google-genai>=1.0.0"
+_STAGEHAND_AGENT_VERSION = "3.5.0"
+_STAGEHAND_GOOGLE_VERSION = "2.0.74"
+_STAGEHAND_PLAYWRIGHT_VERSION = "1.55.1"
+_STAGEHAND_AGENT_DIR = "/opt/benchflow/stagehand-agent"
+_STAGEHAND_BROWSERS = "/opt/benchflow/stagehand-ms-playwright"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
+)
+_BENCHFLOW_PYTHONPATH_PREFIX = (
+    f"PYTHONPATH={_BENCHFLOW_PYTHONPATH}${{PYTHONPATH:+:$PYTHONPATH}}"
 )
 # Node >=22.19 is required by current openclaw (the JS agents install
 # @latest); keep this pin at or above that floor or the openclaw ACP
@@ -191,6 +236,11 @@ def _js_agent_launch(binary: str, args: str = "") -> str:
     return f"{cmd} {args}".rstrip()
 
 
+def _benchflow_python_launch(command: str) -> str:
+    """Launch a sandbox Python shim with bundled BenchFlow helper modules."""
+    return f"{_BENCHFLOW_PYTHONPATH_PREFIX} {command}"
+
+
 # Path to the openclaw ACP shim script
 _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
@@ -202,6 +252,54 @@ _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text(
 
 # Path to the deepagents ACP shim (runs LangChain's create_deep_agent as an ACP agent)
 _DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text()
+
+# Path to the Browser Use smoke ACP shim (fixture agent adapter dogfood)
+_BROWSER_USE_SMOKE_SHIM = (
+    Path(__file__).parent / "browser_use_smoke_acp_shim.py"
+).read_text()
+
+# Path to the Computer Use smoke ACP shim (fixture desktop adapter dogfood)
+_COMPUTER_USE_SMOKE_SHIM = (
+    Path(__file__).parent / "computer_use_smoke_acp_shim.py"
+).read_text()
+
+# Path to the Computer Use Agent ACP shim (real Gemini-driven CUA model loop)
+_COMPUTER_USE_AGENT_SHIM = (
+    Path(__file__).parent / "computer_use_agent_acp_shim.py"
+).read_text()
+
+# Path to the Browser Use CLI ACP shim (wraps the real browser-use CLI harness)
+_BROWSER_USE_CLI_SHIM = (
+    Path(__file__).parent / "browser_use_cli_acp_shim.py"
+).read_text()
+
+# Path to the Browser Use Agent ACP shim (wraps browser_use.Agent)
+_BROWSER_USE_AGENT_SHIM = (
+    Path(__file__).parent / "browser_use_agent_acp_shim.py"
+).read_text()
+
+# Path to the Stagehand Agent ACP shim (wraps Stagehand's DOM agent loop)
+_STAGEHAND_AGENT_SHIM = (
+    Path(__file__).parent / "stagehand_agent_acp_shim.py"
+).read_text()
+
+# Shared browser environment adapter runtime bundled for standalone shims.
+_BROWSER_ENVIRONMENT_RUNTIME = (
+    Path(__file__).parents[1] / "environment" / "browser_runtime.py"
+).read_text()
+_INSTALL_BROWSER_ENVIRONMENT_RUNTIME = _install_python_module(
+    "benchflow.environment.browser_runtime",
+    _BROWSER_ENVIRONMENT_RUNTIME,
+)
+
+# Shared desktop environment adapter runtime bundled for standalone shims.
+_DESKTOP_ENVIRONMENT_RUNTIME = (
+    Path(__file__).parents[1] / "environment" / "desktop_runtime.py"
+).read_text()
+_INSTALL_DESKTOP_ENVIRONMENT_RUNTIME = _install_python_module(
+    "benchflow.environment.desktop_runtime",
+    _DESKTOP_ENVIRONMENT_RUNTIME,
+)
 
 
 def _json_settings_merge(path: str, mutator: str) -> str:
@@ -598,6 +696,204 @@ AGENTS: dict[str, AgentConfig] = {
         # directly (set unconditionally by resolve_provider_env when the model
         # carries a registered provider prefix), with DEEPSEEK_* as a fallback
         # (auto_inherit_env propagates those).
+    ),
+    "browser-use-smoke": AgentConfig(
+        name="browser-use-smoke",
+        description=(
+            "Browser Use smoke ACP shim — fixture agent adapter for local "
+            "Browser Use-shaped parity checks"
+        ),
+        install_cmd=(
+            _INSTALL_BROWSER_ENVIRONMENT_RUNTIME
+            + " && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/browser-use-smoke-acp-shim",
+                _BROWSER_USE_SMOKE_SHIM,
+            )
+        ),
+        launch_cmd=_benchflow_python_launch(
+            f"{_BENCHFLOW_BIN_PREFIX}/browser-use-smoke-acp-shim"
+        ),
+        protocol="acp",
+        requires_env=[],
+        default_model="browser-use-smoke",
+    ),
+    "computer-use-smoke": AgentConfig(
+        name="computer-use-smoke",
+        description=(
+            "Computer Use smoke ACP shim — fixture desktop adapter for local "
+            "Cua-backed parity checks"
+        ),
+        install_cmd=(
+            _INSTALL_DESKTOP_ENVIRONMENT_RUNTIME
+            + " && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/computer-use-smoke-acp-shim",
+                _COMPUTER_USE_SMOKE_SHIM,
+            )
+        ),
+        launch_cmd=_benchflow_python_launch(
+            f"{_BENCHFLOW_BIN_PREFIX}/computer-use-smoke-acp-shim"
+        ),
+        protocol="acp",
+        requires_env=[],
+        default_model="computer-use-smoke",
+    ),
+    "computer-use-agent": AgentConfig(
+        name="computer-use-agent",
+        description=(
+            "Computer Use Agent via ACP shim — real Gemini-driven CUA model "
+            "loop (screenshot → action → xdotool) for desktop eval runs"
+        ),
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive; "
+            "( command -v python3 >/dev/null 2>&1 || "
+            "(apt-get update -qq && apt-get install -y -qq python3 python3-pip "
+            "python3-venv >/dev/null 2>&1) ) && " + _apt_install("xdotool") + " && "
+            f"( python3 -m venv {_CUA_AGENT_VENV} 2>/dev/null || "
+            "(apt-get update -qq && apt-get install -y -qq python3-venv "
+            f">/dev/null 2>&1 && python3 -m venv {_CUA_AGENT_VENV}) ) && "
+            f"{_CUA_AGENT_VENV}/bin/python -m pip install -q "
+            f"{shlex.quote(_GOOGLE_GENAI_SPEC)} && "
+            + _INSTALL_DESKTOP_ENVIRONMENT_RUNTIME
+            + " && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/computer-use-agent-acp-shim",
+                _COMPUTER_USE_AGENT_SHIM,
+            )
+            + " && chmod -R a+rX /opt/benchflow"
+        ),
+        launch_cmd=_benchflow_python_launch(
+            f"{_CUA_AGENT_VENV}/bin/python "
+            f"{_BENCHFLOW_BIN_PREFIX}/computer-use-agent-acp-shim"
+        ),
+        protocol="acp",
+        requires_env=["GEMINI_API_KEY"],
+        install_timeout=1200,
+        default_model="gemini-3.5-flash",
+    ),
+    "browser-use-cli": AgentConfig(
+        name="browser-use-cli",
+        description=(
+            "Browser Use CLI via ACP shim — direct-control browser harness "
+            "smoke adapter"
+        ),
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive; "
+            "( command -v python3 >/dev/null 2>&1 || "
+            "(apt-get update -qq && apt-get install -y -qq python3 python3-pip "
+            "python3-venv >/dev/null 2>&1) ) && "
+            f"( python3 -m venv {_BROWSER_USE_CLI_VENV} 2>/dev/null || "
+            "(apt-get update -qq && apt-get install -y -qq python3-venv "
+            f">/dev/null 2>&1 && python3 -m venv {_BROWSER_USE_CLI_VENV}) ) && "
+            f"{_BROWSER_USE_CLI_VENV}/bin/python -m pip install -q uv "
+            f"browser-use=={_BROWSER_USE_CLI_VERSION} && "
+            f"PLAYWRIGHT_BROWSERS_PATH={_BROWSER_USE_CLI_BROWSERS} "
+            f"PATH={_BROWSER_USE_CLI_VENV}/bin:$PATH "
+            f"{_BROWSER_USE_CLI_VENV}/bin/browser-use install && "
+            + _INSTALL_BROWSER_ENVIRONMENT_RUNTIME
+            + " && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/browser-use-cli-acp-shim",
+                _BROWSER_USE_CLI_SHIM,
+            )
+            + " && chmod -R a+rX /opt/benchflow"
+        ),
+        launch_cmd=_benchflow_python_launch(
+            f"PLAYWRIGHT_BROWSERS_PATH={_BROWSER_USE_CLI_BROWSERS} "
+            f"BROWSER_USE_BIN={_BROWSER_USE_CLI_VENV}/bin/browser-use "
+            f"{_BROWSER_USE_CLI_VENV}/bin/python "
+            f"{_BENCHFLOW_BIN_PREFIX}/browser-use-cli-acp-shim"
+        ),
+        protocol="acp",
+        requires_env=[],
+        install_timeout=1200,
+        default_model="browser-use-cli",
+    ),
+    "browser-use-agent": AgentConfig(
+        name="browser-use-agent",
+        description=(
+            "Browser Use Agent via ACP shim — LLM-driven Browser Use loop "
+            "for browser eval smoke runs"
+        ),
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive; "
+            "( command -v python3 >/dev/null 2>&1 || "
+            "(apt-get update -qq && apt-get install -y -qq python3 python3-pip "
+            "python3-venv >/dev/null 2>&1) ) && "
+            f"( python3 -m venv {_BROWSER_USE_CLI_VENV} 2>/dev/null || "
+            "(apt-get update -qq && apt-get install -y -qq python3-venv "
+            f">/dev/null 2>&1 && python3 -m venv {_BROWSER_USE_CLI_VENV}) ) && "
+            f"{_BROWSER_USE_CLI_VENV}/bin/python -m pip install -q uv "
+            f"browser-use=={_BROWSER_USE_CLI_VERSION} && "
+            f"PLAYWRIGHT_BROWSERS_PATH={_BROWSER_USE_CLI_BROWSERS} "
+            f"PATH={_BROWSER_USE_CLI_VENV}/bin:$PATH "
+            f"{_BROWSER_USE_CLI_VENV}/bin/browser-use install && "
+            + _INSTALL_BROWSER_ENVIRONMENT_RUNTIME
+            + " && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/browser-use-agent-acp-shim",
+                _BROWSER_USE_AGENT_SHIM,
+            )
+            + " && chmod -R a+rX /opt/benchflow"
+        ),
+        launch_cmd=_benchflow_python_launch(
+            f"PLAYWRIGHT_BROWSERS_PATH={_BROWSER_USE_CLI_BROWSERS} "
+            f"{_BROWSER_USE_CLI_VENV}/bin/python "
+            f"{_BENCHFLOW_BIN_PREFIX}/browser-use-agent-acp-shim"
+        ),
+        protocol="acp",
+        requires_env=["GEMINI_API_KEY"],
+        install_timeout=1200,
+        default_model="gemini-2.5-flash",
+    ),
+    "stagehand-agent": AgentConfig(
+        name="stagehand-agent",
+        description=(
+            "Stagehand Agent via ACP shim — DOM-mode Stagehand browser loop "
+            "for browser eval smoke runs"
+        ),
+        install_cmd=(
+            f"{_NODE_INSTALL} && "
+            f"{_apt_install('ca-certificates', 'python3', 'make', 'g++')} && "
+            f"mkdir -p {_STAGEHAND_AGENT_DIR} {_STAGEHAND_BROWSERS} && "
+            f"cd {_STAGEHAND_AGENT_DIR} && "
+            "( [ -d node_modules/@browserbasehq/stagehand ] && "
+            "[ -d node_modules/@ai-sdk/google ] && "
+            "[ -d node_modules/playwright ] || "
+            f"( {_BENCHFLOW_NODE_PREFIX}/bin/npm init -y >/dev/null 2>&1 && "
+            f"{_BENCHFLOW_NODE_PREFIX}/bin/npm install --omit=dev "
+            "--no-audit --no-fund "
+            f"@browserbasehq/stagehand@{_STAGEHAND_AGENT_VERSION} "
+            f"@ai-sdk/google@{_STAGEHAND_GOOGLE_VERSION} "
+            f"playwright@{_STAGEHAND_PLAYWRIGHT_VERSION} ) ) && "
+            "( "
+            f"PLAYWRIGHT_BROWSERS_PATH={_STAGEHAND_BROWSERS} "
+            f"{_BENCHFLOW_NODE_PREFIX}/bin/node -e "
+            '\'const fs=require("fs"); '
+            'const { chromium }=require("playwright"); '
+            "process.exit(fs.existsSync(chromium.executablePath()) ? 0 : 1)' || "
+            f"PLAYWRIGHT_BROWSERS_PATH={_STAGEHAND_BROWSERS} "
+            f"{_BENCHFLOW_NODE_PREFIX}/bin/npx playwright install chromium --with-deps "
+            ") && "
+            + _INSTALL_BROWSER_ENVIRONMENT_RUNTIME
+            + " && "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/stagehand-agent-acp-shim",
+                _STAGEHAND_AGENT_SHIM,
+            )
+            + " && chmod -R a+rX /opt/benchflow"
+        ),
+        launch_cmd=_benchflow_python_launch(
+            f"NODE_PATH={_STAGEHAND_AGENT_DIR}/node_modules "
+            f"PLAYWRIGHT_BROWSERS_PATH={_STAGEHAND_BROWSERS} "
+            f"STAGEHAND_AGENT_NODE={_BENCHFLOW_NODE_PREFIX}/bin/node "
+            f"python3 {_BENCHFLOW_BIN_PREFIX}/stagehand-agent-acp-shim"
+        ),
+        protocol="acp",
+        requires_env=["GEMINI_API_KEY"],
+        install_timeout=1200,
+        default_model="google/gemini-2.5-flash",
     ),
     "openhands": AgentConfig(
         name="openhands",

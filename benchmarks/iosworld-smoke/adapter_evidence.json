@@ -1,0 +1,45 @@
+{
+  "schema": "benchflow.environment-adapter-evidence.v1",
+  "benchmark": "iosworld-smoke",
+  "status": "unsupported-confirmed",
+  "evidence_kind": "adapter-adoption-loop",
+  "updated_at": "2026-06-12",
+  "source": {
+    "type": "checked-in-iosworld-shaped-fixture",
+    "task_shape": "iOSWorld repository with tasks.json and bootstrap scripts"
+  },
+  "unsupported_reports": [
+    {
+      "id": "tasks-check-cua",
+      "status": "unsupported-adapter-task",
+      "adapter": "iosworld",
+      "dataset": "iosworld",
+      "reason": "iOSWorld tasks require a macOS/iOS Simulator provider mapping",
+      "details": {
+        "issue": "macos-ios-simulator-provider-required",
+        "required_provider": "macos-ios-simulator"
+      },
+      "commands": [
+        "uv run bench tasks check benchmarks/iosworld-smoke/repo --level runtime-capability --sandbox cua --json"
+      ]
+    },
+    {
+      "id": "environment-check-cua",
+      "status": "unsupported-adapter-task",
+      "adapter": "iosworld",
+      "dataset": "iosworld",
+      "reason": "iOSWorld tasks require a macOS/iOS Simulator provider mapping",
+      "details": {
+        "issue": "macos-ios-simulator-provider-required",
+        "required_provider": "macos-ios-simulator"
+      },
+      "commands": [
+        "uv run bench environment check benchmarks/iosworld-smoke/repo --sandbox cua --json"
+      ]
+    }
+  ],
+  "gaps": [
+    "no runnable iOSWorld slice until a macOS/iOS Simulator provider is available",
+    "no original-runner parity until the provider can boot the simulator, install benchmark apps, and run Appium/XCUITest"
+  ]
+}

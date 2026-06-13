@@ -35,6 +35,7 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
     SandboxProvider("docker", extra=None, off_box_model=False),
     SandboxProvider("daytona", extra="sandbox-daytona", off_box_model=True),
     SandboxProvider("modal", extra="sandbox-modal", off_box_model=True),
+    SandboxProvider("cua", extra="sandbox-cua", off_box_model=True),
 )
 
 PROVIDERS_BY_NAME: dict[str, SandboxProvider] = {p.name: p for p in _PROVIDERS}

@@ -395,6 +395,23 @@ class TestShimProviderFallback:
         assert cfg.auth_type == "api_key"
         assert cfg.auth_env == "OPENAI_API_KEY"
 
+    def test_google_ai_studio_is_user_supplied_openai_compatible(self):
+        """google-ai-studio mirrors vllm (empty base_url + runtime URL) but uses
+        Gemini's own key, targeting an OpenAI-compatible Gemini proxy."""
+        cfg = PROVIDERS["google-ai-studio"]
+        assert cfg.base_url == ""  # user-supplied via BENCHFLOW_PROVIDER_BASE_URL
+        assert cfg.api_protocol == "openai-completions"
+        assert cfg.auth_type == "api_key"
+        assert cfg.auth_env == "GEMINI_API_KEY"
+
+    def test_google_ai_studio_prefix_resolves(self):
+        name, _cfg = find_provider("google-ai-studio/gemini-3.1-flash-lite")
+        assert name == "google-ai-studio"
+        assert strip_provider_prefix("google-ai-studio/gemini-3.1-flash-lite") == (
+            "gemini-3.1-flash-lite"
+        )
+        assert resolve_auth_env("google-ai-studio/x") == "GEMINI_API_KEY"
+
 
 # Shim helper functions
 

@@ -59,7 +59,7 @@ def apply() -> None:
     async def _patched_get_session_command_logs(
         self: Any, session_id: str, command_id: str
     ) -> SessionCommandLogsResponse:
-        # Harbor already wraps this call in tenacity (3 attempts), so
+        # The upstream SDK already wraps this call in tenacity (3 attempts), so
         # additional retries here are usually wasted on a deterministic
         # malformed payload. Try once more with a small delay in case it
         # IS transient, then return an empty-but-valid response so the

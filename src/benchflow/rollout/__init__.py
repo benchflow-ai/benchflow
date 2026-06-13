@@ -116,6 +116,9 @@ from benchflow.rollout._setup import (
     _configured_task_workdir as _configured_task_workdir,
 )
 from benchflow.rollout._setup import (
+    _download_rollout_artifacts as _download_rollout_artifacts,
+)
+from benchflow.rollout._setup import (
     _ensure_canonical_rewards as _ensure_canonical_rewards,
 )
 from benchflow.rollout._setup import _ensure_sandbox_dir as _ensure_sandbox_dir
@@ -130,6 +133,7 @@ from benchflow.rollout._setup import (
 from benchflow.rollout._setup import _resolve_agent_cwd as _resolve_agent_cwd
 from benchflow.rollout._setup import _resolve_prompts as _resolve_prompts
 from benchflow.rollout._setup import _run_oracle as _run_oracle
+from benchflow.rollout._setup import _run_task_setup_hooks as _run_task_setup_hooks
 from benchflow.rollout._setup import _skill_nudge as _skill_nudge
 from benchflow.rollout._setup import _start_env_and_upload as _start_env_and_upload
 from benchflow.rollout._setup import (
@@ -682,7 +686,12 @@ class Rollout:
                 await _ensure_sandbox_dir(
                     self._env, cfg.generated_skills_root, cfg.sandbox_user
                 )
-            await self._planes.lockdown_paths(self._env, self._effective_locked)
+            oracle_locked = [
+                path
+                for path in self._effective_locked
+                if path not in {"/oracle", "/solution"}
+            ]
+            await self._planes.lockdown_paths(self._env, oracle_locked)
             self._phase = "installed"
             return
 
@@ -1221,6 +1230,8 @@ class Rollout:
         if verifier_timeout_diag is not None:
             self._diagnostics.set(verifier_timeout_diag)
 
+        await _download_rollout_artifacts(self._env, self._rollout_paths)
+
         self._phase = "verified"
         return self._rewards
 
@@ -1471,7 +1482,10 @@ class Rollout:
                     timeout_sec=10,
                 )
                 self._trajectory, self._agent_name = await _run_oracle(
-                    self._env, cfg.task_path, self._timeout, sandbox_user=None
+                    self._env,
+                    cfg.task_path,
+                    self._timeout,
+                    sandbox_user=cfg.sandbox_user,
                 )
             else:
                 await self.install_agent()

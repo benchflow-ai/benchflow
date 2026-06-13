@@ -210,6 +210,26 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="OPENAI_API_KEY",  # vLLM uses OpenAI-compatible auth
     ),
+    # Google AI Studio / Gemini behind a *self-hosted or proxied* base URL.
+    #
+    # This targets an OpenAI-compatible Gemini endpoint (the ``/v1beta/openai``
+    # surface, or any proxy speaking the OpenAI chat-completions protocol). It
+    # follows the ``vllm`` pattern exactly: empty config base_url + user-supplied
+    # BENCHFLOW_PROVIDER_BASE_URL at runtime, OpenAI-completions protocol so the
+    # LiteLLM route uses the ``openai/`` upstream prefix + api_base.
+    #
+    # Auth is GEMINI_API_KEY (carried as the OpenAI-style bearer key to the
+    # proxy). For a *native* GenerateContent endpoint behind a custom base URL,
+    # use a bare/``gemini/`` model id instead — the native gemini route now also
+    # honors BENCHFLOW_PROVIDER_BASE_URL (it keeps the ``gemini/`` upstream so
+    # LiteLLM speaks GenerateContent). See litellm_config.resolve_litellm_route.
+    "google-ai-studio": ProviderConfig(
+        name="google-ai-studio",
+        base_url="",  # user-supplied via --agent-env BENCHFLOW_PROVIDER_BASE_URL=...
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="GEMINI_API_KEY",
+    ),
     "litellm": ProviderConfig(
         name="litellm",
         base_url="{base_url}",
@@ -475,7 +495,7 @@ def strip_provider_prefix(model: str) -> str:
     "claude-sonnet-4-6" → "claude-sonnet-4-6"
 
     Single normalization point for downstream callers (ACP set_model,
-    BENCHFLOW_PROVIDER_MODEL env var, Harbor YAML parse). If a model ID
+    BENCHFLOW_PROVIDER_MODEL env var, agent config YAML parse). If a model ID
     reaches an agent launcher still prefixed, fix the routing into this
     function — do NOT strip again at the call site. See PRs #154 and #155
     for the symptomatic-patch anti-pattern that caused the original bug.

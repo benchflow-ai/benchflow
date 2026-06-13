@@ -290,15 +290,18 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
 
     lower = model.lower()
     bare = strip_provider_prefix(model)
+    is_gemini = False
     if lower.startswith("anthropic/"):
         upstream = model
         required = ("ANTHROPIC_API_KEY",)
     elif lower.startswith("gemini/"):
         upstream = model
         required = ("GEMINI_API_KEY",)
+        is_gemini = True
     elif "gemini" in lower:
         upstream = f"gemini/{bare}"
         required = ("GEMINI_API_KEY",)
+        is_gemini = True
     elif lower.startswith("openai/"):
         upstream = model
         required = ("OPENAI_API_KEY",)
@@ -313,6 +316,17 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
     key = required[0] if required else None
     if key:
         params["api_key"] = _env_ref(key)
+    # Native gemini/ models speak GenerateContent. Honor a runtime-supplied
+    # BENCHFLOW_PROVIDER_BASE_URL so a self-hosted / proxied *native* Gemini
+    # endpoint is reachable through the gateway — parity with the vllm route's
+    # base-URL override. The ``gemini/`` upstream prefix is preserved, so
+    # LiteLLM keeps speaking GenerateContent (``:generateContent``) against the
+    # custom host. For an OpenAI-compatible Gemini proxy, use the
+    # ``google-ai-studio/`` provider prefix instead (openai/ upstream).
+    if is_gemini:
+        api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
+        if api_base:
+            params["api_base"] = api_base
     return LiteLLMRoute(
         requested_model=model,
         model_alias=safe_model_alias(model),
