@@ -105,7 +105,9 @@ def test_benchflow_metrics_json_includes_memory_score_without_changing_score(tmp
         )
     )
 
-    result = CliRunner().invoke(app, ["eval", "metrics", str(tmp_path / "jobs"), "--json"])
+    result = CliRunner().invoke(
+        app, ["eval", "metrics", str(tmp_path / "jobs"), "--json"]
+    )
 
     assert result.exit_code == 0
     payload_start = result.output.index("{")
