@@ -902,7 +902,8 @@ class TestLoopStrategyEngine:
             "iterations_run": 3,
             "stop_reason": "max_iterations",
             "reward_trajectory": [0.0, 0.0, 0.0],
-            "tokens_trajectory": [0, 0, 0],
+            # No trusted native usage on the mock trial → None, not a spurious 0.
+            "tokens_trajectory": [None, None, None],
             "first_pass_iteration": None,
             "tokens_to_pass": None,
         }
@@ -938,9 +939,9 @@ class TestLoopStrategyEngine:
             "iterations_run": 3,
             "stop_reason": "passed_bar",
             "reward_trajectory": [0.0, 0.0, 1.0],
-            "tokens_trajectory": [0, 0, 0],
+            "tokens_trajectory": [None, None, None],
             "first_pass_iteration": 2,
-            "tokens_to_pass": 0,
+            "tokens_to_pass": None,
         }
 
     @pytest.mark.asyncio
@@ -1020,9 +1021,9 @@ class TestLoopStrategyEngine:
             "iterations_run": 1,
             "stop_reason": "passed_bar",
             "reward_trajectory": [1.0],
-            "tokens_trajectory": [0],
+            "tokens_trajectory": [None],
             "first_pass_iteration": 0,
-            "tokens_to_pass": 0,
+            "tokens_to_pass": None,
         }
 
     @pytest.mark.asyncio
@@ -1047,6 +1048,41 @@ class TestLoopStrategyEngine:
 
         assert not (tmp_path / "loop").exists()
         assert trial._loop_strategy_metadata() is None
+
+
+class TestRoundTokens:
+    """Per-round token capture must distinguish 'spent 0' from 'no usage'."""
+
+    def test_returns_none_when_usage_unavailable(self):
+        from benchflow.rollout._usage import _zero_native_acp_usage_metrics
+        from benchflow.rollout._user_loop import _round_tokens
+
+        # The zeroed default carries usage_source="unavailable" + total_tokens=0.
+        rollout = type(
+            "R", (), {"_native_usage_metrics": _zero_native_acp_usage_metrics()}
+        )()
+        assert _round_tokens(rollout) is None
+
+    def test_returns_none_when_metrics_missing(self):
+        from benchflow.rollout._user_loop import _round_tokens
+
+        assert _round_tokens(type("R", (), {})()) is None
+
+    def test_returns_total_when_usage_trusted(self):
+        from benchflow.rollout._user_loop import _round_tokens
+        from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
+
+        rollout = type(
+            "R",
+            (),
+            {
+                "_native_usage_metrics": {
+                    "total_tokens": 4096,
+                    "usage_source": USAGE_SOURCE_AGENT_NATIVE_ACP,
+                }
+            },
+        )()
+        assert _round_tokens(rollout) == 4096
 
 
 class TestSoftVerify:
