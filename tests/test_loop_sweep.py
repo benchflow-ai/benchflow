@@ -447,9 +447,13 @@ async def test_run_sweep_drives_one_job_per_cell_and_writes_matrix(
 
         async def run(self):
             summary = fake_summaries[(self._config.model, _full_label(self._config))]
+            # Mirror the real Evaluation: canonical copy under <job_name>/ plus a
+            # backward-compat copy at the (now per-cell) jobs_dir root.
             job_dir = self._jobs_dir / self._job_name
             job_dir.mkdir(parents=True, exist_ok=True)
-            (job_dir / "summary.json").write_text(json.dumps(summary))
+            text = json.dumps(summary)
+            (job_dir / "summary.json").write_text(text)
+            (self._jobs_dir / "summary.json").write_text(text)
 
     monkeypatch.setattr("benchflow.loop_sweep.Evaluation", FakeEvaluation)
 
@@ -476,6 +480,12 @@ async def test_run_sweep_drives_one_job_per_cell_and_writes_matrix(
     assert (jobs_dir / "sweep-matrix.md").exists()
     on_disk = json.loads((jobs_dir / "sweep-matrix.json").read_text())
     assert on_disk == matrix
+
+    # Cells are isolated: each writes under its own subdir, so the shared
+    # jobs_dir root is never clobbered with a single cell's summary (#720).
+    assert not (jobs_dir / "summary.json").exists()
+    cell_summaries = sorted(p.parent.name for p in jobs_dir.glob("*/summary.json"))
+    assert len(cell_summaries) == 4  # one isolated job dir per cell
 
     # 3 non-baseline verdicts; only cheap/verify-retry crosses over (matches the
     # 70% baseline at < its token spend). cheap/single-shot fails on pass-rate;

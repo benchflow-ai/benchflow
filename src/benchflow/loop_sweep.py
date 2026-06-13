@@ -376,10 +376,13 @@ async def run_sweep(
 
     Cells run sequentially — each :class:`Evaluation` already parallelizes its
     own tasks (``config.concurrency``), and sequential cells keep the shared
-    sandbox-concurrency budget predictable. Each cell's job dir is named by
-    :attr:`SweepCell.job_name` so reruns are addressable; the assembled matrix is
-    written as ``{matrix_prefix}-matrix.json`` and ``-matrix.md`` under
-    ``jobs_dir``. The matrix dict is also returned.
+    sandbox-concurrency budget predictable. Each cell gets its **own** jobs_dir
+    (``jobs_dir/<cell.job_name>/``), so cells never collide on shared-root files
+    — notably ``Evaluation``'s backward-compat ``jobs_dir/summary.json`` copy,
+    which N cells writing into one jobs_dir would otherwise clobber to the last
+    cell's. The assembled matrix is written as ``{matrix_prefix}-matrix.json`` /
+    ``-matrix.md`` under the top ``jobs_dir``, which now holds only the per-cell
+    subdirs plus those two artifacts. The matrix dict is also returned.
     """
     tasks_dir = Path(tasks_dir)
     jobs_dir = Path(jobs_dir)
@@ -389,15 +392,17 @@ async def run_sweep(
     results: list[CellResult] = []
     for cell in cells:
         cfg = replace(base_config, model=cell.model, loop_strategy=cell.loop)
+        cell_dir = jobs_dir / cell.job_name
         evaluation = Evaluation(
             tasks_dir=tasks_dir,
-            jobs_dir=jobs_dir,
+            jobs_dir=cell_dir,
             config=cfg,
             job_name=cell.job_name,
         )
         await evaluation.run()
-        summary_path = jobs_dir / cell.job_name / "summary.json"
-        summary = json.loads(summary_path.read_text())
+        # Read the per-cell top-level summary.json (Evaluation writes it under
+        # this cell's isolated jobs_dir, so no cross-cell clobber).
+        summary = json.loads((cell_dir / "summary.json").read_text())
         results.append(cell_result_from_summary(cell.model, cell.loop_label, summary))
 
     matrix = build_cost_curve_matrix(
