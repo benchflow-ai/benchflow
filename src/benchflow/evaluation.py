@@ -22,7 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -456,7 +456,8 @@ class EvaluationConfig:
     environment_manifest: EnvironmentManifest | None = None
     # Harness loop strategy applied to every rollout (e.g.
     # "verify-retry:k=3,feedback=names"). Threaded to RolloutConfig.from_legacy
-    # and stamped in summary.json; None = single-shot.
+    # and stamped in summary.json; None = single-shot. A dict (the to_mapping()
+    # shape) is also accepted at runtime — __post_init__ materializes it.
     loop_strategy: LoopStrategySpec | str | None = None
 
     def __post_init__(self):
@@ -481,7 +482,11 @@ class EvaluationConfig:
             # through a --config YAML, or an SDK EvaluationConfig(loop_strategy={...}))
             # must materialize too — not silently fall through and mislabel the run
             # single-shot. Mirror the sharding guard's loud-failure stance.
-            self.loop_strategy = LoopStrategySpec.from_mapping(self.loop_strategy)
+            # cast: isinstance narrows to dict[Unknown, Unknown]; from_mapping
+            # validates the keys at runtime.
+            self.loop_strategy = LoopStrategySpec.from_mapping(
+                cast("dict[str, Any]", self.loop_strategy)
+            )
         elif self.loop_strategy is not None and not isinstance(
             self.loop_strategy, LoopStrategySpec
         ):

@@ -34,6 +34,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic/text output in ACP updates
 _TOOL_RESULT_TRUNCATE = 1000  # max chars for tool result text
@@ -80,7 +81,7 @@ def recv():
 # a live model.
 
 
-def resolve_base_url(env: dict | None = None) -> str:
+def resolve_base_url(env: Mapping[str, str] | None = None) -> str:
     """Resolve the OpenAI-compatible base URL for the deepseek provider."""
     env = os.environ if env is None else env
     for key in ("BENCHFLOW_PROVIDER_BASE_URL", "DEEPSEEK_BASE_URL"):
@@ -90,7 +91,7 @@ def resolve_base_url(env: dict | None = None) -> str:
     return _DEFAULT_DEEPSEEK_BASE_URL
 
 
-def resolve_api_key(env: dict | None = None) -> str:
+def resolve_api_key(env: Mapping[str, str] | None = None) -> str:
     """Resolve the API key for the deepseek provider (may be empty)."""
     env = os.environ if env is None else env
     for key in ("BENCHFLOW_PROVIDER_API_KEY", "DEEPSEEK_API_KEY"):
@@ -100,7 +101,7 @@ def resolve_api_key(env: dict | None = None) -> str:
     return ""
 
 
-def resolve_model_id(requested: str, env: dict | None = None) -> str:
+def resolve_model_id(requested: str, env: Mapping[str, str] | None = None) -> str:
     """Resolve the bare deepseek model id to hand to the chat model.
 
     Priority: the ACP-supplied model (``set_model``) → BENCHFLOW_PROVIDER_MODEL
@@ -122,7 +123,7 @@ def resolve_model_id(requested: str, env: dict | None = None) -> str:
     return model
 
 
-def build_chat_model(model_id: str, env: dict | None = None):
+def build_chat_model(model_id: str, env: Mapping[str, str] | None = None):
     """Build a LangChain chat model for deepseek-v4-pro via the OpenAI protocol.
 
     deepseek-v4-pro is OpenAI-compatible, so we use ``langchain_openai.ChatOpenAI``
@@ -161,7 +162,7 @@ def build_chat_model(model_id: str, env: dict | None = None):
     return ChatOpenAI(**kwargs)
 
 
-def _float_env(env: dict, key: str):
+def _float_env(env: Mapping[str, str], key: str):
     raw = env.get(key)
     if raw is None or not str(raw).strip():
         return None
@@ -171,7 +172,7 @@ def _float_env(env: dict, key: str):
         return None
 
 
-def _int_env(env: dict, key: str):
+def _int_env(env: Mapping[str, str], key: str):
     raw = env.get(key)
     if raw is None or not str(raw).strip():
         return None
@@ -184,7 +185,7 @@ def _int_env(env: dict, key: str):
 # ── deep agent construction + run ─────────────────────────────────────────────
 
 
-def build_deep_agent(model_id: str, cwd: str, env: dict | None = None):
+def build_deep_agent(model_id: str, cwd: str, env: Mapping[str, str] | None = None):
     """Construct a deep agent rooted at ``cwd`` with shell + filesystem tools.
 
     Uses ``LocalShellBackend`` (a ``FilesystemBackend`` that also exposes the
@@ -263,7 +264,7 @@ def run_deep_agent(
     instruction: str,
     cwd: str,
     session_id: str,
-    env: dict | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict:
     """Build and invoke a deep agent, emitting ACP updates for its trajectory.
 
