@@ -291,10 +291,6 @@ class Verifier:
             return await self._verify_llm_judge()
         return await self._verify_test_script()
 
-    def _selected_verifier_strategy(self) -> VerifierStrategy | None:
-        document = self._selected_verifier_document()
-        return None if document is None else document.selected_strategy
-
     def _selected_verifier_document(self) -> VerifierDocument | None:
         paths = getattr(self._task, "paths", None)
         verifier_dir = getattr(paths, "tests_dir", None)

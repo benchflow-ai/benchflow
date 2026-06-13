@@ -36,7 +36,6 @@ class GitContext:
     repo: str | None = None
     branch: str | None = None
     commit_before: str | None = None
-    commit_after: str | None = None
 
 
 @dataclass
