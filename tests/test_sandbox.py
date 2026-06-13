@@ -347,7 +347,7 @@ class TestDockerComposeUpNetworkRaceRetry:
         calls: list[list[str]] = []
         sleeps: list[float] = []
 
-        async def fake_run(command):
+        async def fake_run(command, check=True, timeout_sec=None):
             calls.append(command)
             if len(calls) == 1:
                 raise RuntimeError(
@@ -388,7 +388,7 @@ class TestDockerComposeUpNetworkRaceRetry:
         calls: list[list[str]] = []
         sleeps: list[float] = []
 
-        async def fake_run(command):
+        async def fake_run(command, check=True, timeout_sec=None):
             calls.append(command)
             if len(calls) == 1:
                 raise RuntimeError(
@@ -422,7 +422,7 @@ class TestDockerComposeUpNetworkRaceRetry:
         calls: list[list[str]] = []
         sleeps: list[float] = []
 
-        async def fake_run(command):
+        async def fake_run(command, check=True, timeout_sec=None):
             calls.append(command)
             raise RuntimeError(
                 "Docker compose command failed. Stdout: "
@@ -454,7 +454,7 @@ class TestDockerComposeUpNetworkRaceRetry:
         calls: list[list[str]] = []
         sleeps: list[float] = []
 
-        async def fake_run(command):
+        async def fake_run(command, check=True, timeout_sec=None):
             calls.append(command)
             raise RuntimeError(
                 "Docker compose command failed. Stdout: "
@@ -473,6 +473,46 @@ class TestDockerComposeUpNetworkRaceRetry:
 
         assert calls == [["up", "--detach", "--wait"]] * 3
         assert sleeps == [2.0, 5.0]
+
+    @pytest.mark.asyncio
+    async def test_compose_up_timeout_force_kills_and_does_not_retry(self, monkeypatch):
+        """A `--wait` timeout reclaims the slot via force-kill, then re-raises.
+
+        A wedged 'starting' container is not a network race, so it must not
+        consume the retry budget; instead the half-started project is
+        force-killed so the concurrency slot is freed immediately.
+        """
+        from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.environment_name = "wedged-start"
+        sandbox.logger = docker_module.logger
+
+        calls: list[list[str]] = []
+        force_killed: list[bool] = []
+
+        async def fake_run(command, check=True, timeout_sec=None):
+            calls.append(command)
+            # `_run_docker_compose_command` raises this exact message on timeout.
+            raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+
+        async def fake_force_kill():
+            force_killed.append(True)
+
+        async def fake_sleep(delay):
+            raise AssertionError("timeout path must not sleep/retry")
+
+        monkeypatch.setattr(sandbox, "_run_docker_compose_command", fake_run)
+        monkeypatch.setattr(sandbox, "_force_kill_project", fake_force_kill)
+        monkeypatch.setattr(docker_module.asyncio, "sleep", fake_sleep)
+
+        with pytest.raises(RuntimeError, match="Command timed out"):
+            await sandbox._run_docker_compose_up()
+
+        # Exactly one attempt (no retry) and the project was force-killed.
+        assert calls == [["up", "--detach", "--wait"]]
+        assert force_killed == [True]
 
     def test_network_race_signature_matching(self):
         """The race matcher stays anchored to the daemon network-not-found error."""

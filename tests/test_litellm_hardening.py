@@ -52,6 +52,10 @@ class _FakeHostServer:
     [
         ("gemini", "gemini-3.5-flash", False),
         ("oracle", "openai/gpt-4.1-mini", False),
+        ("browser-use-smoke", "browser-use-smoke", False),
+        ("computer-use-smoke", "computer-use-smoke", False),
+        ("browser-use-cli", "browser-use-cli", False),
+        ("browser-use-agent", "gemini-2.5-flash", False),
         ("openhands", "gemini-3.5-flash", True),
         ("codex-acp", "openai/gpt-4.1-mini", True),
         ("openhands", None, False),

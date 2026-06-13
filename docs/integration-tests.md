@@ -133,9 +133,31 @@ uv run python tests/integration/run_suite.py --lane adapter-release-set --execut
   --open-pr-root OpaqueToolsBench=/path/to/pr-280-worktree \
   --open-pr-root ContinualLearningBench=/path/to/pr-283-worktree
 
+# Validate only the 0.7 browser/computer-use/iOSWorld environment-adapter
+# evidence manifests.
+uv run python tests/integration/check_adapter_evidence.py \
+  --only-universal-environment-adapters
+
 # Validate hosted env hub metadata and regenerate Harbor inventory evidence.
 uv run python tests/integration/run_suite.py --lane hosted-env-compatibility-board --execute-hosted-env-evidence
 ```
+
+Universal environment-adapter evidence is provider-mode honest. Cua slices must
+include `sandbox_provider_mode`: use `local` for local Cua parity evidence and
+`cloud-probed` only after a live cloud Cua runtime probe passes and cleanup
+evidence includes `cloud_vms: 0`.
+
+When 0.7 smoke parity scripts run with `--parity-out`, they also write a
+scrubbed `adoption_report.json` beside `parity_experiment.json`. The parity
+file remains the machine gate; the adoption report is the reviewable manifest
+for architecture planes, artifact counts, timing coverage, and cleanup.
+The computer-use Cua smoke evidence must also retain the live cloud not-ready
+probe with `failure_class`, SDK package/version, failed runtime capabilities,
+and `cloud_vms: 0` cleanup evidence until cloud runtime readiness is healthy.
+Official Stagehand eval import dogfood is recorded as additional browser
+evidence and must include same-task original-vs-BenchFlow parity for
+`agent/sign_in` until broader selected-task coverage replaces the one-task
+release gate.
 
 Trace-to-task evidence writes generated tasks, oracle job outputs, and `trace-evidence.json` under `dogfood/2026-05-19-trace-to-task-e2e/` by default. The evidence directory is declared in [`tests/integration/suites/release.yaml`](../tests/integration/suites/release.yaml) and can be overridden with `--trace-evidence-dir`.
 

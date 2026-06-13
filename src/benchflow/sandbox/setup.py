@@ -55,7 +55,6 @@ def _stage_ignore(directory: str, contents: list[str]) -> list[str]:
 
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
 
-
 def _raise_missing_optional_sandbox_dependency(
     sandbox_type: str,
     exc: ImportError,
@@ -630,7 +629,7 @@ def _create_sandbox_environment(
     preserve_agent_network: bool = False,
     environment_manifest: Any = None,
 ) -> Any:
-    """Create a sandbox environment (Docker, Daytona, or Modal).
+    """Create a sandbox environment (Docker, Daytona, Modal, or Cua).
 
     When ``environment_manifest`` is provided, its declared controls take
     effect at sandbox-construction time: the manifest's runnable ``image``
@@ -745,6 +744,38 @@ def _create_sandbox_environment(
         modal_environment_class.preflight()
 
         return modal_environment_class(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
+    elif sandbox_type == "cua":
+        try:
+            from benchflow.sandbox.cua import CuaSandbox
+        except ModuleNotFoundError as exc:
+            _raise_missing_optional_sandbox_dependency("cua", exc)
+        CuaSandbox.preflight()
+
+        return CuaSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
+    elif sandbox_type == "macos-ios-simulator":
+        # Non-Docker host provider: uses the host's xcrun/simctl + Appium
+        # toolchain (no pip extra), so a missing-import path is not possible
+        # the way it is for cloud SDK backends. preflight() raises an
+        # actionable SystemExit when the host cannot run iOS Simulators.
+        from benchflow.sandbox.macos_ios_simulator import MacosIosSimulatorSandbox
+
+        MacosIosSimulatorSandbox.preflight()
+
+        return MacosIosSimulatorSandbox(
             environment_dir=environment_dir,
             environment_name=task_path.name,
             session_id=rollout_name,

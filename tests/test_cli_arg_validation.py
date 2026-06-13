@@ -261,6 +261,39 @@ def test_sandbox_modal_missing_extra_rejected_even_when_installed(
         )
 
 
+def test_sandbox_cua_missing_extra_rejected(tmp_path, monkeypatch):
+    """Cua is optional; --sandbox cua must fail fast when its SDK is absent."""
+    import builtins
+
+    task = _task_dir(tmp_path)
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name in {"cua_sandbox", "cua"}:
+            raise ModuleNotFoundError(f"No module named {name!r}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(EvalPlanError, match="sandbox-cua"):
+        build_eval_plan(
+            EvalCreateRequest(tasks_dir=task, environment="cua", agent="oracle")
+        )
+
+
+def test_sandbox_cua_validates_when_preflight_passes(tmp_path, monkeypatch):
+    """A working Cua preflight lets planning accept --sandbox cua."""
+    from benchflow.sandbox.cua import CuaSandbox
+
+    task = _task_dir(tmp_path)
+    monkeypatch.setattr(CuaSandbox, "preflight", classmethod(lambda cls: None))
+
+    plan = build_eval_plan(
+        EvalCreateRequest(tasks_dir=task, environment="cua", agent="oracle")
+    )
+
+    assert plan.eval_environment == "cua"
+
+
 def test_source_env_skips_sandbox_preflight(monkeypatch):
     # Regression: --sandbox is ignored by hosted source-env runs, so a missing
     # modal extra (and an unknown sandbox value) must NOT block them — only

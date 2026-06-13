@@ -7,7 +7,7 @@ runs as an asyncio coroutine under a local ``asyncio.Semaphore``.
 
 This replaces the old subprocess-per-trial design in ``run_matrix.py``
 which OOM'd a ~8 GB dev container at ``--concurrency 64`` because each
-subprocess re-imported the full benchflow + harbor + daytona SDK (~300–400
+subprocess re-imported the full benchflow + daytona SDK (~300–400
 MB each × 64 = ~20 GB peak).
 
 Protocol

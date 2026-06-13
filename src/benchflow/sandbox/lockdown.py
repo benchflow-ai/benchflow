@@ -132,7 +132,7 @@ async def setup_sandbox_user(
     logger.info(f"Setting up sandbox user: {sandbox_user}")
     home = f"/home/{sandbox_user}"
     home_dirs = sorted(d for d in get_sandbox_home_dirs() if d != ".local")
-    await env.exec(
+    result = await env.exec(
         f"id -u {sandbox_user} >/dev/null 2>&1 || "
         f"useradd -m -s /bin/bash {sandbox_user} && "
         f"{_legacy_root_tool_link_cmd('/root/.local/bin', f'{home}/.local/bin')} && "
@@ -141,10 +141,23 @@ async def setup_sandbox_user(
         f"mkdir -p {home}/$d && "
         f"if [ -d /root/$d ]; then "
         f"cp -a /root/$d/. {home}/$d/ 2>/dev/null || true; fi; done && "
+        f"if [ -f /home/cua/.Xauthority ]; then "
+        f"cp /home/cua/.Xauthority {home}/.Xauthority && "
+        f"chown {sandbox_user}:{sandbox_user} {home}/.Xauthority; fi && "
         f"chown -R {sandbox_user}:{sandbox_user} {home} && "
         f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)}",
         timeout_sec=timeout_sec,
+        user="root",
     )
+    return_code = getattr(result, "return_code", None)
+    if not isinstance(return_code, int):
+        return_code = getattr(result, "exit_code", 0)
+    if return_code != 0:
+        stdout = getattr(result, "stdout", "") or ""
+        stderr = getattr(result, "stderr", "") or ""
+        detail = (stderr or stdout).strip()
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Sandbox user setup failed for {sandbox_user!r}{suffix}")
     logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
     return workspace
 
@@ -173,7 +186,7 @@ async def lockdown_paths(env, paths: list[str]) -> None:
             f"done"
         )
     cmd = " && ".join(parts)
-    await env.exec(cmd, timeout_sec=30)
+    await env.exec(cmd, timeout_sec=30, user="root")
 
 
 # Build-config snapshot / restore (Tier 2)
@@ -317,7 +330,7 @@ VERIFIER_ENV: dict[str, str] = {
         "--confcutdir=/tests "  # block conftest.py walk-up beyond /tests
         "-p no:cacheprovider"
         # --rootdir is injected dynamically by _build_pytest_addopts() based on
-        # the task's actual workspace, so it works for both /app (Harbor/SWE-bench)
+        # the task's actual workspace, so it works for both /app (SWE-bench)
         # and /root (SkillsBench) conventions.
     ),
     # Block pytest11 entry-point plugins. An agent can modify a pre-installed

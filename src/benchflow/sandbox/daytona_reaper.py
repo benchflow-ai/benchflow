@@ -18,6 +18,14 @@ logger = logging.getLogger("benchflow")
 _REAP_DEFAULT_MAX_AGE_MIN = 1440
 _REAP_FAILED_MAX_AGE_MIN = 120
 _REAP_FAILED_STATE_MARKERS = ("FAILED", "ERROR")
+# Name prefix every snapshot ``DaytonaSandbox.snapshot()`` creates carries.
+# Daytona snapshots have no ``labels`` field, so the prefix is the *only*
+# ownership signal :func:`reap_leaked_snapshots` can scope on — mirrors the
+# constant in ``daytona_strategies`` and the Docker provider's ``bf-snap-*``.
+_SNAPSHOT_NAME_PREFIX = "bf-snap-"
+# Page size for the paginated ``snapshot.list`` sweep. Conservative; the reaper
+# is a periodic/manual maintenance pass, not a hot path.
+_SNAPSHOT_LIST_PAGE_SIZE = 100
 # Minimum idle window before the general (non-failed) tier may reap an owned
 # sandbox that is old by creation time. The SDK returns ``last_activity_at`` on
 # list results, so a genuinely live, recently-active run older than the TTL is
@@ -221,4 +229,67 @@ def reap_stale_sandboxes(
         except Exception:
             logger.warning("Failed to delete sandbox %s", getattr(sb, "id", "?"))
             counts["failed"] += 1
+    return counts
+
+
+def reap_leaked_snapshots(
+    client: Any | None = None,
+    *,
+    dry_run: bool = False,
+    on_decision: Any | None = None,
+) -> dict[str, int]:
+    """Delete leaked benchflow snapshots (``bf-snap-*``) from the Daytona account.
+
+    Companion to :func:`reap_stale_sandboxes` for the *snapshot* tier: the
+    sandbox reaper never touches snapshots, and ``DaytonaSandbox.snapshot()``
+    creates cloud snapshots that only its ``stop()`` deletes — so a crash or a
+    skipped teardown leaks them against the account's quota/cost forever.
+
+    Ownership scoping: Daytona snapshots carry **no labels** (only a ``name``),
+    so unlike the label-scoped sandbox reaper this can only key on the
+    ``bf-snap-`` name prefix benchflow stamps on every snapshot it creates.
+    Anything not starting with that prefix is treated as foreign and never
+    deleted. There is no age TTL here: a ``bf-snap-*`` snapshot is, by
+    construction, a benchflow checkpoint that should have been reaped at
+    teardown, so its mere presence is the leak signal.
+
+    *on_decision* (snapshot, will_delete) is called per *owned* snapshot when
+    provided (the CLI uses it for per-row display). Returns counts:
+    ``{"found", "deleted", "skipped", "failed"}`` (``found`` counts every
+    snapshot listed; foreign ones fall into ``skipped``).
+    """
+    if client is None:
+        from benchflow.sandbox.daytona import build_sync_client
+
+        client = build_sync_client()
+    counts = {"found": 0, "deleted": 0, "skipped": 0, "failed": 0}
+    page = 1
+    while True:
+        result = client.snapshot.list(page=page, limit=_SNAPSHOT_LIST_PAGE_SIZE)
+        items = list(getattr(result, "items", None) or [])
+        for snap in items:
+            counts["found"] += 1
+            name = getattr(snap, "name", "") or ""
+            if not name.startswith(_SNAPSHOT_NAME_PREFIX):
+                # Scope guard: only benchflow-created snapshots are ever deleted.
+                counts["skipped"] += 1
+                continue
+            if on_decision is not None:
+                on_decision(snap, True)
+            if dry_run:
+                counts["deleted"] += 1
+                continue
+            try:
+                client.snapshot.delete(snap)
+                counts["deleted"] += 1
+            except Exception:
+                logger.warning(
+                    "Failed to delete snapshot %s", getattr(snap, "name", "?")
+                )
+                counts["failed"] += 1
+        # Stop once we've consumed the last page (or pagination is unavailable).
+        total_pages = getattr(result, "total_pages", None)
+        if not items or (isinstance(total_pages, int) and page >= total_pages):
+            break
+        page += 1
     return counts

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reward-hack matrix orchestrator.
 
-Pulls real tasks from three Harbor-format benchmarks (skillsbench,
+Pulls real tasks from three benchmarks (skillsbench,
 swebench-verified, terminal-bench-2), copies each into an isolated
 "cell" directory under .cells/, swaps the task's `solution/solve.sh`
 with one of our exploit payloads, and runs the cell under both
@@ -119,7 +119,7 @@ CELLS: list[Cell] = [
         exploit="pth_injection.sh",
     ),
     # swebench-verified: /testbed is in-image (created by the SWE-bench Docker
-    # image, not a Harbor mount), so writes during agent phase persist.
+    # image, not a bind mount), so writes during agent phase persist.
     # Conftest drop at /testbed/conftest.py works.
     Cell(
         pattern_id="P1",
@@ -360,7 +360,7 @@ class _Worker:
     and all trials for that version run as asyncio coroutines inside the
     worker under its own ``Semaphore``. Replaces the old subprocess-per-
     trial design which OOM'd an ~8 GB dev container at concurrency 64
-    because it re-imported benchflow/harbor/daytona SDK per trial.
+    because it re-imported the benchflow + daytona SDK per trial.
     """
 
     def __init__(self, version_label: str, venv_dir: Path, per_worker_concurrency: int):

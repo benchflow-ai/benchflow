@@ -70,7 +70,7 @@ with `error`. `_verify()` now owns its own try/except with an explicit
    other build-backend files; `pip install` in `test.sh` then runs agent code
    as the verifier user, enabling PATH shims, pytest entry-point plugins,
    `sitecustomize.py` plants in system site-packages, and `conftest.py` plants
-   in `/tests` after Harbor uploads the canonical copy.
+   in `/tests` after the runtime uploads the canonical copy.
 3. **Forged scraped trajectory** — `_scrape_agent_trajectory()` reads from
    the agent's own home directory. Tool-call counts derived from it were
    trusted.
@@ -139,7 +139,7 @@ build artifacts during verification (`pip install -e .` → `_compiler.c`,
 the Tier 4 restore — a non-root verifier BLOCKed universally on these tasks.
 Security is now carried by content integrity (rsync restores trusted pre-agent
 source before any code runs) rather than user isolation. Tasks that need a
-non-root verifier set `[verifier] user = "verifier"` in `task.toml`; Harbor
+non-root verifier set `[verifier] user = "verifier"` in `task.toml`; the runtime
 honors it if the user is pre-provisioned in the image.
 
 **Tier 4 — workspace restore.**  
@@ -363,7 +363,7 @@ no workspace snapshot, no build-config snapshot, and `_verify` received
 | pytest entry-point plugin via pre-installed dist-info (canonical `pytest11`) | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`; per-task allowlist for legitimate plugins |
 | Symlink at restore dst redirects `cp` write to `reward.txt` | `rm -f {dst}` severs any symlink before `cp` in `_restore_build_config` |
 | `sitecustomize.py` / `.pth` planted during `pip install` | `CLEANUP_CMD` sys.path sweep removes them before verifier starts |
-| `conftest.py` plant in `/tests` after Harbor upload | Build-config snapshot (canonical `setup.py` cannot plant it) |
+| `conftest.py` plant in `/tests` after runtime upload | Build-config snapshot (canonical `setup.py` cannot plant it) |
 | Agent forges `reward.txt` via background process | `pkill -u sandbox_user` before verify |
 | Agent forges scraped tool-call count | `n_tool_calls` only sourced from ACP session |
 | `conftest.py` injection forces tests to pass | `--confcutdir=/tests` + `find / -name conftest.py -delete` (no depth limit, as root) |
@@ -394,7 +394,7 @@ no workspace snapshot, no build-config snapshot, and `_verify` received
 - Agent re-escalating to root — mitigated by setpriv/su capability drop;
   SUID binary stripping is future work
 - Service-mediated exfiltration — benchmark author responsibility
-- Harbor private-attribute coupling in `process.py` — upstream-blocked
+- SDK private-attribute coupling in `process.py` — upstream-blocked
 - **Custom task layouts that `cd` into deeply nested agent-writable dirs
   other than `/app`** — `--confcutdir=/tests` blocks `conftest.py` walk-up
   to any depth, `-c /dev/null` blocks ini-file walk-up entirely, and
@@ -425,11 +425,11 @@ should prompt revisiting it.
   this hardening round). **Trigger:** any new layer added to `_VERIFIER_ENV`,
   or any change to `_harden_before_verify` / `_CLEANUP_CMD`.
 
-- **Two-phase verifier (root install, non-root test).** Harbor currently
+- **Two-phase verifier (root install, non-root test).** The runtime currently
   runs all of `test.sh` as one user. A two-phase API — root for the pip
   install step, non-root for pytest — would restore least-privilege for
   test execution without blocking write-heavy installs. **Trigger:**
-  Harbor gains a two-phase verifier field, or a privilege-escalation path
+  the runtime gains a two-phase verifier field, or a privilege-escalation path
   from a test script is found that content-restore + env hardening doesn't
   close.
 

@@ -159,9 +159,32 @@ def test_validator_reports_unknown_sandbox_backend() -> None:
     assert [(issue.path, issue.reason) for issue in issues] == [
         (
             "sandbox",
-            "unknown sandbox backend; use docker, daytona, or modal",
+            "unknown sandbox backend; use docker, daytona, modal, or cua",
         )
     ]
+
+
+def test_validator_routes_windows_tasks_to_cua() -> None:
+    """Cua is the first supported backend for Windows desktop tasks."""
+    config = TaskConfig.model_validate({"environment": {"os": "windows"}})
+
+    docker_issues = validate_task_runtime_support(config, sandbox="docker")
+    cua_issues = validate_task_runtime_support(config, sandbox="cua")
+
+    assert any(issue.path == "environment.os" for issue in docker_issues)
+    assert not any(issue.path == "environment.os" for issue in cua_issues)
+
+
+@pytest.mark.parametrize("os_name", ["macos", "android"])
+def test_validator_routes_desktop_tasks_to_cua(os_name: str) -> None:
+    """macOS/Android desktop tasks require the cua sandbox backend."""
+    config = TaskConfig.model_validate({"environment": {"os": os_name}})
+
+    docker_issues = validate_task_runtime_support(config, sandbox="docker")
+    cua_issues = validate_task_runtime_support(config, sandbox="cua")
+
+    assert any(issue.path == "environment.os" for issue in docker_issues)
+    assert not any(issue.path == "environment.os" for issue in cua_issues)
 
 
 def test_validator_reports_selected_script_missing_interpreter_artifact(

@@ -103,6 +103,101 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
 
+def test_native_gemini_route_honors_provider_base_url():
+    """A native ``gemini/`` model with BENCHFLOW_PROVIDER_BASE_URL set routes
+    through the gateway with api_base = that URL, keeping the ``gemini/``
+    upstream so LiteLLM speaks GenerateContent against the custom host
+    (parity with the vllm base-URL override)."""
+    base = "https://gateway.example.test/v1beta"
+    route = resolve_litellm_route(
+        "gemini/gemini-3.1-flash-lite",
+        {"GEMINI_API_KEY": "key", "BENCHFLOW_PROVIDER_BASE_URL": base},
+    )
+
+    assert route.provider_name == "native"
+    assert route.upstream_model == "gemini/gemini-3.1-flash-lite"
+    assert route.litellm_params["api_base"] == base
+    assert route.litellm_params["api_key"] == "os.environ/GEMINI_API_KEY"
+    assert route.required_env == ("GEMINI_API_KEY",)
+
+
+def test_native_bare_gemini_route_honors_provider_base_url():
+    """A bare gemini model id (no prefix) also picks up the base URL and keeps
+    the ``gemini/`` GenerateContent upstream."""
+    base = "https://gateway.example.test/v1beta"
+    route = resolve_litellm_route(
+        "gemini-2.5-flash",
+        {"GEMINI_API_KEY": "key", "BENCHFLOW_PROVIDER_BASE_URL": base},
+    )
+
+    assert route.upstream_model == "gemini/gemini-2.5-flash"
+    assert route.litellm_params["api_base"] == base
+
+
+def test_native_gemini_route_without_base_url_is_unchanged():
+    """Without BENCHFLOW_PROVIDER_BASE_URL the gemini route sets no api_base —
+    the baseline behavior must be preserved exactly."""
+    route = resolve_litellm_route(
+        "gemini/gemini-2.5-flash",
+        {"GEMINI_API_KEY": "key"},
+    )
+
+    assert route.provider_name == "native"
+    assert route.upstream_model == "gemini/gemini-2.5-flash"
+    assert "api_base" not in route.litellm_params
+    assert route.litellm_params == {
+        "model": "gemini/gemini-2.5-flash",
+        "api_key": "os.environ/GEMINI_API_KEY",
+    }
+
+
+def test_native_non_gemini_route_ignores_provider_base_url():
+    """The gemini base-URL override must not leak into non-gemini native routes
+    (e.g. a bare anthropic claude id)."""
+    route = resolve_litellm_route(
+        "claude-sonnet-4-6",
+        {"ANTHROPIC_API_KEY": "key", "BENCHFLOW_PROVIDER_BASE_URL": "https://x.test"},
+    )
+
+    assert route.upstream_model == "anthropic/claude-sonnet-4-6"
+    assert "api_base" not in route.litellm_params
+
+
+def test_google_ai_studio_provider_routes_openai_compatible_with_base_url():
+    """The google-ai-studio provider targets an OpenAI-compatible Gemini proxy:
+    ``openai/`` upstream + api_base + GEMINI_API_KEY auth (vllm parity)."""
+    base = "https://gateway.example.test/v1beta/openai"
+    route = resolve_litellm_route(
+        "google-ai-studio/gemini-3.1-flash-lite",
+        {"GEMINI_API_KEY": "key", "BENCHFLOW_PROVIDER_BASE_URL": base},
+    )
+
+    assert route.provider_name == "google-ai-studio"
+    assert route.upstream_model == "openai/gemini-3.1-flash-lite"
+    assert route.litellm_params["api_base"] == base
+    assert route.litellm_params["api_key"] == "os.environ/GEMINI_API_KEY"
+    assert route.required_env == ("GEMINI_API_KEY",)
+
+
+def test_google_ai_studio_matches_vllm_base_url_shape():
+    """google-ai-studio and vllm produce the same param shape (openai/ upstream
+    + api_base) for a runtime-supplied base URL — they differ only in auth env."""
+    base = "https://gateway.example.test/v1"
+    gemini = resolve_litellm_route(
+        "google-ai-studio/m",
+        {"GEMINI_API_KEY": "k", "BENCHFLOW_PROVIDER_BASE_URL": base},
+    )
+    vllm = resolve_litellm_route(
+        "vllm/m",
+        {"OPENAI_API_KEY": "k", "BENCHFLOW_PROVIDER_BASE_URL": base},
+    )
+
+    assert gemini.litellm_params["api_base"] == vllm.litellm_params["api_base"]
+    assert gemini.litellm_params["model"] == vllm.litellm_params["model"]
+    assert gemini.litellm_params["api_key"] == "os.environ/GEMINI_API_KEY"
+    assert vllm.litellm_params["api_key"] == "os.environ/OPENAI_API_KEY"
+
+
 def test_proxy_config_registers_plain_and_openai_aliases():
     route = resolve_litellm_route(
         "aws-bedrock/us.anthropic.claude-opus-4-8",

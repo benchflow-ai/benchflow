@@ -353,3 +353,47 @@ async def test_legacy_verifier_does_not_alias_tests_mount(tmp_path):
 
     assert result.rewards == {"reward": 1.0}
     assert not [c for c in calls if "ln -s" in c["command"]]
+
+
+@pytest.mark.asyncio
+async def test_verify_test_script_runs_main_service_from_workspace(tmp_path):
+    """Guards the 0.7 Cua fix after 5f6ca8b3: verifier cwd must match workspace."""
+    rollout_paths = RolloutPaths(tmp_path / "rollout")
+    rollout_paths.mkdir()
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    test_path = tests_dir / "test.sh"
+    test_path.write_text("#!/bin/sh\nexit 0\n")
+
+    task = MagicMock()
+    task.config.verifier.type = "test-script"
+    task.config.verifier.service = "main"
+    task.config.verifier.user = "root"
+    task.config.verifier.env = None
+    task.config.verifier.timeout_sec = 60
+    task.paths.tests_dir = tests_dir
+    task.paths.test_path = test_path
+
+    sandbox = MagicMock()
+    sandbox.is_mounted = True
+    sandbox.upload_dir = AsyncMock()
+
+    async def fake_exec(*args, **kwargs):
+        command = args[0] if args else kwargs.get("command", "")
+        if "chmod" not in command:
+            rollout_paths.reward_text_path.write_text("1")
+        return MagicMock(exit_code=0, returncode=0)
+
+    sandbox.exec = AsyncMock(side_effect=fake_exec)
+    verifier = Verifier(
+        task=task,
+        rollout_paths=rollout_paths,
+        sandbox=sandbox,
+        workspace="/app",
+    )
+
+    result = await verifier._verify_test_script()
+
+    assert result.rewards == {"reward": 1.0}
+    test_exec = sandbox.exec.await_args_list[-1]
+    assert test_exec.kwargs["cwd"] == "/app"

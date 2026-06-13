@@ -19,6 +19,7 @@ import pytest
 from benchflow.sandbox.daytona import (
     _is_benchflow_label_orphan,
     _is_benchflow_owned,
+    reap_leaked_snapshots,
     reap_stale_sandboxes,
 )
 
@@ -498,3 +499,67 @@ class TestEvaluationAutoReapGate:
         monkeypatch.setenv("BENCHFLOW_DAYTONA_AUTO_REAP", value)
         self._eval(tmp_path, "daytona")._maybe_start_daytona_reap()
         assert started == ["daytona-auto-reap"], f"{value!r} should keep reaper on"
+
+
+class _SnapPage:
+    """One page of the SDK's ``snapshot.list`` (mirrors PaginatedSnapshots)."""
+
+    def __init__(self, items, page, total_pages):
+        self.items = items
+        self.total = sum(len(p) for p in (items,))
+        self.page = page
+        self.total_pages = total_pages
+
+
+class FakeSnapshotClient:
+    """Sync client exposing a paginated ``.snapshot`` service for the reaper."""
+
+    def __init__(self, pages, fail_names=()):
+        # ``pages`` is a list of lists of snapshot names.
+        self._pages = pages
+        self._fail = set(fail_names)
+        self.deleted: list[str] = []
+        total = sum(len(p) for p in pages)
+        outer = self
+
+        class _Service:
+            def list(self, page=None, limit=None):
+                idx = (page or 1) - 1
+                names = outer._pages[idx] if 0 <= idx < len(outer._pages) else []
+                items = [
+                    SimpleNamespace(name=n, id=f"id-{n}", state="active") for n in names
+                ]
+                return _SnapPage(items, page or 1, len(outer._pages))
+
+            def delete(self, snap):
+                if snap.name in outer._fail:
+                    raise RuntimeError("api 500")
+                outer.deleted.append(snap.name)
+
+        self.snapshot = _Service()
+        self._total = total
+
+
+class TestReapLeakedSnapshots:
+    def test_paginates_across_pages(self):
+        client = FakeSnapshotClient(
+            [["bf-snap-a", "foreign-1"], ["bf-snap-b", "bf-snap-c"]]
+        )
+        counts = reap_leaked_snapshots(client)
+        assert sorted(client.deleted) == ["bf-snap-a", "bf-snap-b", "bf-snap-c"]
+        assert counts == {"found": 4, "deleted": 3, "skipped": 1, "failed": 0}
+
+    def test_failed_delete_counted(self):
+        client = FakeSnapshotClient(
+            [["bf-snap-ok", "bf-snap-bad"]], fail_names=["bf-snap-bad"]
+        )
+        counts = reap_leaked_snapshots(client)
+        assert client.deleted == ["bf-snap-ok"]
+        assert counts["deleted"] == 1
+        assert counts["failed"] == 1
+
+    def test_never_touches_foreign_snapshots(self):
+        client = FakeSnapshotClient([["prod-db", "user-checkpoint", "snapshot-1"]])
+        counts = reap_leaked_snapshots(client)
+        assert client.deleted == []
+        assert counts == {"found": 3, "deleted": 0, "skipped": 3, "failed": 0}

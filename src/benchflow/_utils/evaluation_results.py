@@ -205,7 +205,7 @@ def loop_summary(results: dict[str, dict]) -> dict[str, Any]:
 
 
 def trajectory_step_summary(results: dict[str, dict]) -> dict[str, Any]:
-    """Aggregate Harbor-style trajectory step counts for summary.json."""
+    """Aggregate trajectory step counts for summary.json."""
     summaries: list[dict[str, Any]] = []
     for result in results.values():
         summary = result.get("trajectory_summary")

@@ -1,4 +1,4 @@
-"""Native DaytonaSandbox — internalized from Harbor with RL-first terminology.
+"""Native DaytonaSandbox with RL-first terminology.
 
 Supports two strategies:
 - Direct: single-container sandbox (Dockerfile only)
@@ -73,10 +73,11 @@ from benchflow.sandbox.daytona_reaper import (
     _benchflow_owned_labels,  # noqa: F401
     _is_benchflow_label_orphan,  # noqa: F401
     _is_benchflow_owned,  # noqa: F401
+    reap_leaked_snapshots,  # noqa: F401
     reap_stale_sandboxes,  # noqa: F401
 )
 from benchflow.sandbox.daytona_strategies import _DaytonaDirect, _DaytonaStrategy
-from benchflow.sandbox.metadata import persist_sandbox_info
+from benchflow.sandbox.metadata import persist_sandbox_info, record_snapshot_leak
 from benchflow.sandbox.protocol import (
     SandboxImage,
     SandboxStartupError,
@@ -870,3 +871,14 @@ class DaytonaSandbox(BaseSandbox):
 
     async def restore(self, image: SandboxImage) -> None:
         return await self._strategy.restore(image)
+
+    def record_snapshot_leak(self, snapshot_names: list[str]) -> None:
+        """Record snapshots that could not be deleted on teardown.
+
+        Called by the strategy when ``snapshot.delete`` fails: the cloud
+        snapshot is a real cost/quota leak we can't reclaim here, so persist its
+        name for a post-mortem reaper / operator (see ``record_snapshot_leak``
+        in :mod:`benchflow.sandbox.metadata`).
+        """
+        rollout_dir = self.rollout_paths.rollout_dir if self.rollout_paths else None
+        record_snapshot_leak(snapshot_names, type(self).__name__, rollout_dir)

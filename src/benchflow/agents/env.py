@@ -383,7 +383,7 @@ def uses_native_subscription_auth(
 ) -> bool:
     """Return True when an agent should use CLI/subscription auth directly.
 
-    This is the Harbor-style split point: API-key runs can be routed through
+    This is the auth split point: API-key runs can be routed through
     LiteLLM, while subscription-auth runs stay on the native Codex/Claude ACP
     path and report usage from the agent protocol response.
     """

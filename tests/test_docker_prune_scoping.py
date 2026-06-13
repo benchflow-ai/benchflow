@@ -8,6 +8,7 @@ base compose file applies to every container/network we create.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,22 @@ from benchflow.evaluation import (
     Evaluation,
     EvaluationConfig,
 )
+
+
+def _fake_run_factory(image_ls_stdout: str = ""):
+    """Return a ``subprocess.run`` stub: image-ls yields *image_ls_stdout*.
+
+    Every other docker call returns an empty-stdout success so the prune
+    helper's parsing stays deterministic under mocking.
+    """
+
+    def _fake_run(cmd, *args, **kwargs):
+        stdout = ""
+        if cmd[:3] == ["docker", "image", "ls"]:
+            stdout = image_ls_stdout
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    return _fake_run
 
 
 @pytest.fixture
@@ -61,11 +78,11 @@ class TestPruneScopedToLabel:
         assert BENCHFLOW_OWNED_LABEL == "benchflow.owned=true"
 
     def test_container_prune_uses_label_filter(self, docker_eval):
-        with patch("benchflow.evaluation.subprocess.run") as mock_run:
+        with patch(
+            "benchflow.evaluation.subprocess.run", side_effect=_fake_run_factory()
+        ) as mock_run:
             docker_eval._prune_docker()
 
-        # Two calls: container prune, then network prune.
-        assert mock_run.call_count == 2
         container_cmd = mock_run.call_args_list[0].args[0]
         assert container_cmd[:3] == ["docker", "container", "prune"]
         assert "--filter" in container_cmd
@@ -73,7 +90,9 @@ class TestPruneScopedToLabel:
         assert container_cmd[idx + 1] == f"label={BENCHFLOW_OWNED_LABEL}"
 
     def test_network_prune_uses_label_filter(self, docker_eval):
-        with patch("benchflow.evaluation.subprocess.run") as mock_run:
+        with patch(
+            "benchflow.evaluation.subprocess.run", side_effect=_fake_run_factory()
+        ) as mock_run:
             docker_eval._prune_docker()
 
         network_cmd = mock_run.call_args_list[1].args[0]
@@ -82,21 +101,64 @@ class TestPruneScopedToLabel:
         idx = network_cmd.index("--filter")
         assert network_cmd[idx + 1] == f"label={BENCHFLOW_OWNED_LABEL}"
 
-    def test_no_unfiltered_prune_call_anywhere(self, docker_eval):
-        """Regression guard: no prune call may omit --filter.
+    def test_image_pass_lists_by_label_then_removes_owned_ids(self, docker_eval):
+        """Snapshot-image leak fix: list owned images by label, rm by id.
 
-        If someone re-introduces a global ``docker container prune -f`` or
-        ``docker network prune -f`` here, this test fails.
+        ``image prune`` only reaps *dangling* images; tagged ``bf-snap-*``
+        images survive. The reaper lists owned image ids via the label filter
+        and removes exactly those — never an unscoped ``image rm``/``prune``.
         """
-        with patch("benchflow.evaluation.subprocess.run") as mock_run:
+        with patch(
+            "benchflow.evaluation.subprocess.run",
+            side_effect=_fake_run_factory("img-aaa\nimg-bbb\n"),
+        ) as mock_run:
+            docker_eval._prune_docker()
+
+        cmds = [c.args[0] for c in mock_run.call_args_list]
+        ls_cmd = next(c for c in cmds if c[:3] == ["docker", "image", "ls"])
+        assert "--filter" in ls_cmd
+        idx = ls_cmd.index("--filter")
+        assert ls_cmd[idx + 1] == f"label={BENCHFLOW_OWNED_LABEL}"
+        assert "-q" in ls_cmd
+
+        rm_cmd = next(c for c in cmds if c[:3] == ["docker", "image", "rm"])
+        # Removes exactly the ids the label-scoped list returned.
+        assert "img-aaa" in rm_cmd
+        assert "img-bbb" in rm_cmd
+
+    def test_image_rm_skipped_when_no_owned_images(self, docker_eval):
+        """No owned images => no ``image rm`` shellout at all."""
+        with patch(
+            "benchflow.evaluation.subprocess.run", side_effect=_fake_run_factory("")
+        ) as mock_run:
+            docker_eval._prune_docker()
+
+        cmds = [c.args[0] for c in mock_run.call_args_list]
+        assert not any(c[:3] == ["docker", "image", "rm"] for c in cmds)
+
+    def test_no_unscoped_removal_call_anywhere(self, docker_eval):
+        """Regression guard: every removal call is scoped to the owned label.
+
+        ``prune``/``rm`` of containers, networks, and images must either carry
+        the ``--filter label=...`` argument or operate only on ids that came
+        from a label-scoped listing (``image rm`` of ids from ``image ls
+        --filter``). A re-introduced global prune fails this test.
+        """
+        with patch(
+            "benchflow.evaluation.subprocess.run",
+            side_effect=_fake_run_factory("img-aaa\n"),
+        ) as mock_run:
             docker_eval._prune_docker()
 
         for call in mock_run.call_args_list:
             cmd = call.args[0]
-            # Every prune invocation must carry a --filter argument.
-            assert "prune" in cmd, f"Unexpected non-prune call: {cmd}"
+            if cmd[:3] == ["docker", "image", "rm"]:
+                # rm operates on ids from the label-scoped image ls above —
+                # it must never be a wildcard/prune-style call.
+                assert "img-aaa" in cmd
+                continue
             assert "--filter" in cmd, (
-                f"Unscoped Docker prune would delete unrelated resources: {cmd}"
+                f"Unscoped Docker call would touch unrelated resources: {cmd}"
             )
 
     def test_skipped_for_non_docker_environment(self, non_docker_eval):

@@ -1,0 +1,23 @@
+version = "1.0"
+
+[task]
+name = "osworld/ubuntu-smoke"
+description = "OSWorld Ubuntu smoke task"
+keywords = ["osworld", "ubuntu", "smoke"]
+
+[metadata]
+author_name = "Use.Computer"
+difficulty = "smoke"
+category = "desktop-automation"
+tags = ["osworld", "ubuntu", "gui", "smoke"]
+
+[verifier]
+timeout_sec = 180
+
+[agent]
+timeout_sec = 180
+
+[environment]
+cpus = 4
+memory_mb = 8192
+allow_internet = true

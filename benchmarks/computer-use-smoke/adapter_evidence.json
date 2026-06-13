@@ -1,0 +1,99 @@
+{
+  "schema": "benchflow.environment-adapter-evidence.v1",
+  "benchmark": "computer-use-smoke",
+  "status": "parity-confirmed",
+  "evidence_kind": "adapter-adoption-loop",
+  "updated_at": "2026-06-12",
+  "source": {
+    "type": "checked-in-fixture",
+    "task_shape": "computer-use desktop file roundtrip"
+  },
+  "slices": [
+    {
+      "id": "desktop-file-roundtrip",
+      "task_id": "desktop-file-roundtrip",
+      "agent_adapter": "computer-use-smoke",
+      "sandbox_provider": "cua",
+      "sandbox_provider_mode": "local",
+      "environment_adapter": "desktop",
+      "benchmark_adapter": "computer-use",
+      "original_runner": {
+        "framework": "cua-sdk-original",
+        "score": 1.0,
+        "trace_steps_min": 2
+      },
+      "benchflow_run": {
+        "reward": 1.0,
+        "trajectory_steps_min": 5,
+        "tool_calls_min": 3,
+        "artifact_steps_min": 3,
+        "screenshots_min": 1,
+        "eval_json": true
+      },
+      "parity": {
+        "criteria_compared": 7,
+        "criteria_agreed": 7,
+        "reward_delta_max": 0.0,
+        "artifact_manifest": true,
+        "eval_run_summary": true,
+        "adoption_report": true,
+        "loop_state": true,
+        "runtime_trace_schema": true
+      },
+      "provider_probe": {
+        "shell": true,
+        "file_transfer": true,
+        "dimensions": true,
+        "screenshot": true,
+        "cleanup": true,
+        "display_url": "unsupported-on-local-cua"
+      },
+      "cleanup": {
+        "cua_containers": 0
+      },
+      "commands": [
+        "BENCHFLOW_CUA_LOCAL=1 BENCHFLOW_CUA_LINUX_KIND=container uv run python benchmarks/computer-use-smoke/parity_test.py --parity-out <evidence-root>/computer-use-smoke/parity_experiment.json",
+        "uv run bench agent verify computer-use-smoke --benchmarks-dir <evidence-root> --json",
+        "BENCHFLOW_CUA_LOCAL=1 BENCHFLOW_CUA_LINUX_KIND=container uv run bench environment check benchmarks/computer-use-smoke/tasks/desktop-file-roundtrip --sandbox cua --probe-runtime --json"
+      ]
+    }
+  ],
+  "cloud_failure_probe": {
+    "status": "not-ready",
+    "failure_class": "cloud-computer-server-cmd-404",
+    "sdk": {
+      "package": "cua-sandbox",
+      "version": "0.1.16"
+    },
+    "request": {
+      "local": false,
+      "region": "us-east-1",
+      "linux_kind": "vm",
+      "linux_distro": "ubuntu",
+      "linux_version": "24.04",
+      "named_create": false,
+      "time_to_start_sec": "10",
+      "request_timeout_sec": "5"
+    },
+    "failed_capabilities": [
+      "startup",
+      "shell",
+      "file_transfer",
+      "dimensions",
+      "screenshot"
+    ],
+    "cleanup": {
+      "cloud_vms": 0
+    },
+    "commands": [
+      "BENCHFLOW_CUA_TIME_TO_START_SEC=10 BENCHFLOW_CUA_REQUEST_TIMEOUT_SEC=5 uv run bench environment check benchmarks/use-computer-cookbook-smoke/tasks/osworld-ubuntu-smoke --sandbox cua --probe-runtime --json",
+      "uv run bench environment list --sandbox cua --json",
+      "uv run bench environment cleanup --sandbox cua --dry-run --json"
+    ]
+  },
+  "gaps": [
+    "computer-use-smoke is a fixture ACP shim, not a full CUA model loop",
+    "Cua cloud command endpoint readiness is not healthy evidence yet; current failure_class is cloud-computer-server-cmd-404",
+    "Cua cloud can prove cleanup/list zero after the not-ready probe, but cannot yet prove shell/file/screenshot runtime readiness"
+  ]
+}

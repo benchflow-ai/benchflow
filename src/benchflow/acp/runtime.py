@@ -460,6 +460,8 @@ async def connect_acp(
         try:
             if environment == "docker":
                 live_proc = DockerProcess.from_sandbox_env(env)
+            elif environment == "cua":
+                live_proc = env.process
             else:
                 is_dind = hasattr(env, "_strategy") and hasattr(
                     env._strategy, "_compose_cmd"

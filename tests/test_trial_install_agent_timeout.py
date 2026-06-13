@@ -145,6 +145,39 @@ async def test_install_agent_honors_skip_agent_install(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_oracle_install_leaves_solution_unlocked_for_reference_solve(
+    tmp_path, monkeypatch
+):
+    """Guards the 0.7 Cua fix after 5f6ca8b3 against locking oracle solve inputs."""
+    trial = _make_trial(tmp_path, agent="oracle", sandbox_setup_timeout=41)
+    trial._effective_locked = [
+        "/oracle",
+        "/solution",
+        "/verifier",
+        "/tests",
+        "/testbed_verify",
+    ]
+
+    lockdown_paths_mock = AsyncMock()
+    monkeypatch.setattr(trial._planes, "snapshot_build_config", AsyncMock())
+    monkeypatch.setattr(trial._planes, "seed_verifier_workspace", AsyncMock())
+    monkeypatch.setattr(trial._planes, "deploy_skills", AsyncMock())
+    monkeypatch.setattr(trial._planes, "lockdown_paths", lockdown_paths_mock)
+    monkeypatch.setattr(
+        trial._planes, "setup_sandbox_user", AsyncMock(return_value="/workspace")
+    )
+
+    await trial.install_agent()
+
+    lockdown_paths_mock.assert_awaited_once()
+    assert lockdown_paths_mock.await_args.args[1] == [
+        "/verifier",
+        "/tests",
+        "/testbed_verify",
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("agent", ["claude-agent-acp", "oracle"])
 async def test_install_agent_passes_effective_task_path_to_deploy_skills(
     tmp_path, monkeypatch, agent
@@ -275,6 +308,7 @@ async def test_recorded_install_timeout_equals_enforced_timeout(tmp_path):
     await install_agent(env, "openhands", tmp_path / "rollout", 120)
 
     enforced = env.exec.await_args_list[0].kwargs["timeout_sec"]
+    assert env.exec.await_args_list[0].kwargs["user"] == "root"
     assert config["agent_install_timeout"] == enforced
     assert enforced == AGENTS["openhands"].install_timeout
     assert config["agent_install_timeout"] != config["sandbox_setup_timeout"]
@@ -328,6 +362,7 @@ async def test_install_timeout_falls_back_to_config_without_registry_entry(
     await install_agent(env, "fake-agent", tmp_path, 41)
 
     assert env.exec.await_args_list[0].kwargs["timeout_sec"] == 41
+    assert env.exec.await_args_list[0].kwargs["user"] == "root"
     assert effective_install_timeout("fake-agent", 41) == 41
 
 
