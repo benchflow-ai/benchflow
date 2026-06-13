@@ -43,6 +43,7 @@ import logging
 import shlex
 import shutil
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -104,6 +105,12 @@ from benchflow.rollout._results import _write_config as _write_config
 from benchflow.rollout._results import _write_rewards_jsonl as _write_rewards_jsonl
 from benchflow.rollout._results import (
     _write_trainer_artifact as _write_trainer_artifact,
+)
+from benchflow.rollout._session_factory import (
+    connect_session_factory as _connect_session_factory,
+)
+from benchflow.rollout._session_factory import (
+    is_session_factory_agent as _is_session_factory_agent,
 )
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
@@ -311,6 +318,12 @@ class Rollout:
 
         # Populated by connect()
         self._acp_client: Any = None
+        # Transport discriminator set at connect: True when the agent rides the
+        # non-ACP session-factory path, False for ACP. Distinct from
+        # ``_acp_client is None`` (which also means "not connected / torn down"),
+        # so the shared post-connect methods branch on intent, not on a value
+        # that doubles as connectedness.
+        self._is_session_path: bool = False
         self._session: Any = None
         # ``_session_adapter`` carries the Agent-plane :class:`Session` contract
         # over the live ACP client (architecture.md, "The four contracts").
@@ -772,23 +785,24 @@ class Rollout:
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
         )
-        (
-            self._acp_client,
-            self._session,
-            self._session_adapter,
-            self._agent_name,
-        ) = await self._planes.connect_acp(
-            env=self._env,
-            agent=cfg.primary_agent,
-            agent_launch=self._agent_launch,
+        await self._open_session(
+            self._agent_cfg,
+            role="primary",
             agent_env=self._agent_env,
-            sandbox_user=cfg.sandbox_user,
-            model=cfg.primary_model,
-            rollout_dir=rollout_dir,
-            environment=cfg.environment,
-            agent_cwd=self._agent_cwd,
-            reasoning_effort=cfg.primary_reasoning_effort,
-            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
+            name_fallback=cfg.primary_agent,
+            acp_connect=lambda: self._planes.connect_acp(
+                env=self._env,
+                agent=cfg.primary_agent,
+                agent_launch=self._agent_launch,
+                agent_env=self._agent_env,
+                sandbox_user=cfg.sandbox_user,
+                model=cfg.primary_model,
+                rollout_dir=rollout_dir,
+                environment=cfg.environment,
+                agent_cwd=self._agent_cwd,
+                reasoning_effort=cfg.primary_reasoning_effort,
+                mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
+            ),
         )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
@@ -798,6 +812,48 @@ class Rollout:
             self._timing["agent_setup"] = (datetime.now() - t0).total_seconds()
 
         self._phase = "connected"
+
+    async def _open_session(
+        self,
+        agent_cfg: Any,
+        *,
+        role: str,
+        agent_env: dict[str, str],
+        name_fallback: str,
+        acp_connect: Callable[[], Awaitable[tuple[Any, Any, Any, str]]],
+    ) -> None:
+        """Open the agent session — non-ACP session-factory or ACP — in one place.
+
+        The single CONNECT dispatch shared by the primary connect and the
+        role-swap reconnect. When ``agent_cfg`` declares
+        ``protocol == "session-factory"`` it instantiates the registered Python
+        Session factory (``_acp_client`` stays ``None``; the returned object is
+        both ``_session`` and ``_session_adapter``); otherwise it awaits
+        ``acp_connect()`` — a thunk the caller builds with its role-specific
+        ``connect_acp`` arguments — and unpacks the standard 4-tuple. Sets
+        ``_is_session_path`` so the post-connect methods branch on intent rather
+        than on the overloaded ``_acp_client is None``. ACP stays the default.
+        """
+        if _is_session_factory_agent(agent_cfg):
+            self._is_session_path = True
+            self._acp_client = None
+            session = await _connect_session_factory(
+                agent_cfg,
+                sandbox=self._env,
+                role=role,
+                agent_env=agent_env,
+            )
+            self._session = session
+            self._session_adapter = session
+            self._agent_name = getattr(agent_cfg, "name", name_fallback)
+        else:
+            self._is_session_path = False
+            (
+                self._acp_client,
+                self._session,
+                self._session_adapter,
+                self._agent_name,
+            ) = await acp_connect()
 
     def _attach_trajectory_writer(self, rollout_dir: Path) -> None:
         """Wire the current session's ``on_change`` to stream cumulative
@@ -812,19 +868,47 @@ class Rollout:
             return
         prior: list[dict] = getattr(self, "_trajectory", []) or []
         traj_path = rollout_dir / "trajectory" / "acp_trajectory.jsonl"
-        self._session.on_change = make_trajectory_sink(
-            TrajectoryWriter(traj_path), prior
-        )
+        writer = TrajectoryWriter(traj_path)
+        if self._is_session_path:
+            # Non-ACP session: it already exposes trajectory events in the
+            # canonical on-disk shape via ``steps``. Wire a session-native
+            # sink instead of ``make_trajectory_sink`` (which reads
+            # ACPSession's private event log). The sink prepends prior scenes'
+            # events, mirroring the ACP path.
+            prior_snapshot = list(prior)
+
+            def _sink(session: Any) -> None:
+                writer.write_events(prior_snapshot + list(session.steps))
+
+            self._session.on_change = _sink
+            return
+        self._session.on_change = make_trajectory_sink(writer, prior)
 
     async def disconnect(self) -> None:
         """Close the ACP client and clean up agent process, keeping the environment alive."""
         self._capture_partial_acp_trajectory()
-        if self._acp_client:
+        # Defensive ``getattr`` mirrors the rest of this file (e.g.
+        # ``_capture_partial_acp_trajectory``): some rollout tests build the
+        # object via ``__new__`` and only set the attributes their scenario
+        # exercises, so the non-ACP branch must tolerate a missing ``_session``.
+        if getattr(self, "_acp_client", None):
             try:
                 await self._acp_client.close()
             except Exception as e:
                 logger.warning(f"ACP client close failed: {e}")
             self._acp_client = None
+            self._session = None
+            self._session_adapter = None
+        elif getattr(self, "_session", None) is not None:
+            # Non-ACP session: capture its final trajectory tail, then close it
+            # (tears down the SDK client + any session-owned LocalServer).
+            self._capture_partial_session_trajectory()
+            close = getattr(self._session, "close", None)
+            if callable(close):
+                try:
+                    await close()
+                except Exception as e:
+                    logger.warning(f"Session close failed: {e}")
             self._session = None
             self._session_adapter = None
         # Kill any lingering agent processes to prevent context bleed between scenes
@@ -913,14 +997,40 @@ class Rollout:
         self.on_ask_user(_deny_without_human)
         return True
 
-    def _capture_partial_acp_trajectory(self) -> None:
-        """Append the live session's uncaptured tail to ``self._trajectory``.
+    def _commit_partial_capture(
+        self, captured: list[dict], n_tools: int, *, acp: bool
+    ) -> None:
+        """Append a captured trajectory tail to rollout state (the shared core).
 
-        Runs on the disconnect / cleanup path when ``execute_prompts`` may
-        have raised before the normal extend in :meth:`execute`. Uses
-        ``_session_traj_count`` as the pointer to events already extended
-        from this session so a partial scene's events are preserved on top
-        of any prior scenes' (already-captured) events — see PR #566 review.
+        Both partial-capture paths (ACP and non-ACP session) funnel here. Uses
+        ``_session_traj_count`` as the pointer to events already extended from
+        this session, so a partial scene's events land on top of prior scenes'
+        (already-captured) events — see PR #566 review. A clean wall-clock
+        terminal timeout (#640) keeps the captured tail whole (leaves
+        ``_partial_trajectory`` False); this is now honoured on both transports.
+        ``acp`` only selects the ``trajectory_source`` label.
+        """
+        delta = captured[getattr(self, "_session_traj_count", 0) :]
+        if not delta:
+            return
+        self._trajectory.extend(delta)
+        self._session_traj_count = len(captured)
+        if getattr(self, "_terminal_timeout", False):
+            self._trajectory_source = "acp" if acp else "session"
+        else:
+            self._partial_trajectory = True
+            self._trajectory_source = "partial_acp" if acp else "partial_session"
+        prior_session_tools = getattr(self, "_session_tool_count", 0)
+        new_tools = n_tools - prior_session_tools
+        if new_tools > 0:
+            self._n_tool_calls += new_tools
+        self._session_tool_count = n_tools
+
+    def _capture_partial_acp_trajectory(self) -> None:
+        """Append the live ACP session's uncaptured tail to ``self._trajectory``.
+
+        Runs on the disconnect / cleanup path when ``execute_prompts`` may have
+        raised before the normal extend in :meth:`execute`.
         """
         # Defensive lookup tolerates bare ``object()`` stubs used by older
         # rollout tests that pre-date the live-session partial-capture path.
@@ -934,23 +1044,22 @@ class Rollout:
         except Exception as e:
             logger.warning(f"Partial trajectory capture failed: {e}")
             return
-        delta = captured[getattr(self, "_session_traj_count", 0) :]
-        if not delta:
+        self._commit_partial_capture(captured, len(session.tool_calls), acp=True)
+
+    def _capture_partial_session_trajectory(self) -> None:
+        """Non-ACP analogue of :meth:`_capture_partial_acp_trajectory`.
+
+        Appends the non-ACP session's uncaptured trajectory tail (its ``steps``)
+        on the cleanup path, so a turn that raised mid-``prompt`` still preserves
+        what the agent produced.
+        """
+        session = self._session
+        steps = getattr(session, "steps", None) if session is not None else None
+        if steps is None:
             return
-        self._trajectory.extend(delta)
-        self._session_traj_count = len(captured)
-        if getattr(self, "_terminal_timeout", False):
-            # Clean wall-clock terminal timeout (#640): the captured tail is the
-            # complete trajectory, so leave _partial_trajectory False.
-            self._trajectory_source = "acp"
-        else:
-            self._partial_trajectory = True
-            self._trajectory_source = "partial_acp"
-        prior_session_tools = getattr(self, "_session_tool_count", 0)
-        new_tools = len(session.tool_calls) - prior_session_tools
-        if new_tools > 0:
-            self._n_tool_calls += new_tools
-        self._session_tool_count = len(session.tool_calls)
+        captured = list(steps)
+        n_tools = sum(1 for e in captured if e.get("type") == "tool_call")
+        self._commit_partial_capture(captured, n_tools, acp=False)
 
     # Phase 3c: EXECUTE
 
@@ -970,7 +1079,11 @@ class Rollout:
         continuation Step lands on the child node itself.
         """
         effective_prompts = prompts or self._resolved_prompts
-        if self._acp_client is None:
+        # Connected means either an ACP client (ACP path) or a non-ACP Session
+        # (session-factory path). The ACP path keys off ``_acp_client`` as
+        # before; the non-ACP path has ``_acp_client is None`` and a live
+        # ``_session``.
+        if self._acp_client is None and self._session is None:
             raise RuntimeError("Rollout.connect() must run before execute()")
         prev_session_tools = self._session_tool_count
         t0 = datetime.now()
@@ -987,13 +1100,23 @@ class Rollout:
         )
 
         try:
-            trajectory, n_tool_calls = await self._planes.execute_prompts(
-                self._acp_client,
-                self._session,
-                effective_prompts,
-                timeout,
-                idle_timeout=idle_timeout,
-            )
+            if self._is_session_path:
+                # Non-ACP session: drive the Session Protocol directly.
+                # ``_execute_session_prompts`` consumes the agent's stream,
+                # appends trajectory events to the session (firing ``on_change``
+                # → the disk writer), and returns the cumulative trajectory +
+                # tool-call count (the number of ``tool_call`` events).
+                trajectory, n_tool_calls = await self._execute_session_prompts(
+                    effective_prompts, timeout
+                )
+            else:
+                trajectory, n_tool_calls = await self._planes.execute_prompts(
+                    self._acp_client,
+                    self._session,
+                    effective_prompts,
+                    timeout,
+                    idle_timeout=idle_timeout,
+                )
         except AgentPromptTimeoutError as e:
             self._diagnostics.set(e.diagnostic)
             self._commit_acp_execution(
@@ -1028,7 +1151,8 @@ class Rollout:
         node: RolloutNode | None,
         partial_trajectory: bool = False,
     ) -> None:
-        """Commit a finalized ACP snapshot into rollout state."""
+        """Commit a finalized execution snapshot into rollout state (ACP or
+        non-ACP session)."""
 
         # trajectory and n_tool_calls are cumulative for this session.
         # Compute the delta since last execute() on this session.
@@ -1040,11 +1164,16 @@ class Rollout:
         self._trajectory.extend(new_events)
         self._n_tool_calls += new_tools
         self._executed_prompts.extend(effective_prompts)
+        # getattr-default tolerates the partial Rollout doubles some tests build
+        # via __new__ (which never ran __init__); a real connect always sets it.
+        is_session_path = getattr(self, "_is_session_path", False)
         if partial_trajectory:
             self._partial_trajectory = True
-            self._trajectory_source = "partial_acp"
+            self._trajectory_source = (
+                "partial_session" if is_session_path else "partial_acp"
+            )
         elif not self._partial_trajectory:
-            self._trajectory_source = "acp"
+            self._trajectory_source = "session" if is_session_path else "acp"
         self._collect_native_acp_usage()
 
         # Grow the tree at Step-level granularity — one Step per ACP event
@@ -1076,6 +1205,31 @@ class Rollout:
         )
 
         self._phase = "executed"
+
+    async def _execute_session_prompts(
+        self, prompts: list[str], timeout: int
+    ) -> tuple[list[dict], int]:
+        """Drive a non-ACP :class:`Session` and return (cumulative_traj, n_tools).
+
+        The ACP analogue is :func:`benchflow.acp.runtime.execute_prompts`. Each
+        prompt is sent through the Session Protocol's ``prompt`` under a
+        wall-clock ``timeout``; the session accumulates trajectory events
+        (firing ``on_change`` → disk). The cumulative trajectory is the
+        session's ``steps``; tool-call count is the number of tool_call events.
+        """
+        session = self._session
+        for i, prompt in enumerate(prompts):
+            logger.info(
+                f"Prompt {i + 1}/{len(prompts)}: "
+                f"{(prompt or '<instruction.md>')[:80]}..."
+            )
+            stop_reason = await asyncio.wait_for(
+                session.prompt(prompt), timeout=timeout
+            )
+            logger.info(f"  → {stop_reason}")
+        trajectory = list(session.steps)
+        n_tool_calls = sum(1 for e in trajectory if e.get("type") == "tool_call")
+        return trajectory, n_tool_calls
 
     def _collect_native_acp_usage(self) -> None:
         """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
@@ -1680,23 +1834,27 @@ class Rollout:
 
         self._agent_launch = agent_launch
 
-        (
-            self._acp_client,
-            self._session,
-            self._session_adapter,
-            self._agent_name,
-        ) = await self._planes.connect_acp(
-            env=self._env,
-            agent=role.agent,
-            agent_launch=agent_launch,
+        # Role-swap reconnect — same dispatch as the primary CONNECT.
+        # ``agent_cfg`` here is the role's config (from install_agent or the
+        # cached primary config).
+        await self._open_session(
+            agent_cfg,
+            role=role.name,
             agent_env=agent_env,
-            sandbox_user=cfg.sandbox_user,
-            model=role.model,
-            rollout_dir=rollout_dir,
-            environment=cfg.environment,
-            agent_cwd=self._agent_cwd,
-            reasoning_effort=role.reasoning_effort,
-            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
+            name_fallback=role.agent,
+            acp_connect=lambda: self._planes.connect_acp(
+                env=self._env,
+                agent=role.agent,
+                agent_launch=agent_launch,
+                agent_env=agent_env,
+                sandbox_user=cfg.sandbox_user,
+                model=role.model,
+                rollout_dir=rollout_dir,
+                environment=cfg.environment,
+                agent_cwd=self._agent_cwd,
+                reasoning_effort=role.reasoning_effort,
+                mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
+            ),
         )
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)

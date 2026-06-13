@@ -347,7 +347,14 @@ class AgentConfig:
     name: str
     install_cmd: str
     launch_cmd: str
-    protocol: str = "acp"  # "acp" or "cli"
+    protocol: str = "acp"  # "acp" | "cli" | "session-factory"
+    session_factory: str = ""
+    # Non-ACP only. When ``protocol == "session-factory"`` this is a dotted
+    # ``module:callable`` entrypoint (e.g. ``omnigent.agent:build_omnigent_agent``)
+    # that returns an object satisfying the Agent Protocol (connect/capabilities).
+    # The kernel's non-ACP CONNECT branch (rollout) instantiates it INSTEAD of
+    # connect_acp and wires the returned Session into the trajectory sink. Empty
+    # for ACP agents (the default path), so this is fully additive.
     requires_env: list[str] = field(default_factory=list)
     description: str = ""
     skill_paths: list[str] = field(default_factory=list)
@@ -1082,7 +1089,7 @@ AGENT_ALIASES: dict[str, str] = {
     "cua": "mini-computer-agent",
 }
 
-VALID_PROTOCOLS = {"acp", "acpx"}
+VALID_PROTOCOLS = {"acp", "acpx", "session-factory"}
 
 # ---------------------------------------------------------------------------
 # The ``acpx:`` runtime-key namespace
