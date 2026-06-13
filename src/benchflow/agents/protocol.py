@@ -20,6 +20,7 @@ adapter that makes ``ACPClient`` honour the ``Session`` contract.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -111,7 +112,27 @@ class Session(Protocol):
     turn, registers an ``on_ask_user`` handler for agent-initiated
     branches, and reads ``steps`` for the session's contribution to the
     trajectory.
+
+    Two hooks beyond the core verbs:
+
+    * ``on_change`` — an assignable callback the kernel sets
+      (``Rollout._attach_trajectory_writer``); invoked with the session after
+      every appended event so a writer can stream ``steps`` to disk. Set on
+      both the ACP and non-ACP sessions; ``None`` until the kernel wires it.
+    * ``close`` — an *optional* async teardown the kernel calls on disconnect
+      for non-ACP sessions (ACP sessions are torn down via the ACP client). It
+      is invoked duck-typed (``getattr`` + ``callable``), so a session that
+      owns no resources may simply omit it.
+
+    ``steps`` elements are trajectory-event dicts (``type`` ∈ ``user_message``
+    / ``agent_message`` / ``agent_thought`` / ``tool_call``), matching the
+    on-disk shape in :mod:`benchflow.trajectories._capture`.
     """
+
+    # Assignable streaming hook (see the class docstring). Declared here because
+    # the kernel sets it on every session it drives — part of the real contract,
+    # not an ACP-only detail.
+    on_change: Callable[[Session], None] | None
 
     async def prompt(self, text: str) -> StopReason:
         """Send the task instruction or a nudge; block until the turn ends.
