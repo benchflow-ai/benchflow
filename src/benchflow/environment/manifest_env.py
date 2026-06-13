@@ -109,8 +109,19 @@ class ManifestEnvironment:
                 if probe.return_code != 0:
                     continue  # binary missing or its package absent — skip
                 log = f"/tmp/benchflow-env-{svc.name}.log"
+                # Full fd detachment (#676). On Daytona, ``exec`` is a *session*
+                # command that only reports an exit code once nothing holds the
+                # session's streams. A backgrounded service that inherits the
+                # session's stdin/stdout/stderr keeps the call "running" until
+                # the hard timeout cap (#670), so a manifest eval wedges instead
+                # of starting. Redirect ALL THREE fds — ``</dev/null`` for stdin
+                # was the missing one; ``>log 2>&1`` only covered stdout/stderr —
+                # and ``nohup`` to detach from the session's SIGHUP. No
+                # ``disown``: it is a bash/zsh builtin and the Daytona DinD shell
+                # is ``sh``/dash. Docker is unaffected (``communicate()`` returns
+                # when the foreground shell exits), so this only bites on Daytona.
                 await self._sandbox.exec(
-                    f"{svc.command} > {log} 2>&1 &",
+                    f"nohup {svc.command} </dev/null >{shlex.quote(log)} 2>&1 &",
                     timeout_sec=15,
                 )
                 self._started.append(svc)
