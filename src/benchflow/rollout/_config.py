@@ -26,6 +26,11 @@ from benchflow._utils.config import (
 )
 from benchflow.contracts import BaseUser, RolloutPlanes
 from benchflow.environment.manifest import EnvironmentManifest
+from benchflow.loop_strategies import (
+    LoopStrategySpec,
+    build_loop_user,
+    parse_loop_strategy_spec,
+)
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -123,6 +128,18 @@ class RolloutConfig:
     user: BaseUser | None = None
     max_user_rounds: int = 5
     oracle_access: bool = False
+    # Harness-level loop strategy (``--loop-strategy``). Accepts a spec string
+    # ("verify-retry:k=3,feedback=names") or a parsed LoopStrategySpec;
+    # __post_init__ materializes it into user/max_user_rounds. Mutually
+    # exclusive with an explicit ``user``.
+    loop_strategy: LoopStrategySpec | str | None = None
+    # Whether a task.md-declared user may be adopted when neither an explicit
+    # ``user`` nor a loop strategy materializes one. ``None`` (default)
+    # derives the answer from scene authorship: programmatic scene callers
+    # opt out of document user loops. ``from_legacy`` passes True — its
+    # scenes come from the task document / flat args, not the caller, so the
+    # document user keeps engaging on that path.
+    allow_document_user: bool | None = None
 
     # Legacy compat fields — used by SDK.run() shim. Ignored when scenes is set.
     agent: str = "claude-agent-acp"
@@ -168,16 +185,22 @@ class RolloutConfig:
                 prompts=self.prompts,
                 skill_mode=self.skill_mode,
             )
-        if self.user is None and not explicit_scenes:
-            document_user = _task_document_user_runtime(
-                self.task_path,
-                prompts=self.prompts,
-                skill_mode=self.skill_mode,
+        if self.allow_document_user is None:
+            self.allow_document_user = not explicit_scenes
+        if isinstance(self.loop_strategy, str):
+            self.loop_strategy = parse_loop_strategy_spec(self.loop_strategy)
+        elif isinstance(self.loop_strategy, dict):
+            # to_mapping() dict shape (round-tripped --config YAML / SDK kwargs)
+            # must materialize, not fall through and mislabel single-shot.
+            self.loop_strategy = LoopStrategySpec.from_mapping(self.loop_strategy)
+        elif self.loop_strategy is not None and not isinstance(
+            self.loop_strategy, LoopStrategySpec
+        ):
+            raise ValueError(
+                "loop_strategy must be a spec string, mapping, or LoopStrategySpec, "
+                f"got {type(self.loop_strategy).__name__}"
             )
-            if document_user is not None:
-                self.user, max_rounds = document_user
-                if max_rounds is not None:
-                    self.max_user_rounds = max_rounds
+        self._resolve_user()
         if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
             raise ValueError("skills_dir requires skill_mode='with-skill'")
         if not isinstance(self.jobs_dir, Path):
@@ -194,6 +217,72 @@ class RolloutConfig:
                 role.reasoning_effort = normalize_reasoning_effort(
                     role.reasoning_effort
                 )
+
+    def _resolve_user(self) -> None:
+        """The single user-materialization point for every construction path.
+
+        One decision ladder — explicit user → strategy user → task-document
+        user → none — applied identically for direct construction and
+        ``from_legacy``, so single-shot semantics cannot fork between them:
+        an explicit ``loop_strategy="single-shot"`` forces a true single-shot
+        run and suppresses a task-document-declared user (with a warning)
+        instead of keeping it on one path and silently dropping it on the
+        other. ``_task_document_user_runtime`` gates itself (no task.md,
+        explicit prompts, or self-gen mode resolve to no document user), and
+        ``allow_document_user`` keeps programmatic scene callers opted out.
+        """
+        spec = self.loop_strategy_spec
+        built = build_loop_user(spec) if spec is not None else None
+        if self.user is not None:
+            if built is not None:
+                raise ValueError(
+                    "loop_strategy and an explicit user are mutually "
+                    "exclusive — the strategy materializes its own user"
+                )
+            return
+        document_user = (
+            _task_document_user_runtime(
+                self.task_path,
+                prompts=self.prompts,
+                skill_mode=self.skill_mode,
+            )
+            if self.allow_document_user
+            else None
+        )
+        if spec is not None and built is not None:
+            if document_user is not None:
+                logger.warning(
+                    "loop_strategy=%s overrides the user declared by %s/task.md",
+                    spec.name,
+                    self.task_path.name,
+                )
+            self.user, self.max_user_rounds = built
+            # Fail at construction — before any sandbox is provisioned —
+            # when the task declares more scene turns than the strategy's
+            # round budget (the engine enforces the same bound at run time).
+            declared_turns = sum(len(scene.turns) for scene in self.scenes)
+            if declared_turns > self.max_user_rounds:
+                raise ValueError(
+                    f"loop_strategy {spec.name!r} allows max_user_rounds="
+                    f"{self.max_user_rounds} but the task declares "
+                    f"{declared_turns} scene turns — raise k or drop the "
+                    "loop strategy"
+                )
+            return
+        if spec is not None:
+            # Explicit single-shot: a true one-prompt run, even when the
+            # task document declares a user.
+            if document_user is not None:
+                logger.warning(
+                    "loop_strategy=single-shot suppresses the user declared "
+                    "by %s/task.md",
+                    self.task_path.name,
+                )
+            return
+        if document_user is not None:
+            self.user, max_rounds = document_user
+            if max_rounds is not None:
+                self.max_user_rounds = max_rounds
 
     @classmethod
     def from_legacy(
@@ -243,16 +332,12 @@ class RolloutConfig:
                     prompts=prompts,
                 )
             ]
-        if "user" not in kwargs:
-            document_user = _task_document_user_runtime(
-                Path(task_path),
-                prompts=prompts,
-                skill_mode=mode,
-            )
-            if document_user is not None:
-                kwargs["user"], max_rounds = document_user
-                if max_rounds is not None and "max_user_rounds" not in kwargs:
-                    kwargs["max_user_rounds"] = max_rounds
+        # User materialization — including the task-document user fallback —
+        # is owned entirely by __post_init__._resolve_user, so this path and
+        # direct construction cannot diverge (single-shot semantics fork).
+        # The scenes built above are derived, not caller-authored, so the
+        # document user stays eligible.
+        kwargs.setdefault("allow_document_user", True)
         return cls(
             task_path=task_path,
             scenes=scenes,
@@ -293,6 +378,12 @@ class RolloutConfig:
     @property
     def recorded_skill_mode(self) -> str:
         return self.artifact_skill_mode or self.skill_mode
+
+    @property
+    def loop_strategy_spec(self) -> LoopStrategySpec | None:
+        """The parsed loop strategy — spec strings are parsed in __post_init__."""
+        spec = self.loop_strategy
+        return spec if isinstance(spec, LoopStrategySpec) else None
 
     @property
     def _primary_role(self) -> Role | None:

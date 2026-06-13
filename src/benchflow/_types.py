@@ -26,8 +26,12 @@ Concretely:
 * Agent-as-tool is a per-agent capability.  BenchFlow does not invoke
   agents on behalf of other agents; the calling agent uses its own
   native tool-use to reach a companion agent's endpoint.
-* Loop management is entirely the agent's responsibility.  BenchFlow
-  scenes define *turns* (prompts), not iteration.
+* *Agent-internal* loop management is the agent's responsibility.
+  BenchFlow scenes define *turns* (prompts), not iteration.  Harness-level
+  loop strategies (:mod:`benchflow.loop_strategies`, ``--loop-strategy``)
+  are a separate evaluand axis: the harness re-prompts the agent across
+  verify-retry rounds and scores only the final hardened verify, but never
+  orchestrates loops *inside* the agent.
 """
 
 from __future__ import annotations

@@ -34,6 +34,7 @@ from benchflow.contracts import (
 )
 from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.environment.manifest import EnvironmentManifest
+from benchflow.loop_strategies import LoopStrategySpec, loop_block
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
@@ -155,6 +156,7 @@ def _write_config(
     dataset: dict[str, Any] | None = None,
     task_digest: str | None = None,
     environment_manifest: EnvironmentManifest | None = None,
+    loop_strategy: LoopStrategySpec | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     from benchflow.agents.install import effective_install_timeout
@@ -183,6 +185,7 @@ def _write_config(
         "started_at": str(started_at),
         "agent_env": recorded_env,
         "scenes": _scene_metadata(scenes or []),
+        "loop": loop_block(loop_strategy),
     }
     if usage_tracking is not None:
         config_data["usage_tracking"] = usage_tracking.to_config_artifact()
@@ -262,6 +265,7 @@ def _build_rollout_result(
     diagnostics: RolloutDiagnostics | None = None,
     skill_policy: TaskSkillPolicy | None = None,
     sandbox_id: str | None = None,
+    loop: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -381,6 +385,7 @@ def _build_rollout_result(
                 "finished_at": str(result.finished_at),
                 "timing": timing,
                 "scenes": _scene_metadata(scenes or []),
+                "loop": loop or loop_block(None),
                 **(
                     {"source": source_provenance}
                     if source_provenance is not None

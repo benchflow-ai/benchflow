@@ -126,6 +126,76 @@ def test_sandbox_modal_without_extra_fails_fast(tmp_path: Path):
     assert "Traceback (most recent call last)" not in result.stdout
 
 
+def test_loop_strategy_bad_spec_clean_error(tmp_path: Path):
+    result = _invoke(tmp_path, "--sandbox", "docker", "--loop-strategy", "bogus")
+    assert result.exit_code == 1
+    assert "Invalid --loop-strategy" in result.stdout
+    assert "Traceback (most recent call last)" not in result.stdout
+
+
+def test_loop_strategy_k_out_of_range_rejected(tmp_path: Path):
+    result = _invoke(
+        tmp_path, "--sandbox", "docker", "--loop-strategy", "verify-retry:k=99"
+    )
+    assert result.exit_code == 1
+    assert "k must be between 1 and 10" in result.stdout
+
+
+def test_loop_strategy_conflicts_with_self_gen(tmp_path: Path):
+    result = _invoke(
+        tmp_path,
+        "--sandbox",
+        "docker",
+        "--skill-mode",
+        "self-gen",
+        "--loop-strategy",
+        "verify-retry",
+    )
+    assert result.exit_code == 1
+    assert "not supported with --skill-mode self-gen" in result.stdout
+
+
+def test_loop_strategy_conflicts_with_multiple_prompts(tmp_path: Path):
+    result = _invoke(
+        tmp_path,
+        "--sandbox",
+        "docker",
+        "--prompt",
+        "first",
+        "--prompt",
+        "second",
+        "--loop-strategy",
+        "verify-retry",
+    )
+    assert result.exit_code == 1
+    assert "conflicts with multiple" in result.stdout
+
+
+def test_loop_strategy_accepted_and_plumbed(tmp_path: Path):
+    result = _invoke(
+        tmp_path,
+        "--sandbox",
+        "docker",
+        "--loop-strategy",
+        "verify-retry:k=3,feedback=names",
+    )
+    assert result.exit_code == 0
+
+    from benchflow.loop_strategies import LoopStrategySpec
+
+    plumb_dir = tmp_path / "plumb"
+    plumb_dir.mkdir()
+    plan = build_eval_plan(
+        EvalCreateRequest(
+            tasks_dir=_task_dir(plumb_dir),
+            loop_strategy="verify-retry:k=3,feedback=names",
+        )
+    )
+    expected = LoopStrategySpec("verify-retry", {"k": 3, "feedback": "names"})
+    assert plan.eval_loop_strategy == expected
+    assert plan.make_eval_config().loop_strategy == expected
+
+
 @pytest.mark.parametrize("value", ["banana", "fastest", "9", "lowish"])
 def test_normalize_reasoning_effort_rejects_unknown(value: str):
     with pytest.raises(ValueError, match="reasoning_effort must be one of"):
