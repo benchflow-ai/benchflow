@@ -1,6 +1,6 @@
 <div align="center">
   <h1>BenchFlow</h1>
-  <p>Multi-turn agent benchmarking — Scene-based lifecycle for any ACP agent</p>
+  <p>Run any benchmark, with any agent, in any sandbox — one scored-trajectory contract.</p>
   <a href="https://pypi.org/project/benchflow/" target="_blank">
     <img src="https://img.shields.io/badge/PyPI-benchflow-3775A9?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI package">
   </a>
@@ -11,59 +11,52 @@
 
 ## What
 
-BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Single-agent, multi-agent, and multi-round patterns share one Scene-based lifecycle.
+BenchFlow runs AI agents against benchmark tasks in sandboxed environments and scores them through one hardened contract. Point it at *any* benchmark, drive it with *any* ACP agent, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
 
 - **Run any benchmark** — three-layer routing runs supported frameworks natively, translates unknown formats and proves equivalence with a parity gate, or runs a bespoke harness as-is; every layer emits one scored-trajectory contract. See [Run any benchmark](./docs/running-any-benchmark.md)
 - **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, Pi, or your own
 - **Single + multi + progressive** — single-agent / multi-agent (coder + reviewer, simulated user) / multi-round with a Python `BaseUser` callback
+- **Loop strategies** — wrap any agent in a `--loop-strategy` (`verify-retry`, `self-review`); every rollout captures a per-iteration reward + token trajectory, so you can plot capability against cost (can a cheap model + loops match an expensive one at equal token spend?)
 - **`task.md` tasks** — one file (YAML frontmatter + prompt body) replaces the split `task.toml` + `instruction.md` layout; author with `bench tasks init` / `check` / `migrate` / `export`
 - **Hosted environments** — run external PrimeIntellect / Verifiers environments through `--source-env`, without converting them to BenchFlow tasks
 - **Sandboxes** — Docker locally, Daytona for parallel cloud runs (orphaned sandboxes auto-reaped at eval start), Modal for serverless/GPU-backed task environments
 - **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
 - **Training-ready output** — every scored rollout emits ATIF (`trainer/atif.json`) and ADP (`trainer/adp.jsonl`) trajectory records next to the Verifiers/ORS (OpenReward) reward record
 
-## Install
-
-`0.6.0` is in **release-candidate** testing and is **not on PyPI yet** — the
-newest build published there is still `0.5.x`. While 0.6 is RC, install the
-latest `0.6.0-rc.*` wheel from the
-[GitHub releases page](https://github.com/benchflow-ai/benchflow/releases)
-(open it, pick the newest `0.6.0-rc.*` prerelease, and install its `.whl`
-asset):
+## Quickstart
 
 ```bash
+# Install the current 0.6 release candidate (see Install for why the wheel URL)
 uv tool install --prerelease allow \
-  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.3/benchflow-0.6.0rc3-py3-none-any.whl'
+  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
+
+# Run a benchmark: any task source, any ACP agent, any sandbox
+export GEMINI_API_KEY=...            # or claude login / codex --login for subscription auth
+bench eval create \
+    --source-repo benchflow-ai/skillsbench --source-path tasks \
+    --agent gemini --model gemini-3.1-flash-lite-preview \
+    --sandbox daytona --concurrency 64
 ```
 
-The URL above pins `0.6.0-rc.3` (the newest at time of writing); if a later
-`0.6.0-rc.*` prerelease exists, use that tag and filename instead. Confirm with
-`bench --version`.
+Each run writes a per-task `result.json` (rewards + trajectory + token usage) and a job `summary.json` (pass-rate, cost, and — for looped runs — a pass@iteration convergence curve). New here? Start with [Getting started](./docs/getting-started.md), or paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code / Codex / Gemini CLI and let it drive the whole thing.
 
-The `--prerelease allow` flag is required for BenchFlow's pinned LiteLLM
-release-candidate dependency. If the command reports `Executables already
-exist: bench, benchflow`, the machine has old entrypoints from a previous
-install; rerun the same command with `--force` to let `uv` replace them.
+## Install
 
-**Once `0.6.0` ships to PyPI**, the plain install commands will work:
+`0.6.0` is in **release-candidate** testing and is **not on PyPI yet** (the newest PyPI build is still `0.5.x`). Until it ships, install the latest `0.6.0-rc.*` wheel from the [GitHub releases page](https://github.com/benchflow-ai/benchflow/releases) — the Quickstart pins `0.6.0-rc.6`; if a newer `rc.*` exists, swap the tag and filename. Confirm with `bench --version`.
+
+- `--prerelease allow` is required for BenchFlow's pinned LiteLLM release-candidate dependency.
+- If you see `Executables already exist: bench, benchflow`, re-run with `--force` to replace stale entrypoints from an older install.
+
+**Once `0.6.0` ships to PyPI**, the plain commands resolve (until then they pick up only `0.5.x`):
 
 ```bash
 pip install --upgrade benchflow                                  # once 0.6.0 is on PyPI
 uv tool install --prerelease allow --upgrade 'benchflow==0.6.0'  # once 0.6.0 is on PyPI
 ```
 
-Until then, `pip install --upgrade benchflow` resolves only to `0.5.x`, and
-`benchflow==0.6.0` does not resolve at all.
+Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --prerelease allow --upgrade benchflow`).
 
-Internal users who want the newest preview published from `main` can install
-the internal preview channel (currently a `0.5.3.dev<N>` build; it becomes
-`0.6.1.dev<N>` once `0.6.0` is tagged):
-
-```bash
-uv tool install --prerelease allow --upgrade benchflow
-```
-
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona runs or configure Modal auth for Modal runs; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth. Provider-prefixed models may use provider-specific credentials; Azure Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
+**Requirements & auth.** Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal; export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use subscription auth (`claude login` / `codex --login`). Provider-prefixed models may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` + `AZURE_API_ENDPOINT`.
 
 ## Documentation
 
