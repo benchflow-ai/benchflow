@@ -175,6 +175,17 @@ def loop_summary(results: dict[str, dict]) -> dict[str, Any]:
     for loop in looped:
         sr = loop.get("stop_reason") or "unknown"
         stop_reasons[sr] = stop_reasons.get(sr, 0) + 1
+    # Cost-to-converge economics (the cost-curve money axis), over the converged
+    # tasks that actually captured token usage. None when nothing converged with
+    # usage data (e.g. a LiteLLM path that doesn't surface native tokens).
+    tokens_to_pass = [
+        loop["tokens_to_pass"]
+        for loop in looped
+        if loop.get("tokens_to_pass") is not None
+    ]
+    mean_tokens_to_converge = (
+        round(sum(tokens_to_pass) / len(tokens_to_pass), 1) if tokens_to_pass else None
+    )
 
     return {
         "loop_summary": {
@@ -185,6 +196,7 @@ def loop_summary(results: dict[str, dict]) -> dict[str, Any]:
                 round(sum(first_pass) / len(first_pass), 4) if first_pass else None
             ),
             "mean_iterations_run": round(sum(iters_run) / n, 4),
+            "mean_tokens_to_converge": mean_tokens_to_converge,
             "pass_at_iteration": [round(p, 4) for p in pass_at_iteration],
             "stop_reasons": stop_reasons,
         }

@@ -257,7 +257,9 @@ class TestCollectLoopMetadata:
             "iterations_run": 3,
             "stop_reason": "passed_bar",
             "reward_trajectory": [0.0, 0.0, 1.0],
+            "tokens_trajectory": [None, None, None],
             "first_pass_iteration": 2,
+            "tokens_to_pass": None,
         }
 
     def test_exhausted_budget_is_max_iterations(self):
@@ -275,8 +277,24 @@ class TestCollectLoopMetadata:
             "iterations_run": 1,
             "stop_reason": "error",
             "reward_trajectory": [0.0],
+            "tokens_trajectory": [None],
             "first_pass_iteration": None,
+            "tokens_to_pass": None,
         }
+
+    def test_token_trajectory_and_cost_to_pass(self):
+        """Cumulative tokens per round form the cost-curve x-axis; tokens_to_pass
+        is the cumulative spend at the first passing round."""
+        rounds = [
+            {"round": 0, "rewards": {"reward": 0.0}, "tokens": 1000},
+            {"round": 1, "rewards": {"reward": 1.0}, "tokens": 2500},
+        ]
+        meta = collect_loop_metadata(
+            VerifyRetryUser(k=2), rounds, max_rounds=3, error=None
+        )
+        assert meta["tokens_trajectory"] == [1000, 2500]
+        assert meta["first_pass_iteration"] == 1
+        assert meta["tokens_to_pass"] == 2500
 
     def test_unscored_rounds_keep_none_in_trajectory(self):
         meta = collect_loop_metadata(
@@ -476,7 +494,9 @@ class TestRolloutConfigLoopStrategy:
     def test_bad_loop_strategy_type_raises(self, tmp_path):
         from benchflow.rollout import RolloutConfig
 
-        with pytest.raises(ValueError, match="spec string, mapping, or LoopStrategySpec"):
+        with pytest.raises(
+            ValueError, match="spec string, mapping, or LoopStrategySpec"
+        ):
             RolloutConfig(task_path=tmp_path, loop_strategy=5)
 
 
@@ -501,7 +521,9 @@ class TestEvaluationConfigLoopStrategy:
     def test_bad_type_raises(self):
         from benchflow.evaluation import EvaluationConfig
 
-        with pytest.raises(ValueError, match="spec string, mapping, or LoopStrategySpec"):
+        with pytest.raises(
+            ValueError, match="spec string, mapping, or LoopStrategySpec"
+        ):
             EvaluationConfig(loop_strategy=5)
 
 

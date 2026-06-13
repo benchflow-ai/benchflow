@@ -846,8 +846,9 @@ class TestLoopStrategyEngine:
                 trial,
                 "soft_verify",
                 new=AsyncMock(
-                    side_effect=lambda: verifies.append(1)
-                    or ({"reward": 0.0}, None, None)
+                    side_effect=lambda: (
+                        verifies.append(1) or ({"reward": 0.0}, None, None)
+                    )
                 ),
             ),
             patch.object(trial._planes, "lockdown_paths", new_callable=AsyncMock),
@@ -858,15 +859,14 @@ class TestLoopStrategyEngine:
                     side_effect=RuntimeError('service "main" is not running')
                 ),
             ),
+            caplog.at_level("WARNING"),
         ):
-            with caplog.at_level("WARNING"):
-                await trial._run_user_loop()  # must NOT raise
+            await trial._run_user_loop()  # must NOT raise
 
         # k=1 → round 0 + 1 retry; both ran despite the clear failing each round.
         assert len(verifies) == 2
         assert any(
-            "Mid-loop verifier isolation skipped" in r.message
-            for r in caplog.records
+            "Mid-loop verifier isolation skipped" in r.message for r in caplog.records
         )
 
     @pytest.mark.asyncio
@@ -902,7 +902,9 @@ class TestLoopStrategyEngine:
             "iterations_run": 3,
             "stop_reason": "max_iterations",
             "reward_trajectory": [0.0, 0.0, 0.0],
+            "tokens_trajectory": [0, 0, 0],
             "first_pass_iteration": None,
+            "tokens_to_pass": None,
         }
 
     @pytest.mark.asyncio
@@ -936,7 +938,9 @@ class TestLoopStrategyEngine:
             "iterations_run": 3,
             "stop_reason": "passed_bar",
             "reward_trajectory": [0.0, 0.0, 1.0],
+            "tokens_trajectory": [0, 0, 0],
             "first_pass_iteration": 2,
+            "tokens_to_pass": 0,
         }
 
     @pytest.mark.asyncio
@@ -1016,7 +1020,9 @@ class TestLoopStrategyEngine:
             "iterations_run": 1,
             "stop_reason": "passed_bar",
             "reward_trajectory": [1.0],
+            "tokens_trajectory": [0],
             "first_pass_iteration": 0,
+            "tokens_to_pass": 0,
         }
 
     @pytest.mark.asyncio

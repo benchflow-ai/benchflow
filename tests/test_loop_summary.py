@@ -98,3 +98,56 @@ def test_ignores_single_shot_rows_in_a_mixed_job():
     s = loop_summary(results)["loop_summary"]
     assert s["n_tasks"] == 1  # single-shot row excluded
     assert s["fraction_converged"] == 1.0
+
+
+def test_mean_tokens_to_converge_over_captured_converged_tasks():
+    """Cost-to-converge (the cost-curve money axis): mean ``tokens_to_pass``
+    over converged tasks that captured usage; tasks with no token data are
+    excluded so a single uninstrumented path can't drag the mean to zero."""
+    results = {
+        "t1": _r(
+            {
+                "strategy": "verify-retry",
+                "first_pass_iteration": 1,
+                "iterations_run": 2,
+                "stop_reason": "passed_bar",
+                "tokens_to_pass": 2000,
+            }
+        ),
+        "t2": _r(
+            {
+                "strategy": "verify-retry",
+                "first_pass_iteration": 0,
+                "iterations_run": 1,
+                "stop_reason": "passed_bar",
+                "tokens_to_pass": 1000,
+            }
+        ),
+        "t3": _r(
+            {
+                "strategy": "verify-retry",
+                "first_pass_iteration": None,
+                "iterations_run": 1,
+                "stop_reason": "max_iterations",
+                "tokens_to_pass": None,
+            }
+        ),
+    }
+    s = loop_summary(results)["loop_summary"]
+    assert s["mean_tokens_to_converge"] == 1500.0  # (2000 + 1000) / 2
+
+
+def test_mean_tokens_to_converge_none_when_no_usage_captured():
+    """A LiteLLM-style path that surfaces no native tokens yields None, not 0."""
+    results = {
+        "t1": _r(
+            {
+                "strategy": "verify-retry",
+                "first_pass_iteration": 0,
+                "iterations_run": 1,
+                "stop_reason": "passed_bar",
+                "tokens_to_pass": None,
+            }
+        ),
+    }
+    assert loop_summary(results)["loop_summary"]["mean_tokens_to_converge"] is None

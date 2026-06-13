@@ -406,11 +406,23 @@ def collect_loop_metadata(
     result-build time when the error state is final.
     """
     trajectory = [_soft_reward(record.get("rewards")) for record in rounds_log]
+    # Cumulative native-ACP tokens through each round — the cost-curve x-axis.
+    # Best-effort: entries are None when usage isn't captured for the run.
+    tokens_trajectory = [record.get("tokens") for record in rounds_log]
     first_pass = next(
         (
             record["round"]
             for record, reward in zip(rounds_log, trajectory, strict=True)
             if reward is not None and reward >= user.pass_threshold
+        ),
+        None,
+    )
+    # Cost-to-converge: cumulative tokens at the first passing round.
+    tokens_to_pass = next(
+        (
+            record.get("tokens")
+            for record in rounds_log
+            if record.get("round") == first_pass
         ),
         None,
     )
@@ -429,5 +441,7 @@ def collect_loop_metadata(
         "iterations_run": len(rounds_log),
         "stop_reason": stop_reason,
         "reward_trajectory": trajectory,
+        "tokens_trajectory": tokens_trajectory,
         "first_pass_iteration": first_pass,
+        "tokens_to_pass": tokens_to_pass,
     }

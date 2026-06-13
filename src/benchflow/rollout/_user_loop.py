@@ -185,6 +185,7 @@ _ITERATION_RECORD_KEYS = (
     "verifier_error",
     "feedback_level",
     "wall_sec",
+    "tokens",
 )
 
 
@@ -389,6 +390,12 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 "n_tool_calls": round_tools,
                 "n_trajectory_events": len(round_trajectory),
                 "wall_sec": round(time.monotonic() - round_started, 1),
+                # Cumulative native-ACP tokens spent through this round — the
+                # cost-curve x-axis. Best-effort: None when usage is unavailable
+                # (e.g. a LiteLLM-proxied path that doesn't surface native usage).
+                "tokens": (getattr(rollout, "_native_usage_metrics", None) or {}).get(
+                    "total_tokens"
+                ),
             }
             if isinstance(user, LoopStrategyUser):
                 entry["feedback_level"] = user.feedback_level.value
