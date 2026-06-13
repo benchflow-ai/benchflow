@@ -866,13 +866,9 @@ def eval_metrics(
     if summary["passed_tasks"]:
         console.print(f"\n[green]Passed:[/green] {', '.join(summary['passed_tasks'])}")
     if summary["errored_tasks"]:
-        console.print(
-            f"[yellow]Errors:[/yellow] {', '.join(summary['errored_tasks'])}"
-        )
+        console.print(f"[yellow]Errors:[/yellow] {', '.join(summary['errored_tasks'])}")
     if summary["error_breakdown"]:
-        console.print(
-            f"[yellow]Error breakdown:[/yellow] {summary['error_breakdown']}"
-        )
+        console.print(f"[yellow]Error breakdown:[/yellow] {summary['error_breakdown']}")
 
 
 @eval_app.command("view")

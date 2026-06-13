@@ -218,8 +218,10 @@ def _message_role(message) -> str:
 
 def _message_text(message) -> str:
     """Flatten a LangChain message's content to plain text."""
-    content = message.get("content") if isinstance(message, dict) else getattr(
-        message, "content", ""
+    content = (
+        message.get("content")
+        if isinstance(message, dict)
+        else getattr(message, "content", "")
     )
     if isinstance(content, str):
         return content

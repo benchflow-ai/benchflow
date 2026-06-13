@@ -56,6 +56,7 @@ cpus = 2
 memory_mb = 4096
 """
 
+
 def _write_harbor_task(root: Path) -> Path:
     """Create a Harbor-style task dir; return its path."""
     task_dir = root / "harbor-task"
