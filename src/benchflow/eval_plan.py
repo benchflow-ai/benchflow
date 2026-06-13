@@ -230,6 +230,22 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError("--ignore-bench-version requires --dataset")
     if request.tasks_dir and not Path(request.tasks_dir).exists():
         raise EvalPlanError(f"--tasks-dir not found: {request.tasks_dir}")
+    # Validate --config here so a typo'd / missing / non-file path becomes a clean
+    # CLI error instead of a raw FileNotFoundError/IsADirectoryError traceback from
+    # the bare open() in Evaluation.from_yaml.
+    if request.config_file and not Path(request.config_file).is_file():
+        raise EvalPlanError(f"--config not found: {request.config_file}")
+    # Validate the --source-repo shape up front (it's otherwise checked deep in
+    # resolve_source_with_metadata, after planning, where the ValueError escapes
+    # as a traceback). Match that resolver's semantics — split("/", 1) into two
+    # non-empty parts — so this guard never rejects a shape the resolver accepts.
+    if request.source_repo is not None:
+        parts = str(request.source_repo).split("/", 1)
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            raise EvalPlanError(
+                f"Invalid --source-repo {request.source_repo!r}; expected 'org/repo' "
+                "(e.g. benchflow-ai/skillsbench)"
+            )
     if request.worker_concurrency is not None and not (
         request.tasks_dir or request.source_repo
     ):
@@ -246,7 +262,11 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         if request.agent is not None
         else DEFAULT_AGENT
     )
-    eval_environment = request.environment or "docker"
+    # Only None means "unset" → default docker; an empty/whitespace --sandbox is a
+    # typo and must reach the Invalid-sandbox check below, not be swallowed.
+    eval_environment = (
+        request.environment if request.environment is not None else "docker"
+    )
     # --sandbox is ignored by hosted source-env runs (the hosted Verifiers
     # environment owns its harness), so only validate / preflight it for the
     # paths that actually use the local sandbox.

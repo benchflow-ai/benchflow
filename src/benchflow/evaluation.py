@@ -593,6 +593,8 @@ class Evaluation:
         config: EvaluationConfig | None = None,
         job_name: str | None = None,
         on_result: Callable[[str, RunResult], None] | None = None,
+        on_task_start: Callable[[str], None] | None = None,
+        on_plan: Callable[[int, int, int], None] | None = None,
     ):
         self._tasks_dir = Path(tasks_dir)
         self._jobs_dir = Path(jobs_dir)
@@ -600,6 +602,10 @@ class Evaluation:
         self._job_name = job_name or self._resolve_job_name(self._jobs_dir)
         self._explicit_job_name = job_name is not None
         self._on_result = on_result
+        # UI-progress hooks (the CLI live dashboard; None everywhere else). Fired
+        # best-effort via _fire_progress so a display bug never aborts a run.
+        self._on_task_start = on_task_start
+        self._on_plan = on_plan
         # Kept for test mocking compat; _run_task prefers Rollout
         from benchflow.sdk import SDK
 
@@ -1175,6 +1181,21 @@ class Evaluation:
         assert last_result is not None
         return last_result
 
+    @staticmethod
+    def _fire_progress(callback, *args) -> None:
+        """Invoke a UI-progress hook, swallowing any error.
+
+        A live-display callback must never abort or perturb the run, so failures
+        are logged at debug and ignored.
+        """
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception as exc:
+            # Display is best-effort: a render bug must never abort the run.
+            logger.debug("progress callback failed: %s", exc)
+
     def _log_and_report(self, td: Path, result: RunResult) -> None:
         """Log one rollout's outcome and fire the on_result callback."""
         reward = result.rewards.get("reward") if result.rewards else None
@@ -1182,8 +1203,7 @@ class Evaluation:
         err_msg = result.error or result.verifier_error
         err = f" ({truncate_end(err_msg, 50)})" if err_msg else ""
         logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
-        if self._on_result:
-            self._on_result(td.name, result)
+        self._fire_progress(self._on_result, td.name, result)
 
     async def _run_parallel_independent(
         self, remaining: list[Path]
@@ -1210,6 +1230,7 @@ class Evaluation:
                 if cfg.concurrency > 16:
                     jitter_max = max(cfg.concurrency / 2, 8.0)
                     await asyncio.sleep(random.uniform(0, jitter_max))
+                self._fire_progress(self._on_task_start, td.name)
                 result = await self._run_task(td)
                 breaker.record(result)
                 self._log_and_report(td, result)
@@ -1527,6 +1548,12 @@ class Evaluation:
         logger.info(
             f"Job: {len(task_dirs)} tasks, {len(completed)} done, "
             f"{len(remaining)} to run (concurrency={cfg.concurrency})"
+        )
+        # Hand the live dashboard an honest denominator: total / already-done /
+        # to-run. Resumed-complete tasks fold in below without a finish event, so
+        # a finish-event-only counter would mis-read the total on resume.
+        self._fire_progress(
+            self._on_plan, len(task_dirs), len(completed), len(remaining)
         )
 
         start = time.time()

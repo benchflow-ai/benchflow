@@ -225,9 +225,9 @@ def test_agent_timeout_sec_rejects_nonpositive(bad):
 def test_config_file_with_no_default_model_agent_not_rejected(tmp_path: Path):
     # Regression: --config supplies the model from YAML, so build_eval_plan must
     # NOT pre-reject a no-default-model agent (e.g. codex) when --model is omitted.
-    plan = build_eval_plan(
-        EvalCreateRequest(config_file=tmp_path / "cfg.yaml", agent="codex")
-    )
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text("model: some-model\n")  # must exist (B1 guard); content unused here
+    plan = build_eval_plan(EvalCreateRequest(config_file=cfg, agent="codex"))
     assert plan is not None
 
 
@@ -282,3 +282,45 @@ def test_source_env_skips_sandbox_preflight(monkeypatch):
 @pytest.mark.parametrize("ok", [None, 1, 900.0])
 def test_agent_timeout_sec_accepts_positive_or_none(ok):
     assert AgentConfig(timeout_sec=ok).timeout_sec == ok
+
+
+# --- v0.6 CLI-dogfood guards: clean fail-fast instead of raw tracebacks -------
+
+
+def test_config_missing_path_rejected_cleanly(tmp_path: Path):
+    # Was: a raw FileNotFoundError traceback from Evaluation.from_yaml's open().
+    with pytest.raises(EvalPlanError, match="--config not found"):
+        build_eval_plan(
+            EvalCreateRequest(config_file=tmp_path / "nope.yaml", agent="gemini")
+        )
+
+
+@pytest.mark.parametrize("bad", ["notaslash", "/leading", "trailing/", "org/"])
+def test_source_repo_bad_shape_rejected_cleanly(bad: str):
+    # Was: a raw ValueError traceback from resolve_source_with_metadata, after
+    # planning. Now caught at plan time with the org/repo guidance.
+    with pytest.raises(EvalPlanError, match="Invalid --source-repo"):
+        build_eval_plan(EvalCreateRequest(source_repo=bad, agent="gemini"))
+
+
+@pytest.mark.parametrize(
+    # "org/repo/subpath" must NOT be newly rejected — the canonical resolver
+    # splits "/" once and accepts a two-part shape, so the guard matches it.
+    "ok",
+    ["benchflow-ai/skillsbench", "benchflow-ai/repo/subpath"],
+)
+def test_source_repo_valid_shape_accepted(ok: str):
+    assert (
+        build_eval_plan(EvalCreateRequest(source_repo=ok, agent="gemini")) is not None
+    )
+
+
+def test_empty_sandbox_rejected_not_silently_defaulted(tmp_path: Path):
+    # "" is falsy: it used to slip past `or "docker"` and silently run docker,
+    # swallowing a typo'd --sandbox. It must hit the Invalid --sandbox check.
+    task = tmp_path / "t"
+    task.mkdir()
+    with pytest.raises(EvalPlanError, match="Invalid --sandbox"):
+        build_eval_plan(
+            EvalCreateRequest(tasks_dir=task, environment="", agent="gemini")
+        )

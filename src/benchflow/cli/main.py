@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -27,6 +28,11 @@ from benchflow import __version__
 from benchflow._dotenv import load_dotenv_env
 from benchflow._utils.config import normalize_sandbox_user
 from benchflow.agents.registry import parse_agent_spec
+from benchflow.cli._live_progress import (
+    LiveEvalProgress,
+    live_session,
+    progress_enabled,
+)
 from benchflow.cli._options import AgentOption, ModelOption, SkillModeOption
 from benchflow.cli._shared import (
     _exit_if_evaluation_had_errors,
@@ -66,9 +72,11 @@ logging.basicConfig(
     format="%(message)s",
 )
 
+_TAGLINE = "The universal environment framework — run, author, and adopt agent benchmarks across any environment."
+
 app = typer.Typer(
     name="benchflow",
-    help="ACP-native agent benchmarking framework.",
+    help=_TAGLINE,
     no_args_is_help=True,
 )
 
@@ -91,7 +99,7 @@ def _cli_main(
         ),
     ] = None,
 ) -> None:
-    """ACP-native agent benchmarking framework."""
+    """The universal environment framework — run, author, and adopt agent benchmarks."""
 
 
 def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
@@ -563,6 +571,16 @@ def eval_create(
         raise typer.Exit(1)
 
 
+def _eval_label(plan: "EvalPlan", tasks_dir: Path) -> str:
+    """A short source descriptor for the live dashboard header."""
+    req = plan.request
+    for attr in ("source_repo", "dataset", "source_env"):
+        val = getattr(req, attr, None)
+        if val:
+            return str(val)
+    return tasks_dir.name
+
+
 def run_batch_eval(
     plan: "EvalPlan",
     resolved_tasks_dir: Path,
@@ -578,13 +596,34 @@ def run_batch_eval(
 
     try:
         if plan.request.worker_concurrency is None:
-            result = asyncio.run(
-                Evaluation(
-                    tasks_dir=str(resolved_tasks_dir),
-                    jobs_dir=plan.output_jobs_dir,
-                    config=eval_config,
-                ).run()
-            )
+            # One Evaluation construction; the live dashboard contributes hooks +
+            # a context manager on a TTY, and a null context + no hooks otherwise
+            # (CI/pipes keep the plain logger stream).
+            hooks: dict = {}
+            run_ctx: AbstractContextManager = nullcontext()
+            if progress_enabled(console):
+                live = LiveEvalProgress(
+                    console,
+                    label=_eval_label(plan, resolved_tasks_dir),
+                    agent=eval_config.agent,
+                    model=eval_config.model,
+                    sandbox=eval_config.environment,
+                )
+                hooks = {
+                    "on_plan": live.on_plan,
+                    "on_task_start": live.on_task_start,
+                    "on_result": live.on_result,
+                }
+                run_ctx = live_session(live)
+            with run_ctx:
+                result = asyncio.run(
+                    Evaluation(
+                        tasks_dir=str(resolved_tasks_dir),
+                        jobs_dir=plan.output_jobs_dir,
+                        config=eval_config,
+                        **hooks,
+                    ).run()
+                )
         else:
             from benchflow.eval_sharding import run_sharded_evaluation
 
@@ -606,7 +645,9 @@ def run_batch_eval(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
 
-    _report_eval_result(result)
+    job_name = getattr(result, "job_name", None)
+    job_dir = Path(plan.output_jobs_dir) / job_name if job_name else None
+    _report_eval_result(result, job_dir)
     _exit_if_evaluation_had_errors(result)
     return result
 

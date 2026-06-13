@@ -1,4 +1,4 @@
-"""benchflow — ACP-native agent benchmarking framework.
+"""benchflow — the universal environment framework for agent benchmarks.
 
 Public API surface:
 - Sandbox protocol for isolated execution environments
