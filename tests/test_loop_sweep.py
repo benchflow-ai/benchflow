@@ -69,7 +69,30 @@ def test_sweep_cell_labels_and_job_name_are_filesystem_safe():
     # the structural "model=" / "__loop=" separators (safe in filenames).
     for bad in ("/", ":", ","):
         assert bad not in cell.job_name
-    assert cell.job_name == "model=deepseek_v4-pro__loop=verify-retry_k3_feedbacknames"
+    assert cell.job_name.startswith(
+        "model=deepseek_v4-pro__loop=verify-retry_k3_feedbacknames__"
+    )
+    # ...followed by a short stable hex hash for injectivity.
+    suffix = cell.job_name.rsplit("__", 1)[1]
+    assert len(suffix) == 8 and all(ch in "0123456789abcdef" for ch in suffix)
+
+
+def test_job_name_injective_for_models_that_sanitize_alike():
+    # "foo/bar" and "foo_bar" both sanitize to "foo_bar" in the readable prefix,
+    # but the identity hash keeps their job dirs distinct — else the second cell
+    # resumes into the first's dir and the matrix misattributes results
+    # (Bugbot HIGH, #720).
+    a = SweepCell(model="foo/bar", loop=None).job_name
+    b = SweepCell(model="foo_bar", loop=None).job_name
+    assert a != b
+
+
+def test_job_name_stable_across_instances():
+    # Same identity -> same dir, so resume addresses the same cell across reruns.
+    assert (
+        SweepCell(model="m", loop="verify-retry:k=3").job_name
+        == SweepCell(model="m", loop="verify-retry:k=3").job_name
+    )
 
 
 def test_single_shot_cell_label():
@@ -142,6 +165,22 @@ def test_cell_from_summary_no_usage_yields_none_tokens_not_zero():
     assert cell.total_tokens is None
     assert cell.total_cost_usd is None
     assert cell.telemetry_coverage == 0.0
+
+
+def test_cell_from_summary_partial_coverage_is_undecidable_cost():
+    # 0 < coverage < 1: usage_summary summed only SOME trials, so the partial
+    # total is not the cell's full spend. Leave the cost axis undecidable rather
+    # than let a half-instrumented cell look falsely cheap (Bugbot P1, #720).
+    summary = _summary(
+        score=0.5,
+        passed=1,
+        total=2,
+        usage={"total_tokens": 500, "total_cost_usd": 0.1, "telemetry_coverage": 0.5},
+    )
+    cell = cell_result_from_summary("m", "single-shot", summary)
+    assert cell.total_tokens is None
+    assert cell.total_cost_usd is None
+    assert cell.telemetry_coverage == 0.5  # still surfaced for transparency
 
 
 def test_cell_from_summary_single_shot_has_empty_loop_fields():

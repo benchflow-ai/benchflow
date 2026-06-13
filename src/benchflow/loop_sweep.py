@@ -24,6 +24,7 @@ thin :func:`run_sweep` orchestrator is the only part that drives a real
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -80,10 +81,23 @@ class SweepCell:
 
     @property
     def job_name(self) -> str:
-        """Filesystem-safe per-cell job name (one job dir per cell)."""
+        """Per-cell job dir name: a readable ``{model, loop}`` prefix plus a short
+        deterministic hash of the *exact* ``(model, loop)`` identity.
+
+        The hash is load-bearing for correctness, not decoration: sanitizing the
+        prefix is lossy ("/" → "_", ":"/"," → "_", "=" dropped), so distinct
+        cells like ``foo/bar`` vs ``foo_bar`` would otherwise share a job dir —
+        the second cell would resume into the first's results and the matrix
+        would misattribute one model's rollouts to another. The hash makes the
+        dir injective; it's stable across reruns so resume still addresses the
+        same cell.
+        """
         safe_loop = self.loop_label.replace(":", "_").replace(",", "_").replace("=", "")
         safe_model = self.model.replace("/", "_")
-        return f"model={safe_model}__loop={safe_loop}"
+        digest = hashlib.sha256(
+            f"{self.model}\x00{self.loop_label}".encode()
+        ).hexdigest()[:8]
+        return f"model={safe_model}__loop={safe_loop}__{digest}"
 
 
 def expand_sweep_grid(models: list[str], loops: list[str | None]) -> list[SweepCell]:
@@ -149,14 +163,18 @@ def cell_result_from_summary(
     - ``score`` is a formatted percentage string ("70.0%"), so pass-rate is
       recomputed from the integer ``passed`` / ``total`` counts instead.
 
-    Token totals are read only when usage telemetry was actually captured
-    (``telemetry_coverage > 0``); otherwise ``total_tokens`` / ``total_cost_usd``
-    stay ``None`` so a fully-uninstrumented job doesn't masquerade as a
-    zero-cost one on the matrix's cost axis.
+    Token totals are read only when usage telemetry is **complete**
+    (``telemetry_coverage == 1.0``); otherwise ``total_tokens`` /
+    ``total_cost_usd`` stay ``None``. Partial coverage (``0 < cov < 1``) means
+    ``usage_summary`` summed tokens for only *some* trials, so that partial total
+    is NOT the cell's full spend — treating it as such could make a cell look
+    falsely cheaper and even spuriously cross over. The honest answer for a
+    partially- or un-instrumented cell is an undecidable cost axis (``None``),
+    not a misleading number.
     """
     loop_block = summary.get("loop_summary") or {}
     coverage = summary.get("telemetry_coverage")
-    has_usage = bool(coverage)
+    has_usage = coverage is not None and coverage >= 1.0
     passed = int(summary.get("passed") or 0)
     total = int(summary.get("total") or 0)
     return CellResult(
