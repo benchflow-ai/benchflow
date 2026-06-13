@@ -13,7 +13,7 @@ bench --version
 > agent show` operate on **registered AI agents** (Claude Code, Gemini CLI,
 > Codex, OpenHands, …) — the programs that solve tasks. Onboarding a third-party
 > benchmark (scaffold → drive → parity-gate a `benchmarks/<name>/` adoption) is a
-> separate workflow under [`bench adopt`](#bench-adopt) (`init` → `convert` →
+> separate workflow under [`bench eval adopt`](#bench-eval-adopt) (`init` → `convert` →
 > `verify`). The legacy `bench agent create|run|verify` still work as hidden
 > deprecated aliases through 0.6, printing a one-line notice; they are removed in
 > 0.7.
@@ -37,7 +37,7 @@ about provider-specific credentials.
 bench agent show gemini
 ```
 
-## bench adopt
+## bench eval adopt
 
 Bring a third-party benchmark into the environment framework: scaffold a
 `benchmarks/<name>/` package, drive the codex `CONVERT.md` conversion, then
@@ -46,7 +46,7 @@ parity-gate it (`init` → `convert` → `verify`). These commands were previous
 through 0.6 (they print a one-line notice and are removed in 0.7). See
 [Benchmark adoption](../benchmark-adoption.md) for the full walkthrough.
 
-### bench adopt init
+### bench eval adopt init
 
 Scaffold `benchmarks/<name>/` for a new benchmark adoption. The layout mirrors
 the reference benchmark `benchmarks/programbench/` and the contract in
@@ -58,15 +58,15 @@ the reference benchmark `benchmarks/programbench/` and the contract in
 command refuses to overwrite an existing benchmark directory.
 
 ```bash
-bench adopt init my-bench
-bench adopt init my-bench --benchmarks-dir ./benchmarks
+bench eval adopt init my-bench
+bench eval adopt init my-bench --benchmarks-dir ./benchmarks
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--benchmarks-dir` | repo `benchmarks/` | Target benchmarks/ directory |
 
-### bench adopt convert
+### bench eval adopt convert
 
 Drive the `CONVERT.md` adoption workflow by launching the host `codex` CLI.
 The command assembles the adoption context (the source, the target
@@ -81,10 +81,10 @@ omitted the slug is derived from the source basename.
 
 ```bash
 # Print the codex launch command without running it
-bench adopt convert https://github.com/org/some-benchmark --dry-run
+bench eval adopt convert https://github.com/org/some-benchmark --dry-run
 
 # Launch the host codex driver against a local source
-bench adopt convert ./vendor/some-benchmark --name my-bench --model o3
+bench eval adopt convert ./vendor/some-benchmark --name my-bench --model o3
 ```
 
 | Flag | Default | Description |
@@ -95,7 +95,7 @@ bench adopt convert ./vendor/some-benchmark --name my-bench --model o3
 | `--codex-bin` | `codex` | Host codex binary |
 | `-c`, `--codex-config` | — | Codex config override as `key=value`, passed through to codex as `-c key=value`; repeatable. Use it to work around host `~/.codex/config.toml` drift without editing the file — e.g. `-c service_tier=flex` when an installed codex version rejects a stale value. |
 
-### bench adopt verify
+### bench eval adopt verify
 
 Run the parity gate for an adopted benchmark and emit a confidence verdict. It
 reads `benchmarks/<name>/parity_experiment.json` and scores two layers: a
@@ -120,10 +120,10 @@ a timeout, or output that is not in the scoreable `parity_experiment.json` shape
 all exit non-zero (rather than silently reporting `insufficient-evidence`).
 
 ```bash
-bench adopt verify my-bench
-bench adopt verify my-bench --tolerance 0.05 --issue-out divergence.md
-bench adopt verify my-bench --roundtrip-task benchmarks/my-bench/tasks/example
-bench adopt verify my-bench --rerun   # re-run parity_test.py, score fresh output
+bench eval adopt verify my-bench
+bench eval adopt verify my-bench --tolerance 0.05 --issue-out divergence.md
+bench eval adopt verify my-bench --roundtrip-task benchmarks/my-bench/tasks/example
+bench eval adopt verify my-bench --rerun   # re-run parity_test.py, score fresh output
 ```
 
 | Flag | Default | Description |

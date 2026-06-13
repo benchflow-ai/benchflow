@@ -1,13 +1,14 @@
-"""Benchmark adoption router — ``bench adopt init | convert | verify``.
+"""Benchmark adoption router — ``bench eval adopt init | convert | verify``.
 
-This module is the real logic behind the ``bench adopt`` subcommands that adopt
-an upstream benchmark into a BenchFlow benchmark (canonically ``bench adopt``;
+This module is the real logic behind the ``bench eval adopt`` subcommands that adopt
+an upstream benchmark into a BenchFlow benchmark (canonically ``bench eval adopt``;
 the legacy ``bench agent create|run|verify`` remain as hidden deprecated
 aliases). It sits downstream of every environment framework: a benchmark is
 *routed* into the repo here, while ``bench eval create`` *runs* the tasks.
 
 Three cohesive subcommands, registered by :func:`register_agent_router` onto the
-``adopt`` group (canonical) and the ``agent`` group (hidden aliases):
+``eval adopt`` group (canonical) and the hidden deprecated alias groups
+(top-level ``adopt`` and ``agent``):
 
 ``init``     Deterministic scaffold of ``benchmarks/<name>/`` matching the
              reference layout (``benchmarks/programbench/``) and the contract in
@@ -42,7 +43,7 @@ import typer
 from rich.markup import escape
 
 # The parity gate (parsers, scoring, verdict) lives in agent_router_parity to
-# keep this module focused on create/run/verify CLI wiring. Re-exported here
+# keep this module focused on adopt (init/convert/verify) CLI wiring. Re-exported here
 # (see __all__) so the public API is unchanged, e.g.
 # ``from benchflow.agent_router import build_verify_report``.
 from benchflow.agent_router_parity import (  # noqa: F401
@@ -169,7 +170,7 @@ def derive_name_from_source(source: str) -> str:
 def _scaffold_parity_experiment(name: str) -> str:
     """Templated, empty parity_experiment.json (status ``template``).
 
-    The schema is what ``bench adopt verify`` reads: per-criterion verdict pairs
+    The schema is what ``bench eval adopt verify`` reads: per-criterion verdict pairs
     (the deterministic conversion-faithfulness floor) and reward-distribution
     samples (the statistical legacy-vs-converted layer).
     """
@@ -306,7 +307,7 @@ def assemble_adoption_context(
             f"- benchmarks/{name}/ has benchflow.py, parity_test.py,",
             f"  parity_experiment.json, benchmark.yaml, run_{_module_suffix(name)}.py,",
             "  README.md",
-            f"- `bench adopt verify {name}` reports parity-confirmed",
+            f"- `bench eval adopt verify {name}` reports parity-confirmed",
         ]
     )
 
@@ -464,7 +465,7 @@ def load_parity_experiment(benchmarks_root: Path, name: str) -> Any:
     if not benchmark_dir.exists():
         raise BenchmarkNotFound(
             f"benchmark not adopted: {benchmark_dir} — run "
-            f"`bench adopt init {name}` first"
+            f"`bench eval adopt init {name}` first"
         )
     parity_file = benchmark_dir / "parity_experiment.json"
     if not parity_file.exists():
@@ -512,13 +513,13 @@ def rerun_parity_experiment(
     if not benchmark_dir.exists():
         raise BenchmarkNotFound(
             f"benchmark not adopted: {benchmark_dir} — run "
-            f"`bench adopt init {name}` first"
+            f"`bench eval adopt init {name}` first"
         )
     script = benchmark_dir / "parity_test.py"
     if not script.exists():
         raise ParityRerunError(
             f"no parity_test.py in {benchmark_dir} — cannot --rerun "
-            "(scaffold it with `bench adopt init` and implement side-by-side)"
+            "(scaffold it with `bench eval adopt init` and implement side-by-side)"
         )
     command = ["python", str(script), "--mode", "side-by-side"]
     returncode, stdout, stderr = (runner or _run_parity_script)(command, benchmark_dir)
@@ -617,7 +618,7 @@ def roundtrip_conformance_status(
 # ── CLI registration (thin; real logic lives above) ───────────────────
 
 
-# Canonical adoption verbs (``bench adopt``) and the deprecated ``bench agent``
+# Canonical adoption verbs (``bench eval adopt``) and the deprecated ``bench agent``
 # aliases they replace. The same command bodies register under both name sets.
 ADOPT_VERBS = {"scaffold": "init", "drive": "convert", "verify": "verify"}
 AGENT_ALIAS_VERBS = {"scaffold": "create", "drive": "run", "verify": "verify"}
@@ -631,7 +632,7 @@ def register_agent_router(
 ) -> None:
     """Register the benchmark-adoption commands onto ``agent_app``.
 
-    Canonical home is ``bench adopt`` (verbs ``init`` / ``convert`` / ``verify``).
+    Canonical home is ``bench eval adopt`` (verbs ``init`` / ``convert`` / ``verify``).
     When ``deprecated_as`` is set (e.g. ``"agent"``) the commands are registered
     hidden and each emits a one-line deprecation notice pointing at the new name,
     so the legacy ``bench agent create|run|verify`` keep working through 0.6.
@@ -650,11 +651,11 @@ def register_agent_router(
         if deprecated_as is not None:
             warn_deprecated(
                 f"bench {deprecated_as} {verbs[slot]}",
-                f"bench adopt {ADOPT_VERBS[slot]}",
+                f"bench eval adopt {ADOPT_VERBS[slot]}",
             )
 
     @agent_app.command(verbs["scaffold"], hidden=hidden)
-    def agent_create(
+    def adopt_init(
         name: Annotated[
             str, typer.Argument(help="Benchmark slug (lowercase, hyphenated)")
         ],
@@ -663,7 +664,7 @@ def register_agent_router(
             typer.Option("--benchmarks-dir", help="Target benchmarks/ directory"),
         ] = None,
     ) -> None:
-        """Scaffold benchmarks/<name>/ for a new benchmark adoption."""
+        """Scaffold benchmarks/<name>/ for a new benchmark adoption (step 1 of init → convert → verify)."""
         _maybe_warn("scaffold")
         root = benchmarks_dir or default_benchmarks_dir()
         try:
@@ -676,7 +677,7 @@ def register_agent_router(
             console.print(f"  {rel}")
 
     @agent_app.command(verbs["drive"], hidden=hidden)
-    def agent_run(
+    def adopt_convert(
         source: Annotated[
             str, typer.Argument(help="Source benchmark repo or local path")
         ],
@@ -747,7 +748,7 @@ def register_agent_router(
         raise typer.Exit(code)
 
     @agent_app.command(verbs["verify"], hidden=hidden)
-    def agent_verify(
+    def adopt_verify(
         name: Annotated[str, typer.Argument(help="Adopted benchmark slug")],
         benchmarks_dir: Annotated[
             Path | None,

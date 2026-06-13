@@ -51,7 +51,7 @@ def warn_deprecated(old: str, new: str, *, removal: str = "0.7") -> None:
     """Emit a one-line deprecation notice to stderr, once per ``old`` per process.
 
     ``old``/``new`` are the user-facing invocations, e.g.
-    ``warn_deprecated("bench agent create", "bench adopt init")``. Printed before
+    ``warn_deprecated("bench agent create", "bench eval adopt init")``. Printed before
     the command does its real work so exit codes + stdout stay unchanged.
     """
     if old in _DEPRECATION_WARNED:
