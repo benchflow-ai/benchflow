@@ -20,7 +20,7 @@ from benchflow.cli.trace_import import register_tasks_generate
 def register_tasks(app: typer.Typer) -> None:
     """Attach the ``tasks`` command group to the top-level benchflow app."""
     tasks_app = typer.Typer(help="Task authoring commands")
-    app.add_typer(tasks_app, name="tasks")
+    app.add_typer(tasks_app, name="tasks", rich_help_panel="Core")
 
     register_tasks_generate(tasks_app)
 

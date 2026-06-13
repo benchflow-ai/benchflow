@@ -29,7 +29,7 @@ def _load_env_defaults() -> None:
 def register_continue(app: typer.Typer) -> None:
     """Attach the ``continue`` command to the top-level benchflow app."""
 
-    @app.command("continue")
+    @app.command("continue", hidden=True)
     def continue_cmd(
         folder: Annotated[
             Path,
@@ -140,7 +140,7 @@ def register_continue(app: typer.Typer) -> None:
         if result.error:
             typer.secho(f"  agent error: {result.error}", fg=typer.colors.YELLOW)
 
-    @app.command("continue-batch")
+    @app.command("continue-batch", hidden=True)
     def continue_batch_cmd(
         root: Annotated[
             Path,

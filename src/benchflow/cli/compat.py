@@ -17,7 +17,7 @@ from benchflow.cli._shared import console
 def register_compat(app: typer.Typer) -> None:
     """Attach the ``compat`` command group to the top-level benchflow app."""
     compat_app = typer.Typer(help="Third-party framework compatibility checks.")
-    app.add_typer(compat_app, name="compat")
+    app.add_typer(compat_app, name="compat", rich_help_panel="Environments")
 
     @compat_app.command("harbor-registry")
     def compat_harbor_registry(

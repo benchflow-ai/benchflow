@@ -25,14 +25,31 @@ def _help(args: list[str]) -> str:
     return _ANSI_RE.sub("", result.output)
 
 
+def _help_command_names(out: str) -> set[str]:
+    """The command names listed in --help, from the panel rows only.
+
+    Rich renders each command as a panel row ``│ <name>   <description>``. Match
+    the first token of those rows so the check is robust to (a) the tagline prose
+    (which may contain words like "run") and (b) command-panel names (Core /
+    Environments / Recovery / the default "Commands").
+    """
+    names: set[str] = set()
+    for line in out.splitlines():
+        m = re.match(r"^\s*│\s+([A-Za-z][\w-]*)\s", line)
+        if m:
+            names.add(m.group(1))
+    return names
+
+
 def test_top_level_help_lists_public_groups() -> None:
     """Every public top-level group documented in cli.md is shown in --help."""
     out = _help([])
+    commands = _help_command_names(out)
     for group in ("eval", "skills", "tasks", "compat", "agent", "environment"):
-        assert group in out, f"missing public group {group!r} in: {out}"
+        assert group in commands, f"missing public group {group!r} in: {out}"
     # Deprecated, hidden, and removed commands must not show up in public help.
     for hidden in ("run", "job", "agents", "metrics", "view", "eval-batch"):
-        assert hidden not in out.split("Commands")[-1].split("─")[0], (
+        assert hidden not in commands, (
             f"hidden command {hidden!r} unexpectedly shown: {out}"
         )
 

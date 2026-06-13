@@ -24,7 +24,7 @@ from benchflow.cli._shared import console
 def register_skills(app: typer.Typer) -> None:
     """Attach the ``skills`` command group to the top-level benchflow app."""
     skills_app = typer.Typer(help="Skill discovery, installation, and evaluation.")
-    app.add_typer(skills_app, name="skills")
+    app.add_typer(skills_app, name="skills", rich_help_panel="Core")
 
     @skills_app.command("list")
     def skills_list(
