@@ -457,28 +457,16 @@ bench environment create tasks/my-task --sandbox daytona
 
 ### bench environment list
 
-List active Daytona sandboxes, or list a hosted hub.
+List active local (Daytona) sandboxes.
 
 ```bash
 bench environment list
-bench environment list --provider primeintellect --owner primeintellect --search general-agent --limit 5
 ```
 
-### bench environment show
-
-Show hosted environment metadata.
-
-```bash
-bench environment show primeintellect/general-agent --version 0.1.1
-```
-
-### bench environment inspect
-
-Inspect a file from a hosted environment package.
-
-```bash
-bench environment inspect primeintellect/general-agent --version 0.1.1 --path README.md
-```
+> Browsing a hosted provider's environments moved to [`bench hub env`](#bench-hub-env). The
+> old `bench environment list --provider`/`--hub`, `bench environment show`, and `bench
+> environment inspect` still work as **deprecated aliases** through 0.6 (one-line stderr
+> notice; removed in 0.7).
 
 ### bench environment cleanup
 
@@ -497,8 +485,19 @@ to disable that automatic pass and rely on the manual command above.
 
 ## bench hub
 
-Compatibility checks for external environment hubs (Harbor today; built to
-extend to other hubs).
+External environment hubs: compatibility checks (`check`) and browsing a hosted
+provider's environments (`env`).
+
+### bench hub env
+
+Read-only browsing of a hosted provider's environments (PrimeIntellect
+"Environments"). To *run* one, use [`bench eval create --source-env`](#bench-eval-create).
+
+```bash
+bench hub env list --provider primeintellect --owner primeintellect --search general-agent --limit 5
+bench hub env show primeintellect/general-agent --version 0.1.1
+bench hub env inspect primeintellect/general-agent --version 0.1.1 --path README.md
+```
 
 ### bench hub check
 

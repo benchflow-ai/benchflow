@@ -1,7 +1,9 @@
-"""``bench environment`` — environment management commands.
+"""``bench environment`` — local sandbox lifecycle (create / list / cleanup).
 
-Covers local Daytona sandbox lifecycle (create / list / cleanup) and the
-read-only hosted-environment hub views (list / show / inspect).
+Read-only browsing of hosted external-provider environments moved to
+``bench hub env list|show|inspect`` (see :mod:`benchflow.cli._hosted_env`); the
+old ``environment show|inspect`` and ``environment list --provider`` remain as
+hidden deprecated aliases through 0.6.
 
 Registered onto the top-level app by :func:`register_environment`;
 ``cli/main.py`` only wires the call. The Daytona client + cleanup helpers
@@ -13,7 +15,6 @@ deliberately live in ``cli/main.py`` (``_daytona_client_or_exit`` /
 
 from __future__ import annotations
 
-import json
 from datetime import UTC
 from pathlib import Path
 from typing import Annotated
@@ -22,6 +23,11 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
+from benchflow.cli._hosted_env import (
+    hosted_env_inspect,
+    hosted_env_list,
+    hosted_env_show,
+)
 from benchflow.cli._options import SandboxOption
 from benchflow.cli._shared import console, warn_deprecated
 
@@ -71,83 +77,61 @@ def register_environment(app: typer.Typer) -> None:
             str | None,
             typer.Option(
                 "--provider",
-                help="Hosted environment provider to list (e.g. primeintellect)",
+                hidden=True,
+                help="[deprecated] use `bench hub env list --provider`",
             ),
         ] = None,
         hub: Annotated[
             str | None,
-            typer.Option("--hub", hidden=True, help="[deprecated] use --provider"),
+            typer.Option(
+                "--hub", hidden=True, help="[deprecated] use `bench hub env list`"
+            ),
         ] = None,
         owner: Annotated[
             str | None,
-            typer.Option("--owner", help="Hosted provider owner/namespace filter"),
+            typer.Option("--owner", hidden=True, help="Hosted provider owner filter"),
         ] = None,
         search: Annotated[
             str | None,
-            typer.Option("--search", help="Hosted provider search query"),
+            typer.Option("--search", hidden=True, help="Hosted provider search query"),
         ] = None,
         limit: Annotated[
             int | None,
-            typer.Option("--limit", help="Maximum hosted provider results"),
+            typer.Option(
+                "--limit", hidden=True, help="Maximum hosted provider results"
+            ),
         ] = None,
         output_json: Annotated[
             bool,
-            typer.Option("--json", help="Emit raw JSON for hosted provider results"),
+            typer.Option(
+                "--json", hidden=True, help="Emit raw JSON for hosted results"
+            ),
         ] = False,
     ) -> None:
-        """List active Daytona sandboxes or hosted provider environments."""
+        """List active local sandboxes.
+
+        (Hosted-provider browsing moved to ``bench hub env list``; the
+        ``--provider``/``--hub`` options here are deprecated aliases.)
+        """
         from datetime import datetime
 
         from benchflow.cli import main as cli_main
 
-        # --hub is the deprecated spelling of --provider (kept through 0.6).
-        if hub is not None:
-            warn_deprecated(
-                "bench environment list --hub", "bench environment list --provider"
-            )
-            if provider is None:
-                provider = hub
-
+        # Hosted browsing moved to `bench hub env list`. --provider/--hub stay
+        # as deprecated aliases (one stderr nudge) that delegate to the same
+        # logic, so existing scripts keep working through 0.6.
+        provider = provider or hub
         if provider:
-            if provider != "primeintellect":
-                console.print(
-                    "[red]Only --provider primeintellect is supported today[/red]"
-                )
-                raise typer.Exit(1)
-            from benchflow.hosted_env import HostedEnvError, prime_env_list
-
-            try:
-                raw = prime_env_list(owner=owner, search=search, limit=limit)
-            except HostedEnvError as e:
-                console.print(f"[red]{escape(str(e))}[/red]")
-                raise typer.Exit(1) from None
-            if output_json:
-                console.print(raw)
-                return
-            data = json.loads(raw)
-            rows = (
-                data
-                if isinstance(data, list)
-                else data.get("environments", data.get("items", []))
+            warn_deprecated(
+                "bench environment list --provider", "bench hub env list --provider"
             )
-            table = Table(title="PrimeIntellect Environments")
-            table.add_column("Environment", style="cyan")
-            table.add_column("Version", style="green")
-            table.add_column("Visibility")
-            table.add_column("Updated", style="dim")
-            for item in rows:
-                name = (
-                    item.get("environment")
-                    or item.get("fullName")
-                    or item.get("name")
-                    or item.get("id")
-                    or ""
-                )
-                version = str(item.get("version") or item.get("latestVersion") or "")
-                visibility = str(item.get("visibility") or item.get("private") or "")
-                updated = str(item.get("updated_at") or item.get("updatedAt") or "")
-                table.add_row(name, version, visibility, updated)
-            console.print(table)
+            hosted_env_list(
+                provider=provider,
+                owner=owner,
+                search=search,
+                limit=limit,
+                output_json=output_json,
+            )
             return
 
         d = cli_main._daytona_client_or_exit()
@@ -175,7 +159,7 @@ def register_environment(app: typer.Typer) -> None:
         console.print(table)
         console.print(f"\n[bold]{total} sandbox(es)[/bold]")
 
-    @env_app.command("show")
+    @env_app.command("show", hidden=True, deprecated=True)
     def environment_show(
         source_env: Annotated[
             str,
@@ -188,17 +172,11 @@ def register_environment(app: typer.Typer) -> None:
             typer.Option("--version", help="Hosted environment version"),
         ] = None,
     ) -> None:
-        """Show hosted environment metadata."""
-        from benchflow.hosted_env import HostedEnvError, HostedEnvRef, prime_env_info
+        """[deprecated] Show hosted environment metadata — use `bench hub env show`."""
+        warn_deprecated("bench environment show", "bench hub env show")
+        hosted_env_show(source_env=source_env, version=version)
 
-        try:
-            ref = HostedEnvRef.parse(source_env, version=version)
-            console.print(prime_env_info(ref))
-        except HostedEnvError as e:
-            console.print(f"[red]{escape(str(e))}[/red]")
-            raise typer.Exit(1) from None
-
-    @env_app.command("inspect")
+    @env_app.command("inspect", hidden=True, deprecated=True)
     def environment_inspect(
         source_env: Annotated[
             str,
@@ -215,19 +193,9 @@ def register_environment(app: typer.Typer) -> None:
             typer.Option("--path", help="File inside the hosted environment package"),
         ] = "README.md",
     ) -> None:
-        """Inspect a file from a hosted environment package."""
-        from benchflow.hosted_env import (
-            HostedEnvError,
-            HostedEnvRef,
-            prime_env_inspect,
-        )
-
-        try:
-            ref = HostedEnvRef.parse(source_env, version=version)
-            console.print(prime_env_inspect(ref, path=path))
-        except HostedEnvError as e:
-            console.print(f"[red]{escape(str(e))}[/red]")
-            raise typer.Exit(1) from None
+        """[deprecated] Inspect a hosted environment file — use `bench hub env inspect`."""
+        warn_deprecated("bench environment inspect", "bench hub env inspect")
+        hosted_env_inspect(source_env=source_env, version=version, path=path)
 
     @env_app.command("cleanup")
     def environment_cleanup(
