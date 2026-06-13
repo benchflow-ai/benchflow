@@ -122,6 +122,31 @@ async def test_provision_starts_present_services():
     assert all(c.rstrip().endswith("&") for c in starts)
 
 
+async def test_provision_fully_detaches_service_fds():
+    """Guards #676: manifest services must start with ALL THREE fds redirected
+    (``</dev/null`` + ``>log 2>&1``) and ``nohup``, never ``disown``.
+
+    On Daytona, ``exec`` is a session command that only returns once nothing
+    holds the session's streams; a service inheriting stdin/stdout/stderr keeps
+    the call running until the timeout cap (#670), wedging the eval. Docker
+    hides this, so only an explicit shape assertion catches the regression.
+    """
+    sandbox = FakeSandbox()
+    env = ManifestEnvironment(CLAWS, sandbox=sandbox)
+    await env.provision(ctx=None)
+    starts = [c for c in sandbox.exec_calls if "serve" in c]
+    assert starts, "expected at least one service start"
+    for cmd in starts:
+        assert cmd.startswith("nohup "), f"service start must use nohup: {cmd!r}"
+        assert "</dev/null" in cmd, f"stdin not redirected (the #676 bug): {cmd!r}"
+        assert ">/tmp/benchflow-env-" in cmd and "2>&1" in cmd, (
+            f"stdout/stderr not redirected to the per-service log: {cmd!r}"
+        )
+        assert cmd.rstrip().endswith("&"), f"service must be backgrounded: {cmd!r}"
+        # `disown` is bash/zsh-only and breaks under the Daytona DinD `sh`/dash.
+        assert "disown" not in cmd, f"disown is not sh/dash-safe: {cmd!r}"
+
+
 async def test_provision_skips_absent_service_binary():
     sandbox = FakeSandbox(absent_binaries={"claw-gcal"})
     env = ManifestEnvironment(CLAWS, sandbox=sandbox)
