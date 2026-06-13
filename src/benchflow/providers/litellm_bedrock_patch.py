@@ -18,7 +18,22 @@ BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
     r"claude-(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)"
 )
 
-_VALID_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"}
+# Requested efforts low→high. LiteLLM 1.88.0rc1 only accepts up to ``high`` for
+# adaptive Claude 4.8+ and raises on ``xhigh``/``max`` (#737), so an override is
+# clamped to the accepted ceiling before being handed to the transform. This is
+# the standalone (sandbox-deployed) copy of the ladder in ``litellm_config``;
+# keep the two in sync.
+_EFFORT_LADDER = ("minimal", "low", "medium", "high", "xhigh", "max")
+_VALID_EFFORTS = set(_EFFORT_LADDER)
+_LITELLM_MAX_EFFORT = "high"
+
+
+def _clamp_effort(effort: str) -> str:
+    if effort not in _EFFORT_LADDER:
+        return effort
+    return _EFFORT_LADDER[
+        min(_EFFORT_LADDER.index(effort), _EFFORT_LADDER.index(_LITELLM_MAX_EFFORT))
+    ]
 
 
 def _is_new_bedrock_claude(model: str | None) -> bool:
@@ -68,6 +83,9 @@ def _patch_bedrock_effort() -> None:
             override = os.environ.get(BEDROCK_THINKING_EFFORT_ENV, "").strip().lower()
             if override in _VALID_EFFORTS:
                 reasoning_effort = override
+            # Clamp xhigh/max (which litellm rejects) to the accepted ceiling so
+            # the request runs at the real maximum instead of raising (#737).
+            reasoning_effort = _clamp_effort(reasoning_effort)
         return original(self, model, reasoning_effort, optional_params)
 
     # Marker for the fail-closed startup preflight (#602): lets the runtime
