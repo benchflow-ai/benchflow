@@ -47,6 +47,7 @@ from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.environment import register_environment
 from benchflow.cli.hub import register_hub
 from benchflow.cli.monitor import register_monitor
+from benchflow.cli.sandbox import register_sandbox
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
 from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
@@ -990,6 +991,7 @@ register_tasks(app)
 register_hub(app)
 register_agent(app)
 register_adopt(app)
+register_sandbox(app)
 register_environment(app)
 register_monitor(app)
 

@@ -444,37 +444,35 @@ to `bench tasks generate --from-hf`.
 bench tasks list-sources
 ```
 
-## bench environment
+## bench sandbox
 
-### bench environment create
+Local sandbox lifecycle: provision a task on a docker/daytona/modal backend,
+list active sandboxes, and reap stale ones.
+
+### bench sandbox create
 
 Create an environment object from a task directory. This validates environment
 construction but does not start the sandbox.
 
 ```bash
-bench environment create tasks/my-task --sandbox daytona
+bench sandbox create tasks/my-task --sandbox daytona
 ```
 
-### bench environment list
+### bench sandbox list
 
 List active local (Daytona) sandboxes.
 
 ```bash
-bench environment list
+bench sandbox list
 ```
 
-> Browsing a hosted provider's environments moved to [`bench hub env`](#bench-hub-env). The
-> old `bench environment list --provider`/`--hub`, `bench environment show`, and `bench
-> environment inspect` still work as **deprecated aliases** through 0.6 (one-line stderr
-> notice; removed in 0.7).
-
-### bench environment cleanup
+### bench sandbox cleanup
 
 Clean up orphaned Daytona sandboxes. By default this deletes sandboxes older
 than 24 hours; use `--dry-run` to preview what would be deleted.
 
 ```bash
-bench environment cleanup --dry-run --max-age 1440
+bench sandbox cleanup --dry-run --max-age 1440
 ```
 
 Daytona-backed evals also reap orphaned sandboxes automatically at run start
@@ -482,6 +480,14 @@ Daytona-backed evals also reap orphaned sandboxes automatically at run start
 an idle-activity guard means concurrent live runs are never reaped). Set
 `BENCHFLOW_DAYTONA_AUTO_REAP` to any of `0`/`false`/`no`/`off` (case-insensitive)
 to disable that automatic pass and rely on the manual command above.
+
+## bench environment (deprecated)
+
+`bench environment` is a hidden **deprecated alias group**, removed in 0.7. The
+local lifecycle moved to [`bench sandbox`](#bench-sandbox) (`create`/`list`/`cleanup`)
+and hosted-provider browsing to [`bench hub env`](#bench-hub-env). The old
+`bench environment create|list|cleanup` and `show|inspect` (plus `list
+--provider`/`--hub`) still work, each printing a one-line stderr notice.
 
 ## bench hub
 

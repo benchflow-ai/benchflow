@@ -87,10 +87,19 @@ def test_top_level_help_lists_public_groups() -> None:
     """Every public top-level group documented in cli.md is shown in --help."""
     out = _help([])
     commands = _help_command_names(out)
-    for group in ("eval", "skills", "tasks", "hub", "agent", "environment"):
+    for group in ("eval", "skills", "tasks", "hub", "agent", "adopt", "sandbox"):
         assert group in commands, f"missing public group {group!r} in: {out}"
     # Deprecated, hidden, and removed commands must not show up in public help.
-    for hidden in ("run", "job", "agents", "metrics", "view", "eval-batch"):
+    # `environment` is now a hidden deprecated alias group (→ sandbox / hub env).
+    for hidden in (
+        "run",
+        "job",
+        "agents",
+        "metrics",
+        "view",
+        "eval-batch",
+        "environment",
+    ):
         assert hidden not in commands, (
             f"hidden command {hidden!r} unexpectedly shown: {out}"
         )
@@ -162,10 +171,15 @@ def test_documented_subcommands_exist() -> None:
         ["tasks", "list-sources"],
         ["skills", "list"],
         ["skills", "eval"],
+        ["sandbox", "create"],
+        ["sandbox", "list"],
+        ["sandbox", "cleanup"],
+        # `environment` is now a hidden deprecated alias group; its commands
+        # still resolve for back-compat.
         ["environment", "create"],
         ["environment", "list"],
-        ["environment", "show"],  # hidden deprecated alias, still resolves
-        ["environment", "inspect"],  # hidden deprecated alias, still resolves
+        ["environment", "show"],
+        ["environment", "inspect"],
         ["environment", "cleanup"],
         ["hub", "check"],
         ["hub", "env", "list"],
