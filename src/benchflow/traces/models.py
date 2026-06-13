@@ -16,7 +16,6 @@ class ToolCall:
 
     name: str
     input: dict[str, object] = field(default_factory=dict)
-    output: str | None = None
 
 
 @dataclass

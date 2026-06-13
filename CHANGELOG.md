@@ -19,6 +19,17 @@
   on `bench eval create --source-env`.
 
 ### Removed
+- Removed two unimplemented stub methods (`read_file`, `write_file`) from the
+  `@runtime_checkable` `Sandbox` Protocol. No backend implemented them (backends
+  expose the `upload_file`/`download_file` family) and there were no call sites,
+  so they were a latent `isinstance` trap on the contract surface.
+- Dead-code purge, round 3 (no public-API impact; each symbol re-verified
+  zero-reference with class context): removed `TaskMetrics.audit_outcome`,
+  `OTelCollector.endpoint`, `ReplayRouter.cursor`, `RuntimeResult.to_run_result`
+  (legacy SDK-compat converter, unused), the never-read dataclass fields
+  `ToolCall.output` and `JudgeConfig.{reference, prompt_template}`, the write-only
+  `ReplayProxy._host`, the inert `AgentProtocolError.code` annotation, and an
+  unused `retry_if_exception_type` import + fallback in `sandbox/daytona.py`.
 - Dead-code purge, round 2 (no public-API impact; each symbol adversarially
   verified zero-reference with class context): removed seven unused `*_path`
   `@property`s from `TaskPaths`/`RolloutPaths` (`readme_path`, `gitignore_path`,
