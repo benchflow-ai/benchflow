@@ -9,14 +9,11 @@ folder linked to the parent. See :mod:`benchflow.continue_run`.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from pathlib import Path
 from typing import Annotated
 
 import typer
-
-logger = logging.getLogger(__name__)
 
 
 def _load_env_defaults() -> None:

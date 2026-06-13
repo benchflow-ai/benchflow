@@ -19,6 +19,14 @@
   on `bench eval create --source-env`.
 
 ### Removed
+- Dead-code purge, round 2 (no public-API impact; each symbol adversarially
+  verified zero-reference with class context): removed seven unused `*_path`
+  `@property`s from `TaskPaths`/`RolloutPaths` (`readme_path`, `gitignore_path`,
+  `verifier_document_path`, `artifacts_manifest_path`, `result_path`,
+  `exception_message_path`, `log_path`), the vestigial `ModalSandbox.supports_gpus`
+  / `can_disable_internet` capability properties (not on the Sandbox Protocol),
+  an unused module-level `logger` in `cli/continue_cmd.py`, and the orphaned
+  `mcp_service_hooks_from_config` helper.
 - Dead-code purge (no public-API impact unless noted): removed the unused
   `job_config_from_yaml` helper, the nominal `TASK_REPOS` back-compat dict
   (use `TASK_ALIASES`), the `_looks_like_verifier_dep_install_error` shim

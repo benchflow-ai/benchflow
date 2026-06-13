@@ -50,25 +50,3 @@ def mcp_reviewer_hook(
             logger.warning(f"MCP reviewer server may not be ready on port {port}")
 
     return _start_reviewer
-
-
-def mcp_service_hooks_from_config(services: list[str] | None) -> list:
-    """Parse service declarations into pre_agent_hooks.
-
-    Format: "service-name:port" where service-name maps to a known MCP server.
-    """
-    if not services:
-        return []
-
-    hooks = []
-    for svc in services:
-        parts = svc.split(":")
-        name = parts[0]
-        port = int(parts[1]) if len(parts) > 1 else 8100
-
-        if name == "benchflow-reviewer":
-            hooks.append(mcp_reviewer_hook(port=port))
-        else:
-            logger.warning(f"Unknown MCP service: {name}")
-
-    return hooks
