@@ -42,7 +42,7 @@ def register_monitor(app: typer.Typer) -> None:
             "API surface scaffold; runtime not yet implemented."
         ),
     )
-    app.add_typer(monitor_app, name="monitor")
+    app.add_typer(monitor_app, name="monitor", hidden=True)
 
     @monitor_app.command("run")
     def monitor_run(

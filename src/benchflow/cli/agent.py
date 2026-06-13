@@ -24,7 +24,7 @@ from benchflow.cli._shared import (
 def register_agent(app: typer.Typer) -> None:
     """Attach the ``agent`` command group to the top-level benchflow app."""
     agent_app = typer.Typer(help="Agent management commands.")
-    app.add_typer(agent_app, name="agent")
+    app.add_typer(agent_app, name="agent", rich_help_panel="Core")
     register_agent_router(agent_app)
 
     @agent_app.command("list")

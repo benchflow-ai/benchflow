@@ -181,7 +181,7 @@ def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
 
 
 eval_app = typer.Typer(help="Evaluation commands.")
-app.add_typer(eval_app, name="eval")
+app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 
 
 @eval_app.command("create")

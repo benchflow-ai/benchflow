@@ -28,7 +28,7 @@ from benchflow.cli._shared import console
 def register_environment(app: typer.Typer) -> None:
     """Attach the ``environment`` command group to the top-level benchflow app."""
     env_app = typer.Typer(help="Environment management commands.")
-    app.add_typer(env_app, name="environment")
+    app.add_typer(env_app, name="environment", rich_help_panel="Environments")
 
     @env_app.command("create")
     def environment_create(
