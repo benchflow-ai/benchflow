@@ -825,6 +825,51 @@ class TestLoopStrategyEngine:
         clear.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_mid_loop_isolation_failure_warns_and_continues(
+        self, tmp_path: Path, caplog
+    ):
+        """A mid-loop isolation failure (e.g. a single-container task whose
+        verifier service is gone — 'service main is not running') must NOT crash
+        the run: the final verify() still hardens before scoring, so the loop
+        warns and continues to its next round."""
+        trial = _make_loop_trial("verify-retry:k=1,feedback=names", tmp_path)
+        trial._effective_locked = ["/tests", "/verifier"]
+
+        verifies: list[int] = []
+        with (
+            patch.object(trial, "connect_as", new_callable=AsyncMock),
+            patch.object(
+                trial, "execute", new_callable=AsyncMock, return_value=([], 0)
+            ),
+            patch.object(trial, "disconnect", new_callable=AsyncMock),
+            patch.object(
+                trial,
+                "soft_verify",
+                new=AsyncMock(
+                    side_effect=lambda: verifies.append(1)
+                    or ({"reward": 0.0}, None, None)
+                ),
+            ),
+            patch.object(trial._planes, "lockdown_paths", new_callable=AsyncMock),
+            patch.object(
+                trial._planes,
+                "clear_verifier_output_dir",
+                new=AsyncMock(
+                    side_effect=RuntimeError('service "main" is not running')
+                ),
+            ),
+        ):
+            with caplog.at_level("WARNING"):
+                await trial._run_user_loop()  # must NOT raise
+
+        # k=1 → round 0 + 1 retry; both ran despite the clear failing each round.
+        assert len(verifies) == 2
+        assert any(
+            "Mid-loop verifier isolation skipped" in r.message
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
     async def test_iterations_jsonl_and_metadata_on_retries_exhausted(
         self, tmp_path: Path
     ):

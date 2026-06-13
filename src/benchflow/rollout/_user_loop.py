@@ -401,16 +401,34 @@ async def _run_user_loop(rollout: Rollout) -> None:
             # Re-lock and clear now that verifier_output is captured, before
             # the next connect_as. Both are no-ops without a sandbox user
             # (setup() already warned loudly about that configuration).
-            if rollout._effective_locked:
-                await rollout._planes.lockdown_paths(
-                    rollout._env, rollout._effective_locked
-                )
-            if cfg.sandbox_user:
-                await rollout._planes.clear_verifier_output_dir(
-                    rollout._env,
-                    "User loop isolation failed: clearing verifier output directory",
-                    user="root",
-                    timeout_sec=10,
+            #
+            # BEST-EFFORT: mid-loop isolation is defense-in-depth for the NEXT
+            # round's feedback. The final verify() ALWAYS runs harden_before_verify
+            # and is the only result that scores, so a mid-loop isolation failure
+            # (e.g. a single-container task whose verifier service is no longer
+            # running mid-loop — "service main is not running") must NOT crash the
+            # whole run. Warn loudly and continue; the worst case is the
+            # pre-existing, less-isolated next-round feedback, never a mis-scored
+            # result.
+            try:
+                if rollout._effective_locked:
+                    await rollout._planes.lockdown_paths(
+                        rollout._env, rollout._effective_locked
+                    )
+                if cfg.sandbox_user:
+                    await rollout._planes.clear_verifier_output_dir(
+                        rollout._env,
+                        "User loop isolation failed: clearing verifier output directory",
+                        user="root",
+                        timeout_sec=10,
+                    )
+            except Exception as iso_err:
+                logger.warning(
+                    "Mid-loop verifier isolation skipped at round %d: %s. "
+                    "Final verify() still hardens before scoring; next-round "
+                    "feedback may be less isolated.",
+                    round_num,
+                    iso_err,
                 )
 
             result = RoundResult(
