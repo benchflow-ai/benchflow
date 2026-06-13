@@ -24,7 +24,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from benchflow.cli._options import SandboxOption
-from benchflow.cli._shared import console
+from benchflow.cli._shared import console, print_error
 
 
 def sandbox_create(task_dir: Path, sandbox: str) -> None:
@@ -32,17 +32,21 @@ def sandbox_create(task_dir: Path, sandbox: str) -> None:
     from benchflow.runtime import Environment
 
     if not task_dir.is_dir():
-        console.print(f"[red]Not a directory: {escape(str(task_dir))}[/red]")
+        print_error(f"Not a directory: {task_dir}")
         raise typer.Exit(1)
     try:
         env = Environment.from_task(task_dir, sandbox=sandbox)
     except (FileNotFoundError, NotADirectoryError, ValueError) as e:
         # An existing dir with no task document reaches Task.__init__'s unguarded
         # read_text() — surface a clean error instead of a raw traceback.
-        console.print(
-            f"[red]Not a valid task directory {escape(str(task_dir))}:[/red] "
-            f"{escape(str(e))}"
-        )
+        print_error(f"Not a valid task directory {task_dir}: {e}")
+        raise typer.Exit(1) from None
+    except RuntimeError as e:
+        # An unknown --sandbox backend (UnsupportedTaskFeatureError, a RuntimeError
+        # subclass) and a missing optional sandbox dependency both raise a
+        # RuntimeError carrying a clean, user-facing message. Surface it without a
+        # traceback, matching how `sandbox list`/`cleanup` handle the same cases.
+        print_error(str(e))
         raise typer.Exit(1) from None
     console.print(f"[green]Environment created:[/green] {escape(str(env))}")
     console.print(f"  Task:    {env.task_path}")

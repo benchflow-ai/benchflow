@@ -118,7 +118,7 @@ Save parity experiment results to `parity_experiment.json`:
 }
 ```
 
-`bench agent verify` reads this `tasks[].criteria_results` schema as the
+`bench eval adopt verify` reads this `tasks[].criteria_results` schema as the
 deterministic floor, and also accepts the equivalent pass/total summary blocks
 some benchmarks record instead — `structural_parity` / `eval_parity` /
 `live_parity` / `e2e_parity` / `pipeline_parity` / `security_parity` (or a bare

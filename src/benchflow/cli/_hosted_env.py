@@ -42,7 +42,12 @@ def hosted_env_list(
         print_error(str(e))
         raise typer.Exit(1) from None
     if output_json:
-        console.print(raw)
+        # typer.echo, NOT console.print: Rich's console soft-wraps long lines to
+        # the terminal width and injects a literal newline mid-string, which
+        # turns the upstream's valid JSON into unparseable output (raw control
+        # char inside a string). Write the payload verbatim so `--json | jq`
+        # works at any width.
+        typer.echo(raw)
         return
     data = json.loads(raw)
     rows = (

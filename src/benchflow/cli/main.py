@@ -39,6 +39,7 @@ from benchflow.cli._shared import (
     _exit_if_evaluation_had_errors,
     _report_eval_result,
     console,
+    err_console,
     print_error,
 )
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
@@ -485,7 +486,7 @@ def eval_create(
     # --source-path/--source-ref only apply to --source-repo; otherwise they're
     # silently ignored (e.g. `--dataset X --source-ref abc` drops the ref).
     if (source_path or source_ref) and not source_repo:
-        console.print("[red]--source-path/--source-ref require --source-repo[/red]")
+        print_error("--source-path/--source-ref require --source-repo")
         raise typer.Exit(1)
     try:
         plan = build_eval_plan(request)
@@ -507,11 +508,20 @@ def eval_create(
             source_env_sampling_arg=source_env_sampling_arg,
         )
     elif source_repo:
+        import subprocess
+
         from benchflow._utils.benchmark_repos import resolve_source_with_metadata
 
-        resolved = resolve_source_with_metadata(
-            source_repo, path=source_path, ref=source_ref
-        )
+        try:
+            resolved = resolve_source_with_metadata(
+                source_repo, path=source_path, ref=source_ref
+            )
+        except (subprocess.CalledProcessError, OSError, ValueError, RuntimeError) as e:
+            # A clone failure (missing/private repo, bad --source-ref, auth,
+            # network) otherwise escapes as a raw traceback — unlike the sibling
+            # config/source-env/dataset branches which all map to a clean error.
+            print_error(f"Could not resolve --source-repo {source_repo!r}: {e}")
+            raise typer.Exit(1) from None
         run_batch_eval(
             plan,
             resolved.path,
@@ -522,6 +532,11 @@ def eval_create(
         # handles both layouts (Evaluation._get_task_dirs detects when
         # tasks_dir itself contains task.toml) and applies include/exclude
         # filters uniformly (#400, #401, #407).
+        if not Path(tasks_dir).is_dir():
+            # Without this guard a file (or missing path) reaches iterdir() and
+            # dumps a raw NotADirectoryError, unlike sandbox create / eval metrics.
+            print_error(f"Not a directory: {tasks_dir}")
+            raise typer.Exit(1)
         run_batch_eval(plan, tasks_dir, plan.make_eval_config())
     elif dataset:
         from benchflow._utils.dataset_registry import (
@@ -544,7 +559,9 @@ def eval_create(
             # dataset version was validated against. The escape hatch keeps
             # local experimentation possible without weakening the default.
             print_error(f"{version_issue}")
-            console.print(
+            # The remediation hint is part of the error — keep it on stderr too so
+            # a `--json` consumer's stdout stays clean.
+            err_console.print(
                 "Pick a dataset version validated for this harness, or re-run "
                 "with --ignore-bench-version to proceed anyway."
             )
@@ -871,10 +888,10 @@ def eval_list(
         except (json.JSONDecodeError, OSError):
             data = None
         if not isinstance(data, dict):
-            table.add_row(label, "?", "[dim]corrupt summary[/dim]", "—")
+            table.add_row(escape(label), "?", "[dim]corrupt summary[/dim]", "—")
             return
         table.add_row(
-            label,
+            escape(label),
             str(data.get("total", "?")),
             f"{data.get('passed', '?')}/{data.get('total', '?')} ({data.get('score', '?')})",
             memory_label(data),
@@ -894,7 +911,7 @@ def eval_list(
             add_summary_row(d.name, summary)
         else:
             sub_count = sum(1 for s in d.iterdir() if s.is_dir())
-            table.add_row(d.name, str(sub_count), "[dim]no summary[/dim]", "—")
+            table.add_row(escape(d.name), str(sub_count), "[dim]no summary[/dim]", "—")
 
     console.print(table)
 
@@ -934,7 +951,7 @@ def eval_metrics(
         console.print(json.dumps(summary, indent=2))
         return
 
-    table = Table(title=f"Results: {jobs_dir}")
+    table = Table(title=f"Results: {escape(str(jobs_dir))}")
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="bold")
 
