@@ -14,6 +14,7 @@ from typing import Any, NoReturn, cast
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow.agents.registry import AGENTS
+from benchflow.sandbox.providers import OPTIONAL_SANDBOX_EXTRAS, providers_phrase
 from benchflow.skill_policy import validate_container_mount_path
 from benchflow.task import RolloutPaths, Task
 
@@ -55,17 +56,11 @@ def _stage_ignore(directory: str, contents: list[str]) -> list[str]:
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
 
 
-_OPTIONAL_SANDBOX_EXTRAS = {
-    "daytona": "sandbox-daytona",
-    "modal": "sandbox-modal",
-}
-
-
 def _raise_missing_optional_sandbox_dependency(
     sandbox_type: str,
     exc: ImportError,
 ) -> NoReturn:
-    extra = _OPTIONAL_SANDBOX_EXTRAS[sandbox_type]
+    extra = OPTIONAL_SANDBOX_EXTRAS[sandbox_type]
     raise RuntimeError(
         f"Missing optional dependency for {sandbox_type!r} sandbox. "
         f"Install it with `uv sync --extra {extra}` for local development, "
@@ -759,7 +754,7 @@ def _create_sandbox_environment(
         )
     else:
         raise ValueError(
-            f"Unknown sandbox_type: {sandbox_type!r} (use 'docker', 'daytona', or 'modal')"
+            f"Unknown sandbox_type: {sandbox_type!r} (use {providers_phrase(quote=True)})"
         )
 
 

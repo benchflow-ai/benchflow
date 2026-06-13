@@ -49,6 +49,7 @@ from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
 from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
+from benchflow.sandbox.providers import providers_phrase
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 
 if TYPE_CHECKING:
@@ -268,7 +269,7 @@ def eval_create(
     ] = None,
     environment: Annotated[
         str | None,
-        typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal"),
+        typer.Option("--sandbox", help=f"Sandbox: {providers_phrase()}"),
     ] = None,
     usage_tracking: Annotated[
         str | None,

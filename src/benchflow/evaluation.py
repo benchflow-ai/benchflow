@@ -149,6 +149,15 @@ class EmptyTaskSelectionError(ValueError):
     """
 
 
+class MalformedTaskError(ValueError):
+    """A single-task input whose ``task.md`` exists but fails to parse (#3).
+
+    Subclasses ``ValueError`` so the CLI's existing run-error handlers surface it
+    as a clean red message + exit 1. The message names the offending file —
+    silently treating a typo'd task.md as "not a task" would make the task vanish.
+    """
+
+
 @dataclass
 class RetryConfig:
     """Configuration for retry behavior.
@@ -933,7 +942,23 @@ class Evaluation:
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
     def _get_task_dirs(self) -> list[Path]:
-        """Get all valid task directories."""
+        """Get all valid task directories.
+
+        A directory whose ``task.md`` *exists but fails to parse* is a malformed
+        task, not a non-task: in the single-task case that is a hard error (the
+        user named exactly one thing and it is broken); in the batch case it is
+        loudly warned and skipped (a typo must never make a task silently vanish
+        from a 50-task suite, #3) while the healthy tasks still run. A task.md
+        that PARSES but is structurally incomplete (e.g. a schema-only fixture)
+        keeps its existing silent skip.
+        """
+        from benchflow._utils.task_authoring import task_document_parse_error
+
+        single_task_md = self._tasks_dir / "task.md"
+        if single_task_md.is_file():
+            parse_error = task_document_parse_error(single_task_md)
+            if parse_error is not None:
+                raise MalformedTaskError(f"{single_task_md}: {parse_error}")
         if _is_task_dir(self._tasks_dir):
             if self._tasks_dir.name in self._config.exclude_tasks:
                 return []
@@ -943,14 +968,30 @@ class Evaluation:
             ):
                 return []
             return [self._tasks_dir]
-        return sorted(
-            d
-            for d in self._tasks_dir.iterdir()
-            if d.is_dir()
-            and _is_task_dir(d)
-            and d.name not in self._config.exclude_tasks
-            and (not self._config.include_tasks or d.name in self._config.include_tasks)
-        )
+
+        selected: list[Path] = []
+        for d in sorted(self._tasks_dir.iterdir()):
+            if not d.is_dir():
+                continue
+            if d.name in self._config.exclude_tasks:
+                continue
+            if self._config.include_tasks and d.name not in self._config.include_tasks:
+                continue
+            if _is_task_dir(d):
+                selected.append(d)
+                continue
+            # Not a task per check_task — but if it carries a task.md that fails
+            # to PARSE, warn (naming the dir + error) instead of dropping it
+            # silently. Selection filters were applied above, so excluded dirs
+            # are never warned about.
+            task_md = d / "task.md"
+            if task_md.is_file():
+                parse_error = task_document_parse_error(task_md)
+                if parse_error is not None:
+                    logger.warning(
+                        "Skipping malformed task %r: %s", d.name, parse_error
+                    )
+        return selected
 
     def _get_completed_tasks(self) -> dict[str, dict]:
         """Load tasks that already have results with rewards or verifier errors.

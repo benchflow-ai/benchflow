@@ -10,6 +10,7 @@ None) so both commands return the same verdict.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from typer.testing import CliRunner
 
 from benchflow._utils.task_authoring import check_task
 from benchflow.cli.main import app
-from benchflow.evaluation import Evaluation, EvaluationConfig
+from benchflow.evaluation import Evaluation, EvaluationConfig, MalformedTaskError
 
 SCHEMA_ONLY_TASK_MD_EXAMPLES = (
     Path("docs/examples/task-md/harbor-parity"),
@@ -73,6 +74,16 @@ metadata:
 
 This fixture validates task.md authoring syntax only.
 """
+    )
+    return task
+
+
+def _make_malformed_task_md(parent: Path, name: str = "malformed-task-md") -> Path:
+    """Create a task dir whose task.md has broken YAML frontmatter (fails to parse)."""
+    task = parent / name
+    task.mkdir()
+    (task / "task.md").write_text(
+        "---\ntask:\n  name: [unclosed\n---\n\n## prompt\n\nhi\n"
     )
     return task
 
@@ -346,3 +357,89 @@ def test_tasks_check_escapes_rich_markup_in_diagnostic(tmp_path):
     assert result.exit_code == 1
     # Should mention the parse error literally, not swallow brackets.
     assert "parse error" in result.output
+
+
+# ── malformed task.md no longer vanishes silently (#3) ────────────────────────
+
+
+def test_malformed_task_md_single_task_aborts_with_parse_error(tmp_path):
+    # A single-task input whose task.md fails to parse must abort with a parse
+    # error naming the file — NOT be silently treated as "not a task" and then
+    # mislabeled as an empty-selection / filter miss.
+    task = _make_malformed_task_md(tmp_path)
+    ev = Evaluation(
+        tasks_dir=str(task),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+    with pytest.raises(MalformedTaskError) as ei:
+        ev._get_task_dirs()
+    msg = str(ei.value)
+    assert "task.md" in msg and "parse error" in msg
+    assert "No tasks" not in msg and "selected" not in msg
+
+
+def test_malformed_task_md_in_batch_is_warned_not_silently_dropped(tmp_path, caplog):
+    # The core #3 regression: a typo'd task.md in a batch must leave a trace
+    # (a WARNING naming the dir + parse error) while healthy tasks still run.
+    runnable = _make_task_missing_agent(tmp_path, name="runnable-task")
+    _make_malformed_task_md(tmp_path, name="broken-task")
+    ev = Evaluation(
+        tasks_dir=str(tmp_path),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+    with caplog.at_level(logging.WARNING):
+        dirs = ev._get_task_dirs()
+    assert runnable in dirs
+    assert all(d.name != "broken-task" for d in dirs)
+    assert any(
+        "broken-task" in r.message and "parse error" in r.message
+        for r in caplog.records
+    ), f"no warning naming the malformed task: {[r.message for r in caplog.records]}"
+
+
+def test_schema_only_task_md_is_still_silently_skipped(tmp_path, caplog):
+    # Regression guard: a parse-VALID but structurally-incomplete task.md must
+    # keep its silent skip — the fix must not make intentional fixtures noisy.
+    runnable = _make_task_missing_agent(tmp_path, name="runnable-task")
+    _make_schema_only_task(tmp_path)
+    ev = Evaluation(
+        tasks_dir=str(tmp_path),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+    with caplog.at_level(logging.WARNING):
+        dirs = ev._get_task_dirs()
+    assert runnable in dirs
+    assert not any("malformed" in r.message.lower() for r in caplog.records)
+
+
+def test_malformed_excluded_task_md_is_not_warned(tmp_path, caplog):
+    # Selection filtering wins: an excluded malformed dir wasn't going to run,
+    # so it must not produce a warning.
+    _make_malformed_task_md(tmp_path, name="broken-task")
+    runnable = _make_task_missing_agent(tmp_path, name="runnable-task")
+    ev = Evaluation(
+        tasks_dir=str(tmp_path),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle", exclude_tasks={"broken-task"}),
+    )
+    with caplog.at_level(logging.WARNING):
+        dirs = ev._get_task_dirs()
+    assert runnable in dirs
+    assert not any("broken-task" in r.message for r in caplog.records)
+
+
+def test_malformed_task_md_cli_exits_with_parse_error(tmp_path):
+    # End-to-end: the CLI must exit non-zero with the file + parse error, not a
+    # raw traceback and not a misleading empty-selection message.
+    task = _make_malformed_task_md(tmp_path)
+    result = CliRunner().invoke(
+        app,
+        ["eval", "create", "--tasks-dir", str(task), "--agent", "oracle"],
+    )
+    assert result.exit_code == 1
+    # Collapse Rich's line-wrapping before substring-matching the message.
+    out = " ".join(result.output.split())
+    assert "task.md" in out and "parse error" in out
