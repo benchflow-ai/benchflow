@@ -323,16 +323,20 @@ def _validate_strategy(
                 f"{prefix}.isolation must be 'verifier-only'"
             )
         inputs = config.get("inputs")
-        if not isinstance(inputs, list) or not all(
-            isinstance(item, str) and item for item in inputs
+        if (
+            not isinstance(inputs, list)
+            or not inputs
+            or not all(isinstance(item, str) and item for item in inputs)
         ):
             raise VerifierDocumentParseError(
                 f"{prefix}.inputs must be a non-empty list of strings"
             )
     elif strategy_type == "ors-episode":
         inputs = config.get("inputs")
-        if not isinstance(inputs, list) or not all(
-            isinstance(item, str) and item for item in inputs
+        if (
+            not isinstance(inputs, list)
+            or not inputs
+            or not all(isinstance(item, str) and item for item in inputs)
         ):
             raise VerifierDocumentParseError(
                 f"{prefix}.inputs must be a non-empty list of strings"
