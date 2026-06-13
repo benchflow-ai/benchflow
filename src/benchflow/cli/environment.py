@@ -29,7 +29,7 @@ from benchflow.cli.sandbox import sandbox_cleanup, sandbox_create, sandbox_list_
 
 def register_environment(app: typer.Typer) -> None:
     """Attach the deprecated ``environment`` alias group (hidden from help)."""
-    env_app = typer.Typer(help="[deprecated] use `bench sandbox` / `bench hub env`.")
+    env_app = typer.Typer(help="Deprecated; use `bench sandbox` / `bench hub env`.")
     app.add_typer(env_app, name="environment", hidden=True)
 
     @env_app.command("create", deprecated=True)
@@ -42,7 +42,7 @@ def register_environment(app: typer.Typer) -> None:
         ],
         sandbox: SandboxOption = "daytona",
     ) -> None:
-        """[deprecated] use `bench sandbox create`."""
+        """Deprecated; use `bench sandbox create`."""
         warn_deprecated("bench environment create", "bench sandbox create")
         sandbox_create(task_dir, sandbox)
 
@@ -51,13 +51,13 @@ def register_environment(app: typer.Typer) -> None:
         provider: Annotated[
             str | None,
             typer.Option(
-                "--provider", hidden=True, help="[deprecated] use `bench hub env list`"
+                "--provider", hidden=True, help="Deprecated; use `bench hub env list`"
             ),
         ] = None,
         hub: Annotated[
             str | None,
             typer.Option(
-                "--hub", hidden=True, help="[deprecated] use `bench hub env list`"
+                "--hub", hidden=True, help="Deprecated; use `bench hub env list`"
             ),
         ] = None,
         owner: Annotated[
@@ -79,7 +79,7 @@ def register_environment(app: typer.Typer) -> None:
             ),
         ] = False,
     ) -> None:
-        """[deprecated] use `bench sandbox list` (local) or `bench hub env list` (hosted)."""
+        """Deprecated; use `bench sandbox list` (local) or `bench hub env list` (hosted)."""
         provider = provider or hub
         if provider:
             warn_deprecated(
@@ -108,7 +108,7 @@ def register_environment(app: typer.Typer) -> None:
             str | None, typer.Option("--version", help="Hosted environment version")
         ] = None,
     ) -> None:
-        """[deprecated] use `bench hub env show`."""
+        """Deprecated; use `bench hub env show`."""
         warn_deprecated("bench environment show", "bench hub env show")
         hosted_env_show(source_env=source_env, version=version)
 
@@ -128,7 +128,7 @@ def register_environment(app: typer.Typer) -> None:
             typer.Option("--path", help="File inside the hosted environment package"),
         ] = "README.md",
     ) -> None:
-        """[deprecated] use `bench hub env inspect`."""
+        """Deprecated; use `bench hub env inspect`."""
         warn_deprecated("bench environment inspect", "bench hub env inspect")
         hosted_env_inspect(source_env=source_env, version=version, path=path)
 
@@ -141,6 +141,6 @@ def register_environment(app: typer.Typer) -> None:
             int, typer.Option("--max-age", help="Delete sandboxes older than N minutes")
         ] = 1440,
     ) -> None:
-        """[deprecated] use `bench sandbox cleanup`."""
+        """Deprecated; use `bench sandbox cleanup`."""
         warn_deprecated("bench environment cleanup", "bench sandbox cleanup")
         sandbox_cleanup(dry_run=dry_run, max_age_minutes=max_age_minutes)
