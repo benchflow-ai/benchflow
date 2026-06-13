@@ -474,6 +474,11 @@ def eval_create(
         registry=registry,
         ignore_bench_version=ignore_bench_version,
     )
+    # --source-path/--source-ref only apply to --source-repo; otherwise they're
+    # silently ignored (e.g. `--dataset X --source-ref abc` drops the ref).
+    if (source_path or source_ref) and not source_repo:
+        console.print("[red]--source-path/--source-ref require --source-repo[/red]")
+        raise typer.Exit(1)
     try:
         plan = build_eval_plan(request)
     except EvalPlanError as exc:
@@ -879,6 +884,11 @@ def eval_metrics(
     """Collect and display metrics from a jobs directory."""
     from benchflow.metrics import collect_metrics
 
+    if not Path(jobs_dir).is_dir():
+        # Without this, collect_metrics rglobs nothing and reports a green
+        # all-zeros table with exit 0 — a silent trap for scripted collectors.
+        console.print(f"[red]Not a directory: {jobs_dir}[/red]")
+        raise typer.Exit(1)
     m = collect_metrics(str(jobs_dir), benchmark=benchmark, agent=agent, model=model)
     summary = m.summary()
 

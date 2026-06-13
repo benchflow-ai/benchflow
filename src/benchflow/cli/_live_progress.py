@@ -26,6 +26,7 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
+from benchflow.cli._shared import console
 from benchflow.usage_tracking import is_trusted_usage_source
 
 if TYPE_CHECKING:
@@ -54,23 +55,42 @@ def progress_enabled(console: Console) -> bool:
 
 @contextlib.contextmanager
 def quiet_root_logging() -> Iterator[None]:
-    """Silence root-logger output for the duration of a live display.
+    """Mute INFO chatter during a live display, but buffer + replay WARNING+.
 
     The engine streams ``logger.info`` lines to stderr during a run; a Live panel
-    repainting stdout would be shredded by them. Suppressing them keeps the
-    dashboard the single coherent view. Note this also drops per-task *error
-    detail* (tracebacks) from the live stream — the error counts still surface in
-    the dashboard and the categories in ``summary.json``, but a future refinement
-    could buffer WARNING+ records and flush them after the Live exits. Handlers
-    are restored on exit even if the run raises.
+    repainting stdout would be shredded by them, so INFO/DEBUG are dropped while
+    the dashboard owns the screen. But the engine's *batch-level reliability
+    verdicts* (">20% verifier errors — results may be unreliable", the
+    verifier-error summary, circuit-breaker trips) are WARNING/ERROR and must NOT
+    vanish — a 100%-verifier-error run looking like a normal red score line is a
+    correctness-of-conclusions hazard. So WARNING+ records are captured and
+    replayed to stderr after the Live exits. Handlers are restored even on raise.
     """
     root = logging.getLogger()
     saved = root.handlers[:]
-    root.handlers = [logging.NullHandler()]
+    buffer = _WarningBuffer()
+    root.handlers = [buffer]
     try:
         yield
     finally:
         root.handlers = saved
+        buffer.replay()
+
+
+class _WarningBuffer(logging.Handler):
+    """Capture WARNING+ records during a Live; drop INFO/DEBUG; replay on exit."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self._records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._records.append(record)
+
+    def replay(self) -> None:
+        for record in self._records:
+            style = "red" if record.levelno >= logging.ERROR else "yellow"
+            console.print(f"[{style}]{record.getMessage()}[/{style}]")
 
 
 @contextlib.contextmanager

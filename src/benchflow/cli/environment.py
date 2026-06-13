@@ -43,6 +43,9 @@ def register_environment(app: typer.Typer) -> None:
         """Create an environment from a task directory (does not start it)."""
         from benchflow.runtime import Environment
 
+        if not task_dir.is_dir():
+            console.print(f"[red]Not a directory: {task_dir}[/red]")
+            raise typer.Exit(1)
         env = Environment.from_task(task_dir, sandbox=sandbox)
         console.print(f"[green]Environment created:[/green] {env}")
         console.print(f"  Task:    {env.task_path}")

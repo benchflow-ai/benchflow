@@ -53,7 +53,7 @@ def register_hub(app: typer.Typer) -> None:
         ] = Path(".cache/hub/harbor"),
         limit: Annotated[
             int | None,
-            typer.Option("--limit", help="Optional cap on selected task refs."),
+            typer.Option("--limit", help="Optional cap on selected task refs.", min=1),
         ] = None,
     ) -> None:
         """Inventory or structurally check representative Harbor registry tasks."""

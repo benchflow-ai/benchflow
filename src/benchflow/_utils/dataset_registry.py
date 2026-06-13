@@ -69,12 +69,22 @@ def parse_dataset_spec(spec: str) -> tuple[str, str]:
 
 def load_registry(source: str) -> list[dict[str, Any]]:
     """Load a dataset registry from an HTTP(S) URL or a local file path."""
-    if source.startswith(("http://", "https://")):
-        with urlopen(source, timeout=30) as response:
-            raw = response.read().decode("utf-8")
-    else:
-        raw = Path(source).read_text()
-    registry = json.loads(raw)
+    try:
+        if source.startswith(("http://", "https://")):
+            with urlopen(source, timeout=30) as response:
+                raw = response.read().decode("utf-8")
+        else:
+            raw = Path(source).read_text()
+    except OSError as exc:  # URLError + FileNotFoundError both subclass OSError
+        raise DatasetResolutionError(
+            f"Could not read registry at {source}: {exc}"
+        ) from exc
+    try:
+        registry = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise DatasetResolutionError(
+            f"Registry at {source} is not valid JSON: {exc}"
+        ) from exc
     if not isinstance(registry, list):
         raise DatasetResolutionError(
             f"Registry at {source} is not a list of dataset entries"
