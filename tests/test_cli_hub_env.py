@@ -75,9 +75,7 @@ def test_environment_group_is_hidden_but_still_resolves() -> None:
 
     cmd = typer.main.get_command(app)
     visible = {
-        name
-        for name, sub in cmd.commands.items()
-        if not getattr(sub, "hidden", False)
+        name for name, sub in cmd.commands.items() if not getattr(sub, "hidden", False)
     }
     assert "sandbox" in visible  # canonical local group is visible
     assert "environment" not in visible  # deprecated alias group is hidden
