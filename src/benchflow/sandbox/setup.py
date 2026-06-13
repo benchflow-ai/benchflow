@@ -764,10 +764,28 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             persistent_env=manifest_env or None,
         )
+    elif sandbox_type == "macos-ios-simulator":
+        # Non-Docker host provider: uses the host's xcrun/simctl + Appium
+        # toolchain (no pip extra), so a missing-import path is not possible
+        # the way it is for cloud SDK backends. preflight() raises an
+        # actionable SystemExit when the host cannot run iOS Simulators.
+        from benchflow.sandbox.macos_ios_simulator import MacosIosSimulatorSandbox
+
+        MacosIosSimulatorSandbox.preflight()
+
+        return MacosIosSimulatorSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
     else:
         raise ValueError(
             f"Unknown sandbox_type: {sandbox_type!r} "
-            "(use 'docker', 'daytona', 'modal', or 'cua')"
+            "(use 'docker', 'daytona', 'modal', 'cua', or "
+            "'macos-ios-simulator')"
         )
 
 
