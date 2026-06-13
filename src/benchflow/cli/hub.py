@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.markup import escape
 
 from benchflow.cli._shared import console
 from benchflow.hub.harbor_registry import DEFAULT_HARBOR_REGISTRY_URL
@@ -73,7 +74,12 @@ def register_hub(app: typer.Typer) -> None:
                 limit=limit,
             )
         except Exception as exc:
-            console.print(f"[red]Harbor compatibility check failed:[/red] {exc}")
+            # escape(): the message echoes the user-supplied --registry path,
+            # which can contain Rich markup (`[`, `[/red]`) — an unescaped
+            # interpolation makes the error handler itself raise MarkupError.
+            console.print(
+                f"[red]Harbor compatibility check failed:[/red] {escape(str(exc))}"
+            )
             raise typer.Exit(1) from exc
 
         summary = records_summary(records)

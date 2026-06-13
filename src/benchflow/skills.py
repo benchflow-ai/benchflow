@@ -62,13 +62,21 @@ def parse_skill(skill_md: Path) -> SkillInfo | None:
         frontmatter = yaml.safe_load(text[3:end])
         if not isinstance(frontmatter, dict):
             return None
+
+        def _text(value: object, default: str = "") -> str:
+            # YAML leaves unquoted scalars as int/float/bool/None; the str-typed
+            # fields (and the `description[:60]` slice + the Rich table cell)
+            # need real strings. A present-but-null key must fall back to the
+            # default, which ``.get(key, default)`` does NOT do.
+            return default if value is None else str(value)
+
         return SkillInfo(
-            name=frontmatter.get("name", skill_md.parent.name),
-            description=frontmatter.get("description", ""),
-            version=frontmatter.get("version", ""),
+            name=_text(frontmatter.get("name"), skill_md.parent.name),
+            description=_text(frontmatter.get("description")),
+            version=_text(frontmatter.get("version")),
             path=skill_md.parent,
-            compatibility=frontmatter.get("compatibility", ""),
-            metadata=frontmatter.get("metadata", {}),
+            compatibility=_text(frontmatter.get("compatibility")),
+            metadata=frontmatter.get("metadata") or {},
         )
     except Exception as e:
         logger.debug(f"Failed to parse {skill_md}: {e}")

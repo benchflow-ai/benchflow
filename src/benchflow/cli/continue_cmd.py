@@ -139,6 +139,11 @@ def register_continue(app: typer.Typer) -> None:
             typer.echo(f"  rewards: {result.rewards}")
         if result.error:
             typer.secho(f"  agent error: {result.error}", fg=typer.colors.YELLOW)
+            # A failed continuation must report failure to $? — matches
+            # `continue-batch` (exits 1 if any continuation failed) and the
+            # `eval create` run-error contract. Without this a scripted caller
+            # reads the green ✓ + exit 0 as success.
+            raise typer.Exit(1)
 
     @app.command("continue-batch", hidden=True)
     def continue_batch_cmd(
@@ -175,6 +180,7 @@ def register_continue(app: typer.Typer) -> None:
             typer.Option(
                 "--concurrency",
                 help="Maximum number of continuation runs in flight.",
+                min=1,
             ),
         ] = 100,
         limit: Annotated[

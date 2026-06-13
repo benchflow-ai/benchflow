@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from benchflow.cli._options import SandboxOption
@@ -44,9 +45,19 @@ def register_environment(app: typer.Typer) -> None:
         from benchflow.runtime import Environment
 
         if not task_dir.is_dir():
-            console.print(f"[red]Not a directory: {task_dir}[/red]")
+            console.print(f"[red]Not a directory: {escape(str(task_dir))}[/red]")
             raise typer.Exit(1)
-        env = Environment.from_task(task_dir, sandbox=sandbox)
+        try:
+            env = Environment.from_task(task_dir, sandbox=sandbox)
+        except (FileNotFoundError, NotADirectoryError, ValueError) as e:
+            # An existing dir with no task document reaches Task.__init__'s
+            # unguarded read_text() — surface a clean error instead of a raw
+            # FileNotFoundError traceback ending at instruction.md/task.md.
+            console.print(
+                f"[red]Not a valid task directory {escape(str(task_dir))}:[/red] "
+                f"{escape(str(e))}"
+            )
+            raise typer.Exit(1) from None
         console.print(f"[green]Environment created:[/green] {env}")
         console.print(f"  Task:    {env.task_path}")
         console.print(f"  Sandbox: {env.sandbox}")
@@ -91,7 +102,7 @@ def register_environment(app: typer.Typer) -> None:
             try:
                 raw = prime_env_list(owner=owner, search=search, limit=limit)
             except HostedEnvError as e:
-                console.print(f"[red]{e}[/red]")
+                console.print(f"[red]{escape(str(e))}[/red]")
                 raise typer.Exit(1) from None
             if output_json:
                 console.print(raw)
@@ -167,7 +178,7 @@ def register_environment(app: typer.Typer) -> None:
             ref = HostedEnvRef.parse(source_env, version=version)
             console.print(prime_env_info(ref))
         except HostedEnvError as e:
-            console.print(f"[red]{e}[/red]")
+            console.print(f"[red]{escape(str(e))}[/red]")
             raise typer.Exit(1) from None
 
     @env_app.command("inspect")
@@ -198,7 +209,7 @@ def register_environment(app: typer.Typer) -> None:
             ref = HostedEnvRef.parse(source_env, version=version)
             console.print(prime_env_inspect(ref, path=path))
         except HostedEnvError as e:
-            console.print(f"[red]{e}[/red]")
+            console.print(f"[red]{escape(str(e))}[/red]")
             raise typer.Exit(1) from None
 
     @env_app.command("cleanup")

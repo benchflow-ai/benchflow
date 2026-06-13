@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Annotated, Literal, cast
 
 import typer
+from rich.markup import escape
 
 from benchflow.cli._shared import console
 from benchflow.cli.trace_import import register_tasks_generate
@@ -64,8 +65,13 @@ def register_tasks(app: typer.Typer) -> None:
             # which `bench tasks check` validates).
             for rel in result.files:
                 console.print(f"  {rel}")
-        except (FileExistsError, ValueError) as e:
-            console.print(f"[red]{e}[/red]")
+        except (OSError, ValueError) as e:
+            # OSError covers FileExistsError plus the NotADirectoryError /
+            # PermissionError that mkdir() raises for `--dir <file>` or a
+            # read-only parent — siblings (migrate/normalize/export) already
+            # degrade gracefully; init was the outlier that dumped a traceback.
+            # escape(): the OSError message echoes the user-supplied path.
+            console.print(f"[red]{escape(str(e))}[/red]")
             raise typer.Exit(1) from None
 
     @tasks_app.command("check")
@@ -118,8 +124,6 @@ def register_tasks(app: typer.Typer) -> None:
         ] = False,
     ) -> None:
         """Validate a task directory structure."""
-        from rich.markup import escape
-
         from benchflow._utils.task_authoring import check_task
 
         issues = check_task(

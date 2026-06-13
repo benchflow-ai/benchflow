@@ -351,4 +351,6 @@ class TestSkillEvalCLI:
         assert result.exit_code == 0
         assert "eval" in result.output
         assert "list" in result.output
-        assert "install" in result.output
+        # No "install" assertion: `bench skills` exposes only list + eval — there
+        # is no install command, and the misleading "installation" wording was
+        # removed from the group help (sweep finding D10).
