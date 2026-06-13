@@ -822,11 +822,6 @@ normalized prompt text; verifier/oracle equivalence through deterministic
 SHA-256 file maps over regular files. Comments, TOML/YAML formatting, and blank
 line trivia are not preserved unless a same-format no-op export asks for that.
 
-## Open Primitives and Roadmap
-
-The open primitives (G1–G8) and the M0/M1/M2 milestone sequencing live in
-[the task standard roadmap](./task-standard-roadmap.md).
-
 ## Runtime Capability Matrix
 
 Current implementation status:
