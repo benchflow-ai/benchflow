@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from benchflow._types import Role, Scene
 from benchflow._utils.config import (
@@ -131,7 +131,8 @@ class RolloutConfig:
     # Harness-level loop strategy (``--loop-strategy``). Accepts a spec string
     # ("verify-retry:k=3,feedback=names") or a parsed LoopStrategySpec;
     # __post_init__ materializes it into user/max_user_rounds. Mutually
-    # exclusive with an explicit ``user``.
+    # exclusive with an explicit ``user``. A dict (the to_mapping() shape) is
+    # also accepted at runtime and materialized via from_mapping.
     loop_strategy: LoopStrategySpec | str | None = None
     # Whether a task.md-declared user may be adopted when neither an explicit
     # ``user`` nor a loop strategy materializes one. ``None`` (default)
@@ -192,7 +193,11 @@ class RolloutConfig:
         elif isinstance(self.loop_strategy, dict):
             # to_mapping() dict shape (round-tripped --config YAML / SDK kwargs)
             # must materialize, not fall through and mislabel single-shot.
-            self.loop_strategy = LoopStrategySpec.from_mapping(self.loop_strategy)
+            # cast: isinstance narrows to dict[Unknown, Unknown]; from_mapping
+            # validates the keys at runtime.
+            self.loop_strategy = LoopStrategySpec.from_mapping(
+                cast("dict[str, Any]", self.loop_strategy)
+            )
         elif self.loop_strategy is not None and not isinstance(
             self.loop_strategy, LoopStrategySpec
         ):

@@ -64,9 +64,9 @@ def _round_tokens(rollout: Rollout) -> int | None:
     than a spurious ``0`` — preserving the cost-curve's best-effort contract.
     """
     metrics = getattr(rollout, "_native_usage_metrics", None)
-    if not is_token_usage_available(metrics):
-        return None
-    return metrics.get("total_tokens")
+    if metrics and is_token_usage_available(metrics):
+        return metrics.get("total_tokens")
+    return None
 
 
 async def _export_generated_skills(rollout: Rollout) -> None:
