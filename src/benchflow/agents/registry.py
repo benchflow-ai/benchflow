@@ -514,6 +514,22 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd=_js_agent_launch("mimo", "acp"),
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
+        # MiMo Code ships a fixed endpoint for its native models.dev "xiaomi"
+        # provider, so token-plan/regional keys (XIAOMI_BASE_URL) need a config
+        # override. Written only when XIAOMI_API_KEY is present; the file holds
+        # {env:...} references (resolved by the CLI at runtime), never the key
+        # itself. The no-web-tools setup_cmd merges into this same file.
+        credential_files=[
+            CredentialFile(
+                path="{home}/.config/mimocode/mimocode.json",
+                env_source="XIAOMI_API_KEY",
+                template=(
+                    '{{"provider": {{"xiaomi": {{"options": '
+                    '{{"baseURL": "{{env:XIAOMI_BASE_URL}}", '
+                    '"apiKey": "{{env:XIAOMI_API_KEY}}"}}}}}}}}'
+                ),
+            ),
+        ],
         acp_model_format="provider/model",
         # MiMo Code is an OpenCode fork: `mimo acp` reports agentInfo.name="OpenCode"
         # and uses models.dev "provider/model" ids, so set_model must send e.g.
