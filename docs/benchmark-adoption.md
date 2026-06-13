@@ -1,25 +1,28 @@
 # Benchmark adoption
 
-Adopt an upstream benchmark into a BenchFlow benchmark with `bench agent`.
+Adopt an upstream benchmark into a BenchFlow benchmark with `bench adopt`.
 
 ## What the router is
 
-`bench agent` is the benchmark-adoption router. It *routes* an external
+`bench adopt` is the benchmark-adoption router. It *routes* an external
 benchmark into `benchmarks/<name>/` — scaffold, codex-driven conversion, and a
 parity gate — so the result is a first-class BenchFlow benchmark. It sits
 upstream of evaluation: the router *adopts*, while `bench eval create` *runs*
-the resulting tasks. Once `bench agent verify <name>` reports
+the resulting tasks. Once `bench adopt verify <name>` reports
 `parity-confirmed`, you point `bench eval create` at the converted tasks and run
 them like any other benchmark.
+
+(These commands were `bench agent create|run|verify` before 0.6; the old names
+still work as deprecated aliases through 0.6 and are removed in 0.7.)
 
 Three subcommands form the adopt → verify loop:
 
 ```
-$ bench agent --help
+$ bench adopt --help
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ create   Scaffold benchmarks/<name>/ for a new benchmark adoption.           │
-│ run      Drive the CONVERT.md workflow by launching the host codex CLI.      │
-│ verify   Run the parity gate for an adopted benchmark; emit a verdict.       │
+│ init      Scaffold benchmarks/<name>/ for a new benchmark adoption.          │
+│ convert   Drive the CONVERT.md workflow by launching the host codex CLI.     │
+│ verify    Run the parity gate for an adopted benchmark; emit a verdict.      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -28,14 +31,14 @@ The reference for what a finished adoption looks like is
 contract is [`benchmarks/CONVERT.md`](../benchmarks/CONVERT.md). The router
 embeds both into the conversion workflow for you.
 
-## `bench agent create <name>`
+## `bench adopt init <name>`
 
-`create` writes a deterministic scaffold under `benchmarks/<name>/`, matching
+`init` writes a deterministic scaffold under `benchmarks/<name>/`, matching
 the reference layout and the CONVERT.md contract. Use `--benchmarks-dir` to
 target a directory other than the repo's `benchmarks/`:
 
 ```
-$ bench agent create webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks
+$ bench adopt init webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks
 Scaffolded /tmp/router-docs/benchmarks/webarena-lite
   README.md
   __init__.py
@@ -87,30 +90,30 @@ respectively.
 
 ### Fail-closed behavior
 
-`create` refuses to overwrite an existing benchmark — re-running it is an error,
+`init` refuses to overwrite an existing benchmark — re-running it is an error,
 not a silent clobber:
 
 ```
-$ bench agent create webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks
+$ bench adopt init webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks
 benchmark already exists: /tmp/router-docs/benchmarks/webarena-lite (refusing to
 overwrite)
 ```
 
 Names must be lowercase slugs (leading letter, single internal hyphens). The
-slug is also the security floor — it keeps `create`/`verify` from being steered
+slug is also the security floor — it keeps `init`/`verify` from being steered
 outside `benchmarks/`. An uppercase or underscored name is rejected:
 
 ```
-$ bench agent create WebArena_Lite --benchmarks-dir /tmp/router-docs/benchmarks
+$ bench adopt init WebArena_Lite --benchmarks-dir /tmp/router-docs/benchmarks
 invalid benchmark name 'WebArena_Lite': use a lowercase slug like 'my-bench'
 (letters/digits, single internal hyphens, leading letter)
 ```
 
 Both fail-closed cases exit non-zero.
 
-## `bench agent run <source> [--name]`
+## `bench adopt convert <source> [--name]`
 
-`run` drives the conversion. It assembles an adoption prompt — the source, the
+`convert` drives the conversion. It assembles an adoption prompt — the source, the
 target `benchmarks/<name>/` path, the adoption skills (CONVERT.md, the
 programbench worked example, the parity harness), and the full embedded
 CONVERT.md guide — then launches the host `codex` CLI to do the conversion
@@ -121,7 +124,7 @@ Use `--dry-run` to print the exact command the router would launch without
 running it:
 
 ```
-$ bench agent run https://github.com/web-arena-x/webarena --name webarena-lite --dry-run
+$ bench adopt convert https://github.com/web-arena-x/webarena --name webarena-lite --dry-run
 codex exec --cd /path/to/benchflow --skip-git-repo-check --sandbox workspace-write '# Benchmark adoption: webarena-lite
 
 Adopt the source benchmark below into a BenchFlow benchmark by
@@ -144,7 +147,7 @@ Target directory: benchmarks/webarena-lite/
 - benchmarks/webarena-lite/ has benchflow.py, parity_test.py,
   parity_experiment.json, benchmark.yaml, run_webarena_lite.py,
   README.md
-- `bench agent verify webarena-lite` reports parity-confirmed'
+- `bench adopt verify webarena-lite` reports parity-confirmed'
 ```
 
 The full prompt embeds CONVERT.md verbatim (elided above). The `codex exec`
@@ -155,7 +158,7 @@ argv is constructed deterministically: it runs in the repo root
 
 A live run (drop `--dry-run`) requires codex credentials and fails closed
 without them — set `OPENAI_API_KEY` (or `CODEX_API_KEY`), or run `codex login`
-to create `~/.codex/auth.json`. Without credentials `run` errors before
+to create `~/.codex/auth.json`. Without credentials `convert` errors before
 assembling any context:
 
 ```
@@ -164,9 +167,9 @@ codex needs credentials to launch: set OPENAI_API_KEY (or CODEX_API_KEY), or run
 ```
 
 The codex run is the manual-validation step — it iterates on the converter and
-parity tests until `bench agent verify` confirms parity.
+parity tests until `bench adopt verify` confirms parity.
 
-## `bench agent verify <name>`
+## `bench adopt verify <name>`
 
 `verify` is the gate that closes the loop. It reads the adopted benchmark's
 `parity_experiment.json` and emits a confidence verdict. The gate is *parity
@@ -194,7 +197,7 @@ A freshly scaffolded benchmark has no recorded parity, so it is
 `insufficient-evidence` and exits non-zero:
 
 ```
-$ bench agent verify webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks
+$ bench adopt verify webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks
 Verdict: insufficient-evidence
   conversion: 0/0 criteria agree (rate 0.0000)
 Insufficient evidence: no recorded parity comparisons. Run parity_test.py and
@@ -246,7 +249,7 @@ With every criterion agreeing and every reward delta at zero, the verdict is
 `parity-confirmed` and `verify` exits zero:
 
 ```
-$ bench agent verify webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks
+$ bench adopt verify webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks
 Verdict: parity-confirmed
   conversion: 3/3 criteria agree (rate 1.0000)
   reward: max abs delta 0.0000 (tolerance 0.0200)
@@ -262,7 +265,7 @@ floor trips, the verdict becomes `parity-divergent`, and `verify` prints a draft
 GitHub issue body for the support path:
 
 ```
-$ bench agent verify webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks
+$ bench adopt verify webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks
 Verdict: parity-divergent
   conversion: 2/3 criteria agree (rate 0.6667)
   reward: max abs delta 0.0000 (tolerance 0.0200)
@@ -298,7 +301,7 @@ review and open if they need support. Pass `--issue-out PATH` to write it to a
 file instead of stdout:
 
 ```
-$ bench agent verify webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks --issue-out /tmp/router-docs/divergence.md
+$ bench adopt verify webarena-lite --benchmarks-dir /tmp/router-docs/benchmarks --issue-out /tmp/router-docs/divergence.md
 Verdict: parity-divergent
   ...
 Issue draft written to /tmp/router-docs/divergence.md
@@ -316,9 +319,9 @@ concrete task directory, which the benchmark-level verdict does not require.
 errors if the benchmark was never adopted:
 
 ```
-$ bench agent verify nonexistent-bench --benchmarks-dir /tmp/router-docs/benchmarks
+$ bench adopt verify nonexistent-bench --benchmarks-dir /tmp/router-docs/benchmarks
 benchmark not adopted: /tmp/router-docs/benchmarks/nonexistent-bench — run
-`bench agent create nonexistent-bench` first
+`bench adopt init nonexistent-bench` first
 ```
 
 ## From adoption to evaluation

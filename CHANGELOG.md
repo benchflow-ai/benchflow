@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Renamed (aliased; old names removed in 0.7)
+- Benchmark adoption moved out of `bench agent` into its own `bench adopt` group:
+  `bench agent create` → `bench adopt init`, `bench agent run` → `bench adopt
+  convert`, `bench agent verify` → `bench adopt verify`. `bench agent` now means
+  agent management only (`list` / `show`). The old `bench agent create|run|verify`
+  still work as hidden aliases and print a one-line deprecation notice (stderr).
+- `bench environment list --hub` → `--provider` (the value is a hosted-env
+  provider, e.g. `primeintellect`). `--hub` remains as a hidden deprecated alias.
+
 ### Removed
 - Dead-code purge (no public-API impact unless noted): removed the unused
   `job_config_from_yaml` helper, the nominal `TASK_REPOS` back-compat dict

@@ -40,6 +40,7 @@ from benchflow.cli._shared import (
     _report_eval_result,
     console,
 )
+from benchflow.cli.adopt import register_adopt
 from benchflow.cli.agent import register_agent
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.environment import register_environment
@@ -981,6 +982,7 @@ register_skills(app)
 register_tasks(app)
 register_hub(app)
 register_agent(app)
+register_adopt(app)
 register_environment(app)
 register_monitor(app)
 
