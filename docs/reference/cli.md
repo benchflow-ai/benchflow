@@ -115,7 +115,23 @@ bench agent verify my-bench
 bench agent verify my-bench --tolerance 0.05 --issue-out divergence.md
 bench agent verify my-bench --roundtrip-task benchmarks/my-bench/tasks/example
 bench agent verify my-bench --rerun   # re-run parity_test.py, score fresh output
+bench agent verify my-bench --json
+bench agent verify my-bench --require-adoption-report --loop-report-out loop-report.json --json
 ```
+
+Use `--json` when an adapter-adoption loop needs a parseable parity verdict.
+Confirmed records emit `{"status": "parity-confirmed", "passed": true, ...}`;
+divergent records emit conversion disagreements, reward deltas, and either
+`issue_out` or an inline `issue_draft`; insufficient records emit
+`{"status": "insufficient-evidence", "passed": false, ...}`.
+If `benchmarks/<name>/adoption_report.json` exists, `--json` includes it under
+`adoption_report` with the sidecar path and scrubbed architecture/artifact
+manifest payload. Use `--require-adoption-report` for 0.7 environment-adapter
+adoptions: it fails unless `adoption_report.json` proves the architecture
+planes, reward/parity agreement, trace and screenshot artifacts, eval summary,
+timing, and cleanup criterion, and `loop_state.json` proves the resumable
+controller state is at least `review-ready`. `--loop-report-out` writes the
+same machine-readable verdict to disk for a controller or reviewer role.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -124,6 +140,9 @@ bench agent verify my-bench --rerun   # re-run parity_test.py, score fresh outpu
 | `--issue-out` | — | Write the divergence issue draft to this path instead of stdout |
 | `--roundtrip-task` | — | Also run the structural round-trip check on this task dir |
 | `--rerun` | `false` | Re-execute `parity_test.py --mode side-by-side` and score its fresh output instead of the recorded `parity_experiment.json` |
+| `--json` | `false` | Emit a machine-readable parity verdict or error |
+| `--require-adoption-report` | `false` | Fail unless `adoption_report.json` passes the 0.7 adapter-adoption loop gate |
+| `--loop-report-out` | — | Write the parseable verify/adoption-loop verdict to this path |
 
 ## bench eval
 
@@ -160,6 +179,9 @@ bench eval create \
 # From local directory
 bench eval create --tasks-dir ./tasks --agent gemini --model gemini-3.1-flash-lite-preview
 
+# From local directory with a machine-readable run report
+bench eval create --tasks-dir ./tasks --agent gemini --sandbox docker --json
+
 # From a hosted PrimeIntellect / Verifiers environment
 bench eval create \
   --source-env primeintellect/general-agent \
@@ -185,7 +207,7 @@ bench eval create -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lit
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config` | — | YAML config file |
-| `--tasks-dir` | — | Local task dir (single task with task.toml, or parent of many) |
+| `--tasks-dir` | — | Local task dir (native task, supported foreign task descriptor such as `browser-use-task.json` / `stagehand-task.json`, or parent of many) |
 | `-d`, `--dataset` | — | Registry dataset to run as `<name>@<version>` (e.g. `skillsbench@1.1`). Resolves the pinned snapshot from the registry, clones tasks at their pinned commit, verifies each task's sha256 content digest, and checks the dataset's `bench_version` range against the installed benchflow. Each `result.json`/`config.json` is stamped with `dataset_name`, `dataset_version`, and the task's `task_digest`. |
 | `--registry` | skillsbench registry | Dataset registry JSON URL or local file. Only valid with `--dataset`. |
 | `--source-repo` | — | Remote repo as `org/repo` (e.g. `benchflow-ai/skillsbench`) |
@@ -202,7 +224,7 @@ bench eval create -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lit
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
 | `--reasoning-effort` | — | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) |
-| `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
+| `--sandbox` | `docker` | Sandbox: docker, daytona, modal, or cua |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |
 | `--environment-manifest` | — | Path to an Environment-plane manifest (`environment.toml`); applied to every rollout in the batch |
 | `--prompt` | `instruction.md` | Prompt to send to the agent; repeatable for multi-prompt runs |
@@ -224,6 +246,7 @@ bench eval create -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lit
 | `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |
 | `--loop-strategy` | — | Wrap each rollout in a loop, e.g. `verify-retry:k=3,feedback=names` or `self-review:k=3` (omit for single-shot) |
 | `--ignore-bench-version` | `false` | With `--dataset`, skip the dataset's `bench_version` compatibility gate |
+| `--json` | `false` | Emit a machine-readable eval run report or error. Successful local/repo runs include the persisted `summary.json` payload. |
 
 When mounting skills, the recommended docs default is
 `--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
@@ -319,6 +342,7 @@ Validate a task directory (`task.md` or legacy `task.toml` + `instruction.md`, `
 
 ```bash
 bench tasks check tasks/my-task
+bench tasks check tasks/my-task --level runtime-capability --sandbox cua --json
 ```
 
 With `--level`, validation runs at a chosen depth: `schema`, `structural`,
@@ -327,6 +351,20 @@ Acceptance-level errors such as
 `acceptance validation requires benchflow.evidence mapping` refer to the
 `benchflow.evidence` schema documented in the "Assets, Provenance, And
 Evidence" section of `docs/task-standard.md`.
+
+Use `--json` when an adapter-adoption loop needs a machine-readable result.
+Supported foreign tasks emit `{"status": "valid", "adapter": ...}`; recognized
+but unsupported foreign tasks emit `{"status": "unsupported-adapter-task",
+"adapter": ..., "reason": ..., "details": ...}` and exit non-zero. Current
+foreign task signatures include `browser-use-task.json`, `stagehand-task.json`,
+`computer-use-task.json`, `iosworld-task.json`, `task.yaml`, and compatible
+`task.toml` variants.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--level` | `structural` | Validation depth |
+| `--sandbox` | — | Validate runtime semantics for docker, daytona, modal, or cua |
+| `--json` | `false` | Emit a machine-readable validation or unsupported-task report |
 
 ### bench tasks migrate
 
@@ -444,14 +482,66 @@ construction but does not start the sandbox.
 
 ```bash
 bench environment create tasks/my-task --sandbox daytona
+bench environment create tasks/my-task --sandbox cua --dry-run
+bench environment create tasks/my-task --sandbox cua --dry-run --json
 ```
+
+Use `--json` when an adapter-adoption loop needs a parseable create report.
+Dry runs emit `{"status": "dry-run", "adapter": ..., "environment_adapter":
+..., "created": false}`. Foreign task materialization emits
+`{"status": "created", "adapter": ..., "environment_adapter": ..., "native":
+"materialized-temporary"}`. Browser Use tasks report
+`environment_adapter.name = "browser"`; computer-use and use-computer cookbook
+tasks report `environment_adapter.name = "desktop"`.
+
+### bench environment check
+
+Check task runtime compatibility and provider readiness without starting a
+sandbox.
+
+```bash
+bench environment check tasks/my-task --sandbox docker
+bench environment check tasks/my-task --sandbox cua
+bench environment check tasks/my-task --sandbox cua --json
+bench environment check tasks/my-task --sandbox cua --probe-runtime --json
+```
+
+Use `--json` to capture task compatibility and provider readiness in one record.
+Supported tasks emit `{"status": "ready", "adapter": ...,
+"environment_adapter": ..., "provider": ...}`. The `environment_adapter`
+object names the world the agent acts in, required capabilities, verified
+sandbox providers, and whether the selected provider has verified or unverified
+support. Recognized but unsupported foreign tasks emit the same structured
+`unsupported-adapter-task` payload as `bench tasks check --json`.
+
+For desktop/computer-use tasks, Cua support is evidence-scoped. Local Cua
+reports `environment_adapter.provider_support = "verified"` with
+`provider_mode = "local"`. Cua cloud reports
+`provider_support = "runtime-probe-required"` until a live
+`--probe-runtime` check succeeds; a successful cloud probe upgrades the report
+to verified with `verified_sandboxes` including `cua:cloud-probed`.
+
+Use `--probe-runtime` for Cua provider dogfood when you need live runtime
+evidence, not just SDK/auth readiness. The probe creates or connects to a Cua
+runtime, runs a bounded shell command, checks upload/download file transfer,
+screenshot/dimensions/display metadata, records non-sensitive diagnostics, and
+then cleans up. Display URL support is reported as a capability result; local
+Cua may report it unsupported while the required runtime checks still pass.
+If cloud startup fails, the JSON runtime probe names `failed_capabilities` and
+captures SDK background readiness errors under `background_errors`. It also
+includes SDK/version metadata, request metadata such as `linux_kind`, and a
+normalized `failure_class` when a known cloud-runtime pattern is detected.
 
 ### bench environment list
 
-List active Daytona sandboxes, or list a hosted hub.
+List active provider environments, or list a hosted hub. Provider listing is
+supported for Docker, Daytona, and Cua. Docker listing is scoped to
+BenchFlow-owned resources labeled `benchflow.owned=true`.
 
 ```bash
 bench environment list
+bench environment list --sandbox docker --json
+bench environment list --sandbox cua --json
 bench environment list --hub primeintellect --owner primeintellect --search general-agent --limit 5
 ```
 
@@ -473,11 +563,16 @@ bench environment inspect primeintellect/general-agent --version 0.1.1 --path RE
 
 ### bench environment cleanup
 
-Clean up orphaned Daytona sandboxes. By default this deletes sandboxes older
-than 24 hours; use `--dry-run` to preview what would be deleted.
+Clean up orphaned provider sandboxes. By default this deletes sandboxes older
+than 24 hours; use `--dry-run` to preview what would be deleted. Provider
+cleanup is supported for Docker, Daytona, and Cua. Docker cleanup is scoped to
+BenchFlow-owned containers and networks labeled `benchflow.owned=true`.
 
 ```bash
 bench environment cleanup --dry-run --max-age 1440
+bench environment cleanup --sandbox docker --dry-run --max-age 60 --json
+bench environment cleanup --sandbox cua --dry-run --max-age 60
+bench environment cleanup --sandbox cua --dry-run --max-age 60 --json
 ```
 
 Daytona-backed evals also reap orphaned sandboxes automatically at run start
@@ -485,6 +580,10 @@ Daytona-backed evals also reap orphaned sandboxes automatically at run start
 an idle-activity guard means concurrent live runs are never reaped). Set
 `BENCHFLOW_DAYTONA_AUTO_REAP` to any of `0`/`false`/`no`/`off` (case-insensitive)
 to disable that automatic pass and rely on the manual command above.
+
+For Docker and Cua, `--json` emits a cleanup report with `found`, `matched`,
+`skipped`, `deleted`, and `candidates` fields. Use it in adapter dogfood to
+prove cleanup would leave no BenchFlow-owned resources behind before scaling.
 
 ## bench hub
 

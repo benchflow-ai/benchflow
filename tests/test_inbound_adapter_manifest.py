@@ -15,12 +15,14 @@ plane's runtime adapter (:class:`ManifestEnvironment`).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from benchflow.adapters.browser_use import BrowserUseAdapter
 from benchflow.adapters.harbor import HarborAdapter
 from benchflow.adapters.inbound import (
     InboundTask,
@@ -60,11 +62,32 @@ docker_image = "ghcr.io/openmoss/abc-widget:1.2.3"
 """
 
 
+_BROWSER_USE_TASK_JSON = {
+    "task_id": "open-local-page",
+    "confirmed_task": "Report browser-use-smoke: ready",
+    "expected_result": "browser-use-smoke: ready",
+    "url": "file:///app/browser_fixture/index.html",
+}
+
+
 def _write_harbor_task(root: Path, *, toml: str = _HARBOR_TASK_TOML) -> Path:
     task_dir = root / "harbor-task"
     task_dir.mkdir()
     (task_dir / "task.toml").write_text(toml)
     (task_dir / "instruction.md").write_text("Build the widget service.\n")
+    (task_dir / "environment").mkdir()
+    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    (task_dir / "tests").mkdir()
+    (task_dir / "tests" / "test.sh").write_text("#!/bin/bash\npytest\n")
+    return task_dir
+
+
+def _write_browser_use_task(root: Path) -> Path:
+    task_dir = root / "browser-use-task"
+    task_dir.mkdir()
+    (task_dir / "browser-use-task.json").write_text(
+        json.dumps(_BROWSER_USE_TASK_JSON, indent=2) + "\n"
+    )
     (task_dir / "environment").mkdir()
     (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
     (task_dir / "tests").mkdir()
@@ -154,6 +177,30 @@ class TestHarborManifestSeam:
         result = HarborAdapter.from_task_dir(task_dir)
         assert result.manifest.name == "explicit-env"
         assert result.manifest.image == "ghcr.io/example/explicit:9.9"
+
+
+class TestBrowserUseManifestSeam:
+    def test_returns_validated_manifest(self, tmp_path: Path) -> None:
+        task_dir = _write_browser_use_task(tmp_path)
+        result = BrowserUseAdapter.from_task_dir(task_dir)
+        assert isinstance(result.manifest, EnvironmentManifest)
+
+    def test_manifest_name_is_namespaced(self, tmp_path: Path) -> None:
+        task_dir = _write_browser_use_task(tmp_path)
+        result = BrowserUseAdapter.from_task_dir(task_dir)
+        assert result.manifest.name == "browser-use/open-local-page"
+
+    def test_prefers_sibling_environment_toml(self, tmp_path: Path) -> None:
+        task_dir = _write_browser_use_task(tmp_path)
+        (task_dir / "environment.toml").write_text(
+            "[environment]\n"
+            'name = "browser-use-env"\n'
+            'image = "ghcr.io/example/browser-use-env:1"\n'
+            "owns_lifecycle = true\n"
+        )
+        result = BrowserUseAdapter.from_task_dir(task_dir)
+        assert result.manifest.name == "browser-use-env"
+        assert result.manifest.image == "ghcr.io/example/browser-use-env:1"
 
 
 # Manifest can be consumed by manifest-backed runtime

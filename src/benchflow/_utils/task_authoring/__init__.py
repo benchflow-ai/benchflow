@@ -215,7 +215,7 @@ def check_task(
     issues.extend(_check_compatibility_alias_drift(paths))
 
     # Check verifier code. Native tasks use verifier/; tests/ remains the
-    # legacy alias for existing Harbor-style task packages.
+    # legacy alias for existing split task packages.
     verifier_dir = paths.tests_dir
     verifier_label = _logical_dir_label(paths, kind="verifier")
     if verifier_dir.is_dir():

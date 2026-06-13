@@ -114,6 +114,128 @@ def _usage_from_response(response: Any) -> Any:
     return None
 
 
+# Map an upstream provider-model prefix (the LiteLLM ``litellm_params['model']``,
+# e.g. ``gemini/...``, ``anthropic/...``, ``openai/...``) to the wire protocol it
+# speaks on the wire. GenerateContent (Gemini/Vertex) and Anthropic Messages are
+# distinct from the OpenAI chat-completions protocol the agent emits; when they
+# differ we record the provider-facing (translated) view additively.
+def _upstream_wire_protocol(provider_model: Any) -> str:
+    model = str(provider_model or "").lower()
+    prefix = model.split("/", 1)[0] if "/" in model else ""
+    if prefix in ("gemini", "vertex_ai", "vertex_ai_beta", "google"):
+        return "generate_content"
+    if prefix in ("anthropic", "anthropic_text"):
+        return "anthropic_messages"
+    return "openai_chat"
+
+
+# Derive the upstream wire protocol from the *real* upstream URL LiteLLM dialed.
+# This is the authoritative signal at success time: ``litellm_params['model']``
+# is ``None`` and ``kwargs['model']`` is the bare gateway alias (no ``gemini/``
+# prefix), but ``litellm_params['api_base']`` carries the true resource URL
+# (e.g. ``.../v1beta/models/<model>:generateContent``). The ``:generateContent``
+# / ``:streamGenerateContent`` action suffix and the ``/v1beta/models/`` segment
+# unambiguously identify a GenerateContent backend; an ``/anthropic`` path or an
+# anthropic host identifies an Anthropic Messages backend; everything else is the
+# OpenAI chat-completions protocol. Returns ``None`` when ``api_base`` carries no
+# usable signal so callers can fall back to the model-name classifier.
+def _wire_protocol_from_api_base(api_base: Any) -> str | None:
+    base = str(api_base or "").lower()
+    if not base:
+        return None
+    path = base.split("://", 1)[1] if "://" in base else base
+    host = path.split("/", 1)[0]
+    if (
+        ":generatecontent" in base
+        or ":streamgeneratecontent" in base
+        or "/v1beta/models/" in base
+        or "/v1beta1/models/" in base
+        or "generativelanguage.googleapis.com" in host
+    ):
+        return "generate_content"
+    if "/anthropic" in base or "anthropic.com" in host:
+        return "anthropic_messages"
+    return "openai_chat"
+
+
+def _agent_facing_protocol(kwargs: dict[str, Any]) -> str:
+    return (
+        "anthropic_messages"
+        if kwargs.get("call_type") == "anthropic_messages"
+        else "openai_chat"
+    )
+
+
+def _upstream_request_path(api_base: Any, wire_protocol: str, streaming: Any) -> str:
+    # GenerateContent upstreams append the action to the model resource as a
+    # ``:method`` suffix; surface the *true* path (``:streamGenerateContent`` for
+    # streaming, else ``:generateContent``) rather than the hardcoded OpenAI path.
+    if wire_protocol == "generate_content":
+        # The success-time ``api_base`` already carries the real action suffix
+        # (``.../models/<model>:generateContent``); echo it back verbatim when
+        # present so the path reflects the URL actually dialed, else fall back to
+        # the streaming/non-streaming default.
+        base = str(api_base or "")
+        lowered = base.lower()
+        if ":streamgeneratecontent" in lowered:
+            return ":streamGenerateContent"
+        if ":generatecontent" in lowered:
+            return ":generateContent"
+        return ":streamGenerateContent" if streaming else ":generateContent"
+    if wire_protocol == "anthropic_messages":
+        return "/v1/messages"
+    base = str(api_base or "")
+    if "://" in base:
+        rest = base.split("://", 1)[1]
+        path = rest[rest.find("/") :] if "/" in rest else ""
+        if path:
+            return path.split("?", 1)[0]
+    return "/v1/chat/completions"
+
+
+def _provider_facing_view(kwargs: dict[str, Any]) -> dict[str, Any] | None:
+    # Provider-facing (gateway-translated) capture, or None when same-protocol.
+    #
+    # Returns the LiteLLM-translated upstream request (complete_input_dict), the
+    # real upstream URL (litellm_params['api_base']) and true path (e.g.
+    # ':generateContent'). Emitted ONLY when the upstream wire protocol differs
+    # from the agent-facing protocol (cross-protocol). For a same-protocol call
+    # this returns None so the record stays byte-unchanged. The raw provider
+    # response is attached by the success handler (original_response).
+    litellm_params = kwargs.get("litellm_params") or {}
+    additional_args = kwargs.get("additional_args") or {}
+    api_base = litellm_params.get("api_base") or additional_args.get("api_base")
+    # The real upstream URL is the authoritative protocol signal at success time:
+    # ``litellm_params['model']`` is ``None`` and ``kwargs['model']`` is the bare
+    # gateway alias (no ``gemini/`` prefix), so deriving from the model name alone
+    # misclassifies a GenerateContent backend as OpenAI and silently drops the
+    # cross-protocol block. Prefer the ``api_base``-derived protocol and fall back
+    # to the model-name classifier only when ``api_base`` carries no usable signal.
+    upstream_protocol = _wire_protocol_from_api_base(api_base)
+    if upstream_protocol is None:
+        provider_model = litellm_params.get("model") or kwargs.get("model")
+        upstream_protocol = _upstream_wire_protocol(provider_model)
+    if upstream_protocol == _agent_facing_protocol(kwargs):
+        return None
+
+    translated = additional_args.get("complete_input_dict")
+    if translated is None and not api_base:
+        # Nothing translated to record (e.g. the proxy never reached pre-call).
+        return None
+
+    optional_params = kwargs.get("optional_params") or {}
+    streaming = optional_params.get("stream") or kwargs.get("stream")
+    return {
+        "protocol": upstream_protocol,
+        "request": {
+            "method": "POST",
+            "path": _upstream_request_path(api_base, upstream_protocol, streaming),
+            "url": api_base or None,
+            "body": translated,
+        },
+    }
+
+
 class BenchFlowLiteLLMLogger(CustomLogger):
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
@@ -144,7 +266,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             if value is not None:
                 request_body[key] = value
         request_body = {k: v for k, v in request_body.items() if v is not None}
-        return {
+        record = {
             "request_model": kwargs.get("model"),
             "provider_model": litellm_params.get("model") or kwargs.get("model"),
             "model_group": metadata.get("model_group") if isinstance(metadata, dict) else None,
@@ -163,6 +285,15 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             "end_time": _iso(end_time),
             "duration_ms": max((getattr(end_time, "timestamp", lambda: time.time())() - getattr(start_time, "timestamp", lambda: time.time())()) * 1000, 0),
         }
+        # Additively record the gateway-translated provider-facing request when
+        # the upstream speaks a different wire protocol (e.g. an OpenAI-protocol
+        # agent routed to a Gemini GenerateContent backend). The agent-facing
+        # OpenAI view above is preserved unchanged; same-protocol calls add
+        # nothing, keeping the record byte-identical.
+        upstream = _provider_facing_view(kwargs)
+        if upstream is not None:
+            record["upstream"] = upstream
+        return record
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         record = self._base_record(kwargs, start_time, end_time)
@@ -195,6 +326,19 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 "response_cost": cost,
             }
         )
+        # When the call crossed protocols, attach the RAW provider response
+        # (LiteLLM ``original_response``) to the provider-facing block recorded
+        # in _base_record. The agent-facing ``response`` above is untouched.
+        upstream = record.get("upstream")
+        if isinstance(upstream, dict):
+            original = kwargs.get("original_response")
+            if isinstance(original, str):
+                try:
+                    original = json.loads(original)
+                except (ValueError, TypeError):
+                    pass
+            if original is not None:
+                upstream["response"] = original
         self._write(record)
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
@@ -359,6 +503,13 @@ def trajectory_from_litellm_callback_log(
             status = 200
         else:
             status = _provider_failure_status_from_failure_record(record) or 500
+        # Carry the gateway-translated provider-facing block (translated request
+        # body, real upstream URL/path, raw provider response) through into the
+        # persisted Trajectory so the cross-protocol capture survives to
+        # ``to_jsonl`` — where it is redacted alongside the rest of the exchange.
+        # Absent for same-protocol records (None keeps the exchange unchanged).
+        upstream = record.get("upstream")
+        upstream = upstream if isinstance(upstream, dict) else None
         trajectory.exchanges.append(
             LLMExchange(
                 request=LLMRequest(
@@ -373,6 +524,7 @@ def trajectory_from_litellm_callback_log(
                     body=response_body,
                 ),
                 duration_ms=float(record.get("duration_ms") or 0.0),
+                upstream=upstream,
             )
         )
         cost = record.get("response_cost")

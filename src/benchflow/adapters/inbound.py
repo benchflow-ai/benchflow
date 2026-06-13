@@ -157,6 +157,17 @@ def materialize_inbound_task_md(
         (_task_md_file_map_destination(native_rel), source)
         for native_rel, source in sorted(task.files.items())
     ]
+    generated_plan = [
+        (_task_md_file_map_destination(native_rel), content)
+        for native_rel, content in sorted(task.generated_files.items())
+    ]
+    copy_targets = {target for target, _source in copy_plan}
+    generated_targets = {target for target, _content in generated_plan}
+    collisions = copy_targets & generated_targets
+    if collisions:
+        rendered = ", ".join(path.as_posix() for path in sorted(collisions))
+        raise ValueError(f"Inbound generated file collision: {rendered}")
+
     dest = Path(output_dir)
     if dest.exists():
         if not overwrite:
@@ -181,6 +192,13 @@ def materialize_inbound_task_md(
         target = dest / target_rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+    for target_rel, content in generated_plan:
+        target = dest / target_rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(content)
 
     _ensure_script_verifier_contract(dest)
     return dest
@@ -252,6 +270,32 @@ class InboundCompatibility:
 
 
 @dataclass(frozen=True)
+class InboundSupportReport:
+    """Whether an adapter can translate a foreign task, and why not."""
+
+    source: str
+    supported: bool
+    task_id: str | None = None
+    dataset: str | None = None
+    reason: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class UnsupportedInboundTaskError(ValueError):
+    """Raised when an adapter recognizes a task but cannot translate it yet."""
+
+    def __init__(self, report: InboundSupportReport) -> None:
+        self.report = report
+        task = f" {report.task_id}" if report.task_id else ""
+        dataset = f" ({report.dataset})" if report.dataset else ""
+        reason = report.reason or "unsupported task shape"
+        super().__init__(f"{report.source}{task}{dataset}: {reason}")
+
+
+@dataclass(frozen=True)
 class InboundTask:
     """A foreign task translated into BenchFlow-native shape.
 
@@ -283,6 +327,10 @@ class InboundTask:
             Keys are paths under :data:`NATIVE_SUBTREES`; values are real,
             existing paths in the foreign task directory. A consumer copies
             each value to its key to materialize a runnable task.
+        generated_files: Map of *BenchFlow-native relative path* -> in-memory
+            content for native files synthesized from structured foreign
+            schemas, such as evaluator JSON. This keeps adapters pure while
+            still letting them materialize runnable verifier/oracle assets.
         compatibility: Explicit foreign-format metadata that could not become
             native ``TaskConfig`` fields. Native task authoring remains strict;
             adapters preserve this data for migration/export tooling.
@@ -294,33 +342,56 @@ class InboundTask:
     manifest: EnvironmentManifest
     config: TaskConfig
     files: dict[str, Path] = field(default_factory=dict)
+    generated_files: dict[str, str | bytes] = field(default_factory=dict)
     compatibility: InboundCompatibility | None = None
 
 
 if TYPE_CHECKING:
-    from benchflow.adapters.harbor import HarborAdapter
-
     # An inbound adapter is just a class with a ``from_task_dir(Path) ->
     # InboundTask`` classmethod. No standalone Protocol: InboundTask is the
-    # real contract, the adapter is its producer.
-    InboundAdapterType = type[HarborAdapter]
+    # real contract, the adapter is its producer. ``detect_adapter`` returns
+    # one of several concrete adapter classes, so the type is left open.
+    InboundAdapterType = type[Any]
 
 
 def detect_adapter(task_dir: Path | str) -> InboundAdapterType:
     """Return the inbound adapter whose format ``task_dir`` matches.
 
-    Detection is by signature file: Harbor task dirs carry a ``task.toml``.
+    Detection is by signature file: native-compatible task dirs carry a
+    ``task.toml`` and Browser Use slices carry a ``browser-use-task.json``;
+    Stagehand slices carry a ``stagehand-task.json``; computer-use slices
+    carry a ``computer-use-task.json``. iOSWorld sources carry
+    ``iosworld-task.json`` or the upstream repository signatures. Cookbook
+    task dirs are a tagged ``task.toml`` variant and are detected before the
+    generic native-compatible fallback.
 
     Raises:
         ValueError: if the directory matches no known foreign format.
     """
     # Imported here to avoid a module-load cycle: the concrete adapters
     # import InboundTask from this module.
+    from benchflow.adapters.browser_use import BrowserUseAdapter
+    from benchflow.adapters.computer_use import ComputerUseAdapter
     from benchflow.adapters.harbor import HarborAdapter
+    from benchflow.adapters.iosworld import IOSWorldAdapter
+    from benchflow.adapters.stagehand import StagehandEvalAdapter
+    from benchflow.adapters.use_computer_cookbook import UseComputerCookbookAdapter
 
     root = Path(task_dir)
     if (root / "task.toml").is_file():
+        if UseComputerCookbookAdapter.is_task_dir(root):
+            return UseComputerCookbookAdapter
         return HarborAdapter
+    if (root / "browser-use-task.json").is_file():
+        return BrowserUseAdapter
+    if (root / "stagehand-task.json").is_file():
+        return StagehandEvalAdapter
+    if (root / "computer-use-task.json").is_file():
+        return ComputerUseAdapter
+    if IOSWorldAdapter.is_task_dir(root):
+        return IOSWorldAdapter
     raise ValueError(
-        f"Unrecognized task format in {root}: expected a Harbor 'task.toml'."
+        f"Unrecognized task format in {root}: expected 'task.toml', "
+        "'browser-use-task.json', 'stagehand-task.json', "
+        "'computer-use-task.json', or 'iosworld-task.json'."
     )

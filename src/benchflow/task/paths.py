@@ -1,4 +1,4 @@
-"""Path models for tasks and rollouts — internalized from Harbor.
+"""Path models for tasks and rollouts.
 
 Terminology:
     - TaskPaths: filesystem layout of a task specification ($T$)

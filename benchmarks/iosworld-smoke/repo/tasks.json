@@ -1,0 +1,13 @@
+[
+  {
+    "name": "clock-001",
+    "goal": "Set a new alarm for 6:45 AM labeled Gym.",
+    "apps": ["clock"],
+    "category": "single_app",
+    "difficulty": "easy",
+    "rubric": [
+      {"criterion": "The alarm exists"},
+      {"criterion": "The alarm time is 6:45 AM"}
+    ]
+  }
+]

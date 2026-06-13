@@ -135,7 +135,15 @@ _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMoc
 
 def _is_task_dir(path: Path) -> bool:
     if not (path / "task.md").exists():
-        return (path / "task.toml").exists()
+        if (path / "task.toml").exists():
+            return True
+        from benchflow.adapters.inbound import detect_adapter
+
+        try:
+            detect_adapter(path)
+        except ValueError:
+            return False
+        return True
     from benchflow._utils.task_authoring import check_task
 
     return check_task(path) == []
@@ -153,8 +161,8 @@ class EmptyTaskSelectionError(ValueError):
 class RetryConfig:
     """Configuration for retry behavior.
 
-    Matches Harbor's RetryConfig pattern: exponential backoff with
-    configurable exception filtering. Legacy boolean fields are
+    Exponential backoff with configurable exception filtering.
+    Legacy boolean fields are
     preserved for backwards compat but the category-based check
     covers all cases.
     """
@@ -653,6 +661,24 @@ class Evaluation:
         # One RolloutNode per sequential-shared rollout, each carrying that
         # rollout's memory_delta — the Memory-space scorer's input.
         self.learner_nodes: list[RolloutNode] = []
+        self._inbound_task_materializer = None
+
+    def _native_task_target(self, task_dir: Path):
+        from benchflow.adapters.task_target import InboundTaskMaterializer
+
+        if self._inbound_task_materializer is None:
+            self._inbound_task_materializer = InboundTaskMaterializer(
+                prefix="benchflow-eval-tasks-"
+            )
+        return self._inbound_task_materializer.native_target(task_dir)
+
+    def _task_matches_filters(self, source_path: Path, native_path: Path) -> bool:
+        names = {source_path.name, native_path.name}
+        if names & self._config.exclude_tasks:
+            return False
+        return not (
+            self._config.include_tasks and not (names & self._config.include_tasks)
+        )
 
     def _learner_store_path(self) -> Path:
         """Where the persisted LearnerStore snapshot lives for this job."""
@@ -935,22 +961,19 @@ class Evaluation:
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories."""
         if _is_task_dir(self._tasks_dir):
-            if self._tasks_dir.name in self._config.exclude_tasks:
+            target = self._native_task_target(self._tasks_dir)
+            if not self._task_matches_filters(target.source_path, target.path):
                 return []
-            if (
-                self._config.include_tasks
-                and self._tasks_dir.name not in self._config.include_tasks
-            ):
-                return []
-            return [self._tasks_dir]
-        return sorted(
-            d
-            for d in self._tasks_dir.iterdir()
-            if d.is_dir()
-            and _is_task_dir(d)
-            and d.name not in self._config.exclude_tasks
-            and (not self._config.include_tasks or d.name in self._config.include_tasks)
-        )
+            return [target.path]
+
+        task_dirs: list[Path] = []
+        for d in sorted(self._tasks_dir.iterdir()):
+            if not d.is_dir() or not _is_task_dir(d):
+                continue
+            target = self._native_task_target(d)
+            if self._task_matches_filters(target.source_path, target.path):
+                task_dirs.append(target.path)
+        return task_dirs
 
     def _get_completed_tasks(self) -> dict[str, dict]:
         """Load tasks that already have results with rewards or verifier errors.
@@ -1030,6 +1053,31 @@ class Evaluation:
                 capture_output=True,
                 timeout=30,
             )
+            # Reap snapshot images (``bf-snap-*`` from ``docker commit``) that
+            # carry the same ownership label. Scoped via ``--filter`` so only
+            # BenchFlow-stamped images are touched; ``image prune`` alone only
+            # deletes *dangling* images, so we list the still-tagged owned
+            # images and ``image rm -f`` them explicitly.
+            owned = subprocess.run(
+                [
+                    "docker",
+                    "image",
+                    "ls",
+                    "--filter",
+                    label_filter,
+                    "-q",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            image_ids = sorted({i for i in (owned.stdout or "").split() if i})
+            if image_ids:
+                subprocess.run(
+                    ["docker", "image", "rm", "-f", *image_ids],
+                    capture_output=True,
+                    timeout=30,
+                )
         except Exception as e:
             logger.warning(f"Docker prune failed: {e}")
         finally:
@@ -1519,7 +1567,10 @@ class Evaluation:
 
         def _reap() -> None:
             try:
-                from benchflow.sandbox.daytona import reap_stale_sandboxes
+                from benchflow.sandbox.daytona import (
+                    reap_leaked_snapshots,
+                    reap_stale_sandboxes,
+                )
 
                 counts = reap_stale_sandboxes()
                 if counts["deleted"] or counts["failed"]:
@@ -1527,6 +1578,16 @@ class Evaluation:
                         "Daytona auto-reap: %s stale sandboxes deleted (%s failed)",
                         counts["deleted"],
                         counts["failed"],
+                    )
+                # Snapshot tier: ``bf-snap-*`` cloud snapshots leak when a
+                # sandbox's ``stop()`` never runs (crash/interrupt), since the
+                # sandbox reaper never touches snapshots. Scoped by name prefix.
+                snap_counts = reap_leaked_snapshots()
+                if snap_counts["deleted"] or snap_counts["failed"]:
+                    logger.info(
+                        "Daytona auto-reap: %s leaked snapshots deleted (%s failed)",
+                        snap_counts["deleted"],
+                        snap_counts["failed"],
                     )
             except Exception as e:
                 logger.debug("Daytona auto-reap skipped: %s", e)

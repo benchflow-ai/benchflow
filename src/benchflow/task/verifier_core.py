@@ -1,7 +1,7 @@
 """Verifier ($V$) — maps agent completion to a reward signal.
 
-Internalized from Harbor's Verifier class. Supports two verification methods,
-selected by ``[verifier].type`` in ``task.toml``:
+Supports two verification methods, selected by ``[verifier].type`` in
+``task.toml``:
 
 - ``"test-script"`` (default): run ``tests/test.sh`` inside the sandbox and
   parse ``reward.txt`` / ``reward.json``.
@@ -104,11 +104,13 @@ class Verifier:
         task: Any,
         rollout_paths: RolloutPaths,
         sandbox: Any,
+        workspace: str | None = None,
         _logger: logging.Logger | None = None,
     ) -> None:
         self._task = task
         self._rollout_paths = rollout_paths
         self._sandbox = sandbox
+        self._workspace = workspace
         self._logger = (_logger or logger).getChild("verifier")
         # Task-declared ``[verifier] reward_range`` (BF-8); None keeps the
         # canonical strict [0, 1]. Applies to the test-script reward contract
@@ -341,7 +343,7 @@ class Verifier:
                 legacy_dir,
             )
 
-    # test-script verifier (default — Harbor-compatible)
+    # test-script verifier (default)
 
     async def _verify_test_script(
         self,
@@ -352,7 +354,7 @@ class Verifier:
         """Run the task's ``test.sh`` verifier and return the reward result.
 
         ``[verifier].service`` selects which compose service ``test.sh`` runs
-        in. The default ``"main"`` is the agent container (Harbor-compatible).
+        in. The default ``"main"`` is the agent container.
         Multi-container (vulhub-style) tasks set it to a target/database
         service so the verifier can inspect *target-side* state — RCE markers,
         DB modifications — instead of only the agent workspace (#248).
@@ -463,6 +465,7 @@ class Verifier:
 
         test_result = await self._sandbox.exec(
             command=f"{test_command} > {test_stdout_path} 2>&1",
+            cwd=self._workspace if service == "main" else None,
             env=env,
             user=self._task.config.verifier.user,
             service=service,

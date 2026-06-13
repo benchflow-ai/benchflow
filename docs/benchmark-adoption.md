@@ -53,7 +53,7 @@ That produces this tree:
 ```
 webarena-lite/
 ├── __init__.py
-├── benchflow.py            # converter: source instances → Harbor task dirs
+├── benchflow.py            # converter: source instances → BenchFlow task dirs
 ├── main.py                 # converter CLI delegator
 ├── parity_test.py          # structural / eval / side-by-side parity checks
 ├── parity_experiment.json  # recorded parity results (read by verify)
@@ -68,7 +68,7 @@ What each file is for:
 - **`benchflow.py`** — the converter. Its documented `convert()` /
   `convert_all()` entry points are `NotImplementedError` stubs that point at
   CONVERT.md step 2; you fill them in to map each source instance to a
-  Harbor-format task directory (`task.toml`, `instruction.md`,
+  BenchFlow task directory (`task.toml`, `instruction.md`,
   `environment/Dockerfile`, `tests/test.sh`).
 - **`parity_test.py`** — the parity harness, with `--mode full | eval-parity |
   side-by-side` (CONVERT.md steps 3–5). Side-by-side parity records the
@@ -309,7 +309,7 @@ Issue draft written to /tmp/router-docs/divergence.md
 By default `verify` scores the recorded `parity_experiment.json` at the
 benchmark level. Pass `--roundtrip-task <task-dir>` to also run the structural
 round-trip conformance check on one concrete task tree (it reuses the existing
-Harbor round-trip parity utility). It is opt-in because that harness needs a
+split-layout round-trip parity utility). It is opt-in because that harness needs a
 concrete task directory, which the benchmark-level verdict does not require.
 
 `verify` exits non-zero for `parity-divergent` and `insufficient-evidence`, and

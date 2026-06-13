@@ -1,4 +1,4 @@
-"""Native DockerSandbox — internalized from Harbor with RL-first terminology.
+"""Native DockerSandbox with RL-first terminology.
 
 Uses docker-compose for container orchestration on local Docker.
 """
@@ -34,6 +34,7 @@ from benchflow.sandbox._compose import (
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
     COMPOSE_UP_RETRY_DELAYS_SEC,
+    healthcheck_to_compose_block,
     is_compose_up_network_race_error,
 )
 from benchflow.sandbox.protocol import SandboxImage
@@ -56,6 +57,20 @@ _DOCKER_BUILD_RETRYABLE_ERRORS = (
 # Compose-up network-race retry config lives in _compose so the host docker
 # path and the Daytona DinD path share the exact same race detection + back-off.
 _COMPOSE_UP_RETRY_DELAYS_SEC = COMPOSE_UP_RETRY_DELAYS_SEC
+
+# Hard ceiling on a single `compose up --wait` attempt. `--wait` blocks until
+# every service is healthy; a container stuck in 'starting' (bad healthcheck,
+# hung entrypoint) would otherwise pin a concurrency slot indefinitely. On
+# timeout we force-kill the project so the slot is reclaimed (see start()).
+_COMPOSE_UP_TIMEOUT_SEC = 600
+
+# Ownership label stamped on resources BenchFlow creates so the reaper can
+# reclaim them without touching unrelated Docker workloads. Mirrors the value
+# applied by ``_compose_files/docker-compose-base.yaml`` to containers/networks
+# and the constant in ``evaluation.py``/``cli/environment.py``. Snapshot images
+# (``docker commit``) get it via ``--change`` so the same label-scoped prune
+# reaps leaked ``bf-snap-*`` images.
+_BENCHFLOW_OWNED_LABEL = "benchflow.owned=true"
 
 
 def _sanitize_docker_image_name(name: str) -> str:
@@ -170,6 +185,10 @@ class DockerSandbox(BaseSandbox):
         self._keep_containers = keep_containers
         self._mounts_json = mounts_json
         self._mounts_compose_path: Path | None = None
+        self._healthcheck_compose_path: Path | None = None
+        # Tags of snapshot images this instance committed via ``snapshot()``.
+        # Removed in ``stop(delete=True)`` so ``bf-snap-*`` images don't leak.
+        self._snapshot_tags: list[str] = []
 
         verifier_dir = (
             str(rollout_paths.verifier_dir.resolve().absolute())
@@ -256,6 +275,9 @@ class DockerSandbox(BaseSandbox):
         if self._mounts_compose_path:
             paths.append(self._mounts_compose_path)
 
+        if self._healthcheck_compose_path:
+            paths.append(self._healthcheck_compose_path)
+
         if not self.task_env_config.allow_internet:
             paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
 
@@ -265,6 +287,24 @@ class DockerSandbox(BaseSandbox):
         compose = {"services": {"main": {"volumes": self._mounts_json}}}
         assert self.rollout_paths is not None
         path = self.rollout_paths.rollout_dir / "docker-compose-mounts.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(compose, indent=2))
+        return path
+
+    def _write_healthcheck_compose_file(self) -> Path:
+        # Render the task-declared healthcheck onto the ``main`` service so that
+        # ``compose up --wait`` blocks until the in-container service is healthy.
+        # Without this, a service that defines no Docker HEALTHCHECK is treated
+        # "up" the moment the container starts, racing ahead of the agent.
+        healthcheck = self.task_env_config.healthcheck
+        assert healthcheck is not None
+        compose = {
+            "services": {
+                "main": {"healthcheck": healthcheck_to_compose_block(healthcheck)}
+            }
+        }
+        assert self.rollout_paths is not None
+        path = self.rollout_paths.rollout_dir / "docker-compose-healthcheck.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(compose, indent=2))
         return path
@@ -376,9 +416,25 @@ class DockerSandbox(BaseSandbox):
         max_attempts = len(_COMPOSE_UP_RETRY_DELAYS_SEC) + 1
         for attempt in range(1, max_attempts + 1):
             try:
-                await self._run_docker_compose_command(["up", "--detach", "--wait"])
+                await self._run_docker_compose_command(
+                    ["up", "--detach", "--wait"],
+                    timeout_sec=_COMPOSE_UP_TIMEOUT_SEC,
+                )
                 return
             except RuntimeError as exc:
+                # A `--wait` timeout means a service is wedged in 'starting'.
+                # Reclaim the slot: force-kill the half-up project (the partial
+                # network/containers compose left behind) before propagating so
+                # the rollout's gather() can advance instead of stalling.
+                if "Command timed out" in str(exc):
+                    self.logger.warning(
+                        "docker compose up for %s timed out after %ss; "
+                        "force-killing the half-started project.",
+                        self.environment_name,
+                        _COMPOSE_UP_TIMEOUT_SEC,
+                    )
+                    await self._force_kill_project()
+                    raise
                 if attempt == max_attempts or not _is_compose_up_network_race_error(
                     str(exc)
                 ):
@@ -399,6 +455,9 @@ class DockerSandbox(BaseSandbox):
     async def start(self, force_build: bool) -> None:
         if self._mounts_json:
             self._mounts_compose_path = self._write_mounts_compose_file()
+
+        if self.task_env_config.healthcheck is not None:
+            self._healthcheck_compose_path = self._write_healthcheck_compose_file()
 
         self._use_prebuilt = not force_build and bool(self.task_env_config.docker_image)
 
@@ -460,11 +519,14 @@ class DockerSandbox(BaseSandbox):
                     ["stop", "-t", "5"], timeout_sec=90
                 )
             elif delete:
+                # ``--rmi local`` (not ``all``) so shared prebuilt/base images
+                # survive teardown for the next task's cross-task image cache;
+                # only images we built without a custom tag are removed.
                 await self._run_docker_compose_command(
                     [
                         "down",
                         "--rmi",
-                        "all",
+                        "local",
                         "--volumes",
                         "--remove-orphans",
                         "-t",
@@ -472,6 +534,10 @@ class DockerSandbox(BaseSandbox):
                     ],
                     timeout_sec=120,
                 )
+                # `compose down --rmi local` only removes the service images,
+                # not the `bf-snap-*` images `docker commit` produced. Reclaim
+                # the snapshot tags this instance created so they don't leak.
+                await self._remove_snapshot_images()
             else:
                 await self._run_docker_compose_command(
                     ["down", "-t", "5"], timeout_sec=90
@@ -481,6 +547,23 @@ class DockerSandbox(BaseSandbox):
                 f"Docker compose down hung/failed ({e}); force-killing project."
             )
             await self._force_kill_project()
+
+    async def _remove_snapshot_images(self) -> None:
+        """Best-effort removal of the snapshot images this instance committed.
+
+        Honours ``keep_containers`` (a kept container's snapshot is kept too).
+        Errors are swallowed — a leftover ``bf-snap-*`` tag still carries the
+        ownership label, so the reaper will sweep it on the next prune pass.
+        """
+        if self._keep_containers:
+            return
+        tags = getattr(self, "_snapshot_tags", [])
+        for tag in tags:
+            try:
+                await self._docker_cli(["image", "rm", "-f", tag], check=False)
+            except Exception as e:  # pragma: no cover - defensive
+                self.logger.warning(f"Failed to remove snapshot image {tag}: {e}")
+        self._snapshot_tags = []
 
     async def _force_kill_project(self) -> None:
         """Last-resort cleanup when `compose down` hangs or fails.
@@ -525,6 +608,20 @@ class DockerSandbox(BaseSandbox):
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(net_proc.wait(), timeout=10)
+            # `network prune` only reaps *unused* networks: if a container rm
+            # above timed out, an endpoint may still be attached and the
+            # project network would leak. Remove it explicitly by name
+            # (compose's default network is ``<project>_default``).
+            # Best-effort — ignore errors (already-gone / still-attached).
+            netrm_proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "network",
+                "rm",
+                f"{project}_default",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(netrm_proc.wait(), timeout=10)
         except Exception as e:
             self.logger.warning(f"Force-kill of compose project {project} failed: {e}")
 
@@ -630,9 +727,15 @@ class DockerSandbox(BaseSandbox):
             )
         suffix = name or uuid.uuid4().hex[:12]
         tag = _sanitize_docker_image_name(f"bf-snap-{self.environment_name}-{suffix}")
+        # Stamp the committed image with the ownership label (via ``--change``)
+        # so the label-scoped reaper can reclaim it if ``stop(delete=True)``
+        # never runs (crash, --keep-containers); without it ``bf-snap-*``
+        # images would accumulate forever.
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "commit",
+            "--change",
+            f"LABEL {_BENCHFLOW_OWNED_LABEL}",
             container_id,
             tag,
             stdout=asyncio.subprocess.PIPE,
@@ -645,6 +748,7 @@ class DockerSandbox(BaseSandbox):
                 f"{(stderr_bytes or stdout_bytes or b'').decode(errors='replace')}"
             )
         digest = (stdout_bytes or b"").decode(errors="replace").strip()
+        self._snapshot_tags.append(tag)
         self.logger.info(f"Snapshot created: {tag} ({digest})")
         return SandboxImage(
             provider="docker",
@@ -655,10 +759,17 @@ class DockerSandbox(BaseSandbox):
     async def restore(self, image: SandboxImage) -> None:
         """Restore the ``main`` container from a previously committed image.
 
-        Stops and removes the current ``main`` container, then ``docker
-        run``s a replacement from ``image.ref``. Sibling compose services
-        are untouched — they keep running as before, matching the
-        documented container-only scope of the Sandbox layer.
+        Inspects the live ``main`` container to capture its real runtime spec
+        (env, workdir, user, cpu/memory limits, volume binds, network), stops
+        and removes it, then ``docker run``s a replacement from ``image.ref``
+        carrying that exact spec forward. Without this an agent's env/cwd/limits
+        would silently change after a Branch restore. The ownership label
+        (``benchflow.owned=true``) is always stamped so the reaper and
+        ``bench environment cleanup`` can reclaim the restored container the
+        same way they reclaim the compose-managed one; otherwise it would leak.
+
+        Sibling compose services are untouched — they keep running as before,
+        matching the documented container-only scope of the Sandbox layer.
         """
         from benchflow.sandbox.protocol import SandboxSnapshotNotSupported
 
@@ -669,29 +780,25 @@ class DockerSandbox(BaseSandbox):
                 "across providers."
             )
 
+        project_name = _sanitize_docker_compose_project_name(self.session_id)
+
+        # Capture the original container's runtime spec *before* removing it —
+        # ``docker inspect`` is the only faithful source (the compose service
+        # may build from a Dockerfile, so there is no static image: pin to
+        # re-derive env/limits/binds from).
         container_id = await self._main_container_id()
+        spec = await self._inspect_container_spec(container_id) if container_id else {}
         if container_id:
             await self._docker_cli(["stop", container_id])
             await self._docker_cli(["rm", "-f", container_id])
 
-        project_name = _sanitize_docker_compose_project_name(self.session_id)
         new_name = f"{project_name}-main-restored-{uuid.uuid4().hex[:8]}"
-
-        run_cmd = [
-            "run",
-            "--detach",
-            "--name",
-            new_name,
-            "--network",
-            f"{project_name}_default",
-            "--label",
-            f"com.docker.compose.project={project_name}",
-            "--label",
-            "com.docker.compose.service=main",
-            image.ref,
-            "sleep",
-            "infinity",
-        ]
+        run_cmd = self._build_restore_run_cmd(
+            image_ref=image.ref,
+            new_name=new_name,
+            project_name=project_name,
+            spec=spec,
+        )
         result = await self._docker_cli(run_cmd, check=False)
         if result.return_code != 0:
             raise RuntimeError(
@@ -699,6 +806,101 @@ class DockerSandbox(BaseSandbox):
                 f"{result.stderr or result.stdout}"
             )
         self.logger.info(f"Snapshot restored: {image.ref} -> {new_name}")
+
+    async def _inspect_container_spec(self, container_id: str) -> dict:
+        """Return the subset of ``docker inspect`` we replay onto a restore.
+
+        Best-effort: a failed/empty inspect yields ``{}`` so ``restore`` still
+        produces a working container (just without the carried-over spec) — the
+        ownership label and compose wiring are added unconditionally regardless.
+        """
+        result = await self._docker_cli(["inspect", container_id], check=False)
+        if result.return_code != 0:
+            return {}
+        try:
+            parsed = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            return {}
+        return parsed[0] if isinstance(parsed, list) and parsed else {}
+
+    def _build_restore_run_cmd(
+        self,
+        *,
+        image_ref: str,
+        new_name: str,
+        project_name: str,
+        spec: dict,
+    ) -> list[str]:
+        """Build the ``docker run`` argv that recreates ``main`` from a snapshot.
+
+        Carries the inspected runtime spec (env, workdir, user, cpu/memory
+        limits, volume binds) forward so the restored container is faithful to
+        the pre-snapshot one, and stamps ``benchflow.owned=true`` plus the
+        compose project/service labels so the label-scoped reaper sees it.
+        Factored out of :meth:`restore` so it can be asserted on without a live
+        daemon.
+        """
+        config = spec.get("Config") or {}
+        host_config = spec.get("HostConfig") or {}
+
+        cmd: list[str] = [
+            "run",
+            "--detach",
+            "--name",
+            new_name,
+            # Ownership label so the reaper / `bench environment cleanup`
+            # (both filter on label=benchflow.owned=true) reclaim this just
+            # like the compose-managed container; the compose base file stamps
+            # the same label on the normal `main` container.
+            "--label",
+            _BENCHFLOW_OWNED_LABEL,
+            "--label",
+            f"com.docker.compose.project={project_name}",
+            "--label",
+            "com.docker.compose.service=main",
+        ]
+
+        # Network: prefer the inspected NetworkMode, falling back to the
+        # compose project default network (matches the prior behaviour).
+        network = host_config.get("NetworkMode") or f"{project_name}_default"
+        cmd.extend(["--network", network])
+
+        for env_kv in config.get("Env") or []:
+            cmd.extend(["--env", env_kv])
+
+        working_dir = config.get("WorkingDir")
+        if working_dir:
+            cmd.extend(["--workdir", working_dir])
+
+        user = config.get("User")
+        if user:
+            cmd.extend(["--user", user])
+
+        nano_cpus = host_config.get("NanoCpus")
+        if nano_cpus:
+            # docker run --cpus takes a decimal core count; NanoCpus is in
+            # billionths of a core (1 CPU == 1_000_000_000).
+            cmd.extend(["--cpus", f"{nano_cpus / 1_000_000_000:g}"])
+
+        memory = host_config.get("Memory")
+        if memory:
+            cmd.extend(["--memory", str(memory)])
+
+        for bind in host_config.get("Binds") or []:
+            cmd.extend(["--volume", bind])
+
+        cmd.append(image_ref)
+
+        # Preserve the original command (the compose service runs
+        # ``sh -c "sleep infinity"``); fall back to that if inspect gave us
+        # nothing so the restored container still stays up for exec.
+        original_cmd = config.get("Cmd")
+        if original_cmd:
+            cmd.extend(original_cmd)
+        else:
+            cmd.extend(["sh", "-c", "sleep infinity"])
+
+        return cmd
 
     async def _main_container_id(self) -> str | None:
         """Return the container id of the ``main`` compose service, or None."""

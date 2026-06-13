@@ -1,4 +1,4 @@
-"""Native ModalSandbox — internalized from Harbor with RL-first terminology.
+"""Native ModalSandbox with RL-first terminology.
 
 Uses Modal sandboxes for cloud-based container execution.
 """

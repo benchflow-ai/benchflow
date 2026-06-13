@@ -5,7 +5,7 @@ Status: v0.6 — shipped with BenchFlow 0.6.0 (2026-06-10)
 This document defines the direction for BenchFlow-native task packages. The
 short version: `task.md` is the native authoring entrypoint; `oracle/` and
 `verifier/` are the BenchFlow-native names for held-out reference behavior and
-reward checks. Harbor/Pier split names such as `solution/` and `tests/` remain
+reward checks. Legacy split names such as `solution/` and `tests/` remain
 compatibility names and export targets.
 
 The standard is intentionally split into three views:
@@ -14,7 +14,7 @@ The standard is intentionally split into three views:
 |---|---|---|
 | Authoring document | What humans and generators write: one `task.md` plus sidecar dirs | `TaskDocument` |
 | Runtime task view | What rollout, verifier, hardening, provenance, and trajectories consume | `TaskRuntimeView` plus first `TaskPackage` boundary |
-| Foreign adapter view | What Harbor, Pier, Terminal-Bench, SWE-bench, Inspect, and hosted envs import/export | adapters |
+| Foreign adapter view | What the split format, Terminal-Bench, SWE-bench, Inspect, and hosted envs import/export | adapters |
 
 Do not treat these as the same interface. A good authoring document can include
 more information than a foreign format can export, and a foreign import can
@@ -87,19 +87,19 @@ Within a BenchFlow-native package, selection is fail-closed:
   validation should report a collision
 
 This does not deprecate split layouts. Foreign adapters can still load and emit
-plain Harbor/Pier `task.toml` + `instruction.md` packages directly.
+plain split `task.toml` + `instruction.md` packages directly.
 
 ## Versioning
 
 There are two versions:
 
 ```yaml
-schema_version: "1.3"        # Harbor-compatible task config surface
+schema_version: "1.3"        # recognized task config surface
 benchflow:
   document_version: "0.6"    # BenchFlow task.md document syntax
 ```
 
-`schema_version` is for the runtime config model shared with Harbor-style
+`schema_version` is for the runtime config model shared with split-layout
 `task.toml`. `benchflow.document_version` is for document-only concepts such as
 teams, prompt composition, agent policy, runtime policy, private assets,
 provenance, evidence, nudges, and export policy.
@@ -108,7 +108,7 @@ provenance, evidence, nudges, and export policy.
 
 The root frontmatter has three classes of keys.
 
-Harbor-compatible config keys are modeled by `TaskConfig` and must be rejected
+Recognized config keys are modeled by `TaskConfig` and must be rejected
 when unknown in native authoring mode:
 
 - `schema_version` / `version`
@@ -240,7 +240,7 @@ The package has six planes. Keeping them separate is the core abstraction.
 | Oracle | held-out reference implementation and oracle-only env | tests/verifier code |
 | Evidence | validation runs, flake data, anti-cheat review, artifact hashes, leaderboard metadata | mutable task source |
 
-Harbor `steps` are verifier/runtime checkpoints. BenchFlow `scenes` are
+Multi-step `steps` are verifier/runtime checkpoints. BenchFlow `scenes` are
 interaction checkpoints. They are orthogonal. A task can have both, but a
 runtime must define how they compose before executing them.
 
@@ -358,7 +358,7 @@ Grade only the submitted artifact and declared evidence. Do not infer intent
 from private oracle files or hidden verifier fixtures.
 ```
 
-`test.sh` is the minimum executable strategy and the Harbor/Pier export target.
+`test.sh` is the minimum executable strategy and the split-layout export target.
 Reward Kit-style criteria, ORS-style episode rewards, and AgentBeats-style
 assessor agents are verifier strategies. Runtime adapters may write declared
 evidence artifacts such as `trajectory/ors-rewards.jsonl`, but the ORS-specific
@@ -437,9 +437,9 @@ only through declared artifact transfer paths.
 
 Target reward precedence:
 
-- `reward.txt` remains the Harbor-compatible scalar minimum
+- `reward.txt` remains the compatibility scalar minimum
 - when `reward.json` exists, it should be the authoritative rich reward artifact
-- `reward.json` may be an envelope with a numeric `reward`, or a Harbor Reward
+- `reward.json` may be an envelope with a numeric `reward`, or a Reward
   Kit-style multi-metric map with `metrics` plus a declared `aggregate` policy
 - if both files exist and `reward.json` has a scalar aggregate, the scalar must
   match `float(reward.txt)` or validation should fail closed
@@ -478,7 +478,7 @@ verifiers download it with the rest of `/logs/verifier`, and the built-in LLM
 judge emits criterion details there. Metrics-only `reward.json` maps can now
 use the verifier document's `outputs.aggregate_policy` or selected Reward Kit
 criteria policy to compute and persist the canonical `reward`. It still does
-not fully match the target: full Harbor
+not fully match the target: full
 Reward Kit parity, full OpenReward environment import/export, and AgentBeats
 assessor lifecycles are not yet first-class; selected unsupported strategies
 fail closed.
@@ -495,7 +495,7 @@ Compatibility `solution/` remains supported and is mounted at `/solution`.
 The naming change is semantic:
 
 - `oracle` means "held-out reference behavior used to prove solvability"
-- `solution` is a compatibility name for Harbor/Pier/Terminal-Bench exports
+- `solution` is a compatibility name for split-layout/Terminal-Bench exports
 
 Proposed outbound exporters should map native `oracle/` to foreign
 `solution/`. Current runtime supports native and compatibility oracle paths, and
@@ -761,7 +761,7 @@ Target compatibility rules:
 1. Native authoring rejects unknown root config keys.
 2. Foreign adapter import preserves unknown `task.toml` keys outside native
    config. The first implementation is `import_task_config_toml()`: strict
-   native validation still fails on unknown keys, while Harbor import returns a
+   native validation still fails on unknown keys, while split-format import returns a
    validated `TaskConfig` plus `InboundCompatibility.config_extra`.
 3. Legacy-to-native migration writes preserved foreign keys under
    `benchflow.compat.extra`:
@@ -793,11 +793,11 @@ Target compatibility rules:
    normalized prompt, and environment/solution/tests file-map hashes.
 6. Export emits a degraded-export report when the target format cannot express
    a native concept. The first implementation is
-   `src/benchflow/task/export.py`, which writes Harbor/Pier-style split layout
+   `src/benchflow/task/export.py`, which writes a split layout
    plus `compatibility/export-report.json`.
 7. Mixed native/legacy files are structurally invalid when task config,
    prompt, oracle/solution, or verifier/tests aliases drift.
-8. Harbor/Pier export should emit `task.toml`, `instruction.md`, `solution/`,
+8. Split-layout export should emit `task.toml`, `instruction.md`, `solution/`,
    and `tests/`.
 9. BenchFlow import should prefer `task.md` only when compatibility metadata
    proves the legacy files are equivalent.
@@ -838,7 +838,7 @@ Current implementation status:
 | native `oracle/` | yes | yes | keep |
 | verifier `script` strategy | yes | yes | keep |
 | verifier `llm-judge` strategy | yes | yes | keep |
-| verifier `reward-kit` strategy | yes | partial | safe relative `reward.py` runner executes; declared criteria parse before launch, emit a runtime manifest, require exact metrics, and compute/verify canonical reward; fuller Harbor Reward Kit parity remains target work |
+| verifier `reward-kit` strategy | yes | partial | safe relative `reward.py` runner executes; declared criteria parse before launch, emit a runtime manifest, require exact metrics, and compute/verify canonical reward; fuller Reward Kit parity remains target work |
 | verifier `agent-judge` strategy | yes | partial | verifier-scoped LLM judge over declared inputs; richer ACP-backed judge agents remain target work |
 | verifier `ors-episode` strategy | yes | partial | runtime helper writes ORS tool-output rewards to `trajectory/ors-rewards.jsonl`; declared reward responses/event streams normalize into `reward.json` and `reward-details.json`; fuller OpenReward environment import/export remains target work |
 | `agents.roles` | yes | partial | `TaskRuntimeView` carries parsed scenes; explicit sequential shared-workspace handoff can switch roles through the user loop |
@@ -846,7 +846,7 @@ Current implementation status:
 | `user` / `## user-persona` | yes | partial | `model: scripted` + string `private_facts` compiles to `DocumentNudgeUser`; bounded model-linear users compile to `ModelDocumentNudgeUser`; linear single- and multi-scene user loops execute when every scene is single-role, or when explicit multi-role turns opt into sequential shared-workspace team handoff; `confirmation_policy: human` gates ACP permissions fail-closed without an explicit handler; `branch_execution: option-kinds-preserved` preserves option IDs and kinds; forked branch execution, interactive approval UI, parallel teams, and rich handoff artifacts fail closed |
 | `benchflow.teams` | yes | partial | supports exactly one `handoff` with `mode: sequential`, `workspace_visibility: shared`, and `trajectory_visibility: none|metadata`; richer team keys fail closed |
 | `benchflow:` | raw | no | typed document schema after v0.3 stabilizes |
-| Harbor `steps` | yes | no/partial | fail closed per sandbox until implemented |
+| Multi-step `steps` | yes | no/partial | fail closed per sandbox until implemented |
 | root/step artifacts | yes | no/partial | implement collection or fail closed |
 | network allowlist | yes | no/partial | per-sandbox capability check |
 | separate verifier env | yes | no/partial | materializer plus verifier runner support |
@@ -974,7 +974,7 @@ Start with `document_version`, `compatibility`, `provenance`, `assets`,
 P4: Extend exporters.
 
 The first `bench tasks export ... --target harbor|pier` path exports to
-Harbor/Pier-style split layout with explicit loss reports, backed by
+a split layout with explicit loss reports, backed by
 `export_task_to_split_layout()`. Extend the same reporting discipline to
 Terminal-Bench, Inspect, SWE-bench-style datasets, and same-format no-op
 exports.

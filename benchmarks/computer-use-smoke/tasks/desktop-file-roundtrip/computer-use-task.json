@@ -1,0 +1,12 @@
+{
+  "task_id": "desktop-file-roundtrip",
+  "benchmark": "computer-use-smoke",
+  "category": "desktop-file-and-screenshot",
+  "instruction": "Use the desktop environment to create the result file, verify a file roundtrip, and capture a screenshot. Final answer must be exactly: computer-use-smoke: ready",
+  "expected_result": "computer-use-smoke: ready",
+  "expected_file": "/app/computer_use_result.txt",
+  "roundtrip_file": "/app/computer_use_roundtrip.txt",
+  "screenshot_required": true,
+  "workdir": "/app",
+  "timeout_sec": 180
+}

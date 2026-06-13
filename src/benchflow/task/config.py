@@ -1,9 +1,9 @@
-"""Task configuration models — internalized from Harbor, aligned to RL terminology.
+"""Task configuration models — aligned to RL terminology.
 
 Terminology (per https://leehanchung.github.io/blogs/2026/03/21/rl-environments-for-llm-agents/):
     - Task ($T$): problem specification the agent solves
-    - Sandbox: isolated execution environment (replaces Harbor "environment")
-    - Rollout: single episode of agent interaction (replaces Harbor "trial")
+    - Sandbox: isolated execution environment (the "environment" concept)
+    - Rollout: single episode of agent interaction (a "trial")
     - Verifier ($V$): maps completion → reward signal
 """
 
@@ -34,9 +34,9 @@ _ENV_VAR_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 class TaskConfigModel(BaseModel):
     """Base model for task schema sections.
 
-    Harbor-compatible config keys should be modeled explicitly. Unknown keys
+    Recognized config keys should be modeled explicitly. Unknown keys
     are rejected so ``task.md`` and ``task.toml`` do not silently become a
-    lossy subset of the upstream task schema.
+    lossy subset of the task schema.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -55,6 +55,8 @@ class TaskOS(StrEnum):
 
     LINUX = "linux"
     WINDOWS = "windows"
+    MACOS = "macos"
+    ANDROID = "android"
 
 
 class VerifierEnvironmentMode(StrEnum):
@@ -427,7 +429,7 @@ class TpuSpec(TaskConfigModel):
 class SandboxConfig(TaskConfigModel):
     """Sandbox configuration — the isolated execution environment.
 
-    Replaces Harbor's EnvironmentConfig with RL-aligned naming.
+    The environment-configuration model, with RL-aligned naming.
     """
 
     network_mode: NetworkMode = Field(
@@ -620,7 +622,7 @@ class ArtifactConfig(TaskConfigModel):
 
 
 class StepConfig(TaskConfigModel):
-    """Harbor-style multi-step task configuration."""
+    """Multi-step task configuration."""
 
     name: str
     agent: AgentConfig = Field(default_factory=AgentConfig)

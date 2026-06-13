@@ -47,6 +47,7 @@ from benchflow.trajectories.types import redact_acp_trajectory_jsonl
 logger = logging.getLogger(__name__)
 
 _DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
+_TASK_SETUP_SANDBOX_DIR = PurePosixPath("/tmp/benchflow-task-setup")
 
 
 def _task_disallows_internet(task: Any) -> bool:
@@ -113,10 +114,47 @@ def _configured_task_workdir(task: Any) -> str | None:
 
     env_config = getattr(getattr(task, "config", None), "environment", None)
     value = getattr(env_config, "workdir", None)
-    if not isinstance(value, str):
+    if isinstance(value, str):
+        value = value.strip()
+        if value:
+            return value
+    return _dockerfile_task_workdir(task)
+
+
+def _dockerfile_task_workdir(task: Any) -> str | None:
+    """Return the task Dockerfile's effective WORKDIR, when simple to resolve."""
+
+    paths = getattr(task, "paths", None)
+    environment_dir = getattr(paths, "environment_dir", None)
+    if environment_dir is None:
         return None
-    value = value.strip()
-    return value or None
+    dockerfile_path = Path(environment_dir) / "Dockerfile"
+    if not dockerfile_path.exists():
+        return None
+
+    workdir = PurePosixPath("/")
+    try:
+        lines = dockerfile_path.read_text().splitlines()
+    except OSError:
+        return None
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        instruction, _, rest = stripped.partition(" ")
+        if instruction.upper() != "WORKDIR" or not rest.strip():
+            continue
+        try:
+            parts = shlex.split(rest, comments=False, posix=True)
+        except ValueError:
+            return None
+        if not parts or "$" in parts[0]:
+            return None
+        next_path = PurePosixPath(parts[0])
+        workdir = next_path if next_path.is_absolute() else workdir / next_path
+    if workdir == PurePosixPath("/"):
+        return None
+    return workdir.as_posix()
 
 
 def _validate_agent_workdir(workdir: str) -> None:
@@ -316,6 +354,45 @@ async def _start_env_and_upload(
             else sandbox_paths.solution_dir
         )
         await env.upload_dir(paths.solution_dir, str(target_dir))
+    await _run_task_setup_hooks(env, task_path)
+
+
+async def _run_task_setup_hooks(env: Any, task_path: Path) -> None:
+    """Run verifier/setup pre-command hooks before the agent starts."""
+    from benchflow.task.paths import TaskPaths
+
+    paths = TaskPaths(task_path)
+    setup_dir = paths.tests_dir / "setup"
+    pre_command = setup_dir / "pre_command.sh"
+    if not pre_command.is_file():
+        return
+
+    remote_dir = str(_TASK_SETUP_SANDBOX_DIR)
+    await env.exec(
+        f"rm -rf -- {shlex.quote(remote_dir)} && mkdir -p {shlex.quote(remote_dir)}",
+        user="root",
+        timeout_sec=10,
+    )
+    try:
+        await env.upload_dir(setup_dir, remote_dir)
+        command = (
+            f"chmod +x {shlex.quote(remote_dir)}/pre_command.sh && "
+            f"cd {shlex.quote(remote_dir)} && "
+            "DEBIAN_FRONTEND=noninteractive ./pre_command.sh"
+        )
+        result = await env.exec(command, user="root", timeout_sec=300)
+        return_code = getattr(result, "return_code", getattr(result, "exit_code", 0))
+        if isinstance(return_code, int) and return_code != 0:
+            stderr = (getattr(result, "stderr", "") or "").strip()
+            stdout = (getattr(result, "stdout", "") or "").strip()
+            detail = stderr or stdout or f"rc={return_code}"
+            raise RuntimeError(f"task setup pre_command.sh failed: {detail}")
+    finally:
+        await env.exec(
+            f"rm -rf -- {shlex.quote(remote_dir)}",
+            user="root",
+            timeout_sec=10,
+        )
 
 
 async def _run_oracle(
@@ -351,10 +428,15 @@ async def _run_oracle(
     oracle_env: dict[str, str] = {"DEBIAN_FRONTEND": "noninteractive"}
     if task.config.solution.env:
         oracle_env.update(resolve_env_vars(task.config.solution.env))
+    exec_kwargs: dict[str, object] = {
+        "env": oracle_env,
+        "timeout_sec": timeout,
+    }
+    if sandbox_user:
+        exec_kwargs["user"] = "root"
     result = await env.exec(
         f"{cmd} > /logs/agent/oracle.txt 2>&1",
-        env=oracle_env,
-        timeout_sec=timeout,
+        **exec_kwargs,
     )
     if result.return_code != 0:
         logger.warning(f"Oracle solve.sh exited with rc={result.return_code}")
@@ -400,6 +482,21 @@ async def _publish_trajectory_for_verifier(
             os.unlink(tmp_path)
 
 
+async def _download_rollout_artifacts(env: Any, rollout_paths: Any) -> None:
+    """Copy sandbox-side /logs/artifacts back for non-mounted providers."""
+    if getattr(env, "is_mounted", False):
+        return
+    from benchflow.task.paths import SandboxPaths
+
+    try:
+        await env.download_dir(
+            str(SandboxPaths.artifacts_dir),
+            rollout_paths.artifacts_dir,
+        )
+    except Exception as exc:
+        logger.warning("Failed to download rollout artifacts: %s", exc)
+
+
 async def _verify_rollout(
     env: Any,
     task: Any,
@@ -423,7 +520,12 @@ async def _verify_rollout(
     try:
         await planes.harden_before_verify(env, task, sandbox_user, workspace=workspace)
         logger.info("Running verifier...")
-        verifier = planes.verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
+        verifier = planes.verifier(
+            task=task,
+            rollout_paths=rollout_paths,
+            sandbox=env,
+            workspace=workspace,
+        )
         verifier_result = await asyncio.wait_for(
             verifier.verify(),
             timeout=timeout_budget,

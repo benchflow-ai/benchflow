@@ -322,6 +322,14 @@ class LLMExchange(BaseModel):
     request: LLMRequest
     response: LLMResponse
     duration_ms: float = 0.0
+    # Provider-facing (gateway-translated) capture for cross-protocol calls: the
+    # translated upstream request body, the real upstream URL/path, and the raw
+    # provider response. Present only when the upstream wire protocol differs
+    # from the agent-facing protocol (e.g. an OpenAI-protocol agent routed to a
+    # native GenerateContent backend); ``None`` keeps same-protocol exchanges
+    # byte-identical. Serialized by ``to_jsonl`` and therefore subject to the
+    # same secret redaction as the rest of the exchange.
+    upstream: dict[str, Any] | None = None
 
 
 class Trajectory(BaseModel):
@@ -400,7 +408,10 @@ class Trajectory(BaseModel):
 
         lines = []
         for ex in self.exchanges:
-            data = ex.model_dump(mode="json")
+            # ``exclude_none`` keeps same-protocol exchanges byte-identical: the
+            # optional ``upstream`` passthrough only appears when a cross-protocol
+            # call actually populated it.
+            data = ex.model_dump(mode="json", exclude_none=True)
             raw = json.dumps(data, default=str)
             if redact_keys:
                 raw = redact_trajectory_text(raw)

@@ -119,7 +119,7 @@ PYTEST_ADDOPTS="-c /dev/null --confcutdir=<verifier-dir> --rootdir=<workspace> -
 ```
 
 where `<verifier-dir>` is `/verifier` for native packages (`/tests` for
-legacy), and `<workspace>` is the agent workspace (`/app` for Harbor/SWE-bench
+legacy), and `<workspace>` is the agent workspace (`/app` for SWE-bench
 conventions, `/root` for SkillsBench — injected dynamically). `-c /dev/null`
 blocks `pyproject.toml`/`pytest.ini` discovery and `--confcutdir` blocks
 `conftest.py` walk-up beyond the verifier dir. Tasks that do not use pytest

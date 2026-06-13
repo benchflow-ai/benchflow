@@ -107,6 +107,7 @@ async def test_run_oracle_redirects_sandbox_user_output(tmp_path):
         "'DEBIAN_FRONTEND=noninteractive bash /solution/solve.sh' "
         "> /logs/agent/oracle.txt 2>&1"
     )
+    assert env.exec.call_args_list[0].kwargs["user"] == "root"
     assert "tee" not in solve_cmd
 
 

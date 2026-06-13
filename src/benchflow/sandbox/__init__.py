@@ -6,6 +6,8 @@ Public API:
     ServiceConfig, SERVICES  — sandbox service registry
     DockerSandbox        — local Docker backend
     DaytonaSandbox       — Daytona cloud backend
+    CuaSandbox           — optional Cua desktop backend
+    MacosIosSimulatorSandbox — macOS-host iOS Simulator backend (xcrun simctl)
 """
 
 from benchflow.sandbox.protocol import (

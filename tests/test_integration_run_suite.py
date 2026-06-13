@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
-from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from tests.integration.check_adapter_evidence import (
+    check_browser_use_smoke,
+    check_computer_use_smoke,
     check_continuallearningbench,
     check_hilbench,
+    check_iosworld_smoke,
     check_programbench,
     check_skillsbench_result,
+    check_use_computer_cookbook_smoke,
 )
 from tests.integration.check_adapter_evidence import (
     main as adapter_evidence_main,
@@ -650,7 +655,7 @@ def test_hosted_env_evidence_execution_invokes_checker(
 
 def test_run_adapter_evidence_rejects_empty_selection() -> None:
     """Guards ENG-89 adapter-release-set execution rejects missing lane."""
-    args = SimpleNamespace(
+    args = argparse.Namespace(
         adapter_evidence_repo_root=Path.cwd(),
         skillsbench_result=None,
         open_pr_root=[],
@@ -663,7 +668,7 @@ def test_run_adapter_evidence_rejects_empty_selection() -> None:
 
 def test_run_trace_evidence_rejects_empty_selection() -> None:
     """Guards ENG-93 trace evidence rejects missing lane."""
-    args = SimpleNamespace(
+    args = argparse.Namespace(
         suite=SUITE_PATH,
         trace_evidence_repo_root=Path.cwd(),
         trace_evidence_dir=None,
@@ -677,7 +682,7 @@ def test_run_trace_evidence_rejects_empty_selection() -> None:
 
 def test_run_hosted_env_evidence_rejects_empty_selection() -> None:
     """Guards ENG-92 hosted-env evidence rejects missing lane."""
-    args = SimpleNamespace(
+    args = argparse.Namespace(
         suite=SUITE_PATH,
         hosted_env_evidence_dir=None,
         harbor_inventory_limit=2,
@@ -740,6 +745,496 @@ def test_adapter_evidence_checker_validates_programbench_fixture() -> None:
 
     assert finding.status == "pass"
     assert "pipeline parity" in finding.message
+
+
+def test_adapter_evidence_checker_validates_universal_environment_fixtures() -> None:
+    """Guards 0.7 environment-adapter evidence from staying /tmp-only."""
+    root = Path.cwd()
+
+    findings = [
+        check_browser_use_smoke(root),
+        check_computer_use_smoke(root),
+        check_use_computer_cookbook_smoke(root),
+        check_iosworld_smoke(root),
+    ]
+
+    assert [finding.status for finding in findings] == ["pass"] * 4
+    assert "slice(s)" in findings[0].message
+    assert "Cua" in findings[1].adapter
+    assert "cookbook" in findings[2].adapter
+    assert "macOS/iOS Simulator" in findings[3].message
+
+
+def _browser_use_evidence(
+    *,
+    screenshots_min: int = 1,
+    adoption_report: bool = True,
+    additional_evidence: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    slices = []
+    for agent in (
+        "browser-use-cli",
+        "browser-use-agent",
+        "stagehand-agent",
+    ):
+        parity = {
+            "criteria_compared": 7,
+            "criteria_agreed": 7,
+            "reward_delta_max": 0.0,
+            "artifact_manifest": True,
+            "eval_run_summary": True,
+            "environment_readiness": True,
+            "runtime_trace_schema": True,
+        }
+        if adoption_report:
+            parity["adoption_report"] = True
+            parity["loop_state"] = True
+        slices.append(
+            {
+                "id": agent,
+                "task_id": "open-local-page",
+                "agent_adapter": agent,
+                "sandbox_provider": "docker",
+                "environment_adapter": "browser",
+                "benchmark_adapter": "browser-use",
+                "original_runner": {"score": 1.0},
+                "benchflow_run": {
+                    "reward": 1.0,
+                    "trajectory_steps_min": 3,
+                    "tool_calls_min": 1,
+                    "screenshots_min": screenshots_min,
+                },
+                "parity": parity,
+                "cleanup": {"docker_containers": 0, "docker_networks": 0},
+                "commands": [
+                    "uv run python benchmarks/browser-use-smoke/parity_test.py"
+                ],
+            }
+        )
+
+    evidence: dict[str, object] = {
+        "schema": "benchflow.environment-adapter-evidence.v1",
+        "benchmark": "browser-use-smoke",
+        "status": "parity-confirmed",
+        "slices": slices,
+        "gaps": ["fixture gap"],
+    }
+    if additional_evidence is not None:
+        evidence["additional_evidence"] = additional_evidence
+    return evidence
+
+
+def _official_browser_use_probe_record() -> dict[str, object]:
+    return {
+        "id": "official-browser-use-encrypted-task",
+        "status": "blocked-original-runner-benchflow-completed",
+        "original_runner_probe": {
+            "schema": "benchflow.browser-use-original-runner-probe.v1",
+            "status": "blocked",
+            "failure_class": "host-local-browser-startup-timeout",
+            "checks": {
+                "trace_complete": False,
+                "expected_result_count": 1,
+            },
+            "artifacts": {
+                "raw_trace_policy": "raw traces are path/count only",
+            },
+        },
+        "benchflow_run": {
+            "reward": 0.0,
+            "trajectory_steps_min": 3,
+            "tool_calls_min": 1,
+            "screenshots_min": 1,
+        },
+        "parity": {
+            "comparable": False,
+            "benchflow_completed_same_selected_task": True,
+        },
+        "cleanup": {"docker_containers": 0, "docker_networks": 0},
+        "commands": [
+            "uv run python benchmarks/browser-use-smoke/import_upstream.py",
+            "uv run bench eval create --tasks-dir /tmp/tasks --agent browser-use-agent",
+            "uv run python benchmarks/browser-use-smoke/original_runner_probe.py",
+        ],
+    }
+
+
+def test_adapter_evidence_checker_rejects_trace_thin_browser_evidence(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 Browser Use evidence from passing without screenshots."""
+    evidence_dir = tmp_path / "benchmarks" / "browser-use-smoke"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "adapter_evidence.json").write_text(
+        json.dumps(_browser_use_evidence(screenshots_min=0))
+    )
+
+    finding = check_browser_use_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "screenshot" in finding.message
+
+
+def test_adapter_evidence_checker_rejects_missing_adoption_report(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 evidence from omitting the scrubbed review manifest."""
+    evidence_dir = tmp_path / "benchmarks" / "browser-use-smoke"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "adapter_evidence.json").write_text(
+        json.dumps(_browser_use_evidence(adoption_report=False))
+    )
+
+    finding = check_browser_use_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "adoption report" in finding.message
+
+
+def test_adapter_evidence_checker_rejects_missing_loop_state(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 loopcraft evidence from omitting resumable state."""
+    evidence_dir = tmp_path / "benchmarks" / "browser-use-smoke"
+    evidence_dir.mkdir(parents=True)
+    evidence = _browser_use_evidence()
+    for item in cast(list[dict[str, Any]], evidence["slices"]):
+        item["parity"].pop("loop_state", None)
+    (evidence_dir / "adapter_evidence.json").write_text(json.dumps(evidence))
+
+    finding = check_browser_use_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "loop state" in finding.message
+
+
+def test_adapter_evidence_checker_rejects_missing_browser_readiness(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 Browser Use evidence from hiding environment readiness."""
+    evidence_dir = tmp_path / "benchmarks" / "browser-use-smoke"
+    evidence_dir.mkdir(parents=True)
+    evidence = _browser_use_evidence()
+    for item in cast(list[dict[str, Any]], evidence["slices"]):
+        item["parity"].pop("environment_readiness", None)
+    (evidence_dir / "adapter_evidence.json").write_text(json.dumps(evidence))
+
+    finding = check_browser_use_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "environment readiness" in finding.message
+
+
+def test_adapter_evidence_checker_rejects_missing_browser_runtime_schema(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 Browser Use evidence from bypassing runtime artifact writer."""
+    evidence_dir = tmp_path / "benchmarks" / "browser-use-smoke"
+    evidence_dir.mkdir(parents=True)
+    evidence = _browser_use_evidence()
+    for item in cast(list[dict[str, Any]], evidence["slices"]):
+        item["parity"].pop("runtime_trace_schema", None)
+    (evidence_dir / "adapter_evidence.json").write_text(json.dumps(evidence))
+
+    finding = check_browser_use_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "runtime trace schema" in finding.message
+
+
+def test_adapter_evidence_checker_requires_official_stagehand_parity(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 Stagehand evidence from passing on fixture-only parity."""
+    evidence_dir = tmp_path / "benchmarks" / "browser-use-smoke"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "adapter_evidence.json").write_text(
+        json.dumps(
+            _browser_use_evidence(
+                additional_evidence=[_official_browser_use_probe_record()]
+            )
+        )
+    )
+
+    finding = check_browser_use_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "official Stagehand" in finding.message
+
+
+def test_adapter_evidence_checker_requires_official_browser_use_probe(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 Browser Use evidence from hiding original-runner blockers."""
+    evidence_dir = tmp_path / "benchmarks" / "browser-use-smoke"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "adapter_evidence.json").write_text(
+        json.dumps(_browser_use_evidence(additional_evidence=[]))
+    )
+
+    finding = check_browser_use_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "official Browser Use" in finding.message
+
+
+def _cookbook_evidence(*, support_report: bool = True) -> dict[str, object]:
+    slices = []
+    for task_id, reward in (
+        ("smoke__ubuntu-osworld", 1.0),
+        ("raw-cuagym-supported-python-reward", 0.0),
+    ):
+        slices.append(
+            {
+                "id": task_id,
+                "task_id": task_id,
+                "agent_adapter": "computer-use-smoke",
+                "sandbox_provider": "cua",
+                "sandbox_provider_mode": "local",
+                "environment_adapter": "desktop",
+                "benchmark_adapter": "use-computer-cookbook",
+                "original_runner": {"score": reward},
+                "benchflow_run": {
+                    "reward": reward,
+                    "trajectory_steps_min": 5,
+                    "tool_calls_min": 3,
+                    "screenshots_min": 1,
+                },
+                "parity": {
+                    "criteria_compared": 7,
+                    "criteria_agreed": 7,
+                    "reward_delta_max": 0.0,
+                    "artifact_manifest": True,
+                    "eval_run_summary": True,
+                    "adoption_report": True,
+                    "loop_state": True,
+                    "runtime_trace_schema": True,
+                },
+                "cleanup": {"cua_containers": 0},
+                "commands": [
+                    "BENCHFLOW_CUA_LOCAL=1 uv run python benchmarks/use-computer-cookbook-smoke/parity_test.py"
+                ],
+            }
+        )
+    unsupported_summary: dict[str, object] = {
+        "known_supported_raw_cuagym_tasks": 333,
+        "raw_cuagym_total_tasks": 10910,
+        "top_remaining_blockers": ["unmapped desktop app launchers"],
+    }
+    if support_report:
+        unsupported_summary["support_report"] = {
+            "schema": "benchflow.cuagym-import-support-report.v1",
+            "unsupported_records_persisted": True,
+            "record_fields": [
+                "task_id",
+                "status",
+                "app_type",
+                "difficulty",
+                "reason",
+                "code",
+            ],
+            "plaintext_policy": "metadata only",
+            "commands": [
+                "uv run python benchmarks/use-computer-cookbook-smoke/import_upstream.py --support-report-out /tmp/report.json"
+            ],
+        }
+    return {
+        "schema": "benchflow.environment-adapter-evidence.v1",
+        "benchmark": "use-computer-cookbook-smoke",
+        "status": "parity-confirmed",
+        "slices": slices,
+        "unsupported_summary": unsupported_summary,
+        "gaps": ["fixture gap"],
+    }
+
+
+def test_adapter_evidence_checker_requires_cookbook_support_report(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 CUA-Gym scaling evidence from losing unsupported records."""
+    evidence_dir = tmp_path / "benchmarks" / "use-computer-cookbook-smoke"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "adapter_evidence.json").write_text(
+        json.dumps(_cookbook_evidence(support_report=False))
+    )
+
+    finding = check_use_computer_cookbook_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "support report" in finding.message
+
+
+def test_adapter_evidence_checker_rejects_ambiguous_cua_mode(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 Cua evidence from implying cloud support with local runs."""
+    evidence_dir = tmp_path / "benchmarks" / "computer-use-smoke"
+    evidence_dir.mkdir(parents=True)
+    evidence = {
+        "schema": "benchflow.environment-adapter-evidence.v1",
+        "benchmark": "computer-use-smoke",
+        "status": "parity-confirmed",
+        "slices": [
+            {
+                "id": "desktop-file-roundtrip",
+                "task_id": "desktop-file-roundtrip",
+                "agent_adapter": "computer-use-smoke",
+                "sandbox_provider": "cua",
+                "environment_adapter": "desktop",
+                "benchmark_adapter": "computer-use",
+                "original_runner": {"score": 1.0},
+                "benchflow_run": {
+                    "reward": 1.0,
+                    "trajectory_steps_min": 5,
+                    "tool_calls_min": 3,
+                    "screenshots_min": 1,
+                },
+                "parity": {
+                    "criteria_compared": 7,
+                    "criteria_agreed": 7,
+                    "reward_delta_max": 0.0,
+                    "artifact_manifest": True,
+                    "eval_run_summary": True,
+                    "adoption_report": True,
+                    "loop_state": True,
+                },
+                "cleanup": {"cua_containers": 0},
+                "commands": [
+                    "BENCHFLOW_CUA_LOCAL=1 uv run python benchmarks/computer-use-smoke/parity_test.py"
+                ],
+            }
+        ],
+        "gaps": ["fixture gap"],
+    }
+    (evidence_dir / "adapter_evidence.json").write_text(json.dumps(evidence))
+
+    finding = check_computer_use_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "sandbox_provider_mode" in finding.message
+
+
+def test_adapter_evidence_checker_requires_cua_cloud_failure_probe(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 Cua evidence from losing cloud not-ready diagnostics."""
+    evidence_dir = tmp_path / "benchmarks" / "computer-use-smoke"
+    evidence_dir.mkdir(parents=True)
+    evidence = {
+        "schema": "benchflow.environment-adapter-evidence.v1",
+        "benchmark": "computer-use-smoke",
+        "status": "parity-confirmed",
+        "slices": [
+            {
+                "id": "desktop-file-roundtrip",
+                "task_id": "desktop-file-roundtrip",
+                "agent_adapter": "computer-use-smoke",
+                "sandbox_provider": "cua",
+                "sandbox_provider_mode": "local",
+                "environment_adapter": "desktop",
+                "benchmark_adapter": "computer-use",
+                "original_runner": {"score": 1.0},
+                "benchflow_run": {
+                    "reward": 1.0,
+                    "trajectory_steps_min": 5,
+                    "tool_calls_min": 3,
+                    "screenshots_min": 1,
+                },
+                "parity": {
+                    "criteria_compared": 7,
+                    "criteria_agreed": 7,
+                    "reward_delta_max": 0.0,
+                    "artifact_manifest": True,
+                    "eval_run_summary": True,
+                    "adoption_report": True,
+                    "loop_state": True,
+                    "runtime_trace_schema": True,
+                },
+                "cleanup": {"cua_containers": 0},
+                "commands": [
+                    "BENCHFLOW_CUA_LOCAL=1 uv run python benchmarks/computer-use-smoke/parity_test.py"
+                ],
+            }
+        ],
+        "gaps": ["fixture gap"],
+    }
+    (evidence_dir / "adapter_evidence.json").write_text(json.dumps(evidence))
+
+    finding = check_computer_use_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "cloud failure probe" in finding.message
+
+
+def test_adapter_evidence_checker_rejects_missing_desktop_runtime_schema(
+    tmp_path: Path,
+) -> None:
+    """Guards 0.7 desktop evidence from bypassing runtime artifact writer."""
+    evidence_dir = tmp_path / "benchmarks" / "computer-use-smoke"
+    evidence_dir.mkdir(parents=True)
+    evidence = {
+        "schema": "benchflow.environment-adapter-evidence.v1",
+        "benchmark": "computer-use-smoke",
+        "status": "parity-confirmed",
+        "slices": [
+            {
+                "id": "desktop-file-roundtrip",
+                "task_id": "desktop-file-roundtrip",
+                "agent_adapter": "computer-use-smoke",
+                "sandbox_provider": "cua",
+                "sandbox_provider_mode": "local",
+                "environment_adapter": "desktop",
+                "benchmark_adapter": "computer-use",
+                "original_runner": {"score": 1.0},
+                "benchflow_run": {
+                    "reward": 1.0,
+                    "trajectory_steps_min": 5,
+                    "tool_calls_min": 3,
+                    "screenshots_min": 1,
+                },
+                "parity": {
+                    "criteria_compared": 7,
+                    "criteria_agreed": 7,
+                    "reward_delta_max": 0.0,
+                    "artifact_manifest": True,
+                    "eval_run_summary": True,
+                    "adoption_report": True,
+                    "loop_state": True,
+                },
+                "cleanup": {"cua_containers": 0},
+                "commands": [
+                    "BENCHFLOW_CUA_LOCAL=1 uv run python benchmarks/computer-use-smoke/parity_test.py"
+                ],
+            }
+        ],
+        "gaps": ["fixture gap"],
+    }
+    (evidence_dir / "adapter_evidence.json").write_text(json.dumps(evidence))
+
+    finding = check_computer_use_smoke(tmp_path)
+
+    assert finding.status == "fail"
+    assert "desktop runtime trace schema" in finding.message
+
+
+def test_adapter_evidence_main_can_run_universal_environment_gate(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Guards 0.7 evidence gate runs without unrelated release inputs."""
+    rc = adapter_evidence_main(
+        [
+            "--repo-root",
+            str(Path.cwd()),
+            "--only-universal-environment-adapters",
+        ]
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Browser Use / Stagehand" in out
+    assert "Computer Use Cua smoke" in out
+    assert "SkillsBench" not in out
+    assert "HILBench" not in out
 
 
 def test_adapter_evidence_checker_accepts_skillsbench_result(tmp_path: Path) -> None:

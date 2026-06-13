@@ -14,7 +14,7 @@ import typer
 AgentOption = Annotated[str, typer.Option("--agent", help="Agent name")]
 ModelOption = Annotated[str | None, typer.Option("--model", help="Model")]
 SandboxOption = Annotated[
-    str, typer.Option("--sandbox", help="Sandbox: docker, daytona, or modal")
+    str, typer.Option("--sandbox", help="Sandbox: docker, daytona, modal, or cua")
 ]
 ConcurrencyOption = Annotated[
     int, typer.Option("--concurrency", help="Max concurrent tasks")

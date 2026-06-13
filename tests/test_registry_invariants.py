@@ -48,7 +48,7 @@ VALID_ACP_MODEL_FORMATS = {
 JS_ACP_AGENTS = {
     name
     for name, cfg in AGENTS.items()
-    if cfg.protocol == "acp" and "npm install" in cfg.install_cmd
+    if cfg.protocol == "acp" and "--prefix /opt/benchflow/js-agents" in cfg.install_cmd
 }
 
 

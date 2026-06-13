@@ -1,6 +1,6 @@
 """Runtime capability checks for parsed task packages.
 
-The authoring parser intentionally accepts the Harbor-compatible task surface,
+The authoring parser intentionally accepts the legacy split task surface,
 plus BenchFlow-native document fields. This module is the first runtime-facing
 gate: it reports parsed semantics that the selected backend cannot currently
 honor, so callers can fail closed before sandbox launch.
@@ -30,7 +30,7 @@ from benchflow.task.prompts import (
 )
 from benchflow.task.verifier_document import load_verifier_document
 
-SUPPORTED_SANDBOX_BACKENDS = {"docker", "daytona", "modal"}
+SUPPORTED_SANDBOX_BACKENDS = {"docker", "daytona", "modal", "cua"}
 
 
 @dataclass(frozen=True)
@@ -76,7 +76,7 @@ def validate_task_runtime_support(
         _issue(
             unsupported,
             path="sandbox",
-            reason="unknown sandbox backend; use docker, daytona, or modal",
+            reason="unknown sandbox backend; use docker, daytona, modal, or cua",
             sandbox=sandbox,
         )
         return unsupported
@@ -128,7 +128,7 @@ def _append_config_issues(
         _issue(
             unsupported,
             path="steps",
-            reason="Harbor multi-step execution is parsed but not runtime-gated",
+            reason="Multi-step execution is parsed but not runtime-gated",
             sandbox=sandbox,
         )
         for i, step in enumerate(config.steps):
@@ -197,11 +197,13 @@ def _append_config_issues(
         )
 
     env = config.environment
-    if env.os == TaskOS.WINDOWS:
+    if env.os in {TaskOS.WINDOWS, TaskOS.MACOS, TaskOS.ANDROID} and sandbox != "cua":
         _issue(
             unsupported,
             path="environment.os",
-            reason="Windows task environments are parsed but not executable",
+            reason=(
+                f"{env.os.value} task environments require the cua sandbox backend"
+            ),
             sandbox=sandbox,
         )
     if env.tpu is not None:

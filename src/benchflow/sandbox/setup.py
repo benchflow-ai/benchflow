@@ -56,6 +56,7 @@ _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
 
 
 _OPTIONAL_SANDBOX_EXTRAS = {
+    "cua": "sandbox-cua",
     "daytona": "sandbox-daytona",
     "modal": "sandbox-modal",
 }
@@ -635,7 +636,7 @@ def _create_sandbox_environment(
     preserve_agent_network: bool = False,
     environment_manifest: Any = None,
 ) -> Any:
-    """Create a sandbox environment (Docker, Daytona, or Modal).
+    """Create a sandbox environment (Docker, Daytona, Modal, or Cua).
 
     When ``environment_manifest`` is provided, its declared controls take
     effect at sandbox-construction time: the manifest's runnable ``image``
@@ -757,9 +758,43 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             persistent_env=manifest_env or None,
         )
+    elif sandbox_type == "cua":
+        try:
+            from benchflow.sandbox.cua import CuaSandbox
+        except ModuleNotFoundError as exc:
+            _raise_missing_optional_sandbox_dependency("cua", exc)
+        CuaSandbox.preflight()
+
+        return CuaSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
+    elif sandbox_type == "macos-ios-simulator":
+        # Non-Docker host provider: uses the host's xcrun/simctl + Appium
+        # toolchain (no pip extra), so a missing-import path is not possible
+        # the way it is for cloud SDK backends. preflight() raises an
+        # actionable SystemExit when the host cannot run iOS Simulators.
+        from benchflow.sandbox.macos_ios_simulator import MacosIosSimulatorSandbox
+
+        MacosIosSimulatorSandbox.preflight()
+
+        return MacosIosSimulatorSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
     else:
         raise ValueError(
-            f"Unknown sandbox_type: {sandbox_type!r} (use 'docker', 'daytona', or 'modal')"
+            f"Unknown sandbox_type: {sandbox_type!r} "
+            "(use 'docker', 'daytona', 'modal', 'cua', or "
+            "'macos-ios-simulator')"
         )
 
 

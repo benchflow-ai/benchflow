@@ -177,3 +177,16 @@ def test_oracle_branch_setup_calls():
     assert (
         "environment.workdir" in cwd_source or "_configured_task_workdir" in cwd_source
     ), "agent_cwd helper must honor task-declared environment.workdir"
+
+
+def test_oracle_run_forwards_sandbox_user():
+    """Guards the 0.7 Cua fix after 5f6ca8b3: oracle must use sandbox_user."""
+    import inspect
+
+    from benchflow import rollout as rollout_mod
+
+    source = inspect.getsource(rollout_mod.Rollout.run)
+    oracle_call_pos = source.find("await _run_oracle(")
+    assert oracle_call_pos != -1, "Rollout.run oracle call not found"
+    oracle_call = source[oracle_call_pos : source.find(")", oracle_call_pos) + 1]
+    assert "sandbox_user=cfg.sandbox_user" in oracle_call

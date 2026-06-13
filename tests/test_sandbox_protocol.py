@@ -24,10 +24,20 @@ class TestExecResult:
         assert r.stdout == "ok"
         assert r.stderr == ""
 
-    def test_frozen(self):
-        r = ExecResult(return_code=1, stdout="", stderr="err")
-        with pytest.raises(AttributeError):
-            r.return_code = 2  # type: ignore[misc]
+    def test_stdout_stderr_optional(self):
+        """``stdout``/``stderr`` default to ``None`` — backends decode empty
+        process output to ``None`` rather than ``""``, so the public contract
+        type must accept that."""
+        r = ExecResult(return_code=0)
+        assert r.stdout is None
+        assert r.stderr is None
+
+    def test_is_the_backend_exec_result(self):
+        """The public ``ExecResult`` is the same object the backends return —
+        a single contract, not two incompatible types."""
+        from benchflow.sandbox._base import ExecResult as BaseExecResult
+
+        assert ExecResult is BaseExecResult
 
 
 class TestImageRef:

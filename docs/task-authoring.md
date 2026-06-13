@@ -1,7 +1,7 @@
 # Authoring tasks
 A BenchFlow task packages an instruction, a sandboxed environment, and a verifier into a directory that BenchFlow runs and scores automatically.
 
-This page covers the Harbor-compatible split layout (`task.toml` + `instruction.md`). For the native single-document format, see [Authoring native task.md tasks](./task-authoring-task-md.md).
+This page covers the split layout (`task.toml` + `instruction.md`). For the native single-document format, see [Authoring native task.md tasks](./task-authoring-task-md.md).
 
 ---
 
@@ -10,7 +10,7 @@ This page covers the Harbor-compatible split layout (`task.toml` + `instruction.
 > [!NOTE]
 > BenchFlow will provide first-party support for hosted competition platforms, Verifiers, and OpenReward Standard.
 
-You can create [Harbor-format tasks](https://www.harborframework.com/docs/tasks) in BenchFlow with a `task.toml` config file, separate `instruction.md`, sandbox assets under `environment/`, verifier files under `tests/`, and an optional `solution/` oracle.
+You can create split-layout tasks in BenchFlow with a `task.toml` config file, separate `instruction.md`, sandbox assets under `environment/`, verifier files under `tests/`, and an optional `solution/` oracle.
 
 ```
 my-task/

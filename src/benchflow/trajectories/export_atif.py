@@ -1,14 +1,14 @@
 """Export captured trajectories in ATIF (Agent Trajectory Interchange Format).
 
-ATIF is the trajectory interchange format used by the Harbor evaluation
-framework (the terminal-bench lineage). A BenchFlow rollout's ACP-style
-trajectory events become one ATIF trajectory document that Harbor tooling
-(trajectory validator, viewer, SFT/RL pipelines) ingests directly.
+ATIF is an external trajectory interchange format (the terminal-bench
+lineage). A BenchFlow rollout's ACP-style trajectory events become one ATIF
+trajectory document that ATIF tooling (trajectory validator, viewer, SFT/RL
+pipelines) ingests directly.
 
-The record shape is pinned against the Harbor pydantic models
-(``harbor-framework/harbor``, ``src/harbor/models/trajectories/*.py``) and
-the ATIF RFC (``rfcs/0001-trajectory-format.md``), schema version
-``ATIF-v1.7``. Spec constraints honoured here:
+The record shape is pinned against the external ATIF pydantic models
+(``src/.../models/trajectories/*.py``) and the ATIF RFC
+(``rfcs/0001-trajectory-format.md``), schema version ``ATIF-v1.7``. Spec
+constraints honoured here:
 
 - ``steps`` is required with at least one entry; ``step_id`` is sequential
   starting from 1.

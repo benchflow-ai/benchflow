@@ -8,6 +8,7 @@ only wires the call.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
@@ -98,7 +99,7 @@ def register_tasks(app: typer.Typer) -> None:
             str | None,
             typer.Option(
                 "--sandbox",
-                help="Also validate parsed runtime semantics for docker, daytona, or modal",
+                help="Also validate parsed runtime semantics for docker, daytona, modal, or cua",
             ),
         ] = None,
         report_output: Annotated[
@@ -122,23 +123,53 @@ def register_tasks(app: typer.Typer) -> None:
                 ),
             ),
         ] = False,
+        output_json: Annotated[
+            bool,
+            typer.Option("--json", help="Emit a machine-readable validation report"),
+        ] = False,
     ) -> None:
         """Validate a task directory structure."""
         from benchflow._utils.task_authoring import check_task
+        from benchflow.adapters.inbound import UnsupportedInboundTaskError
+        from benchflow.cli._adapter_reporting import unsupported_adapter_task_or_exit
+        from benchflow.cli._inbound_task_target import native_task_target
 
-        issues = check_task(
-            task_dir,
-            sandbox_type=sandbox,
-            validation_level=validation_level,
-            acceptance_live_report_output=report_output,
-            acceptance_live_write_report=not no_report_write,
-        )
-        if not issues:
-            console.print(
-                f"[green]✓[/green] {task_dir.name} — valid ({validation_level})"
+        try:
+            with native_task_target(task_dir) as target:
+                issues = check_task(
+                    target.path,
+                    sandbox_type=sandbox,
+                    validation_level=validation_level,
+                    acceptance_live_report_output=report_output,
+                    acceptance_live_write_report=not no_report_write,
+                )
+        except UnsupportedInboundTaskError as e:
+            unsupported_adapter_task_or_exit(task_dir, e, output_json=output_json)
+
+        label = task_dir.name
+        if target.adapter_source:
+            label = f"{label} ({target.adapter_source})"
+        if output_json:
+            typer.echo(
+                json.dumps(
+                    {
+                        "status": "valid" if not issues else "invalid",
+                        "task": str(task_dir),
+                        "task_name": task_dir.name,
+                        "adapter": target.adapter_source,
+                        "validation_level": validation_level,
+                        "sandbox": sandbox,
+                        "issues": issues,
+                    }
+                )
             )
+            if issues:
+                raise typer.Exit(1)
+            return
+        if not issues:
+            console.print(f"[green]✓[/green] {label} — valid ({validation_level})")
         else:
-            console.print(f"[red]✗[/red] {task_dir.name} — {len(issues)} issue(s):")
+            console.print(f"[red]✗[/red] {label} — {len(issues)} issue(s):")
             for issue in issues:
                 # Escape Rich markup so literal section names like "[agent]"
                 # render verbatim instead of being parsed as styling (#379).

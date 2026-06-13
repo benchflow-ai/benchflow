@@ -29,10 +29,10 @@ def build_rewards_jsonl_events(
     events: list[dict[str, Any]] = []
     rubric = rewards.get("rubric")
     if isinstance(rubric, list):
-        for i, item in enumerate(rubric):
-            if not isinstance(item, dict):
+        for i, raw_item in enumerate(rubric):
+            if not isinstance(raw_item, dict):
                 continue
-            item = cast("dict[str, Any]", item)
+            item = cast("dict[str, Any]", raw_item)
             score = item.get("score")
             if not isinstance(score, (int, float)) or isinstance(score, bool):
                 continue

@@ -271,12 +271,12 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     # environment owns its harness), so only validate / preflight it for the
     # paths that actually use the local sandbox.
     if not request.source_env:
-        if eval_environment not in {"docker", "daytona", "modal"}:
+        if eval_environment not in {"docker", "daytona", "modal", "cua"}:
             # Unknown sandbox values otherwise surface as a raw traceback per-task
             # once the rollout starts — reject them at planning instead.
             raise EvalPlanError(
                 f"Invalid --sandbox {eval_environment!r}: "
-                "choose docker, daytona, or modal"
+                "choose docker, daytona, modal, or cua"
             )
         if eval_environment == "modal":
             # Fail fast with the actionable extra hint instead of surfacing a raw
@@ -289,6 +289,13 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
                     "Missing optional dependency for 'modal' sandbox. "
                     "Install it with `uv sync --extra sandbox-modal`."
                 ) from exc
+        if eval_environment == "cua":
+            try:
+                from benchflow.sandbox.cua import CuaSandbox
+
+                CuaSandbox.preflight()
+            except (RuntimeError, SystemExit) as exc:
+                raise EvalPlanError(str(exc)) from exc
     eval_prompts = cast("list[str | None] | None", request.prompt)
     sandbox_user = normalize_sandbox_user(request.sandbox_user)
     eval_concurrency = request.concurrency if request.concurrency is not None else 4

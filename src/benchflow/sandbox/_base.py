@@ -1,6 +1,6 @@
 """BaseSandbox — abstract base for sandbox backends.
 
-Internalized from Harbor's BaseEnvironment with RL-first terminology:
+Native sandbox abstraction with RL-first terminology:
 - environment -> sandbox
 - rollout_paths -> rollout_paths
 - EnvironmentConfig -> SandboxConfig
@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel
-
-from benchflow.sandbox.protocol import SandboxImage, SandboxSnapshotNotSupported
+from benchflow.sandbox.protocol import (
+    ExecResult,
+    SandboxImage,
+    SandboxSnapshotNotSupported,
+)
 from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths
@@ -110,12 +112,6 @@ def wrap_command_with_env_file(
         f"{env_path}) && set -a && . {env_path} && set +a && "
         f"{command}"
     )
-
-
-class ExecResult(BaseModel):
-    stdout: str | None = None
-    stderr: str | None = None
-    return_code: int
 
 
 class BaseSandbox(ABC):

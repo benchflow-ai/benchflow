@@ -61,8 +61,22 @@ _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 # expose on its OpenAI/Anthropic surfaces. Routing them through the proxy would
 # silently mis-wire the agent (e.g. the Gemini CLI speaks Google's
 # GenerateContent format), so they talk to their provider directly and report
-# usage_source='unavailable'. ``oracle`` has no model at all.
-_NATIVE_PROTOCOL_AGENTS = frozenset({"oracle", "gemini"})
+# usage_source='unavailable'. ``oracle`` has no model at all; the
+# Browser Use / computer-use shims use package-native provider clients,
+# desktop/browser control, or fixture loops; routing them through LiteLLM would
+# mis-wire those runtimes.
+_NATIVE_PROTOCOL_AGENTS = frozenset(
+    {
+        "oracle",
+        "gemini",
+        "browser-use-smoke",
+        "computer-use-smoke",
+        "computer-use-agent",
+        "browser-use-cli",
+        "browser-use-agent",
+        "stagehand-agent",
+    }
+)
 _SANDBOX_LOCAL_ENVIRONMENTS = frozenset({"daytona", "modal"})
 
 

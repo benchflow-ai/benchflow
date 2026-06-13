@@ -46,6 +46,14 @@ if TYPE_CHECKING:
 # build them inside methods that have already called ``_load_daytona_sdk()``.
 _SandboxParams = Any
 
+# Name prefix every snapshot ``DaytonaSandbox.snapshot()`` creates carries.
+# Daytona snapshots have no ``labels`` field (only a ``name``), so — unlike the
+# label-scoped sandbox reaper — this prefix is the *only* ownership signal a
+# leaked snapshot carries. The prefix-scoped reaper keys on it; teardown deletes
+# by exact tracked name (so a caller-supplied name without the prefix is still
+# reclaimed on stop()). Kept in sync with the Docker provider's ``bf-snap-*``.
+_SNAPSHOT_NAME_PREFIX = "bf-snap-"
+
 
 class _DaytonaStrategy:
     """Base for Daytona implementation strategies."""
@@ -57,6 +65,9 @@ class _DaytonaStrategy:
 
     def __init__(self, env: DaytonaSandbox) -> None:
         self._env = env
+        # Names of snapshots this strategy created via ``snapshot()``; deleted on
+        # teardown so cloud snapshots don't leak (see ``snapshot``/``stop``).
+        self._created_snapshots: list[str] = []
 
     @abstractmethod
     async def start(self, force_build: bool) -> None: ...
@@ -217,6 +228,11 @@ class _DaytonaDirect(_DaytonaStrategy):
             )
 
         try:
+            # Delete tracked snapshots *before* the client manager is dropped —
+            # snapshots are independent cloud objects that the sandbox reaper
+            # never touches, so this is the only point at which they are
+            # reliably reclaimed.
+            await self._delete_created_snapshots()
             if not env._sandbox:
                 env.logger.warning(
                     "Sandbox not found. Please build the environment first."
@@ -230,6 +246,46 @@ class _DaytonaDirect(_DaytonaStrategy):
                     env._sandbox = None
         finally:
             env._client_manager = None
+
+    async def _delete_created_snapshots(self) -> None:
+        """Delete the cloud snapshots this strategy created via ``snapshot()``.
+
+        Best-effort: any name that fails to delete is left tracked and recorded
+        on the env as a leak so a post-mortem reaper (or operator) can reclaim
+        it — the name prefix is the only ownership signal a Daytona snapshot
+        carries (snapshots have no ``labels``), so we never guess beyond the
+        names we created. The Daytona SDK exposes ``snapshot.get(name)`` →
+        ``snapshot.delete(snapshot)``; ``get`` raising (already gone) is treated
+        as success.
+        """
+        env = self._env
+        if not self._created_snapshots or env._client_manager is None:
+            return
+        try:
+            daytona = await env._client_manager.get_client()
+        except Exception as e:  # pragma: no cover - defensive
+            env.logger.warning(
+                f"Could not obtain Daytona client to reap snapshots: {e}"
+            )
+            env.record_snapshot_leak(self._created_snapshots)
+            return
+        leaked: list[str] = []
+        for snap_name in self._created_snapshots:
+            try:
+                snap = await daytona.snapshot.get(snap_name)
+            except Exception:
+                # Already gone (or never materialized) — nothing to delete.
+                env.logger.debug(f"Snapshot {snap_name} not found on delete; skipping.")
+                continue
+            try:
+                await daytona.snapshot.delete(snap)
+                env.logger.info(f"Snapshot deleted: {snap_name}")
+            except Exception as e:
+                env.logger.warning(f"Failed to delete snapshot {snap_name}: {e}")
+                leaked.append(snap_name)
+        if leaked:
+            env.record_snapshot_leak(leaked)
+        self._created_snapshots = leaked
 
     async def exec(
         self,
@@ -314,10 +370,17 @@ class _DaytonaDirect(_DaytonaStrategy):
                 "DaytonaSandbox.snapshot requires a started sandbox; call "
                 "start() before snapshot()."
             )
-        snap_name = name or f"bf-snap-{env.environment_name}-{uuid4().hex[:12]}"
+        snap_name = (
+            name or f"{_SNAPSHOT_NAME_PREFIX}{env.environment_name}-{uuid4().hex[:12]}"
+        )
         # Daytona names: lowercase, dash-separated, ascii — sanitize defensively.
         snap_name = snap_name.lower().replace("_", "-")
         await env._sandbox._experimental_create_snapshot(snap_name)
+        # Track the created snapshot so ``stop()`` can delete it: Daytona
+        # snapshots are cloud objects that are NOT reaped with the sandbox, so
+        # an untracked one leaks against the account's quota/cost indefinitely
+        # (mirrors how the Docker provider tracks its ``bf-snap-*`` image tags).
+        self._created_snapshots.append(snap_name)
         env.logger.info(f"Snapshot created: {snap_name}")
         return SandboxImage(
             provider="daytona",

@@ -18,8 +18,10 @@ from benchflow.rollout import (
     RolloutConfig,
     Scene,
     _build_rollout_result,
+    _download_rollout_artifacts,
     _publish_trajectory_for_verifier,
     _resolve_agent_cwd,
+    _run_task_setup_hooks,
     _start_env_and_upload,
 )
 from benchflow.sandbox.metadata import persist_sandbox_info
@@ -38,8 +40,9 @@ class FakeUploadEnv:
 
     async def exec(
         self, command: str, user: str | None = None, timeout_sec: int | None = None
-    ) -> None:
+    ) -> SimpleNamespace:
         self.exec_calls.append((command, user, timeout_sec))
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
 
     async def upload_file(self, source: Path | str, target: str) -> None:
         source_path = Path(source)
@@ -86,6 +89,35 @@ async def test_resolve_agent_cwd_falls_back_to_container_pwd() -> None:
 
     assert agent_cwd == "/app"
     env.exec.assert_awaited_once_with("pwd", timeout_sec=10)
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_cwd_uses_dockerfile_workdir_when_config_absent(
+    tmp_path: Path,
+) -> None:
+    """Guards the 0.7 Cua fix after 5f6ca8b3: Cua must honor Docker WORKDIR."""
+    env = MagicMock()
+    env.exec = AsyncMock(
+        return_value=MagicMock(stdout="/workspace/project\n", stderr="", return_code=0)
+    )
+    env_dir = tmp_path / "task" / "environment"
+    env_dir.mkdir(parents=True)
+    (env_dir / "Dockerfile").write_text(
+        "FROM ubuntu:24.04\nWORKDIR /workspace\nWORKDIR project\n"
+    )
+    task = SimpleNamespace(
+        config=SimpleNamespace(environment=SimpleNamespace(workdir=None)),
+        paths=SimpleNamespace(environment_dir=env_dir),
+    )
+
+    agent_cwd = await _resolve_agent_cwd(env, task)
+
+    assert agent_cwd == "/workspace/project"
+    env.exec.assert_awaited_once_with(
+        "mkdir -p /workspace/project && cd /workspace/project && pwd",
+        user="root",
+        timeout_sec=10,
+    )
 
 
 @pytest.mark.asyncio
@@ -166,6 +198,67 @@ Solve from the unified document.
 
 
 @pytest.mark.asyncio
+async def test_start_env_runs_task_setup_pre_command(tmp_path: Path) -> None:
+    """use-computer/OSWorld-style setup hooks run before the agent starts."""
+    task = tmp_path / "task"
+    (task / "tests" / "setup").mkdir(parents=True)
+    (task / "instruction.md").write_text("observe\n")
+    (task / "tests" / "setup" / "pre_command.sh").write_text(
+        "#!/bin/bash\nprintf setup-ok > /tmp/runner-osworld-setup-ok\n"
+    )
+    env = FakeUploadEnv()
+
+    await _start_env_and_upload(env, task, {})
+
+    assert (
+        task / "tests" / "setup",
+        "/tmp/benchflow-task-setup",
+    ) in env.uploaded_dirs
+    assert any(
+        "DEBIAN_FRONTEND=noninteractive ./pre_command.sh" in command
+        for command, _user, _timeout in env.exec_calls
+    )
+    assert env.exec_calls[-1] == (
+        "rm -rf -- /tmp/benchflow-task-setup",
+        "root",
+        10,
+    )
+
+
+@pytest.mark.asyncio
+async def test_task_setup_pre_command_failure_cleans_remote_dir(
+    tmp_path: Path,
+) -> None:
+    """Failed setup hooks still remove the uploaded setup payload."""
+    task = tmp_path / "task"
+    (task / "verifier" / "setup").mkdir(parents=True)
+    (task / "verifier" / "setup" / "pre_command.sh").write_text("exit 7\n")
+
+    class FailingSetupEnv(FakeUploadEnv):
+        async def exec(
+            self,
+            command: str,
+            user: str | None = None,
+            timeout_sec: int | None = None,
+        ) -> SimpleNamespace:
+            self.exec_calls.append((command, user, timeout_sec))
+            if "pre_command.sh" in command:
+                return SimpleNamespace(return_code=7, stdout="", stderr="boom")
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    env = FailingSetupEnv()
+
+    with pytest.raises(RuntimeError, match=r"pre_command\.sh failed: boom"):
+        await _run_task_setup_hooks(env, task)
+
+    assert env.exec_calls[-1] == (
+        "rm -rf -- /tmp/benchflow-task-setup",
+        "root",
+        10,
+    )
+
+
+@pytest.mark.asyncio
 async def test_publish_trajectory_for_verifier_uploads_acp_jsonl(
     tmp_path: Path,
 ) -> None:
@@ -228,6 +321,50 @@ async def test_publish_trajectory_artifact_set_matches_across_backends(
     sandbox_target = "/logs/agent/acp_trajectory.jsonl"
     assert (expected, sandbox_target) in mounted_env.uploaded_file_contents
     assert (expected, sandbox_target) in remote_env.uploaded_file_contents
+
+
+class FakeRemoteArtifactsEnv:
+    is_mounted = False
+
+    def __init__(self) -> None:
+        self.downloads: list[tuple[str, Path, str]] = []
+
+    async def download_dir(
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
+    ) -> None:
+        target = Path(target_dir)
+        self.downloads.append((source_dir, target, service))
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "computer-use-smoke-trace.json").write_text("{}")
+
+
+@pytest.mark.asyncio
+async def test_download_rollout_artifacts_for_non_mounted_backend(
+    tmp_path: Path,
+) -> None:
+    """Cua/Daytona-style backends must copy /logs/artifacts to the rollout."""
+    env = FakeRemoteArtifactsEnv()
+    rollout_paths = SimpleNamespace(artifacts_dir=tmp_path / "artifacts")
+
+    await _download_rollout_artifacts(env, rollout_paths)
+
+    assert env.downloads == [
+        ("/logs/artifacts", tmp_path / "artifacts", "main"),
+    ]
+    assert (tmp_path / "artifacts" / "computer-use-smoke-trace.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_download_rollout_artifacts_skips_mounted_backend(
+    tmp_path: Path,
+) -> None:
+    """Docker bind-mounts /logs/artifacts, so no copy-back is needed."""
+    env = SimpleNamespace(is_mounted=True, download_dir=AsyncMock())
+    rollout_paths = SimpleNamespace(artifacts_dir=tmp_path / "artifacts")
+
+    await _download_rollout_artifacts(env, rollout_paths)
+
+    env.download_dir.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -59,6 +59,9 @@ sandbox-modal = [
     "modal>=0.73",
     "tenacity>=8.0",
 ]
+sandbox-cua = [
+    "cua-sandbox>=0.1.16; python_version < '3.14'",
+]
 bedrock = [
     "boto3>=1.40",
 ]
@@ -164,6 +167,7 @@ exclude = [
     "src/benchflow/sandbox/daytona.py",
     "src/benchflow/sandbox/daytona_strategies.py",
     "src/benchflow/sandbox/daytona_dind.py",
+    "src/benchflow/sandbox/cua.py",
     "src/benchflow/sandbox/modal_impl.py",
     "src/benchflow/sandbox/docker.py",
     "src/benchflow/sandbox/_base.py",
