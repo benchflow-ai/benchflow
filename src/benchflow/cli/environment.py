@@ -23,7 +23,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from benchflow.cli._options import SandboxOption
-from benchflow.cli._shared import console
+from benchflow.cli._shared import console, warn_deprecated
 
 
 def register_environment(app: typer.Typer) -> None:
@@ -67,35 +67,52 @@ def register_environment(app: typer.Typer) -> None:
 
     @env_app.command("list")
     def environment_list(
+        provider: Annotated[
+            str | None,
+            typer.Option(
+                "--provider",
+                help="Hosted environment provider to list (e.g. primeintellect)",
+            ),
+        ] = None,
         hub: Annotated[
             str | None,
-            typer.Option("--hub", help="Hosted environment hub to list"),
+            typer.Option("--hub", hidden=True, help="[deprecated] use --provider"),
         ] = None,
         owner: Annotated[
             str | None,
-            typer.Option("--owner", help="Hosted hub owner/namespace filter"),
+            typer.Option("--owner", help="Hosted provider owner/namespace filter"),
         ] = None,
         search: Annotated[
             str | None,
-            typer.Option("--search", help="Hosted hub search query"),
+            typer.Option("--search", help="Hosted provider search query"),
         ] = None,
         limit: Annotated[
             int | None,
-            typer.Option("--limit", help="Maximum hosted hub results"),
+            typer.Option("--limit", help="Maximum hosted provider results"),
         ] = None,
         output_json: Annotated[
             bool,
-            typer.Option("--json", help="Emit raw JSON for hosted hub results"),
+            typer.Option("--json", help="Emit raw JSON for hosted provider results"),
         ] = False,
     ) -> None:
-        """List active Daytona sandboxes or hosted hub environments."""
+        """List active Daytona sandboxes or hosted provider environments."""
         from datetime import datetime
 
         from benchflow.cli import main as cli_main
 
-        if hub:
-            if hub != "primeintellect":
-                console.print("[red]Only --hub primeintellect is supported today[/red]")
+        # --hub is the deprecated spelling of --provider (kept through 0.6).
+        if hub is not None:
+            warn_deprecated(
+                "bench environment list --hub", "bench environment list --provider"
+            )
+            if provider is None:
+                provider = hub
+
+        if provider:
+            if provider != "primeintellect":
+                console.print(
+                    "[red]Only --provider primeintellect is supported today[/red]"
+                )
                 raise typer.Exit(1)
             from benchflow.hosted_env import HostedEnvError, prime_env_list
 

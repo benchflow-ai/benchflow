@@ -24,6 +24,31 @@ if TYPE_CHECKING:
 
 console = Console()
 
+# stderr console for out-of-band notices (deprecations) so they never corrupt
+# stdout consumers like `--json` (e.g. `environment list --json`).
+err_console = Console(stderr=True)
+
+_DEPRECATION_WARNED: set[str] = set()
+
+
+def warn_deprecated(old: str, new: str, *, removal: str = "0.7") -> None:
+    """Emit a one-line deprecation notice to stderr, once per ``old`` per process.
+
+    ``old``/``new`` are the user-facing invocations, e.g.
+    ``warn_deprecated("bench agent create", "bench adopt init")``. Printed before
+    the command does its real work so exit codes + stdout stay unchanged.
+    """
+    if old in _DEPRECATION_WARNED:
+        return
+    _DEPRECATION_WARNED.add(old)
+    # Plain "deprecation:" label — NOT "[deprecated]", which Rich would parse as
+    # a markup tag and silently swallow.
+    err_console.print(
+        f"[yellow]deprecation:[/yellow] {old!r} is now {new!r} and will be removed "
+        f"in {removal}. Update your scripts."
+    )
+
+
 _PROVIDER_AUTH_MESSAGE = (
     "Provider-prefixed models may use different credentials; Azure Foundry "
     "models use AZURE_API_KEY + AZURE_API_ENDPOINT."

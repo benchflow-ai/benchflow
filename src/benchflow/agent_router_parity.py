@@ -1,4 +1,4 @@
-"""Parity gate for ``bench agent verify`` — parsers, scoring, and verdict.
+"""Parity gate for ``bench adopt verify`` — parsers, scoring, and verdict.
 
 The ``verify`` subcommand in :mod:`benchflow.agent_router` scores an adopted
 benchmark's recorded ``parity_experiment.json`` and assigns a confidence
