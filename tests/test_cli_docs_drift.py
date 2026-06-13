@@ -247,8 +247,8 @@ def test_install_wheel_url_consistent_across_docs() -> None:
         f"{doc}={tag}" for tag, doc in by_tag.items()
     )
 
-    # Base version ties to pyproject (0.6.0); NOT the rc number — pyproject is
-    # 0.6.0.dev0 and carries no rc, so only the base is sensibly assertable.
+    # Base version ties to pyproject (0.6.0); NOT the rc number — pyproject
+    # carries no rc, so only the base is sensibly assertable.
     pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
     pin = next(iter(by_tag))
     assert pin.base_version == Version(pyproject["project"]["version"]).base_version
