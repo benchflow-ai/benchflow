@@ -505,6 +505,49 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/opencode"],
     ),
+    "mimo": AgentConfig(
+        name="mimo",
+        description="MiMo Code via ACP — Xiaomi's OpenCode fork (TypeScript)",
+        skill_paths=["$HOME/.mimocode/skills"],
+        home_dirs=[".mimocode", ".config/mimocode"],
+        install_cmd=_js_agent_install("mimo", "@mimo-ai/cli@0.1.0"),
+        launch_cmd=_js_agent_launch("mimo", "acp"),
+        protocol="acp",
+        requires_env=[],  # inferred from --model at runtime
+        # MiMo Code ships a fixed endpoint for its native models.dev "xiaomi"
+        # provider, so token-plan/regional keys (XIAOMI_BASE_URL) need a config
+        # override. Written only when XIAOMI_API_KEY is present; the file holds
+        # {env:...} references (resolved by the CLI at runtime), never the key
+        # itself. The no-web-tools setup_cmd merges into this same file.
+        credential_files=[
+            CredentialFile(
+                path="{home}/.config/mimocode/mimocode.json",
+                env_source="XIAOMI_API_KEY",
+                template=(
+                    '{{"provider": {{"xiaomi": {{"options": '
+                    '{{"baseURL": "{{env:XIAOMI_BASE_URL}}", '
+                    '"apiKey": "{{env:XIAOMI_API_KEY}}"}}}}}}}}'
+                ),
+            ),
+        ],
+        acp_model_format="provider/model",
+        # MiMo Code is an OpenCode fork: `mimo acp` reports agentInfo.name="OpenCode"
+        # and uses models.dev "provider/model" ids, so set_model must send e.g.
+        # "openai/benchflow-<alias>" in proxy mode, or "xiaomi/mimo-v2.5-pro" in
+        # non-proxy mode via the registered xiaomi provider (the ("mimo","xiaomi")
+        # models.dev heuristic in acp/runtime.py keeps that prefix intact).
+        env_mapping={
+            # Map BOTH base_url and api_key (codex-acp precedent) so the non-proxy
+            # path wires the key without an `if agent == "mimo"` core edit.
+            "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
+        },
+        disallow_web_tools_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.config/mimocode/mimocode.json",
+            'd.setdefault("tools",{})["webfetch"]=False',
+        ),
+        disallow_web_tools_owned_paths=["$HOME/.config/mimocode"],
+    ),
     "harvey-lab-harness": AgentConfig(
         name="harvey-lab-harness",
         description="Harvey LAB harness — runs the original Harvey LAB agent loop "

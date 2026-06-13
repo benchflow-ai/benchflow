@@ -79,6 +79,27 @@ def test_format_acp_model_passes_through_existing_provider_prefix():
     )
 
 
+def test_mimo_registered_xiaomi_model_keeps_provider_prefix():
+    from benchflow.acp.runtime import _format_acp_model
+
+    # "xiaomi" IS a registered benchflow provider, so strip_provider_prefix
+    # removes the prefix; the models.dev heuristic must restore "xiaomi/",
+    # not fall back to "anthropic/" — the MiMo CLI catalog id is
+    # "xiaomi/<model>" (#679).
+    assert _format_acp_model("xiaomi/mimo-v2.5-pro", "mimo") == "xiaomi/mimo-v2.5-pro"
+
+
+def test_mimo_litellm_alias_formats_to_registered_openai_route():
+    from benchflow.acp.runtime import _format_acp_model
+
+    # Proxy mode is untouched by the heuristic: aliases still route to the
+    # proxy-registered "openai/<alias>" form.
+    assert (
+        _format_acp_model("benchflow-deepseek-deepseek-v4-flash", "mimo")
+        == "openai/benchflow-deepseek-deepseek-v4-flash"
+    )
+
+
 def test_vllm_route_honors_runtime_supplied_base_url():
     route = resolve_litellm_route(
         "vllm/Qwen/Qwen3-Coder",
