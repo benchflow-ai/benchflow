@@ -5,9 +5,30 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
+
+
+def _force_ios_unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the iOS host-capability probe off so the unsupported path is asserted.
+
+    The iOSWorld adapter reports *supported* on a host that actually has the
+    iOS Simulator toolchain. These CLI tests cover the provider-honest
+    *unsupported* report, so they force the probe to "missing" regardless of
+    the host the suite runs on.
+    """
+    import benchflow.sandbox.macos_ios_simulator as ios_sim
+
+    monkeypatch.setattr(
+        ios_sim,
+        "detect_ios_simulator_capabilities",
+        lambda: dict.fromkeys(
+            ("macos", "xcode-26", "ios-26-simulator-runtime", "appium-xcuitest"),
+            False,
+        ),
+    )
 
 
 def _write_cookbook_osworld_task(root: Path) -> Path:
@@ -325,8 +346,11 @@ def test_tasks_check_reports_raw_cuagym_issue_details(tmp_path: Path) -> None:
     assert "Postconfig Kinds: execute" in result.output
 
 
-def test_tasks_check_reports_iosworld_provider_requirement(tmp_path: Path) -> None:
+def test_tasks_check_reports_iosworld_provider_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """iOSWorld sources are recognized but blocked on a Mac/iOS provider."""
+    _force_ios_unsupported(monkeypatch)
     task_dir = _write_iosworld_repo(tmp_path)
 
     result = CliRunner().invoke(
@@ -353,9 +377,10 @@ def test_tasks_check_reports_iosworld_provider_requirement(tmp_path: Path) -> No
 
 
 def test_tasks_check_json_reports_iosworld_provider_requirement(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """iOSWorld JSON reports carry provider-honest unsupported metadata."""
+    _force_ios_unsupported(monkeypatch)
     task_dir = _write_iosworld_repo(tmp_path)
 
     result = CliRunner().invoke(

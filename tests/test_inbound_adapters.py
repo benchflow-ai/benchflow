@@ -1216,7 +1216,30 @@ class TestComputerUseAdapter:
             ComputerUseAdapter.from_task_dir(empty)
 
 
+def _force_ios_caps(monkeypatch: pytest.MonkeyPatch, present: bool) -> None:
+    """Pin the iOS-Simulator host capability probe to a deterministic value.
+
+    The iOSWorld adapter delegates its supported/unsupported decision to
+    ``detect_ios_simulator_capabilities``, which reads the real host. Tests
+    pin it so they assert one path regardless of whether the host happens to
+    have Xcode/Appium installed.
+    """
+    import benchflow.sandbox.macos_ios_simulator as ios_sim
+
+    caps = dict.fromkeys(
+        ("macos", "xcode-26", "ios-26-simulator-runtime", "appium-xcuitest"),
+        present,
+    )
+    monkeypatch.setattr(ios_sim, "detect_ios_simulator_capabilities", lambda: caps)
+
+
 class TestIOSWorldAdapter:
+    """The provider-honest *unsupported* path (host lacks the iOS prereqs)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_ios_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _force_ios_caps(monkeypatch, present=False)
+
     def test_support_report_for_repo_shape(self, tmp_path: Path) -> None:
         repo = _write_iosworld_repo(tmp_path)
 
@@ -1266,6 +1289,67 @@ class TestIOSWorldAdapter:
         assert exc.value.report.source == "iosworld"
         assert exc.value.report.details["issue"] == (
             "macos-ios-simulator-provider-required"
+        )
+
+
+class TestIOSWorldAdapterSupported:
+    """The provider-honest *supported* path (host advertises the iOS prereqs)."""
+
+    @pytest.fixture(autouse=True)
+    def _ios_host_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _force_ios_caps(monkeypatch, present=True)
+
+    def test_task_slice_reports_supported(self, tmp_path: Path) -> None:
+        task_dir = _write_iosworld_task_slice(tmp_path)
+
+        report = IOSWorldAdapter.support_report(task_dir)
+
+        assert report is not None
+        assert report.supported is True
+        assert report.task_id == "clock-001"
+        assert report.dataset == "iosworld"
+        assert report.reason is None
+        assert report.details["shape"] == "task-slice"
+        assert report.details["provider"] == "macos-ios-simulator"
+        assert report.details["apps"] == ["clock"]
+        assert report.details["rubric_count"] == 2
+        # App bootstrap is a follow-up step, not a host capability — it is
+        # reported as pending, never silently claimed as done.
+        assert report.details["pending_capabilities"] == ["iosworld-app-bootstrap"]
+
+    def test_from_task_dir_translates_slice(self, tmp_path: Path) -> None:
+        task_dir = _write_iosworld_task_slice(tmp_path)
+
+        task = IOSWorldAdapter.from_task_dir(task_dir)
+
+        assert isinstance(task, InboundTask)
+        assert task.name == "clock-001"
+        assert task.source == "iosworld"
+        assert "alarm" in task.instruction.lower()
+        # The rubric maps to an LLM-judge verifier, mirroring the Browser
+        # Use / computer-use criteria reward shape.
+        assert task.config.verifier.type == "llm-judge"
+        assert task.config.verifier.judge.rubric_path == "tests/rubric.md"
+        assert task.config.sandbox.os.value == "macos"
+        # The rubric criteria are materialized as a generated rubric file.
+        rubric = task.generated_files["tests/rubric.md"]
+        assert isinstance(rubric, str)
+        assert "Open Clock app" in rubric
+        assert "Save the alarm" in rubric
+
+    def test_repo_shape_supported_host_is_not_a_single_task(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _write_iosworld_repo(tmp_path)
+
+        report = IOSWorldAdapter.support_report(repo)
+
+        # A whole-repository source is a suite, not one translatable task —
+        # even on a capable host it is not a single InboundTask.
+        assert report is not None
+        assert report.supported is False
+        assert report.details["issue"] == (
+            "iosworld-repository-suite-not-a-single-task"
         )
 
 

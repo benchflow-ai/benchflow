@@ -27,6 +27,7 @@ _BACKENDS = [
     ("benchflow.sandbox.daytona", "DaytonaSandbox"),
     ("benchflow.sandbox.modal_impl", "ModalSandbox"),
     ("benchflow.sandbox.cua", "CuaSandbox"),
+    ("benchflow.sandbox.macos_ios_simulator", "MacosIosSimulatorSandbox"),
 ]
 
 

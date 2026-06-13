@@ -945,6 +945,19 @@ def test_environment_check_json_reports_iosworld_provider_requirement(
     monkeypatch,
 ) -> None:
     task_dir = _write_iosworld_repo(tmp_path)
+    # The iOSWorld adapter reports supported on a host with the real iOS
+    # toolchain; pin the probe off so this test asserts the unsupported path
+    # regardless of where the suite runs.
+    import benchflow.sandbox.macos_ios_simulator as ios_sim
+
+    monkeypatch.setattr(
+        ios_sim,
+        "detect_ios_simulator_capabilities",
+        lambda: dict.fromkeys(
+            ("macos", "xcode-26", "ios-26-simulator-runtime", "appium-xcuitest"),
+            False,
+        ),
+    )
     checked: list[str] = []
     monkeypatch.setattr(
         cli_environment,
