@@ -164,10 +164,13 @@ def test_documented_subcommands_exist() -> None:
         ["skills", "eval"],
         ["environment", "create"],
         ["environment", "list"],
-        ["environment", "show"],
-        ["environment", "inspect"],
+        ["environment", "show"],  # hidden deprecated alias, still resolves
+        ["environment", "inspect"],  # hidden deprecated alias, still resolves
         ["environment", "cleanup"],
         ["hub", "check"],
+        ["hub", "env", "list"],
+        ["hub", "env", "show"],
+        ["hub", "env", "inspect"],
     ):
         out = _help(cmd)
         assert "Usage:" in out, f"bench {' '.join(cmd)} --help failed: {out}"

@@ -69,29 +69,19 @@ def test_deprecation_fires_once_per_process(tmp_path) -> None:
     assert "deprecation" not in second.stderr  # already warned this process
 
 
-def test_environment_list_provider_replaces_hub_json_stays_clean(monkeypatch) -> None:
+def test_environment_list_hosted_is_deprecated_json_stays_clean(monkeypatch) -> None:
+    # Hosted browsing moved to `bench hub env list`; `environment list
+    # --provider`/`--hub` now warn (deprecated) but still work, and the warning
+    # goes to stderr ONLY so `--json >out` consumers stay clean.
     import benchflow.hosted_env as hosted
 
     monkeypatch.setattr(hosted, "prime_env_list", lambda **kw: '{"environments": []}')
-
-    # --provider: canonical, no warning at all.
-    shared._DEPRECATION_WARNED.clear()
-    res = runner.invoke(
-        app, ["environment", "list", "--provider", "primeintellect", "--json"]
-    )
-    assert res.exit_code == 0
-    assert res.output.strip() == '{"environments": []}'
-    assert "deprecation" not in res.stderr
-
-    # --hub: deprecated alias — the notice goes to stderr ONLY; the JSON stays on
-    # stdout, so a `... --json >out` consumer is never corrupted. (res.output
-    # mixes streams; res.stderr is pure stderr — assert the JSON never leaks
-    # there and the warning never leaves it.)
-    shared._DEPRECATION_WARNED.clear()
-    res2 = runner.invoke(
-        app, ["environment", "list", "--hub", "primeintellect", "--json"]
-    )
-    assert res2.exit_code == 0
-    assert "deprecation" in res2.stderr and "--provider" in res2.stderr
-    assert "environments" not in res2.stderr  # JSON did not leak to stderr
-    assert '{"environments": []}' in res2.output  # JSON present on stdout
+    for flag in ("--provider", "--hub"):
+        shared._DEPRECATION_WARNED.clear()
+        res = runner.invoke(
+            app, ["environment", "list", flag, "primeintellect", "--json"]
+        )
+        assert res.exit_code == 0
+        assert "deprecation" in res.stderr and "bench hub env list" in res.stderr
+        assert "environments" not in res.stderr  # JSON did not leak to stderr
+        assert '{"environments": []}' in res.output  # JSON present on stdout
