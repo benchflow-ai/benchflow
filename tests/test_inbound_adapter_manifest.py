@@ -28,6 +28,7 @@ from benchflow.adapters.inbound import (
     InboundTask,
     manifest_from_task_config,
 )
+from benchflow.adapters.macosworld import MacOSWorldAdapter
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.environment.manifest_env import ManifestEnvironment
 from benchflow.task.config import TaskConfig
@@ -92,6 +93,30 @@ def _write_browser_use_task(root: Path) -> Path:
     (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
     (task_dir / "tests").mkdir()
     (task_dir / "tests" / "test.sh").write_text("#!/bin/bash\npytest\n")
+    return task_dir
+
+
+_MACOSWORLD_TASK_JSON = {
+    "id": "task-001",
+    "snapshot": {"en": "snapshot_used_en"},
+    "task": {"en": "Add Ong KC to contacts with number 96910380."},
+    "grading_command": [["echo True", 100]],
+}
+
+
+def _write_macosworld_task_slice(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    import benchflow.adapters.macosworld as macosworld
+
+    monkeypatch.setattr(
+        macosworld,
+        "detect_cua_macos_capabilities",
+        lambda: {"macos": True, "cua-macos-vm": True},
+    )
+    task_dir = root / "macosworld-task"
+    task_dir.mkdir()
+    (task_dir / "macosworld-task.json").write_text(
+        json.dumps(_MACOSWORLD_TASK_JSON, indent=2) + "\n"
+    )
     return task_dir
 
 
@@ -201,6 +226,22 @@ class TestBrowserUseManifestSeam:
         result = BrowserUseAdapter.from_task_dir(task_dir)
         assert result.manifest.name == "browser-use-env"
         assert result.manifest.image == "ghcr.io/example/browser-use-env:1"
+
+
+class TestMacOSWorldManifestSeam:
+    def test_returns_validated_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task_dir = _write_macosworld_task_slice(tmp_path, monkeypatch)
+        result = MacOSWorldAdapter.from_task_dir(task_dir)
+        assert isinstance(result.manifest, EnvironmentManifest)
+
+    def test_manifest_name_is_namespaced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task_dir = _write_macosworld_task_slice(tmp_path, monkeypatch)
+        result = MacOSWorldAdapter.from_task_dir(task_dir)
+        assert result.manifest.name == "macosworld/task-001"
 
 
 # Manifest can be consumed by manifest-backed runtime

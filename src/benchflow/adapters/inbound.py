@@ -361,9 +361,10 @@ def detect_adapter(task_dir: Path | str) -> InboundAdapterType:
     ``task.toml`` and Browser Use slices carry a ``browser-use-task.json``;
     Stagehand slices carry a ``stagehand-task.json``; computer-use slices
     carry a ``computer-use-task.json``. iOSWorld sources carry
-    ``iosworld-task.json`` or the upstream repository signatures. Cookbook
-    task dirs are a tagged ``task.toml`` variant and are detected before the
-    generic native-compatible fallback.
+    ``iosworld-task.json`` or the upstream repository signatures, and
+    macOSWorld sources carry ``macosworld-task.json`` or the upstream
+    repository signatures. Cookbook task dirs are a tagged ``task.toml``
+    variant and are detected before the generic native-compatible fallback.
 
     Raises:
         ValueError: if the directory matches no known foreign format.
@@ -374,6 +375,7 @@ def detect_adapter(task_dir: Path | str) -> InboundAdapterType:
     from benchflow.adapters.computer_use import ComputerUseAdapter
     from benchflow.adapters.harbor import HarborAdapter
     from benchflow.adapters.iosworld import IOSWorldAdapter
+    from benchflow.adapters.macosworld import MacOSWorldAdapter
     from benchflow.adapters.stagehand import StagehandEvalAdapter
     from benchflow.adapters.use_computer_cookbook import UseComputerCookbookAdapter
 
@@ -390,8 +392,11 @@ def detect_adapter(task_dir: Path | str) -> InboundAdapterType:
         return ComputerUseAdapter
     if IOSWorldAdapter.is_task_dir(root):
         return IOSWorldAdapter
+    if MacOSWorldAdapter.is_task_dir(root):
+        return MacOSWorldAdapter
     raise ValueError(
         f"Unrecognized task format in {root}: expected 'task.toml', "
         "'browser-use-task.json', 'stagehand-task.json', "
-        "'computer-use-task.json', or 'iosworld-task.json'."
+        "'computer-use-task.json', 'iosworld-task.json', or "
+        "'macosworld-task.json'."
     )
