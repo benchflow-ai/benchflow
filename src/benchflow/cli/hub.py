@@ -23,7 +23,12 @@ from benchflow.hub.harbor_registry import DEFAULT_HARBOR_REGISTRY_URL
 
 def register_hub(app: typer.Typer) -> None:
     """Attach the ``hub`` command group to the top-level benchflow app."""
-    hub_app = typer.Typer(help="Compatibility checks for external environment hubs.")
+    hub_app = typer.Typer(
+        help=(
+            "External environment hubs: compatibility checks (check) and browsing "
+            "hosted provider environments (env)."
+        )
+    )
     app.add_typer(hub_app, name="hub", rich_help_panel="Environments")
     _register_hub_env(hub_app)
 
