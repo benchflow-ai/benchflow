@@ -67,10 +67,19 @@ def test_environment_group_is_hidden_but_still_resolves() -> None:
     # The whole `environment` group is now a hidden deprecated alias (local
     # lifecycle → `bench sandbox`, hosted reads → `bench hub env`). It must not
     # appear in top-level `bench --help`, but must still resolve for back-compat.
-    import re
+    #
+    # Assert against the Click command registry (authoritative), NOT a regex over
+    # rendered `--help` rows: that text is environment-fragile (Rich emits ANSI
+    # color codes on CI that break a `│`-anchored match → empty set → false fail).
+    import typer
 
-    top = runner.invoke(app, ["--help"], terminal_width=200).output
-    rows = {m.group(1) for m in re.finditer(r"^\s*│\s+([A-Za-z][\w-]*)\s", top, re.M)}
-    assert "sandbox" in rows  # canonical local group is visible
-    assert "environment" not in rows  # deprecated alias group is hidden
+    cmd = typer.main.get_command(app)
+    visible = {
+        name
+        for name, sub in cmd.commands.items()
+        if not getattr(sub, "hidden", False)
+    }
+    assert "sandbox" in visible  # canonical local group is visible
+    assert "environment" not in visible  # deprecated alias group is hidden
+    assert "environment" in cmd.commands  # …but still registered for back-compat
     assert runner.invoke(app, ["environment", "create", "--help"]).exit_code == 0
