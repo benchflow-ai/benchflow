@@ -102,12 +102,34 @@ def test_progress_enabled_respects_tty_and_optout(monkeypatch):
     assert progress_enabled(tty) is False
 
 
-def test_quiet_root_logging_restores_handlers():
+def test_quiet_root_logging_buffers_then_restores():
+    from benchflow.cli._live_progress import _WarningBuffer
+
     root = logging.getLogger()
     before = root.handlers[:]
     with quiet_root_logging():
-        assert all(isinstance(h, logging.NullHandler) for h in root.handlers)
+        # INFO is dropped (would shred the Live), WARNING+ is buffered, not a NullHandler.
+        assert all(isinstance(h, _WarningBuffer) for h in root.handlers)
     assert root.handlers == before
+
+
+def test_quiet_root_logging_replays_warnings_not_info(monkeypatch):
+    # B5 regression: batch-level reliability WARNING/ERROR must survive the Live
+    # (be replayed after), while INFO chatter stays suppressed.
+    import benchflow.cli._live_progress as lp
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        lp.console, "print", lambda msg, *a, **k: printed.append(str(msg))
+    )
+    log = logging.getLogger("benchflow.test")
+    with quiet_root_logging():
+        log.info("per-task chatter that would shred the Live")
+        log.warning(">20% verifier errors — results may be unreliable")
+        log.error("circuit breaker tripped")
+    blob = "\n".join(printed)
+    assert "unreliable" in blob and "circuit breaker" in blob
+    assert "per-task chatter" not in blob
 
 
 def test_quiet_root_logging_restores_on_exception():

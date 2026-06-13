@@ -7,6 +7,7 @@ only wires the call.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -97,6 +98,12 @@ def register_skills(app: typer.Typer) -> None:
         """
         from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
+        if environment not in ("docker", "daytona", "modal"):
+            console.print(
+                f"[red]Invalid --sandbox {environment!r}: "
+                "choose docker, daytona, or modal[/red]"
+            )
+            raise typer.Exit(1)
         if agent is None:
             agent = ["claude-agent-acp"]
         if not (skill_dir / "evals" / "evals.json").exists():
@@ -106,7 +113,16 @@ def register_skills(app: typer.Typer) -> None:
             )
             raise typer.Exit(1)
 
-        evaluator = SkillEvaluator(skill_dir)
+        try:
+            evaluator = SkillEvaluator(skill_dir)
+        except (
+            json.JSONDecodeError,
+            ValueError,
+            FileNotFoundError,
+            NotADirectoryError,
+        ) as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
         console.print(
             f"[bold]Skill eval:[/bold] {evaluator.dataset.skill_name} "
             f"({len(evaluator.dataset.cases)} cases)"
@@ -116,16 +132,25 @@ def register_skills(app: typer.Typer) -> None:
         if no_baseline:
             console.print("  [dim]Baseline skipped (--no-baseline)[/dim]")
 
-        result = asyncio.run(
-            evaluator.run(
-                agents=agent,
-                models=model,
-                environment=environment,
-                jobs_dir=jobs_dir,
-                no_baseline=no_baseline,
-                concurrency=concurrency,
+        try:
+            result = asyncio.run(
+                evaluator.run(
+                    agents=agent,
+                    models=model,
+                    environment=environment,
+                    jobs_dir=jobs_dir,
+                    no_baseline=no_baseline,
+                    concurrency=concurrency,
+                )
             )
-        )
+        except (
+            json.JSONDecodeError,
+            ValueError,
+            FileNotFoundError,
+            NotADirectoryError,
+        ) as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
 
         # Display results
         table = Table(title=f"Skill Eval: {result.skill_name}")

@@ -1231,7 +1231,10 @@ class Evaluation:
     ) -> list[tuple[str, RunResult]]:
         """The default schedule — rollouts run concurrently and isolated."""
         cfg = self._config
-        sem = asyncio.Semaphore(cfg.concurrency)
+        # Floor at 1: Semaphore(0) deadlocks on first acquire. eval-create already
+        # rejects <1 at plan time, but this guards every other caller (skills eval,
+        # SDK) against a silent forever-hang on a bad concurrency.
+        sem = asyncio.Semaphore(max(1, cfg.concurrency))
 
         breaker = ApiErrorCircuitBreaker()
 
@@ -1504,8 +1507,8 @@ class Evaluation:
         threading.Thread(target=_reap, name="daytona-auto-reap", daemon=True).start()
 
     async def run(self) -> EvaluationResult:
-        self._maybe_start_daytona_reap()
         """Execute the job."""
+        self._maybe_start_daytona_reap()
         task_dirs = self._get_task_dirs()
         if not task_dirs:
             # Fail fast on an empty selection (#407). Silently writing a
