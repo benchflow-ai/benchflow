@@ -27,10 +27,10 @@ open it, pick the newest `0.6.0-rc.*` prerelease, and install its `.whl` asset:
 
 ```bash
 uv tool install --prerelease allow \
-  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.3/benchflow-0.6.0rc3-py3-none-any.whl'
+  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
 ```
 
-The URL pins `0.6.0-rc.3` (newest at time of writing); use a later
+The URL pins `0.6.0-rc.6` (newest at time of writing); use a later
 `0.6.0-rc.*` tag and filename if one exists. Confirm with `bench --version`.
 
 ## Install and Upgrade Commands (once 0.6.0 ships to PyPI)

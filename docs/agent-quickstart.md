@@ -48,14 +48,14 @@ resolve yet. To get the real 0.6 flow TODAY, install the latest 0.6.0
 release-candidate WHEEL from the GitHub prerelease page.
   1. Open https://github.com/benchflow-ai/benchflow/releases and find the
      NEWEST `0.6.0-rc.*` prerelease (highest rc number — do not assume a
-     specific rc; rc.3 may already be superseded by rc.4 or later).
+     specific rc; rc.6 may already be superseded by rc.7 or later).
   2. Copy the download URL of that release's `.whl` asset (named like
      `benchflow-0.6.0rcN-py3-none-any.whl`). The tag and the filename share
      the same rc number — tag `0.6.0-rc.N`, file `benchflow-0.6.0rcN`.
-  3. Install it with the URL you copied, e.g. (this example pins rc.3; replace
-     `rc.3`/`rc3` with the actual newest rc you found):
+  3. Install it with the URL you copied, e.g. (this example pins rc.6; replace
+     `rc.6`/`rc6` with the actual newest rc you found):
     uv tool install --prerelease allow \
-      'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.3/benchflow-0.6.0rc3-py3-none-any.whl'
+      'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
 Any `0.6.0-rc.*` is a valid full-0.6 build. If `gh` is available, you can
 resolve the newest tag without opening a browser:
     gh release list --repo benchflow-ai/benchflow --limit 20 | grep '0.6.0-rc'

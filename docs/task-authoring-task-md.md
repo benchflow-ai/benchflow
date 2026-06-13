@@ -124,8 +124,12 @@ the entire body is the instruction the agent receives.
 
 Four reserved headings are recognized for compatibility imports: `## prompt`,
 `## role:<name>`, `## scene:<name>`, and `## user-persona`. Repeating the same
-section heading is a parse error. New tasks should not use them;
-multi-prompt material belongs in sidecar files under `prompts/`:
+section heading is a parse error. `bench tasks init` scaffolds a single
+`## prompt` section as a starting point — for a single-prompt task that is
+equivalent to a bare body, so keep it or drop the heading as you prefer. The
+multi-prompt headings (`## role:`, `## scene:`, `## user-persona`) are for
+compatibility imports only; new multi-prompt material belongs in sidecar files
+under `prompts/`:
 
 | File | Meaning |
 |---|---|

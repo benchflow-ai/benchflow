@@ -222,6 +222,8 @@ bench eval create -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lit
 | `--agent-env` | — | Agent environment variable as `KEY=VALUE`; repeatable |
 | `--include` | — | Only run these task names; repeatable (e.g. `--include jax-computing-basics --include data-to-d3`) |
 | `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |
+| `--loop-strategy` | — | Wrap each rollout in a loop, e.g. `verify-retry:k=3,feedback=names` or `self-review:k=3` (omit for single-shot) |
+| `--ignore-bench-version` | `false` | With `--dataset`, skip the dataset's `bench_version` compatibility gate |
 
 When mounting skills, the recommended docs default is
 `--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
@@ -508,7 +510,7 @@ bench hub check --level check --tasks-per-dataset 2 --out hub.jsonl
 | `--tasks-per-dataset` | `2` | Representative tasks selected per dataset |
 | `--level` | `inventory` | Compatibility level: `inventory` or `check` |
 | `--out` | — | Optional JSONL output path |
-| `--cache-dir` | `.cache/compat/harbor` | Cache directory for sparse clones |
+| `--cache-dir` | `.cache/hub/harbor` | Cache directory for sparse clones |
 | `--limit` | — | Optional cap on selected task refs |
 
 ## YAML Config Format

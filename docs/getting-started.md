@@ -18,10 +18,10 @@ open it, pick the newest `0.6.0-rc.*` prerelease, and install its `.whl` asset:
 
 ```bash
 uv tool install --prerelease allow \
-  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.3/benchflow-0.6.0rc3-py3-none-any.whl'
+  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
 ```
 
-The URL pins `0.6.0-rc.3` (newest at time of writing); if a later `0.6.0-rc.*`
+The URL pins `0.6.0-rc.6` (newest at time of writing); if a later `0.6.0-rc.*`
 prerelease exists, use that tag and filename instead. The `--prerelease allow`
 flag is required for BenchFlow's pinned LiteLLM release-candidate dependency. If
 `uv` reports `Executables already exist: bench, benchflow`, rerun the same
