@@ -1,6 +1,73 @@
 # Changelog
 
-## [Unreleased]
+## 0.6.0 — 2026-06-13
+
+### Added
+
+- **The `task.md` task standard** — a single-file unified task format (parser,
+  verifier planes, prompt sidecars, round-trip export with a machine-readable
+  loss report) plus the authoring CLI: `bench tasks init / check / migrate /
+  export`, with a layered `check --level` ladder up to a leaderboard-grade
+  acceptance gate. See [`docs/task-standard.md`](docs/task-standard.md) and the
+  [native authoring guide](docs/task-authoring-task-md.md).
+- **`bench eval adopt` benchmark-adoption router** — `init` scaffolds a benchmark
+  conversion per [`benchmarks/CONVERT.md`](benchmarks/CONVERT.md), `convert` drives
+  the host `codex` CLI through the conversion workflow, and `verify` runs the
+  parity gate (deterministic per-criterion conversion parity plus the
+  agent-scale reward-distribution layer) and emits a confidence verdict, with a
+  drafted support issue on divergence. `bench eval adopt verify --rerun`
+  independently re-executes the benchmark's `parity_test.py` and scores its fresh
+  output (instead of trusting the recorded `parity_experiment.json`), failing
+  closed if the output is not scoreable; `bench eval adopt convert -c key=value`
+  passes codex config overrides through to the host codex driver (e.g. to work
+  around `~/.codex` drift). `bench tasks digest` recognizes native `task.md` tasks
+  as well as legacy `task.toml`.
+- **ATIF and ADP trajectory artifacts** — every scored rollout now emits
+  `trainer/atif.json` and `trainer/adp.jsonl` (alongside the existing
+  `verifiers.jsonl`), with job-level ADP aggregation. One canonical raw
+  trajectory, multiple ecosystem formats out of the box.
+- **OpenReward (ORS) reward-format interop** — export BenchFlow rewards in the
+  Open Reward Standard shape (`benchflow.adapters.ors`) and the `ors-episode`
+  verifier strategy is recognized. (The hosted-environment episode runner that
+  executes ORS environments end-to-end is in progress, not in this release.)
+- **Daytona sandbox auto-reap** — orphaned sandboxes are cleaned at eval start
+  (TTL-tiered; failure states reaped sooner; an idle-activity guard protects
+  live runs), gated by `BENCHFLOW_DAYTONA_AUTO_REAP` (any of `0`/`false`/`no`/
+  `off`, case-insensitive, disables it).
+- **Registry-pinned dataset runs** — `bench eval create -d name@version`
+  (e.g. `-d skillsbench@1.1`) resolves a dataset from a git-backed
+  `registry.json` (see skillsbench `docs/dataset-versioning.md`): tasks are
+  cloned at their pinned `git_commit_id` into `.cache/datasets` and every
+  task directory is verified against its sha256 content digest before
+  anything runs; the entry's `bench_version` range is checked against the
+  installed benchflow. `--registry` overrides the default (skillsbench)
+  registry. `result.json`/`config.json` are stamped with `dataset_name`,
+  `dataset_version`, and a per-task `task_digest` (`summary.json` carries
+  the name/version); `--tasks-dir` dev runs carry no dataset fields but
+  still stamp a live-computed `task_digest`, so every trajectory stays
+  attributable to exact task content. `bench tasks digest <dir>` prints
+  the digest for task authoring, and `check_results.py` audits the stamps.
+  See [`docs/running-benchmarks.md`](docs/running-benchmarks.md). (#689,
+  #690, #691; `packaging` promoted to a core dependency for the
+  `bench_version` check.)
+- **`benchflow continue <run-folder>`** — resume a previous, unfinished
+  (timed-out) `openhands` run to completion. A standalone tool (it does not
+  touch the normal run path) that reconstructs the run's exact workspace and
+  agent memory from the recorded `llm_trajectory.jsonl` via record-replay,
+  then continues with the live model — no injected prompt — and writes a new
+  HF-compatible folder with `continued_from` provenance. See
+  [`docs/continue-runs.md`](docs/continue-runs.md).
+
+### Changed
+
+- `bench metrics` → `bench eval metrics` and `bench view` → `bench eval view`
+  (the deprecated hidden top-level forms are gone; use the `eval` subgroup).
+- Quickstart and CLI reference now match observed run behavior — the real jobs
+  directory layout and artifact map, the `<PROVIDER>_API_KEY` /
+  `<PROVIDER>_BASE_URL` convention, and exit-code semantics.
+- Document the public vs internal preview install/upgrade command matrix,
+  including `uv tool` exact pins, internal preview upgrades, and the
+  `--force` path for replacing stale entrypoint scripts.
 
 ### Renamed (aliased; old names removed in 0.7)
 - Benchmark adoption is now `bench eval adopt {init,convert,verify}`. It lives
@@ -64,10 +131,6 @@
   alongside the earlier `dashboard/` removal and `labs/` → `docs/labs`
   migration. Benchmark result files were preserved out-of-tree, not deleted.
 
-### Changed
-- `bench metrics` → `bench eval metrics` and `bench view` → `bench eval view`
-  (the deprecated hidden top-level forms are gone; use the `eval` subgroup).
-
 ### Fixed
 - **CLI errors now go to stderr.** `print_error` (the single CLI error sink) wrote
   to stdout, so a `bench … --json | jq` pipeline could get a non-JSON error line on
@@ -96,67 +159,6 @@
   `agent` / `eval adopt` alias families.
 - `benchmarks/CONVERT.md` now references the canonical `bench eval adopt verify`
   (was the deprecated `bench agent verify`) in the conversion prompt.
-
-## 0.6.0 — 2026-06-10
-
-### Added
-
-- **The `task.md` task standard** — a single-file unified task format (parser,
-  verifier planes, prompt sidecars, round-trip export with a machine-readable
-  loss report) plus the authoring CLI: `bench tasks init / check / migrate /
-  export`, with a layered `check --level` ladder up to a leaderboard-grade
-  acceptance gate. See [`docs/task-standard.md`](docs/task-standard.md) and the
-  [native authoring guide](docs/task-authoring-task-md.md).
-- **`bench agent` benchmark-adoption router** — `create` scaffolds a benchmark
-  conversion per [`benchmarks/CONVERT.md`](benchmarks/CONVERT.md), `run` drives
-  the host `codex` CLI through the conversion workflow, and `verify` runs the
-  parity gate (deterministic per-criterion conversion parity plus the
-  agent-scale reward-distribution layer) and emits a confidence verdict, with a
-  drafted support issue on divergence. `bench agent verify --rerun` independently
-  re-executes the benchmark's `parity_test.py` and scores its fresh output
-  (instead of trusting the recorded `parity_experiment.json`), failing closed if
-  the output is not scoreable; `bench agent run -c key=value` passes codex config
-  overrides through to the host codex driver (e.g. to work around `~/.codex`
-  drift). `bench tasks digest` recognizes native `task.md` tasks as well as
-  legacy `task.toml`.
-- **ATIF and ADP trajectory artifacts** — every scored rollout now emits
-  `trainer/atif.json` and `trainer/adp.jsonl` (alongside the existing
-  `verifiers.jsonl`), with job-level ADP aggregation. One canonical raw
-  trajectory, multiple ecosystem formats out of the box.
-- **OpenReward (ORS) reward-format interop** — export BenchFlow rewards in the
-  Open Reward Standard shape (`benchflow.adapters.ors`) and the `ors-episode`
-  verifier strategy is recognized. (The hosted-environment episode runner that
-  executes ORS environments end-to-end is in progress, not in this release.)
-- **Daytona sandbox auto-reap** — orphaned sandboxes are cleaned at eval start
-  (TTL-tiered; failure states reaped sooner; an idle-activity guard protects
-  live runs), gated by `BENCHFLOW_DAYTONA_AUTO_REAP` (any of `0`/`false`/`no`/
-  `off`, case-insensitive, disables it).
-- **Registry-pinned dataset runs** — `bench eval create -d name@version`
-  (e.g. `-d skillsbench@1.1`) resolves a dataset from a git-backed
-  `registry.json` (see skillsbench `docs/dataset-versioning.md`): tasks are
-  cloned at their pinned `git_commit_id` into `.cache/datasets` and every
-  task directory is verified against its sha256 content digest before
-  anything runs; the entry's `bench_version` range is checked against the
-  installed benchflow. `--registry` overrides the default (skillsbench)
-  registry. `result.json`/`config.json` are stamped with `dataset_name`,
-  `dataset_version`, and a per-task `task_digest` (`summary.json` carries
-  the name/version); `--tasks-dir` dev runs carry no dataset fields but
-  still stamp a live-computed `task_digest`, so every trajectory stays
-  attributable to exact task content. `bench tasks digest <dir>` prints
-  the digest for task authoring, and `check_results.py` audits the stamps.
-  See [`docs/running-benchmarks.md`](docs/running-benchmarks.md). (#689,
-  #690, #691; `packaging` promoted to a core dependency for the
-  `bench_version` check.)
-- **`benchflow continue <run-folder>`** — resume a previous, unfinished
-  (timed-out) `openhands` run to completion. A standalone tool (it does not
-  touch the normal run path) that reconstructs the run's exact workspace and
-  agent memory from the recorded `llm_trajectory.jsonl` via record-replay,
-  then continues with the live model — no injected prompt — and writes a new
-  HF-compatible folder with `continued_from` provenance. See
-  [`docs/continue-runs.md`](docs/continue-runs.md).
-
-### Fixed
-
 - `bench tasks migrate` emits minimal, canonical (`schema_version`) front
   matter instead of a full defaults dump.
 - Verifier `timeout_sec` is validated as a positive, finite budget
@@ -181,15 +183,6 @@
 - Bedrock Claude 4.8+ routes fail closed when LiteLLM's adaptive-thinking patch
   is inactive, instead of silently sending a request the proxy cannot satisfy
   (#602).
-
-### Changed
-
-- Quickstart and CLI reference now match observed run behavior — the real jobs
-  directory layout and artifact map, the `<PROVIDER>_API_KEY` /
-  `<PROVIDER>_BASE_URL` convention, and exit-code semantics.
-- Document the public vs internal preview install/upgrade command matrix,
-  including `uv tool` exact pins, internal preview upgrades, and the
-  `--force` path for replacing stale entrypoint scripts.
 
 ## 0.5.2 — 2026-06-05
 
