@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -250,11 +250,6 @@ def collect_lane_blockers(lanes: list[Mapping[str, Any]]) -> dict[str, list[str]
             if blockers:
                 lane_blockers[lane["id"]] = blockers
     return lane_blockers
-
-
-def iter_lane_ids(suite: Mapping[str, Any]) -> Iterable[str]:
-    for lane in suite["lanes"]:
-        yield lane["id"]
 
 
 def print_lane_list(suite: Mapping[str, Any]) -> None:

@@ -622,7 +622,6 @@ class Evaluation:
         self._jobs_dir = Path(jobs_dir)
         self._config = config or EvaluationConfig()
         self._job_name = job_name or self._resolve_job_name(self._jobs_dir)
-        self._explicit_job_name = job_name is not None
         self._on_result = on_result
         # UI-progress hooks (the CLI live dashboard; None everywhere else). Fired
         # best-effort via _fire_progress so a display bug never aborts a run.
