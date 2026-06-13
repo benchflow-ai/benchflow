@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -27,6 +28,21 @@ console = Console()
 # stderr console for out-of-band notices (deprecations) so they never corrupt
 # stdout consumers like `--json` (e.g. `environment list --json`).
 err_console = Console(stderr=True)
+
+
+def print_error(message: str) -> None:
+    """Print a red error line, escaping Rich markup in ``message``.
+
+    The single safe sink for CLI error messages: error text routinely
+    interpolates user-supplied values (a task path, an agent name, a config
+    error echoing a field) that can contain ``[`` / ``[/x]`` tokens. An
+    unescaped ``console.print(f"[red]{value}[/red]")`` then makes Rich itself
+    raise ``MarkupError`` — turning a clean error into a raw traceback. Route
+    every such message through here. (Messages with NO user input escape to a
+    no-op, so it is always safe.)
+    """
+    console.print(f"[red]{escape(str(message))}[/red]")
+
 
 _DEPRECATION_WARNED: set[str] = set()
 
@@ -107,5 +123,5 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
         f"({result.score:.1%})[/{style}]{err_part}"
     )
     if job_dir is not None:
-        console.print(f"[dim]Artifacts:[/dim] {job_dir}")
-        console.print(f"[dim]Summary:  [/dim] {job_dir}/summary.json")
+        console.print(f"[dim]Artifacts:[/dim] {escape(str(job_dir))}")
+        console.print(f"[dim]Summary:  [/dim] {escape(str(job_dir))}/summary.json")

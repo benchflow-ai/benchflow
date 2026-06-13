@@ -182,6 +182,7 @@ _INSTALL_URL_DOCS = (
     "docs/getting-started.md",
     "docs/release.md",
     "docs/agent-quickstart.md",
+    "docs/skill-eval.md",
     ".claude/skills/benchflow/SKILL.md",
 )
 # Matches only CONCRETE pins, e.g.

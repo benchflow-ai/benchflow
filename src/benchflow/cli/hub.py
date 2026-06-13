@@ -90,4 +90,4 @@ def register_hub(app: typer.Typer) -> None:
             f"{summary['blocked']} blocked"
         )
         if out is not None:
-            console.print(f"[green]Wrote JSONL report:[/green] {out}")
+            console.print(f"[green]Wrote JSONL report:[/green] {escape(str(out))}")

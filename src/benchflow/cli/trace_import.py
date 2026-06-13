@@ -17,6 +17,7 @@ from typing import Annotated, Literal, cast
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 console = Console()
@@ -247,7 +248,7 @@ def _load_file(path: Path, format: str) -> list:
     )
 
     if not path.exists():
-        console.print(f"[red]File not found: {path}[/red]")
+        console.print(f"[red]File not found: {escape(str(path))}[/red]")
         raise typer.Exit(1)
 
     detected_format = format
@@ -262,7 +263,7 @@ def _load_file(path: Path, format: str) -> list:
     elif detected_format == "claude-messages":
         return _parse_hf_messages_file(path)
     else:
-        console.print(f"[red]Unknown format: {detected_format}[/red]")
+        console.print(f"[red]Unknown format: {escape(str(detected_format))}[/red]")
         raise typer.Exit(1)
 
 
