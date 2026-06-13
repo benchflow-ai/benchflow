@@ -69,6 +69,7 @@ scenes:
 
 ```python
 from pathlib import Path
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -146,6 +147,7 @@ For stronger isolation, use the MCP reviewer server pattern. The reviewer runs a
 from pathlib import Path
 
 from benchflow.experimental.mcp.hooks import mcp_reviewer_hook
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -226,6 +228,7 @@ scenes:
 
 ```python
 from pathlib import Path
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -287,6 +290,7 @@ scenes:
 
 ```python
 from pathlib import Path
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -357,6 +361,7 @@ scenes:
 
 ```python
 from pathlib import Path
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -401,6 +406,7 @@ Tasks that require agents to interact with live services -- Gmail, Calendar, Doc
 
 ```python
 from pathlib import Path
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 from benchflow import SERVICES, build_service_hooks
 

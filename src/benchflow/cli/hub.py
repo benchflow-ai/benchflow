@@ -1,4 +1,4 @@
-"""``bench compat`` — third-party framework compatibility checks.
+"""``bench hub`` — compatibility checks for external environment hubs.
 
 Registered onto the top-level app by :func:`register_hub`; ``cli/main.py``
 only wires the call.
@@ -12,6 +12,7 @@ from typing import Annotated
 import typer
 
 from benchflow.cli._shared import console
+from benchflow.hub.harbor_registry import DEFAULT_HARBOR_REGISTRY_URL
 
 
 def register_hub(app: typer.Typer) -> None:
@@ -27,7 +28,7 @@ def register_hub(app: typer.Typer) -> None:
                 "--registry",
                 help="Harbor registry JSON URL or local file.",
             ),
-        ] = "https://raw.githubusercontent.com/harbor-framework/harbor/main/registry.json",
+        ] = DEFAULT_HARBOR_REGISTRY_URL,
         tasks_per_dataset: Annotated[
             int,
             typer.Option(

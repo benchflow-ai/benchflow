@@ -9,7 +9,11 @@ live Typer parser so doc rot is caught in CI.
 from __future__ import annotations
 
 import re
+from pathlib import Path
+from typing import cast
 
+import click
+import typer
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
@@ -17,6 +21,41 @@ from benchflow.cli.main import app
 runner = CliRunner()
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+_CLI_MD = Path(__file__).resolve().parents[1] / "docs" / "reference" / "cli.md"
+
+
+def _click_command(path: list[str]) -> click.Command:
+    """Resolve a subcommand from the live Typer app (authoritative, untruncated)."""
+    cmd = typer.main.get_command(app)
+    for seg in path:
+        cmd = cast("click.Group", cmd).commands[seg]
+    return cmd
+
+
+def _cli_long_flags(path: list[str]) -> set[str]:
+    """Every ``--long`` option the parser actually accepts for ``path`` (minus --help)."""
+    flags = {
+        opt
+        for param in _click_command(path).params
+        for opt in getattr(param, "opts", [])
+        if opt.startswith("--")
+    }
+    flags.discard("--help")
+    return flags
+
+
+def _doc_section(header: str) -> str:
+    """The cli.md block from ``header`` up to the next ``### `` heading."""
+    doc = _CLI_MD.read_text()
+    i = doc.index(header)
+    nxt = doc.find("\n### ", i + len(header))
+    return doc[i : nxt if nxt != -1 else len(doc)]
+
+
+def _doc_flags(header: str) -> set[str]:
+    """Backtick-wrapped ``--flags`` documented under a cli.md heading."""
+    return set(re.findall(r"`(--[a-z0-9-]+)`", _doc_section(header)))
 
 
 def _help(args: list[str]) -> str:
@@ -54,49 +93,46 @@ def test_top_level_help_lists_public_groups() -> None:
         )
 
 
-def test_eval_create_help_lists_all_documented_flags() -> None:
-    """docs/reference/cli.md's bench eval create flag table must stay in sync.
+def test_eval_create_flags_match_cli_md_bidirectional() -> None:
+    """`bench eval create`'s flags and its cli.md table must be set-equal.
 
-    Typer truncates long flag names with '…' in --help, so we match against a
-    prefix of each documented flag — long enough to disambiguate from
-    sibling flags but short enough to survive Click's right-column truncation.
+    The old guard only checked doc→CLI (a hand-maintained list of documented
+    flags must exist in --help). It could not catch the *reverse* — a new CLI
+    flag landing undocumented — which is exactly how ``--loop-strategy`` and
+    ``--ignore-bench-version`` rotted out of the docs (#731). Deriving both
+    sides from ground truth (the live parser + the doc table) drops the
+    hand-maintained list and closes both directions.
     """
-    out = _help(["eval", "create"])
-    documented_flag_prefixes = [
-        "--config",
-        "--tasks-dir",
-        "--source-repo",
-        "--source-path",
-        "--source-ref",
-        "--source-env",
-        "--source-env-version",
-        "--source-env-arg",
-        "--source-env-num-examp",
-        "--source-env-rollouts-",
-        "--source-env-max-tokens",
-        "--source-env-temperatu",
-        "--source-env-sampling-",
-        "--agent",
-        "--model",
-        "--sandbox",
-        "--environment-manifest",
-        "--prompt",
-        "--concurrency",
-        "--agent-idle-timeout",
-        "--jobs-dir",
-        "--sandbox-user",
-        "--sandbox-setup-timeout",
-        "--skills-dir",
-        "--skill-mode",
-        "--skill-creator-dir",
-        "--self-gen-no-internet",
-        "--agent-env",
-        "--include",
-        "--exclude",
+    cli = _cli_long_flags(["eval", "create"])
+    doc = _doc_flags("### bench eval create")
+    assert cli == doc, (
+        "bench eval create CLI↔cli.md flag drift:\n"
+        f"  in CLI but UNDOCUMENTED: {sorted(cli - doc)}\n"
+        f"  documented but NOT in CLI: {sorted(doc - cli)}"
+    )
+
+
+def test_documented_defaults_match_cli() -> None:
+    """Documented default *values* must match the live param defaults.
+
+    The name-only guard happily passed while ``bench hub check --cache-dir``
+    documented the pre-rename ``.cache/compat/harbor`` (the CLI moved to
+    ``.cache/hub/harbor``). Pin the defaults that have drift history so a
+    stale value in either the code or the doc fails CI.
+    """
+    checks = [
+        (["hub", "check"], "--cache-dir", "### bench hub check", ".cache/hub/harbor"),
     ]
-    for flag in documented_flag_prefixes:
-        assert flag in out, (
-            f"documented flag prefix {flag!r} missing from `bench eval create --help`: {out}"
+    for path, flag, header, expected in checks:
+        param = next(
+            p for p in _click_command(path).params if flag in getattr(p, "opts", [])
+        )
+        assert expected in str(param.default), (
+            f"`bench {' '.join(path)} {flag}` default is {param.default!r}, "
+            f"expected to contain {expected!r}"
+        )
+        assert expected in _doc_section(header), (
+            f"cli.md {header!r} no longer documents the {flag} default {expected!r}"
         )
 
 

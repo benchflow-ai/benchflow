@@ -322,6 +322,16 @@ def test_number():  assert _load()(7) == "7"
 ```
 
 ```bash
+# tests/test.sh — verifier entrypoint; runs the pytest module, writes the reward
+#!/bin/bash
+curl -LsSf https://astral.sh/uv/0.9.7/install.sh | sh
+source $HOME/.local/bin/env
+
+uvx --with pytest==8.4.1 pytest /tests/test_outputs.py -rA
+if [ $? -eq 0 ]; then echo 1; else echo 0; fi > /logs/verifier/reward.txt
+```
+
+```bash
 # solution/solve.sh
 cat > /app/fizzbuzz.py << 'EOF'
 def fizzbuzz(n: int) -> str:
