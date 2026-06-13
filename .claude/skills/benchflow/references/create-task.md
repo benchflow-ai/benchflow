@@ -1,11 +1,11 @@
 ---
 name: benchflow-create-task
-description: Create benchmark tasks for BenchFlow in the Harbor task format. Use when asked to create a new benchmark task, write a verifier, or set up a task environment.
+description: Create benchmark tasks for BenchFlow in the split task format. Use when asked to create a new benchmark task, write a verifier, or set up a task environment.
 ---
 
 # BenchFlow Create Task Skill
 
-Use this skill to create benchmark tasks that BenchFlow can run. Tasks follow the Harbor format — a directory with an instruction, environment, and verifier.
+Use this skill to create benchmark tasks that BenchFlow can run. Tasks follow the split format — a directory with an instruction, environment, and verifier.
 
 ## When to Use
 

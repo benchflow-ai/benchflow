@@ -46,6 +46,7 @@ class TestSetupSandboxUser:
         assert "cp -aL /root/.local/bin/." not in cmd
         assert "cp -a /root/.nvm/." not in cmd
         assert kwargs["timeout_sec"] == 120
+        assert kwargs["user"] == "root"
 
     @pytest.mark.asyncio
     async def test_setup_command_still_creates_user_prepares_home_and_chowns_workspace(
@@ -56,6 +57,8 @@ class TestSetupSandboxUser:
 
         assert "id -u agent >/dev/null 2>&1 || useradd -m -s /bin/bash agent" in cmd
         assert "mkdir -p /home/agent/.local/bin" not in cmd
+        assert "if [ -f /home/cua/.Xauthority ]; then" in cmd
+        assert "cp /home/cua/.Xauthority /home/agent/.Xauthority" in cmd
         assert "chown -R agent:agent /home/agent" in cmd
         assert f"chown -R agent:agent {shlex.quote('/app')}" in cmd
 
@@ -108,6 +111,20 @@ class TestSetupSandboxUser:
             assert heavy_dir not in copy_loop_dirs, (
                 f"sandbox copy loop must not include heavy tool dir {heavy_dir!r}"
             )
+
+    @pytest.mark.asyncio
+    async def test_setup_raises_when_user_creation_command_fails(self):
+        env = MagicMock()
+        env.exec = AsyncMock(
+            return_value=MagicMock(
+                return_code=1,
+                stdout="",
+                stderr="useradd: failure",
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="Sandbox user setup failed"):
+            await setup_sandbox_user(env, "agent", "/app")
 
 
 class TestStageDockerfileDeps:

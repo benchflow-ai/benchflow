@@ -27,9 +27,7 @@ from benchflow.rewards.rubric_config import (
 _MOCK_PASS = '```json\n{"verdict": "pass", "reasoning": "good"}\n```'
 
 
-# ---------------------------------------------------------------------------
 # Dense event tags
-# ---------------------------------------------------------------------------
 
 
 class TestDenseEventTags:
@@ -127,9 +125,7 @@ class TestDenseEventTags:
             await func.score(tmp_path)
 
 
-# ---------------------------------------------------------------------------
 # Rubric-file parsing
-# ---------------------------------------------------------------------------
 
 
 class TestRubricSpaceParsing:
@@ -184,9 +180,7 @@ space = "not-a-real-space"
         assert c.space == "output"
 
 
-# ---------------------------------------------------------------------------
 # Regression: the exact symptom from #396
-# ---------------------------------------------------------------------------
 
 
 class TestIssue396Repro:

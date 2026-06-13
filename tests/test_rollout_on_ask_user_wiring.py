@@ -96,6 +96,10 @@ async def test_rollout_on_ask_user_forwards_to_live_adapter() -> None:
     assert option_id == "deny"
     assert len(received) == 1
     assert received[0].options == ["allow_once", "deny"]
+    assert received[0].option_kinds == {
+        "allow_once": "allow_once",
+        "deny": "reject",
+    }
     assert received[0].prompt == "rm -rf /etc"
 
 

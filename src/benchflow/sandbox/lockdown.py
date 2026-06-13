@@ -28,9 +28,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ── Path lockdown defaults and validation ─────────────────────────────────────
+# Path lockdown defaults and validation
 
-_DEFAULT_LOCKED = ["/solution", "/tests"]
+# /testbed_verify is the root-owned pre-agent workspace snapshot seeded by
+# _seed_verifier_workspace, which makes it world-readable (chmod -R o+rX) so the
+# verifier can diff against it. That readability leaks grading-side state to the
+# agent: an agent can read the snapshot's verifier/judge config (rubrics,
+# expected outputs, judge credentials) and forge or reverse-engineer a reward.
+# Seeding runs before lockdown in install_agent, so locking it here (chmod 700,
+# root-owned) closes the read window before the agent starts. The verifier runs
+# as root and so still reads /testbed_verify regardless of mode.
+_DEFAULT_LOCKED = ["/oracle", "/solution", "/verifier", "/tests", "/testbed_verify"]
 _SAFE_PATH_RE = re.compile(r"^/[a-zA-Z0-9_./*?\-]+(/[a-zA-Z0-9_./*?\-]+)*$")
 
 
@@ -63,7 +71,8 @@ def _resolve_locked_paths(
     """Resolve effective locked paths.
 
     - sandbox_user=None → [] (no lockdown)
-    - sandbox_user set, paths=None → defaults (/solution, /tests)
+    - sandbox_user set, paths=None → defaults (/oracle, /solution, /verifier,
+      /tests, /testbed_verify)
     - sandbox_user set, paths=[] → [] (explicit opt-out)
     - sandbox_user set, paths=[...] → union of defaults + caller paths
     """
@@ -78,7 +87,7 @@ def _resolve_locked_paths(
     return list(dict.fromkeys(_DEFAULT_LOCKED + sandbox_locked_paths))
 
 
-# ── Sandbox user + privilege drop ─────────────────────────────────────────────
+# Sandbox user + privilege drop
 
 
 def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
@@ -123,7 +132,7 @@ async def setup_sandbox_user(
     logger.info(f"Setting up sandbox user: {sandbox_user}")
     home = f"/home/{sandbox_user}"
     home_dirs = sorted(d for d in get_sandbox_home_dirs() if d != ".local")
-    await env.exec(
+    result = await env.exec(
         f"id -u {sandbox_user} >/dev/null 2>&1 || "
         f"useradd -m -s /bin/bash {sandbox_user} && "
         f"{_legacy_root_tool_link_cmd('/root/.local/bin', f'{home}/.local/bin')} && "
@@ -131,10 +140,23 @@ async def setup_sandbox_user(
         f"for d in {' '.join(home_dirs)}; do "
         f"if [ -d /root/$d ]; then mkdir -p {home}/$d && "
         f"cp -a /root/$d/. {home}/$d/ 2>/dev/null || true; fi; done && "
+        f"if [ -f /home/cua/.Xauthority ]; then "
+        f"cp /home/cua/.Xauthority {home}/.Xauthority && "
+        f"chown {sandbox_user}:{sandbox_user} {home}/.Xauthority; fi && "
         f"chown -R {sandbox_user}:{sandbox_user} {home} && "
         f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)}",
         timeout_sec=timeout_sec,
+        user="root",
     )
+    return_code = getattr(result, "return_code", None)
+    if not isinstance(return_code, int):
+        return_code = getattr(result, "exit_code", 0)
+    if return_code != 0:
+        stdout = getattr(result, "stdout", "") or ""
+        stderr = getattr(result, "stderr", "") or ""
+        detail = (stderr or stdout).strip()
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Sandbox user setup failed for {sandbox_user!r}{suffix}")
     logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
     return workspace
 
@@ -163,10 +185,10 @@ async def lockdown_paths(env, paths: list[str]) -> None:
             f"done"
         )
     cmd = " && ".join(parts)
-    await env.exec(cmd, timeout_sec=30)
+    await env.exec(cmd, timeout_sec=30, user="root")
 
 
-# ── Build-config snapshot / restore (Tier 2) ─────────────────────────────────
+# Build-config snapshot / restore (Tier 2)
 
 # Files snapshotted before agent runs and restored before verification.
 # Covers common build backends to prevent setup.py / pyproject.toml hijacks.
@@ -295,7 +317,7 @@ async def _refresh_verifier_workspace(env, workspace: str) -> None:
         await env.exec(cmd, user="root")
 
 
-# ── Verifier hardening ────────────────────────────────────────────────────────
+# Verifier hardening
 
 # Trusted env vars for verifier execution — override any agent pollution.
 # Intentionally omitted (negative guard in test_verify.py explains why):
@@ -307,13 +329,13 @@ VERIFIER_ENV: dict[str, str] = {
         "--confcutdir=/tests "  # block conftest.py walk-up beyond /tests
         "-p no:cacheprovider"
         # --rootdir is injected dynamically by _build_pytest_addopts() based on
-        # the task's actual workspace, so it works for both /app (Harbor/SWE-bench)
+        # the task's actual workspace, so it works for both /app (SWE-bench)
         # and /root (SkillsBench) conventions.
     ),
     # Block pytest11 entry-point plugins. An agent can modify a pre-installed
     # package's plugin source to forge a reward; -c /dev/null does not block
     # entry-point registration. Tasks that need specific plugins declare them
-    # in task.toml [verifier] pytest_plugins = [...].
+    # in task config [verifier] pytest_plugins = [...].
     "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
     # Redirect .pyc cache reads/writes to a non-existent directory so
@@ -350,9 +372,15 @@ _SAFE_VERIFIER_PATH_PARTS = tuple(_SAFE_VERIFIER_PATH.split(":"))
 _RUNTIME_PATH_PREFIXES = ("/tmp", "/var/tmp", "/logs", "/testbed")
 
 _DEFAULT_ROOTDIR = "/app"
+_LEGACY_VERIFIER_CONFCUTDIR = "/tests"
 
 
-def _build_pytest_addopts(workspace: str | None = None, plugin_flags: str = "") -> str:
+def _build_pytest_addopts(
+    workspace: str | None = None,
+    plugin_flags: str = "",
+    *,
+    verifier_confcutdir: str = _LEGACY_VERIFIER_CONFCUTDIR,
+) -> str:
     """Build PYTEST_ADDOPTS with a dynamic --rootdir based on the workspace.
 
     Without an explicit --rootdir, -c /dev/null causes pytest to fall back to
@@ -360,10 +388,27 @@ def _build_pytest_addopts(workspace: str | None = None, plugin_flags: str = "") 
     The rootdir must point to a directory that actually exists in the container.
     """
     rootdir = workspace or _DEFAULT_ROOTDIR
-    addopts = f"{VERIFIER_ENV['PYTEST_ADDOPTS']} --rootdir={shlex.quote(rootdir)}"
+    base_addopts = VERIFIER_ENV["PYTEST_ADDOPTS"].replace(
+        f"--confcutdir={_LEGACY_VERIFIER_CONFCUTDIR}",
+        f"--confcutdir={shlex.quote(verifier_confcutdir)}",
+    )
+    addopts = f"{base_addopts} --rootdir={shlex.quote(rootdir)}"
     if plugin_flags:
         addopts += f" {plugin_flags}"
     return addopts
+
+
+def _uses_native_verifier_dir(task: "Task") -> bool:
+    paths = getattr(task, "paths", None)
+    return getattr(paths, "uses_native_verifier_dir", False) is True
+
+
+def _verifier_confcutdir(task: "Task") -> str:
+    from benchflow.task.paths import SandboxPaths
+
+    if _uses_native_verifier_dir(task):
+        return str(SandboxPaths.verifier_code_dir)
+    return str(SandboxPaths.tests_dir)
 
 
 # Container-side script to enumerate pre-installed pytest11 entry points.
@@ -384,11 +429,6 @@ except Exception as e:
     print(json.dumps({"error": str(e)}), file=sys.stderr)
     print("[]")
 """.strip()
-
-
-def _under_path(path: str, prefix: str) -> bool:
-    prefix = prefix.rstrip("/")
-    return path == prefix or path.startswith(f"{prefix}/")
 
 
 def _blocked_verifier_path_prefixes(
@@ -489,9 +529,9 @@ def _trusted_path_extras_cmd(raw_path: str, blocked_prefixes: tuple[str, ...]) -
 async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
     """Auto-discover pytest plugins from root-owned system packages.
 
-    Runs a container-side script that enumerates pytest11 entry points and
+    Runs a sandbox-side script that enumerates pytest11 entry points and
     filters to only those whose dist-info is in a root-owned directory.
-    Falls back to task.toml pytest_plugins declarations if discovery fails.
+    Falls back to task verifier pytest_plugins declarations if discovery fails.
     Replaces the previous hand-curated whitelist mechanism.
     """
     plugins: list[str] = []
@@ -501,7 +541,7 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
         if name and name not in plugins:
             plugins.append(name)
 
-    # Container-side auto-discovery
+    # Sandbox-side auto-discovery
     try:
         result = await env.exec(
             f"python3 -c {shlex.quote(_DISCOVER_PYTEST_PLUGINS_SCRIPT)}",
@@ -510,16 +550,27 @@ async def _discover_pytest_plugin_flags(env, task: "Task") -> str:
         )
         if result.stderr:
             logger.debug(f"Plugin discovery stderr: {result.stderr.strip()}")
-        discovered = _json.loads(result.stdout or "[]")
-        if isinstance(discovered, list):
-            for p in discovered:
-                if isinstance(p, str):
-                    add_plugin(p)
-        logger.info(f"Discovered {len(plugins)} pytest plugins from container")
+        if _exec_return_code(result) != 0:
+            logger.debug(
+                "Pytest plugin discovery unavailable; using task verifier "
+                "plugin declarations.%s",
+                _exec_failure_detail(result),
+            )
+        else:
+            discovered = _json.loads(result.stdout or "[]")
+            if isinstance(discovered, list):
+                for p in discovered:
+                    if isinstance(p, str):
+                        add_plugin(p)
+            logger.info(f"Discovered {len(plugins)} pytest plugins from sandbox")
     except Exception as e:
-        logger.warning(f"Pytest plugin discovery failed, using task.toml fallback: {e}")
+        logger.debug(
+            "Pytest plugin discovery failed; using task verifier plugin "
+            "declarations: %s",
+            e,
+        )
 
-    # Merge task.toml [verifier] pytest_plugins declarations as fallback.
+    # Merge task [verifier] pytest_plugins declarations as fallback.
     # pytest_plugins is a guaranteed list[str] field on VerifierConfig.
     for name in task.config.verifier.pytest_plugins:
         add_plugin(name)
@@ -539,7 +590,8 @@ def _infer_pytest_plugins_from_test_script(task: "Task") -> list[str]:
     task_dir = getattr(task, "task_dir", None)
     if not task_dir:
         return []
-    test_sh = Path(task_dir) / "tests" / "test.sh"
+    verifier_dir = "verifier" if _uses_native_verifier_dir(task) else "tests"
+    test_sh = Path(task_dir) / verifier_dir / "test.sh"
     try:
         text = test_sh.read_text()
     except OSError:
@@ -602,14 +654,23 @@ async def _trusted_verifier_path(
         raw_path, _blocked_verifier_path_prefixes(sandbox_user, workspace)
     )
     result = await env.exec(cmd, user="root", timeout_sec=10)
-    try:
-        extras = _json.loads(result.stdout or "[]")
-    except _json.JSONDecodeError:
-        logger.warning("Could not parse trusted verifier PATH extras; using safe PATH")
+    if _exec_return_code(result) != 0:
+        logger.debug(
+            "Trusted verifier PATH extras unavailable; using safe PATH.%s",
+            _exec_failure_detail(result),
+        )
         extras = []
-    if not isinstance(extras, list):
-        logger.warning("Invalid trusted verifier PATH extras; using safe PATH")
-        extras = []
+    else:
+        try:
+            extras = _json.loads(result.stdout or "[]")
+        except _json.JSONDecodeError:
+            logger.warning(
+                "Could not parse trusted verifier PATH extras; using safe PATH"
+            )
+            extras = []
+        if not isinstance(extras, list):
+            logger.warning("Invalid trusted verifier PATH extras; using safe PATH")
+            extras = []
     return _merge_trusted_verifier_path([e for e in extras if isinstance(e, str)])
 
 
@@ -730,7 +791,7 @@ async def cleanup_verifier_python_hooks(
     return await _checked_exec(env, _build_cleanup_cmd(hardening), label, **kwargs)
 
 
-# Per-task hardening opt-outs. Tasks declare these in task.toml under
+# Per-task hardening opt-outs. Tasks declare these in task config under
 # [verifier.hardening] when their legitimate test setup conflicts with the
 # default cleanup (e.g. qutebrowser ships a real conftest.py that the cleanup
 # would otherwise delete, breaking pytest collection).
@@ -745,28 +806,39 @@ HARDENING_DEFAULTS: dict[str, bool] = {
 
 
 def _read_hardening_config(task_dir: "Path | str | None") -> dict[str, bool]:
-    """Read [verifier.hardening] section from task.toml. Returns merged defaults."""
+    """Read [verifier.hardening] from task.toml or task.md frontmatter."""
     import tomllib
     from pathlib import Path as _Path
 
     result = dict(HARDENING_DEFAULTS)
     if task_dir is None:
         return result
-    toml_path = _Path(task_dir) / "task.toml"
-    if not toml_path.exists():
-        return result
-    try:
-        with open(toml_path, "rb") as f:
-            data = tomllib.load(f)
-    except Exception as e:
-        logger.warning(f"task.toml parse error in {task_dir}: {e}")
+    root = _Path(task_dir)
+    toml_path = root / "task.toml"
+    document_path = root / "task.md"
+    if document_path.exists():
+        try:
+            from benchflow.task.document import TaskDocument
+
+            data = TaskDocument.from_path(document_path).frontmatter
+        except Exception as e:
+            logger.warning(f"task.md parse error in {task_dir}: {e}")
+            return result
+    elif toml_path.exists():
+        try:
+            with open(toml_path, "rb") as f:
+                data = tomllib.load(f)
+        except Exception as e:
+            logger.warning(f"task.toml parse error in {task_dir}: {e}")
+            return result
+    else:
         return result
     overrides = data.get("verifier", {}).get("hardening", {})
     for k, v in overrides.items():
         if k in result and isinstance(v, bool):
             result[k] = v
         else:
-            logger.warning(f"task.toml [verifier.hardening] unknown/invalid: {k}={v!r}")
+            logger.warning(f"task [verifier.hardening] unknown/invalid: {k}={v!r}")
     return result
 
 
@@ -786,7 +858,9 @@ def _build_cleanup_cmd(hardening: dict[str, bool] | None = None) -> str:
     parts: list[str] = []
     if h.get("cleanup_conftests", True):
         parts.append(
-            "find / -name conftest.py -not -path '/tests/*' -delete 2>/dev/null"
+            "find / -name conftest.py "
+            "-not -path '/verifier/*' -not -path '/tests/*' "
+            "-delete 2>/dev/null"
         )
     parts.append("find /tmp /var/tmp -name '*.py' -delete 2>/dev/null")
     parts.append(
@@ -811,6 +885,186 @@ def _build_cleanup_cmd(hardening: dict[str, bool] | None = None) -> str:
 CLEANUP_CMD = _build_cleanup_cmd()
 
 
+# Verifier-hardening payloads
+#
+# Each agent-tampering neutralization step renders a shell/python payload. The
+# static program bodies live as module-level ``_*_SCRIPT`` constants (matching
+# _DISCOVER_PYTEST_PLUGINS_SCRIPT / _TRUSTED_PATH_EXTRAS_SCRIPT); the few that
+# splice a workspace path into the shell are rendered by ``_*_cmd`` builders
+# (matching _legacy_root_tool_link_cmd / _trusted_path_extras_cmd). The emitted
+# strings are byte-identical to the historical inline f-strings — the rendered
+# payloads, not the call sites, are the security contract under test.
+
+# Full workspace restore from /testbed_verify (the pre-agent canonical copy) so
+# ALL source files — not just build-config files — are reset to their pre-agent
+# state before freezing. Closes the editable-install source modification vector
+# (F2): agent rewrites /testbed/src/pkg/x.py during its phase; this step
+# restores x.py to canonical before verify. rsync is tried first; cp -a via
+# copytree is the fallback. ``__WSQ__`` is the shell-quoted workspace.
+_RESTORE_WORKSPACE_CMD_TEMPLATE = (
+    "if [ -d /testbed_verify ]; then "
+    "  rsync -a --delete /testbed_verify/ __WSQ__/ 2>/dev/null || "
+    "  python3 -c 'import shutil,sys; "
+    'shutil.copytree("/testbed_verify",sys.argv[1],dirs_exist_ok=True)\''
+    "  __WSQ__; "
+    "fi"
+)
+
+# Purge symlinks whose realpath escapes the workspace (e.g. agent-planted
+# utils.py -> /tmp/evil.py). In-tree symlinks are preserved — some source trees
+# (OTP, lake-packages, etc.) ship them as fixtures. Residual risk: agent plants
+# utils.py -> ./evil.py inside workspace. Mitigated by the workspace chown +
+# CLEANUP_CMD path scrubbing. The workspace is passed as argv, never spliced.
+_PURGE_EXTERNAL_SYMLINKS_SCRIPT = (
+    "import os, sys, pathlib;"
+    "root = pathlib.Path(sys.argv[1]).resolve();"
+    "root_str = str(root) + os.sep;"
+    "[p.unlink() for p in root.rglob('*')"
+    " if p.is_symlink()"
+    " and not (str(p.resolve()) + os.sep).startswith(root_str)"
+    " and str(p.resolve()) != str(root)]"
+)
+
+# Purge __pycache__ trees that did not exist in the pre-agent baseline, so
+# agent-planted .pyc bytecode cannot execute even if PYTHONPYCACHEPREFIX is
+# bypassed. Baseline-present caches are kept so tasks whose tests diff workspace
+# against /testbed_verify don't break. ``__WSQ__`` is the shell-quoted workspace.
+_PURGE_PYCACHE_CMD_TEMPLATE = (
+    "if [ -d /testbed_verify ]; then "
+    "  find __WSQ__ -type d -name __pycache__ -print0 "
+    "  | while IFS= read -r -d '' d; do "
+    "      rel=${d#__WSQ__/}; "
+    '      [ -d "/testbed_verify/$rel" ] || rm -rf "$d"; '
+    "  done; "
+    "else "
+    "  find __WSQ__ -type d -name '__pycache__'"
+    " -exec rm -rf {} + 2>/dev/null; "
+    "fi; true"
+)
+
+
+def _restore_workspace_cmd(workspace: str) -> str:
+    """Render the full /testbed_verify → workspace restore command."""
+    return _RESTORE_WORKSPACE_CMD_TEMPLATE.replace("__WSQ__", shlex.quote(workspace))
+
+
+def _purge_external_symlinks_cmd(workspace: str) -> str:
+    """Render the external-symlink purge command for the workspace."""
+    return (
+        f"python3 -c {shlex.quote(_PURGE_EXTERNAL_SYMLINKS_SCRIPT)} "
+        f"{shlex.quote(workspace)} 2>/dev/null; true"
+    )
+
+
+def _purge_pycache_cmd(workspace: str) -> str:
+    """Render the baseline-aware __pycache__ purge command for the workspace."""
+    return _PURGE_PYCACHE_CMD_TEMPLATE.replace("__WSQ__", shlex.quote(workspace))
+
+
+async def _kill_sandbox_user_procs(env, sandbox_user: str) -> None:
+    """Kill sandbox-user processes so none write during verifier teardown."""
+    await env.exec(
+        f"pkill -u {sandbox_user} 2>/dev/null; "
+        f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
+        timeout_sec=10,
+    )
+    # Second pass: catch any processes that slipped through (e.g. cron/at jobs).
+    await env.exec(
+        f"! pgrep -u {sandbox_user} > /dev/null 2>&1 || "
+        f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
+        user="root",
+    )
+
+
+async def _reclaim_disk(env, workspace: str | None) -> None:
+    """Reclaim re-downloadable cache space before the verifier installs deps.
+
+    Heavy SkillsBench tasks (playwright + marker-pdf + HF model snapshots) can
+    saturate disk-constrained sandboxes — notably Daytona's hard 10GB/sandbox
+    cap — so the verifier's own ``uv``/``pip`` install then fails with ENOSPC
+    ("No space left on device") and the run is lost to infra instead of a real
+    score. Best-effort and result-neutral: only re-downloadable download caches
+    (uv/pip/apt) are cleared — never the workspace, agent outputs, installed
+    tools, or task assets — and a failure here never blocks the verifier. Runs
+    on ``main`` only, consistent with the hardening policy.
+
+    Workspace-aware AND symlink-safe (#601): a task can legitimately use /root,
+    /home/<user>, or /tmp/uv-* as its workspace, and an agent can plant
+    ``~/.cache -> /app`` so a naive ``rm -rf "$u/.cache/uv"`` would traverse into
+    workspace/output state. ``build_reclaim_caches_cmd`` rejects symlinked
+    candidates and realpath-guards every deletion against the workspace and
+    /logs — this matters because restore_workspace defaults to False.
+    """
+    try:
+        await env.exec(
+            build_reclaim_caches_cmd(workspace),
+            user="root",
+            timeout_sec=30,
+        )
+    except Exception:
+        logger.debug("pre-verifier disk reclaim skipped", exc_info=True)
+
+
+async def _restore_workspace_state(env, workspace: str) -> None:
+    """Restore workspace + verifier copy from the pre-agent snapshot."""
+    await _restore_build_config(env, workspace)
+    await _refresh_verifier_workspace(env, workspace)
+    await env.exec(_restore_workspace_cmd(workspace), user="root")
+
+
+async def _freeze_workspace(env, workspace: str) -> None:
+    """Purge external symlinks + stale __pycache__, then chown to root.
+
+    chown workspace to root is belt-and-suspenders against any zombie
+    sandbox-user process that survived the pkill above.
+    """
+    await env.exec(_purge_external_symlinks_cmd(workspace), user="root")
+    await env.exec(_purge_pycache_cmd(workspace), user="root")
+    await env.exec(f"chown -R root:root {shlex.quote(workspace)}", user="root")
+
+
+async def _build_verifier_env(
+    env, task: "Task", sandbox_user: str | None, workspace: str | None
+) -> dict[str, str]:
+    """Assemble the hardened verifier env, re-pinning security invariants.
+
+    Task-level verifier env vars merge over the defaults, then the hard
+    invariants are re-pinned so a task cannot replace PATH, strip
+    -c /dev/null / --confcutdir, re-enable entry-point plugin loading, or
+    inject code via breakpoint()/coverage/Django/Celery startup hooks.
+    """
+    hardened_path = await _trusted_verifier_path(env, sandbox_user, workspace)
+    hardened_pythonpath = await _trusted_verifier_pythonpath(env, sandbox_user)
+    distro_env = await _distro_pip_env(env)
+
+    verifier_env = dict(VERIFIER_ENV)
+    verifier_env.update(distro_env)
+    if task.config.verifier.env:
+        verifier_env.update(
+            {k: os.path.expandvars(v) for k, v in task.config.verifier.env.items()}
+        )
+    # Hard security invariants — re-pin after task-env merge so a task cannot
+    # replace PATH, strip -c /dev/null / --confcutdir, re-enable entry-point
+    # plugin loading, or inject code via breakpoint()/coverage/Django/Celery
+    # startup hooks.
+    verifier_env["PATH"] = hardened_path
+    verifier_env["PYTHONPATH"] = hardened_pythonpath
+    verifier_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    verifier_env["PYTHONBREAKPOINT"] = "0"
+    verifier_env["COVERAGE_PROCESS_START"] = ""
+    verifier_env["DJANGO_SETTINGS_MODULE"] = ""
+    verifier_env["CELERY_CONFIG_MODULE"] = ""
+    # Auto-discover pytest plugins from root-owned system packages and
+    # task config declarations. Appends -p flags to the hardened base.
+    flags = await _discover_pytest_plugin_flags(env, task)
+    verifier_env["PYTEST_ADDOPTS"] = _build_pytest_addopts(
+        workspace,
+        flags,
+        verifier_confcutdir=_verifier_confcutdir(task),
+    )
+    return verifier_env
+
+
 async def harden_before_verify(
     env,
     task: "Task",
@@ -818,7 +1072,7 @@ async def harden_before_verify(
     workspace: str | None = None,
     # Default false because SkillsBench/TB2-style answers often are workspace
     # edits. Going forward, enforce true only via an explicit task/benchmark
-    # contract, e.g. task.toml [verifier] restore_workspace = true after an
+    # contract, e.g. task config [verifier] restore_workspace = true after an
     # oracle/diff audit proves the answer is not stored in the workspace.
     restore_workspace: bool = False,
 ) -> None:
@@ -842,20 +1096,11 @@ async def harden_before_verify(
     need no anti-tamper hardening. ``[verifier].service`` chooses where
     ``test.sh`` *runs*; it does not relocate hardening off ``main``.
     """
-
+    # 1. Kill sandbox-user processes (prevent concurrent writes during teardown).
     if sandbox_user:
-        await env.exec(
-            f"pkill -u {sandbox_user} 2>/dev/null; "
-            f"sleep 1; pkill -9 -u {sandbox_user} 2>/dev/null || true",
-            timeout_sec=10,
-        )
-        # Second pass: catch any processes that slipped through (e.g. cron/at jobs).
-        await env.exec(
-            f"! pgrep -u {sandbox_user} > /dev/null 2>&1 || "
-            f"(sleep 1 && pkill -9 -u {sandbox_user}; sleep 1)",
-            user="root",
-        )
-    # Wipe /logs/verifier/ contents while preserving remote bind mounts.
+        await _kill_sandbox_user_procs(env, sandbox_user)
+    # 2. Wipe /logs/verifier/ contents while preserving remote bind mounts, then
+    #    prepare the legacy /app rootdir fallback.
     await _checked_exec(
         env,
         _CLEAR_VERIFIER_DIR_CMD,
@@ -868,115 +1113,19 @@ async def harden_before_verify(
         "Verifier hardening failed: preparing /app",
         user="root",
     )
-    # Reclaim re-downloadable cache space before the verifier installs its own
-    # dependencies. Heavy SkillsBench tasks (playwright + marker-pdf + HF model
-    # snapshots) can saturate disk-constrained sandboxes — notably Daytona's hard
-    # 10GB/sandbox cap — so the verifier's own `uv`/`pip` install then fails with
-    # ENOSPC ("No space left on device") and the run is lost to infra instead of a
-    # real score. Best-effort and result-neutral: only re-downloadable download
-    # caches (uv/pip/apt) are cleared — never the workspace, agent outputs,
-    # installed tools, or task assets — and a failure here never blocks the
-    # verifier. Runs on `main` only, consistent with the hardening policy above.
-    #
-    # Workspace-aware AND symlink-safe (#601): a task can legitimately use
-    # /root, /home/<user>, or /tmp/uv-* as its workspace, and an agent can
-    # plant `~/.cache -> /app` so a naive `rm -rf "$u/.cache/uv"` traverses
-    # into workspace/output state. The reclaim command rejects symlinked
-    # candidates and realpath-guards every deletion against the workspace and
-    # /logs — this matters because restore_workspace defaults to False.
-    try:
-        await env.exec(
-            build_reclaim_caches_cmd(workspace),
-            user="root",
-            timeout_sec=30,
-        )
-    except Exception:
-        logger.debug("pre-verifier disk reclaim skipped", exc_info=True)
+    # 3. Reclaim re-downloadable cache space before the verifier installs deps.
+    await _reclaim_disk(env, workspace)
+    # 4. Optionally restore the workspace from the pre-agent snapshot (opt-in;
+    #    destructive to legitimate workspace-edit answers).
     if workspace and restore_workspace:
-        await _restore_build_config(env, workspace)
-        await _refresh_verifier_workspace(env, workspace)
-        # Full workspace restore from /testbed_verify (the pre-agent canonical
-        # copy) so ALL source files — not just build-config files — are reset
-        # to their pre-agent state before freezing.  Closes the editable-install
-        # source modification vector (F2): agent rewrites /testbed/src/pkg/x.py
-        # during its phase; this step restores x.py to canonical before verify.
-        await env.exec(
-            f"if [ -d /testbed_verify ]; then "
-            f"  rsync -a --delete /testbed_verify/ {shlex.quote(workspace)}/ 2>/dev/null || "
-            f"  python3 -c 'import shutil,sys; shutil.copytree(\"/testbed_verify\",sys.argv[1],dirs_exist_ok=True)'"
-            f"  {shlex.quote(workspace)}; "
-            f"fi",
-            user="root",
-        )
+        await _restore_workspace_state(env, workspace)
+    # 5. Purge symlinks + __pycache__, then chown the workspace to root.
     if workspace:
-        # Purge symlinks whose realpath escapes the workspace (e.g. agent-planted
-        # utils.py -> /tmp/evil.py). In-tree symlinks are preserved — some
-        # source trees (OTP, lake-packages, etc.) ship them as fixtures.
-        # Residual risk: agent plants utils.py -> ./evil.py inside workspace.
-        # Mitigated by the workspace chown below + CLEANUP_CMD path scrubbing.
-        purge_external_symlinks = (
-            "import os, sys, pathlib;"
-            "root = pathlib.Path(sys.argv[1]).resolve();"
-            "root_str = str(root) + os.sep;"
-            "[p.unlink() for p in root.rglob('*')"
-            " if p.is_symlink()"
-            " and not (str(p.resolve()) + os.sep).startswith(root_str)"
-            " and str(p.resolve()) != str(root)]"
-        )
-        await env.exec(
-            f"python3 -c {shlex.quote(purge_external_symlinks)} "
-            f"{shlex.quote(workspace)} 2>/dev/null; true",
-            user="root",
-        )
-        # Purge __pycache__ trees that did not exist in the pre-agent baseline,
-        # so agent-planted .pyc bytecode cannot execute even if
-        # PYTHONPYCACHEPREFIX is bypassed. Baseline-present caches are kept so
-        # tasks whose tests diff workspace against /testbed_verify don't break.
-        await env.exec(
-            f"if [ -d /testbed_verify ]; then "
-            f"  find {shlex.quote(workspace)} -type d -name __pycache__ -print0 "
-            f"  | while IFS= read -r -d '' d; do "
-            f"      rel=${{d#{shlex.quote(workspace)}/}}; "
-            f'      [ -d "/testbed_verify/$rel" ] || rm -rf "$d"; '
-            f"  done; "
-            f"else "
-            f"  find {shlex.quote(workspace)} -type d -name '__pycache__'"
-            f" -exec rm -rf {{}} + 2>/dev/null; "
-            f"fi; true",
-            user="root",
-        )
-        # chown workspace to root: belt-and-suspenders against any zombie
-        # sandbox-user process that survived the pkill above.
-        await env.exec(
-            f"chown -R root:root {shlex.quote(workspace)}",
-            user="root",
-        )
+        await _freeze_workspace(env, workspace)
+    # 6. Remove injected conftest.py, sitecustomize.py, .pth files.
     hardening = _read_hardening_config(getattr(task, "task_dir", None))
     await env.exec(_build_cleanup_cmd(hardening), user="root", timeout_sec=10)
-
-    hardened_path = await _trusted_verifier_path(env, sandbox_user, workspace)
-    hardened_pythonpath = await _trusted_verifier_pythonpath(env, sandbox_user)
-    distro_env = await _distro_pip_env(env)
-
-    verifier_env = dict(VERIFIER_ENV)
-    verifier_env.update(distro_env)
-    if task.config.verifier.env:
-        verifier_env.update(
-            {k: os.path.expandvars(v) for k, v in task.config.verifier.env.items()}
-        )
-    # Hard security invariants — re-pin after task-env merge so a task cannot
-    # replace PATH, strip -c /dev/null / --confcutdir, re-enable entry-point
-    # plugin loading, or inject code via breakpoint()/coverage/Django/Celery
-    # startup hooks.
-    verifier_env["PATH"] = hardened_path
-    verifier_env["PYTHONPATH"] = hardened_pythonpath
-    verifier_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    verifier_env["PYTHONBREAKPOINT"] = "0"
-    verifier_env["COVERAGE_PROCESS_START"] = ""
-    verifier_env["DJANGO_SETTINGS_MODULE"] = ""
-    verifier_env["CELERY_CONFIG_MODULE"] = ""
-    # Auto-discover pytest plugins from root-owned system packages and
-    # task.toml declarations. Appends -p flags to the hardened base.
-    flags = await _discover_pytest_plugin_flags(env, task)
-    verifier_env["PYTEST_ADDOPTS"] = _build_pytest_addopts(workspace, flags)
-    task.config.verifier.env = verifier_env
+    # 7. Merge trusted env vars into task.config.verifier.env.
+    task.config.verifier.env = await _build_verifier_env(
+        env, task, sandbox_user, workspace
+    )

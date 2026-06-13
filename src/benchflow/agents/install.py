@@ -160,18 +160,47 @@ async def _link_skill_paths(
     return len(parts)
 
 
-async def install_agent(env, agent: str, rollout_dir: Path) -> AgentConfig | None:
+def effective_install_timeout(
+    agent: str, sandbox_setup_timeout: int = 120
+) -> int | None:
+    """Timeout enforced for the agent install step, or None when no install runs.
+
+    Single source of truth shared by :func:`install_agent` and the
+    ``config.json`` recorder, so the recorded value always equals the enforced
+    one: a per-agent registry ``install_timeout`` overrides the configured
+    ``sandbox_setup_timeout``.
+    """
+    agent_base = agent.split()[0]
+    if agent_base not in AGENT_INSTALLERS:
+        return None
+    agent_cfg = AGENTS.get(agent_base)
+    if agent_cfg is None:
+        # Defensive fallback, not dead code: an installer can live in
+        # AGENT_INSTALLERS without a matching AGENTS entry (e.g. one injected
+        # directly into the derived install table by external tooling). The
+        # built-in registry keeps the two maps in lockstep, but when they
+        # diverge we still bound the install by the configured sandbox setup
+        # timeout rather than leaving it unbounded. Covered by
+        # test_effective_install_timeout_branches / the fake-agent fallback test.
+        return sandbox_setup_timeout
+    return agent_cfg.install_timeout
+
+
+async def install_agent(
+    env, agent: str, rollout_dir: Path, sandbox_setup_timeout: int = 120
+) -> AgentConfig | None:
     """Install agent in sandbox and return its config."""
     agent_base = agent.split()[0]
     agent_cfg = AGENTS.get(agent_base)
     if agent_base not in AGENT_INSTALLERS:
         return agent_cfg
     install_cmd = AGENT_INSTALLERS[agent_base]
-    install_timeout = agent_cfg.install_timeout if agent_cfg else 900
+    install_timeout = effective_install_timeout(agent, sandbox_setup_timeout)
     logger.info(f"Installing {agent_base} in sandbox (timeout={install_timeout}s)...")
     install_result = await env.exec(
         install_cmd,
         timeout_sec=install_timeout,
+        user="root",
     )
     install_log = rollout_dir / "agent" / "install-stdout.txt"
     install_log.parent.mkdir(parents=True, exist_ok=True)

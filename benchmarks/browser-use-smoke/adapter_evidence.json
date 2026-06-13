@@ -1,0 +1,334 @@
+{
+  "schema": "benchflow.environment-adapter-evidence.v1",
+  "benchmark": "browser-use-smoke",
+  "status": "parity-confirmed",
+  "evidence_kind": "adapter-adoption-loop",
+  "updated_at": "2026-06-12",
+  "source": {
+    "type": "checked-in-fixture",
+    "task_shape": "browser-use-task.json",
+    "plaintext_policy": "fixture task text only; official encrypted BU Bench task text is imported only into /tmp"
+  },
+  "slices": [
+    {
+      "id": "browser-use-cli",
+      "task_id": "open-local-page",
+      "agent_adapter": "browser-use-cli",
+      "sandbox_provider": "docker",
+      "environment_adapter": "browser",
+      "benchmark_adapter": "browser-use",
+      "original_runner": {
+        "framework": "browser-use-smoke-original",
+        "score": 1.0,
+        "trace_steps_min": 2
+      },
+      "benchflow_run": {
+        "reward": 1.0,
+        "trajectory_steps_min": 6,
+        "tool_calls_min": 4,
+        "artifact_steps_min": 4,
+        "screenshots_min": 1,
+        "eval_json": true
+      },
+      "parity": {
+        "criteria_compared": 7,
+        "criteria_agreed": 7,
+        "reward_delta_max": 0.0,
+        "artifact_manifest": true,
+        "eval_run_summary": true,
+        "environment_readiness": true,
+        "adoption_report": true,
+        "loop_state": true,
+        "runtime_trace_schema": true
+      },
+      "cleanup": {
+        "docker_containers": 0,
+        "docker_networks": 0
+      },
+      "commands": [
+        "uv run python benchmarks/browser-use-smoke/parity_test.py --agent browser-use-cli --parity-out <evidence-root>/browser-use-cli/parity_experiment.json",
+        "uv run bench agent verify browser-use-cli --benchmarks-dir <evidence-root> --json"
+      ]
+    },
+    {
+      "id": "browser-use-agent",
+      "task_id": "open-local-page",
+      "agent_adapter": "browser-use-agent",
+      "sandbox_provider": "docker",
+      "environment_adapter": "browser",
+      "benchmark_adapter": "browser-use",
+      "original_runner": {
+        "framework": "browser-use-smoke-original",
+        "score": 1.0,
+        "trace_steps_min": 2
+      },
+      "benchflow_run": {
+        "reward": 1.0,
+        "trajectory_steps_min": 3,
+        "tool_calls_min": 1,
+        "artifact_steps_min": 2,
+        "screenshots_min": 1,
+        "eval_json": true
+      },
+      "parity": {
+        "criteria_compared": 7,
+        "criteria_agreed": 7,
+        "reward_delta_max": 0.0,
+        "artifact_manifest": true,
+        "eval_run_summary": true,
+        "environment_readiness": true,
+        "adoption_report": true,
+        "loop_state": true,
+        "runtime_trace_schema": true
+      },
+      "cleanup": {
+        "docker_containers": 0,
+        "docker_networks": 0
+      },
+      "commands": [
+        "GEMINI_API_KEY=<redacted> uv run python benchmarks/browser-use-smoke/parity_test.py --agent browser-use-agent --model gemini-3.5-flash --parity-out <evidence-root>/browser-use-agent/parity_experiment.json",
+        "uv run bench agent verify browser-use-agent --benchmarks-dir <evidence-root> --json"
+      ]
+    },
+    {
+      "id": "stagehand-agent",
+      "task_id": "open-local-page",
+      "agent_adapter": "stagehand-agent",
+      "sandbox_provider": "docker",
+      "environment_adapter": "browser",
+      "benchmark_adapter": "browser-use",
+      "original_runner": {
+        "framework": "browser-use-smoke-original",
+        "score": 1.0,
+        "trace_steps_min": 2
+      },
+      "benchflow_run": {
+        "reward": 1.0,
+        "trajectory_steps_min": 3,
+        "tool_calls_min": 1,
+        "artifact_steps_min": 2,
+        "screenshots_min": 1,
+        "eval_json": true
+      },
+      "parity": {
+        "criteria_compared": 7,
+        "criteria_agreed": 7,
+        "reward_delta_max": 0.0,
+        "artifact_manifest": true,
+        "eval_run_summary": true,
+        "environment_readiness": true,
+        "adoption_report": true,
+        "loop_state": true,
+        "runtime_trace_schema": true
+      },
+      "cleanup": {
+        "docker_containers": 0,
+        "docker_networks": 0
+      },
+      "commands": [
+        "GEMINI_API_KEY=<redacted> uv run python benchmarks/browser-use-smoke/parity_test.py --agent stagehand-agent --model google/gemini-3.5-flash --parity-out <evidence-root>/stagehand-agent/parity_experiment.json",
+        "uv run bench agent verify stagehand-agent --benchmarks-dir <evidence-root> --json"
+      ]
+    }
+  ],
+  "additional_evidence": [
+    {
+      "id": "official-browser-use-encrypted-task",
+      "status": "blocked-original-runner-benchflow-completed",
+      "task_id": "66c6641b-f949-46a2-8bcc-6d9dd388b534",
+      "environment_adapter": "browser",
+      "benchmark_adapter": "browser-use",
+      "agent_adapter": "browser-use-agent",
+      "sandbox_provider": "docker",
+      "original_runner_probe": {
+        "schema": "benchflow.browser-use-original-runner-probe.v1",
+        "status": "blocked",
+        "failure_class": "original-runner-process-timeout",
+        "source": {
+          "type": "browser-use-benchmark",
+          "benchmark": "BU_Bench_V1",
+          "task_indices": [
+            0
+          ],
+          "interleaved_order": true
+        },
+        "runner": {
+          "framework": "browser-use",
+          "browser": "local_headless",
+          "model": "gemini-2.5-flash",
+          "parallel": 1,
+          "task_timeout_sec": 5,
+          "runner_timeout_sec": 5,
+          "returncode": null
+        },
+        "checks": {
+          "score_recorded": false,
+          "trace_complete": false,
+          "result_count": 0,
+          "expected_result_count": 1,
+          "artifact_shape": {
+            "summary": false,
+            "task_results": 0,
+            "raw_trace_files": 0
+          }
+        },
+        "artifacts": {
+          "summary_file_present": false,
+          "run_data_dir_present": false,
+          "task_result_count": 0,
+          "raw_trace_file_count": 0,
+          "raw_trace_policy": "raw run_data traces may contain decrypted task text, ground truth, model output, and screenshots; this probe records paths/counts only"
+        }
+      },
+      "benchflow_run": {
+        "reward": 0.0,
+        "trajectory_steps_min": 3,
+        "tool_calls_min": 1,
+        "artifact_steps_min": 6,
+        "screenshots_min": 5,
+        "reward_source": "llm-judge",
+        "eval_json": true
+      },
+      "parity": {
+        "comparable": false,
+        "blocked_reason": "original runner did not produce an agent trace",
+        "benchflow_completed_same_selected_task": true
+      },
+      "cleanup": {
+        "docker_containers": 0,
+        "docker_networks": 0
+      },
+      "commands": [
+        "uv run python benchmarks/browser-use-smoke/import_upstream.py --upstream-repo <tmp>/benchmark --out-dir <tmp>/tasks --task-indices 0 --overwrite",
+        "GEMINI_API_KEY=<redacted> uv run --extra judge bench eval create --tasks-dir <tmp>/tasks --agent browser-use-agent --model gemini-2.5-flash --sandbox docker --jobs-dir <tmp>/jobs --concurrency 1 --agent-idle-timeout 900",
+        "GEMINI_API_KEY=<redacted> uv run python benchmarks/browser-use-smoke/official_adoption_driver.py --upstream-repo <tmp>/benchmark --work-dir <tmp>/work --task-indices 0 --agent browser-use-agent --model gemini-2.5-flash --sandbox docker --original-runner-timeout-sec 5 --original-task-timeout-sec 5 --parity-out <tmp>/browser-use-official/parity_experiment.json --overwrite"
+      ],
+      "summary": "One official encrypted BU Bench task imported into /tmp ran through the repeatable adoption driver with browser-use-agent, Docker, Gemini, and llm-judge. The latest dogfood completed with reward 0.0 because StackExchange was behind Cloudflare verification, while the bounded original runner probe timed out before producing an agent trace. This is structured blocked-runner/completed-BenchFlow evidence, not original-vs-BenchFlow parity."
+    },
+    {
+      "id": "official-stagehand-agent-sign-in",
+      "status": "parity-confirmed",
+      "task_id": "agent/sign_in",
+      "environment_adapter": "browser",
+      "benchmark_adapter": "stagehand-evals",
+      "agent_adapter": "stagehand-agent",
+      "sandbox_provider": "docker",
+      "original_runner": {
+        "framework": "stagehand-evals",
+        "runner": "packages/evals/dist/esm/framework/runner.js",
+        "score": 1.0,
+        "final_url": "https://v0-modern-login-flow.vercel.app/authorized",
+        "logs_min": 7,
+        "duration_sec": 18.97,
+        "env_key_alias_required": "GOOGLE_GENERATIVE_AI_API_KEY"
+      },
+      "benchflow_run": {
+        "reward": 1.0,
+        "final_url": "https://v0-modern-login-flow.vercel.app/authorized",
+        "trajectory_steps_min": 3,
+        "tool_calls_min": 1,
+        "artifact_steps_min": 11,
+        "screenshots_min": 1,
+        "timing_coverage": 1.0
+      },
+      "parity": {
+        "criteria_compared": 8,
+        "criteria_agreed": 8,
+        "reward_delta_max": 0.0,
+        "pass_fail_agreed": true,
+        "final_url_agreed": true,
+        "artifact_manifest": true,
+        "eval_run_summary": true,
+        "adoption_report": true,
+        "loop_state": true,
+        "adoption_loop_status": "scale-ready"
+      },
+      "cleanup": {
+        "docker_containers": 0,
+        "docker_networks": 0
+      },
+      "commands": [
+        "GEMINI_API_KEY=<redacted> uv run python benchmarks/stagehand-smoke/parity_test.py --stagehand-repo /tmp/stagehand-fresh.OuHQN2 --task agent/sign_in --model google/gemini-3.5-flash --parity-out /tmp/benchflow-stagehand-parity.aJhbsC/stagehand-smoke/parity_experiment.json --keep-work-dir",
+        "uv run bench agent verify stagehand-smoke --benchmarks-dir /tmp/benchflow-stagehand-parity.aJhbsC --require-adoption-report --loop-report-out /tmp/benchflow-stagehand-parity.aJhbsC/stagehand-smoke/loop-report.json --json"
+      ],
+      "summary": "Official Stagehand eval task agent/sign_in has same-task original-vs-BenchFlow parity through the repeatable driver: original score 1.0 and final URL https://v0-modern-login-flow.vercel.app/authorized; BenchFlow reward 1.0, same final URL, trace/artifact/timing evidence, and strict adoption-loop scale-ready."
+    },
+    {
+      "id": "official-stagehand-agent-steam-games",
+      "status": "parity-confirmed",
+      "task_id": "agent/steam_games",
+      "environment_adapter": "browser",
+      "benchmark_adapter": "stagehand-evals",
+      "agent_adapter": "stagehand-agent",
+      "sandbox_provider": "docker",
+      "original_runner": {
+        "framework": "stagehand-evals",
+        "runner": "packages/evals/dist/esm/framework/runner.js",
+        "score": 1.0,
+        "final_url": "https://store.steampowered.com/charts/",
+        "logs_min": 1,
+        "duration_sec": 21.56,
+        "success_check": {
+          "type": "url_contains",
+          "value": "https://store.steampowered.com/"
+        }
+      },
+      "benchflow_run": {
+        "reward": 1.0,
+        "final_url": "https://store.steampowered.com/charts/mostplayed",
+        "trajectory_steps_min": 3,
+        "tool_calls_min": 1,
+        "artifact_steps_min": 6,
+        "screenshots_min": 1,
+        "timing_coverage": 1.0
+      },
+      "parity": {
+        "criteria_compared": 8,
+        "criteria_agreed": 8,
+        "reward_delta_max": 0.0,
+        "pass_fail_agreed": true,
+        "success_check_agreed": true,
+        "artifact_manifest": true,
+        "eval_run_summary": true,
+        "adoption_report": true,
+        "loop_state": true,
+        "adoption_loop_status": "scale-ready"
+      },
+      "cleanup": {
+        "docker_containers": 0,
+        "docker_networks": 0
+      },
+      "commands": [
+        "GEMINI_API_KEY=<redacted> uv run python benchmarks/stagehand-smoke/parity_test.py --stagehand-repo /tmp/stagehand-fresh.OuHQN2 --task agent/steam_games --model google/gemini-3.5-flash --parity-out /tmp/benchflow-stagehand-steam-parity.iRJx1g/stagehand-smoke/parity_experiment.json --keep-work-dir",
+        "uv run bench agent verify stagehand-smoke --benchmarks-dir /tmp/benchflow-stagehand-steam-parity.iRJx1g --require-adoption-report --loop-report-out /tmp/benchflow-stagehand-steam-parity.iRJx1g/stagehand-smoke/loop-report.json --json"
+      ],
+      "summary": "Official Stagehand eval task agent/steam_games passes original-vs-BenchFlow parity under the URL-contains success contract: both runners scored 1.0 and satisfied https://store.steampowered.com/, while retaining raw final URLs, trace/artifact/timing evidence, and zero Docker leaks."
+    },
+    {
+      "id": "official-stagehand-support-inventory",
+      "status": "unsupported-confirmed",
+      "task_count": 146,
+      "supported_count": 3,
+      "unsupported_count": 143,
+      "supported_tasks": [
+        "agent/sign_in",
+        "agent/steam_games",
+        "agent/trivago"
+      ],
+      "unsupported_issues": {
+        "missing-static-instruction": 104,
+        "stagehand-verifier-not-mapped": 38,
+        "stagehand-expected-answer-verifier-not-mapped": 1
+      },
+      "commands": [
+        "uv run python benchmarks/stagehand-smoke/import_upstream.py --stagehand-repo /tmp/stagehand-fresh.OuHQN2 --out-dir /tmp/benchflow-stagehand-inventory.6vvzz7/tasks --tasks all --overwrite --support-report-out /tmp/benchflow-stagehand-inventory.6vvzz7/stagehand-support.json"
+      ],
+      "summary": "The Stagehand importer now inventories all official bench tasks and reports provider-honest unsupported reasons. Current conservative support is deterministic URL-check agent tasks only; Stagehand verifier/expected-answer mappings remain explicit unsupported work."
+    }
+  ],
+  "gaps": [
+    "browser runtime is still mostly agent-owned; first-class browser environment adapter remains to land",
+    "broader Stagehand parity still needs coverage beyond the two verified official deterministic URL-check tasks and a mapped verifier/expected-answer reward contract",
+    "broader BU Bench parity requires more selected tasks and a stable original runner path"
+  ]
+}

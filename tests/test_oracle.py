@@ -30,6 +30,27 @@ def _scaffold_task(tmp_path, solution_env=None):
     (tmp_path / "environment").mkdir(exist_ok=True)
 
 
+def _scaffold_native_task(tmp_path, oracle_env=None):
+    """Create minimal native task.md structure for Task() to parse."""
+    solve = tmp_path / "oracle" / "solve.sh"
+    solve.parent.mkdir(parents=True, exist_ok=True)
+    solve.write_text("#!/bin/sh\necho ok\n")
+    oracle_section = ""
+    if oracle_env:
+        env_lines = "\n".join(f"    {k}: {v}" for k, v in oracle_env.items())
+        oracle_section = f"\noracle:\n  env:\n{env_lines}\n"
+    (tmp_path / "task.md").write_text(
+        f"""---
+version: "1.0"
+{oracle_section}---
+## prompt
+
+Solve the task.
+"""
+    )
+    (tmp_path / "environment").mkdir(exist_ok=True)
+
+
 @pytest.mark.asyncio
 async def test_run_oracle_redirects_to_container_log(tmp_path):
     from benchflow.sdk import SDK
@@ -57,6 +78,21 @@ async def test_run_oracle_redirects_to_container_log(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_oracle_uses_native_oracle_mount(tmp_path):
+    """Native oracle/ packages execute from /oracle, not legacy /solution."""
+    from benchflow.sdk import SDK
+
+    _scaffold_native_task(tmp_path)
+    env = _oracle_env()
+
+    trajectory, _agent_name = await SDK()._run_oracle(env, tmp_path, timeout=123)
+
+    solve_call = env.exec.call_args_list[0]
+    assert solve_call.args[0] == "bash /oracle/solve.sh > /logs/agent/oracle.txt 2>&1"
+    assert trajectory[0]["command"] == "oracle/solve.sh"
+
+
+@pytest.mark.asyncio
 async def test_run_oracle_redirects_sandbox_user_output(tmp_path):
     from benchflow.sdk import SDK
 
@@ -71,6 +107,7 @@ async def test_run_oracle_redirects_sandbox_user_output(tmp_path):
         "'DEBIAN_FRONTEND=noninteractive bash /solution/solve.sh' "
         "> /logs/agent/oracle.txt 2>&1"
     )
+    assert env.exec.call_args_list[0].kwargs["user"] == "root"
     assert "tee" not in solve_cmd
 
 

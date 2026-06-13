@@ -30,9 +30,7 @@ def _planted_secret(tmp_path: Path) -> Path:
     return secret
 
 
-# ---------------------------------------------------------------------------
 # Daytona _sdk_upload_dir
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -74,9 +72,7 @@ async def test_daytona_sdk_upload_dir_skips_symlinked_files(
     assert any("leak.txt" in r.message for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # Modal upload_dir
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -108,9 +104,7 @@ async def test_modal_upload_dir_skips_symlinked_files(
     assert any("leak.txt" in r.message for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # Docker build-context staging
-# ---------------------------------------------------------------------------
 
 
 def test_stage_copy_source_refuses_symlinked_file(

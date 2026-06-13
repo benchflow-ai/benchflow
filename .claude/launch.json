@@ -1,11 +1,4 @@
 {
   "version": "0.0.1",
-  "configurations": [
-    {
-      "name": "dashboard",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["dashboard/serve.py"],
-      "port": 8777
-    }
-  ]
+  "configurations": []
 }

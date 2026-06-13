@@ -1,0 +1,18 @@
+{
+  "id": "smoke__ubuntu-osworld",
+  "instruction": "Observe the desktop once, then stop.",
+  "config": [
+    {
+      "type": "execute",
+      "parameters": {
+        "command": ["bash", "-lc", "printf 'setup-ok\\n' > /tmp/runner-osworld-setup-ok"],
+        "shell": false,
+        "until": {"returncode": 0}
+      }
+    }
+  ],
+  "evaluator": {
+    "func": "exact_match",
+    "result": {"type": "vm_command_line", "command": "cat /tmp/runner-osworld-setup-ok"}
+  }
+}

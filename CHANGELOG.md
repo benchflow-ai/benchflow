@@ -2,8 +2,34 @@
 
 ## [Unreleased]
 
+## 0.6.0 — 2026-06-10
+
 ### Added
 
+- **The `task.md` task standard** — a single-file unified task format (parser,
+  verifier planes, prompt sidecars, round-trip export with a machine-readable
+  loss report) plus the authoring CLI: `bench tasks init / check / migrate /
+  export`, with a layered `check --level` ladder up to a leaderboard-grade
+  acceptance gate. See [`docs/task-standard.md`](docs/task-standard.md) and the
+  [native authoring guide](docs/task-authoring-task-md.md).
+- **`bench agent` benchmark-adoption router** — `create` scaffolds a benchmark
+  conversion per [`benchmarks/CONVERT.md`](benchmarks/CONVERT.md), `run` drives
+  the host `codex` CLI through the conversion workflow, and `verify` runs the
+  parity gate (deterministic per-criterion conversion parity plus the
+  agent-scale reward-distribution layer) and emits a confidence verdict, with a
+  drafted support issue on divergence.
+- **ATIF and ADP trajectory artifacts** — every scored rollout now emits
+  `trainer/atif.json` and `trainer/adp.jsonl` (alongside the existing
+  `verifiers.jsonl`), with job-level ADP aggregation. One canonical raw
+  trajectory, multiple ecosystem formats out of the box.
+- **OpenReward (ORS) reward-format interop** — export BenchFlow rewards in the
+  Open Reward Standard shape (`benchflow.adapters.ors`) and the `ors-episode`
+  verifier strategy is recognized. (The hosted-environment episode runner that
+  executes ORS environments end-to-end is in progress, not in this release.)
+- **Daytona sandbox auto-reap** — orphaned sandboxes are cleaned at eval start
+  (TTL-tiered; failure states reaped sooner; an idle-activity guard protects
+  live runs), gated by `BENCHFLOW_DAYTONA_AUTO_REAP` (any of `0`/`false`/`no`/
+  `off`, case-insensitive, disables it).
 - **`benchflow continue <run-folder>`** — resume a previous, unfinished
   (timed-out) `openhands` run to completion. A standalone tool (it does not
   touch the normal run path) that reconstructs the run's exact workspace and
@@ -12,8 +38,38 @@
   HF-compatible folder with `continued_from` provenance. See
   [`docs/continue-runs.md`](docs/continue-runs.md).
 
+### Fixed
+
+- `bench tasks migrate` emits minimal, canonical (`schema_version`) front
+  matter instead of a full defaults dump.
+- Verifier `timeout_sec` is validated as a positive, finite budget
+  (fail-closed at parse time; omission inherits the documented default).
+- Docker `compose up` retries on the daemon network create/attach race.
+- Console error messages truncate at word boundaries instead of mid-token.
+- Recorded sandbox-setup timeouts and trajectory artifacts are consistent
+  across the Docker and Daytona backends.
+- The `task.md` init scaffold is agent-neutral, so `--agent oracle` works on a
+  freshly scaffolded task.
+- `gemini/`-prefixed judge/simulated-user models now resolve to the Google
+  backend instead of passing the slashed name through and 404-ing.
+- Model-backed judges raise a clear error naming the provider and pointing at
+  `pip install benchflow[judge]` when the judge SDK is missing, instead of the
+  misleading "Missing OPENAI_API_KEY" fall-through.
+- `bench tasks check` recognizes a rubric-backed `llm-judge` verifier as a valid
+  entrypoint and no longer demands a `test.sh`.
+- Pre-verifier disk reclaim is workspace-aware and symlink-safe: it rejects
+  symlinked cache candidates and realpath-guards every deletion against the
+  workspace and `/logs`, so an agent-planted `~/.cache` symlink cannot steer the
+  reclaim into workspace or output state (#601).
+- Bedrock Claude 4.8+ routes fail closed when LiteLLM's adaptive-thinking patch
+  is inactive, instead of silently sending a request the proxy cannot satisfy
+  (#602).
+
 ### Changed
 
+- Quickstart and CLI reference now match observed run behavior — the real jobs
+  directory layout and artifact map, the `<PROVIDER>_API_KEY` /
+  `<PROVIDER>_BASE_URL` convention, and exit-code semantics.
 - Document the public vs internal preview install/upgrade command matrix,
   including `uv tool` exact pins, internal preview upgrades, and the
   `--force` path for replacing stale entrypoint scripts.
@@ -191,7 +247,7 @@
 - **OpenClaw ACP shim hardcodes `anthropic/` prefix** (#95) — now routes correctly for Gemini/GLM models.
 - **Oracle agent `PermissionError`** writing `agent/oracle.txt` (#91).
 - **Oracle path skips `pre_agent_hooks`** (#92) — services now start before oracle runs.
-- **Trial data parity with Harbor** (#90) — richer `result.json`, agent logs, per-phase timing.
+- **Trial data parity** (#90) — richer `result.json`, agent logs, per-phase timing.
 - **`SDK.run()` `PermissionError`** — `jobs_dir` subdirectories created as root (#88).
 - **Partial trajectory lost on timeout** — saved before timeout raises.
 - **Redundant `--version` binary check** removed — was wasting 30s per trial.

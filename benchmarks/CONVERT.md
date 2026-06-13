@@ -1,6 +1,6 @@
 # Benchmark Conversion Guide
 
-How to convert a new benchmark into Harbor-format tasks for BenchFlow.
+How to convert a new benchmark into BenchFlow task directories.
 
 ## Overview
 
@@ -24,7 +24,7 @@ Clone the benchmark repo and study its structure:
 
 ### 2. Write the converter (`benchflow.py`)
 
-Create `benchmarks/<name>/benchflow.py` that maps the source format to Harbor-format task directories for BenchFlow.
+Create `benchmarks/<name>/benchflow.py` that maps the source format to BenchFlow task directories.
 
 Each generated task directory must contain:
 ```
@@ -117,6 +117,17 @@ Save parity experiment results to `parity_experiment.json`:
   ]
 }
 ```
+
+`bench agent verify` reads this `tasks[].criteria_results` schema as the
+deterministic floor, and also accepts the equivalent pass/total summary blocks
+some benchmarks record instead — `structural_parity` / `eval_parity` /
+`live_parity` / `e2e_parity` / `pipeline_parity` / `security_parity` (or a bare
+top-level `results`), each as `{ "tasks_tested": <N>, "passed": <N> }` (a nested
+`results_summary` or a `total_tasks`/`passed`/`failed` triple is also read). A
+summary confirms only when `passed == tasks_tested > 0`; a partial summary
+surfaces as a divergence. `agent_parity.results` /
+`reward_distribution_parity.samples` supply the statistical reward layer (a
+half-recorded legacy-vs-converted sample fails the gate, never confirms it).
 
 ### 7. Generate `benchmark.yaml`
 

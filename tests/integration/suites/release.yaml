@@ -411,6 +411,7 @@ lanes:
       - Harbor baseline root is pinned to the recorded skillsbench-trajectories SHA.
       - Expected schema differences are normalized explicitly before comparison.
       - Compared tasks have result.json and trajectory artifacts on both sides.
+      - BenchFlow result source provenance points to native SkillsBench task.md tasks in the expected skill lane.
       - Outcome-rate, mean-reward, and per-task reward drift remain within the configured parity thresholds.
 
   - id: adapter-release-set

@@ -1,4 +1,4 @@
-"""Environment variable utilities — internalized from Harbor."""
+"""Environment variable utilities."""
 
 from __future__ import annotations
 

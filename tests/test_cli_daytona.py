@@ -8,12 +8,27 @@ from typer.testing import CliRunner
 from benchflow.cli.main import app
 
 
-def _install_fake_daytona(monkeypatch, sandboxes):
+def _install_fake_daytona(monkeypatch, sandboxes, snapshots=()):
+    class _FakeSnapshotService:
+        """Mirror the SDK's ``client.snapshot`` service (paginated list/delete)."""
+
+        def __init__(self):
+            self.deleted = []
+
+        def list(self, page=None, limit=None):
+            _ = (page, limit)
+            items = list(snapshots)
+            return SimpleNamespace(items=items, total=len(items), page=1, total_pages=1)
+
+        def delete(self, snapshot):
+            self.deleted.append(snapshot.name)
+
     class FakeDaytona:
         instances: ClassVar[list] = []
 
         def __init__(self):
             self.deleted = []
+            self.snapshot = _FakeSnapshotService()
             self.__class__.instances.append(self)
 
         def list(self, query=None):
@@ -34,13 +49,25 @@ def _install_fake_daytona(monkeypatch, sandboxes):
 
 def test_environment_cleanup_dry_run_lists_old_daytona_sandboxes(monkeypatch):
     """Guards PR #605: cleanup must iterate Daytona.list() (Iterator[Sandbox],
-    SDK >=0.18) instead of the removed paged ``.items`` page object."""
+    SDK >=0.18) instead of the removed paged ``.items`` page object.
+
+    Also guards ownership scoping: only benchflow-owned sandboxes are listed as
+    delete candidates; a foreign sandbox sharing the API key is left alone even
+    when it is far past the age cutoff.
+    """
     sandboxes = [
         SimpleNamespace(
             id="old-sandbox",
             state="started",
             created_at="2025-01-01T00:00:00Z",
-        )
+            labels={"benchflow.managed": "1"},
+        ),
+        SimpleNamespace(
+            id="foreign-sandbox",
+            state="started",
+            created_at="2025-01-01T00:00:00Z",
+            labels={"owner": "someone-else"},
+        ),
     ]
     fake_daytona = _install_fake_daytona(monkeypatch, sandboxes)
 
@@ -51,7 +78,28 @@ def test_environment_cleanup_dry_run_lists_old_daytona_sandboxes(monkeypatch):
     assert result.exit_code == 0
     assert "old-sandbox" in result.output
     assert "(delete)" in result.output
+    assert "foreign-sandbox" not in result.output
     assert fake_daytona.instances[0].deleted == []
+
+
+def test_environment_cleanup_reaps_leaked_snapshots(monkeypatch):
+    """`environment cleanup` also reaps leaked ``bf-snap-*`` snapshots, scoped by
+    name prefix (Daytona snapshots have no labels). Foreign snapshots are never
+    touched even though they share the API key."""
+    snapshots = [
+        SimpleNamespace(name="bf-snap-demo-abc123", state="active"),
+        SimpleNamespace(name="someone-elses-snapshot", state="active"),
+    ]
+    fake_daytona = _install_fake_daytona(monkeypatch, sandboxes=[], snapshots=snapshots)
+
+    result = CliRunner().invoke(app, ["environment", "cleanup", "--max-age", "60"])
+
+    assert result.exit_code == 0
+    assert "1 snapshots deleted" in result.output
+    # Sandbox and snapshot tiers each build their own sync client; aggregate the
+    # snapshot deletions across every client instance the run created.
+    deleted = [n for inst in fake_daytona.instances for n in inst.snapshot.deleted]
+    assert deleted == ["bf-snap-demo-abc123"]
 
 
 def test_legacy_cleanup_delegates_to_daytona_cleanup(monkeypatch):
@@ -62,7 +110,14 @@ def test_legacy_cleanup_delegates_to_daytona_cleanup(monkeypatch):
             id="old-sandbox",
             state="started",
             created_at="2025-01-01T00:00:00Z",
-        )
+            labels={"benchflow.managed": "1"},
+        ),
+        SimpleNamespace(
+            id="foreign-sandbox",
+            state="started",
+            created_at="2025-01-01T00:00:00Z",
+            labels={"owner": "someone-else"},
+        ),
     ]
     fake_daytona = _install_fake_daytona(monkeypatch, sandboxes)
 

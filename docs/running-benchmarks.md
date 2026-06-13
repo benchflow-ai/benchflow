@@ -1,6 +1,6 @@
 # Running Adapted Benchmarks
 
-How to run benchmarks that have been converted into Harbor-format tasks for BenchFlow.
+How to run benchmarks that have been converted into BenchFlow task directories.
 
 BenchFlow ships with adapted benchmarks under `benchmarks/<name>/`. Each benchmark
 includes a converter, parity tests, metadata, and one or more YAML job configs.
@@ -301,6 +301,7 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 | Docker | `--sandbox docker` | Local development, small runs (≤10 tasks) |
 | Daytona | `--sandbox daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
 | Modal | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
+| Cua | `--sandbox cua` | Desktop/computer-use environments (install `benchflow[sandbox-cua]`; cloud mode uses `CUA_API_KEY`) |
 
 For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 
@@ -316,6 +317,35 @@ bench eval create \
 > `latex-formula-extraction`) overflow during bootstrap (`No space left on
 > device`) or hang at "Sandbox user agent ready" with no trajectory. Run those on
 > `--sandbox docker` (host disk, no cap); keep Daytona for lighter tasks.
+
+Cua is the desktop/computer-use path. Validate task/runtime compatibility before
+a GUI benchmark:
+
+```bash
+bench tasks check tasks/my-gui-task --level runtime-capability --sandbox cua
+bench environment check tasks/my-gui-task --sandbox cua
+bench environment create tasks/my-gui-task --sandbox cua --dry-run
+bench environment create tasks/my-gui-task --sandbox cua
+```
+
+By default BenchFlow asks Cua for an Ubuntu Linux VM image. Override the Linux
+image kind with `BENCHFLOW_CUA_LINUX_KIND=container` when a lightweight desktop
+container is enough, or set `CUA_SANDBOX_NAME` / `BENCHFLOW_CUA_SANDBOX_NAME` to
+attach to an existing Cua sandbox. Set `BENCHFLOW_CUA_TIME_TO_START_SEC` and
+`BENCHFLOW_CUA_REQUEST_TIMEOUT_SEC` when you want startup failures to return
+faster than the Cua SDK defaults.
+
+For read-only provider lifecycle checks:
+
+```bash
+bench environment list --sandbox cua --json
+bench environment cleanup --sandbox cua --dry-run --max-age 60
+```
+
+BenchFlow-created Cua environments are named with `BENCHFLOW_CUA_NAME_PREFIX`
+(default `benchflow-`). Cua cleanup only considers environments whose name
+starts with `BENCHFLOW_CUA_CLEANUP_PREFIX` (default `benchflow-`) so dry runs
+and cleanup do not sweep unrelated VMs owned by the same account.
 
 ---
 
@@ -471,20 +501,29 @@ for the full manifest schema, both onboarded benchmarks, and the
 
 BenchFlow runs benchmarks authored in other formats without converting them
 first. An **inbound adapter** translates a foreign task directory into
-BenchFlow-native shape; the rollout then runs natively. Two adapters ship:
+BenchFlow-native shape; the rollout then runs natively. Supported signatures
+include:
 
 | Source format | Signature file | Adapter |
 |---------------|----------------|---------|
-| Harbor | `task.toml` | `HarborAdapter` |
+| Native split | `task.toml` | `HarborAdapter` |
 | Terminal-Bench | `task.yaml` | `TerminalBenchAdapter` |
+| Browser Use benchmark slice | `browser-use-task.json` | `BrowserUseAdapter` |
+| Stagehand eval slice | `stagehand-task.json` | `StagehandEvalAdapter` |
+| Computer-use benchmark slice | `computer-use-task.json` | `ComputerUseAdapter` |
+| use-computer cookbook slice | tagged `task.toml` | `UseComputerCookbookAdapter` |
+| iOSWorld source | `iosworld-task.json` or upstream repo signatures | `IOSWorldAdapter` |
 
 `benchflow.adapters.inbound.detect_adapter()` sniffs a task directory and
 picks the adapter whose format it matches (`task.toml` is checked first, so a
-directory carrying both is treated as Harbor — the native superset). Each
+directory carrying both is treated as the native split format — the superset). Each
 adapter is a pure `Path -> InboundTask` translation: it reads a directory and
 returns an in-memory native task, building no sandboxes and running nothing.
 Terminal-Bench tasks are backward-compatible this way — old terminal-style
-tasks keep running on BenchFlow unchanged.
+tasks keep running on BenchFlow unchanged. Browser and desktop adapters preserve
+the architecture split: the benchmark adapter imports task shape, the
+environment adapter reports browser/desktop capability, the agent adapter owns
+the decision loop, and the sandbox provider owns lifecycle.
 
 ---
 
@@ -530,16 +569,36 @@ jobs/
     └── ...
 ```
 
-The `result.json` contains:
+The `result.json` contains (abridged):
 ```json
 {
   "rewards": {"reward": 0.48},
   "n_tool_calls": 12,
   "n_skill_invocations": 2,
-  "passed": true,
-  "verifier_output": "..."
+  "agent_result": {"total_tokens": 23993, "cost_usd": 0.07, "usage_source": "provider_response"},
+  "final_metrics": {"total_prompt_tokens": 18000, "total_completion_tokens": 5993},
+  "error": null,
+  "verifier_error": null
 }
 ```
+
+**Canonical fields — read these, not invented top-level ones.** The reward,
+token totals, and outcome each live in exactly one place:
+
+| You want | Read | Notes |
+| --- | --- | --- |
+| reward | `rewards.reward` | scalar 0.0–1.0, or `null` if unscored |
+| token total | `agent_result.total_tokens` | `null` when no provider usage was captured (e.g. hosted runs) |
+| outcome / status | derived from `rewards.reward` + `error`/`verifier_error` | not stored as a field; see below |
+
+There is intentionally **no top-level `reward`, `total_tokens`, or `status`
+key** — those names are absent, not `null`. A naive consumer doing
+`result["reward"]` or `result.get("total_tokens")` gets `None` because the key
+does not exist, never because the value is null. Pass/fail is a *derived*
+classification (only `reward == 1.0` passes); BenchFlow computes it from
+`rewards.reward` plus the error channels rather than persisting a redundant
+`status`. The same nested shape is produced for both native rollouts and
+hosted-env runs, so one reader handles both.
 
 `n_skill_invocations` is derived from structured ACP trajectory events: BenchFlow
 counts only `tool_call` events whose `kind` is `skill`. Job `summary.json`
@@ -633,6 +692,6 @@ All fields from [CLI reference](./reference/cli.md#yaml-config-format) apply:
 ## Adding a new benchmark
 
 See the [Benchmark Conversion Guide](../benchmarks/CONVERT.md) for the 9-step
-process to convert a new benchmark into Harbor-format tasks for BenchFlow. Harvey LAB
+process to convert a new benchmark into BenchFlow task directories. Harvey LAB
 (`benchmarks/harvey-lab/`) and ProgramBench (`benchmarks/programbench/`) are
 reference implementations.

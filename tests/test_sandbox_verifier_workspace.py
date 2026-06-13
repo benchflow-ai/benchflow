@@ -145,13 +145,14 @@ def test_oracle_branch_setup_calls():
     2. snapshot_build_config missing → workspace not snapshotted; oracle can tamper setup.py
     3. agent_cwd not set → _verify(workspace=None) → restore skipped entirely
     4. agent_cwd hardcoded to "/app" → breaks tasks whose WORKDIR is /testbed or other;
-       must be detected via `pwd` like the non-oracle path
+       must be resolved through the cwd helper used by the non-oracle path
     """
     import inspect
 
     from benchflow import rollout as rollout_mod
 
     source = inspect.getsource(rollout_mod.Rollout.install_agent)
+    cwd_source = inspect.getsource(rollout_mod._resolve_agent_cwd)
     oracle_pos = source.find('primary_agent == "oracle"')
     assert oracle_pos != -1, "oracle branch not found in Rollout.install_agent"
     oracle_block = source[oracle_pos:]
@@ -166,8 +167,26 @@ def test_oracle_branch_setup_calls():
     assert "agent_cwd" in oracle_block, (
         "agent_cwd not assigned in oracle branch — _verify(workspace=None) skips restore"
     )
-    # pwd detection happens before the oracle branch in install_agent
-    assert '"pwd"' in source or "'pwd'" in source, (
-        "agent_cwd must be detected via pwd (not hardcoded) — "
+    assert "_resolve_agent_cwd" in source, (
+        "install_agent must resolve agent_cwd through the shared helper — "
         "different tasks use different WORKDIR values (/testbed, /app, etc.)"
     )
+    assert '"pwd"' in cwd_source or "'pwd'" in cwd_source, (
+        "agent_cwd fallback must still detect cwd via pwd (not hardcode /app)"
+    )
+    assert (
+        "environment.workdir" in cwd_source or "_configured_task_workdir" in cwd_source
+    ), "agent_cwd helper must honor task-declared environment.workdir"
+
+
+def test_oracle_run_forwards_sandbox_user():
+    """Guards the 0.7 Cua fix after 5f6ca8b3: oracle must use sandbox_user."""
+    import inspect
+
+    from benchflow import rollout as rollout_mod
+
+    source = inspect.getsource(rollout_mod.Rollout.run)
+    oracle_call_pos = source.find("await _run_oracle(")
+    assert oracle_call_pos != -1, "Rollout.run oracle call not found"
+    oracle_call = source[oracle_call_pos : source.find(")", oracle_call_pos) + 1]
+    assert "sandbox_user=cfg.sandbox_user" in oracle_call

@@ -76,6 +76,7 @@ def test_eval_create_help_lists_all_documented_flags() -> None:
         "--agent-env",
         "--include",
         "--exclude",
+        "--json",
     ]
     for flag in documented_flag_prefixes:
         assert flag in out, (

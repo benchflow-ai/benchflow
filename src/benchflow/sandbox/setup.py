@@ -56,6 +56,7 @@ _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
 
 
 _OPTIONAL_SANDBOX_EXTRAS = {
+    "cua": "sandbox-cua",
     "daytona": "sandbox-daytona",
     "modal": "sandbox-modal",
 }
@@ -178,6 +179,12 @@ def _modal_builder_dockerfile(
 
 def _create_benchflow_modal_environment_class():
     """Create a ModalSandbox subclass with BenchFlow's image-build defaults."""
+    # Import the optional ``modal`` dependency eagerly so a missing
+    # ``sandbox-modal`` extra surfaces here — where the caller wraps this in
+    # ``except ModuleNotFoundError`` and raises the actionable extra hint —
+    # rather than deep inside ``start()`` as a raw traceback.
+    import modal  # noqa: F401
+
     from benchflow.sandbox.modal_impl import ModalSandbox
 
     class BenchFlowModalSandbox(ModalSandbox):
@@ -629,7 +636,7 @@ def _create_sandbox_environment(
     preserve_agent_network: bool = False,
     environment_manifest: Any = None,
 ) -> Any:
-    """Create a sandbox environment (Docker, Daytona, or Modal).
+    """Create a sandbox environment (Docker, Daytona, Modal, or Cua).
 
     When ``environment_manifest`` is provided, its declared controls take
     effect at sandbox-construction time: the manifest's runnable ``image``
@@ -643,6 +650,11 @@ def _create_sandbox_environment(
     environment_dir = task_path / "environment"
     if not environment_dir.exists():
         environment_dir = task.paths.environment_dir
+    _validate_task_runtime_for_launch(
+        task,
+        sandbox_type=sandbox_type,
+        task_path=task_path,
+    )
     if preserve_agent_network and env_config.allow_internet is False:
         # LLM agents run inside the sandbox and need outbound network for model
         # APIs and first-run agent installation. BenchFlow enforces the task's
@@ -737,10 +749,56 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             persistent_env=manifest_env or None,
         )
+    elif sandbox_type == "cua":
+        try:
+            from benchflow.sandbox.cua import CuaSandbox
+        except ModuleNotFoundError as exc:
+            _raise_missing_optional_sandbox_dependency("cua", exc)
+        CuaSandbox.preflight()
+
+        return CuaSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
     else:
         raise ValueError(
-            f"Unknown sandbox_type: {sandbox_type!r} (use 'docker', 'daytona', or 'modal')"
+            f"Unknown sandbox_type: {sandbox_type!r} "
+            "(use 'docker', 'daytona', 'modal', or 'cua')"
         )
+
+
+def _validate_task_runtime_for_launch(
+    task: Task,
+    *,
+    sandbox_type: str,
+    task_path: Path,
+) -> None:
+    """Fail closed before launch when a real parsed task has unsupported fields."""
+
+    from benchflow.task.config import TaskConfig
+    from benchflow.task.document import TaskDocument
+    from benchflow.task.runtime_capabilities import raise_for_task_runtime_support
+    from benchflow.task.runtime_view import TaskRuntimeView
+
+    document = getattr(task, "document", None)
+    config = getattr(task, "config", None)
+    if isinstance(document, TaskDocument):
+        runtime_task: TaskDocument | TaskConfig = document
+    elif isinstance(config, TaskConfig):
+        runtime_task = config
+    else:
+        return
+
+    runtime_view = TaskRuntimeView.from_task(task, task_dir=task_path)
+    raise_for_task_runtime_support(
+        runtime_task,
+        sandbox=sandbox_type,
+        task_dir=runtime_view.task_dir,
+    )
 
 
 # Backward compatibility alias

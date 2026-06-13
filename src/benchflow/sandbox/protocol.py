@@ -4,12 +4,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from pydantic import BaseModel
 
-@dataclass(frozen=True)
-class ExecResult:
+
+class ExecResult(BaseModel):
+    """Result of running a command inside a :class:`Sandbox`.
+
+    The single ``ExecResult`` contract — the public type and the type every
+    backend (Docker, Daytona, Modal, Cua) actually returns are one and the
+    same. ``stdout``/``stderr`` are optional because backends decode empty
+    process output to ``None`` rather than ``""``.
+    """
+
+    stdout: str | None = None
+    stderr: str | None = None
     return_code: int
-    stdout: str
-    stderr: str
 
 
 @dataclass(frozen=True)
@@ -49,7 +58,7 @@ class SandboxStartupError(RuntimeError):
 
     Lives in the core ``benchflow.sandbox.protocol`` module — and not in any
     provider-specific backend — so a base install of ``benchflow`` (no
-    ``sandbox-daytona`` / ``sandbox-modal`` extras) can still import
+    ``sandbox-daytona`` / ``sandbox-modal`` / ``sandbox-cua`` extras) can still import
     ``benchflow.rollout`` and reference this exception type without pulling
     in optional provider SDKs (issue #358). Provider-specific backends
     re-raise this same type with a structured
@@ -88,13 +97,16 @@ class Sandbox(Protocol):
     """Run-only: isolated execution environment.
 
     All roles in a scene share one Sandbox instance, so inter-agent
-    communication over localhost is available by default.  If an agent
-    needs to expose additional ports (e.g. for an agent-as-tool HTTP
-    endpoint), configure ``expose_ports`` on the sandbox before
-    ``start()``.
+    communication over localhost is available by default.
 
     BenchFlow provides the sandbox infrastructure; it does **not**
     orchestrate agent-internal loops or tool protocols (ENG-50).
+
+    This Protocol is the literal projection of the surface every backend
+    shares via :class:`~benchflow.sandbox._base.BaseSandbox` — the method
+    signatures (params and defaults) match ``BaseSandbox`` so a backend
+    instance passes ``isinstance(sb, Sandbox)``. Capabilities that only some
+    backends provide are deliberately **not** part of this contract.
 
     Roll-back (``snapshot``/``restore``) is part of the contract — Branch
     composes container, environment-state, and agent-session checkpoints in
@@ -104,23 +116,30 @@ class Sandbox(Protocol):
     """
 
     async def exec(
-        self, cmd: str, *, user: str = "root", timeout_sec: int = 30
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+        service: str = "main",
     ) -> ExecResult: ...
 
-    async def read_file(self, path: str) -> bytes: ...
-    async def write_file(self, path: str, content: bytes) -> None: ...
-
-    async def upload_file(self, src: Path, dst: str) -> None: ...
-    async def upload_dir(self, src: Path, dst: str, service: str = "main") -> None: ...
-    async def download_file(self, src: str, dst: Path) -> None: ...
+    async def upload_file(self, source_path: Path | str, target_path: str) -> None: ...
+    async def upload_dir(
+        self, source_dir: Path | str, target_dir: str, service: str = "main"
+    ) -> None: ...
+    async def download_file(
+        self, source_path: str, target_path: Path | str
+    ) -> None: ...
     async def download_dir(
-        self, src: str, dst: Path, service: str = "main"
+        self, source_dir: str, target_dir: Path | str, service: str = "main"
     ) -> None: ...
 
-    async def start(self) -> None: ...
-    async def stop(self, *, delete: bool = True) -> None: ...
+    async def start(self, force_build: bool) -> None: ...
+    async def stop(self, delete: bool) -> None: ...
 
-    # --- container-level roll-back (the substrate Branch runs on) ---
+    # container-level roll-back (the substrate Branch runs on)
     async def snapshot(self, name: str | None = None) -> SandboxImage:
         """Capture the current container state as a re-usable image.
 
@@ -144,18 +163,6 @@ class Sandbox(Protocol):
 
         Capability gate for ``Rollout.branch()`` — see the Branch lifecycle
         in ``docs/architecture.md``.
-        """
-        ...
-
-    @property
-    def host(self) -> str: ...
-
-    @property
-    def expose_ports(self) -> list[int]:
-        """Ports the sandbox exposes for inter-agent communication.
-
-        Defaults to an empty list.  Sandbox implementations that support
-        port mapping should honour this list at ``start()`` time.
         """
         ...
 

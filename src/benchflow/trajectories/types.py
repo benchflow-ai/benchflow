@@ -193,6 +193,12 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"), "***REDACTED***"),
     # Daytona SDK tokens: dtn_... — ≥16 char suffix avoids short ids (`dtn_v2`).
     (re.compile(r"dtn_[A-Za-z0-9_]{16,}"), "***REDACTED***"),
+    # GitHub tokens: PATs / OAuth / app / refresh (ghp_/gho_/ghu_/ghs_/ghr_) and
+    # fine-grained PATs (github_pat_...). ≥20 char suffix avoids short slugs.
+    (re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"), "***REDACTED***"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "***REDACTED***"),
+    # Slack tokens: bot/user/app/refresh/legacy (xoxb-/xoxp-/xoxa-/xoxr-/xoxs-).
+    (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "***REDACTED***"),
     # Header / key-value secret carriers, in BOTH JSON and raw-text forms
     # (agents print env, curl -v, request logs into trajectories — #585).
     # Matches: `"x-api-key": "v"`, `x-api-key: v`, `api-key=v`,
@@ -218,6 +224,18 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(
             r'("?api_key"?\s*[:=]\s*"?)[^"\s,}\\*]+',
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+    # Generic *TOKEN* / *SECRET* carriers (e.g. GITHUB_TOKEN=, SLACK_SECRET:),
+    # closing the name-coverage gap vs config.json's _SECRET_ENV_SUBSTRINGS. The
+    # name is kept, the value dropped. Value excludes backslash and `*` like the
+    # api_key/authorization carriers so an escaped `\n` can't swallow the next
+    # entry and an already-redacted value isn't re-matched.
+    (
+        re.compile(
+            r'("?[A-Za-z0-9_]*(?:TOKEN|SECRET)"?\s*[:=]\s*"?)[^"\s,}\\*]+',
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
@@ -251,10 +269,12 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 def redact_trajectory_text(text: str) -> str:
     """Apply all secret-redaction patterns to *text*.
 
-    Token families (Anthropic/OpenAI/Google/AWS/Daytona) are redacted whole,
-    prefix included, so the secret-leak audit greps see no live-key shape.
-    Header/key-value carriers keep the field name but drop the value, in both
-    JSON (``"x-api-key": "v"``) and raw-text (``x-api-key: v``) forms.
+    Token families (Anthropic/OpenAI/Google/AWS/Daytona/GitHub/Slack) are
+    redacted whole, prefix included, so the secret-leak audit greps see no
+    live-key shape. Header/key-value carriers keep the field name but drop the
+    value, in both JSON (``"x-api-key": "v"``) and raw-text (``x-api-key: v``)
+    forms; this includes generic ``*TOKEN*``/``*SECRET*`` carriers so a
+    ``GITHUB_TOKEN=...`` env dump is scrubbed even without a known prefix.
     """
     for pattern, replacement in _REDACTION_PATTERNS:
         text = pattern.sub(replacement, text)
@@ -302,6 +322,14 @@ class LLMExchange(BaseModel):
     request: LLMRequest
     response: LLMResponse
     duration_ms: float = 0.0
+    # Provider-facing (gateway-translated) capture for cross-protocol calls: the
+    # translated upstream request body, the real upstream URL/path, and the raw
+    # provider response. Present only when the upstream wire protocol differs
+    # from the agent-facing protocol (e.g. an OpenAI-protocol agent routed to a
+    # native GenerateContent backend); ``None`` keeps same-protocol exchanges
+    # byte-identical. Serialized by ``to_jsonl`` and therefore subject to the
+    # same secret redaction as the rest of the exchange.
+    upstream: dict[str, Any] | None = None
 
 
 class Trajectory(BaseModel):
@@ -380,7 +408,10 @@ class Trajectory(BaseModel):
 
         lines = []
         for ex in self.exchanges:
-            data = ex.model_dump(mode="json")
+            # ``exclude_none`` keeps same-protocol exchanges byte-identical: the
+            # optional ``upstream`` passthrough only appears when a cross-protocol
+            # call actually populated it.
+            data = ex.model_dump(mode="json", exclude_none=True)
             raw = json.dumps(data, default=str)
             if redact_keys:
                 raw = redact_trajectory_text(raw)

@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -43,14 +44,17 @@ from benchflow._utils.learner_memory import (
 from benchflow._utils.reward_events import memory_summary
 from benchflow._utils.scoring import (
     ACP_ERROR,
+    API_ERROR,
     IDLE_TIMEOUT,
     INFRA_ERROR,
     INSTALL_FAILED,
     PIPE_CLOSED,
     PROVIDER_AUTH,
+    SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
+    api_error_is_transient,
     classify_error,
     classify_verifier_error,
     count_audit_outcomes,
@@ -59,6 +63,7 @@ from benchflow._utils.scoring import (
     pass_rate_excl_errors,
 )
 from benchflow._utils.source_provenance import summary_source_fields
+from benchflow._utils.text import truncate_end
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.learner_store import LearnerState, LearnerStore
@@ -89,7 +94,52 @@ BENCHFLOW_OWNED_LABEL = "benchflow.owned=true"
 # flight, skip — there's nothing new to clean since the in-flight one started.
 _PRUNE_LOCK = threading.Lock()
 
+
+def _environment_manifest_from_task_document(
+    task_dir: Path,
+) -> EnvironmentManifest | None:
+    task_md = task_dir / "task.md"
+    if not task_md.is_file():
+        return None
+
+    from benchflow.environment.manifest import load_manifest
+    from benchflow.task.document import TaskDocument
+
+    document = TaskDocument.from_path(task_md)
+    environment = document.benchflow.get("environment")
+    if environment is None:
+        return None
+    if not isinstance(environment, dict):
+        raise ValueError("task.md benchflow.environment must be a mapping")
+    manifest = environment.get("manifest")
+    if manifest is None:
+        return None
+    if not isinstance(manifest, str) or not manifest.strip():
+        raise ValueError("task.md benchflow.environment.manifest must be a path")
+
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = task_dir / manifest_path
+    return load_manifest(manifest_path)
+
+
 _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMock
+
+
+def _is_task_dir(path: Path) -> bool:
+    if not (path / "task.md").exists():
+        if (path / "task.toml").exists():
+            return True
+        from benchflow.adapters.inbound import detect_adapter
+
+        try:
+            detect_adapter(path)
+        except ValueError:
+            return False
+        return True
+    from benchflow._utils.task_authoring import check_task
+
+    return check_task(path) == []
 
 
 class EmptyTaskSelectionError(ValueError):
@@ -104,8 +154,8 @@ class EmptyTaskSelectionError(ValueError):
 class RetryConfig:
     """Configuration for retry behavior.
 
-    Matches Harbor's RetryConfig pattern: exponential backoff with
-    configurable exception filtering. Legacy boolean fields are
+    Exponential backoff with configurable exception filtering.
+    Legacy boolean fields are
     preserved for backwards compat but the category-based check
     covers all cases.
     """
@@ -117,6 +167,10 @@ class RetryConfig:
     retry_on_idle_timeout: bool = True
     retry_on_infra: bool = True
     retry_on_verifier_infra: bool = True
+    # Provider API errors: only TRANSIENT ones (rate limit, 5xx) are
+    # retryable — auth/quota/model-not-found are permanent until a human
+    # fixes the credential or model id, so retrying only burns wall-clock.
+    retry_on_api_error: bool = True
     wait_multiplier: float = 2.0
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
@@ -146,6 +200,9 @@ class RetryConfig:
                 raw.get("retry_on_idle_timeout", defaults.retry_on_idle_timeout)
             ),
             retry_on_infra=bool(raw.get("retry_on_infra", defaults.retry_on_infra)),
+            retry_on_api_error=bool(
+                raw.get("retry_on_api_error", defaults.retry_on_api_error)
+            ),
             retry_on_verifier_infra=bool(
                 raw.get("retry_on_verifier_infra", defaults.retry_on_verifier_infra)
             ),
@@ -177,6 +234,14 @@ class RetryConfig:
             return True
         if self.retry_on_infra and category == INFRA_ERROR:
             return True
+        if category == API_ERROR:
+            # Transient-only: rate limit / provider 5xx self-heal on backoff;
+            # permanent (auth, quota, model_not_found, rejected_request) do not.
+            return self.retry_on_api_error and api_error_is_transient(error)
+        if category == SUSPECTED_API_ERROR:
+            # Zero-signal verdicts have an unknown subcategory — never provably
+            # transient, so never auto-retried (rerun is an operator action).
+            return False
         return bool(self.retry_on_acp and category == ACP_ERROR)
 
     def should_retry_verifier_error(self, verifier_error: str | None) -> bool:
@@ -192,6 +257,75 @@ class RetryConfig:
         """Exponential backoff delay for retry attempt."""
         delay = self.min_wait_sec * (self.wait_multiplier**attempt)
         return min(delay, self.max_wait_sec)
+
+
+class ApiErrorCircuitBreaker:
+    """Trip after N consecutive permanent provider-API failures with the SAME
+    fingerprint (classic dead key / wrong model id), so a doomed batch stops
+    burning sandbox-hours producing all-unhealthy artifacts.
+
+    Isolated api_errors never interrupt the batch — any completion that is not
+    a permanent api_error resets the streak. Threshold comes from
+    ``BENCHFLOW_API_ERROR_BREAKER_THRESHOLD`` (default 5; ``0`` disables).
+    Already-running tasks finish; only not-yet-started tasks are skipped.
+    """
+
+    ENV_VAR = "BENCHFLOW_API_ERROR_BREAKER_THRESHOLD"
+    DEFAULT_THRESHOLD = 5
+
+    def __init__(self, threshold: int | None = None) -> None:
+        if threshold is None:
+            raw = os.environ.get(self.ENV_VAR, "")
+            try:
+                threshold = int(raw) if raw.strip() else self.DEFAULT_THRESHOLD
+            except ValueError:
+                threshold = self.DEFAULT_THRESHOLD
+        self.threshold = max(threshold, 0)
+        self._fingerprint: str | None = None
+        self._streak = 0
+        self.tripped = False
+
+    @staticmethod
+    def _fingerprint_of(result: RunResult) -> str | None:
+        """Permanent-api-error fingerprint, or None when not breaker-relevant."""
+        category = result.error_category or classify_error(result.error)
+        if category == SUSPECTED_API_ERROR:
+            return "suspected:zero_signal"
+        if category == API_ERROR and not api_error_is_transient(result.error):
+            match = re.search(r"\[([a-z_]+)/permanent\] HTTP (\d+)", result.error or "")
+            return (
+                f"{match.group(1)}:{match.group(2)}" if match else "api_error:unknown"
+            )
+        return None
+
+    def record(self, result: RunResult) -> None:
+        """Track one completed task; trip when the same-fingerprint streak hits
+        the threshold."""
+        if self.threshold == 0 or self.tripped:
+            return
+        fingerprint = self._fingerprint_of(result)
+        if fingerprint is None:
+            self._fingerprint = None
+            self._streak = 0
+            return
+        if fingerprint == self._fingerprint:
+            self._streak += 1
+        else:
+            self._fingerprint = fingerprint
+            self._streak = 1
+        if self._streak >= self.threshold:
+            self.tripped = True
+            logger.error(
+                f"API-error circuit breaker OPEN: {self._streak} consecutive "
+                f"permanent provider failures [{fingerprint}] — skipping "
+                f"remaining unstarted tasks (set {self.ENV_VAR}=0 to disable)"
+            )
+
+    def skip_error(self) -> str:
+        return (
+            f"skipped: api-error circuit breaker open "
+            f"([{self._fingerprint}] x{self._streak} consecutive)"
+        )
 
 
 # Defaults: works out-of-the-box with `claude login` (subscription auth, no API key needed)
@@ -297,7 +431,7 @@ class EvaluationConfig:
                 f"unknown job_mode {self.job_mode!r} — "
                 f"expected one of {', '.join(JOB_MODES)}"
             )
-        if self.agent not in AGENTS:
+        if self.agent != "oracle" and self.agent not in AGENTS:
             available = ", ".join(sorted(AGENTS.keys()))
             logger.warning(
                 f"Unknown agent {self.agent!r} — not in registry. "
@@ -422,6 +556,24 @@ class Evaluation:
         # One RolloutNode per sequential-shared rollout, each carrying that
         # rollout's memory_delta — the Memory-space scorer's input.
         self.learner_nodes: list[RolloutNode] = []
+        self._inbound_task_materializer = None
+
+    def _native_task_target(self, task_dir: Path):
+        from benchflow.adapters.task_target import InboundTaskMaterializer
+
+        if self._inbound_task_materializer is None:
+            self._inbound_task_materializer = InboundTaskMaterializer(
+                prefix="benchflow-eval-tasks-"
+            )
+        return self._inbound_task_materializer.native_target(task_dir)
+
+    def _task_matches_filters(self, source_path: Path, native_path: Path) -> bool:
+        names = {source_path.name, native_path.name}
+        if names & self._config.exclude_tasks:
+            return False
+        return not (
+            self._config.include_tasks and not (names & self._config.include_tasks)
+        )
 
     def _learner_store_path(self) -> Path:
         """Where the persisted LearnerStore snapshot lives for this job."""
@@ -675,23 +827,20 @@ class Evaluation:
 
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories."""
-        if (self._tasks_dir / "task.toml").exists():
-            if self._tasks_dir.name in self._config.exclude_tasks:
+        if _is_task_dir(self._tasks_dir):
+            target = self._native_task_target(self._tasks_dir)
+            if not self._task_matches_filters(target.source_path, target.path):
                 return []
-            if (
-                self._config.include_tasks
-                and self._tasks_dir.name not in self._config.include_tasks
-            ):
-                return []
-            return [self._tasks_dir]
-        return sorted(
-            d
-            for d in self._tasks_dir.iterdir()
-            if d.is_dir()
-            and (d / "task.toml").exists()
-            and d.name not in self._config.exclude_tasks
-            and (not self._config.include_tasks or d.name in self._config.include_tasks)
-        )
+            return [target.path]
+
+        task_dirs: list[Path] = []
+        for d in sorted(self._tasks_dir.iterdir()):
+            if not d.is_dir() or not _is_task_dir(d):
+                continue
+            target = self._native_task_target(d)
+            if self._task_matches_filters(target.source_path, target.path):
+                task_dirs.append(target.path)
+        return task_dirs
 
     def _get_completed_tasks(self) -> dict[str, dict]:
         """Load tasks that already have results with rewards or verifier errors.
@@ -722,7 +871,8 @@ class Evaluation:
         for task, (_mt, r) in best.items():
             if r.get("verifier_error"):
                 logger.info(
-                    f"Skipping verifier-errored task on resume: {task} ({r['verifier_error'][:80]})"
+                    f"Skipping verifier-errored task on resume: {task} "
+                    f"({truncate_end(r['verifier_error'], 80)})"
                 )
             completed[task] = r
         return completed
@@ -770,6 +920,31 @@ class Evaluation:
                 capture_output=True,
                 timeout=30,
             )
+            # Reap snapshot images (``bf-snap-*`` from ``docker commit``) that
+            # carry the same ownership label. Scoped via ``--filter`` so only
+            # BenchFlow-stamped images are touched; ``image prune`` alone only
+            # deletes *dangling* images, so we list the still-tagged owned
+            # images and ``image rm -f`` them explicitly.
+            owned = subprocess.run(
+                [
+                    "docker",
+                    "image",
+                    "ls",
+                    "--filter",
+                    label_filter,
+                    "-q",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            image_ids = sorted({i for i in (owned.stdout or "").split() if i})
+            if image_ids:
+                subprocess.run(
+                    ["docker", "image", "rm", "-f", *image_ids],
+                    capture_output=True,
+                    timeout=30,
+                )
         except Exception as e:
             logger.warning(f"Docker prune failed: {e}")
         finally:
@@ -832,6 +1007,9 @@ class Evaluation:
             if self._learner_export_dir is not None
             else None
         )
+        environment_manifest = cfg.environment_manifest
+        if environment_manifest is None:
+            environment_manifest = _environment_manifest_from_task_document(task_dir)
         rollout_config = RolloutConfig.from_legacy(
             task_path=task_dir,
             agent=cfg.agent,
@@ -843,7 +1021,7 @@ class Evaluation:
             jobs_dir=str(self._jobs_dir),
             concurrency=cfg.concurrency,
             environment=cfg.environment,
-            environment_manifest=cfg.environment_manifest,
+            environment_manifest=environment_manifest,
             skills_dir=skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
@@ -935,7 +1113,9 @@ class Evaluation:
                 break
 
             if attempt <= cfg.retry.max_retries:
-                err_preview = (result.error or result.verifier_error or "")[:60]
+                err_preview = truncate_end(
+                    result.error or result.verifier_error or "", 60
+                )
                 logger.info(
                     f"Retrying {task_dir.name} (attempt {attempt + 1}): {err_preview}"
                 )
@@ -950,7 +1130,7 @@ class Evaluation:
         reward = result.rewards.get("reward") if result.rewards else None
         status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
         err_msg = result.error or result.verifier_error
-        err = f" ({err_msg[:50]})" if err_msg else ""
+        err = f" ({truncate_end(err_msg, 50)})" if err_msg else ""
         logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
         if self._on_result:
             self._on_result(td.name, result)
@@ -962,8 +1142,14 @@ class Evaluation:
         cfg = self._config
         sem = asyncio.Semaphore(cfg.concurrency)
 
+        breaker = ApiErrorCircuitBreaker()
+
         async def bounded(td: Path) -> tuple[str, RunResult]:
             async with sem:
+                if breaker.tripped:
+                    result = RunResult(task_name=td.name, error=breaker.skip_error())
+                    self._log_and_report(td, result)
+                    return td.name, result
                 # Jitter start to avoid SSH/docker-daemon storms at high
                 # concurrency. The window scales linearly with --concurrency so
                 # the average start rate stays around 2 tasks/sec; the previous
@@ -975,6 +1161,7 @@ class Evaluation:
                     jitter_max = max(cfg.concurrency / 2, 8.0)
                     await asyncio.sleep(random.uniform(0, jitter_max))
                 result = await self._run_task(td)
+                breaker.record(result)
                 self._log_and_report(td, result)
                 return td.name, result
 
@@ -1191,7 +1378,56 @@ class Evaluation:
         self.learner_nodes.append(node)
         return node
 
+    def _maybe_start_daytona_reap(self) -> None:
+        """Fire-and-forget auto-reap of orphaned Daytona sandboxes (issue: leakage at scale).
+
+        Gated by ``BENCHFLOW_DAYTONA_AUTO_REAP`` (default on; any of
+        ``0``/``false``/``no``/``off`` case-insensitively disables it).
+        Conservative TTLs (24h general / 2h failed states) plus an idle-activity
+        guard mean concurrent live runs are never reaped. Runs in a daemon
+        thread so eval startup never blocks or fails on reaping.
+        """
+        if self._config.environment != "daytona":
+            return
+        if os.environ.get("BENCHFLOW_DAYTONA_AUTO_REAP", "1").strip().lower() in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            return
+
+        def _reap() -> None:
+            try:
+                from benchflow.sandbox.daytona import (
+                    reap_leaked_snapshots,
+                    reap_stale_sandboxes,
+                )
+
+                counts = reap_stale_sandboxes()
+                if counts["deleted"] or counts["failed"]:
+                    logger.info(
+                        "Daytona auto-reap: %s stale sandboxes deleted (%s failed)",
+                        counts["deleted"],
+                        counts["failed"],
+                    )
+                # Snapshot tier: ``bf-snap-*`` cloud snapshots leak when a
+                # sandbox's ``stop()`` never runs (crash/interrupt), since the
+                # sandbox reaper never touches snapshots. Scoped by name prefix.
+                snap_counts = reap_leaked_snapshots()
+                if snap_counts["deleted"] or snap_counts["failed"]:
+                    logger.info(
+                        "Daytona auto-reap: %s leaked snapshots deleted (%s failed)",
+                        snap_counts["deleted"],
+                        snap_counts["failed"],
+                    )
+            except Exception as e:
+                logger.debug("Daytona auto-reap skipped: %s", e)
+
+        threading.Thread(target=_reap, name="daytona-auto-reap", daemon=True).start()
+
     async def run(self) -> EvaluationResult:
+        self._maybe_start_daytona_reap()
         """Execute the job."""
         task_dirs = self._get_task_dirs()
         if not task_dirs:
@@ -1315,7 +1551,11 @@ class Evaluation:
         job_result = EvaluationResult(
             job_name=self._job_name,
             config=cfg,
-            total=len(task_dirs),
+            # Score counts cover one entry per scored rollout. Skill-eval expands
+            # a single task into multiple rollouts (baseline/skill x trials), so
+            # the denominator must be the number of results, not task dirs, or the
+            # invariant below (and every pass-rate/percentage) is wrong.
+            total=len(all_results),
             passed=score_counts["passed"],
             failed=score_counts["failed"],
             errored=score_counts["errored"],
@@ -1411,6 +1651,12 @@ class Evaluation:
             write_job_verifiers_jsonl(job_dir)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Job-level trainer artifact aggregation failed: %s", e)
+        try:
+            from benchflow.trajectories.export_adp import write_job_adp_jsonl
+
+            write_job_adp_jsonl(job_dir)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Job-level ADP aggregation failed: %s", e)
 
         # Per-diagnostic summary warnings — driven by the registry so a
         # new diagnostic class adds its warning automatically (issue #503).

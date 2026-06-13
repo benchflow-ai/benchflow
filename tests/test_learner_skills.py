@@ -21,9 +21,7 @@ from benchflow.learner_skills import (
 )
 from benchflow.learner_store import LearnerState
 
-# ---------------------------------------------------------------------------
 # materialize_skills — store skills -> a skills_dir the agent reads
-# ---------------------------------------------------------------------------
 
 
 def test_materialize_writes_one_skill_pack_per_skill(tmp_path: Path) -> None:
@@ -56,9 +54,7 @@ def test_materialize_is_idempotent_replacing_prior_content(
     assert capture_skills(tmp_path) == {"new": "v1"}
 
 
-# ---------------------------------------------------------------------------
 # capture_skills — an exported skills dir -> a skills dict for the store
-# ---------------------------------------------------------------------------
 
 
 def test_capture_reads_exported_skill_packs(tmp_path: Path) -> None:
@@ -86,9 +82,7 @@ def test_capture_ignores_loose_files(tmp_path: Path) -> None:
     assert capture_skills(tmp_path) == {"skill-x": "x"}
 
 
-# ---------------------------------------------------------------------------
 # skill_memory_delta — the record the MemoryScorer reads off the node
-# ---------------------------------------------------------------------------
 
 
 def test_skill_memory_delta_records_before_and_after() -> None:

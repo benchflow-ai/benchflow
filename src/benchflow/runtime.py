@@ -93,7 +93,7 @@ class Environment:
 
     @property
     def inner(self) -> Any:
-        """The underlying harbor environment (Docker/Daytona). Use for Scene-based shared sandbox access."""
+        """The underlying sandbox environment (Docker/Daytona). Use for Scene-based shared sandbox access."""
         return self._inner
 
     @property

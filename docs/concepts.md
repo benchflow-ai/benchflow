@@ -7,10 +7,10 @@ The mental model for benchflow. Read once, then refer back from the how-tos.
 
 | Primitive | What it is |
 |-----------|------------|
-| **Task** | A directory on disk: `instruction.md` for the agent + `tests/` for the verifier + (optional) `solution/solve.sh` for oracle runs + `environment/Dockerfile` for the sandbox. Authored once, evaluated many times. |
+| **Task** | A directory on disk: a `task.md` document (YAML frontmatter + prompt body) plus `environment/Dockerfile` for the sandbox, `verifier/` checks, and optional `oracle/` — or the legacy split layout (`task.toml` + `instruction.md` + `tests/` + `solution/`). Authored once, evaluated many times. |
 | **Agent** | A registered ACP-speaking program (Claude Code, Gemini CLI, OpenCode, etc.). Identified by name (`"gemini"`, `"opencode"`) plus an optional model ID. Use the `acpx/` prefix (e.g. `acpx/gemini`) to route through [ACPX](https://acpx.sh/), a headless ACP client with persistent sessions and crash recovery. |
 | **Environment** | The sandbox where the agent runs and the verifier checks the result. Docker locally, Daytona for cloud, Modal for serverless/GPU. Abstracted behind the `Sandbox` protocol — bring your own sandbox backend. |
-| **Verifier** | The test runner that scores the rollout. By default `pytest /tests/...` against the workspace the agent left behind. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier with a `rubric.toml`. Outputs `rewards: {reward: float}`. |
+| **Verifier** | The test runner that scores the rollout. Its entry point is a `test.sh` script (native `verifier/test.sh`, legacy `tests/test.sh`) — which typically runs `pytest` against the workspace the agent left behind. For subjective tasks, use an [LLM-as-judge](./llm-judge.md) verifier scored against a rubric. Outputs `rewards: {reward: float}`. See the [verifier file map](#verifier-file-map) for which file lives where in native vs legacy packages. |
 | **Rollout** | One agent run on one task. Holds the lifecycle (setup → start → install → execute → verify → cleanup). All higher-level primitives below are built on Rollouts. |
 
 ---
@@ -102,16 +102,38 @@ Use `BaseUser` when the loop logic is rule-based (compress instruction → show 
 
 ## Verifier, sandbox, hardening
 
-Once the agent stops, the verifier runs. By default that's `pytest -c /dev/null --confcutdir=/tests --rootdir=/app -p no:cacheprovider /tests/test.sh` (or whatever the task's `tests/test.sh` does), against the workspace the agent left behind.
+Once the agent stops, the verifier runs. Its entry point is the task's
+`test.sh` script — uploaded to `/verifier` for native packages (`/tests` for
+legacy ones) — executed against the workspace the agent left behind. benchflow
+runs `test.sh` **as a script** (it `chmod +x`'s the file and executes it
+directly; a native `script` strategy runs `cd /verifier && <command>`). It
+never hands `test.sh` to `pytest` — pytest cannot collect a shell script as a
+test target.
+
+Most `test.sh` scripts *invoke* pytest internally. For those invocations,
+benchflow applies hardening through `PYTEST_ADDOPTS` in the verifier
+environment — every pytest run inside `test.sh` inherits roughly:
+
+```text
+PYTEST_ADDOPTS="-c /dev/null --confcutdir=<verifier-dir> --rootdir=<workspace> -p no:cacheprovider"
+```
+
+where `<verifier-dir>` is `/verifier` for native packages (`/tests` for
+legacy), and `<workspace>` is the agent workspace (`/app` for SWE-bench
+conventions, `/root` for SkillsBench — injected dynamically). `-c /dev/null`
+blocks `pyproject.toml`/`pytest.ini` discovery and `--confcutdir` blocks
+`conftest.py` walk-up beyond the verifier dir. Tasks that do not use pytest
+(e.g. a `test.sh` that diffs files and writes `reward.txt` directly) are
+scored the same way — pytest is just the most common tool, not a requirement.
 
 Between agent and verifier, benchflow **hardens** the sandbox to prevent the agent from gaming the score:
 - Kill any lingering agent processes
 - Restore build-config files (setup.py, pyproject.toml, …) to their pre-agent snapshots
 - Delete agent-injected `conftest.py`, `sitecustomize.py`, `.pth` files
 - Lock the workspace to root, set restrictive PYTHONPATH/PATH for the verifier process
-- Run pytest with plugin auto-discovery off, only allow plugins declared in `task.toml`
+- Run pytest with plugin auto-discovery off, only allowing plugins declared in the task config (`[verifier] pytest_plugins` in `task.toml`, or auto-discovered root-owned plugins)
 
-This catches the BenchJack and Meerkat exploit families documented in [`labs/benchjack-sandbox-hardening/`](../labs/benchjack-sandbox-hardening/) and [`labs/reward-hack-matrix/`](../labs/reward-hack-matrix/).
+This catches the BenchJack and Meerkat exploit families documented in the historical (0.2.x-era) labs [`docs/labs/benchjack-sandbox-hardening/`](../docs/labs/benchjack-sandbox-hardening/) and [`docs/labs/reward-hack-matrix/`](../docs/labs/reward-hack-matrix/).
 
 When a task ships a legitimate `conftest.py` (e.g. qutebrowser uses one to break a real circular import), the task opts out via `task.toml`:
 
@@ -121,6 +143,29 @@ cleanup_conftests = false
 ```
 
 See [`progressive-disclosure.md`](./progressive-disclosure.md#per-task-hardening-opt-outs) for the full opt-out list.
+
+### Verifier file map
+
+Native `task.md` packages and the legacy split layout name their verifier
+files differently. The runtime resolves native files first and falls back to
+the legacy names, so a task ships **one** of each row, not both:
+
+| What it is | Native (`task.md`) package | Legacy split layout | Sandbox path |
+|---|---|---|---|
+| Verifier directory | `verifier/` | `tests/` | `/verifier` (native), `/tests` (legacy) |
+| Script entry point | `verifier/test.sh` | `tests/test.sh` | executed as a script (chmod +x then run) inside the verifier dir |
+| Strategy declaration (how it's scored) | `verifier/verifier.md` | — (legacy uses `[verifier]` in `task.toml`) | not uploaded as a runtime target; selects the strategy |
+| LLM-judge rubric | `verifier/rubrics/verifier.md` + `verifier/rubrics/verifier.toml` | `tests/rubric.toml` (also `rubric.json`, Harvey-LAB style) | downloaded for the judge |
+
+A plain `test.sh` is a complete verifier on its own: with no `verifier.md`
+strategy declared, the runtime just executes it. `verifier/verifier.md`
+declares *how* a task is scored (script / llm-judge / reward-kit / agent-judge
+/ ors-episode) and is the native equivalent of the legacy `[verifier]` section
+in `task.toml`. The native LLM-judge rubric lives under `verifier/rubrics/`
+(both a human-readable `verifier.md` and a machine-readable `verifier.toml`),
+not in a single top-level `rubric.toml`. For the native verifier document and
+its strategy table see [Native task.md authoring](./task-authoring-task-md.md);
+for the legacy `[verifier.judge]` rubric path see [LLM-as-judge](./llm-judge.md).
 
 ---
 
@@ -151,8 +196,9 @@ Trajectories are written to `<evaluations_dir>/<evaluation_name>/<rollout_name>/
 ## Where to go next
 
 - [Getting started](./getting-started.md) — install, run your first eval.
-- [Task authoring](./task-authoring.md) — write a task with `task.toml` + `tests/` + `solution/`.
-- [LLM-as-judge](./llm-judge.md) — use an LLM to score subjective tasks with `rubric.toml`.
+- [Task authoring (native task.md)](./task-authoring-task-md.md) — write a task as a single `task.md` document plus `environment/` and `verifier/`.
+- [Task authoring (legacy split layout)](./task-authoring.md) — write a task with `task.toml` + `tests/` + `solution/`.
+- [LLM-as-judge](./llm-judge.md) — use an LLM to score subjective tasks against a rubric (see the [verifier file map](#verifier-file-map) for native vs legacy rubric paths).
 - [Progressive disclosure](./progressive-disclosure.md) — the User abstraction; SWE-bench Pro case study.
 - [Use cases](./use-cases.md) — multi-agent patterns (coder/reviewer, simulated user, BYOS, stateful environments).
 - [CLI reference](./reference/cli.md), [Python API reference](./reference/python-api.md).
