@@ -47,14 +47,29 @@ def test_counts_classify_like_the_engine():
     d.__rich__()
 
 
-def test_resume_denominator_and_progress():
+def test_resume_seeds_outcomes_so_counts_cover_whole_job():
+    # On resume the counts + pass-rate must include the resumed tasks' outcomes,
+    # not just this process's new tasks (Bugbot #726 medium).
     d = _dash()
-    d.on_plan(total=10, done=6, remaining=4)  # 6 resumed-complete
+    d.on_plan(total=10, done=6, remaining=4, resumed_outcomes=(5, 1, 0))
     d.on_task_start("x")
-    d.on_result("x", _result(1.0))
-    # done = resumed(6) + finished(1) = 7 of 10; render reflects it
-    assert d._resumed == 6 and d._passed == 1
+    d.on_result("x", _result(1.0))  # one new pass on top of the resumed 5/1/0
+    assert (d._passed, d._failed, d._errored) == (6, 1, 0)
+    assert d._resumed == 6
+    assert d._completed == 1  # this-run only — drives the ETA rate, not the bar
     d.__rich__()
+
+
+def test_classify_completed_outcomes_mirrors_engine():
+    from benchflow.evaluation import _classify_completed_outcomes
+
+    completed = {
+        "a": {"rewards": {"reward": 1.0}},
+        "b": {"rewards": {"reward": 0.0}},
+        "c": {"rewards": None, "verifier_error": "boom"},
+        "d": {},
+    }
+    assert _classify_completed_outcomes(completed) == (1, 1, 2)
 
 
 def test_footer_no_telemetry_is_dash_not_zero():

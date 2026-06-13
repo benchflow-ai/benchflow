@@ -379,6 +379,28 @@ def _warn_on_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
         )
 
 
+def _classify_completed_outcomes(
+    completed: dict[str, dict],
+) -> tuple[int, int, int]:
+    """(passed, failed, errored) over already-complete (resumed) result payloads.
+
+    Mirrors ``_log_and_report``'s classification (reward==1 → passed, reward not
+    None → failed, else errored) so the live dashboard's resumed-seeded counts
+    match how this-run results are tallied.
+    """
+    passed = failed = errored = 0
+    for r in completed.values():
+        rewards = r.get("rewards") if isinstance(r, dict) else None
+        reward = rewards.get("reward") if rewards else None
+        if reward == 1:
+            passed += 1
+        elif reward is not None:
+            failed += 1
+        else:
+            errored += 1
+    return passed, failed, errored
+
+
 def effective_model(agent: str, model: str | None) -> str | None:
     """Resolve the model an agent should run with.
 
@@ -594,7 +616,7 @@ class Evaluation:
         job_name: str | None = None,
         on_result: Callable[[str, RunResult], None] | None = None,
         on_task_start: Callable[[str], None] | None = None,
-        on_plan: Callable[[int, int, int], None] | None = None,
+        on_plan: Callable[[int, int, int, tuple[int, int, int]], None] | None = None,
     ):
         self._tasks_dir = Path(tasks_dir)
         self._jobs_dir = Path(jobs_dir)
@@ -1249,12 +1271,12 @@ class Evaluation:
                     raise r
                 task_name = remaining[i].name
                 logger.error(f"[ERR] {task_name}: unexpected exception: {r}")
-                pairs.append(
-                    (
-                        task_name,
-                        RunResult(task_name=task_name, error=f"Unexpected: {r}"),
-                    )
-                )
+                err_result = RunResult(task_name=task_name, error=f"Unexpected: {r}")
+                # _run_task raised after on_task_start fired, so the live
+                # dashboard still has this task "running" — fire on_result to
+                # remove it and count it errored.
+                self._fire_progress(self._on_result, task_name, err_result)
+                pairs.append((task_name, err_result))
             else:
                 pairs.append(r)
         return pairs
@@ -1312,18 +1334,16 @@ class Evaluation:
                 self._learner_skills_dir = skills_dir
                 self._learner_export_dir = export_dir
 
+                self._fire_progress(self._on_task_start, td.name)
                 try:
                     result = await self._run_task(td)
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     raise
                 except Exception as e:  # mirror the parallel path's catch
                     logger.error(f"[ERR] {td.name}: unexpected exception: {e}")
-                    pairs.append(
-                        (
-                            td.name,
-                            RunResult(task_name=td.name, error=f"Unexpected: {e}"),
-                        )
-                    )
+                    err_result = RunResult(task_name=td.name, error=f"Unexpected: {e}")
+                    self._fire_progress(self._on_result, td.name, err_result)
+                    pairs.append((td.name, err_result))
                     continue
                 finally:
                     self._learner_skills_dir = None
@@ -1551,9 +1571,15 @@ class Evaluation:
         )
         # Hand the live dashboard an honest denominator: total / already-done /
         # to-run. Resumed-complete tasks fold in below without a finish event, so
-        # a finish-event-only counter would mis-read the total on resume.
+        # a finish-event-only counter would mis-read the total on resume. Pass the
+        # resumed tasks' (passed, failed, errored) breakdown too, so the live
+        # counts + pass-rate cover the whole job, not just this process's tasks.
         self._fire_progress(
-            self._on_plan, len(task_dirs), len(completed), len(remaining)
+            self._on_plan,
+            len(task_dirs),
+            len(completed),
+            len(remaining),
+            _classify_completed_outcomes(completed),
         )
 
         start = time.time()

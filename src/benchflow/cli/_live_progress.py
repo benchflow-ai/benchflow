@@ -144,12 +144,23 @@ class LiveEvalProgress:
 
     # -- engine hooks -------------------------------------------------------
 
-    def on_plan(self, total: int, done: int, remaining: int) -> None:
+    def on_plan(
+        self,
+        total: int,
+        done: int,
+        remaining: int,
+        resumed_outcomes: tuple[int, int, int] = (0, 0, 0),
+    ) -> None:
+        # Seed the pass/fail/errored counters with the RESUMED tasks' outcomes so
+        # the counts row and pass-rate footer are correct over the whole job, not
+        # just this process's new tasks. resumed_outcomes = (passed, failed,
+        # errored). _completed stays this-run-only (drives the ETA rate).
         with self._lock:
             self._total = total
             self._resumed = done
             self._to_run = remaining
             self._run_start = time.monotonic()
+            self._passed, self._failed, self._errored = resumed_outcomes
 
     def on_task_start(self, name: str) -> None:
         with self._lock:
@@ -210,8 +221,9 @@ class LiveEvalProgress:
             completed, covered = self._completed, self._covered
             elapsed = time.monotonic() - self._run_start
 
-        finished = passed + failed + errored
-        done = resumed + finished
+        # passed/failed/errored already include the resumed-seeded outcomes, so
+        # "done" is their sum — adding `resumed` again would double-count.
+        done = passed + failed + errored
         queued = max(total - done - len(running), 0)
 
         header = Text()
@@ -225,8 +237,9 @@ class LiveEvalProgress:
         bar = Text()
         bar.append("━" * filled, style="green")
         bar.append("━" * (_BAR_WIDTH - filled), style="grey37")
-        rate = finished / elapsed if elapsed > 0 and finished else 0.0
-        eta = (to_run - finished) / rate if rate > 0 else None
+        # ETA from THIS run's finish rate (completed excludes instant resumed).
+        rate = completed / elapsed if elapsed > 0 and completed else 0.0
+        eta = (to_run - completed) / rate if rate > 0 else None
         bar.append(f"  {done}/{total}", style="bold")
         bar.append(f" · {frac * 100:.0f}%", style="dim")
         bar.append(f" · {_fmt_dur(elapsed)}", style="dim")
