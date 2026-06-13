@@ -374,10 +374,12 @@ def eval_create(
         typer.Option(
             "--loop-strategy",
             help=(
-                "Harness loop strategy, e.g. 'verify-retry:k=3,feedback=names' "
-                "or 'single-shot' (default). verify-retry re-prompts the agent "
-                "with filtered soft-verifier feedback until it passes or k "
-                "retries are spent."
+                "Harness loop strategy, e.g. 'verify-retry:k=3,feedback=names', "
+                "'self-review:k=3', or 'single-shot' (default). verify-retry "
+                "re-prompts with filtered soft-verifier feedback; self-review "
+                "re-prompts the agent to critique its OWN work (no verifier "
+                "signal) — both loop until the soft verifier passes or k retries "
+                "are spent."
             ),
         ),
     ] = None,
