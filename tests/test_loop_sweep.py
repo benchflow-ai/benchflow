@@ -276,6 +276,32 @@ def test_unknown_baseline_omits_cross_over():
     assert "baseline" not in matrix
 
 
+def test_baseline_single_shot_alias_resolves_by_canonical_identity():
+    # Baseline named with the "" alias still resolves to the single-shot cell.
+    cells = [
+        _cell("pricey", "single-shot", 0.70, 2500),
+        _cell("cheap", "verify-retry:k=3", 0.72, 1200),
+    ]
+    matrix = build_cost_curve_matrix(cells, baseline=("pricey", ""))
+    assert matrix["baseline"] == {"model": "pricey", "loop": "single-shot"}
+    [verdict] = matrix["cross_over"]
+    assert verdict["model"] == "cheap"
+    assert verdict["crosses_over"] is True
+
+
+def test_baseline_resolves_explicit_and_reordered_params():
+    # Cell stores "verify-retry:k=3"; baseline names it with explicit-default +
+    # reordered params — canonical identity still resolves it (Bugbot #720).
+    cells = [
+        _cell("pricey", "single-shot", 0.70, 2500),
+        _cell("cheap", "verify-retry:k=3", 0.72, 1200),
+    ]
+    matrix = build_cost_curve_matrix(
+        cells, baseline=("cheap", "verify-retry:feedback=names,k=3")
+    )
+    assert matrix["baseline"] == {"model": "cheap", "loop": "verify-retry:k=3"}
+
+
 # --------------------------------------------------------------------------- #
 # render_matrix_markdown
 # --------------------------------------------------------------------------- #

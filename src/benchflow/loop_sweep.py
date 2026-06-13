@@ -215,6 +215,30 @@ def _cross_over_verdict(
     }
 
 
+def _resolve_baseline_cell(
+    cells: list[CellResult], baseline: tuple[str, str] | None
+) -> CellResult | None:
+    """Find the cell matching ``baseline`` by model + *canonical* loop identity.
+
+    Cells store the first-seen loop spelling, but the grid dedupes on a parsed
+    canonical key — so an exact label match would miss a baseline spelled
+    differently (``""`` vs ``"single-shot"``, default-vs-explicit params). Match
+    on the canonical key instead, mirroring :func:`expand_sweep_grid`.
+    """
+    if not baseline:
+        return None
+    base_model, base_loop = baseline
+    base_canon = _canonical_loop_key(base_loop)
+    return next(
+        (
+            c
+            for c in cells
+            if c.model == base_model and _canonical_loop_key(c.loop) == base_canon
+        ),
+        None,
+    )
+
+
 def build_cost_curve_matrix(
     cells: list[CellResult],
     *,
@@ -223,12 +247,14 @@ def build_cost_curve_matrix(
 ) -> dict[str, Any]:
     """Assemble the pass-rate-vs-tokens matrix + per-cell cross-over verdicts.
 
-    ``baseline`` is a ``(model, loop_label)`` pair naming the reference cell —
-    typically the expensive model's single-shot run. When given (and found among
-    ``cells``), each *other* cell gets a cross-over verdict against it. When
-    omitted or not found, the matrix carries no ``cross_over`` section.
+    ``baseline`` is a ``(model, loop)`` pair naming the reference cell —
+    typically the expensive model's single-shot run. Its loop is matched by the
+    same **canonical identity** the grid dedupes on, so the baseline resolves
+    even when spelled differently from the cell's stored label (``""`` vs
+    ``"single-shot"``, explicit-vs-default params, reordered params). When given
+    (and resolved), each *other* cell gets a cross-over verdict against it; when
+    omitted or unresolved, the matrix carries no ``cross_over`` section.
     """
-    by_key = {(c.model, c.loop): c for c in cells}
     # Preserve first-seen order for both axes so the matrix reads grid-stable.
     models: list[str] = []
     loops: list[str] = []
@@ -244,7 +270,7 @@ def build_cost_curve_matrix(
         "cells": [c.to_dict() for c in cells],
     }
 
-    baseline_cell = by_key.get(baseline) if baseline else None
+    baseline_cell = _resolve_baseline_cell(cells, baseline)
     if baseline_cell is not None:
         matrix["baseline"] = {
             "model": baseline_cell.model,
