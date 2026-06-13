@@ -12,6 +12,10 @@ agent: mimo
 # (the endpoint returns 400). `mimo-v2.5-pro` is the current coding model.
 model: xiaomi/mimo-v2.5-pro
 environment: daytona
+# Non-proxy path required: the MiMo CLI validates model ids against its own
+# models.dev catalog and rejects LiteLLM proxy aliases (openai/benchflow-*),
+# so the eval must send the native xiaomi/<model> id directly.
+usage_tracking: "off"
 concurrency: 64
 max_retries: 1
 
