@@ -6,8 +6,8 @@ import pytest
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
-from benchflow.compat import harbor_registry
-from benchflow.compat.harbor_registry import (
+from benchflow.hub import harbor_registry
+from benchflow.hub.harbor_registry import (
     HarborTaskRef,
     check_harbor_registry,
     dataclass_record,
@@ -310,8 +310,8 @@ def test_harbor_registry_cli_check_outputs_report(tmp_path: Path) -> None:
     result = CliRunner().invoke(
         app,
         [
-            "compat",
-            "harbor-registry",
+            "hub",
+            "check",
             "--registry",
             str(registry_path),
             "--level",

@@ -112,7 +112,7 @@ def check_harbor_registry(
     if limit is not None:
         refs = refs[:limit]
 
-    cache = cache_dir or Path(".cache") / "compat" / "harbor"
+    cache = cache_dir or Path(".cache") / "hub" / "harbor"
     records = [_record_for_ref(ref, level=level, cache_dir=cache) for ref in refs]
 
     if out is not None:

@@ -1,6 +1,6 @@
 """``bench compat`` — third-party framework compatibility checks.
 
-Registered onto the top-level app by :func:`register_compat`; ``cli/main.py``
+Registered onto the top-level app by :func:`register_hub`; ``cli/main.py``
 only wires the call.
 """
 
@@ -14,13 +14,13 @@ import typer
 from benchflow.cli._shared import console
 
 
-def register_compat(app: typer.Typer) -> None:
-    """Attach the ``compat`` command group to the top-level benchflow app."""
-    compat_app = typer.Typer(help="Third-party framework compatibility checks.")
-    app.add_typer(compat_app, name="compat", rich_help_panel="Environments")
+def register_hub(app: typer.Typer) -> None:
+    """Attach the ``hub`` command group to the top-level benchflow app."""
+    hub_app = typer.Typer(help="Compatibility checks for external environment hubs.")
+    app.add_typer(hub_app, name="hub", rich_help_panel="Environments")
 
-    @compat_app.command("harbor-registry")
-    def compat_harbor_registry(
+    @hub_app.command("check")
+    def hub_check(
         registry: Annotated[
             str,
             typer.Option(
@@ -50,14 +50,14 @@ def register_compat(app: typer.Typer) -> None:
         cache_dir: Annotated[
             Path,
             typer.Option("--cache-dir", help="Cache directory for sparse clones."),
-        ] = Path(".cache/compat/harbor"),
+        ] = Path(".cache/hub/harbor"),
         limit: Annotated[
             int | None,
             typer.Option("--limit", help="Optional cap on selected task refs."),
         ] = None,
     ) -> None:
         """Inventory or structurally check representative Harbor registry tasks."""
-        from benchflow.compat.harbor_registry import (
+        from benchflow.hub.harbor_registry import (
             check_harbor_registry,
             records_summary,
         )

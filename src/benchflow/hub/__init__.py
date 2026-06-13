@@ -1,6 +1,6 @@
 """Compatibility helpers for third-party benchmark frameworks."""
 
-from benchflow.compat.harbor_registry import (
+from benchflow.hub.harbor_registry import (
     DEFAULT_HARBOR_REGISTRY_URL,
     HarborTaskRef,
     check_harbor_registry,

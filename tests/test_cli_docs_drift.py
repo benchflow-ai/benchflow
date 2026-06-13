@@ -45,7 +45,7 @@ def test_top_level_help_lists_public_groups() -> None:
     """Every public top-level group documented in cli.md is shown in --help."""
     out = _help([])
     commands = _help_command_names(out)
-    for group in ("eval", "skills", "tasks", "compat", "agent", "environment"):
+    for group in ("eval", "skills", "tasks", "hub", "agent", "environment"):
         assert group in commands, f"missing public group {group!r} in: {out}"
     # Deprecated, hidden, and removed commands must not show up in public help.
     for hidden in ("run", "job", "agents", "metrics", "view", "eval-batch"):
@@ -128,7 +128,7 @@ def test_documented_subcommands_exist() -> None:
         ["environment", "show"],
         ["environment", "inspect"],
         ["environment", "cleanup"],
-        ["compat", "harbor-registry"],
+        ["hub", "check"],
     ):
         out = _help(cmd)
         assert "Usage:" in out, f"bench {' '.join(cmd)} --help failed: {out}"
