@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from benchflow.cli._options import (
@@ -19,7 +20,7 @@ from benchflow.cli._options import (
     JobsDirOption,
     SandboxOption,
 )
-from benchflow.cli._shared import console
+from benchflow.cli._shared import console, print_error
 from benchflow.sandbox.providers import is_known_provider, providers_phrase
 
 
@@ -100,17 +101,16 @@ def register_skills(app: typer.Typer) -> None:
         from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
         if not is_known_provider(environment):
-            console.print(
-                f"[red]Invalid --sandbox {environment!r}: "
-                f"choose {providers_phrase()}[/red]"
+            print_error(
+                f"Invalid --sandbox {environment!r}: choose {providers_phrase()}"
             )
             raise typer.Exit(1)
         if agent is None:
             agent = ["claude-agent-acp"]
         if not (skill_dir / "evals" / "evals.json").exists():
-            console.print(
-                f"[red]No evals/evals.json found in {skill_dir}[/red]\n"
-                f"Create one with test cases. See: benchflow skills eval --help"
+            print_error(
+                f"No evals/evals.json found in {skill_dir}\n"
+                "Create one with test cases. See: benchflow skills eval --help"
             )
             raise typer.Exit(1)
 
@@ -122,10 +122,10 @@ def register_skills(app: typer.Typer) -> None:
             FileNotFoundError,
             NotADirectoryError,
         ) as e:
-            console.print(f"[red]{e}[/red]")
+            print_error(f"{e}")
             raise typer.Exit(1) from None
         console.print(
-            f"[bold]Skill eval:[/bold] {evaluator.dataset.skill_name} "
+            f"[bold]Skill eval:[/bold] {escape(str(evaluator.dataset.skill_name))} "
             f"({len(evaluator.dataset.cases)} cases)"
         )
         console.print(f"  Agents: {', '.join(agent)}")
@@ -150,7 +150,7 @@ def register_skills(app: typer.Typer) -> None:
             FileNotFoundError,
             NotADirectoryError,
         ) as e:
-            console.print(f"[red]{e}[/red]")
+            print_error(f"{e}")
             raise typer.Exit(1) from None
 
         # Display results
@@ -174,4 +174,6 @@ def register_skills(app: typer.Typer) -> None:
                 evaluator.dataset,
                 output_dir=f"{jobs_dir}/skill-eval/{result.skill_name}/gepa",
             )
-            console.print(f"[green]GEPA traces exported to {gepa_dir}[/green]")
+            console.print(
+                f"[green]GEPA traces exported to {escape(str(gepa_dir))}[/green]"
+            )

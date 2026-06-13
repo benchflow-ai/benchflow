@@ -230,10 +230,13 @@ bench eval create \
   --agent claude-agent-acp \
   --sandbox daytona \
   --skills-dir skills/ \
+  --skill-mode with-skill \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
-Skills are uploaded to `/skills/` in the sandbox and symlinked to agent-specific paths.
+`--skill-mode with-skill` is required whenever you pass `--skills-dir` (omitting
+it errors). Skills are uploaded to `/skills/` in the sandbox and symlinked to
+agent-specific paths.
 
 ## Tips
 

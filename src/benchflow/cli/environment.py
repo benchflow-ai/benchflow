@@ -58,7 +58,7 @@ def register_environment(app: typer.Typer) -> None:
                 f"{escape(str(e))}"
             )
             raise typer.Exit(1) from None
-        console.print(f"[green]Environment created:[/green] {env}")
+        console.print(f"[green]Environment created:[/green] {escape(str(env))}")
         console.print(f"  Task:    {env.task_path}")
         console.print(f"  Sandbox: {env.sandbox}")
         console.print(

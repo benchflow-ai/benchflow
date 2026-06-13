@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Group
 from rich.live import Live
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -90,7 +91,13 @@ class _WarningBuffer(logging.Handler):
     def replay(self) -> None:
         for record in self._records:
             style = "red" if record.levelno >= logging.ERROR else "yellow"
-            console.print(f"[{style}]{record.getMessage()}[/{style}]")
+            # escape(): buffered warnings carry user-derived text (a malformed
+            # task dir name, a resume agent-mismatch from config.json) that can
+            # contain Rich markup — an unescaped replay raises MarkupError and
+            # crashes the CLI on live-context exit (and silently swallows
+            # balanced [tokens]), defeating the buffer's "warnings must survive
+            # the Live" purpose.
+            console.print(f"[{style}]{escape(record.getMessage())}[/{style}]")
 
 
 @contextlib.contextmanager

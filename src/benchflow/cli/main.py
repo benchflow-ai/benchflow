@@ -39,6 +39,7 @@ from benchflow.cli._shared import (
     _exit_if_evaluation_had_errors,
     _report_eval_result,
     console,
+    print_error,
 )
 from benchflow.cli.adopt import register_adopt
 from benchflow.cli.agent import register_agent
@@ -109,7 +110,7 @@ def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for entry in entries or []:
         if "=" not in entry:
-            console.print(f"[red]Invalid env var: {entry}[/red]")
+            print_error(f"Invalid env var: {entry}")
             raise typer.Exit(1)
         key, value = entry.split("=", 1)
         parsed[key] = value
@@ -125,7 +126,7 @@ def _apply_dotenv_to_process_env() -> None:
 def _normalize_eval_agent_or_exit(agent_spec: str) -> str:
     protocol, canonical_agent = parse_agent_spec(agent_spec)
     if protocol not in ("acp", "acpx"):
-        console.print(f"[red]Unsupported eval agent protocol: {protocol}[/red]")
+        print_error(f"Unsupported eval agent protocol: {protocol}")
         raise typer.Exit(1)
     if protocol == "acpx":
         return f"acpx/{canonical_agent}"
@@ -146,10 +147,10 @@ def _daytona_client_or_exit():
                 "Install it with [cyan]uv sync --extra sandbox-daytona[/cyan]."
             )
         else:
-            console.print(f"[red]daytona SDK import failed: {exc}[/red]")
+            print_error(f"daytona SDK import failed: {exc}")
         raise typer.Exit(1) from None
     except Exception as exc:
-        console.print(f"[red]daytona SDK import failed: {exc}[/red]")
+        print_error(f"daytona SDK import failed: {exc}")
         raise typer.Exit(1) from None
 
 
@@ -485,7 +486,7 @@ def eval_create(
     try:
         plan = build_eval_plan(request)
     except EvalPlanError as exc:
-        console.print(f"[red]{exc}[/red]")
+        print_error(f"{exc}")
         raise typer.Exit(1) from None
 
     if config_file:
@@ -531,14 +532,14 @@ def eval_create(
             with console.status(f"Resolving dataset {dataset}…"):
                 resolved_dataset = resolve_dataset(dataset, registry=registry_source)
         except DatasetResolutionError as e:
-            console.print(f"[red]{e}[/red]")
+            print_error(f"{e}")
             raise typer.Exit(1) from None
         version_issue = bench_version_issue(resolved_dataset.bench_version)
         if version_issue and not ignore_bench_version:
             # Hard gate: published results must come from a harness the
             # dataset version was validated against. The escape hatch keeps
             # local experimentation possible without weakening the default.
-            console.print(f"[red]{version_issue}[/red]")
+            print_error(f"{version_issue}")
             console.print(
                 "Pick a dataset version validated for this harness, or re-run "
                 "with --ignore-bench-version to proceed anyway."
@@ -546,10 +547,10 @@ def eval_create(
             raise typer.Exit(1)
         if version_issue:
             console.print(
-                f"[yellow]Warning:[/yellow] {version_issue} (--ignore-bench-version)"
+                f"[yellow]Warning:[/yellow] {escape(str(version_issue))} (--ignore-bench-version)"
             )
         console.print(
-            f"[green]✓[/green] {resolved_dataset.spec}: "
+            f"[green]✓[/green] {escape(str(resolved_dataset.spec))}: "
             f"{len(resolved_dataset.task_names)} tasks, digests verified "
             f"({str(resolved_dataset.provenance.get('resolved_sha', ''))[:12]})"
         )
@@ -647,10 +648,10 @@ def run_batch_eval(
                 )
             )
     except EmptyTaskSelectionError as e:
-        console.print(f"[red]{e}[/red]")
+        print_error(f"{e}")
         raise typer.Exit(1) from None
     except (ValueError, RuntimeError, ShardWorkerError) as e:
-        console.print(f"[red]{e}[/red]")
+        print_error(f"{e}")
         raise typer.Exit(1) from None
 
     job_name = getattr(result, "job_name", None)
@@ -729,7 +730,7 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
     try:
         result = asyncio.run(j.run())
     except (EmptyTaskSelectionError, ValueError) as e:
-        console.print(f"[red]{e}[/red]")
+        print_error(f"{e}")
         raise typer.Exit(1) from None
     job_name = getattr(result, "job_name", None)
     job_dir = Path(j._jobs_dir) / job_name if job_name else None
@@ -765,12 +766,12 @@ def _run_source_env_eval(
         )
     if plan.eval_environment != "docker":
         console.print(
-            f"[yellow]--sandbox {plan.eval_environment!r} is not used by source-env runs; "
+            f"[yellow]--sandbox {escape(repr(plan.eval_environment))} is not used by source-env runs; "
             "the hosted Verifiers environment owns its harness/sandbox.[/yellow]"
         )
     if plan.eval_agent != DEFAULT_AGENT:
         console.print(
-            f"[dim]source-env records --agent {plan.eval_agent!r}, but executes the model endpoint through Verifiers.[/dim]"
+            f"[dim]source-env records --agent {escape(repr(plan.eval_agent))}, but executes the model endpoint through Verifiers.[/dim]"
         )
     if plan.eval_env_manifest is not None:
         console.print(
@@ -808,25 +809,25 @@ def _run_source_env_eval(
             )
         )
     except HostedEnvError as e:
-        console.print(f"[red]{e}[/red]")
+        print_error(f"{e}")
         raise typer.Exit(1) from None
 
     console.print(f"\n[bold]Environment:[/bold] {run_result.source_env.env_uid}")
-    console.print(f"[bold]Hub:[/bold] {run_result.source_env.hub_url}")
+    console.print(f"[bold]Hub:[/bold] {escape(str(run_result.source_env.hub_url))}")
     console.print(
-        f"[bold]Model:[/bold] {run_result.normalized_model}"
+        f"[bold]Model:[/bold] {escape(str(run_result.normalized_model))}"
         + (
             f" [dim](from {run_result.model})[/dim]"
             if run_result.normalized_model != run_result.model
             else ""
         )
     )
-    console.print(f"[bold]Run dir:[/bold] {run_result.run_dir}")
+    console.print(f"[bold]Run dir:[/bold] {escape(str(run_result.run_dir))}")
     console.print(f"[bold]Reward:[/bold] {run_result.reward}")
     if run_result.total_tool_calls is not None:
         console.print(f"[bold]Tool calls:[/bold] {run_result.total_tool_calls}")
     if run_result.error:
-        console.print(f"[red]Error:[/red] {run_result.error}")
+        console.print(f"[red]Error:[/red] {escape(str(run_result.error))}")
         raise typer.Exit(1)
 
 
@@ -839,7 +840,7 @@ def eval_list(
 ) -> None:
     """List completed evaluations."""
     if not jobs_dir.exists():
-        console.print(f"[yellow]No jobs directory: {jobs_dir}[/yellow]")
+        console.print(f"[yellow]No jobs directory: {escape(str(jobs_dir))}[/yellow]")
         return
     if not jobs_dir.is_dir():
         # exists() is True for a file; iterdir() below would NotADirectoryError.
@@ -920,7 +921,7 @@ def eval_metrics(
     if not Path(jobs_dir).is_dir():
         # Without this, collect_metrics rglobs nothing and reports a green
         # all-zeros table with exit 0 — a silent trap for scripted collectors.
-        console.print(f"[red]Not a directory: {jobs_dir}[/red]")
+        print_error(f"Not a directory: {jobs_dir}")
         raise typer.Exit(1)
     m = collect_metrics(str(jobs_dir), benchmark=benchmark, agent=agent, model=model)
     summary = m.summary()
@@ -950,11 +951,17 @@ def eval_metrics(
     console.print(table)
 
     if summary["passed_tasks"]:
-        console.print(f"\n[green]Passed:[/green] {', '.join(summary['passed_tasks'])}")
+        console.print(
+            f"\n[green]Passed:[/green] {escape(', '.join(summary['passed_tasks']))}"
+        )
     if summary["errored_tasks"]:
-        console.print(f"[yellow]Errors:[/yellow] {', '.join(summary['errored_tasks'])}")
+        console.print(
+            f"[yellow]Errors:[/yellow] {escape(', '.join(summary['errored_tasks']))}"
+        )
     if summary["error_breakdown"]:
-        console.print(f"[yellow]Error breakdown:[/yellow] {summary['error_breakdown']}")
+        console.print(
+            f"[yellow]Error breakdown:[/yellow] {escape(str(summary['error_breakdown']))}"
+        )
 
 
 @eval_app.command("view")

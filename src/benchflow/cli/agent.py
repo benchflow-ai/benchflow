@@ -22,6 +22,7 @@ from benchflow.cli._shared import (
     _REQUIRES_AUTH_NOTE,
     _format_requires,
     console,
+    print_error,
 )
 
 
@@ -70,7 +71,7 @@ def register_agent(app: typer.Typer) -> None:
         resolved = AGENT_ALIASES.get(name, name)
         cfg = AGENTS.get(resolved)
         if not cfg:
-            console.print(f"[red]Unknown agent: {name}[/red]")
+            print_error(f"Unknown agent: {name}")
             raise typer.Exit(1)
 
         # Collect aliases that point to this agent

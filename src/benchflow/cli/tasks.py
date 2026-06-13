@@ -14,7 +14,7 @@ from typing import Annotated, Literal, cast
 import typer
 from rich.markup import escape
 
-from benchflow.cli._shared import console
+from benchflow.cli._shared import console, print_error
 from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.sandbox.providers import providers_phrase
 
@@ -72,7 +72,7 @@ def register_tasks(app: typer.Typer) -> None:
             # read-only parent — siblings (migrate/normalize/export) already
             # degrade gracefully; init was the outlier that dumped a traceback.
             # escape(): the OSError message echoes the user-supplied path.
-            console.print(f"[red]{escape(str(e))}[/red]")
+            print_error(str(e))
             raise typer.Exit(1) from None
 
     @tasks_app.command("check")
@@ -136,10 +136,12 @@ def register_tasks(app: typer.Typer) -> None:
         )
         if not issues:
             console.print(
-                f"[green]✓[/green] {task_dir.name} — valid ({validation_level})"
+                f"[green]✓[/green] {escape(task_dir.name)} — valid ({validation_level})"
             )
         else:
-            console.print(f"[red]✗[/red] {task_dir.name} — {len(issues)} issue(s):")
+            console.print(
+                f"[red]✗[/red] {escape(task_dir.name)} — {len(issues)} issue(s):"
+            )
             for issue in issues:
                 # Escape Rich markup so literal section names like "[agent]"
                 # render verbatim instead of being parsed as styling (#379).
@@ -179,7 +181,7 @@ def register_tasks(app: typer.Typer) -> None:
             NotADirectoryError,
             ValueError,
         ) as e:
-            console.print(f"[red]{e}[/red]")
+            print_error(f"{e}")
             raise typer.Exit(1) from None
 
         console.print(f"[green]Created:[/green] {result.task_md}")
@@ -215,7 +217,7 @@ def register_tasks(app: typer.Typer) -> None:
         try:
             result = normalize_task_md(task_dir, output_path=output, write=write)
         except (FileNotFoundError, NotADirectoryError, ValueError) as e:
-            console.print(f"[red]{e}[/red]")
+            print_error(f"{e}")
             raise typer.Exit(1) from None
 
         if result.output_path is None:
@@ -283,10 +285,10 @@ def register_tasks(app: typer.Typer) -> None:
             NotADirectoryError,
             ValueError,
         ) as e:
-            console.print(f"[red]{e}[/red]")
+            print_error(f"{e}")
             raise typer.Exit(1) from None
 
-        console.print(f"[green]Exported:[/green] {output_dir}")
+        console.print(f"[green]Exported:[/green] {escape(str(output_dir))}")
         console.print(f"  target: {report.target}")
         console.print(f"  status: {report.status}")
         console.print(f"  losses: {len(report.losses)}")
@@ -316,7 +318,7 @@ def register_tasks(app: typer.Typer) -> None:
             return (p / "task.toml").is_file() or (p / "task.md").is_file()
 
         if not path.is_dir():
-            console.print(f"[red]Not a directory: {path}[/red]")
+            print_error(f"Not a directory: {path}")
             raise typer.Exit(1)
 
         if _is_task_dir(path):
@@ -327,9 +329,9 @@ def register_tasks(app: typer.Typer) -> None:
 
         task_dirs = sorted(d for d in path.iterdir() if d.is_dir() and _is_task_dir(d))
         if not task_dirs:
-            console.print(
-                f"[red]No tasks under {path} — expected task.toml or task.md "
-                f"in it or in its immediate subdirectories[/red]"
+            print_error(
+                f"No tasks under {path} — expected task.toml or task.md "
+                "in it or in its immediate subdirectories"
             )
             raise typer.Exit(1)
         for task_dir in task_dirs:

@@ -669,7 +669,7 @@ def register_agent_router(
         try:
             target, written = create_benchmark(name, root)
         except (InvalidBenchmarkName, BenchmarkExistsError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
         console.print(f"[green]Scaffolded[/green] {target}")
         for rel in written:
@@ -791,16 +791,16 @@ def register_agent_router(
             else:
                 data = load_parity_experiment(root, name)
         except InvalidBenchmarkName as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
         except BenchmarkNotFound as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
         except ParityRerunError as exc:
-            console.print(f"[red]--rerun failed: {exc}[/red]")
+            console.print(f"[red]--rerun failed: {escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
         except ParityExperimentMissing as exc:
-            console.print(f"[yellow]{exc}[/yellow]")
+            console.print(f"[yellow]{escape(str(exc))}[/yellow]")
             data = {}
 
         report = build_verify_report(name, data, tolerance=tolerance)
@@ -845,7 +845,7 @@ def register_agent_router(
         issue = render_divergence_issue(report)
         if issue_out is not None:
             Path(issue_out).write_text(issue)
-            console.print(f"[dim]Issue draft written to {issue_out}[/dim]")
+            console.print(f"[dim]Issue draft written to {escape(str(issue_out))}[/dim]")
         else:
             console.print(issue)
         raise typer.Exit(1)
