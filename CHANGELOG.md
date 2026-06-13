@@ -8,12 +8,13 @@
   convert`, `bench agent verify` → `bench adopt verify`. `bench agent` now means
   agent management only (`list` / `show`). The old `bench agent create|run|verify`
   still work as hidden aliases and print a one-line deprecation notice (stderr).
-- Hosted-environment browsing moved out of the overloaded `bench environment`
-  group into `bench hub env {list,show,inspect}` (`bench environment` is now
-  local sandbox lifecycle only: `create`/`list`/`cleanup`). The old
-  `bench environment show`/`inspect` and `bench environment list --provider`/`--hub`
-  still work as hidden deprecated aliases (one-line stderr notice; removed in 0.7).
-  The hosted *run* path stays on `bench eval create --source-env`.
+- The overloaded `bench environment` group was split and is now a hidden
+  **deprecated alias group** (removed in 0.7): the local sandbox lifecycle moved
+  to `bench sandbox {create,list,cleanup}`, and hosted-provider browsing to
+  `bench hub env {list,show,inspect}`. The old `bench environment
+  create|list|cleanup|show|inspect` (plus `list --provider`/`--hub`) still work,
+  each printing a one-line stderr deprecation notice. The hosted *run* path stays
+  on `bench eval create --source-env`.
 
 ### Removed
 - Dead-code purge (no public-API impact unless noted): removed the unused

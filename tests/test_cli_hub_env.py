@@ -63,10 +63,14 @@ def test_environment_inspect_is_deprecated_alias(monkeypatch) -> None:
     assert "deprecation" in res.stderr and "bench hub env inspect" in res.stderr
 
 
-def test_environment_show_inspect_hidden_from_help() -> None:
-    out = runner.invoke(app, ["environment", "--help"]).output
-    assert "create" in out and "list" in out and "cleanup" in out
-    for hidden in ("show", "inspect"):
-        assert hidden not in out, (
-            f"deprecated {hidden!r} still shown in environment help"
-        )
+def test_environment_group_is_hidden_but_still_resolves() -> None:
+    # The whole `environment` group is now a hidden deprecated alias (local
+    # lifecycle → `bench sandbox`, hosted reads → `bench hub env`). It must not
+    # appear in top-level `bench --help`, but must still resolve for back-compat.
+    import re
+
+    top = runner.invoke(app, ["--help"], terminal_width=200).output
+    rows = {m.group(1) for m in re.finditer(r"^\s*│\s+([A-Za-z][\w-]*)\s", top, re.M)}
+    assert "sandbox" in rows  # canonical local group is visible
+    assert "environment" not in rows  # deprecated alias group is hidden
+    assert runner.invoke(app, ["environment", "create", "--help"]).exit_code == 0
