@@ -144,11 +144,6 @@ _BROWSER_USE_CLI_VERSION = "0.13.1"
 _BROWSER_USE_CLI_VENV = "/opt/benchflow/browser-use-cli-venv"
 _BROWSER_USE_CLI_BROWSERS = "/opt/benchflow/ms-playwright"
 
-# Computer Use Agent: a venv with the Gemini SDK for the real CUA model loop.
-# Desktop control (xdotool) and capture (gnome-screenshot) run in-sandbox, so
-# the Cua sandbox provider stays untouched.
-_CUA_AGENT_VENV = "/opt/benchflow/computer-use-agent-venv"
-_GOOGLE_GENAI_SPEC = "google-genai>=1.0.0"
 _STAGEHAND_AGENT_VERSION = "3.5.0"
 _STAGEHAND_GOOGLE_VERSION = "2.0.74"
 _STAGEHAND_PLAYWRIGHT_VERSION = "1.55.1"
@@ -264,11 +259,6 @@ _BROWSER_USE_SMOKE_SHIM = (
 # Path to the Computer Use smoke ACP shim (fixture desktop adapter dogfood)
 _COMPUTER_USE_SMOKE_SHIM = (
     Path(__file__).parent / "computer_use_smoke_acp_shim.py"
-).read_text()
-
-# Path to the Computer Use Agent ACP shim (real Gemini-driven CUA model loop)
-_COMPUTER_USE_AGENT_SHIM = (
-    Path(__file__).parent / "computer_use_agent_acp_shim.py"
 ).read_text()
 
 # Path to the Browser Use CLI ACP shim (wraps the real browser-use CLI harness)
@@ -801,9 +791,9 @@ AGENTS: dict[str, AgentConfig] = {
         default_model="computer-use-smoke",
     ),
     # mini-computer-agent: the pure computer-use agent (mini-swe-agent style) from
-    # benchflow-ai/agents, served by the generic acp_serve.py. Supersedes the
-    # baked computer_use_agent_acp_shim below (kept until the pure path is dogfood-
-    # validated). Coordinates are [0,1000]-normalized -> pixels in the agent core.
+    # benchflow-ai/agents, served by the generic acp_serve.py. Coordinates are
+    # [0,1000]-normalized -> pixels in the agent core (the earlier baked shim fed
+    # them as raw pixels, ~3x off).
     "mini-computer-agent": _pure_agent_config(
         name="mini-computer-agent",
         agent_spec="mini_computer_agent.core:run",
@@ -820,39 +810,6 @@ AGENTS: dict[str, AgentConfig] = {
             "mini-computer-agent — minimal computer-use agent (screenshot -> any "
             "vision model -> xdotool); pure agent served via the generic ACP serve"
         ),
-    ),
-    "computer-use-agent": AgentConfig(
-        name="computer-use-agent",
-        description=(
-            "Computer Use Agent via ACP shim — real Gemini-driven CUA model "
-            "loop (screenshot → action → xdotool) for desktop eval runs"
-        ),
-        install_cmd=(
-            "export DEBIAN_FRONTEND=noninteractive; "
-            "( command -v python3 >/dev/null 2>&1 || "
-            "(apt-get update -qq && apt-get install -y -qq python3 python3-pip "
-            "python3-venv >/dev/null 2>&1) ) && " + _apt_install("xdotool") + " && "
-            f"( python3 -m venv {_CUA_AGENT_VENV} 2>/dev/null || "
-            "(apt-get update -qq && apt-get install -y -qq python3-venv "
-            f">/dev/null 2>&1 && python3 -m venv {_CUA_AGENT_VENV}) ) && "
-            f"{_CUA_AGENT_VENV}/bin/python -m pip install -q "
-            f"{shlex.quote(_GOOGLE_GENAI_SPEC)} && "
-            + _INSTALL_DESKTOP_ENVIRONMENT_RUNTIME
-            + " && "
-            + _install_python_script(
-                f"{_BENCHFLOW_BIN_PREFIX}/computer-use-agent-acp-shim",
-                _COMPUTER_USE_AGENT_SHIM,
-            )
-            + " && chmod -R a+rX /opt/benchflow"
-        ),
-        launch_cmd=_benchflow_python_launch(
-            f"{_CUA_AGENT_VENV}/bin/python "
-            f"{_BENCHFLOW_BIN_PREFIX}/computer-use-agent-acp-shim"
-        ),
-        protocol="acp",
-        requires_env=["GEMINI_API_KEY"],
-        install_timeout=1200,
-        default_model="gemini-3.5-flash",
     ),
     "browser-use-cli": AgentConfig(
         name="browser-use-cli",
