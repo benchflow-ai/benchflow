@@ -1,4 +1,4 @@
-"""``bench skills`` — skill discovery, installation, and evaluation.
+"""``bench skills`` — skill discovery and evaluation.
 
 Registered onto the top-level app by :func:`register_skills`; ``cli/main.py``
 only wires the call.
@@ -23,7 +23,7 @@ from benchflow.cli._shared import console
 
 def register_skills(app: typer.Typer) -> None:
     """Attach the ``skills`` command group to the top-level benchflow app."""
-    skills_app = typer.Typer(help="Skill discovery, installation, and evaluation.")
+    skills_app = typer.Typer(help="Skill discovery and evaluation.")
     app.add_typer(skills_app, name="skills", rich_help_panel="Core")
 
     @skills_app.command("list")
