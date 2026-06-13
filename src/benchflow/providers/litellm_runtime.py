@@ -72,7 +72,6 @@ _NATIVE_PROTOCOL_AGENTS = frozenset(
         "gemini",
         "browser-use-smoke",
         "computer-use-smoke",
-        "computer-use-agent",
         "browser-use-cli",
         "browser-use-agent",
         "stagehand-agent",
