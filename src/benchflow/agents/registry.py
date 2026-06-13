@@ -424,13 +424,6 @@ class AgentConfig:
 _ACP_SERVE_SOURCE = (Path(__file__).parent / "acp_serve.py").read_text()
 _ACP_SERVE_PATH = f"{_BENCHFLOW_BIN_PREFIX}/acp_serve.py"
 
-# Local mini-computer-agent core source for the unpushed dogfood deploy (the
-# published path will list it in ``pip`` instead). Empty if the checkout is absent.
-_MCA_CORE_PATH = Path(
-    "/Users/lixiangyi/benchflow/agents/mini-computer-agent/src/mini_computer_agent/core.py"
-)
-_MCA_CORE_SOURCE = _MCA_CORE_PATH.read_text() if _MCA_CORE_PATH.is_file() else ""
-
 
 def _pure_agent_config(
     *,
@@ -442,31 +435,14 @@ def _pure_agent_config(
     default_model: str = "",
     description: str = "",
     install_timeout: int = 1200,
-    deploy_module: tuple[str, str] | None = None,
 ) -> AgentConfig:
     """AgentConfig for a pure agent (a ``module:callable`` run entry) served by
-    the generic acp_serve.py. The agent has zero benchflow/protocol code.
-
-    ``deploy_module=(module_name, source)`` deploys the agent source into the
-    sandbox instead of pip-installing it — used while the agent is unpublished;
-    the published path just lists it in ``pip``.
+    the generic acp_serve.py. The agent ships zero benchflow/protocol code: its
+    package is pip-installed (``pip``) and acp_serve.py wraps its ``run``.
     """
-    if deploy_module is not None and not deploy_module[1].strip():
-        # An empty source would deploy an importable-but-undefined module (``run``
-        # missing) and fail opaquely in-sandbox. Fail loudly at config-build
-        # instead: the local agent checkout is missing — publish the agent and
-        # switch this entry to a ``pip`` spec, or restore the local checkout.
-        raise ValueError(
-            f"{name}: deploy_module source for {deploy_module[0]!r} is empty "
-            "(local agent checkout missing). Pip-install the published agent "
-            "instead, or restore the local checkout."
-        )
     venv = f"/opt/benchflow/{name}-venv"
     pip_specs = " ".join(shlex.quote(p) for p in pip)
     apt_step = (_apt_install(*apt) + " && ") if apt else ""
-    deploy_step = (
-        (_install_python_module(*deploy_module) + " && ") if deploy_module else ""
-    )
     install_cmd = (
         "export DEBIAN_FRONTEND=noninteractive && "
         "( command -v python3 >/dev/null 2>&1 || "
@@ -476,7 +452,6 @@ def _pure_agent_config(
         f"  ( {_apt_install('python3-venv')} && python3 -m venv {venv} ) ) && "
         f"{venv}/bin/python -m pip install -q --upgrade pip && "
         f"{venv}/bin/python -m pip install -q {pip_specs} && "
-        + deploy_step
         + _install_python_script(_ACP_SERVE_PATH, _ACP_SERVE_SOURCE)
         + " && chmod -R a+rX /opt/benchflow"
     )
@@ -832,8 +807,12 @@ AGENTS: dict[str, AgentConfig] = {
     "mini-computer-agent": _pure_agent_config(
         name="mini-computer-agent",
         agent_spec="mini_computer_agent.core:run",
-        pip=["litellm>=1.40"],
-        deploy_module=("mini_computer_agent.core", _MCA_CORE_SOURCE),
+        # Pip-install the published agent (it declares litellm). Branch ref so it
+        # resolves pre-merge; switch to @main once the agents PR lands.
+        pip=[
+            "mini-computer-agent @ git+https://github.com/benchflow-ai/agents.git"
+            "@feat/mini-computer-acp#subdirectory=mini-computer-agent",
+        ],
         apt=("xdotool", "scrot"),
         requires_env=["GEMINI_API_KEY"],
         default_model="gemini-3.5-flash",
