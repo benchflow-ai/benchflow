@@ -1,6 +1,6 @@
 <div align="center">
   <h1>BenchFlow</h1>
-  <p>Run any benchmark, with any agent, in any sandbox — one scored-trajectory contract.</p>
+  <p>The universal environment framework — a benchmark is just a frozen environment.</p>
   <a href="https://pypi.org/project/benchflow/" target="_blank">
     <img src="https://img.shields.io/badge/PyPI-benchflow-3775A9?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI package">
   </a>
@@ -11,7 +11,7 @@
 
 ## What
 
-BenchFlow runs AI agents against benchmark tasks in sandboxed environments and scores them through one hardened contract. Point it at *any* benchmark, drive it with *any* ACP agent, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
+BenchFlow is a universal environment framework: it runs AI agents against task environments and scores them through one hardened contract. **A benchmark is just a frozen environment** — point BenchFlow at any of them, drive it with *any* ACP agent, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
 
 - **Run any benchmark** — three-layer routing runs supported frameworks natively, translates unknown formats and proves equivalence with a parity gate, or runs a bespoke harness as-is; every layer emits one scored-trajectory contract. See [Run any benchmark](./docs/running-any-benchmark.md)
 - **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, Pi, or your own
