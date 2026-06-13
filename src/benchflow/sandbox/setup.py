@@ -57,6 +57,7 @@ _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
 
 _OPTIONAL_SANDBOX_EXTRAS = {
     "cua": "sandbox-cua",
+    "cua-cloud": "sandbox-cua-cloud",
     "daytona": "sandbox-daytona",
     "modal": "sandbox-modal",
 }
@@ -773,6 +774,27 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             persistent_env=manifest_env or None,
         )
+    elif sandbox_type == "cua-cloud":
+        # Cloud Cua desktops via the supported cyclops-cs warm-pool claim API
+        # (driven by the `cua-train` SDK), distinct from the local/SDK `cua`
+        # path above. The provider module imports without the optional extra
+        # (the SDK is loaded lazily inside preflight/start), so a missing
+        # `[sandbox-cua-cloud]` extra surfaces through preflight()'s actionable
+        # RuntimeError rather than a raw ImportError.
+        try:
+            from benchflow.sandbox.cua_cloud import CuaCloudSandbox
+        except ModuleNotFoundError as exc:
+            _raise_missing_optional_sandbox_dependency("cua-cloud", exc)
+        CuaCloudSandbox.preflight()
+
+        return CuaCloudSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
     elif sandbox_type == "macos-ios-simulator":
         # Non-Docker host provider: uses the host's xcrun/simctl + Appium
         # toolchain (no pip extra), so a missing-import path is not possible
@@ -793,7 +815,7 @@ def _create_sandbox_environment(
     else:
         raise ValueError(
             f"Unknown sandbox_type: {sandbox_type!r} "
-            "(use 'docker', 'daytona', 'modal', 'cua', or "
+            "(use 'docker', 'daytona', 'modal', 'cua', 'cua-cloud', or "
             "'macos-ios-simulator')"
         )
 

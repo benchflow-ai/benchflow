@@ -401,6 +401,9 @@ judge = [
 sandbox-cua = [
     { name = "cua-sandbox", marker = "python_full_version < '3.14'" },
 ]
+sandbox-cua-cloud = [
+    { name = "cua-train" },
+]
 sandbox-daytona = [
     { name = "daytona" },
     { name = "tenacity" },
@@ -417,6 +420,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.0" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.40" },
     { name = "cua-sandbox", marker = "python_full_version < '3.14' and extra == 'sandbox-cua'", specifier = ">=0.1.16" },
+    { name = "cua-train", marker = "extra == 'sandbox-cua-cloud'", specifier = ">=0.1.0", index = "https://wheels.cua.ai/simple/" },
     { name = "daytona", marker = "extra == 'sandbox-daytona'", specifier = ">=0.184.0" },
     { name = "deepagents", marker = "extra == 'deepagents'", specifier = ">=0.6" },
     { name = "google-genai", marker = "extra == 'judge'", specifier = ">=1.0" },
@@ -439,7 +443,7 @@ requires-dist = [
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a1" },
     { name = "typer", specifier = ">=0.9" },
 ]
-provides-extras = ["dev", "sandbox-daytona", "sandbox-modal", "sandbox-cua", "bedrock", "judge", "deepagents"]
+provides-extras = ["dev", "sandbox-daytona", "sandbox-modal", "sandbox-cua", "sandbox-cua-cloud", "bedrock", "judge", "deepagents"]
 
 [[package]]
 name = "boto3"
@@ -807,6 +811,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c4/c1/c3dfc77e9d71624a44658c8cce4b6e325209d05b14dc5621402b65b3b664/cua_sandbox-0.1.16.tar.gz", hash = "sha256:d765e05933b2a9039a7d6cbf6d10745e90a0d493a92dfa4b48d43d15996c9f6e", size = 143781, upload-time = "2026-04-23T07:15:47.206Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/12/07/5960333b0f6c56e4e509ecb3ed3999764e1ecc549241d4dee0824b637c81/cua_sandbox-0.1.16-py3-none-any.whl", hash = "sha256:468ef558527d14748622a98198ccdf0c848a7bcba626f0203116b0d40b77ee39", size = 174659, upload-time = "2026-04-23T07:15:46.092Z" },
+]
+
+[[package]]
+name = "cua-train"
+version = "0.1.0"
+source = { registry = "https://wheels.cua.ai/simple/" }
+dependencies = [
+    { name = "attrs" },
+    { name = "httpx" },
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://wheels.cua.ai/simple/cua-train/cua_train-0.1.0.tar.gz", hash = "sha256:2c098d080ed8c0e1f05b974349bfa74bc0f9352b0b97f4b0f2691ee56d194fc1" }
+wheels = [
+    { url = "https://wheels.cua.ai/simple/cua-train/cua_train-0.1.0-py3-none-any.whl", hash = "sha256:5c5dfc6d1a5f02779398975b40a9f2d774563595bbd23a642610b277c974c6a4" },
 ]
 
 [[package]]

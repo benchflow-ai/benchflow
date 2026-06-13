@@ -62,6 +62,14 @@ sandbox-modal = [
 sandbox-cua = [
     "cua-sandbox>=0.1.16; python_version < '3.14'",
 ]
+# Cloud Cua desktops via the supported cyclops-cs warm-pool claim API. Distinct
+# from `sandbox-cua` (the local/SDK path): the claim API is driven by the
+# `cua-train` SDK, published on Cua's own index
+# (`--extra-index-url https://wheels.cua.ai/simple/`). Lazily imported, so a
+# base install / import test is unaffected when this extra is absent.
+sandbox-cua-cloud = [
+    "cua-train>=0.1.0",
+]
 bedrock = [
     "boto3>=1.40",
 ]
@@ -94,6 +102,19 @@ Changelog = "https://github.com/benchflow-ai/benchflow/blob/main/CHANGELOG.md"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# `cua-train` (the cyclops-cs claim-API SDK behind the `sandbox-cua-cloud`
+# extra) is not published on PyPI — it lives on Cua's own wheel index. The
+# index is marked `explicit = true` so it is consulted *only* for packages
+# pinned to it via [tool.uv.sources]; default-index resolution for every other
+# dependency is unchanged.
+[[tool.uv.index]]
+name = "cua-wheels"
+url = "https://wheels.cua.ai/simple/"
+explicit = true
+
+[tool.uv.sources]
+cua-train = { index = "cua-wheels" }
 
 [tool.hatch.build.targets.sdist]
 # Allowlist: only ship what the installed package needs.
