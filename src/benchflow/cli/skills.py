@@ -20,6 +20,7 @@ from benchflow.cli._options import (
     SandboxOption,
 )
 from benchflow.cli._shared import console
+from benchflow.sandbox.providers import is_known_provider, providers_phrase
 
 
 def register_skills(app: typer.Typer) -> None:
@@ -98,10 +99,10 @@ def register_skills(app: typer.Typer) -> None:
         """
         from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
-        if environment not in ("docker", "daytona", "modal"):
+        if not is_known_provider(environment):
             console.print(
                 f"[red]Invalid --sandbox {environment!r}: "
-                "choose docker, daytona, or modal[/red]"
+                f"choose {providers_phrase()}[/red]"
             )
             raise typer.Exit(1)
         if agent is None:

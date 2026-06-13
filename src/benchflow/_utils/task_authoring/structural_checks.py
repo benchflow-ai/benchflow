@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
-from benchflow.task.document import TaskDocument, TaskDocumentParseError
+from benchflow.task.document import TaskDocument
 from benchflow.task.package import TaskPackage
 from benchflow.task.paths import TaskPaths, local_script_strategy_files
 from benchflow.task.verifier_document import (
@@ -142,14 +142,28 @@ def _check_partial_split_definition(paths: TaskPaths) -> list[str]:
     ]
 
 
+def task_document_parse_error(task_md: Path) -> str | None:
+    """Return a human-readable parse error if ``task_md`` fails to parse, else None.
+
+    The single source of truth for "does this task.md parse?" — used both by
+    ``check_task``'s structural validation and by eval task-discovery, so a
+    genuinely malformed task.md (a typo that would otherwise make the dir
+    silently vanish from a batch, #3) can be told apart from a dir that simply
+    isn't a task.
+    """
+    try:
+        TaskDocument.from_path(task_md)
+    except Exception as e:
+        return f"task.md parse error: {e}"
+    return None
+
+
 def _check_task_document(task_md: Path) -> list[str]:
     issues: list[str] = []
-    try:
-        document = TaskDocument.from_path(task_md)
-    except TaskDocumentParseError as e:
-        return [f"task.md parse error: {e}"]
-    except Exception as e:
-        return [f"task.md parse error: {e}"]
+    parse_error = task_document_parse_error(task_md)
+    if parse_error is not None:
+        return [parse_error]
+    document = TaskDocument.from_path(task_md)
 
     text = task_md.read_text()
     if not document.instruction.strip():

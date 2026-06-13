@@ -16,6 +16,7 @@ from rich.markup import escape
 
 from benchflow.cli._shared import console
 from benchflow.cli.trace_import import register_tasks_generate
+from benchflow.sandbox.providers import providers_phrase
 
 
 def register_tasks(app: typer.Typer) -> None:
@@ -98,7 +99,7 @@ def register_tasks(app: typer.Typer) -> None:
             str | None,
             typer.Option(
                 "--sandbox",
-                help="Also validate parsed runtime semantics for docker, daytona, or modal",
+                help=f"Also validate parsed runtime semantics for {providers_phrase()}",
             ),
         ] = None,
         report_output: Annotated[
