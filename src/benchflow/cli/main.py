@@ -41,7 +41,7 @@ from benchflow.cli._shared import (
     console,
     print_error,
 )
-from benchflow.cli.adopt import register_adopt
+from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
 from benchflow.cli.agent import register_agent
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.environment import register_environment
@@ -187,6 +187,9 @@ def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
 
 eval_app = typer.Typer(help="Evaluation commands.")
 app.add_typer(eval_app, name="eval", rich_help_panel="Core")
+# Canonical `bench eval adopt init|convert|verify` (eval is the universal
+# benchmark entry point; adopt makes a foreign benchmark runnable).
+register_eval_adopt(eval_app)
 
 
 @eval_app.command("create")
@@ -990,7 +993,7 @@ register_skills(app)
 register_tasks(app)
 register_hub(app)
 register_agent(app)
-register_adopt(app)
+register_adopt_deprecated(app)
 register_sandbox(app)
 register_environment(app)
 register_monitor(app)

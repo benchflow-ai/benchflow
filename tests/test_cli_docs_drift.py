@@ -87,10 +87,11 @@ def test_top_level_help_lists_public_groups() -> None:
     """Every public top-level group documented in cli.md is shown in --help."""
     out = _help([])
     commands = _help_command_names(out)
-    for group in ("eval", "skills", "tasks", "hub", "agent", "adopt", "sandbox"):
+    for group in ("eval", "skills", "tasks", "hub", "agent", "sandbox"):
         assert group in commands, f"missing public group {group!r} in: {out}"
     # Deprecated, hidden, and removed commands must not show up in public help.
-    # `environment` is now a hidden deprecated alias group (→ sandbox / hub env).
+    # `environment` is now a hidden deprecated alias group (→ sandbox / hub env);
+    # `adopt` is a hidden deprecated alias group (→ eval adopt).
     for hidden in (
         "run",
         "job",
@@ -99,6 +100,7 @@ def test_top_level_help_lists_public_groups() -> None:
         "view",
         "eval-batch",
         "environment",
+        "adopt",
     ):
         assert hidden not in commands, (
             f"hidden command {hidden!r} unexpectedly shown: {out}"
@@ -163,6 +165,10 @@ def test_documented_subcommands_exist() -> None:
         ["eval", "list"],
         ["eval", "metrics"],
         ["eval", "view"],
+        # Adoption is canonically under `eval` (cli.md documents `bench eval adopt`).
+        ["eval", "adopt", "init"],
+        ["eval", "adopt", "convert"],
+        ["eval", "adopt", "verify"],
         ["agent", "list"],
         ["agent", "show"],
         ["tasks", "init"],

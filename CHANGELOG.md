@@ -3,11 +3,13 @@
 ## [Unreleased]
 
 ### Renamed (aliased; old names removed in 0.7)
-- Benchmark adoption moved out of `bench agent` into its own `bench adopt` group:
-  `bench agent create` → `bench adopt init`, `bench agent run` → `bench adopt
-  convert`, `bench agent verify` → `bench adopt verify`. `bench agent` now means
-  agent management only (`list` / `show`). The old `bench agent create|run|verify`
-  still work as hidden aliases and print a one-line deprecation notice (stderr).
+- Benchmark adoption is now `bench eval adopt {init,convert,verify}`. It lives
+  under `eval` because `eval` is the universal benchmark entry point (`eval
+  create` runs a benchmark; `eval adopt` makes a foreign one runnable). Two prior
+  spellings remain as hidden deprecated aliases, each printing a one-line stderr
+  notice pointing at `bench eval adopt`: the original `bench agent
+  create|run|verify`, and the 0.6-dev intermediate top-level `bench adopt`.
+  `bench agent` now means agent management only (`list` / `show`).
 - The overloaded `bench environment` group was split and is now a hidden
   **deprecated alias group** (removed in 0.7): the local sandbox lifecycle moved
   to `bench sandbox {create,list,cleanup}`, and hosted-provider browsing to
