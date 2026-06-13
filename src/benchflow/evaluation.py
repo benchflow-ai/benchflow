@@ -954,11 +954,7 @@ class Evaluation:
         """
         from benchflow._utils.task_authoring import task_document_parse_error
 
-        single_task_md = self._tasks_dir / "task.md"
-        if single_task_md.is_file():
-            parse_error = task_document_parse_error(single_task_md)
-            if parse_error is not None:
-                raise MalformedTaskError(f"{single_task_md}: {parse_error}")
+        # A valid task at the root → that IS the whole job (single-task input).
         if _is_task_dir(self._tasks_dir):
             if self._tasks_dir.name in self._config.exclude_tasks:
                 return []
@@ -969,6 +965,11 @@ class Evaluation:
                 return []
             return [self._tasks_dir]
 
+        # Batch input: collect valid child tasks; warn (don't silently drop) on
+        # any child whose task.md fails to PARSE. Selection filters are applied
+        # first, so excluded dirs are never warned about. A child task.md that
+        # PARSES but is structurally incomplete (schema-only fixture) keeps its
+        # silent skip.
         selected: list[Path] = []
         for d in sorted(self._tasks_dir.iterdir()):
             if not d.is_dir():
@@ -980,10 +981,6 @@ class Evaluation:
             if _is_task_dir(d):
                 selected.append(d)
                 continue
-            # Not a task per check_task — but if it carries a task.md that fails
-            # to PARSE, warn (naming the dir + error) instead of dropping it
-            # silently. Selection filters were applied above, so excluded dirs
-            # are never warned about.
             task_md = d / "task.md"
             if task_md.is_file():
                 parse_error = task_document_parse_error(task_md)
@@ -991,6 +988,24 @@ class Evaluation:
                     logger.warning(
                         "Skipping malformed task %r: %s", d.name, parse_error
                     )
+
+        # A malformed task.md at the tasks-dir ROOT is a hard error ONLY when no
+        # valid child tasks were found — i.e. the root was meant as a single
+        # task and it is broken. If the dir is a batch container that also
+        # happens to carry a stray broken root task.md, warn but still run the
+        # healthy children rather than aborting the whole batch.
+        root_task_md = self._tasks_dir / "task.md"
+        if root_task_md.is_file():
+            parse_error = task_document_parse_error(root_task_md)
+            if parse_error is not None:
+                if selected:
+                    logger.warning(
+                        "Ignoring malformed task.md at the tasks-dir root %r: %s",
+                        self._tasks_dir.name,
+                        parse_error,
+                    )
+                else:
+                    raise MalformedTaskError(f"{root_task_md}: {parse_error}")
         return selected
 
     def _get_completed_tasks(self) -> dict[str, dict]:

@@ -431,6 +431,29 @@ def test_malformed_excluded_task_md_is_not_warned(tmp_path, caplog):
     assert not any("broken-task" in r.message for r in caplog.records)
 
 
+def test_batch_with_broken_root_task_md_still_runs_children(tmp_path, caplog):
+    # Bugbot edge case: a batch tasks-dir that ALSO has a broken root task.md
+    # must warn + run the valid children, NOT abort the whole batch (the
+    # root-malformed hard-error is only for the single-task case).
+    runnable = _make_task_missing_agent(tmp_path, name="runnable-task")
+    (tmp_path / "task.md").write_text(
+        "---\ntask:\n  name: [unclosed\n---\n## prompt\nx\n"
+    )
+    ev = Evaluation(
+        tasks_dir=str(tmp_path),
+        jobs_dir=str(tmp_path / "jobs"),
+        config=EvaluationConfig(agent="oracle"),
+    )
+    with caplog.at_level(logging.WARNING):
+        dirs = ev._get_task_dirs()
+    assert dirs == [runnable]  # batch ran, did not abort
+    assert any(
+        "root" in r.message and "parse error" in r.message for r in caplog.records
+    ), (
+        f"no warning about the broken root task.md: {[r.message for r in caplog.records]}"
+    )
+
+
 def test_malformed_task_md_cli_exits_with_parse_error(tmp_path):
     # End-to-end: the CLI must exit non-zero with the file + parse error, not a
     # raw traceback and not a misleading empty-selection message.
