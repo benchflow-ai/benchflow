@@ -82,12 +82,12 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 
 Notebooks and runnable example scripts live under [`docs/examples/`](./docs/examples/) so examples stay versioned with the docs that explain them.
 
-> **Heads-up on `bench agent`.** Two different nouns share this command group:
-> `bench agent list` / `bench agent show` inspect **registered AI agents** (the
-> solver programs like Claude Code or Gemini CLI), while `bench agent create` /
-> `run` / `verify` drive **benchmark adoptions** (onboarding a third-party
-> benchmark into `benchmarks/<name>/`). See the
-> [CLI reference](./docs/reference/cli.md#bench-agent) for details.
+> **`bench agent` vs `bench adopt`.** `bench agent list` / `bench agent show`
+> inspect **registered AI agents** (the solver programs like Claude Code or
+> Gemini CLI). Onboarding a third-party benchmark into `benchmarks/<name>/` is a
+> separate workflow — `bench adopt init` → `convert` → `verify`. (The legacy
+> `bench agent create|run|verify` still work as deprecated aliases through 0.6.)
+> See the [CLI reference](./docs/reference/cli.md#bench-agent) for details.
 
 ## Benchmark task sources
 

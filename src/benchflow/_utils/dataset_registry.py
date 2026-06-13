@@ -12,7 +12,7 @@ import posixpath
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.request import urlopen
 
 from benchflow._utils import benchmark_repos
@@ -155,13 +155,20 @@ def resolve_dataset(
         (
             e
             for e in entries
-            if e.get("name") == name and str(e.get("version")) == version
+            if isinstance(e, dict)
+            and e.get("name") == name
+            and str(e.get("version")) == version
         ),
         None,
     )
     if entry is None:
         available = (
-            ", ".join(f"{e.get('name')}@{e.get('version')}" for e in entries) or "none"
+            ", ".join(
+                f"{e.get('name')}@{e.get('version')}"
+                for e in entries
+                if isinstance(e, dict)
+            )
+            or "none"
         )
         raise DatasetResolutionError(
             f"Dataset {spec!r} not found in registry (available: {available})"
@@ -170,7 +177,18 @@ def resolve_dataset(
     if not tasks:
         raise DatasetResolutionError(f"Dataset {spec!r} has no tasks in the registry")
 
-    snapshots = {(t["git_url"], t["git_commit_id"]) for t in tasks}
+    def _require(task: object, key: str) -> str:
+        # A registry written by hand / a stale tool can have task entries that
+        # are non-objects or miss a key; surface a clean DatasetResolutionError
+        # instead of a raw KeyError / TypeError ('string indices must be integers').
+        if not isinstance(task, dict) or key not in task:
+            raise DatasetResolutionError(
+                f"Dataset {spec!r} has a malformed task entry "
+                f"(expected an object with {key!r}): {task!r}"
+            )
+        return str(cast("dict[str, Any]", task)[key])
+
+    snapshots = {(_require(t, "git_url"), _require(t, "git_commit_id")) for t in tasks}
     if len(snapshots) != 1:
         raise DatasetResolutionError(
             f"Dataset {spec!r} spans {len(snapshots)} git snapshots — "
@@ -178,7 +196,7 @@ def resolve_dataset(
         )
     git_url, commit = next(iter(snapshots))
 
-    parents = {posixpath.dirname(t["path"].rstrip("/")) for t in tasks}
+    parents = {posixpath.dirname(_require(t, "path").rstrip("/")) for t in tasks}
     if len(parents) != 1:
         raise DatasetResolutionError(
             f"Dataset {spec!r} tasks live under {len(parents)} parent "
@@ -188,12 +206,12 @@ def resolve_dataset(
 
     task_digests: dict[str, str] = {}
     for t in tasks:
-        base = posixpath.basename(t["path"].rstrip("/"))
+        base = posixpath.basename(_require(t, "path").rstrip("/"))
         if base in task_digests:
             raise DatasetResolutionError(
                 f"Dataset {spec!r} has two tasks named {base!r}"
             )
-        task_digests[base] = t["digest"]
+        task_digests[base] = _require(t, "digest")
 
     repo = _github_org_repo(git_url)
     resolved = benchmark_repos.resolve_source_with_metadata(

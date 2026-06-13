@@ -10,6 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from benchflow.sandbox.providers import SANDBOX_PROVIDERS
+
+# The "repo" environment adapter is verified on every canonical sandbox provider
+# plus the 0.7 ``cua`` backend. Derived from the registry so it can't drift from
+# the provider set (guarded by tests/test_sandbox_provider_registry_drift.py).
+_REPO_VERIFIED_SANDBOXES: tuple[str, ...] = (*SANDBOX_PROVIDERS, "cua")
+
 
 @dataclass(frozen=True)
 class EnvironmentAdapterReport:
@@ -69,7 +76,7 @@ def environment_adapter_report(
                 status="ready",
                 provider_support="native",
                 required_capabilities=("shell", "filesystem"),
-                verified_sandboxes=("docker", "daytona", "modal", "cua"),
+                verified_sandboxes=_REPO_VERIFIED_SANDBOXES,
             )
 
 

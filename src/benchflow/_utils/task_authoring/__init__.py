@@ -84,6 +84,7 @@ from .structural_checks import (
     _check_unreplaced_verifier_placeholders,
     _logical_dir_label,
     _strategy_file_exists,
+    task_document_parse_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -327,6 +328,7 @@ __all__ = [
     "_check_unreplaced_verifier_placeholders",
     "_logical_dir_label",
     "_strategy_file_exists",
+    "task_document_parse_error",
     # acceptance_evidence
     "_append_declared_evidence_path",
     "_check_acceptance_evidence",

@@ -36,6 +36,11 @@ from benchflow.loop_strategies import (
     LoopStrategySpec,
     parse_loop_strategy_spec,
 )
+from benchflow.sandbox.providers import (
+    SANDBOX_PROVIDERS,
+    is_known_provider,
+    provider_extra,
+)
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -52,6 +57,13 @@ __all__ = [
     "EvalPlanError",
     "build_eval_plan",
 ]
+
+# 0.7 universal-environment sandbox dispatched in sandbox/setup.py. It is a
+# different category from the canonical docker/daytona/modal registry, so it is
+# accepted alongside it rather than added to that registry. (cua-cloud and
+# macos-ios-simulator are reachable programmatically / via manifest, but the
+# `bench eval create --sandbox` CLI surface gates to cua as in 0.7.)
+_UNIVERSAL_ENV_SANDBOXES = frozenset({"cua"})
 
 
 class EvalPlanError(ValueError):
@@ -271,12 +283,15 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     # environment owns its harness), so only validate / preflight it for the
     # paths that actually use the local sandbox.
     if not request.source_env:
-        if eval_environment not in {"docker", "daytona", "modal", "cua"}:
+        if not (
+            is_known_provider(eval_environment)
+            or eval_environment in _UNIVERSAL_ENV_SANDBOXES
+        ):
             # Unknown sandbox values otherwise surface as a raw traceback per-task
             # once the rollout starts — reject them at planning instead.
             raise EvalPlanError(
-                f"Invalid --sandbox {eval_environment!r}: "
-                "choose docker, daytona, modal, or cua"
+                f"Invalid --sandbox {eval_environment!r}: choose "
+                f"{', '.join(SANDBOX_PROVIDERS)}, or cua"
             )
         if eval_environment == "modal":
             # Fail fast with the actionable extra hint instead of surfacing a raw
@@ -287,7 +302,7 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
             except ModuleNotFoundError as exc:
                 raise EvalPlanError(
                     "Missing optional dependency for 'modal' sandbox. "
-                    "Install it with `uv sync --extra sandbox-modal`."
+                    f"Install it with `uv sync --extra {provider_extra('modal')}`."
                 ) from exc
         if eval_environment == "cua":
             try:

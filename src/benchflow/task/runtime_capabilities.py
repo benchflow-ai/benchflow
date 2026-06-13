@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
+from benchflow.sandbox.providers import SANDBOX_PROVIDER_SET, SANDBOX_PROVIDERS
 from benchflow.task.config import (
     NetworkMode,
     TaskConfig,
@@ -30,7 +31,11 @@ from benchflow.task.prompts import (
 )
 from benchflow.task.verifier_document import load_verifier_document
 
-SUPPORTED_SANDBOX_BACKENDS = {"docker", "daytona", "modal", "cua"}
+# The canonical docker/daytona/modal set lives in benchflow.sandbox.providers;
+# the 0.7 ``cua`` universal-environment backend is dispatched in sandbox/setup.py
+# and is an equally valid runtime target, so it is unioned in for this module's
+# task-support membership check.
+SUPPORTED_SANDBOX_BACKENDS = SANDBOX_PROVIDER_SET | {"cua"}
 
 
 @dataclass(frozen=True)
@@ -76,7 +81,7 @@ def validate_task_runtime_support(
         _issue(
             unsupported,
             path="sandbox",
-            reason="unknown sandbox backend; use docker, daytona, modal, or cua",
+            reason=f"unknown sandbox backend; use {', '.join(SANDBOX_PROVIDERS)}, or cua",
             sandbox=sandbox,
         )
         return unsupported

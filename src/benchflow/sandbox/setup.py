@@ -14,6 +14,7 @@ from typing import Any, NoReturn, cast
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow.agents.registry import AGENTS
+from benchflow.sandbox.providers import OPTIONAL_SANDBOX_EXTRAS, SANDBOX_PROVIDERS
 from benchflow.skill_policy import validate_container_mount_path
 from benchflow.task import RolloutPaths, Task
 
@@ -55,11 +56,16 @@ def _stage_ignore(directory: str, contents: list[str]) -> list[str]:
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
 
 
-_OPTIONAL_SANDBOX_EXTRAS = {
+# The canonical registry (benchflow.sandbox.providers) is the single source of
+# truth for the docker/daytona/modal "off-box host-proxy" providers. The 0.7
+# universal-environment providers (cua, cua-cloud, macos-ios-simulator) are a
+# different category — they are dispatched here and not part of that registry —
+# so their optional-dependency extras are layered on top of it. macos-ios-
+# simulator uses the host xcrun/simctl toolchain and needs no pip extra.
+_SANDBOX_OPTIONAL_EXTRAS = {
+    **OPTIONAL_SANDBOX_EXTRAS,
     "cua": "sandbox-cua",
     "cua-cloud": "sandbox-cua-cloud",
-    "daytona": "sandbox-daytona",
-    "modal": "sandbox-modal",
 }
 
 
@@ -67,7 +73,7 @@ def _raise_missing_optional_sandbox_dependency(
     sandbox_type: str,
     exc: ImportError,
 ) -> NoReturn:
-    extra = _OPTIONAL_SANDBOX_EXTRAS[sandbox_type]
+    extra = _SANDBOX_OPTIONAL_EXTRAS[sandbox_type]
     raise RuntimeError(
         f"Missing optional dependency for {sandbox_type!r} sandbox. "
         f"Install it with `uv sync --extra {extra}` for local development, "
@@ -813,11 +819,17 @@ def _create_sandbox_environment(
             persistent_env=manifest_env or None,
         )
     else:
-        raise ValueError(
-            f"Unknown sandbox_type: {sandbox_type!r} "
-            "(use 'docker', 'daytona', 'modal', 'cua', 'cua-cloud', or "
-            "'macos-ios-simulator')"
-        )
+        # Registry providers (docker/daytona/modal) come from the registry; the
+        # 0.7 universal-environment providers are appended so the error lists
+        # every valid sandbox_type without re-hardcoding the registry set.
+        names = [
+            *(f"'{n}'" for n in SANDBOX_PROVIDERS),
+            "'cua'",
+            "'cua-cloud'",
+            "'macos-ios-simulator'",
+        ]
+        valid = ", ".join(names[:-1]) + ", or " + names[-1]
+        raise ValueError(f"Unknown sandbox_type: {sandbox_type!r} (use {valid})")
 
 
 def _validate_task_runtime_for_launch(

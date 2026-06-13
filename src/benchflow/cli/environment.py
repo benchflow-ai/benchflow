@@ -1,7 +1,9 @@
-"""``bench environment`` — environment management commands.
+"""``bench environment`` — local sandbox lifecycle (create / list / cleanup).
 
-Covers local Daytona sandbox lifecycle (create / list / cleanup) and the
-read-only hosted-environment hub views (list / show / inspect).
+Read-only browsing of hosted external-provider environments moved to
+``bench hub env list|show|inspect`` (see :mod:`benchflow.cli._hosted_env`); the
+old ``environment show|inspect`` and ``environment list --provider`` remain as
+hidden deprecated aliases through 0.6.
 
 Registered onto the top-level app by :func:`register_environment`;
 ``cli/main.py`` only wires the call. The Daytona client + cleanup helpers
@@ -31,11 +33,22 @@ from rich.table import Table
 
 from benchflow.adapters.inbound import UnsupportedInboundTaskError
 from benchflow.cli._adapter_reporting import unsupported_adapter_task_or_exit
+from benchflow.cli._hosted_env import (
+    hosted_env_inspect,
+    hosted_env_list,
+    hosted_env_show,
+)
 from benchflow.cli._options import SandboxOption
-from benchflow.cli._shared import console
+from benchflow.cli._shared import console, warn_deprecated
 from benchflow.environment.adapters import environment_adapter_report
+from benchflow.sandbox.providers import SANDBOX_PROVIDER_SET
 
-_SUPPORTED_SANDBOXES = {"docker", "daytona", "modal", "cua"}
+# Sandboxes `bench environment create/check/list` can target: the canonical
+# docker/daytona/modal registry plus the 0.7 `cua` universal-environment
+# backend. Derived from the registry so it can't drift from the provider set.
+# (cua-cloud / macos-ios-simulator are reachable via `bench eval create`, but
+# the environment create/check provider-readiness path only models cua today.)
+_SUPPORTED_SANDBOXES = SANDBOX_PROVIDER_SET | {"cua"}
 _DOCKER_OWNED_LABEL = "benchflow.owned=true"
 
 
@@ -162,12 +175,12 @@ def register_environment(app: typer.Typer) -> None:
                 )
             )
             return
-        console.print(f"[green]Environment created:[/green] {env}")
-        console.print(f"  Task:    {task_dir}")
+        console.print(f"[green]Environment created:[/green] {escape(str(env))}")
+        console.print(f"  Task:    {escape(str(task_dir))}")
         if adapter_source:
-            console.print(f"  Adapter: {adapter_source}")
+            console.print(f"  Adapter: {escape(str(adapter_source))}")
             console.print("  Native:  materialized task.md package (temporary)")
-        console.print(f"  Environment adapter: {environment_adapter.name}")
+        console.print(f"  Environment adapter: {escape(str(environment_adapter.name))}")
         console.print(f"  Sandbox: {env.sandbox}")
         console.print(
             "  Use [cyan]bench eval create[/cyan] for CLI runs, or pass to [cyan]bf.run()[/cyan]"
@@ -257,73 +270,67 @@ def register_environment(app: typer.Typer) -> None:
     @env_app.command("list")
     def environment_list(
         sandbox: SandboxOption = "daytona",
+        provider: Annotated[
+            str | None,
+            typer.Option(
+                "--provider",
+                hidden=True,
+                help="[deprecated] use `bench hub env list --provider`",
+            ),
+        ] = None,
         hub: Annotated[
             str | None,
-            typer.Option("--hub", help="Hosted environment hub to list"),
+            typer.Option(
+                "--hub", hidden=True, help="[deprecated] use `bench hub env list`"
+            ),
         ] = None,
         owner: Annotated[
             str | None,
-            typer.Option("--owner", help="Hosted hub owner/namespace filter"),
+            typer.Option("--owner", hidden=True, help="Hosted provider owner filter"),
         ] = None,
         search: Annotated[
             str | None,
-            typer.Option("--search", help="Hosted hub search query"),
+            typer.Option("--search", hidden=True, help="Hosted provider search query"),
         ] = None,
         limit: Annotated[
             int | None,
-            typer.Option("--limit", help="Maximum hosted hub results"),
+            typer.Option(
+                "--limit", hidden=True, help="Maximum hosted provider results"
+            ),
         ] = None,
         output_json: Annotated[
             bool,
             typer.Option("--json", help="Emit raw JSON for list results"),
         ] = False,
     ) -> None:
-        """List active provider environments or hosted hub environments."""
+        """List active local sandboxes for the selected ``--sandbox`` backend.
+
+        (Hosted-provider browsing moved to ``bench hub env list``; the
+        ``--provider``/``--hub`` options here are deprecated aliases.)
+        """
         from datetime import datetime
 
         from benchflow.cli import main as cli_main
 
-        _validate_sandbox_or_exit(sandbox)
-        if hub:
-            if hub != "primeintellect":
-                console.print("[red]Only --hub primeintellect is supported today[/red]")
-                raise typer.Exit(1)
-            from benchflow.hosted_env import HostedEnvError, prime_env_list
-
-            try:
-                raw = prime_env_list(owner=owner, search=search, limit=limit)
-            except HostedEnvError as e:
-                console.print(f"[red]{escape(str(e))}[/red]")
-                raise typer.Exit(1) from None
-            if output_json:
-                typer.echo(raw)
-                return
-            data = json.loads(raw)
-            rows = (
-                data
-                if isinstance(data, list)
-                else data.get("environments", data.get("items", []))
+        # Hosted browsing moved to `bench hub env list`. --provider/--hub stay
+        # as deprecated aliases (one stderr nudge) that delegate to the same
+        # logic, so existing scripts keep working through 0.6.
+        provider = provider or hub
+        if provider:
+            warn_deprecated(
+                "bench environment list --provider", "bench hub env list --provider"
             )
-            table = Table(title="PrimeIntellect Environments")
-            table.add_column("Environment", style="cyan")
-            table.add_column("Version", style="green")
-            table.add_column("Visibility")
-            table.add_column("Updated", style="dim")
-            for item in rows:
-                name = (
-                    item.get("environment")
-                    or item.get("fullName")
-                    or item.get("name")
-                    or item.get("id")
-                    or ""
-                )
-                version = str(item.get("version") or item.get("latestVersion") or "")
-                visibility = str(item.get("visibility") or item.get("private") or "")
-                updated = str(item.get("updated_at") or item.get("updatedAt") or "")
-                table.add_row(name, version, visibility, updated)
-            console.print(table)
+            hosted_env_list(
+                provider=provider,
+                owner=owner,
+                search=search,
+                limit=limit,
+                output_json=output_json,
+            )
             return
 
+        # Local sandbox listing for the selected backend (0.7).
+        _validate_sandbox_or_exit(sandbox)
         if sandbox == "cua":
             _list_cua_environments(output_json=output_json)
             return
@@ -361,7 +368,7 @@ def register_environment(app: typer.Typer) -> None:
         console.print(table)
         console.print(f"\n[bold]{total} sandbox(es)[/bold]")
 
-    @env_app.command("show")
+    @env_app.command("show", hidden=True, deprecated=True)
     def environment_show(
         source_env: Annotated[
             str,
@@ -374,17 +381,11 @@ def register_environment(app: typer.Typer) -> None:
             typer.Option("--version", help="Hosted environment version"),
         ] = None,
     ) -> None:
-        """Show hosted environment metadata."""
-        from benchflow.hosted_env import HostedEnvError, HostedEnvRef, prime_env_info
+        """[deprecated] Show hosted environment metadata — use `bench hub env show`."""
+        warn_deprecated("bench environment show", "bench hub env show")
+        hosted_env_show(source_env=source_env, version=version)
 
-        try:
-            ref = HostedEnvRef.parse(source_env, version=version)
-            console.print(prime_env_info(ref))
-        except HostedEnvError as e:
-            console.print(f"[red]{escape(str(e))}[/red]")
-            raise typer.Exit(1) from None
-
-    @env_app.command("inspect")
+    @env_app.command("inspect", hidden=True, deprecated=True)
     def environment_inspect(
         source_env: Annotated[
             str,
@@ -401,19 +402,9 @@ def register_environment(app: typer.Typer) -> None:
             typer.Option("--path", help="File inside the hosted environment package"),
         ] = "README.md",
     ) -> None:
-        """Inspect a file from a hosted environment package."""
-        from benchflow.hosted_env import (
-            HostedEnvError,
-            HostedEnvRef,
-            prime_env_inspect,
-        )
-
-        try:
-            ref = HostedEnvRef.parse(source_env, version=version)
-            console.print(prime_env_inspect(ref, path=path))
-        except HostedEnvError as e:
-            console.print(f"[red]{escape(str(e))}[/red]")
-            raise typer.Exit(1) from None
+        """[deprecated] Inspect a hosted environment file — use `bench hub env inspect`."""
+        warn_deprecated("bench environment inspect", "bench hub env inspect")
+        hosted_env_inspect(source_env=source_env, version=version, path=path)
 
     @env_app.command("cleanup")
     def environment_cleanup(

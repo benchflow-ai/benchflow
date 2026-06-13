@@ -1034,7 +1034,7 @@ def test_cli_verify_json_pass_outputs_single_parseable_verdict(tmp_path: Path) -
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1082,7 +1082,7 @@ def test_cli_verify_json_includes_adoption_report_sidecar(tmp_path: Path) -> Non
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1114,7 +1114,7 @@ def test_cli_verify_require_adoption_report_blocks_missing_sidecar(
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1149,7 +1149,7 @@ def test_cli_verify_require_adoption_report_blocks_missing_loop_state(
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1185,7 +1185,7 @@ def test_cli_verify_require_adoption_report_writes_scale_ready_loop_report(
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1226,7 +1226,7 @@ def test_cli_verify_require_adoption_report_rejects_trace_thin_artifact(
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1277,7 +1277,7 @@ def test_cli_verify_require_adoption_report_honors_artifact_manifest(
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1310,7 +1310,7 @@ def test_cli_verify_require_adoption_report_requires_cua_provider_mode(
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1341,7 +1341,7 @@ def test_cli_verify_json_rejects_malformed_adoption_report(
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1369,7 +1369,7 @@ def test_cli_verify_json_rejects_malformed_loop_state(tmp_path: Path) -> None:
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1397,7 +1397,7 @@ def test_cli_verify_json_divergent_writes_issue_and_suppresses_human_text(
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1434,7 +1434,7 @@ def test_cli_verify_json_fresh_scaffold_is_parseable_insufficient_evidence(
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",
@@ -1476,7 +1476,7 @@ def test_cli_verify_nonexistent_roundtrip_task_no_traceback(tmp_path: Path) -> N
     result = CliRunner().invoke(
         app,
         [
-            "agent",
+            "adopt",
             "verify",
             "my-bench",
             "--benchmarks-dir",

@@ -11,10 +11,17 @@ from typing import Annotated
 
 import typer
 
+from benchflow.sandbox.providers import SANDBOX_PROVIDERS
+
+# Sandbox `--sandbox` choices: the canonical docker/daytona/modal registry plus
+# the 0.7 ``cua`` backend. Derived from the registry so it can't drift.
+_SANDBOX_HELP = f"Sandbox: {', '.join(SANDBOX_PROVIDERS)}, or cua"
+
 AgentOption = Annotated[str, typer.Option("--agent", help="Agent name")]
 ModelOption = Annotated[str | None, typer.Option("--model", help="Model")]
 SandboxOption = Annotated[
-    str, typer.Option("--sandbox", help="Sandbox: docker, daytona, modal, or cua")
+    str,
+    typer.Option("--sandbox", help=_SANDBOX_HELP),
 ]
 ConcurrencyOption = Annotated[
     int, typer.Option("--concurrency", help="Max concurrent tasks")
