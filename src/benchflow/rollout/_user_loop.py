@@ -46,11 +46,27 @@ from benchflow.scenes import (
     scene_step_skills_dir,
 )
 from benchflow.trajectories.tree import Step
+from benchflow.usage_tracking import is_token_usage_available
 
 if TYPE_CHECKING:
     from benchflow.rollout import Rollout
 
 logger = logging.getLogger(__name__)
+
+
+def _round_tokens(rollout: Rollout) -> int | None:
+    """Cumulative native-ACP tokens spent so far, or ``None`` if untrusted.
+
+    ``_native_usage_metrics`` is initialized to a zeroed ``usage_unavailable()``
+    payload (``usage_source="unavailable"``, ``total_tokens=0``), so a bare read
+    can't tell "spent 0 tokens" apart from "no usage captured". Gating on the
+    trusted-source check keeps uninstrumented paths reporting ``None`` rather
+    than a spurious ``0`` — preserving the cost-curve's best-effort contract.
+    """
+    metrics = getattr(rollout, "_native_usage_metrics", None)
+    if not is_token_usage_available(metrics):
+        return None
+    return metrics.get("total_tokens")
 
 
 async def _export_generated_skills(rollout: Rollout) -> None:
@@ -391,11 +407,12 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 "n_trajectory_events": len(round_trajectory),
                 "wall_sec": round(time.monotonic() - round_started, 1),
                 # Cumulative native-ACP tokens spent through this round — the
-                # cost-curve x-axis. Best-effort: None when usage is unavailable
-                # (e.g. a LiteLLM-proxied path that doesn't surface native usage).
-                "tokens": (getattr(rollout, "_native_usage_metrics", None) or {}).get(
-                    "total_tokens"
-                ),
+                # cost-curve x-axis. None (NOT 0) when no trusted usage was
+                # captured: _native_usage_metrics defaults to a zeroed
+                # usage_unavailable() payload, so a bare total_tokens read would
+                # report a spurious 0 on uninstrumented paths (e.g. a
+                # LiteLLM-proxied run that never surfaces native ACP usage).
+                "tokens": _round_tokens(rollout),
             }
             if isinstance(user, LoopStrategyUser):
                 entry["feedback_level"] = user.feedback_level.value
