@@ -42,12 +42,29 @@ def test_bedrock_thinking_effort_is_threaded_into_route_params():
         {
             "AWS_BEARER_TOKEN_BEDROCK": "token",
             "AWS_REGION": "us-west-2",
-            BEDROCK_THINKING_EFFORT_ENV: "max",
+            BEDROCK_THINKING_EFFORT_ENV: "medium",
         },
     )
 
     assert route.upstream_model == "bedrock/us.anthropic.claude-opus-4-8"
-    assert route.litellm_params["reasoning_effort"] == "max"
+    assert route.litellm_params["reasoning_effort"] == "medium"
+
+
+@pytest.mark.parametrize("requested", ["xhigh", "max"])
+def test_bedrock_effort_clamps_unsupported_to_litellm_ceiling(requested):
+    """Guards #737: LiteLLM rejects xhigh/max for opus-4-8 with a
+    BadRequestError, so BenchFlow clamps a requested xhigh/max down to the
+    accepted ceiling (`high`) — a MAX-thinking config runs at the real maximum
+    instead of erroring mid-run, matching the garbage->high default behavior."""
+    route = resolve_litellm_route(
+        "aws-bedrock/us.anthropic.claude-opus-4-8",
+        {
+            "AWS_BEARER_TOKEN_BEDROCK": "token",
+            "AWS_REGION": "us-west-2",
+            BEDROCK_THINKING_EFFORT_ENV: requested,
+        },
+    )
+    assert route.litellm_params["reasoning_effort"] == "high"
 
 
 def test_bedrock_fable5_thinking_effort_is_threaded_into_route_params():
@@ -183,3 +200,36 @@ def test_docker_and_daytona_resolve_identical_bedrock_effort_from_run_env(monkey
     )
     # And the host env being empty did not strip it — it came from the run env.
     assert BEDROCK_THINKING_EFFORT_ENV not in os.environ
+
+
+# --------------------------------------------------------------------------- #
+# Clamp end-to-end + drift guard (issue #737)                                 #
+# --------------------------------------------------------------------------- #
+
+
+def test_proxy_env_max_override_clamps_in_wire_payload(monkeypatch):
+    """#737 (patch path): a run-level `max` in the proxy process env is clamped
+    to the LiteLLM ceiling in the actual wire payload — it must NOT raise."""
+    monkeypatch.delenv(BEDROCK_THINKING_EFFORT_ENV, raising=False)
+    assert _wire_output_config_effort("high", env_override="max") == "high"
+
+
+def test_every_requestable_bedrock_effort_survives_real_litellm_transform(monkeypatch):
+    """Drift guard for #737: every effort a user may request must, after the
+    route clamp, be accepted by the REAL litellm Converse transform (no
+    BadRequestError). If a future litellm changes its accepted set, this fails
+    and forces _BEDROCK_LITELLM_MAX_EFFORT / the ladder to be revisited rather
+    than silently shipping a value the provider rejects mid-run.
+    """
+    from benchflow.providers.litellm_config import _BEDROCK_EFFORT_LADDER
+
+    monkeypatch.delenv(BEDROCK_THINKING_EFFORT_ENV, raising=False)
+    for requested in _BEDROCK_EFFORT_LADDER:
+        route = resolve_litellm_route(
+            "aws-bedrock/us.anthropic.claude-opus-4-8-20251101-v1:0",
+            {**_BEDROCK_BASE_ENV, BEDROCK_THINKING_EFFORT_ENV: requested},
+        )
+        clamped = route.litellm_params["reasoning_effort"]
+        # Must not raise — this is the whole point of the clamp.
+        effort = _wire_output_config_effort(clamped, env_override=None)
+        assert effort, f"{requested!r} -> {clamped!r} produced no effort"
