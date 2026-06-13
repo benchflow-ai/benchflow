@@ -105,8 +105,6 @@ class JudgeConfig:
     mode: Literal["batched", "individual"] = "individual"
     files: list[str] = field(default_factory=list)
     timeout: int = 120
-    reference: str | None = None
-    prompt_template: str | None = None
 
 
 @dataclass
@@ -138,8 +136,6 @@ def _parse_judge(raw: dict) -> JudgeConfig:
         mode=raw.get("mode", "individual"),
         files=raw.get("files", []),
         timeout=raw.get("timeout", 120),
-        reference=raw.get("reference"),
-        prompt_template=raw.get("prompt_template"),
     )
 
 

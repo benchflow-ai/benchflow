@@ -59,10 +59,6 @@ class OTelCollector:
         return self._port
 
     @property
-    def endpoint(self) -> str:
-        return f"http://{self._host}:{self._port}"
-
-    @property
     def trajectory(self) -> Trajectory:
         return self._trajectory
 
