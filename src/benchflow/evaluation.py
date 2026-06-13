@@ -727,6 +727,18 @@ class Evaluation:
         with open(path) as f:
             raw = yaml.safe_load(f)
 
+        # A non-mapping document (empty file → None, or a top-level list/scalar)
+        # is not a valid config. Reject it up front: the membership tests below
+        # would otherwise TypeError on None, or silently substring-match a scalar
+        # string that happens to contain "agents"/"datasets" and mis-route to
+        # the legacy parser.
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"Eval config {path} must be a YAML mapping with 'source' or "
+                f"'tasks_dir' (or legacy 'agents'/'datasets'); got "
+                f"{type(raw).__name__}."
+            )
+
         # Detect format: legacy uses "agents" + "datasets", benchflow uses "agent"
         if "agents" in raw or "datasets" in raw:
             return cls._from_legacy_yaml(raw, **kwargs)
@@ -745,8 +757,18 @@ class Evaluation:
         source_provenance = None
         if "source" in raw:
             src = raw["source"]
+            if not isinstance(src, dict):
+                raise ValueError(
+                    f"YAML 'source' must be a mapping with a 'repo' key; got "
+                    f"{type(src).__name__}."
+                )
+            repo = src.get("repo")
+            if not isinstance(repo, str) or not repo:
+                raise ValueError(
+                    "YAML 'source.repo' must be a non-empty string (e.g. 'org/repo')."
+                )
             resolved = resolve_source_with_metadata(
-                repo=src["repo"],
+                repo=repo,
                 path=src.get("path"),
                 ref=src.get("ref"),
             )
@@ -763,8 +785,13 @@ class Evaluation:
 
         jobs_dir = Path(raw.get("jobs_dir", "jobs"))
 
-        # Parse prompts — YAML null becomes Python None
-        prompts = raw.get("prompts")
+        # Parse prompts — YAML null becomes Python None. A bare string must be
+        # wrapped: otherwise Scene.single iterates it character-by-character into
+        # one garbage turn per character (mirrors the SDK YAML loader).
+        raw_prompts = raw.get("prompts")
+        prompts: list[str | None] | None = (
+            [raw_prompts] if isinstance(raw_prompts, str) else raw_prompts
+        )
 
         agent_env_raw = raw.get("agent_env", {})
         exclude = set(raw.get("exclude", []))

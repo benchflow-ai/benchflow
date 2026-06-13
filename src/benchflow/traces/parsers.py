@@ -94,10 +94,14 @@ def parse_claude_code_session(
         if not line:
             continue
         try:
-            entries.append(json.loads(line))
+            row = json.loads(line)
         except json.JSONDecodeError:
             logger.debug("Skipping malformed JSONL line in %s", path)
             continue
+        if isinstance(row, dict):
+            entries.append(row)
+        else:
+            logger.debug("Skipping non-object JSONL entry in %s", path)
 
     if not entries:
         raise ValueError(f"No valid entries in {path}")
@@ -260,13 +264,21 @@ def parse_claude_code_file(path: Path) -> list[ParsedTrace]:
         if not line:
             continue
         try:
-            entries.append(json.loads(line))
+            row = json.loads(line)
         except json.JSONDecodeError:
             logger.debug("Skipping malformed JSONL line in %s", path)
             continue
+        if isinstance(row, dict):
+            entries.append(row)
+        else:
+            logger.debug("Skipping non-object JSONL entry in %s", path)
 
     if not entries:
-        raise ValueError(f"No valid entries in {path}")
+        # Empty / all-malformed / non-object file → no traces. Returning []
+        # lets the CLI surface its clean "No traces found" message + exit 1
+        # instead of a raw ValueError/AttributeError traceback. (The
+        # single-session parser keeps its "No valid entries" contract.)
+        return []
 
     # Group entries by sessionId
     session_groups: dict[str, list[dict[str, Any]]] = {}
@@ -278,9 +290,11 @@ def parse_claude_code_file(path: Path) -> list[ParsedTrace]:
         else:
             no_session_id.append(entry)
 
-    # If no sessionId found at all, treat as single session
+    # If no sessionId found at all, treat as single session. Reuse the entries
+    # already read + dict-filtered above rather than re-reading the file — a
+    # re-read skips the non-dict filtering and would crash on a list/scalar line.
     if not session_groups:
-        return [parse_claude_code_session(path)]
+        return [_parse_claude_entries(entries, source_path=path)]
 
     # Append ungrouped entries to the first session (context lines, etc.)
     if no_session_id and session_groups:

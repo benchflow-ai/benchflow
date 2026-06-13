@@ -290,7 +290,12 @@ class LiveEvalProgress:
             tbl.add_column("elapsed", justify="right")
             now = time.monotonic()
             for name in sorted(running, key=lambda n: running[n])[:_MAX_RUNNING_ROWS]:
-                tbl.add_row(name, _fmt_dur(now - running[name]))
+                # Text() so a task name containing Rich markup (`[` is legal in
+                # SkillsBench dir names) is rendered literally, not parsed as
+                # markup — a MarkupError here escapes __rich__ and aborts the
+                # CLI on live-context exit, violating this module's "a render
+                # bug can never perturb a run" contract.
+                tbl.add_row(Text(name), _fmt_dur(now - running[name]))
             extra = len(running) - _MAX_RUNNING_ROWS
             if extra > 0:
                 tbl.add_row(f"… {extra} more", "")

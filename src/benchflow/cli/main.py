@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from benchflow import __version__
@@ -659,6 +660,8 @@ def run_batch_eval(
 
 def _run_config_file_eval(plan: "EvalPlan") -> None:
     """Apply CLI overrides onto a YAML-loaded Evaluation, then run and report it."""
+    import yaml
+
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
 
     req = plan.request
@@ -666,44 +669,61 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
     assert (
         config_file is not None
     )  # config-file source: build_eval_plan guarantees this
-    j = Evaluation.from_yaml(config_file)
-    if req.agent is not None:
-        j._config.agent = plan.eval_agent
-    else:
-        j._config.agent = _normalize_eval_agent_or_exit(j._config.agent)
-    if req.model is not None:
-        j._config.model = effective_model(j._config.agent, req.model)
-    else:
-        j._config.model = effective_model(j._config.agent, j._config.model)
-    if req.reasoning_effort is not None:
-        j._config.reasoning_effort = plan.eval_reasoning_effort
-    if req.environment is not None:
-        j._config.environment = plan.eval_environment
-    j._config.agent_env = {**j._config.agent_env, **plan.parsed_env}
-    j._config.sandbox_user = normalize_sandbox_user(j._config.sandbox_user)
-    if req.jobs_dir is not None:
-        j._jobs_dir = Path(req.jobs_dir)
-    if req.concurrency is not None:
-        j._config.concurrency = req.concurrency
-    if req.build_concurrency is not None:
-        j._config.build_concurrency = req.build_concurrency
-    if req.prompt is not None:
-        j._config.prompts = plan.eval_prompts
-    if req.agent_idle_timeout is not None:
-        j._config.agent_idle_timeout = plan.eval_agent_idle_timeout
-    if plan.usage_tracking_overridden:
-        j._config.usage_tracking = j._config.usage_tracking.overlay(
-            plan.eval_usage_tracking
+    # from_yaml + the override overlay run BEFORE j.run(); a malformed config
+    # surfaces here (bad YAML, missing source.repo, a list where a mapping is
+    # expected, a non-existent/invalid environment_manifest, …). Guard the
+    # whole block so the CLI prints one clean error instead of ~10 distinct raw
+    # tracebacks. The exception type is kept in the message for diagnosability.
+    try:
+        j = Evaluation.from_yaml(config_file)
+        if req.agent is not None:
+            j._config.agent = plan.eval_agent
+        else:
+            j._config.agent = _normalize_eval_agent_or_exit(j._config.agent)
+        if req.model is not None:
+            j._config.model = effective_model(j._config.agent, req.model)
+        else:
+            j._config.model = effective_model(j._config.agent, j._config.model)
+        if req.reasoning_effort is not None:
+            j._config.reasoning_effort = plan.eval_reasoning_effort
+        if req.environment is not None:
+            j._config.environment = plan.eval_environment
+        j._config.agent_env = {**j._config.agent_env, **plan.parsed_env}
+        j._config.sandbox_user = normalize_sandbox_user(j._config.sandbox_user)
+        if req.jobs_dir is not None:
+            j._jobs_dir = Path(req.jobs_dir)
+        if req.concurrency is not None:
+            j._config.concurrency = req.concurrency
+        if req.build_concurrency is not None:
+            j._config.build_concurrency = req.build_concurrency
+        if req.prompt is not None:
+            j._config.prompts = plan.eval_prompts
+        if req.agent_idle_timeout is not None:
+            j._config.agent_idle_timeout = plan.eval_agent_idle_timeout
+        if plan.usage_tracking_overridden:
+            j._config.usage_tracking = j._config.usage_tracking.overlay(
+                plan.eval_usage_tracking
+            )
+        if plan.include_tasks:
+            j._config.include_tasks = plan.include_tasks
+        if plan.exclude_tasks:
+            j._config.exclude_tasks = plan.exclude_tasks
+        # CLI --environment-manifest wins over whatever the YAML carried
+        # so an operator can override a baseline manifest without editing
+        # the config file.
+        if plan.eval_env_manifest is not None:
+            j._config.environment_manifest = plan.eval_env_manifest
+    except (yaml.YAMLError, ValueError, TypeError, LookupError, OSError) as e:
+        # LookupError covers missing source.repo (KeyError) and empty legacy
+        # agents:/datasets: lists (IndexError). Type-mismatch cases (e.g. a
+        # non-string source.repo) are converted to ValueError at the parse
+        # source rather than catching AttributeError here, which would mask
+        # genuine bugs.
+        console.print(
+            f"[red]Invalid eval config {escape(str(config_file))}:[/red] "
+            f"{type(e).__name__}: {escape(str(e))}"
         )
-    if plan.include_tasks:
-        j._config.include_tasks = plan.include_tasks
-    if plan.exclude_tasks:
-        j._config.exclude_tasks = plan.exclude_tasks
-    # CLI --environment-manifest wins over whatever the YAML carried
-    # so an operator can override a baseline manifest without editing
-    # the config file.
-    if plan.eval_env_manifest is not None:
-        j._config.environment_manifest = plan.eval_env_manifest
+        raise typer.Exit(1) from None
     try:
         result = asyncio.run(j.run())
     except (EmptyTaskSelectionError, ValueError) as e:
@@ -819,6 +839,10 @@ def eval_list(
     if not jobs_dir.exists():
         console.print(f"[yellow]No jobs directory: {jobs_dir}[/yellow]")
         return
+    if not jobs_dir.is_dir():
+        # exists() is True for a file; iterdir() below would NotADirectoryError.
+        console.print(f"[red]Not a directory: {escape(str(jobs_dir))}[/red]")
+        raise typer.Exit(1)
 
     table = Table(title="Evaluations")
     table.add_column("Evaluation", style="cyan")
@@ -830,15 +854,28 @@ def eval_list(
         score = data.get("memory_score")
         return f"{score:.1%}" if isinstance(score, int | float) else "—"
 
-    root_summary = jobs_dir / "summary.json"
-    if root_summary.exists():
-        data = json.loads(root_summary.read_text())
+    def add_summary_row(label: str, summary_path: Path) -> None:
+        # A corrupt / truncated / non-object summary.json must not abort the
+        # whole listing — degrade that one row, mirroring the "no summary"
+        # fallback (and matching collect_metrics / _get_completed_tasks, which
+        # both skip-guard).
+        try:
+            data = json.loads(summary_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            data = None
+        if not isinstance(data, dict):
+            table.add_row(label, "?", "[dim]corrupt summary[/dim]", "—")
+            return
         table.add_row(
-            jobs_dir.name,
+            label,
             str(data.get("total", "?")),
             f"{data.get('passed', '?')}/{data.get('total', '?')} ({data.get('score', '?')})",
             memory_label(data),
         )
+
+    root_summary = jobs_dir / "summary.json"
+    if root_summary.exists():
+        add_summary_row(jobs_dir.name, root_summary)
         console.print(table)
         return
 
@@ -847,13 +884,7 @@ def eval_list(
             continue
         summary = d / "summary.json"
         if summary.exists():
-            data = json.loads(summary.read_text())
-            table.add_row(
-                d.name,
-                str(data.get("total", "?")),
-                f"{data.get('passed', '?')}/{data.get('total', '?')} ({data.get('score', '?')})",
-                memory_label(data),
-            )
+            add_summary_row(d.name, summary)
         else:
             sub_count = sum(1 for s in d.iterdir() if s.is_dir())
             table.add_row(d.name, str(sub_count), "[dim]no summary[/dim]", "—")

@@ -324,6 +324,13 @@ def _detect_format(path: Path) -> str:
     except json.JSONDecodeError:
         return "claude-code"
 
+    # A non-dict first line (list / bare scalar) is not any known trace shape;
+    # the membership tests and `.get` below assume a mapping. Route to the
+    # claude-code loader, which returns [] for unrecognized rows so the caller
+    # surfaces the clean "No traces found" message instead of a raw traceback.
+    if not isinstance(data, dict):
+        return "claude-code"
+
     if "schema_version" in data or ("agent" in data and "steps" in data):
         return "opentraces"
 

@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from rich.markup import escape
 
 # The parity gate (parsers, scoring, verdict) lives in agent_router_parity to
 # keep this module focused on create/run/verify CLI wiring. Re-exported here
@@ -395,7 +396,17 @@ ExecFn = Callable[..., int]
 def _subprocess_exec(command: list[str], *, cwd: str, env: Mapping[str, str]) -> int:
     import subprocess
 
-    return subprocess.run(command, cwd=cwd, env=dict(env)).returncode
+    try:
+        return subprocess.run(command, cwd=cwd, env=dict(env)).returncode
+    except FileNotFoundError as exc:
+        # Missing codex binary (default ``codex`` not on PATH, or a bad
+        # --codex-bin) raises FileNotFoundError here; re-raise as the
+        # already-handled launch error so the CLI prints a clean hint instead
+        # of a raw traceback on every fresh/CI machine.
+        raise CodexLaunchError(
+            f"codex binary not found: {command[0]!r} — install codex or pass "
+            "--codex-bin with the path to the binary"
+        ) from exc
 
 
 def run_agent_adoption(
@@ -697,7 +708,10 @@ def register_agent_router(agent_app: typer.Typer) -> None:
                 config_overrides=overrides,
             )
         except (InvalidBenchmarkName, CodexLaunchError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            # escape(): CodexLaunchError embeds the user-supplied --codex-bin
+            # and InvalidBenchmarkName the benchmark name — either can contain
+            # Rich markup that would make this handler itself raise MarkupError.
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
         raise typer.Exit(code)
 
