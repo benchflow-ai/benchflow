@@ -93,6 +93,22 @@ def scaffold_task(
         no_oracle = no_solution
     if task_format not in ("legacy", "task-md"):
         raise ValueError("task_format must be 'legacy' or 'task-md'")
+    # The name is a single directory segment under parent_dir, never a path. Reject
+    # separators / '..' / leading dots / whitespace so `init "../escape"` can't write
+    # outside parent_dir and names stay safe for HF/registry/shell tooling.
+    if (
+        not name
+        or name in (".", "..")
+        or "/" in name
+        or "\\" in name
+        or name != name.strip()
+        or name.startswith(".")
+        or any(c.isspace() for c in name)
+    ):
+        raise ValueError(
+            "task name must be a single path segment "
+            f"(no '/', '..', leading dot, or spaces); got {name!r}"
+        )
 
     task_dir = parent_dir / name
     if task_dir.exists():

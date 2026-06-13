@@ -146,6 +146,18 @@ class TestInitTask:
         with pytest.raises(FileExistsError):
             init_task("dupe", parent_dir=tmp_path)
 
+    @pytest.mark.parametrize(
+        "bad",
+        ["../escape", "foo/bar", "my task", "..", ".hidden", " lead", "back\\slash"],
+    )
+    def test_rejects_unsafe_task_names(self, tmp_path, bad):
+        # The name is a single dir segment under parent_dir; separators / '..' /
+        # leading dots / whitespace are rejected (path traversal + tooling safety).
+        with pytest.raises(ValueError, match="single path segment"):
+            init_task(bad, parent_dir=tmp_path)
+        # Nothing escaped the parent dir.
+        assert not (tmp_path.parent / "escape").exists()
+
     def test_creates_parent_dirs(self, tmp_path):
         task = init_task("deep", parent_dir=tmp_path / "nested" / "tasks")
         assert task.exists()
