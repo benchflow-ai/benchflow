@@ -19,6 +19,13 @@
   on `bench eval create --source-env`.
 
 ### Removed
+- **Removed the unwired `OTelCollector`** (`benchflow.OTelCollector` /
+  `benchflow.trajectories.OTelCollector`) and its `trajectories/otel.py` module.
+  It was a designed-but-never-wired OTLP receiver from the v2 rewrite — never
+  instantiated, never tested, and not part of any run path (BenchFlow captures
+  trajectories via ACP session events and the LiteLLM callback path instead).
+  This drops it from the public `__all__`; re-add it (with a test + real wiring)
+  if OpenTelemetry-based capture is revived.
 - Removed two unimplemented stub methods (`read_file`, `write_file`) from the
   `@runtime_checkable` `Sandbox` Protocol. No backend implemented them (backends
   expose the `upload_file`/`download_file` family) and there were no call sites,
