@@ -8,9 +8,7 @@ import pytest
 
 from benchflow._paths import assert_within, safe_path_segment
 
-# ---------------------------------------------------------------------------
 # safe_path_segment
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -62,9 +60,7 @@ def test_error_message_includes_kind() -> None:
         safe_path_segment("../escape", kind="skill name")
 
 
-# ---------------------------------------------------------------------------
 # assert_within
-# ---------------------------------------------------------------------------
 
 
 def test_within_accepts_nested(tmp_path: Path) -> None:

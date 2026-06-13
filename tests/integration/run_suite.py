@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -250,11 +250,6 @@ def collect_lane_blockers(lanes: list[Mapping[str, Any]]) -> dict[str, list[str]
             if blockers:
                 lane_blockers[lane["id"]] = blockers
     return lane_blockers
-
-
-def iter_lane_ids(suite: Mapping[str, Any]) -> Iterable[str]:
-    for lane in suite["lanes"]:
-        yield lane["id"]
 
 
 def print_lane_list(suite: Mapping[str, Any]) -> None:
@@ -612,7 +607,24 @@ def run_skillsbench_harbor_parity(
         str(args.skillsbench_harbor_max_mean_reward_delta),
         "--max-task-reward-delta",
         str(args.skillsbench_harbor_max_task_reward_delta),
+        "--expected-benchflow-source-repo",
+        args.skillsbench_harbor_expected_source_repo,
+        "--expected-benchflow-source-path-prefix",
+        args.skillsbench_harbor_expected_source_path_prefix,
+        "--expected-benchflow-task-entrypoint",
+        args.skillsbench_harbor_expected_task_entrypoint,
+        "--expected-skill-mode",
+        args.skillsbench_harbor_expected_skill_mode,
+        "--expected-skill-source",
+        args.skillsbench_harbor_expected_skill_source,
     ]
+    if args.skillsbench_harbor_expected_source_sha:
+        checker_args.extend(
+            [
+                "--expected-benchflow-source-sha",
+                args.skillsbench_harbor_expected_source_sha,
+            ]
+        )
     for task in args.skillsbench_harbor_task or []:
         checker_args.extend(["--task", task])
     if args.skillsbench_harbor_no_require_trajectories:
@@ -781,6 +793,35 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Allowed per-task reward movement outside Harbor observed range.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-expected-source-repo",
+        default="benchflow-ai/skillsbench",
+        help="Expected BenchFlow source.repo for SkillsBench parity artifacts.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-expected-source-path-prefix",
+        default="tasks",
+        help="Expected prefix for BenchFlow source.path values.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-expected-task-entrypoint",
+        default="task.md",
+        help="Required native task entrypoint in BenchFlow source.file_hashes.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-expected-source-sha",
+        help="Optional exact BenchFlow source.resolved_sha for all compared results.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-expected-skill-mode",
+        default="no-skill",
+        help="Expected canonical BenchFlow skill_mode for the Harbor parity lane.",
+    )
+    parser.add_argument(
+        "--skillsbench-harbor-expected-skill-source",
+        default="none",
+        help="Expected canonical BenchFlow skill_source for the Harbor parity lane.",
     )
     return parser
 

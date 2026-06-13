@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from benchflow.compat.harbor_registry import (
+from benchflow.hub.harbor_registry import (
     check_harbor_registry,
     records_summary,
 )

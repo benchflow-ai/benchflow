@@ -118,6 +118,17 @@ Save parity experiment results to `parity_experiment.json`:
 }
 ```
 
+`bench eval adopt verify` reads this `tasks[].criteria_results` schema as the
+deterministic floor, and also accepts the equivalent pass/total summary blocks
+some benchmarks record instead — `structural_parity` / `eval_parity` /
+`live_parity` / `e2e_parity` / `pipeline_parity` / `security_parity` (or a bare
+top-level `results`), each as `{ "tasks_tested": <N>, "passed": <N> }` (a nested
+`results_summary` or a `total_tasks`/`passed`/`failed` triple is also read). A
+summary confirms only when `passed == tasks_tested > 0`; a partial summary
+surfaces as a divergence. `agent_parity.results` /
+`reward_distribution_parity.samples` supply the statistical reward layer (a
+half-recorded legacy-vs-converted sample fails the gate, never confirms it).
+
 ### 7. Generate `benchmark.yaml`
 
 Standard descriptor:
@@ -160,7 +171,7 @@ parity:
 Script that:
 1. Downloads/clones the source benchmark
 2. Runs the converter
-3. Runs the benchmark via BenchFlow `Job`
+3. Runs the benchmark via BenchFlow `Evaluation`
 
 ### 9. Publish
 

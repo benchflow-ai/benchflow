@@ -19,6 +19,7 @@ import pytest
 from benchflow.agents.providers import (
     PROVIDERS,
     find_provider,
+    find_provider_for_bare_model,
     resolve_auth_env,
 )
 from benchflow.agents.registry import (
@@ -127,7 +128,14 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
     launch_cmd = AGENTS[name].launch_cmd
 
     assert "/opt/benchflow/node" in install_cmd
-    assert "BF_NODE_VERSION=22.14.0" in install_cmd
+    # Node >=22.19 is required by current openclaw (JS agents install @latest);
+    # assert the floor, not a brittle exact pin (BF-10).
+    pin = re.search(r"BF_NODE_VERSION=(\d+)\.(\d+)\.\d+", install_cmd)
+    assert pin, "BF_NODE_VERSION pin missing from JS agent bootstrap"
+    major, minor = int(pin.group(1)), int(pin.group(2))
+    assert (major, minor) >= (22, 19), (
+        f"pinned node {pin.group(0)} is below openclaw's >=22.19 floor"
+    )
     assert "/opt/benchflow/js-agents" in install_cmd
     assert "/opt/benchflow/bin" in install_cmd
     assert "--prefix /opt/benchflow/js-agents" in install_cmd
@@ -388,6 +396,48 @@ def test_provider_models_and_credentials(name, cfg):
     for cf in cfg.credential_files:
         assert cf.get("path"), f"credential_files entry missing path: {cf}"
         assert cf.get("env_source"), f"credential_files entry missing env_source: {cf}"
+
+
+@pytest.mark.parametrize("name,cfg", PROVIDERS.items(), ids=list(PROVIDERS.keys()))
+def test_provider_model_prefixes_shape(name, cfg):
+    """model_prefixes tokens are non-empty, lowercase, stripped, and prefix-free.
+
+    ``find_provider_for_bare_model`` matches tokens against bare (already
+    prefix-stripped) model ids, so a token containing ``/`` could never match.
+    """
+    for token in cfg.model_prefixes:
+        assert token and isinstance(token, str), (
+            f"{name!r}: model_prefixes entry must be a non-empty string: {token!r}"
+        )
+        assert token == token.strip().lower(), (
+            f"{name!r}: model_prefixes token {token!r} must be lowercase/stripped"
+        )
+        assert "/" not in token, (
+            f"{name!r}: model_prefixes token {token!r} must be a bare id family, "
+            "not a provider/ prefix"
+        )
+
+
+def test_provider_model_prefixes_unique_and_resolvable():
+    """Tokens are unique across providers and round-trip to their owner.
+
+    Uniqueness keeps ``find_provider_for_bare_model``'s longest-token-wins
+    resolution independent of registry declaration order; the round-trip
+    check pins that every declared token actually routes to its provider.
+    """
+    owners: dict[str, str] = {}
+    for name, cfg in PROVIDERS.items():
+        for token in cfg.model_prefixes:
+            assert token not in owners, (
+                f"model_prefixes token {token!r} declared by both "
+                f"{owners[token]!r} and {name!r}; resolution would depend on "
+                "registry order"
+            )
+            owners[token] = name
+            result = find_provider_for_bare_model(token)
+            assert result is not None and result[0] == name, (
+                f"token {token!r} does not resolve back to provider {name!r}"
+            )
 
 
 # ── Cross-cutting derived contracts ─────────────────────────────────────────

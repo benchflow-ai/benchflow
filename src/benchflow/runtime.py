@@ -272,28 +272,6 @@ class RuntimeResult:
             }
         ) in {"passed", "failed"}
 
-    def to_run_result(self) -> Any:
-        """Convert to legacy RunResult for SDK.run() compat."""
-        from benchflow.models import RunResult
-
-        return RunResult(
-            task_name=self.task_name,
-            rollout_name=self.rollout_name,
-            rewards=self.rewards,
-            trajectory=self.trajectory,
-            agent="",
-            agent_name="",
-            model="",
-            n_tool_calls=self.n_tool_calls,
-            n_prompts=0,
-            error=self.error,
-            verifier_error=self.verifier_error,
-            partial_trajectory=False,
-            trajectory_source=None,
-            started_at=self.started_at,
-            finished_at=self.finished_at,
-        )
-
 
 class Runtime:
     """The 0.3 execution center.

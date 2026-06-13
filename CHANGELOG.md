@@ -1,9 +1,39 @@
 # Changelog
 
-## [Unreleased]
+## 0.6.0 — 2026-06-13
 
 ### Added
 
+- **The `task.md` task standard** — a single-file unified task format (parser,
+  verifier planes, prompt sidecars, round-trip export with a machine-readable
+  loss report) plus the authoring CLI: `bench tasks init / check / migrate /
+  export`, with a layered `check --level` ladder up to a leaderboard-grade
+  acceptance gate. See [`docs/task-standard.md`](docs/task-standard.md) and the
+  [native authoring guide](docs/task-authoring-task-md.md).
+- **`bench eval adopt` benchmark-adoption router** — `init` scaffolds a benchmark
+  conversion per [`benchmarks/CONVERT.md`](benchmarks/CONVERT.md), `convert` drives
+  the host `codex` CLI through the conversion workflow, and `verify` runs the
+  parity gate (deterministic per-criterion conversion parity plus the
+  agent-scale reward-distribution layer) and emits a confidence verdict, with a
+  drafted support issue on divergence. `bench eval adopt verify --rerun`
+  independently re-executes the benchmark's `parity_test.py` and scores its fresh
+  output (instead of trusting the recorded `parity_experiment.json`), failing
+  closed if the output is not scoreable; `bench eval adopt convert -c key=value`
+  passes codex config overrides through to the host codex driver (e.g. to work
+  around `~/.codex` drift). `bench tasks digest` recognizes native `task.md` tasks
+  as well as legacy `task.toml`.
+- **ATIF and ADP trajectory artifacts** — every scored rollout now emits
+  `trainer/atif.json` and `trainer/adp.jsonl` (alongside the existing
+  `verifiers.jsonl`), with job-level ADP aggregation. One canonical raw
+  trajectory, multiple ecosystem formats out of the box.
+- **OpenReward (ORS) reward-format interop** — export BenchFlow rewards in the
+  Open Reward Standard shape (`benchflow.adapters.ors`) and the `ors-episode`
+  verifier strategy is recognized. (The hosted-environment episode runner that
+  executes ORS environments end-to-end is in progress, not in this release.)
+- **Daytona sandbox auto-reap** — orphaned sandboxes are cleaned at eval start
+  (TTL-tiered; failure states reaped sooner; an idle-activity guard protects
+  live runs), gated by `BENCHFLOW_DAYTONA_AUTO_REAP` (any of `0`/`false`/`no`/
+  `off`, case-insensitive, disables it).
 - **Registry-pinned dataset runs** — `bench eval create -d name@version`
   (e.g. `-d skillsbench@1.1`) resolves a dataset from a git-backed
   `registry.json` (see skillsbench `docs/dataset-versioning.md`): tasks are
@@ -20,7 +50,6 @@
   See [`docs/running-benchmarks.md`](docs/running-benchmarks.md). (#689,
   #690, #691; `packaging` promoted to a core dependency for the
   `bench_version` check.)
-
 - **`benchflow continue <run-folder>`** — resume a previous, unfinished
   (timed-out) `openhands` run to completion. A standalone tool (it does not
   touch the normal run path) that reconstructs the run's exact workspace and
@@ -31,9 +60,129 @@
 
 ### Changed
 
+- `bench metrics` → `bench eval metrics` and `bench view` → `bench eval view`
+  (the deprecated hidden top-level forms are gone; use the `eval` subgroup).
+- Quickstart and CLI reference now match observed run behavior — the real jobs
+  directory layout and artifact map, the `<PROVIDER>_API_KEY` /
+  `<PROVIDER>_BASE_URL` convention, and exit-code semantics.
 - Document the public vs internal preview install/upgrade command matrix,
   including `uv tool` exact pins, internal preview upgrades, and the
   `--force` path for replacing stale entrypoint scripts.
+
+### Renamed (aliased; old names removed in 0.7)
+- Benchmark adoption is now `bench eval adopt {init,convert,verify}`. It lives
+  under `eval` because `eval` is the universal benchmark entry point (`eval
+  create` runs a benchmark; `eval adopt` makes a foreign one runnable). Two prior
+  spellings remain as hidden deprecated aliases, each printing a one-line stderr
+  notice pointing at `bench eval adopt`: the original `bench agent
+  create|run|verify`, and the 0.6-dev intermediate top-level `bench adopt`.
+  `bench agent` now means agent management only (`list` / `show`).
+- The overloaded `bench environment` group was split and is now a hidden
+  **deprecated alias group** (removed in 0.7): the local sandbox lifecycle moved
+  to `bench sandbox {create,list,cleanup}`, and hosted-provider browsing to
+  `bench hub env {list,show,inspect}`. The old `bench environment
+  create|list|cleanup|show|inspect` (plus `list --provider`/`--hub`) still work,
+  each printing a one-line stderr deprecation notice. The hosted *run* path stays
+  on `bench eval create --source-env`.
+
+### Removed
+- **Removed the unwired `OTelCollector`** (`benchflow.OTelCollector` /
+  `benchflow.trajectories.OTelCollector`) and its `trajectories/otel.py` module.
+  It was a designed-but-never-wired OTLP receiver from the v2 rewrite — never
+  instantiated, never tested, and not part of any run path (BenchFlow captures
+  trajectories via ACP session events and the LiteLLM callback path instead).
+  This drops it from the public `__all__`; re-add it (with a test + real wiring)
+  if OpenTelemetry-based capture is revived.
+- Removed two unimplemented stub methods (`read_file`, `write_file`) from the
+  `@runtime_checkable` `Sandbox` Protocol. No backend implemented them (backends
+  expose the `upload_file`/`download_file` family) and there were no call sites,
+  so they were a latent `isinstance` trap on the contract surface.
+- Dead-code purge, round 3 (no public-API impact; each symbol re-verified
+  zero-reference with class context): removed `TaskMetrics.audit_outcome`,
+  `OTelCollector.endpoint`, `ReplayRouter.cursor`, `RuntimeResult.to_run_result`
+  (legacy SDK-compat converter, unused), the never-read dataclass fields
+  `ToolCall.output` and `JudgeConfig.{reference, prompt_template}`, the write-only
+  `ReplayProxy._host`, the inert `AgentProtocolError.code` annotation, and an
+  unused `retry_if_exception_type` import + fallback in `sandbox/daytona.py`.
+- Dead-code purge, round 2 (no public-API impact; each symbol adversarially
+  verified zero-reference with class context): removed seven unused `*_path`
+  `@property`s from `TaskPaths`/`RolloutPaths` (`readme_path`, `gitignore_path`,
+  `verifier_document_path`, `artifacts_manifest_path`, `result_path`,
+  `exception_message_path`, `log_path`), the vestigial `ModalSandbox.supports_gpus`
+  / `can_disable_internet` capability properties (not on the Sandbox Protocol),
+  an unused module-level `logger` in `cli/continue_cmd.py`, and the orphaned
+  `mcp_service_hooks_from_config` helper.
+- Dead-code purge (no public-API impact unless noted): removed the unused
+  `job_config_from_yaml` helper, the nominal `TASK_REPOS` back-compat dict
+  (use `TASK_ALIASES`), the `_looks_like_verifier_dep_install_error` shim
+  (use `contains_verifier_dep_install_marker`), the unused `parse_binary_verdict`
+  reward helper (use `parse_verdict`), the dead `SandboxBackend` type alias,
+  an unused `StdioTransport._read_buffer` field, and 12 redundant `rollout`
+  package re-export aliases (submodule definitions unchanged).
+- Removed the deprecated, hidden `benchflow skills install` CLI command. The
+  SDK function `benchflow.skills.install_skill` is unchanged.
+- Retired the deprecated top-level legacy CLI (`cli/legacy.py`). The dead
+  0.3-era `job`/`agents`/`eval` commands are removed; `metrics` and `view` are
+  promoted to first-class `bench eval metrics` / `bench eval view`; and the
+  redundant `cleanup` command is dropped in favor of the existing
+  `bench environment cleanup`.
+- Removed the `experiments/` research/dev tooling tree (never shipped in the
+  wheel) and its 6 dependent test modules, completing the dev-tree cleanup
+  alongside the earlier `dashboard/` removal and `labs/` → `docs/labs`
+  migration. Benchmark result files were preserved out-of-tree, not deleted.
+
+### Fixed
+- **CLI errors now go to stderr.** `print_error` (the single CLI error sink) wrote
+  to stdout, so a `bench … --json | jq` pipeline could get a non-JSON error line on
+  the JSON channel. All CLI errors (and the dataset bench-version remediation hint)
+  now route to stderr; exit codes are unchanged, so failures stay detectable.
+- **`bench hub env list --json` now emits valid JSON at any width.** The raw
+  payload was printed through Rich's console, which soft-wrapped long strings and
+  injected literal newlines mid-value (unparseable JSON when piped). It is now
+  written verbatim.
+- **No more raw tracebacks on bad input.** Hardened the unguarded front doors a
+  stress sweep surfaced: `eval create --source-repo` clone failures and
+  `--tasks-dir <file>`; `eval view` on corrupt/partial trajectory artifacts
+  (`prompts.json`, a bad `acp_trajectory.jsonl` line, `result.json`, a null
+  `session_id`); `sandbox create` with an unknown `--sandbox` backend or a missing
+  optional sandbox dependency; `tasks digest` on an unreadable file (single = clean
+  error, batch = warn-and-skip); and `hub check` with a malformed/missing
+  `--registry` (now a user-meaningful message, not a raw `JSONDecodeError`/`OSError`).
+- **Markup-safe output.** User/author-controlled strings that look like Rich markup
+  no longer crash or silently garble output: `eval list` job names, `eval metrics`
+  title, `skills list` cells, and `tasks init`'s reported path are now escaped.
+- **`skills eval` schema errors** no longer leak pydantic internals (private model
+  name, `[type=…]` tags, the pydantic.dev URL) — just the actionable per-field text.
+- **`bench environment` deprecation notice** now fires exactly once (one line,
+  once per process) instead of doubling up with Typer's generic
+  `DeprecationWarning`, and its aliased verbs are hidden from `--help`, matching the
+  `agent` / `eval adopt` alias families.
+- `benchmarks/CONVERT.md` now references the canonical `bench eval adopt verify`
+  (was the deprecated `bench agent verify`) in the conversion prompt.
+- `bench tasks migrate` emits minimal, canonical (`schema_version`) front
+  matter instead of a full defaults dump.
+- Verifier `timeout_sec` is validated as a positive, finite budget
+  (fail-closed at parse time; omission inherits the documented default).
+- Docker `compose up` retries on the daemon network create/attach race.
+- Console error messages truncate at word boundaries instead of mid-token.
+- Recorded sandbox-setup timeouts and trajectory artifacts are consistent
+  across the Docker and Daytona backends.
+- The `task.md` init scaffold is agent-neutral, so `--agent oracle` works on a
+  freshly scaffolded task.
+- `gemini/`-prefixed judge/simulated-user models now resolve to the Google
+  backend instead of passing the slashed name through and 404-ing.
+- Model-backed judges raise a clear error naming the provider and pointing at
+  `pip install benchflow[judge]` when the judge SDK is missing, instead of the
+  misleading "Missing OPENAI_API_KEY" fall-through.
+- `bench tasks check` recognizes a rubric-backed `llm-judge` verifier as a valid
+  entrypoint and no longer demands a `test.sh`.
+- Pre-verifier disk reclaim is workspace-aware and symlink-safe: it rejects
+  symlinked cache candidates and realpath-guards every deletion against the
+  workspace and `/logs`, so an agent-planted `~/.cache` symlink cannot steer the
+  reclaim into workspace or output state (#601).
+- Bedrock Claude 4.8+ routes fail closed when LiteLLM's adaptive-thinking patch
+  is inactive, instead of silently sending a request the proxy cannot satisfy
+  (#602).
 
 ## 0.5.2 — 2026-06-05
 

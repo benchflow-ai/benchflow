@@ -47,6 +47,7 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
+from benchflow.sandbox.providers import OFF_BOX_MODEL_PROVIDERS
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
@@ -63,7 +64,9 @@ _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 # GenerateContent format), so they talk to their provider directly and report
 # usage_source='unavailable'. ``oracle`` has no model at all.
 _NATIVE_PROTOCOL_AGENTS = frozenset({"oracle", "gemini"})
-_SANDBOX_LOCAL_ENVIRONMENTS = frozenset({"daytona", "modal"})
+# Providers whose model traffic exits the sandbox to the host proxy (≡ non-docker);
+# derived from the canonical registry so it can't drift from the provider set.
+_SANDBOX_LOCAL_ENVIRONMENTS = OFF_BOX_MODEL_PROVIDERS
 
 
 @dataclass(frozen=True)

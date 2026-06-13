@@ -95,7 +95,7 @@ async def list_workspace_snapshots(env) -> list[str]:
     ]
 
 
-# ── Backward-compatibility aliases ────────────────────────────────────────
+# Backward-compatibility aliases
 #
 # Pre-#384 these were ``snapshot`` / ``restore`` / ``list_snapshots`` and
 # exported as ``bf.snapshot`` etc. The names looked like the Sandbox lifecycle

@@ -6,15 +6,13 @@ Two directions, both pure format translators (no external SDK required):
 / ``RewardEvent`` into the conventions of external eval frameworks:
 
 * **Inspect AI** — ``InspectAdapter`` / ``to_inspect_task``
-* **ORS (OpenReward)** — ``ORSAdapter`` / ``to_ors_reward``
+* **ORS (OpenReward)** — ``ORSAdapter`` / ``to_ors_reward`` /
+  ``write_ors_tool_outputs_jsonl``
 
 **Inbound** — translate a foreign benchmark's task directory into BenchFlow's
 native task format so the foreign benchmark runs natively:
 
 * **Harbor** — ``HarborAdapter`` / ``from_harbor_task``
-* **Terminal-Bench** — ``TerminalBenchAdapter`` / ``from_terminal_bench_task``
-  (Terminal-Bench is also backward-compatible through the Harbor adapter,
-  since Harbor is itself terminal-bench-derived).
 
 ``detect_adapter`` sniffs a task directory and returns the matching inbound
 adapter; every inbound adapter returns an :class:`InboundTask`.
@@ -25,27 +23,32 @@ re-export its public symbols here.
 
 from benchflow.adapters.harbor import HarborAdapter, from_harbor_task
 from benchflow.adapters.inbound import (
+    InboundCompatibility,
     InboundTask,
     detect_adapter,
     manifest_from_task_config,
+    materialize_inbound_task_md,
 )
 from benchflow.adapters.inspect_ai import InspectAdapter, to_inspect_task
-from benchflow.adapters.ors import ORSAdapter, to_ors_reward
-from benchflow.adapters.terminal_bench import (
-    TerminalBenchAdapter,
-    from_terminal_bench_task,
+from benchflow.adapters.ors import (
+    ORSAdapter,
+    ors_tool_outputs_to_reward_events,
+    to_ors_reward,
+    write_ors_tool_outputs_jsonl,
 )
 
 __all__ = [
     "HarborAdapter",
+    "InboundCompatibility",
     "InboundTask",
     "InspectAdapter",
     "ORSAdapter",
-    "TerminalBenchAdapter",
     "detect_adapter",
     "from_harbor_task",
-    "from_terminal_bench_task",
+    "materialize_inbound_task_md",
     "manifest_from_task_config",
+    "ors_tool_outputs_to_reward_events",
     "to_inspect_task",
     "to_ors_reward",
+    "write_ors_tool_outputs_jsonl",
 ]

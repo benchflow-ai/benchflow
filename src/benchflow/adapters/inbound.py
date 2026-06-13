@@ -36,10 +36,12 @@ performing any I/O of its own beyond reading.
 from __future__ import annotations
 
 import re
+import shutil
+import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import TYPE_CHECKING
+from dataclasses import asdict, dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Any
 
 from benchflow.environment.manifest import EnvironmentManifest
 
@@ -60,9 +62,8 @@ def carry_native_subtrees(
 
     A native task directory's ``environment`` / ``tests`` / ``solution``
     subtrees are *already* in BenchFlow-native shape, so every file under
-    them carries straight through under its own relative path. Both inbound
-    adapters share this rglob-and-carry walk — harbor.py over all
-    :data:`NATIVE_SUBTREES`, terminal_bench.py over ``tests`` alone.
+    them carries straight through under its own relative path. harbor.py
+    uses this rglob-and-carry walk over all :data:`NATIVE_SUBTREES`.
 
     Files are visited in a stable, sorted order so the caller's collision
     handling is deterministic. The ``place`` callback owns the collision
@@ -104,11 +105,10 @@ def manifest_from_task_config(
 ) -> EnvironmentManifest:
     """Derive a baseline :class:`EnvironmentManifest` from a foreign task.
 
-    A Harbor- or Terminal-Bench-style foreign task does not ship an
-    ``environment.toml``; its environment is described by the
-    ``[environment]`` (now ``sandbox``) section of its ``task.toml`` /
-    ``task.yaml`` plus a buildable ``environment/Dockerfile``. This helper
-    folds that legacy shape into the Environment-plane seam:
+    A Harbor-style foreign task does not ship an ``environment.toml``; its
+    environment is described by the ``[environment]`` (now ``sandbox``)
+    section of its ``task.toml`` plus a buildable ``environment/Dockerfile``.
+    This helper folds that legacy shape into the Environment-plane seam:
 
     * ``manifest.image`` is the task's prebuilt ``docker_image`` when set,
       otherwise the ``bf__<name>:latest`` tag the framework's Dockerfile
@@ -116,8 +116,7 @@ def manifest_from_task_config(
       either way.
     * ``owns_lifecycle`` is true (no framework-started services) so the
       manifest validates without a ``[[services]]`` array — legacy
-      single-container Harbor/Terminal-Bench tasks have no separate
-      service plane.
+      single-container Harbor tasks have no separate service plane.
     * ``forward_env`` carries the foreign task's ``sandbox.env`` keys so
       the manifest's host-env forwarding surface stays honest to what the
       legacy path forwarded.
@@ -139,6 +138,119 @@ def manifest_from_task_config(
     return EnvironmentManifest.model_validate(payload)
 
 
+def materialize_inbound_task_md(
+    task: InboundTask,
+    output_dir: Path | str,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Write an :class:`InboundTask` as a native ``task.md`` package.
+
+    Inbound adapters stay pure: they read a foreign task and return an
+    in-memory :class:`InboundTask`. This helper is the shared consumer-facing
+    bridge from that adapter result to a runnable BenchFlow-native directory.
+    Legacy compatibility file-map destinations are promoted while copying:
+    ``tests/`` becomes ``verifier/`` and ``solution/`` becomes ``oracle/``.
+    """
+
+    copy_plan = [
+        (_task_md_file_map_destination(native_rel), source)
+        for native_rel, source in sorted(task.files.items())
+    ]
+    dest = Path(output_dir)
+    if dest.exists():
+        if not overwrite:
+            raise FileExistsError(f"Inbound materialization destination exists: {dest}")
+        if dest.is_dir():
+            shutil.rmtree(dest)
+        else:
+            dest.unlink()
+    dest.mkdir(parents=True)
+
+    frontmatter = tomllib.loads(task.config.model_dump_toml())
+    if task.compatibility is not None and (
+        task.compatibility.config_extra or task.compatibility.config_extra_paths
+    ):
+        benchflow = frontmatter.setdefault("benchflow", {})
+        benchflow["compat"] = task.compatibility.to_dict()
+
+    from benchflow.task.document import render_task_md
+
+    (dest / "task.md").write_text(render_task_md(frontmatter, task.instruction))
+    for target_rel, source in copy_plan:
+        target = dest / target_rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+    _ensure_script_verifier_contract(dest)
+    return dest
+
+
+def _task_md_file_map_destination(native_rel: str) -> Path:
+    path = PurePosixPath(native_rel)
+    if path.is_absolute() or ".." in path.parts or not path.parts:
+        raise ValueError(f"Inbound file-map path is not safe relative: {native_rel}")
+    parts = list(path.parts)
+    match parts[0]:
+        case "tests":
+            parts[0] = "verifier"
+        case "solution":
+            parts[0] = "oracle"
+        case "environment" | "verifier" | "oracle":
+            pass
+        case other:
+            raise ValueError(f"Inbound file-map path uses unsupported subtree: {other}")
+    return Path(*parts)
+
+
+def _ensure_script_verifier_contract(task_dir: Path) -> None:
+    verifier_dir = task_dir / "verifier"
+    test_sh = verifier_dir / "test.sh"
+    if not test_sh.is_file():
+        return
+
+    verifier_md = verifier_dir / "verifier.md"
+    if not verifier_md.exists():
+        verifier_md.write_text(
+            """---
+verifier:
+  default_strategy: deterministic
+  strategies:
+    deterministic:
+      type: script
+      command: ./test.sh
+  rubric:
+    combine: weighted_sum
+    dimensions:
+      correctness: {weight: 1.0, source: deterministic}
+  outputs:
+    reward_json: /logs/verifier/reward.json
+---
+"""
+        )
+
+    rubrics_dir = verifier_dir / "rubrics"
+    rubrics_dir.mkdir(exist_ok=True)
+    if not any(child.is_file() for child in rubrics_dir.rglob("*")):
+        (rubrics_dir / "verifier.md").write_text(
+            "Verify the foreign benchmark's original deterministic test contract.\n"
+        )
+
+
+@dataclass(frozen=True)
+class InboundCompatibility:
+    """Foreign-format data preserved outside the native task schema."""
+
+    source: str
+    config_extra: dict[str, Any] = field(default_factory=dict)
+    config_extra_paths: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["config_extra_paths"] = list(self.config_extra_paths)
+        return data
+
+
 @dataclass(frozen=True)
 class InboundTask:
     """A foreign task translated into BenchFlow-native shape.
@@ -156,15 +268,14 @@ class InboundTask:
     Attributes:
         name: The task identity (BenchFlow ``org/name`` form when the source
             provides one; otherwise derived from the source).
-        source: The foreign format this came from (e.g. ``"harbor"``,
-            ``"terminal-bench"``) — recorded so downstream tooling can trace
-            provenance.
+        source: The foreign format this came from (e.g. ``"harbor"``) —
+            recorded so downstream tooling can trace provenance.
         instruction: The task instruction, as it belongs in ``instruction.md``.
         manifest: The validated :class:`EnvironmentManifest` for this task
             — the Environment-plane integration seam. Either loaded from a
             sibling ``environment.toml`` (when the foreign task ships one)
             or derived from :func:`manifest_from_task_config` (the common
-            single-container Harbor / Terminal-Bench case).
+            single-container Harbor case).
         config: A validated native :class:`TaskConfig` — the legacy
             ``task.toml`` equivalent, kept for backward compatibility with
             file-materialization paths.
@@ -172,6 +283,9 @@ class InboundTask:
             Keys are paths under :data:`NATIVE_SUBTREES`; values are real,
             existing paths in the foreign task directory. A consumer copies
             each value to its key to materialize a runnable task.
+        compatibility: Explicit foreign-format metadata that could not become
+            native ``TaskConfig`` fields. Native task authoring remains strict;
+            adapters preserve this data for migration/export tooling.
     """
 
     name: str
@@ -180,25 +294,22 @@ class InboundTask:
     manifest: EnvironmentManifest
     config: TaskConfig
     files: dict[str, Path] = field(default_factory=dict)
+    compatibility: InboundCompatibility | None = None
 
 
 if TYPE_CHECKING:
     from benchflow.adapters.harbor import HarborAdapter
-    from benchflow.adapters.terminal_bench import TerminalBenchAdapter
 
     # An inbound adapter is just a class with a ``from_task_dir(Path) ->
-    # InboundTask`` classmethod — the two concrete ones. No standalone
-    # Protocol: InboundTask is the real contract, the adapter is its producer.
-    InboundAdapterType = type[HarborAdapter] | type[TerminalBenchAdapter]
+    # InboundTask`` classmethod. No standalone Protocol: InboundTask is the
+    # real contract, the adapter is its producer.
+    InboundAdapterType = type[HarborAdapter]
 
 
 def detect_adapter(task_dir: Path | str) -> InboundAdapterType:
     """Return the inbound adapter whose format ``task_dir`` matches.
 
-    Detection is by signature file: Harbor task dirs carry a ``task.toml``,
-    Terminal-Bench task dirs carry a ``task.yaml``. ``task.toml`` is checked
-    first so a directory carrying both is treated as Harbor (the native
-    superset format).
+    Detection is by signature file: Harbor task dirs carry a ``task.toml``.
 
     Raises:
         ValueError: if the directory matches no known foreign format.
@@ -206,14 +317,10 @@ def detect_adapter(task_dir: Path | str) -> InboundAdapterType:
     # Imported here to avoid a module-load cycle: the concrete adapters
     # import InboundTask from this module.
     from benchflow.adapters.harbor import HarborAdapter
-    from benchflow.adapters.terminal_bench import TerminalBenchAdapter
 
     root = Path(task_dir)
     if (root / "task.toml").is_file():
         return HarborAdapter
-    if (root / "task.yaml").is_file() or (root / "task.yml").is_file():
-        return TerminalBenchAdapter
     raise ValueError(
-        f"Unrecognized task format in {root}: expected a Harbor 'task.toml' "
-        f"or a Terminal-Bench 'task.yaml'."
+        f"Unrecognized task format in {root}: expected a Harbor 'task.toml'."
     )

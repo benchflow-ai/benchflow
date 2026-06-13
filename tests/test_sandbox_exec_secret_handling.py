@@ -14,6 +14,7 @@ covers the Daytona path, where ``_sandbox_exec`` previously emitted
 from __future__ import annotations
 
 import base64
+import re
 
 import pytest
 
@@ -229,3 +230,87 @@ class TestDaytonaExecEnvSecrecy:
         sub = captured[0]
         assert sub[-1] == "echo hi"
         assert "-e" not in sub
+
+
+class TestCrossBackendRedactionParity:
+    """Docker and Daytona must redact secrets identically (de-fork guard).
+
+    The env-file/secret-redaction logic was previously a near-verbatim fork
+    across ``DockerSandbox._wrap_command_with_env_file`` and
+    ``_wrap_daytona_command_with_env_file`` — two copies free to drift apart.
+    They now both delegate to the single canonical
+    ``benchflow.sandbox._base.wrap_command_with_env_file``. This test pins them
+    together: for the same secret env, both backends must emit a byte-identical
+    redacted command, modulo the one intentional difference — the temp env-file
+    path prefix (plus its random per-call suffix).
+    """
+
+    # The two backends deliberately use distinct env-file path prefixes; the
+    # 16-hex suffix is random per call. Normalizing both to a placeholder lets
+    # us assert the *rest* of the command (the redaction + shape) is identical.
+    _ENV_PATH_RE = re.compile(r"/tmp/\.benchflow_(?:exec|daytona)_env_[0-9a-f]{16}")
+
+    def _normalize(self, wrapped: str) -> str:
+        return self._ENV_PATH_RE.sub("<ENV_PATH>", wrapped)
+
+    def test_identical_redaction_for_same_secret_env(self) -> None:
+        from benchflow.sandbox.docker import DockerSandbox
+
+        env = {
+            "OPENAI_API_KEY": "sk-very-secret",
+            "AUTHORIZATION": "Bearer hunter2",
+            "SAFE_VAR": "ordinary value",
+            # A non-identifier key — both backends must skip it identically.
+            "dotted.key": "drop-me",
+        }
+        command = "run-verifier --flag"
+
+        docker_wrapped = DockerSandbox._wrap_command_with_env_file(env, command)
+        daytona_wrapped = _wrap_daytona_command_with_env_file(env, command)
+
+        # The only legitimate difference is the env-file path prefix/suffix.
+        assert self._normalize(docker_wrapped) == self._normalize(daytona_wrapped)
+
+        # And the shared, normalized command carries the same redacted payload:
+        # raw secrets never appear, the base64 blob is byte-identical, and the
+        # user command is reached the same way.
+        normalized = self._normalize(docker_wrapped)
+        assert "sk-very-secret" not in normalized
+        assert "hunter2" not in normalized
+        assert normalized.endswith(command)
+
+        # Same base64 env body on both sides (the heart of the redaction).
+        docker_body = base64.b64decode(
+            docker_wrapped.split("printf %s ", 1)[1].split(" |", 1)[0].strip("'")
+        ).decode()
+        daytona_body = base64.b64decode(
+            daytona_wrapped.split("printf %s ", 1)[1].split(" |", 1)[0].strip("'")
+        ).decode()
+        assert docker_body == daytona_body
+        assert "export OPENAI_API_KEY=" in docker_body
+        assert "export SAFE_VAR=" in docker_body
+        # The non-identifier key is dropped on both sides.
+        assert "dotted.key" not in docker_body
+
+    def test_both_backends_share_canonical_helper(self) -> None:
+        """Guards against re-forking: both wrappers must route through one home.
+
+        If a future edit reintroduces a private copy of the redaction logic in
+        either backend, this byte-for-byte equality (after path normalization)
+        with the canonical helper's own output would break.
+        """
+        from benchflow.sandbox._base import wrap_command_with_env_file
+        from benchflow.sandbox.docker import DockerSandbox
+
+        env = {"API_KEY": "sk-leak", "AUTHORIZATION": "Bearer leak"}
+        command = "tool"
+
+        canonical = wrap_command_with_env_file(
+            env, command, env_path_prefix="/tmp/canonical_"
+        )
+        docker_wrapped = DockerSandbox._wrap_command_with_env_file(env, command)
+        daytona_wrapped = _wrap_daytona_command_with_env_file(env, command)
+
+        canonical_norm = re.sub(r"/tmp/canonical_[0-9a-f]{16}", "<ENV_PATH>", canonical)
+        assert self._normalize(docker_wrapped) == canonical_norm
+        assert self._normalize(daytona_wrapped) == canonical_norm

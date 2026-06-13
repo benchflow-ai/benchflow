@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 import typer
 from rich.console import Console
 from rich.table import Table
+
+from benchflow.cli._shared import print_error
 
 console = Console()
 
@@ -55,7 +57,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             Path,
             typer.Option("--output", help="Output directory for generated tasks"),
         ] = Path("tasks"),
-        # ── source-specific options ──────────────────────────────────
+        # source-specific options
         projects_dir: Annotated[
             Path | None,
             typer.Option(
@@ -85,7 +87,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             int,
             typer.Option("--max-rows", help="Max rows to download from HuggingFace"),
         ] = 100,
-        # ── shared filtering / output options ────────────────────────
+        # shared filtering / output options
         limit: Annotated[
             int,
             typer.Option("--limit", help="Max traces to process"),
@@ -104,6 +106,13 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             str,
             typer.Option("--author", help="Author name for task.toml"),
         ] = "benchflow-traces",
+        task_format: Annotated[
+            str,
+            typer.Option(
+                "--task-format",
+                help="Generated task package format: task-md or legacy",
+            ),
+        ] = "task-md",
         dry_run: Annotated[
             bool,
             typer.Option("--dry-run", help="Preview traces without generating tasks"),
@@ -123,12 +132,10 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         """
         sources = sum([from_local, from_file is not None, from_hf is not None])
         if sources == 0:
-            console.print(
-                "[red]Specify a source: --from-local, --from-file, or --from-hf[/red]"
-            )
+            print_error("Specify a source: --from-local, --from-file, or --from-hf")
             raise typer.Exit(1)
         if sources > 1:
-            console.print("[red]Only one source allowed at a time[/red]")
+            print_error("Only one source allowed at a time")
             raise typer.Exit(1)
 
         if from_local:
@@ -171,12 +178,17 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
 
         from benchflow.traces.task_gen import generate_tasks_from_traces
 
+        if task_format not in ("task-md", "legacy"):
+            print_error("--task-format must be task-md or legacy")
+            raise typer.Exit(1)
+
         results = generate_tasks_from_traces(
             traces,
             output_dir,
             author=author,
             min_steps=min_steps,
             outcome_filter=outcome,
+            output_format=cast(Literal["task-md", "legacy"], task_format),
         )
 
         console.print(f"\n[green]Generated {len(results)} tasks[/green] → {output_dir}")
@@ -202,9 +214,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         console.print(table)
 
 
-# ---------------------------------------------------------------------------
 # Source loaders
-# ---------------------------------------------------------------------------
 
 
 def _load_local(
@@ -237,7 +247,7 @@ def _load_file(path: Path, format: str) -> list:
     )
 
     if not path.exists():
-        console.print(f"[red]File not found: {path}[/red]")
+        print_error(f"File not found: {path}")
         raise typer.Exit(1)
 
     detected_format = format
@@ -252,7 +262,7 @@ def _load_file(path: Path, format: str) -> list:
     elif detected_format == "claude-messages":
         return _parse_hf_messages_file(path)
     else:
-        console.print(f"[red]Unknown format: {detected_format}[/red]")
+        print_error(f"Unknown format: {detected_format}")
         raise typer.Exit(1)
 
 
@@ -271,11 +281,6 @@ def _load_hf(dataset: str, format: str | None, split: str, max_rows: int) -> lis
         )
 
     return load_hf_dataset(dataset, format=fmt, split=split, max_rows=max_rows)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _parse_hf_messages_file(path: Path) -> list:
@@ -317,6 +322,13 @@ def _detect_format(path: Path) -> str:
     try:
         data = json.loads(first_line)
     except json.JSONDecodeError:
+        return "claude-code"
+
+    # A non-dict first line (list / bare scalar) is not any known trace shape;
+    # the membership tests and `.get` below assume a mapping. Route to the
+    # claude-code loader, which returns [] for unrecognized rows so the caller
+    # surfaces the clean "No traces found" message instead of a raw traceback.
+    if not isinstance(data, dict):
         return "claude-code"
 
     if "schema_version" in data or ("agent" in data and "steps" in data):

@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from benchflow._utils.task_authoring import check_task
 from tests.integration.check_adapter_evidence import (
     check_continuallearningbench,
     check_hilbench,
@@ -29,7 +28,6 @@ from tests.integration.run_suite import (
 )
 
 SUITE_PATH = Path("tests/integration/suites/release.yaml")
-TERMINAL_BENCH_SMOKE_TASK = Path("tests/examples/terminal-bench-smoke-task")
 INTEGRATION_CONFIG_DIR = Path("tests/integration/configs")
 INTEGRATION_RUN_SH = Path("tests/integration/run.sh")
 SELECTED_SKILLSBENCH_TASKS = [
@@ -219,7 +217,7 @@ def test_collect_lane_todos_groups_unresolved_manifest_todos() -> None:
     suite = load_suite(SUITE_PATH)
     lanes = select_lanes(
         suite,
-        ["shared-sandbox-smoke", "skillsbench-agent-matrix", "terminal-bench-smoke"],
+        ["shared-sandbox-smoke", "skillsbench-agent-matrix"],
     )
 
     lane_todos = collect_lane_todos(suite, lanes)
@@ -245,11 +243,6 @@ def test_security_dind_lane_has_concrete_task_but_remains_blocked() -> None:
     )
     assert expanded["todos"] == []
     assert collect_lane_blockers([lane]) == {"security-dind-smoke": lane["blocked_by"]}
-
-
-def test_terminal_bench_smoke_task_is_valid() -> None:
-    """Guards ENG-92 terminal smoke uses a real local shell-verifier task."""
-    assert check_task(TERMINAL_BENCH_SMOKE_TASK) == []
 
 
 def test_dry_run_prints_selected_lane(capsys: pytest.CaptureFixture[str]) -> None:
@@ -289,7 +282,6 @@ def test_full_release_dry_run_passes_current_release_gate(
     assert "shared-sandbox-smoke" in captured.out
     assert "skillsbench-harbor-parity" in captured.out
     assert "hosted-env-compatibility-board" in captured.out
-    assert "terminal-bench-smoke" in captured.out
     assert "trace-to-task-e2e" in captured.out
     assert "security-dind-smoke" not in captured.out
     assert captured.err == ""
@@ -373,7 +365,6 @@ def test_release_gated_cli_dry_run_passes_fail_on_todo(
     assert "Profile: release-gated-cli" in captured.out
     assert "Preferred sandboxes: docker, daytona" in captured.out
     assert "local:tests/examples/hello-world-task" in captured.out
-    assert "local:tests/examples/terminal-bench-smoke-task" in captured.out
     assert "firecracker, k8s" not in captured.out
     assert captured.err == ""
 
@@ -420,7 +411,6 @@ def test_near_term_profile_prints_small_daytona_plan(
     )
     assert "Task budget:" in out
     assert "per_adapter: 1" in out
-    assert "terminal-bench-smoke" not in out
     assert "shared-sandbox-smoke" not in out
 
 

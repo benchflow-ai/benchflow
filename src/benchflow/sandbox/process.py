@@ -24,6 +24,27 @@ _BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB readline buffer
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stderr in error messages
 _BOOTSTRAP_DONE = "__BENCHFLOW_BOOTSTRAP_DONE__"
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DAYTONA_PTY_READLINE_TIMEOUT_ENV = "BENCHFLOW_DAYTONA_PTY_READLINE_TIMEOUT"
+_DAYTONA_PTY_READLINE_TIMEOUT_DEFAULT_SEC = 900.0
+
+
+def _daytona_pty_readline_timeout_sec() -> float:
+    value = os.environ.get(_DAYTONA_PTY_READLINE_TIMEOUT_ENV)
+    if value is None:
+        return _DAYTONA_PTY_READLINE_TIMEOUT_DEFAULT_SEC
+    try:
+        timeout = float(value)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; using default %.0fs",
+            _DAYTONA_PTY_READLINE_TIMEOUT_ENV,
+            value,
+            _DAYTONA_PTY_READLINE_TIMEOUT_DEFAULT_SEC,
+        )
+        return _DAYTONA_PTY_READLINE_TIMEOUT_DEFAULT_SEC
+    if timeout <= 0:
+        return _DAYTONA_PTY_READLINE_TIMEOUT_DEFAULT_SEC
+    return timeout
 
 
 async def _cleanup_daytona_remote_env_file(
@@ -790,11 +811,12 @@ class DaytonaPtyProcess(LiveProcess):
                     raw_message=msg, transport_diagnosis="pty_error"
                 ),
             )
+        timeout = _daytona_pty_readline_timeout_sec()
         try:
-            line = await asyncio.wait_for(self._line_buffer.get(), timeout=900)
+            line = await asyncio.wait_for(self._line_buffer.get(), timeout=timeout)
             return line
         except TimeoutError as e:
-            msg = "PTY readline timeout (900s)"
+            msg = f"PTY readline timeout ({timeout:g}s)"
             raise TransportClosedError(
                 msg,
                 TransportClosedDiagnostic(

@@ -235,7 +235,7 @@ Human interaction is modelled through ACP's role split: **BenchFlow is the ACP C
 
 The manifest is BenchFlow's native format; **adapters translate every other format to it.**
 
-**Inbound env adapters** — Harbor, Inspect, ORS, PrimeIntellect/Verifiers environments → run foreign benchmarks natively. **Terminal-Bench is backward-compatible** through the Harbor adapter (Harbor is itself terminal-bench-derived) or a direct Terminal-Bench adapter — old terminal tasks keep running.
+**Inbound env adapters** — Harbor, Inspect, ORS, PrimeIntellect/Verifiers environments → run foreign benchmarks natively. **Terminal-Bench tasks run through the Harbor adapter** (Harbor is itself terminal-bench-derived).
 
 **Outbound — the trainer seam.** A scored trajectory exports as a **Verifiers / ORS JSONL record** (`prompt / completion / reward / metrics / info`). Being a Verifiers/ORS-compatible producer yields a trainer — prime-rl — with zero trainer code. BenchFlow is a rollout *service*; trainers (Tinker, verl, NeMo-RL) stay external. The trajectory is the seam.
 

@@ -14,6 +14,7 @@ from typing import Any, NoReturn, cast
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow.agents.registry import AGENTS
+from benchflow.sandbox.providers import OPTIONAL_SANDBOX_EXTRAS, providers_phrase
 from benchflow.skill_policy import validate_container_mount_path
 from benchflow.task import RolloutPaths, Task
 
@@ -55,17 +56,11 @@ def _stage_ignore(directory: str, contents: list[str]) -> list[str]:
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?")
 
 
-_OPTIONAL_SANDBOX_EXTRAS = {
-    "daytona": "sandbox-daytona",
-    "modal": "sandbox-modal",
-}
-
-
 def _raise_missing_optional_sandbox_dependency(
     sandbox_type: str,
-    exc: ModuleNotFoundError,
+    exc: ImportError,
 ) -> NoReturn:
-    extra = _OPTIONAL_SANDBOX_EXTRAS[sandbox_type]
+    extra = OPTIONAL_SANDBOX_EXTRAS[sandbox_type]
     raise RuntimeError(
         f"Missing optional dependency for {sandbox_type!r} sandbox. "
         f"Install it with `uv sync --extra {extra}` for local development, "
@@ -178,6 +173,12 @@ def _modal_builder_dockerfile(
 
 def _create_benchflow_modal_environment_class():
     """Create a ModalSandbox subclass with BenchFlow's image-build defaults."""
+    # Import the optional ``modal`` dependency eagerly so a missing
+    # ``sandbox-modal`` extra surfaces here — where the caller wraps this in
+    # ``except ModuleNotFoundError`` and raises the actionable extra hint —
+    # rather than deep inside ``start()`` as a raw traceback.
+    import modal  # noqa: F401
+
     from benchflow.sandbox.modal_impl import ModalSandbox
 
     class BenchFlowModalSandbox(ModalSandbox):
@@ -643,6 +644,11 @@ def _create_sandbox_environment(
     environment_dir = task_path / "environment"
     if not environment_dir.exists():
         environment_dir = task.paths.environment_dir
+    _validate_task_runtime_for_launch(
+        task,
+        sandbox_type=sandbox_type,
+        task_path=task_path,
+    )
     if preserve_agent_network and env_config.allow_internet is False:
         # LLM agents run inside the sandbox and need outbound network for model
         # APIs and first-run agent installation. BenchFlow enforces the task's
@@ -684,8 +690,17 @@ def _create_sandbox_environment(
     elif sandbox_type == "daytona":
         try:
             from benchflow.sandbox._sdk_ops import apply as _apply_daytona_patches
-            from benchflow.sandbox.daytona import DaytonaSandbox
-        except ModuleNotFoundError as exc:
+            from benchflow.sandbox.daytona import DaytonaSandbox, _load_daytona_sdk
+
+            # ``benchflow.sandbox.daytona`` is deliberately import-safe without the
+            # optional Daytona SDK (#358), so the imports above succeed even on a
+            # base install. Force the SDK to load here — at env selection — so a
+            # missing ``[sandbox-daytona]`` extra fails fast with the same
+            # actionable install hint as ``modal``, instead of leaking a raw
+            # ``ImportError`` deep inside ``DaytonaSandbox.__init__`` after the
+            # CPU/memory clamping below has already run (BF-1).
+            _load_daytona_sdk()
+        except ImportError as exc:
             _raise_missing_optional_sandbox_dependency("daytona", exc)
 
         _apply_daytona_patches()
@@ -739,8 +754,38 @@ def _create_sandbox_environment(
         )
     else:
         raise ValueError(
-            f"Unknown sandbox_type: {sandbox_type!r} (use 'docker', 'daytona', or 'modal')"
+            f"Unknown sandbox_type: {sandbox_type!r} (use {providers_phrase(quote=True)})"
         )
+
+
+def _validate_task_runtime_for_launch(
+    task: Task,
+    *,
+    sandbox_type: str,
+    task_path: Path,
+) -> None:
+    """Fail closed before launch when a real parsed task has unsupported fields."""
+
+    from benchflow.task.config import TaskConfig
+    from benchflow.task.document import TaskDocument
+    from benchflow.task.runtime_capabilities import raise_for_task_runtime_support
+    from benchflow.task.runtime_view import TaskRuntimeView
+
+    document = getattr(task, "document", None)
+    config = getattr(task, "config", None)
+    if isinstance(document, TaskDocument):
+        runtime_task: TaskDocument | TaskConfig = document
+    elif isinstance(config, TaskConfig):
+        runtime_task = config
+    else:
+        return
+
+    runtime_view = TaskRuntimeView.from_task(task, task_dir=task_path)
+    raise_for_task_runtime_support(
+        runtime_task,
+        sandbox=sandbox_type,
+        task_dir=runtime_view.task_dir,
+    )
 
 
 # Backward compatibility alias

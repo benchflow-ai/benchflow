@@ -26,8 +26,12 @@ Concretely:
 * Agent-as-tool is a per-agent capability.  BenchFlow does not invoke
   agents on behalf of other agents; the calling agent uses its own
   native tool-use to reach a companion agent's endpoint.
-* Loop management is entirely the agent's responsibility.  BenchFlow
-  scenes define *turns* (prompts), not iteration.
+* *Agent-internal* loop management is the agent's responsibility.
+  BenchFlow scenes define *turns* (prompts), not iteration.  Harness-level
+  loop strategies (:mod:`benchflow.loop_strategies`, ``--loop-strategy``)
+  are a separate evaluand axis: the harness re-prompts the agent across
+  verify-retry rounds and scores only the final hardened verify, but never
+  orchestrates loops *inside* the agent.
 """
 
 from __future__ import annotations
@@ -52,7 +56,7 @@ class Role:
     model: str | None = None
     reasoning_effort: str | None = None
     env: dict[str, str] = field(default_factory=dict)
-    timeout_sec: int | None = None  # None = inherit from task.toml
+    timeout_sec: int | None = None  # None = inherit from task config
     idle_timeout_sec: int | None = None
     skills_dir: str | Path | None = None
     capabilities: list[str] | None = None  # e.g. ["tool-use", "agent-as-tool", "loop"]
@@ -63,7 +67,7 @@ class Turn:
     """One prompt in a scene. *role* selects which Role acts."""
 
     role: str
-    prompt: str | None = None  # None = expand from instruction.md
+    prompt: str | None = None  # None = expand from the task prompt
 
 
 @dataclass

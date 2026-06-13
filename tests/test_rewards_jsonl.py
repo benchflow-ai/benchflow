@@ -108,7 +108,7 @@ def test_empty_rubric_list_only_terminal(tmp_path: Path) -> None:
     assert lines[0]["type"] == "terminal"
 
 
-# --- Space / granularity tags (issue #399) ----------------------------------
+# Space / granularity tags (issue #399)
 #
 # The architecture tags every reward record with ``(space, granularity, value)``.
 # Native ``rewards.jsonl`` must surface those tags as first-class fields so

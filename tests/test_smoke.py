@@ -7,6 +7,19 @@ Bare ``pytest tests/test_smoke.py`` will silently report "1 deselected" because
 the ``addopts = "-m 'not live'"`` filter in pyproject.toml applies to direct
 file invocation too.
 
+Default agent/model is ``claude-agent-acp`` + Haiku 4.5. A contributor whose
+only credential is non-Anthropic can point the smoke at an agent/model they can
+actually authenticate via two env vars (proven combo: openhands + deepseek):
+
+    export BENCHFLOW_SMOKE_AGENT=openhands
+    export BENCHFLOW_SMOKE_MODEL=deepseek/deepseek-chat
+    export DEEPSEEK_API_KEY=...   DEEPSEEK_BASE_URL=https://api.deepseek.com
+    pytest -m live tests/test_smoke.py
+
+The skip reason is always specific (which credential is missing for the chosen
+model) so a release gate can grep the pytest summary and refuse to call a
+skipped live smoke "green" — see ``docs/release.md`` and the launch-prep skill.
+
 Importing ``benchflow.sdk`` triggers ``_patch_dind()`` at sdk.py:135.
 That patch is gated on ``/.dockerenv`` and runs ``docker info`` with a 5s
 timeout, swallowing all exceptions — safe but worth flagging.
@@ -36,6 +49,73 @@ from benchflow.sandbox.setup import _detect_dind_mount
 HELLO_TASK = Path(__file__).parent / "examples" / "hello-world-task"
 SMOKE_JOBS_BASE = Path(__file__).parent / ".smoke-jobs"
 
+DEFAULT_SMOKE_AGENT = "claude-agent-acp"
+DEFAULT_SMOKE_MODEL = "claude-haiku-4-5-20251001"
+
+SMOKE_AGENT_ENV = "BENCHFLOW_SMOKE_AGENT"
+SMOKE_MODEL_ENV = "BENCHFLOW_SMOKE_MODEL"
+
+
+def resolve_smoke_target() -> tuple[str, str]:
+    """Return the (agent, model) the live smoke will run.
+
+    Defaults to claude-agent-acp + Haiku 4.5. ``BENCHFLOW_SMOKE_AGENT`` and
+    ``BENCHFLOW_SMOKE_MODEL`` override both (the escape hatch for contributors
+    without an Anthropic credential). Both must be set together; setting only
+    one is a configuration error, not a silent fall-back to the Anthropic
+    default the contributor cannot authenticate.
+    """
+    agent = os.environ.get(SMOKE_AGENT_ENV)
+    model = os.environ.get(SMOKE_MODEL_ENV)
+    if (agent is None) != (model is None):
+        missing = SMOKE_MODEL_ENV if agent is not None else SMOKE_AGENT_ENV
+        raise RuntimeError(
+            f"{SMOKE_AGENT_ENV} and {SMOKE_MODEL_ENV} must be set together; "
+            f"{missing} is unset."
+        )
+    if agent and model:
+        return agent, model
+    return DEFAULT_SMOKE_AGENT, DEFAULT_SMOKE_MODEL
+
+
+def _missing_model_credentials(model: str) -> str | None:
+    """Return a reason string if the chosen model has no usable credential.
+
+    The default Anthropic model accepts either ``ANTHROPIC_API_KEY`` or
+    ``~/.claude/.credentials.json`` (subscription OAuth) — the dual path
+    ``resolve_agent_env`` honors for claude-agent-acp. Any other model is
+    validated against the credential env vars its registered provider needs:
+    the inferred API key plus every ``url_params`` env var (e.g. deepseek's
+    ``DEEPSEEK_BASE_URL``), so the skip reason names the missing var.
+    """
+    from benchflow.agents.providers import find_provider
+    from benchflow.agents.registry import infer_env_key_for_model
+
+    provider = find_provider(model)
+    if provider is None:
+        # No registered provider: only the built-in Anthropic dual path is
+        # special-cased; the heuristic key still applies as a fallback.
+        required = infer_env_key_for_model(model)
+        if required == "ANTHROPIC_API_KEY":
+            has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+            has_login = Path("~/.claude/.credentials.json").expanduser().is_file()
+            if has_key or has_login:
+                return None
+            return "no ANTHROPIC_API_KEY and no ~/.claude/.credentials.json"
+        if required and not os.environ.get(required):
+            return f"no {required} for model {model!r}"
+        return None
+
+    _, cfg = provider
+    needed: list[str] = []
+    if cfg.auth_type == "api_key" and cfg.auth_env:
+        needed.append(cfg.auth_env)
+    needed.extend(cfg.url_params.values())
+    missing = [var for var in needed if not os.environ.get(var)]
+    if missing:
+        return f"missing {', '.join(missing)} for model {model!r}"
+    return None
+
 
 def _smoke_skip_reason() -> str | None:
     """Return a skip reason or None.
@@ -46,9 +126,9 @@ def _smoke_skip_reason() -> str | None:
     Checks:
     - docker CLI present (cheap, no subprocess)
     - docker daemon reachable (3s timeout to kill hangs on misconfigured DOCKER_HOST)
-    - ANTHROPIC_API_KEY env var OR ~/.claude/.credentials.json (matches what
-      resolve_agent_env at _agent_env.py accepts for claude-agent-acp's
-      subscription_auth path)
+    - credentials for the resolved smoke model (the Anthropic dual key/login
+      path for the default, or the provider's required env vars for an
+      escape-hatch model — see ``_missing_model_credentials``)
 
     Deliberately does NOT call resolve_agent_env — the test exercises that code
     path; skipping when it raises would mask real regressions.
@@ -65,11 +145,8 @@ def _smoke_skip_reason() -> str | None:
         return f"docker daemon unreachable: {e}"
     if r.returncode != 0:
         return "docker daemon unreachable"
-    has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    has_login = Path("~/.claude/.credentials.json").expanduser().is_file()
-    if not (has_key or has_login):
-        return "no ANTHROPIC_API_KEY and no ~/.claude/.credentials.json"
-    return None
+    _, model = resolve_smoke_target()
+    return _missing_model_credentials(model)
 
 
 @pytest.fixture(scope="session")
@@ -80,6 +157,11 @@ def smoke_prereqs() -> bool:
     only when a live test is actually selected. Replaces the naive
     ``@pytest.mark.skipif(_smoke_skip_reason() is not None, ...)`` pattern,
     which evaluates at decorator (collection) time on every pytest invocation.
+
+    A skip here is intentionally loud at the gate level: ``docs/release.md`` and
+    the launch-prep skill run the live smoke with ``-ra`` and fail the gate if
+    the summary reports this test as skipped, so a missing credential cannot
+    false-green the e2e step on a run that never executed.
     """
     reason = _smoke_skip_reason()
     if reason:
@@ -127,7 +209,11 @@ def smoke_jobs_dir(tmp_path: Path) -> Iterator[Path]:
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("smoke_prereqs")
 async def test_hello_world_smoke(smoke_jobs_dir: Path) -> None:
-    """End-to-end: claude-agent-acp + Haiku 4.5 solves hello-world-task.
+    """End-to-end: the resolved agent + model solves hello-world-task.
+
+    Defaults to claude-agent-acp + Haiku 4.5; ``BENCHFLOW_SMOKE_AGENT`` /
+    ``BENCHFLOW_SMOKE_MODEL`` redirect it at any other ACP agent/model the
+    contributor can authenticate (e.g. openhands + deepseek).
 
     Asserts the minimal set that proves the orchestration pipeline ran:
     - Verifier produced reward 1.0 (strict equality on "Hello, world!")
@@ -136,10 +222,11 @@ async def test_hello_world_smoke(smoke_jobs_dir: Path) -> None:
       overwritten by scraped fallback — see sdk.py:83-84,540)
     - Trajectory file exists and is non-empty
     """
+    agent, model = resolve_smoke_target()
     result = await SDK().run(
         task_path=HELLO_TASK,
-        agent="claude-agent-acp",
-        model="claude-haiku-4-5-20251001",
+        agent=agent,
+        model=model,
         jobs_dir=smoke_jobs_dir,
     )
 

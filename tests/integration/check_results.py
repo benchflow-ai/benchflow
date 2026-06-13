@@ -20,6 +20,7 @@ Guards: ENG-6 integration test plan (PR #255).
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -237,11 +238,64 @@ def _load_config(result_file: Path) -> tuple[Path, dict | None, str | None]:
         return config_path, None, "config.json: invalid JSON"
 
 
+def _summary_path(agent_dir: Path, result_root: Path) -> Path:
+    summary_path = agent_dir / "summary.json"
+    if summary_path.exists():
+        return summary_path
+    return result_root / "summary.json"
+
+
+def _load_summary(path: Path) -> tuple[dict | None, str | None]:
+    if not path.exists():
+        return None, "summary.json not found"
+    try:
+        summary = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None, "summary.json: invalid JSON"
+    if not isinstance(summary, dict):
+        return None, "summary.json must be a JSON object"
+    return summary, None
+
+
+def _is_worker_sharded_summary(summary: dict[str, Any] | None) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    worker_count = summary.get("worker_count")
+    worker_concurrency = summary.get("worker_concurrency")
+    return (
+        isinstance(worker_count, int)
+        and not isinstance(worker_count, bool)
+        and worker_count > 0
+        and isinstance(worker_concurrency, int)
+        and not isinstance(worker_concurrency, bool)
+        and worker_concurrency > 0
+    )
+
+
+def _expected_config_concurrency(
+    agent: str,
+    summary: dict[str, Any] | None,
+) -> Any:
+    expected_concurrency = _expected(agent, "concurrency")
+    if expected_concurrency is _MISSING:
+        return _MISSING
+    if _is_worker_sharded_summary(summary):
+        return summary["worker_concurrency"]
+    return expected_concurrency
+
+
 # Skill modes that make skills available to the agent (canonical ``skill_mode``
 # field). Only an explicit no-skill sentinel means no skills; any other mode
 # (with-skill, self-gen, or a future/unknown mode) is treated as provisioned so
 # the no-skill invariant never false-flags a legitimate with-skill trial.
 _NO_SKILL_MODES = frozenset({"no-skill", "no-skills", "none", "without-skill"})
+_SKILL_PATH_MARKERS = (
+    ".agents/skills",
+    ".codex/skills",
+    ".claude/skills",
+    "/skills/",
+    "skills/",
+)
 
 
 def _config_provisions_skills(config: dict[str, Any] | None) -> bool:
@@ -284,6 +338,80 @@ def _config_provisions_skills(config: dict[str, Any] | None) -> bool:
     return False
 
 
+def _task_skill_names(config: dict[str, Any], result: dict[str, Any]) -> set[str]:
+    """Return bundled task skill names from the recorded source checkout."""
+    for source in (config.get("source"), result.get("source")):
+        if not isinstance(source, dict):
+            continue
+        local_path = source.get("local_path")
+        if not isinstance(local_path, str) or not local_path:
+            continue
+        skills_root = Path(local_path) / "environment" / "skills"
+        if not skills_root.is_dir():
+            continue
+        return {
+            child.name
+            for child in skills_root.iterdir()
+            if child.is_dir() and (child / "SKILL.md").is_file()
+        }
+    return set()
+
+
+def _skill_name_variants(name: str) -> set[str]:
+    normalized = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return {
+        name.strip().lower(),
+        normalized,
+        normalized.replace("-", "_"),
+        normalized.replace("-", " "),
+    }
+
+
+def _iter_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        strings: list[str] = []
+        for item in value.values():
+            strings.extend(_iter_strings(item))
+        return strings
+    if isinstance(value, list | tuple):
+        strings = []
+        for item in value:
+            strings.extend(_iter_strings(item))
+        return strings
+    return []
+
+
+def _no_skill_task_file_access_evidence(
+    trajectory: list[dict[str, Any]] | None,
+    *,
+    config: dict[str, Any],
+    result: dict[str, Any],
+) -> list[str]:
+    if not trajectory:
+        return []
+    variants = {
+        variant
+        for name in _task_skill_names(config, result)
+        for variant in _skill_name_variants(name)
+        if variant
+    }
+    if not variants:
+        return []
+
+    evidence: list[str] = []
+    for event in trajectory:
+        for text in _iter_strings(event):
+            lowered = text.lower()
+            if not any(marker in lowered for marker in _SKILL_PATH_MARKERS):
+                continue
+            if any(variant in lowered for variant in variants):
+                evidence.append(text)
+                break
+    return evidence
+
+
 def _source_hash_truth_issues(source: object, label: str) -> list[str]:
     if not isinstance(source, dict):
         return []
@@ -306,73 +434,6 @@ def _source_hash_truth_issues(source: object, label: str) -> list[str]:
     if actual != file_hashes:
         return [f"{label}: source.file_hashes do not match local_path"]
     return _source_git_truth_issues(source_dict, local_path, label)
-
-
-# Dataset identity stamp (dataset-versioning plan: benchflow #690 + dev-run
-# digest stamping follow-up). dataset_name/dataset_version mark registry
-# dataset runs; task_digest pins the exact task content for every run.
-_DATASET_STAMP_KEYS = ("dataset_name", "dataset_version", "task_digest")
-
-
-def _dataset_stamp_issues(artifact: object, label: str) -> list[str]:
-    """Audit the dataset identity stamp on one result.json/config.json.
-
-    Rules: dataset_name and dataset_version travel together; a dataset run
-    must carry a task_digest; any task_digest must be ``sha256:<64 hex>``.
-    A bare task_digest without dataset fields is a dev run — allowed.
-    """
-    if not isinstance(artifact, dict):
-        return []
-    artifact_dict = cast(dict[str, Any], artifact)
-    name = artifact_dict.get("dataset_name")
-    version = artifact_dict.get("dataset_version")
-    digest = artifact_dict.get("task_digest")
-    if name is None and version is None and digest is None:
-        return []
-    issues: list[str] = []
-    if (name is None) != (version is None):
-        issues.append(f"{label}: dataset_name and dataset_version must travel together")
-    for field_name, value in (("dataset_name", name), ("dataset_version", version)):
-        if value is not None and (not isinstance(value, str) or not value):
-            issues.append(f"{label}: {field_name} must be a non-empty string")
-    if name is not None and digest is None:
-        issues.append(f"{label}: dataset-stamped artifact missing task_digest")
-    if digest is not None and not is_sha256_digest(digest):
-        issues.append(f"{label}: task_digest must be 'sha256:<64 hex>'")
-    return issues
-
-
-def _task_digest_truth_issues(result: object, label: str) -> list[str]:
-    """Recompute the task content digest when the task dir is still on disk.
-
-    Complements ``_source_hash_truth_issues``: ``source.file_hashes`` audits
-    per-file hashes, this audits the single registry-algorithm digest the
-    leaderboard pipeline keys on.
-    """
-    if not isinstance(result, dict):
-        return []
-    result_dict = cast(dict[str, Any], result)
-    digest = result_dict.get("task_digest")
-    if not is_sha256_digest(digest):
-        return []  # absent or malformed — format issues reported elsewhere
-    source = result_dict.get("source")
-    if not isinstance(source, dict):
-        return []
-    local_path_raw = source.get("local_path")
-    if not isinstance(local_path_raw, str):
-        return []
-    local_path = Path(local_path_raw)
-    if not (local_path / "task.toml").exists():
-        return []
-    try:
-        from benchflow._utils.task_authoring import task_digest
-
-        actual = task_digest(local_path)
-    except Exception as e:
-        return [f"{label}: task_digest could not be recomputed: {e}"]
-    if actual != digest:
-        return [f"{label}: task_digest does not match local_path content"]
-    return []
 
 
 def _git_stdout(cwd: Path, *args: str) -> str | None:
@@ -515,6 +576,73 @@ def _source_git_truth_issues(
     return issues
 
 
+# Dataset identity stamp (dataset-versioning plan: benchflow #690 + dev-run
+# digest stamping follow-up #691). dataset_name/dataset_version mark registry
+# dataset runs; task_digest pins the exact task content for every run.
+_DATASET_STAMP_KEYS = ("dataset_name", "dataset_version", "task_digest")
+
+
+def _dataset_stamp_issues(artifact: object, label: str) -> list[str]:
+    """Audit the dataset identity stamp on one result.json/config.json.
+
+    Rules: dataset_name and dataset_version travel together; a dataset run
+    must carry a task_digest; any task_digest must be ``sha256:<64 hex>``.
+    A bare task_digest without dataset fields is a dev run — allowed.
+    """
+    if not isinstance(artifact, dict):
+        return []
+    artifact_dict = cast(dict[str, Any], artifact)
+    name = artifact_dict.get("dataset_name")
+    version = artifact_dict.get("dataset_version")
+    digest = artifact_dict.get("task_digest")
+    if name is None and version is None and digest is None:
+        return []
+    issues: list[str] = []
+    if (name is None) != (version is None):
+        issues.append(f"{label}: dataset_name and dataset_version must travel together")
+    for field_name, value in (("dataset_name", name), ("dataset_version", version)):
+        if value is not None and (not isinstance(value, str) or not value):
+            issues.append(f"{label}: {field_name} must be a non-empty string")
+    if name is not None and digest is None:
+        issues.append(f"{label}: dataset-stamped artifact missing task_digest")
+    if digest is not None and not is_sha256_digest(digest):
+        issues.append(f"{label}: task_digest must be 'sha256:<64 hex>'")
+    return issues
+
+
+def _task_digest_truth_issues(result: object, label: str) -> list[str]:
+    """Recompute the task content digest when the task dir is still on disk.
+
+    Complements ``_source_hash_truth_issues``: ``source.file_hashes`` audits
+    per-file hashes, this audits the single registry-algorithm digest the
+    leaderboard pipeline keys on.
+    """
+    if not isinstance(result, dict):
+        return []
+    result_dict = cast(dict[str, Any], result)
+    digest = result_dict.get("task_digest")
+    if not is_sha256_digest(digest):
+        return []  # absent or malformed — format issues reported elsewhere
+    source = result_dict.get("source")
+    if not isinstance(source, dict):
+        return []
+    local_path_raw = source.get("local_path")
+    if not isinstance(local_path_raw, str):
+        return []
+    local_path = Path(local_path_raw)
+    if not (local_path / "task.toml").exists():
+        return []
+    try:
+        from benchflow._utils.task_authoring import task_digest
+
+        actual = task_digest(local_path)
+    except Exception as e:
+        return [f"{label}: task_digest could not be recomputed: {e}"]
+    if actual != digest:
+        return [f"{label}: task_digest does not match local_path content"]
+    return []
+
+
 def check_agent(agent_dir: Path) -> dict:
     """Validate one agent's output. Returns a summary dict."""
     agent = agent_dir.name
@@ -537,6 +665,8 @@ def check_agent(agent_dir: Path) -> dict:
     results = [result for _, result in result_entries]
     latest_results = _latest_results_by_task(result_entries)
     latest_result_entries = _latest_result_entries_by_task(result_entries)
+    summary_path = _summary_path(agent_dir, result_root)
+    summary, summary_error = _load_summary(summary_path)
 
     if not results:
         findings["ok"] = False
@@ -642,9 +772,21 @@ def check_agent(agent_dir: Path) -> dict:
                     "fidelity failure)"
                 )
                 findings["ok"] = False
+            skill_file_evidence = _no_skill_task_file_access_evidence(
+                trajectory,
+                config=config,
+                result=r,
+            )
+            if skill_file_evidence and not _config_provisions_skills(config):
+                findings["issues"].append(
+                    f"{r.get('task_name', '?')}: trajectory accessed task skill "
+                    "files but config provisions no skills (no-skill trial must "
+                    f"not access task skill files): {skill_file_evidence[0]}"
+                )
+                findings["ok"] = False
             expected_model = _expected(agent, "model")
             expected_environment = _expected(agent, "environment")
-            expected_concurrency = _expected(agent, "concurrency")
+            expected_concurrency = _expected_config_concurrency(agent, summary)
             expected_agent_idle_timeout = _expected_agent_idle_timeout(agent)
             if r.get("agent") != config.get("agent"):
                 findings["issues"].append(
@@ -834,151 +976,147 @@ def check_agent(agent_dir: Path) -> dict:
         )
 
     # Summary.json — bench eval create writes it at the agent_dir root
-    summary_path = agent_dir / "summary.json"
-    if not summary_path.exists():
-        summary_path = result_root / "summary.json"
-    if summary_path.exists():
-        try:
-            summary = json.loads(summary_path.read_text())
-            missing = SUMMARY_REQUIRED - set(summary.keys())
-            if missing:
-                findings["issues"].append(f"summary.json missing: {missing}")
+    if summary_error is None:
+        assert summary is not None
+        worker_sharded_summary = _is_worker_sharded_summary(summary)
+        missing = SUMMARY_REQUIRED - set(summary.keys())
+        if missing:
+            findings["issues"].append(f"summary.json missing: {missing}")
+            findings["ok"] = False
+        if summary.get("source_mismatch_tasks"):
+            findings["issues"].append(
+                f"summary.json source mismatch tasks: {summary['source_mismatch_tasks']}"
+            )
+            findings["ok"] = False
+        if summary.get("source") is not None:
+            found_source_issues = source_issues(
+                summary.get("source"),
+                "summary.json",
+                require_file_hashes=False,
+            )
+            if found_source_issues:
+                findings["issues"].extend(found_source_issues)
                 findings["ok"] = False
-            if summary.get("source_mismatch_tasks"):
+        elif any(not isinstance(r.get("source"), dict) for r in results):
+            findings["issues"].append(
+                "summary.json missing source provenance and not all results have source"
+            )
+            findings["ok"] = False
+        # Dataset identity must agree across summary.json and every
+        # result.json — one leaderboard namespace per dataset version (#691).
+        for dataset_key in ("dataset_name", "dataset_version"):
+            dataset_values = {r.get(dataset_key) for r in results}
+            dataset_values.add(summary.get(dataset_key))
+            if len(dataset_values) > 1:
                 findings["issues"].append(
-                    f"summary.json source mismatch tasks: {summary['source_mismatch_tasks']}"
+                    f"summary.json {dataset_key} does not agree across "
+                    f"summary and results: {sorted(map(repr, dataset_values))}"
                 )
                 findings["ok"] = False
-            if summary.get("source") is not None:
-                found_source_issues = source_issues(
-                    summary.get("source"),
-                    "summary.json",
-                    require_file_hashes=False,
-                )
-                if found_source_issues:
-                    findings["issues"].extend(found_source_issues)
-                    findings["ok"] = False
-            elif any(not isinstance(r.get("source"), dict) for r in results):
-                findings["issues"].append(
-                    "summary.json missing source provenance and not all results have source"
-                )
-                findings["ok"] = False
-            # Dataset identity must agree across summary.json and every
-            # result.json — one leaderboard namespace per dataset version.
-            for dataset_key in ("dataset_name", "dataset_version"):
-                dataset_values = {r.get(dataset_key) for r in results}
-                dataset_values.add(summary.get(dataset_key))
-                if len(dataset_values) > 1:
+        expected_model = _expected(agent, "model")
+        expected_environment = _expected(agent, "environment")
+        expected_concurrency = _expected(agent, "concurrency")
+        expected_agent_idle_timeout = _expected_agent_idle_timeout(agent)
+        summary_agent = summary.get("agent")
+        if (
+            expected_agent is not _MISSING
+            and summary_agent is not None
+            and summary_agent != expected_agent
+        ):
+            findings["issues"].append(
+                f"summary.json agent {summary_agent!r} does not match expected {_expected_label(expected_agent)}"
+            )
+            findings["ok"] = False
+        if summary_agent is not None:
+            for result in results:
+                if result.get("agent") != summary_agent:
                     findings["issues"].append(
-                        f"summary.json {dataset_key} does not agree across "
-                        f"summary and results: {sorted(map(repr, dataset_values))}"
+                        f"summary.json agent {summary_agent!r} does not match result.json agent {result.get('agent')!r}"
                     )
                     findings["ok"] = False
-            expected_model = _expected(agent, "model")
-            expected_environment = _expected(agent, "environment")
-            expected_concurrency = _expected(agent, "concurrency")
-            expected_agent_idle_timeout = _expected_agent_idle_timeout(agent)
-            summary_agent = summary.get("agent")
-            if (
-                expected_agent is not _MISSING
-                and summary_agent is not None
-                and summary_agent != expected_agent
-            ):
-                findings["issues"].append(
-                    f"summary.json agent {summary_agent!r} does not match expected {_expected_label(expected_agent)}"
-                )
-                findings["ok"] = False
-            if summary_agent is not None:
-                for result in results:
-                    if result.get("agent") != summary_agent:
-                        findings["issues"].append(
-                            f"summary.json agent {summary_agent!r} does not match result.json agent {result.get('agent')!r}"
-                        )
-                        findings["ok"] = False
-            if (
-                expected_model is not _MISSING
-                and summary.get("model") != expected_model
-            ):
-                findings["issues"].append(
-                    f"summary.json model {summary.get('model')!r} does not match expected {_expected_label(expected_model)}"
-                )
-                findings["ok"] = False
-            if (
-                expected_environment is not _MISSING
-                and summary.get("environment") != expected_environment
-            ):
-                findings["issues"].append(
-                    f"summary.json environment {summary.get('environment')!r} does not match expected {_expected_label(expected_environment)}"
-                )
-                findings["ok"] = False
-            if expected_concurrency is not _MISSING and str(
-                summary.get("concurrency")
-            ) != str(expected_concurrency):
-                findings["issues"].append(
-                    f"summary.json concurrency {summary.get('concurrency')!r} does not match expected {_expected_label(expected_concurrency)}"
-                )
-                findings["ok"] = False
-            summary_agent_idle_timeout = _artifact_agent_idle_timeout(summary)
-            if expected_agent_idle_timeout is not _MISSING:
-                idle_timeout_issue = _compare_agent_idle_timeout(
-                    summary_agent_idle_timeout,
-                    expected_agent_idle_timeout,
-                    "summary.json",
-                )
-            elif summary_agent_idle_timeout is not _MISSING:
-                idle_timeout_issue = _parse_agent_idle_timeout_value(
-                    summary_agent_idle_timeout,
-                    "summary.json",
-                )[1]
-            else:
-                idle_timeout_issue = None
-            if idle_timeout_issue:
-                findings["issues"].append(idle_timeout_issue)
-                findings["ok"] = False
-            summary_source = summary.get("source")
-            for result_file, r in latest_result_entries:
-                _path, config, config_error = _load_config(result_file)
-                if not config_error and config is not None:
-                    config_agent_idle_timeout = _artifact_agent_idle_timeout(config)
-                    if (
-                        config_agent_idle_timeout is not _MISSING
-                        and summary_agent_idle_timeout is not _MISSING
-                    ):
-                        consistency_issue = _compare_agent_idle_timeout(
-                            config_agent_idle_timeout,
-                            summary_agent_idle_timeout,
-                            f"{r.get('task_name', '?')}: config.json",
-                        )
-                        if consistency_issue:
-                            findings["issues"].append(
-                                f"{consistency_issue} from summary.json"
-                            )
-                            findings["ok"] = False
-            if isinstance(summary_source, dict):
-                for r in results:
-                    if not source_matches_parent(r.get("source"), summary_source):
-                        findings["issues"].append(
-                            f"summary source does not cover {r.get('task_name', '?')}"
-                        )
-                        findings["ok"] = False
-            for field in ("total_skill_invocations", "avg_skill_invocations"):
-                if field in summary:
-                    value = summary[field]
-                    if (
-                        isinstance(value, bool)
-                        or not isinstance(value, int | float)
-                        or value < 0
-                    ):
-                        findings["issues"].append(
-                            f"summary.json {field} must be a non-negative number"
-                        )
-                        findings["ok"] = False
-            findings["summary"] = summary
-        except json.JSONDecodeError:
-            findings["issues"].append("summary.json: invalid JSON")
+        summary_model_present = "model" in summary
+        if expected_model is not _MISSING and (
+            summary.get("model") != expected_model
+            and (summary_model_present or not worker_sharded_summary)
+        ):
+            findings["issues"].append(
+                f"summary.json model {summary.get('model')!r} does not match expected {_expected_label(expected_model)}"
+            )
             findings["ok"] = False
+        summary_environment_present = "environment" in summary
+        if expected_environment is not _MISSING and (
+            summary.get("environment") != expected_environment
+            and (summary_environment_present or not worker_sharded_summary)
+        ):
+            findings["issues"].append(
+                f"summary.json environment {summary.get('environment')!r} does not match expected {_expected_label(expected_environment)}"
+            )
+            findings["ok"] = False
+        if expected_concurrency is not _MISSING and str(
+            summary.get("concurrency")
+        ) != str(expected_concurrency):
+            findings["issues"].append(
+                f"summary.json concurrency {summary.get('concurrency')!r} does not match expected {_expected_label(expected_concurrency)}"
+            )
+            findings["ok"] = False
+        summary_agent_idle_timeout = _artifact_agent_idle_timeout(summary)
+        if expected_agent_idle_timeout is not _MISSING:
+            idle_timeout_issue = _compare_agent_idle_timeout(
+                summary_agent_idle_timeout,
+                expected_agent_idle_timeout,
+                "summary.json",
+            )
+        elif summary_agent_idle_timeout is not _MISSING:
+            idle_timeout_issue = _parse_agent_idle_timeout_value(
+                summary_agent_idle_timeout,
+                "summary.json",
+            )[1]
+        else:
+            idle_timeout_issue = None
+        if idle_timeout_issue:
+            findings["issues"].append(idle_timeout_issue)
+            findings["ok"] = False
+        summary_source = summary.get("source")
+        for result_file, r in latest_result_entries:
+            _path, config, config_error = _load_config(result_file)
+            if not config_error and config is not None:
+                config_agent_idle_timeout = _artifact_agent_idle_timeout(config)
+                if (
+                    config_agent_idle_timeout is not _MISSING
+                    and summary_agent_idle_timeout is not _MISSING
+                ):
+                    consistency_issue = _compare_agent_idle_timeout(
+                        config_agent_idle_timeout,
+                        summary_agent_idle_timeout,
+                        f"{r.get('task_name', '?')}: config.json",
+                    )
+                    if consistency_issue:
+                        findings["issues"].append(
+                            f"{consistency_issue} from summary.json"
+                        )
+                        findings["ok"] = False
+        if isinstance(summary_source, dict):
+            for r in results:
+                if not source_matches_parent(r.get("source"), summary_source):
+                    findings["issues"].append(
+                        f"summary source does not cover {r.get('task_name', '?')}"
+                    )
+                    findings["ok"] = False
+        for field in ("total_skill_invocations", "avg_skill_invocations"):
+            if field in summary:
+                value = summary[field]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int | float)
+                    or value < 0
+                ):
+                    findings["issues"].append(
+                        f"summary.json {field} must be a non-negative number"
+                    )
+                    findings["ok"] = False
+        findings["summary"] = summary
     else:
-        findings["issues"].append("summary.json not found")
+        findings["issues"].append(summary_error)
         findings["ok"] = False
 
     # Stats

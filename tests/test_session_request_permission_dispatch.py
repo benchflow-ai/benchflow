@@ -82,6 +82,11 @@ async def test_request_permission_invokes_session_on_ask_user_handler():
     # and its return value drove the outcome.optionId on the wire.
     assert len(received) == 1
     assert received[0].options == ["allow_once", "deny", "bypassPermissions"]
+    assert received[0].option_kinds == {
+        "allow_once": "allow_once",
+        "deny": "reject",
+        "bypassPermissions": "allow_always",
+    }
 
     sent = client._transport.sent
     assert len(sent) == 1

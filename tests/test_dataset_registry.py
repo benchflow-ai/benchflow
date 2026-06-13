@@ -131,6 +131,22 @@ class TestBenchVersionIssue:
         issue = bench_version_issue("not-a-range")
         assert issue is not None and "unparseable" in issue
 
+    def test_prerelease_counts_as_in_range_for_its_own_line(self, monkeypatch):
+        """A shipping release candidate (v0.6 ships as 0.6.0rcN) must count as
+        in-range for a >=0.6 dataset. PEP 440 orders 0.6.0rc6 < 0.6.0, so the
+        naive `contains(current)` spuriously flagged the very release being
+        validated as out-of-range — and the planned hard-gate would then block
+        every RC user from dataset runs. The base-version comparison fixes it."""
+        monkeypatch.setattr("benchflow.__version__", "0.6.0rc6")
+        assert bench_version_issue(">=0.6,<0.7") is None
+        # dev builds map to their release line too
+        monkeypatch.setattr("benchflow.__version__", "0.6.0.dev3")
+        assert bench_version_issue(">=0.6,<0.7") is None
+        # but a genuinely-different line still warns (no false in-range)
+        monkeypatch.setattr("benchflow.__version__", "0.6.0rc6")
+        assert bench_version_issue(">=0.4,<0.5") is not None
+        assert bench_version_issue(">=0.5,<0.6") is not None
+
 
 class TestResolveDataset:
     def test_resolves_and_verifies_digests(self, tmp_path, snapshot):
@@ -300,7 +316,7 @@ class TestEvalCreateDatasetCli:
             ],
         )
         assert result.exit_code == 1
-        assert "only one source" in result.stdout
+        assert "only one source" in result.stderr
 
     def test_registry_requires_dataset(self, tmp_path):
         result = CliRunner().invoke(
@@ -308,7 +324,7 @@ class TestEvalCreateDatasetCli:
             ["eval", "create", "--registry", str(tmp_path / "r.json")],
         )
         assert result.exit_code == 1
-        assert "--registry requires --dataset" in result.stdout
+        assert "--registry requires --dataset" in result.stderr
 
     def test_out_of_range_bench_version_blocks(self, tmp_path, snapshot, monkeypatch):
         """The bench_version range is a hard gate for dataset runs; the
@@ -340,8 +356,8 @@ class TestEvalCreateDatasetCli:
             ],
         )
         assert result.exit_code == 1
-        assert "outside the range" in result.stdout
-        assert "--ignore-bench-version" in result.stdout
+        assert "outside the range" in result.stderr
+        assert "--ignore-bench-version" in result.stderr
         assert not ran
 
     def test_ignore_bench_version_overrides_gate(self, tmp_path, snapshot, monkeypatch):
@@ -382,7 +398,7 @@ class TestEvalCreateDatasetCli:
             ["eval", "create", "--ignore-bench-version", "--tasks-dir", str(tmp_path)],
         )
         assert result.exit_code == 1
-        assert "--ignore-bench-version requires --dataset" in result.stdout
+        assert "--ignore-bench-version requires --dataset" in result.stderr
 
     def test_resolution_error_exits_cleanly(self, tmp_path, snapshot):
         registry = _write_registry(tmp_path, snapshot.tasks_parent)
@@ -398,7 +414,7 @@ class TestEvalCreateDatasetCli:
             ],
         )
         assert result.exit_code == 1
-        assert "not found in registry" in result.stdout
+        assert "not found in registry" in result.stderr
 
 
 class TestDatasetStamping:

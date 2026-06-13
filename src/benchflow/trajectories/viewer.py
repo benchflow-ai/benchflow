@@ -142,9 +142,14 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     - trajectory/acp_trajectory.jsonl → ACP session events
     - prompts.json → used for prompt labels if available
     """
-    # Try loading prompts from prompts.json if not provided
+    # Try loading prompts from prompts.json if not provided. A corrupt file is
+    # auxiliary (it only supplies prompt labels) — degrade to default labels
+    # rather than crashing the whole view with a raw JSONDecodeError traceback.
     if prompts is None and (rollout_dir / "prompts.json").exists():
-        prompts = json.loads((rollout_dir / "prompts.json").read_text())
+        try:
+            prompts = json.loads((rollout_dir / "prompts.json").read_text())
+        except (json.JSONDecodeError, OSError):
+            prompts = None
 
     # Auto-detect format
     turn_files = sorted(rollout_dir.glob("turn*.txt"))
@@ -193,9 +198,12 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
                 total_cost += e.get("total_cost_usd", 0)
                 total_turns_count += e.get("num_turns", 0)
 
-    session_id = sys_event.get("session_id", "?")
-    model = sys_event.get("model", "?")
-    version = sys_event.get("claude_code_version", "?")
+    # `or "?"` (not just a .get default): a present-but-null value in the
+    # stream-json (e.g. "session_id": null) bypasses the default and would crash
+    # html.escape() / the [:16] slice below with a raw TypeError.
+    session_id = str(sys_event.get("session_id") or "?")
+    model = str(sys_event.get("model") or "?")
+    version = str(sys_event.get("claude_code_version") or "?")
 
     return f"""<!DOCTYPE html>
 <html>
@@ -248,15 +256,26 @@ def _render_acp_trajectory(
     rollout_dir: Path, acp_path: Path, prompts: list[str] | None
 ) -> str:
     """Render an ACP trajectory JSONL file as HTML."""
-    events = [
-        json.loads(line) for line in acp_path.read_text().splitlines() if line.strip()
-    ]
+    # Skip malformed/truncated lines (mirroring _parse_jsonl for turn files) so a
+    # single bad line does not abort the view with a raw JSONDecodeError.
+    events = []
+    for line in acp_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
 
-    # Load result.json for metadata
+    # Load result.json for metadata; a corrupt file degrades to no metadata
+    # rather than crashing.
     result_data = {}
     result_path = rollout_dir / "result.json"
     if result_path.exists():
-        result_data = json.loads(result_path.read_text())
+        try:
+            result_data = json.loads(result_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            result_data = {}
 
     blocks = []
 

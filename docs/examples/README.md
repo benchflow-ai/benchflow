@@ -44,7 +44,9 @@ skill loading semantics and available nudge modes.
 - `scene-patterns.md` explains single-agent, self-review, specialist-review,
   and client-advisor scene patterns.
 - `nanofirm-task/` is a tiny task directory you can use when checking task
-  layout, verifier behavior, and oracle execution.
+  layout, verifier behavior, and oracle execution. It intentionally stays in
+  the legacy `task.toml` split layout as the input fixture for
+  `bench tasks migrate`; do not convert it to `task.md`.
 - `user_dogfood.py` demonstrates a rule-based `FunctionUser` progressive
   disclosure loop.
 - `swebench_pro_user_dogfood.py` runs the progressive-disclosure pattern on

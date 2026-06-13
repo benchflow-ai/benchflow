@@ -4,7 +4,9 @@ Test whether your agent skill actually helps agents perform better.
 ## Install
 
 ```bash
-uv tool install --prerelease allow 'benchflow==0.5.2'
+uv tool install --prerelease allow \
+  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
+# 0.6.0 is not on PyPI yet — install the newest 0.6.0-rc.* wheel from GitHub releases (replace rc.6 with the latest).
 ```
 
 ## Overview
@@ -14,10 +16,8 @@ file, generates benchmark tasks from it, runs them with and without the
 skill installed, and reports the "lift" — how much the skill improves
 agent performance.
 
-Current v0.5 release evidence is tracked in
-[`docs/v05-integration-evidence.md`](./v05-integration-evidence.md). Historical
-skill-eval dogfood notes from the v0.4 refactor remain archived in
-[`docs/reports/2026-05-19-skill-eval-v04.md`](./reports/2026-05-19-skill-eval-v04.md).
+0.6 task-standard validation is in
+[`docs/reports/2026-06-09-task-standard-validation.md`](./reports/2026-06-09-task-standard-validation.md).
 
 ## Quick start
 
@@ -378,47 +378,6 @@ evolve the skill text based on failure patterns.
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-## Real-World Example: Benchmark Hallucination Audit
-
-The `benchmark-hallucination-audit` skill teaches agents to verify claims
-in benchmark comparison tables by checking papers, GitHub, and HuggingFace.
-Its eval cases use findings from a real audit of AlphaEval (arXiv:2604.12162).
-
-```
-benchmark-hallucination-audit/
-├── skill.md                     # 5-round layered subagent methodology
-└── evals/
-    └── evals.json               # 8 cases from real AlphaEval audit
-```
-
-Sample case — detecting a Cross-Domain overclaim:
-```json
-{
-  "id": "overclaim-xdom-agentbench",
-  "question": "AlphaEval Table 1 marks AgentBench with Cross-Domain=✓. The definition is: 'spans 3+ distinct PROFESSIONAL domains'. AgentBench has 8 environments: OS, Database, Knowledge Graph, Card Game, Puzzles, ALFWorld, WebShop, Web Browsing. Is this correct or an overclaim?",
-  "ground_truth": "OVERCLAIM. The 8 environments are TASK TYPES, not 3+ professional domains like healthcare, finance, or law.",
-  "expected_behavior": [
-    "The agent fetched the AgentBench paper (arXiv:2308.03688)",
-    "The agent compared environments against the strict definition",
-    "The agent concluded task types ≠ professional domains"
-  ]
-}
-```
-
-Other cases test: missing Multi-Modal marks (MLE-bench), missing Dynamic
-marks (Gaia2 — title literally says "Dynamic"), correct Production marks
-(SWE-Lancer — $1M real Upwork payouts), and self-audit overclaims
-(AlphaEval's own Dynamic=✓ is aspirational, not mechanism-backed).
-
-Run it:
-```bash
-bench skills eval ./benchmark-hallucination-audit/ --agent claude-agent-acp --agent codex-acp
-```
-
-This is a good template for **research skills** — where the eval cases
-have verified ground truth from manual expert analysis, and the skill
-teaches a systematic methodology.
-
 ## For Skill Developers (Jon Snow Adapter Pattern)
 
 If you maintain skills and want CI-integrated eval:
@@ -438,7 +397,9 @@ BenchFlow generates everything ephemeral — only results persist.
 **CI integration:**
 ```bash
 # In your skill's CI pipeline
-uv tool install --prerelease allow 'benchflow==0.5.2'
+uv tool install --prerelease allow \
+  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
+# 0.6.0 is not on PyPI yet — install the newest 0.6.0-rc.* wheel from GitHub releases (replace rc.6 with the latest).
 bench skills eval . --agent claude-agent-acp --no-baseline
 ```
 

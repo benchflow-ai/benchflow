@@ -36,8 +36,6 @@ AGENT="codex-acp"
 JOBS_DIR="jobs/test-codex"
 REASONING="${REASONING:-high}"  # none, low, medium, high
 
-# ── Helpers ──
-
 show_failure() {
   local dir="$1"
   local latest
@@ -98,7 +96,7 @@ if model not in models:
 PY
 }
 
-# ── Model definitions ──
+# Model definitions
 declare -A MODELS
 MODELS=(
   [subscription]="gpt-5.5"
@@ -114,7 +112,7 @@ EXTRA_ARGS=(
   [apikey-mini]="--agent-env OPENAI_REASONING_EFFORT=$REASONING"
 )
 
-# ── Pre-flight checks ──
+# Pre-flight checks
 
 if [ "$ENV" = "daytona" ]; then
   if [ -z "${DAYTONA_API_KEY:-}" ]; then
@@ -163,7 +161,7 @@ check_env() {
   return 0
 }
 
-# ── Determine which models to test ──
+# Determine which models to test
 
 if [ $# -gt 0 ]; then
   SELECTED=("$@")
@@ -225,7 +223,7 @@ for label in "${SELECTED[@]}"; do
   echo ""
 done
 
-# ── Summary ──
+# Summary
 
 TOTAL=$((PASS + FAIL + SKIP))
 echo "=== Summary ==="

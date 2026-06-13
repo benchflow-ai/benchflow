@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.5.3.dev0"
+version = "0.6.0"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -50,8 +50,8 @@ sandbox-daytona = [
     # >=0.183: list() returns an auto-paginating Iterator[Sandbox] (the older
     # paged list(page=, limit=) -> .items API was removed).
     # >=0.184: the top-level sync `Daytona` export is present (0.176-0.183 only
-    # shipped `AsyncDaytona`); the dashboard's daytona_status.snapshot() uses the
-    # sync client, so this floor is required for that panel to import.
+    # shipped `AsyncDaytona`); `sandbox/daytona.py` uses the sync client, so this
+    # floor is required for it to import.
     "daytona>=0.184.0",
     "tenacity>=8.0",
 ]
@@ -68,6 +68,13 @@ judge = [
     "anthropic>=0.40",
     "openai>=1.40",
     "google-genai>=1.0",
+]
+# The deepagents (LangChain) harness used as an agent-under-test in the
+# integration suite's agent-as-judge robustness scenarios. Optional: only the
+# deepagents integration test needs it.
+deepagents = [
+    "deepagents>=0.6",
+    "langchain-openai>=0.2",
 ]
 
 [project.scripts]
@@ -113,6 +120,7 @@ target-version = "py312"
 extend-exclude = [
     ".claude/skills/skill-creator",
     "benchmarks/**/tasks/**/environment/claw-*",
+    "tests/fixtures/skillsbench_slice",
 ]
 
 [tool.ruff.lint]
@@ -133,7 +141,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Standalone scripts — sys.path manipulation before imports is intentional
-"experiments/*.py" = ["E402"]
 "tests/conformance/*.py" = ["E402"]
 # Notebooks: cell-local imports + short loop vars are notebook conventions
 "docs/examples/*.ipynb" = ["E402", "E741", "SIM115"]
@@ -155,6 +162,8 @@ include = ["src", "tools"]
 # produce cascading type errors when those packages aren't installed.
 exclude = [
     "src/benchflow/sandbox/daytona.py",
+    "src/benchflow/sandbox/daytona_strategies.py",
+    "src/benchflow/sandbox/daytona_dind.py",
     "src/benchflow/sandbox/modal_impl.py",
     "src/benchflow/sandbox/docker.py",
     "src/benchflow/sandbox/_base.py",

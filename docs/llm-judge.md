@@ -35,7 +35,7 @@ provider's SDK for the model you use, but the extra ships all three):
 uv sync --extra judge
 
 # or as an installed tool
-uv tool install --prerelease allow 'benchflow[judge]==0.5.2'
+uv tool install --prerelease allow 'benchflow[judge]==0.6.0'
 
 # or with pip
 pip install 'benchflow[judge]'
@@ -160,8 +160,6 @@ score = asyncio.run(func.score(Path("/app")))
 | `mode` | string | `"individual"` | `"individual"` scores each criterion separately; `"batched"` is reserved for future use |
 | `files` | string[] | `[]` | Default files to evaluate (fallback when a criterion doesn't specify its own) |
 | `timeout` | int | `120` | Timeout in seconds per judge call |
-| `reference` | string | `null` | Optional reference answer for comparison |
-| `prompt_template` | string | `null` | Custom prompt template (overrides built-in templates) |
 
 ### `[[criterion]]` entries
 

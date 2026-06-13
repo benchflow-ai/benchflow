@@ -9,6 +9,15 @@ bench --version
 
 ## bench agent
 
+> **`bench agent` is agent management only.** `bench agent list` and `bench
+> agent show` operate on **registered AI agents** (Claude Code, Gemini CLI,
+> Codex, OpenHands, …) — the programs that solve tasks. Onboarding a third-party
+> benchmark (scaffold → drive → parity-gate a `benchmarks/<name>/` adoption) is a
+> separate workflow under [`bench eval adopt`](#bench-eval-adopt) (`init` → `convert` →
+> `verify`). The legacy `bench agent create|run|verify` still work as hidden
+> deprecated aliases through 0.6, printing a one-line notice; they are removed in
+> 0.7.
+
 ### bench agent list
 
 List all registered agents with their protocol and native/default auth
@@ -27,6 +36,103 @@ about provider-specific credentials.
 ```bash
 bench agent show gemini
 ```
+
+## bench eval adopt
+
+Bring a third-party benchmark into the environment framework: scaffold a
+`benchmarks/<name>/` package, drive the codex `CONVERT.md` conversion, then
+parity-gate it (`init` → `convert` → `verify`). These commands were previously
+`bench agent create|run|verify`, which still work as hidden deprecated aliases
+through 0.6 (they print a one-line notice and are removed in 0.7). See
+[Benchmark adoption](../benchmark-adoption.md) for the full walkthrough.
+
+### bench eval adopt init
+
+Scaffold `benchmarks/<name>/` for a new benchmark adoption. The layout mirrors
+the reference benchmark `benchmarks/programbench/` and the contract in
+[`benchmarks/CONVERT.md`](../../benchmarks/CONVERT.md): it writes
+`benchflow.py` (converter), `main.py`, `parity_test.py`, `run_<name>.py`,
+`<name>.yaml`, `benchmark.yaml`, `parity_experiment.json` (status `template`),
+`README.md`, and `__init__.py`. It is fail-closed: the slug is validated
+(lowercase, leading letter, single internal hyphens, max 64 chars) and the
+command refuses to overwrite an existing benchmark directory.
+
+```bash
+bench eval adopt init my-bench
+bench eval adopt init my-bench --benchmarks-dir ./benchmarks
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--benchmarks-dir` | repo `benchmarks/` | Target benchmarks/ directory |
+
+### bench eval adopt convert
+
+Drive the `CONVERT.md` adoption workflow by launching the host `codex` CLI.
+The command assembles the adoption context (the source, the target
+`benchmarks/<name>/` path, the adoption skills, and the embedded
+`benchmarks/CONVERT.md` guide) and runs `codex exec` against the repo root to
+drive the conversion toward a `benchmarks/<name>/` pull request. It is
+fail-closed on credentials: `codex` needs `OPENAI_API_KEY` (or `CODEX_API_KEY`)
+in the environment, or a `~/.codex/auth.json` from `codex login`, otherwise the
+command exits before assembling any context. Use `--dry-run` to print the exact
+launch command without running it (no credentials required). When `--name` is
+omitted the slug is derived from the source basename.
+
+```bash
+# Print the codex launch command without running it
+bench eval adopt convert https://github.com/org/some-benchmark --dry-run
+
+# Launch the host codex driver against a local source
+bench eval adopt convert ./vendor/some-benchmark --name my-bench --model o3
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name` | derived from source | Benchmark slug (default: from source basename) |
+| `--model` | codex default | Model for the codex driver |
+| `--dry-run` | `false` | Print the launch command, do not run |
+| `--codex-bin` | `codex` | Host codex binary |
+| `-c`, `--codex-config` | — | Codex config override as `key=value`, passed through to codex as `-c key=value`; repeatable. Use it to work around host `~/.codex/config.toml` drift without editing the file — e.g. `-c service_tier=flex` when an installed codex version rejects a stale value. |
+
+### bench eval adopt verify
+
+Run the parity gate for an adopted benchmark and emit a confidence verdict. It
+reads `benchmarks/<name>/parity_experiment.json` and scores two layers: a
+deterministic conversion-faithfulness floor (every compared criterion's
+converted verdict must match the original's verdict on identical inputs) and a
+statistical reward-distribution layer (every legacy-vs-converted reward delta
+must sit within `--tolerance`). The gate is parity-only — a faithful conversion
+reproduces the original's behavior, including any reward-hackability the source
+has; it never "improves" or sanitizes the source. The verdict is one of
+`parity-confirmed`, `parity-divergent`, or `insufficient-evidence` (no recorded
+comparisons). On any non-confirmed verdict the command exits non-zero and emits
+a draft GitHub issue body for human support — printed to stdout, or written to
+`--issue-out`. The draft is never filed automatically. Pass `--roundtrip-task`
+to also run the structural round-trip conformance check on a concrete task
+directory.
+
+By default the gate **scores the recorded** `parity_experiment.json` — fast, but
+it trusts an artifact the conversion produced about itself. Pass `--rerun` to
+**independently re-execute** `parity_test.py --mode side-by-side` and score its
+fresh output instead. `--rerun` is fail-closed: a missing/failing `parity_test.py`,
+a timeout, or output that is not in the scoreable `parity_experiment.json` shape
+all exit non-zero (rather than silently reporting `insufficient-evidence`).
+
+```bash
+bench eval adopt verify my-bench
+bench eval adopt verify my-bench --tolerance 0.05 --issue-out divergence.md
+bench eval adopt verify my-bench --roundtrip-task benchmarks/my-bench/tasks/example
+bench eval adopt verify my-bench --rerun   # re-run parity_test.py, score fresh output
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--benchmarks-dir` | repo `benchmarks/` | Target benchmarks/ directory |
+| `--tolerance` | `0.02` | Max abs reward delta (statistical layer) |
+| `--issue-out` | — | Write the divergence issue draft to this path instead of stdout |
+| `--roundtrip-task` | — | Also run the structural round-trip check on this task dir |
+| `--rerun` | `false` | Re-execute `parity_test.py --mode side-by-side` and score its fresh output instead of the recorded `parity_experiment.json` |
 
 ## bench eval
 
@@ -79,12 +185,18 @@ bench eval create \
   --sandbox daytona \
   --skill-mode with-skill \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
+
+# Pinned registry dataset: resolves skillsbench@1.1, verifies task digests,
+# and stamps dataset identity into every result.json/config.json
+bench eval create -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-preview
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config` | — | YAML config file |
 | `--tasks-dir` | — | Local task dir (single task with task.toml, or parent of many) |
+| `-d`, `--dataset` | — | Registry dataset to run as `<name>@<version>` (e.g. `skillsbench@1.1`). Resolves the pinned snapshot from the registry, clones tasks at their pinned commit, verifies each task's sha256 content digest, and checks the dataset's `bench_version` range against the installed benchflow. Each `result.json`/`config.json` is stamped with `dataset_name`, `dataset_version`, and the task's `task_digest`. |
+| `--registry` | skillsbench registry | Dataset registry JSON URL or local file. Only valid with `--dataset`. |
 | `--source-repo` | — | Remote repo as `org/repo` (e.g. `benchflow-ai/skillsbench`) |
 | `--source-path` | — | Subpath within the repo (e.g. `tasks`) |
 | `--source-ref` | — | Branch or tag to clone (e.g. `main`) |
@@ -98,11 +210,16 @@ bench eval create \
 | `--source-env-sampling-arg` | — | Verifiers sampling argument as `KEY=VALUE`; repeatable (for example `reasoning_effort=minimal`) |
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
+| `--reasoning-effort` | — | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) |
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |
 | `--environment-manifest` | — | Path to an Environment-plane manifest (`environment.toml`); applied to every rollout in the batch |
 | `--prompt` | `instruction.md` | Prompt to send to the agent; repeatable for multi-prompt runs |
 | `--concurrency` | `4` | Max concurrent tasks (batch mode only) |
+| `--build-concurrency` | `--concurrency` | Max concurrent docker image builds; set lower (e.g. `8`) when `--concurrency` is high to avoid overwhelming the docker daemon |
+| `--worker-concurrency` | — | Run batch eval through isolated worker subprocesses, each with at most this many concurrent tasks; `--concurrency` remains the aggregate target |
+| `--worker-retries` | `1` | Retry a crashed worker shard this many times, resuming its jobs dir |
+| `--worker-start-stagger-sec` | `1.0` | Seconds to stagger worker starts to avoid Daytona connection storms |
 | `--agent-idle-timeout` | (built-in default) | Abort ACP prompts after this many idle seconds; `0` disables idle detection |
 | `--jobs-dir` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
@@ -114,6 +231,8 @@ bench eval create \
 | `--agent-env` | — | Agent environment variable as `KEY=VALUE`; repeatable |
 | `--include` | — | Only run these task names; repeatable (e.g. `--include jax-computing-basics --include data-to-d3`) |
 | `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |
+| `--loop-strategy` | — | Wrap each rollout in a loop, e.g. `verify-retry:k=3,feedback=names` or `self-review:k=3` (omit for single-shot) |
+| `--ignore-bench-version` | `false` | With `--dataset`, skip the dataset's `bench_version` compatibility gate |
 
 When mounting skills, the recommended docs default is
 `--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
@@ -141,6 +260,25 @@ List completed evaluations from a jobs directory.
 
 ```bash
 bench eval list jobs/
+```
+
+### bench eval metrics
+
+Collect and display metrics (pass/fail/score, memory score, tool calls, duration)
+from a jobs directory. Use `--json` for machine-readable output.
+
+```bash
+bench eval metrics jobs/
+bench eval metrics jobs/ --json
+```
+
+### bench eval view
+
+Serve a trial trajectory viewer in the browser for a rollout or job directory.
+
+```bash
+bench eval view jobs/run/task__abc123
+bench eval view jobs/ --port 9000
 ```
 
 ## bench skills
@@ -177,15 +315,97 @@ Scaffold a new benchmark task.
 ```bash
 bench tasks init my-new-task
 bench tasks init my-new-task --dir tasks/
+bench tasks init my-new-task --format legacy
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `task-md` | Task format: `task-md` (native single-document) or `legacy` (split `task.toml` + `instruction.md` layout) |
 
 ### bench tasks check
 
-Validate a task directory (Dockerfile, instruction.md, tests/).
+Validate a task directory (`task.md` or legacy `task.toml` + `instruction.md`, `environment/Dockerfile`, `verifier/` or legacy `tests/`).
 
 ```bash
 bench tasks check tasks/my-task
 ```
+
+With `--level`, validation runs at a chosen depth: `schema`, `structural`,
+`runtime-capability`, `publication-grade`, `acceptance`, or `acceptance-live`.
+Acceptance-level errors such as
+`acceptance validation requires benchflow.evidence mapping` refer to the
+`benchflow.evidence` schema documented in the "Assets, Provenance, And
+Evidence" section of `docs/task-standard.md`.
+
+### bench tasks migrate
+
+Convert a legacy `task.toml` + `instruction.md` task into the unified
+`task.md` format. By default the legacy files are kept alongside the new
+`task.md`.
+
+```bash
+bench tasks migrate tasks/my-task
+bench tasks migrate tasks/my-task --overwrite --remove-legacy
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--overwrite` | `false` | Replace an existing task.md |
+| `--remove-legacy` | `false` | Delete split files and promote tests/solution aliases after task.md is verified |
+
+### bench tasks normalize
+
+Expand minimal `task.md` authoring profiles into the canonical `task.md`
+form. Prints the normalized document to stdout unless told otherwise.
+
+```bash
+bench tasks normalize tasks/my-task
+bench tasks normalize tasks/my-task --write
+bench tasks normalize tasks/my-task -o normalized-task.md
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output`, `-o` | — | Write normalized task.md to this path instead of stdout |
+| `--write` | `false` | Replace task.md in place with the normalized canonical form |
+
+### bench tasks export
+
+Export a `task.md` task to a Harbor/Pier-compatible split layout, with a
+compatibility loss report written to `compatibility/export-report.json` in
+the export directory.
+
+```bash
+bench tasks export tasks/my-task out/my-task-split
+bench tasks export tasks/my-task --report-only
+bench tasks export tasks/my-task out/my-task-split --target pier --overwrite
+```
+
+Arguments: `TASK_DIR` (task directory to export) and optional `OUTPUT_DIR`
+(destination split-layout directory; may be omitted with `--report-only`).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target` | `harbor` | Compatibility target: `harbor` or `pier` |
+| `--overwrite` | `false` | Replace an existing export directory |
+| `--report-only` | `false` | Print the compatibility loss report without writing files |
+
+### bench tasks digest
+
+Compute the content digest that pins a task's files, independent of git — the
+sha256 the dataset registry keys on (matches the digests `bench eval create -d`
+verifies and the `task_digest` stamped into every `result.json`). Recognizes
+both legacy `task.toml` tasks and native `task.md` tasks. Given a single task
+directory it prints the digest; given a directory of tasks it prints one
+`<name> <digest>` line per task. Output goes to stdout via `echo` (not Rich), so
+it is safe to pipe into machine-readable tooling.
+
+```bash
+bench tasks digest tasks/my-task          # -> sha256:<hex>
+bench tasks digest tasks/                  # one "<name> sha256:<hex>" line per task
+```
+
+Arguments: `PATH` (a task directory, or a directory of task directories).
 
 ### bench tasks generate
 
@@ -212,6 +432,7 @@ bench tasks generate --from-hf opentraces-test --limit 50
 | `--min-steps` | `2` | Minimum steps per trace |
 | `--outcome` | — | Filter by outcome: success, failure, unknown |
 | `--author` | `benchflow-traces` | Author name for generated task metadata |
+| `--task-format` | `task-md` | Generated task package format: `task-md` or `legacy` |
 | `--dry-run` | `false` | Preview traces without generating tasks |
 
 ### bench tasks list-sources
@@ -223,66 +444,78 @@ to `bench tasks generate --from-hf`.
 bench tasks list-sources
 ```
 
-## bench environment
+## bench sandbox
 
-### bench environment create
+Local sandbox lifecycle: provision a task on a docker/daytona/modal backend,
+list active sandboxes, and reap stale ones.
+
+### bench sandbox create
 
 Create an environment object from a task directory. This validates environment
 construction but does not start the sandbox.
 
 ```bash
-bench environment create tasks/my-task --sandbox daytona
+bench sandbox create tasks/my-task --sandbox daytona
 ```
 
-### bench environment list
+### bench sandbox list
 
-List active Daytona sandboxes, or list a hosted hub.
+List active local (Daytona) sandboxes.
 
 ```bash
-bench environment list
-bench environment list --hub primeintellect --owner primeintellect --search general-agent --limit 5
+bench sandbox list
 ```
 
-### bench environment show
-
-Show hosted environment metadata.
-
-```bash
-bench environment show primeintellect/general-agent --version 0.1.1
-```
-
-### bench environment inspect
-
-Inspect a file from a hosted environment package.
-
-```bash
-bench environment inspect primeintellect/general-agent --version 0.1.1 --path README.md
-```
-
-### bench environment cleanup
+### bench sandbox cleanup
 
 Clean up orphaned Daytona sandboxes. By default this deletes sandboxes older
 than 24 hours; use `--dry-run` to preview what would be deleted.
 
 ```bash
-bench environment cleanup --dry-run --max-age 1440
+bench sandbox cleanup --dry-run --max-age 1440
 ```
 
-## bench compat
+Daytona-backed evals also reap orphaned sandboxes automatically at run start
+(failure states such as `BUILD_FAILED` are reaped sooner than healthy ones, and
+an idle-activity guard means concurrent live runs are never reaped). Set
+`BENCHFLOW_DAYTONA_AUTO_REAP` to any of `0`/`false`/`no`/`off` (case-insensitive)
+to disable that automatic pass and rely on the manual command above.
 
-Third-party framework compatibility checks.
+## bench environment (deprecated)
 
-### bench compat harbor-registry
+`bench environment` is a hidden **deprecated alias group**, removed in 0.7. The
+local lifecycle moved to [`bench sandbox`](#bench-sandbox) (`create`/`list`/`cleanup`)
+and hosted-provider browsing to [`bench hub env`](#bench-hub-env). The old
+`bench environment create|list|cleanup` and `show|inspect` (plus `list
+--provider`/`--hub`) still work, each printing a one-line stderr notice.
 
-Inventory or structurally check representative Harbor registry tasks. Defaults
-to running an inventory pass against the public Harbor registry JSON.
+## bench hub
+
+External environment hubs: compatibility checks (`check`) and browsing a hosted
+provider's environments (`env`).
+
+### bench hub env
+
+Read-only browsing of a hosted provider's environments (PrimeIntellect
+"Environments"). To *run* one, use [`bench eval create --source-env`](#bench-eval-create).
 
 ```bash
-# Inventory the public Harbor registry
-bench compat harbor-registry
+bench hub env list --provider primeintellect --owner primeintellect --search general-agent --limit 5
+bench hub env show primeintellect/general-agent --version 0.1.1
+bench hub env inspect primeintellect/general-agent --version 0.1.1 --path README.md
+```
+
+### bench hub check
+
+Inventory or structurally check representative tasks from an environment hub's
+registry. Defaults to an inventory pass against the public Harbor registry JSON.
+
+```bash
+# Inventory the public Harbor hub registry
+bench hub check
 
 # Structural check, two tasks per dataset, JSONL output
-bench compat harbor-registry --level check --tasks-per-dataset 2 --out compat.jsonl
+bench hub check --level check --tasks-per-dataset 2 --out hub.jsonl
 ```
 
 | Flag | Default | Description |
@@ -291,7 +524,7 @@ bench compat harbor-registry --level check --tasks-per-dataset 2 --out compat.js
 | `--tasks-per-dataset` | `2` | Representative tasks selected per dataset |
 | `--level` | `inventory` | Compatibility level: `inventory` or `check` |
 | `--out` | — | Optional JSONL output path |
-| `--cache-dir` | `.cache/compat/harbor` | Cache directory for sparse clones |
+| `--cache-dir` | `.cache/hub/harbor` | Cache directory for sparse clones |
 | `--limit` | — | Optional cap on selected task refs |
 
 ## YAML Config Format
@@ -358,5 +591,29 @@ bench continue path/to/original/run-folder --tasks-dir path/to/tasks
 
 Key options: `--model` (override the live-continuation model; defaults to the
 original run's model), `--timeout`, `--output`, `--require-timeout`,
-`--strict-divergence`, and `--replay-only` (rebuild via replay and stop at the
-cut-point — no live model or API key needed).
+`--strict-divergence`, `--replay-only` (rebuild via replay and stop at the
+cut-point — no live model or API key needed), and `--proxy-mode` (replay
+proxy placement: `auto`, `host`, or `sandbox`; default `auto` uses
+sandbox-local replay for Daytona/Modal and host replay for Docker).
+
+### bench continue-batch
+
+Continue all timed-out OpenHands runs found under a directory tree. Discovers
+run folders (`config.json` + `trajectory/llm_trajectory.jsonl`) recursively,
+continues each, and prints a JSON batch summary (exits 1 if any continuation
+failed).
+
+```bash
+bench continue-batch path/to/jobs-root --tasks-dir path/to/tasks
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--tasks-dir` | — | Directory holding task sources; required unless the recorded task path exists |
+| `--model` | original run's model | Override the live-continuation model |
+| `--timeout` | — | Wall-clock budget per continuation |
+| `--output` | — | Output jobs dir for continued runs |
+| `--concurrency` | `100` | Maximum number of continuation runs in flight |
+| `--limit` | — | Limit discovered timeout folders |
+| `--strict-divergence` | `false` | Abort a run if replay leaves the original rails |
+| `--proxy-mode` | `auto` | Replay proxy placement: `auto`, `host`, or `sandbox` |

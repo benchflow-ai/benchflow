@@ -281,7 +281,7 @@ def _source_provenance(
         "local_path": str(local_path),
         "dirty": bool(status),
         "file_hashes": task_file_hashes(local_path)
-        if (local_path / "task.toml").is_file()
+        if (local_path / "task.toml").is_file() or (local_path / "task.md").is_file()
         else {},
     }
     return provenance
@@ -481,9 +481,7 @@ def _is_hex(value: str) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
 # Benchmark aliases
-# ---------------------------------------------------------------------------
 
 # Aliases for ensure_tasks("shortname") callers.
 # Format: (org/repo, ref, subpath)
@@ -495,16 +493,6 @@ TASK_ALIASES: dict[str, tuple[str, str | None, str | None]] = {
         "src/programbench/data/tasks",
     ),
     "harvey-lab": ("benchflow-ai/benchmarks", "main", "datasets/harvey-lab/tasks"),
-}
-
-# Old dict shape kept for imports that reference TASK_REPOS.
-TASK_REPOS = {
-    name: {
-        "repo": f"https://github.com/{org_repo}.git",
-        **({"ref": branch} if branch else {}),
-        **({"subdir": subdir} if subdir else {}),
-    }
-    for name, (org_repo, branch, subdir) in TASK_ALIASES.items()
 }
 
 

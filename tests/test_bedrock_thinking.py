@@ -15,6 +15,7 @@ from benchflow.providers.litellm_config import resolve_litellm_route
         "us.anthropic.claude-opus-4-8",
         "global.anthropic.claude-sonnet-4-9",
         "anthropic.claude-haiku-4-10",
+        "us.anthropic.claude-fable-5",
     ],
 )
 def test_provider_patch_matcher_covers_bedrock_claude_4_8_plus(model):
@@ -44,6 +45,20 @@ def test_bedrock_thinking_effort_is_threaded_into_route_params():
     )
 
     assert route.upstream_model == "bedrock/us.anthropic.claude-opus-4-8"
+    assert route.litellm_params["reasoning_effort"] == "max"
+
+
+def test_bedrock_fable5_thinking_effort_is_threaded_into_route_params():
+    route = resolve_litellm_route(
+        "aws-bedrock/us.anthropic.claude-fable-5",
+        {
+            "AWS_BEARER_TOKEN_BEDROCK": "token",
+            "AWS_REGION": "us-west-2",
+            BEDROCK_THINKING_EFFORT_ENV: "max",
+        },
+    )
+
+    assert route.upstream_model == "bedrock/us.anthropic.claude-fable-5"
     assert route.litellm_params["reasoning_effort"] == "max"
 
 

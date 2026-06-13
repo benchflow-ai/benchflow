@@ -1,6 +1,5 @@
 """Tests for runtime.py — Agent, Environment, Runtime, RuntimeResult."""
 
-from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -137,25 +136,6 @@ def test_environment_context_manager_interface() -> None:
     """Environment has async context manager methods."""
     assert hasattr(Environment, "__aenter__")
     assert hasattr(Environment, "__aexit__")
-
-
-def test_runtime_result_to_run_result() -> None:
-    r = RuntimeResult(
-        task_name="test-task",
-        rollout_name="trial-1",
-        reward=1.0,
-        rewards={"reward": 1.0},
-        n_tool_calls=5,
-        error=None,
-        verifier_error=None,
-        trajectory=[{"type": "tool_call"}],
-        started_at=datetime(2026, 4, 18),
-        finished_at=datetime(2026, 4, 18),
-    )
-    legacy = r.to_run_result()
-    assert legacy.task_name == "test-task"
-    assert legacy.rewards == {"reward": 1.0}
-    assert legacy.n_tool_calls == 5
 
 
 @pytest.mark.skipif(not _daytona_available, reason="daytona not installed")

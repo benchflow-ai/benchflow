@@ -25,7 +25,7 @@ Arguments passed: `$ARGUMENTS`
 1. Check if benchflow is installed: `uv tool list | grep benchflow`
 2. Check if API keys are set (GEMINI_API_KEY, ANTHROPIC_API_KEY, etc.)
 3. Check available agents: `bench agent list`
-4. Show recent eval results if any exist in `evaluations/` or `jobs/`
+4. Show recent eval results if any exist under `jobs/` (the default `--jobs-dir`)
 5. Point to next action based on state
 
 ### `run <task-path>` — run a single task
@@ -94,12 +94,13 @@ max_retries: 1
 ### `metrics <jobs-dir>` — analyze results
 
 ```bash
-bench eval list jobs/
+bench eval metrics jobs/      # aggregate pass-rate / tokens / cost (add --json to pipe)
+bench eval list jobs/         # per-rollout table
 ```
 
 ### `view <rollout-dir>` — view a trajectory
 
-Results are in `evaluations/<eval-name>/<rollout-name>/` or `jobs/<job-name>/<rollout-name>/`:
+Results land under `jobs/<job-name>/<rollout-name>/` (the default `--jobs-dir` is `jobs/`):
 ```
 rollout-dir/
 ├── result.json              # rewards, agent, timing
@@ -114,20 +115,38 @@ rollout-dir/
 ### `create-task` — create a new benchmark task
 
 ```bash
-bench tasks init my-task
-bench tasks init my-task --no-pytest --no-solution
+bench tasks init my-task                       # native task.md format (default)
+bench tasks init my-task --no-pytest --no-oracle
+bench tasks check tasks/my-task                # structural validation
 ```
 
-Quick structure:
+Quick structure (native `task.md` format, the default):
 ```
 my-task/
-├── task.toml          # timeouts, resources, metadata
-├── instruction.md     # what the agent should do
+├── task.md            # YAML frontmatter (config) + prompt body
 ├── environment/
 │   └── Dockerfile     # sandbox setup
-├── tests/
-│   └── test.sh        # verifier -> writes to /logs/verifier/reward.txt
-└── solution/          # optional reference solution
+├── verifier/
+│   ├── test.sh        # verifier entrypoint -> writes /logs/verifier/reward.txt
+│   └── test_outputs.py
+└── oracle/            # optional reference solution (solve.sh)
+```
+
+`--format legacy` instead scaffolds the older split layout (`task.toml` +
+`instruction.md` + `tests/` + `solution/`).
+
+### `skills` — discover and evaluate agent skills
+
+```bash
+bench skills list                                   # discover skills on disk
+bench skills eval skills/citation-management \
+  --agent claude-agent-acp                          # score a skill against its evals/evals.json
+```
+
+### `hub` — check external-environment-hub compatibility
+
+```bash
+bench hub check          # inventory/structurally-check representative Harbor-registry tasks
 ```
 
 ### `agents` — list available agents
@@ -155,15 +174,19 @@ The underlying agent's install, env vars, credentials, and skill paths are prese
 
 ### `compare` — multi-agent comparison
 
+Compare by running one config per agent (the `agent:` key lives in each YAML)
+and printing the aggregate scores:
 ```python
 import asyncio
 from benchflow.evaluation import Evaluation
 
 async def main():
-    for agent_name in ["claude-agent-acp", "gemini", "opencode"]:
-        eval_obj = Evaluation.from_yaml("benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml")
-        result = await eval_obj.run()
-        print(f"{agent_name}: {result.passed}/{result.total} ({result.score:.1%})")
+    for config_path in [
+        "benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml",
+        "benchmarks/harvey-lab/harvey-lab-harness-parity.yaml",
+    ]:
+        result = await Evaluation.from_yaml(config_path).run()
+        print(f"{config_path}: {result.passed}/{result.total} ({result.score:.1%})")
 
 asyncio.run(main())
 ```
@@ -173,7 +196,10 @@ asyncio.run(main())
 ## Setup
 
 ```bash
-uv tool install benchflow    # or: uv sync --extra dev --locked (from source)
+# 0.6 is pre-release — not yet on PyPI. Install the RC wheel from GitHub releases:
+uv tool install --prerelease allow \
+  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
+# (replace rc.6 with the newest 0.6.0-rc.* release; or from source: uv sync --extra dev --locked)
 export GEMINI_API_KEY=...     # or ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.
 export DAYTONA_API_KEY=...    # for cloud sandboxes
 ```
@@ -204,10 +230,13 @@ bench eval create \
   --agent claude-agent-acp \
   --sandbox daytona \
   --skills-dir skills/ \
+  --skill-mode with-skill \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
-Skills are uploaded to `/skills/` in the sandbox and symlinked to agent-specific paths.
+`--skill-mode with-skill` is required whenever you pass `--skills-dir` (omitting
+it errors). Skills are uploaded to `/skills/` in the sandbox and symlinked to
+agent-specific paths.
 
 ## Tips
 

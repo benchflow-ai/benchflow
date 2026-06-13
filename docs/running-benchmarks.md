@@ -470,7 +470,7 @@ python3 .claude/skills/benchflow-experiment-review/scripts/extract_harness_skill
 Notes:
 - `--usage-tracking required` records provider-reported token usage into each trajectory.
 - `--agent-idle-timeout none` disables the idle watchdog (the task wall-clock still applies).
-- Opus-4.8 on Bedrock needs the adaptive-thinking shim (`opus-4.8 bedrock thinking shim ACTIVE` in the install log); see `AGENTS.md`.
+- Opus-4.8 on Bedrock needs the adaptive-thinking patch, which LiteLLM loads into its proxy process (`src/benchflow/providers/litellm_bedrock_patch.py`); see `AGENTS.md`.
 - For heavy tasks, replace `--sandbox daytona` with `--sandbox docker` — same flags otherwise.
 
 ---
@@ -516,20 +516,16 @@ for the full manifest schema, both onboarded benchmarks, and the
 
 BenchFlow runs benchmarks authored in other formats without converting them
 first. An **inbound adapter** translates a foreign task directory into
-BenchFlow-native shape; the rollout then runs natively. Two adapters ship:
+BenchFlow-native shape; the rollout then runs natively:
 
 | Source format | Signature file | Adapter |
 |---------------|----------------|---------|
 | Harbor | `task.toml` | `HarborAdapter` |
-| Terminal-Bench | `task.yaml` | `TerminalBenchAdapter` |
 
 `benchflow.adapters.inbound.detect_adapter()` sniffs a task directory and
-picks the adapter whose format it matches (`task.toml` is checked first, so a
-directory carrying both is treated as Harbor — the native superset). Each
-adapter is a pure `Path -> InboundTask` translation: it reads a directory and
-returns an in-memory native task, building no sandboxes and running nothing.
-Terminal-Bench tasks are backward-compatible this way — old terminal-style
-tasks keep running on BenchFlow unchanged.
+picks the adapter whose format it matches. The adapter is a pure
+`Path -> InboundTask` translation: it reads a directory and returns an
+in-memory native task, building no sandboxes and running nothing.
 
 ---
 
@@ -575,16 +571,36 @@ jobs/
     └── ...
 ```
 
-The `result.json` contains:
+The `result.json` contains (abridged):
 ```json
 {
   "rewards": {"reward": 0.48},
   "n_tool_calls": 12,
   "n_skill_invocations": 2,
-  "passed": true,
-  "verifier_output": "..."
+  "agent_result": {"total_tokens": 23993, "cost_usd": 0.07, "usage_source": "provider_response"},
+  "final_metrics": {"total_prompt_tokens": 18000, "total_completion_tokens": 5993},
+  "error": null,
+  "verifier_error": null
 }
 ```
+
+**Canonical fields — read these, not invented top-level ones.** The reward,
+token totals, and outcome each live in exactly one place:
+
+| You want | Read | Notes |
+| --- | --- | --- |
+| reward | `rewards.reward` | scalar 0.0–1.0, or `null` if unscored |
+| token total | `agent_result.total_tokens` | `null` when no provider usage was captured (e.g. hosted runs) |
+| outcome / status | derived from `rewards.reward` + `error`/`verifier_error` | not stored as a field; see below |
+
+There is intentionally **no top-level `reward`, `total_tokens`, or `status`
+key** — those names are absent, not `null`. A naive consumer doing
+`result["reward"]` or `result.get("total_tokens")` gets `None` because the key
+does not exist, never because the value is null. Pass/fail is a *derived*
+classification (only `reward == 1.0` passes); BenchFlow computes it from
+`rewards.reward` plus the error channels rather than persisting a redundant
+`status`. The same nested shape is produced for both native rollouts and
+hosted-env runs, so one reader handles both.
 
 `n_skill_invocations` is derived from structured ACP trajectory events: BenchFlow
 counts only `tool_call` events whose `kind` is `skill`. Job `summary.json`

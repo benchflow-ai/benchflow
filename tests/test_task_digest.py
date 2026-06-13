@@ -159,3 +159,27 @@ class TestTasksDigestCli:
         )
         assert result.exit_code == 1
         assert "No tasks under" in result.output
+
+    def test_recognizes_native_task_md_task(self, tmp_path):
+        """The universal-adapter native format is task.md (no task.toml). The
+        digest CLI must recognize it and emit the same digest the run-time
+        stamper uses, or `bench tasks digest` is unusable on converted tasks."""
+        task = tmp_path / "md-task"
+        task.mkdir()
+        (task / "task.md").write_text("# A native task\n")
+        (task / "input.txt").write_bytes(b"payload")
+        result = CliRunner().invoke(app, ["tasks", "digest", str(task)])
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == task_digest(task)
+
+    def test_directory_of_task_md_tasks(self, tmp_path):
+        for name in ("a-md", "b-md"):
+            t = tmp_path / name
+            t.mkdir()
+            (t / "task.md").write_text(f"# {name}\n")
+        result = CliRunner().invoke(app, ["tasks", "digest", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert [line.split()[0] for line in result.output.splitlines()] == [
+            "a-md",
+            "b-md",
+        ]

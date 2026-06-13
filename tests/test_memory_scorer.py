@@ -22,9 +22,7 @@ from benchflow.rewards.memory_scorer import (
 from benchflow.rewards.node import NodeScorer, score_node
 from benchflow.trajectories.tree import RolloutNode
 
-# ---------------------------------------------------------------------------
 # skill_delta — the diff over the store
-# ---------------------------------------------------------------------------
 
 
 def test_skill_delta_detects_added_skill():
@@ -62,9 +60,7 @@ def test_skill_delta_changed_is_the_union_of_all_changes():
     assert delta.changed == {"drop", "bump", "new"}
 
 
-# ---------------------------------------------------------------------------
 # MemoryScorer — emits a memory-space RewardEvent
-# ---------------------------------------------------------------------------
 
 
 async def test_memory_scorer_satisfies_the_node_scorer_protocol():
@@ -316,9 +312,7 @@ async def test_memory_scorer_default_source():
     assert event.source == "memory"
 
 
-# ---------------------------------------------------------------------------
 # Aggregation — score_node treats it like any other scorer
-# ---------------------------------------------------------------------------
 
 
 class _OutcomeScorer:
@@ -369,9 +363,7 @@ async def test_memory_scorer_alone_does_not_provide_an_outcome_signal():
     assert "nobody scored" in result.error
 
 
-# ---------------------------------------------------------------------------
 # SkillDelta value semantics
-# ---------------------------------------------------------------------------
 
 
 def test_skill_delta_is_a_value_type():

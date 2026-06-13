@@ -1,0 +1,76 @@
+{
+  "source_commit": "312d07e15e5398f6eda32ee1bb86e492ab18edd1",
+  "source_path_prefix": "tasks",
+  "source_repo": "https://github.com/benchflow-ai/skillsbench",
+  "tasks": {
+    "flood-risk-analysis": {
+      "environment/Dockerfile": "sha256:b1830f3591b6e4bc06facc2f86607cc7368cdb24ad36dc931963702f0b25afef",
+      "environment/data/michigan_stations.txt": "sha256:5b03420d67be56a83db4639fea6203a8ce237f6619958047de0f1cab4dfd45e7",
+      "environment/skills/flood-detection/SKILL.md": "sha256:14e55948af7ac9e90e039985d116fbc2c605f12bb3996c8b49d52167ddf4696d",
+      "environment/skills/nws-flood-thresholds/SKILL.md": "sha256:f0a534dad20748e094e2188b2fb8078264a4c0451757827b54f921146453418f",
+      "environment/skills/usgs-data-download/SKILL.md": "sha256:82f0ec56e7bbfdeadac0bf05a51683d3e90e183d9b27165923f70860183a825e",
+      "instruction.md": "sha256:ba6b8a62c9fbdf0ed1c4445e14068a7d8d887c6ace2fcf9d0ad1bd6e0ce7b75b",
+      "solution/solve.sh": "sha256:05abee5786c4d6e860a2a8143b4f1865aa4883d2d385b81dac496ab85fc28802",
+      "task.toml": "sha256:004ea449760e54a8b772e2dc3a6d9f42c2b16cf8702b7cd17521556e0255e5ea",
+      "tests/test.sh": "sha256:902f131b585fcf98fa34b8138718ecc06101c8e287c0c5a16343389cc29f7c9b",
+      "tests/test_outputs.py": "sha256:718a45e5795a62dbeadedbe427ad1399ad3ee27720dd4a196a702d1ba21ff40b"
+    },
+    "lake-warming-attribution": {
+      "environment/Dockerfile": "sha256:26d08cccf9fa1098265521ffca78ac3a787c39eb797334ef0aa889a325a12170",
+      "environment/data/climate.csv": "sha256:cf25e05768be29bbe65d16b0ab8ef86f6171649d6efcfd3d02d6d59aa19f8c4f",
+      "environment/data/hydrology.csv": "sha256:419539b43291f763f5c3da425d5a6004bff63897ec8d3109990a67cfcf18e5b3",
+      "environment/data/land_cover.csv": "sha256:e83fac4f3de0984ade22cd2c61e74fde87695f0dc6a3a2266f0730fb0ac718ee",
+      "environment/data/water_temperature.csv": "sha256:02fae144ffcd2caa066109512c914a5515671d64eb257615202f481044c68fcb",
+      "environment/skills/contribution-analysis/SKILL.md": "sha256:ec9531b6b06a4e7a699da04bf0e86279af14cc0b7aba77476adbfc4766015c63",
+      "environment/skills/meteorology-driver-classification/SKILL.md": "sha256:5faebbffdf7c5a5a46c22a11b08d5950f378e71f3a4c967c9495ffb70f64fc2f",
+      "environment/skills/pca-decomposition/SKILL.md": "sha256:651fe7e01b2bc9abcf21a51d213398ef27c225ad2ea1a49b5bd681e934015ac2",
+      "environment/skills/trend-analysis/SKILL.md": "sha256:eec026677dd73c7407170d01fc2358ba10dacfd4b8b3b9bf669b8f922491514f",
+      "instruction.md": "sha256:5c9d251ad77db347e6260049060c18e80f0c5c42b89029e136a70b245d7c90e0",
+      "solution/solve.sh": "sha256:1d94077d4f6fa10440a30e2960e16c2a932561804e18714ba7bd5e2e648cf7e3",
+      "task.toml": "sha256:9ab7630fe2ffeedb40d6585eb9f3e8506b37b853bcc6eca8fa93712971314249",
+      "tests/test.sh": "sha256:902f131b585fcf98fa34b8138718ecc06101c8e287c0c5a16343389cc29f7c9b",
+      "tests/test_outputs.py": "sha256:94424ee977ae3435c75f420b4dfce346e1b66937e165f9999ea3288f632811f9"
+    },
+    "r2r-mpc-control": {
+      "environment/Dockerfile": "sha256:8ffdb9b0787016a2e370705f03d7c611e58f9913655e08c4f82a36ef671eea3f",
+      "environment/r2r_simulator.py": "sha256:87d4e8f742137fc5cb8473e6b2b88c5ca2bb8ef3e067bec130a921467180a795",
+      "environment/skills/finite-horizon-lqr/SKILL.md": "sha256:8ce87c503270a401f9bce17518a8f11d8cc421de2f15984678ddeb0b8c27575f",
+      "environment/skills/integral-action-design/SKILL.md": "sha256:e3368f03c7c53e47f650272a2225602b0d437ae82c825b049291b02006d43220",
+      "environment/skills/mpc-horizon-tuning/SKILL.md": "sha256:fa85a6c22e728d92176f4aace0a3ad65e280bd4ecd061d1037a042b29ec47123",
+      "environment/skills/state-space-linearization/SKILL.md": "sha256:1cd18b96f4f55ff004aa92c0acbf0cab2744032c94a42d750ce749055038835b",
+      "environment/system_config.json": "sha256:69659661d4e6bd83bec675306b28d62f47d3ff90c26b38155e23aaef606b743d",
+      "instruction.md": "sha256:34179522d614807b7fde499783993f38edc6de68b1830e2e9d0631018ea011de",
+      "solution/solve.sh": "sha256:983680da7fee6ee5e88091ae60aa82ed5c51045e115c91eb499659e4e8bdf31e",
+      "task.toml": "sha256:915ba7eca35e67f2bc87d0a0395467fff3e07f63a36001cc723c1639495d4044",
+      "tests/test.sh": "sha256:57af27a7a892fa3402f2d5d23d3fdc2833eba6005fc3ba24132ff7c6c5ff2b33",
+      "tests/test_outputs.py": "sha256:d305382c273132476fa8f3a74f701d397d926c91bed20a2f78d38734ebde1fca"
+    },
+    "suricata-custom-exfil": {
+      "environment/Dockerfile": "sha256:b9f0875297b06c460c8df9acf49a2fbb4aaba8d8291239887f9a0a35fc99d322",
+      "environment/generate_training_pcaps.py": "sha256:9b5a8b1ec007def24c94ee3914fd13ab3c7385f0f89de521f83303d21bcda335",
+      "environment/local.rules": "sha256:fabe6756452be9293e375cb8235c9043c5edeaf8a86afb9598e576c5d757096e",
+      "environment/skills/pcap-triage-tshark/SKILL.md": "sha256:1070842f53661264a2e881666d586710a91e8ca463d703af1012645bde1b7e28",
+      "environment/skills/pcap-triage-tshark/scripts/summarize_http_requests.sh": "sha256:56a5573c1d9349292dabf5234e2bd56c70513009c95682b7921a39af1315bc15",
+      "environment/skills/suricata-offline-evejson/SKILL.md": "sha256:5ef330a5329e945c26aec25cef8b896e6e9fd74f6bbbe1e9d8da4432b6c4a4f1",
+      "environment/skills/suricata-offline-evejson/scripts/run_suricata_offline.sh": "sha256:8311e87f20521261d9c5c45f0dc0f1e6b07216ca866e6822926ebea3d3dda0ff",
+      "environment/skills/suricata-rules-basics/SKILL.md": "sha256:12311a48a3bda4a363a9debbcf52c0bb978273aa10c472a2cff72593831f223d",
+      "environment/suricata.yaml": "sha256:e57c67197a839ab2af1c5ae6062cacbb6917f28e663cf9d308476ab6b2c88b44",
+      "instruction.md": "sha256:651a57498887c43568d14daafecd31b583705f6460652efc311eb20ecd488fb7",
+      "solution/solve.sh": "sha256:8efe9dd59fdf0b5e4ecdc3aa44b69781ac976e61c9c9a22f32adb584aeed47c4",
+      "task.toml": "sha256:e3e30d54d34862b484a7b63fceeb9a32809bfd099829c89b829ebf9b98405f84",
+      "tests/test.sh": "sha256:39458123410d106c292afccfb6fbab1f3d37a1c8f9bbec61163ee490167a07ed",
+      "tests/test_outputs.py": "sha256:16cd7f9acb3641a15d96e91c3fa052f96f6708d85ce15079ece6e87707ecdc5d"
+    },
+    "syzkaller-ppdev-syzlang": {
+      "environment/Dockerfile": "sha256:c2b081283e29a59055dcdb95ec0c2df34d1f0abd80aaf8f83a68aa012db61857",
+      "environment/skills/syz-extract-constants/SKILL.md": "sha256:2fc1affd7993d5e0223033fdb8083cd26601994d4686b4e49feca7d83cc1a733",
+      "environment/skills/syzkaller-build-loop/SKILL.md": "sha256:36d455ae98e5dfe11fcdce15b4abac58b3d37b3322ecde27b6bebbb2b619c6d6",
+      "environment/skills/syzlang-ioctl-basics/SKILL.md": "sha256:f733ad59a34b426d8cc02fda55228feb88c15f8af40baae7b2944812d236c1c5",
+      "instruction.md": "sha256:ed3602e5ddbb8cba4c64890d8b4ab796df9f7f805602f365d0a6f36bae94a3f2",
+      "solution/solve.sh": "sha256:850379dbdea74d26044458d0c3c8c003ff5ce4548e9464a361b1e57306e1ba59",
+      "task.toml": "sha256:3ab36eecb2f280363cb77d0df9740002a4e8feacfd4fed70ed58418a87761ab6",
+      "tests/test.sh": "sha256:488aa4912bb574676f1d3f8f59d21cbffddc70cf34a9c7bb70b7036dbbaa6717",
+      "tests/test_outputs.py": "sha256:612c0e484ea93a5d80df2849d13b416e5a6dd050287056d6f022ecff02c069a4"
+    }
+  }
+}

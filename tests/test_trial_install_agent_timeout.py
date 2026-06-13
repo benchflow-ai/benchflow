@@ -1,11 +1,19 @@
 """Tests for Rollout.install_agent timeout wiring."""
 
+import json
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow.rollout import Rollout, RolloutConfig
-from benchflow.skill_policy import SKILL_MODE_WITH_SKILL
+from benchflow.agents.install import effective_install_timeout, install_agent
+from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS
+from benchflow.rollout import Rollout, RolloutConfig, _write_config
+from benchflow.skill_policy import (
+    SKILL_MODE_NO_SKILL,
+    SKILL_MODE_WITH_SKILL,
+    resolve_task_skill_policy,
+)
 
 
 def _make_trial(tmp_path, *, agent: str, sandbox_setup_timeout: int) -> Rollout:
@@ -81,6 +89,7 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
         assert trial._agent_cwd == "/workspace"
     else:
         install_agent_mock.assert_awaited_once()
+        assert install_agent_mock.await_args.kwargs["sandbox_setup_timeout"] == 41
         write_credential_files_mock.assert_awaited_once()
         deploy_skills_mock.assert_awaited_once()
         assert trial._agent_cwd == "/home/agent"
@@ -180,3 +189,97 @@ async def test_install_agent_applies_web_policy_after_sandbox_setup(
     await trial.install_agent()
 
     assert order == ["sandbox", "credentials", "web-policy"]
+
+
+def _write_config_for(tmp_path, *, agent: str, sandbox_setup_timeout: int) -> dict:
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir(parents=True, exist_ok=True)
+    _write_config(
+        rollout_dir,
+        task_path=tmp_path / "task",
+        agent=agent,
+        model=None,
+        environment="daytona",
+        skill_policy=resolve_task_skill_policy(
+            task_path=tmp_path / "task",
+            skill_mode=SKILL_MODE_NO_SKILL,
+            runtime_skills_dir=None,
+            declared_sandbox_skills_dir=None,
+        ),
+        sandbox_user=None,
+        context_root=None,
+        sandbox_setup_timeout=sandbox_setup_timeout,
+        timeout=300,
+        started_at=datetime(2026, 1, 1),
+        agent_env={},
+    )
+    return json.loads((rollout_dir / "config.json").read_text())
+
+
+@pytest.mark.asyncio
+async def test_recorded_install_timeout_equals_enforced_timeout(tmp_path):
+    """Guards the 2026-06 dogfood finding: config.json said 120, runtime ran 900.
+
+    The recorded ``agent_install_timeout`` must be the per-agent override the
+    install step actually enforces, not the configured sandbox setup timeout.
+    """
+    config = _write_config_for(tmp_path, agent="openhands", sandbox_setup_timeout=120)
+
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout="", stderr=""))
+    await install_agent(env, "openhands", tmp_path / "rollout", 120)
+
+    enforced = env.exec.await_args_list[0].kwargs["timeout_sec"]
+    assert config["agent_install_timeout"] == enforced
+    assert enforced == AGENTS["openhands"].install_timeout
+    assert config["agent_install_timeout"] != config["sandbox_setup_timeout"]
+
+
+def test_recorded_install_timeout_is_none_without_installer(tmp_path):
+    config = _write_config_for(tmp_path, agent="oracle", sandbox_setup_timeout=120)
+
+    assert config["agent_install_timeout"] is None
+    assert config["sandbox_setup_timeout"] == 120
+
+
+@pytest.mark.asyncio
+async def test_install_timeout_falls_back_to_config_without_registry_entry(
+    tmp_path, monkeypatch
+):
+    """Installers outside AGENTS get bounded by the recorded config value."""
+    monkeypatch.setitem(AGENT_INSTALLERS, "fake-agent", "echo install")
+    assert "fake-agent" not in AGENTS
+
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout="", stderr=""))
+    await install_agent(env, "fake-agent", tmp_path, 41)
+
+    assert env.exec.await_args_list[0].kwargs["timeout_sec"] == 41
+    assert effective_install_timeout("fake-agent", 41) == 41
+
+
+def test_effective_install_timeout_branches(monkeypatch):
+    """Direct coverage of every effective_install_timeout branch.
+
+    The three branches return three *distinct* values (None / per-agent override
+    / config fallback), so a revert of any one branch — including the
+    ``agent_cfg is None`` defensive guard the audit flagged — flips a concrete
+    assertion here rather than passing silently.
+    """
+    # 1. No installer registered at all → None, whatever the config timeout is.
+    assert "definitely-not-an-agent" not in AGENT_INSTALLERS
+    assert effective_install_timeout("definitely-not-an-agent", 41) is None
+
+    # 2. Real registry entry → the per-agent install_timeout overrides config.
+    override = AGENTS["openhands"].install_timeout
+    assert override != 41  # the override is genuinely distinct from the config value
+    assert effective_install_timeout("openhands", 41) == override
+
+    # 3. Installer in AGENT_INSTALLERS but absent from AGENTS (label/registry
+    #    drift) → defensive fallback to the configured sandbox setup timeout.
+    monkeypatch.setitem(AGENT_INSTALLERS, "fake-agent", "echo install")
+    assert "fake-agent" not in AGENTS
+    assert effective_install_timeout("fake-agent", 41) == 41
+    # agent_base is the first whitespace-delimited token, so specs with flags
+    # resolve through the same fallback.
+    assert effective_install_timeout("fake-agent --acp", 41) == 41
