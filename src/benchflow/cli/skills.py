@@ -58,7 +58,15 @@ def register_skills(app: typer.Typer) -> None:
         table.add_column("Path", style="dim")
 
         for s in found:
-            table.add_row(s.name, s.version or "-", s.description[:60], str(s.path))
+            # escape(): SKILL.md metadata is author/third-party controlled (e.g.
+            # a description mentioning "[/INST]") and would otherwise raise a Rich
+            # MarkupError that crashes the listing — matching `skills eval`.
+            table.add_row(
+                escape(s.name),
+                escape(s.version or "-"),
+                escape(s.description[:60]),
+                escape(str(s.path)),
+            )
 
         console.print(table)
 

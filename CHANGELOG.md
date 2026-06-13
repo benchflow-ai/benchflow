@@ -42,6 +42,35 @@
 - `bench metrics` → `bench eval metrics` and `bench view` → `bench eval view`
   (the deprecated hidden top-level forms are gone; use the `eval` subgroup).
 
+### Fixed
+- **CLI errors now go to stderr.** `print_error` (the single CLI error sink) wrote
+  to stdout, so a `bench … --json | jq` pipeline could get a non-JSON error line on
+  the JSON channel. All CLI errors (and the dataset bench-version remediation hint)
+  now route to stderr; exit codes are unchanged, so failures stay detectable.
+- **`bench hub env list --json` now emits valid JSON at any width.** The raw
+  payload was printed through Rich's console, which soft-wrapped long strings and
+  injected literal newlines mid-value (unparseable JSON when piped). It is now
+  written verbatim.
+- **No more raw tracebacks on bad input.** Hardened the unguarded front doors a
+  stress sweep surfaced: `eval create --source-repo` clone failures and
+  `--tasks-dir <file>`; `eval view` on corrupt/partial trajectory artifacts
+  (`prompts.json`, a bad `acp_trajectory.jsonl` line, `result.json`, a null
+  `session_id`); `sandbox create` with an unknown `--sandbox` backend or a missing
+  optional sandbox dependency; `tasks digest` on an unreadable file (single = clean
+  error, batch = warn-and-skip); and `hub check` with a malformed/missing
+  `--registry` (now a user-meaningful message, not a raw `JSONDecodeError`/`OSError`).
+- **Markup-safe output.** User/author-controlled strings that look like Rich markup
+  no longer crash or silently garble output: `eval list` job names, `eval metrics`
+  title, `skills list` cells, and `tasks init`'s reported path are now escaped.
+- **`skills eval` schema errors** no longer leak pydantic internals (private model
+  name, `[type=…]` tags, the pydantic.dev URL) — just the actionable per-field text.
+- **`bench environment` deprecation notice** now fires exactly once (one line,
+  once per process) instead of doubling up with Typer's generic
+  `DeprecationWarning`, and its aliased verbs are hidden from `--help`, matching the
+  `agent` / `eval adopt` alias families.
+- `benchmarks/CONVERT.md` now references the canonical `bench eval adopt verify`
+  (was the deprecated `bench agent verify`) in the conversion prompt.
+
 ## 0.6.0 — 2026-06-10
 
 ### Added

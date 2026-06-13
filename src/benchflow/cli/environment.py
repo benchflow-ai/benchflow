@@ -28,11 +28,20 @@ from benchflow.cli.sandbox import sandbox_cleanup, sandbox_create, sandbox_list_
 
 
 def register_environment(app: typer.Typer) -> None:
-    """Attach the deprecated ``environment`` alias group (hidden from help)."""
+    """Attach the deprecated ``environment`` alias group (hidden from help).
+
+    Each command uses ``hidden=True`` only — NOT Typer's ``deprecated=True``.
+    ``deprecated=True`` would (a) print its own generic ``DeprecationWarning: The
+    command 'X' is deprecated.`` line that omits the canonical replacement and
+    re-fires every invocation, doubling up with our ``warn_deprecated`` one-liner,
+    and (b) surface the aliased verbs in ``environment --help``. ``hidden=True``
+    alone matches the ``adopt`` / ``agent`` alias families: exactly one
+    once-per-process stderr notice, verbs hidden from help.
+    """
     env_app = typer.Typer(help="Deprecated; use `bench sandbox` / `bench hub env`.")
     app.add_typer(env_app, name="environment", hidden=True)
 
-    @env_app.command("create", deprecated=True)
+    @env_app.command("create", hidden=True)
     def environment_create(
         task_dir: Annotated[
             Path,
@@ -46,7 +55,7 @@ def register_environment(app: typer.Typer) -> None:
         warn_deprecated("bench environment create", "bench sandbox create")
         sandbox_create(task_dir, sandbox)
 
-    @env_app.command("list", deprecated=True)
+    @env_app.command("list", hidden=True)
     def environment_list(
         provider: Annotated[
             str | None,
@@ -96,7 +105,7 @@ def register_environment(app: typer.Typer) -> None:
         warn_deprecated("bench environment list", "bench sandbox list")
         sandbox_list_local()
 
-    @env_app.command("show", deprecated=True)
+    @env_app.command("show", hidden=True)
     def environment_show(
         source_env: Annotated[
             str,
@@ -112,7 +121,7 @@ def register_environment(app: typer.Typer) -> None:
         warn_deprecated("bench environment show", "bench hub env show")
         hosted_env_show(source_env=source_env, version=version)
 
-    @env_app.command("inspect", deprecated=True)
+    @env_app.command("inspect", hidden=True)
     def environment_inspect(
         source_env: Annotated[
             str,
@@ -132,7 +141,7 @@ def register_environment(app: typer.Typer) -> None:
         warn_deprecated("bench environment inspect", "bench hub env inspect")
         hosted_env_inspect(source_env=source_env, version=version, path=path)
 
-    @env_app.command("cleanup", deprecated=True)
+    @env_app.command("cleanup", hidden=True)
     def environment_cleanup(
         dry_run: Annotated[
             bool, typer.Option("--dry-run", help="List sandboxes without deleting")

@@ -31,17 +31,22 @@ err_console = Console(stderr=True)
 
 
 def print_error(message: str) -> None:
-    """Print a red error line, escaping Rich markup in ``message``.
+    """Print a red error line to **stderr**, escaping Rich markup in ``message``.
 
-    The single safe sink for CLI error messages: error text routinely
-    interpolates user-supplied values (a task path, an agent name, a config
-    error echoing a field) that can contain ``[`` / ``[/x]`` tokens. An
-    unescaped ``console.print(f"[red]{value}[/red]")`` then makes Rich itself
-    raise ``MarkupError`` — turning a clean error into a raw traceback. Route
-    every such message through here. (Messages with NO user input escape to a
-    no-op, so it is always safe.)
+    The single safe sink for CLI error messages. Two jobs:
+
+    1. *Escape* — error text routinely interpolates user-supplied values (a task
+       path, an agent name, a config error echoing a field) that can contain
+       ``[`` / ``[/x]`` tokens. An unescaped ``console.print(f"[red]{value}[/red]")``
+       then makes Rich itself raise ``MarkupError`` — turning a clean error into a
+       raw traceback. (Messages with NO user input escape to a no-op, so it is
+       always safe.)
+    2. *Stream* — write to ``err_console`` (stderr), not stdout. Errors on stdout
+       corrupt ``--json`` consumers (a ``bench … --json | jq`` pipeline gets a
+       non-JSON line on the JSON channel); the same stderr rule the deprecation
+       notices follow. Exit codes are unchanged, so failures stay detectable.
     """
-    console.print(f"[red]{escape(str(message))}[/red]")
+    err_console.print(f"[red]{escape(str(message))}[/red]")
 
 
 _DEPRECATION_WARNED: set[str] = set()

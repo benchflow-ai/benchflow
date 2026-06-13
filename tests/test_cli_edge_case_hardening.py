@@ -7,6 +7,7 @@ by the command surface they protect.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -275,3 +276,150 @@ def test_tasks_init_handler_escapes_markup_in_path(tmp_path):
     res = runner.invoke(app, ["tasks", "init", "mytask", "--dir", str(afile)])
     assert res.exit_code == 1
     assert isinstance(res.exception, SystemExit)  # not a MarkupError
+
+
+# ── round-9 stress sweep: error stream, raw-traceback, markup, deprecation ────
+
+
+def test_cli_errors_go_to_stderr_not_stdout(tmp_path):
+    # print_error is the single CLI error sink; it must write to stderr so a
+    # `bench … --json | jq` pipeline never gets a non-JSON line on stdout.
+    res = runner.invoke(app, ["eval", "metrics", str(tmp_path / "nope"), "--json"])
+    assert res.exit_code == 1
+    assert res.stdout == ""  # JSON channel stays clean
+    assert "Not a directory" in res.stderr
+
+
+def test_eval_create_bad_source_repo_no_raw_traceback(monkeypatch):
+    # A clone failure used to escape as a raw CalledProcessError traceback.
+    import subprocess
+
+    import benchflow._utils.benchmark_repos as br
+
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(128, ["git", "clone"])
+
+    monkeypatch.setattr(br, "resolve_source_with_metadata", boom)
+    res = runner.invoke(app, ["eval", "create", "--source-repo", "x/y"])
+    assert res.exit_code == 1
+    assert "Traceback (most recent call last)" not in res.output
+    assert "Could not resolve --source-repo" in res.stderr
+
+
+def test_eval_create_tasks_dir_is_a_file_clean_error(tmp_path):
+    afile = tmp_path / "notadir.txt"
+    afile.write_text("x")
+    res = runner.invoke(
+        app, ["eval", "create", "--tasks-dir", str(afile), "--agent", "oracle"]
+    )
+    assert res.exit_code == 1
+    assert "Traceback (most recent call last)" not in res.output
+    assert "Not a directory" in res.stderr
+
+
+def test_hub_env_list_json_is_valid_json_even_when_narrow(monkeypatch):
+    # The raw payload must be emitted verbatim, not through Rich's console (which
+    # soft-wraps long strings and injects newlines mid-value → unparseable JSON).
+    import benchflow.hosted_env as hosted
+
+    long_desc = "calibration-as-action. " + "a cheap base model " * 30
+    payload = json.dumps({"environments": [{"name": "a/b", "description": long_desc}]})
+    monkeypatch.setattr(hosted, "prime_env_list", lambda **kw: payload)
+    monkeypatch.setenv("COLUMNS", "40")
+    res = runner.invoke(app, ["hub", "env", "list", "--json"])
+    assert res.exit_code == 0
+    assert json.loads(res.stdout) == json.loads(payload)  # round-trips cleanly
+
+
+def test_eval_metrics_markup_in_path_does_not_crash(tmp_path):
+    # The full path string spans a closing-tag-shaped substring ("[/red]");
+    # interpolated unescaped into the Rich Table title it raised MarkupError.
+    d = tmp_path / "done[" / "red]"
+    d.mkdir(parents=True)
+    res = runner.invoke(app, ["eval", "metrics", str(d)])
+    assert res.exit_code == 0
+    assert "MarkupError" not in res.output
+    assert "Traceback (most recent call last)" not in res.output
+
+
+def test_skills_list_markup_in_metadata_does_not_crash(tmp_path):
+    skill = tmp_path / "llm"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: prompt-helper\n"
+        'description: "Wraps user text in [INST] ... [/INST] blocks"\n'
+        'version: "1.0"\n---\nbody\n'
+    )
+    res = runner.invoke(app, ["skills", "list", "--dir", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "MarkupError" not in res.output
+    assert "Traceback (most recent call last)" not in res.output
+
+
+def test_environment_alias_emits_exactly_one_deprecation_line():
+    import benchflow.cli._shared as shared
+
+    shared._DEPRECATION_WARNED.clear()
+    res = runner.invoke(app, ["environment", "list"])
+    # Exactly one project notice; NOT also Typer's generic per-call line.
+    assert res.stderr.count("deprecation:") == 1
+    assert "DeprecationWarning: The command" not in res.stderr
+
+
+def test_environment_help_hides_aliased_verbs():
+    res = runner.invoke(app, ["environment", "--help"])
+    assert res.exit_code == 0
+    assert "(deprecated)" not in res.output  # verbs hidden, like agent/eval adopt
+
+
+def test_skills_eval_schema_error_hides_pydantic_internals(tmp_path):
+    evals = tmp_path / "evals"
+    evals.mkdir()
+    (evals / "evals.json").write_text('{"cases": []}')
+    res = runner.invoke(app, ["skills", "eval", str(tmp_path)])
+    assert res.exit_code == 1
+    assert "_EvalsJsonModel" not in res.output  # no private model class name
+    assert "pydantic.dev" not in res.output  # no docs URL
+    assert "cases" in res.output  # actionable per-field text kept
+
+
+def test_viewer_renders_corrupt_artifacts_without_raising(tmp_path):
+    # eval view's render must degrade, not dump a raw traceback, on partial data.
+    from benchflow.trajectories.viewer import render_rollout
+
+    # null session_id + a corrupt prompts.json (auxiliary → degrade to defaults)
+    (tmp_path / "turn1.txt").write_text(
+        '{"type":"system","session_id":null,"model":"m"}\n'
+    )
+    (tmp_path / "prompts.json").write_text("not json{{{")
+    html = render_rollout(tmp_path)
+    assert "<!DOCTYPE html>" in html
+
+    # a truncated ACP trajectory line must be skipped, not crash
+    acp = tmp_path / "acp"
+    (acp / "trajectory").mkdir(parents=True)
+    (acp / "trajectory" / "acp_trajectory.jsonl").write_text(
+        '{"type":"user_message","text":"hi"}\nTRUNCATED-NOT-JSON'
+    )
+    (acp / "result.json").write_text("garbage{")  # corrupt → degrade to no metadata
+    html2 = render_rollout(acp)
+    assert isinstance(html2, str) and html2
+
+
+@pytest.mark.parametrize(
+    "argv, needle",
+    [
+        (["tasks", "generate"], "Specify a source"),
+        (
+            ["eval", "create", "--source-ref", "abc", "--tasks-dir", "."],
+            "require --source-repo",
+        ),
+    ],
+)
+def test_arg_validation_errors_route_to_stderr(argv, needle):
+    # The print_error sink is uniform: sibling arg-validation guards (not just the
+    # ones the sweep happened to hit) put their error on stderr, leaving stdout clean.
+    res = runner.invoke(app, argv)
+    assert res.exit_code == 1
+    assert needle in res.stderr
+    assert needle not in res.stdout

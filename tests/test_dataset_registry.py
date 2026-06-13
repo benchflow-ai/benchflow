@@ -316,7 +316,7 @@ class TestEvalCreateDatasetCli:
             ],
         )
         assert result.exit_code == 1
-        assert "only one source" in result.stdout
+        assert "only one source" in result.stderr
 
     def test_registry_requires_dataset(self, tmp_path):
         result = CliRunner().invoke(
@@ -324,7 +324,7 @@ class TestEvalCreateDatasetCli:
             ["eval", "create", "--registry", str(tmp_path / "r.json")],
         )
         assert result.exit_code == 1
-        assert "--registry requires --dataset" in result.stdout
+        assert "--registry requires --dataset" in result.stderr
 
     def test_out_of_range_bench_version_blocks(self, tmp_path, snapshot, monkeypatch):
         """The bench_version range is a hard gate for dataset runs; the
@@ -356,8 +356,8 @@ class TestEvalCreateDatasetCli:
             ],
         )
         assert result.exit_code == 1
-        assert "outside the range" in result.stdout
-        assert "--ignore-bench-version" in result.stdout
+        assert "outside the range" in result.stderr
+        assert "--ignore-bench-version" in result.stderr
         assert not ran
 
     def test_ignore_bench_version_overrides_gate(self, tmp_path, snapshot, monkeypatch):
@@ -398,7 +398,7 @@ class TestEvalCreateDatasetCli:
             ["eval", "create", "--ignore-bench-version", "--tasks-dir", str(tmp_path)],
         )
         assert result.exit_code == 1
-        assert "--ignore-bench-version requires --dataset" in result.stdout
+        assert "--ignore-bench-version requires --dataset" in result.stderr
 
     def test_resolution_error_exits_cleanly(self, tmp_path, snapshot):
         registry = _write_registry(tmp_path, snapshot.tasks_parent)
@@ -414,7 +414,7 @@ class TestEvalCreateDatasetCli:
             ],
         )
         assert result.exit_code == 1
-        assert "not found in registry" in result.stdout
+        assert "not found in registry" in result.stderr
 
 
 class TestDatasetStamping:
