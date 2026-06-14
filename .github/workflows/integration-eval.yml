@@ -24,9 +24,10 @@ on:
     # Nightly at 07:00 UTC. Disabled automatically on forks by the job guard.
     - cron: "0 7 * * *"
 
-# Least-privilege default. This job only reads the repo.
+# Least-privilege default. This job reads the repo and calls GitHub Models.
 permissions:
   contents: read
+  models: read
 
 # One in-flight integration run at a time; newer dispatches supersede older.
 concurrency:
@@ -58,8 +59,10 @@ jobs:
       }}
     timeout-minutes: 45
     env:
-      # Agent and judge model key. Values never appear in logs or files.
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # GitHub Models uses the workflow-scoped token, not a repo secret.
+      GITHUB_TOKEN: ${{ github.token }}
+      OPENAI_API_KEY: ${{ github.token }}
+      OPENAI_BASE_URL: https://models.github.ai/inference
       # Optional Daytona key for the parity + reaper scenarios.
       DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
       TASK: ${{ github.event.inputs.task || 'dialogue-parser' }}
@@ -68,16 +71,16 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.sha }}
 
-      - name: Check integration secrets
+      - name: Check integration auth
         run: |
           missing=()
-          for name in OPENAI_API_KEY; do
+          for name in GITHUB_TOKEN OPENAI_API_KEY OPENAI_BASE_URL; do
             if [ -z "${!name}" ]; then
               missing+=("$name")
             fi
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            printf '::error::Missing required GitHub Actions secrets for integration-eval: %s\n' "${missing[*]}"
+            printf '::error::Missing required GitHub Actions auth for integration-eval: %s\n' "${missing[*]}"
             exit 1
           fi
 
@@ -100,7 +103,7 @@ jobs:
             --source-ref main \
             --include "$TASK" \
             --agent openhands \
-            --model openai/gpt-4.1-mini \
+            --model github-models/openai/gpt-4.1-mini \
             --sandbox docker \
             --concurrency 1 \
             --agent-idle-timeout 240 \
@@ -110,7 +113,7 @@ jobs:
         run: |
           uv run python tests/integration/agent_judge.py \
             jobs/integration-eval \
-            --model openai/gpt-4.1-mini \
+            --model openai/openai/gpt-4.1-mini \
             --json
 
       - name: Run the live integration scenarios

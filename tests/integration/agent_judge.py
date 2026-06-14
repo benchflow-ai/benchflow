@@ -60,6 +60,7 @@ _JUDGE_ENV_KEYS = (
     "GOOGLE_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
 )
 
 # Files whose contents define the score: tampering with these to force a pass is

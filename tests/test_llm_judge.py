@@ -60,6 +60,12 @@ class TestStripProviderPrefix:
     def test_openai_prefix_stripped(self) -> None:
         assert _strip_provider_prefix("openai/gpt-4o") == "gpt-4o"
 
+    def test_nested_openai_model_keeps_inner_provider_for_github_models(self) -> None:
+        assert (
+            _strip_provider_prefix("openai/openai/gpt-4.1-mini")
+            == "openai/gpt-4.1-mini"
+        )
+
     def test_google_prefix_stripped(self) -> None:
         assert _strip_provider_prefix("google/gemini-2.0-flash") == "gemini-2.0-flash"
 
@@ -141,6 +147,24 @@ class TestCallJudgeProviderFallback:
         assert result == "ok from openai"
         # ImportError is not retried.
         assert anthropic_mock.await_count == 1
+
+    async def test_github_models_openai_spelling_routes_to_openai(self) -> None:
+        openai_mock = AsyncMock(return_value="ok from github models")
+        anthropic_mock = AsyncMock(return_value="should not be reached")
+        google_mock = AsyncMock(return_value="should not be reached")
+
+        with (
+            patch("benchflow.rewards.llm._call_openai", openai_mock),
+            patch("benchflow.rewards.llm._call_anthropic", anthropic_mock),
+            patch("benchflow.rewards.llm._call_google", google_mock),
+        ):
+            result = await call_judge("openai/openai/gpt-4.1-mini", "prompt")
+
+        assert result == "ok from github models"
+        openai_mock.assert_awaited_once()
+        assert openai_mock.await_args.args[0] == "openai/gpt-4.1-mini"
+        anthropic_mock.assert_not_awaited()
+        google_mock.assert_not_awaited()
 
     async def test_matched_provider_missing_sdk_raises_clear_error(self) -> None:
         """Dogfood bug (2): when the model name confidently selects a provider

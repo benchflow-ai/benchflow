@@ -297,6 +297,28 @@ class TestJudgeRollout:
         # Only judge-relevant keys are forwarded.
         assert await_args.kwargs["env"] == {"GEMINI_API_KEY": "k"}
 
+    async def test_openai_base_url_threaded_to_call_judge(self) -> None:
+        mock = AsyncMock(return_value='{"verdict": "pass", "reason": "ok"}')
+        with patch("tests.integration.agent_judge.call_judge", mock):
+            await judge_rollout(
+                _evidence(),
+                model="openai/openai/gpt-4.1-mini",
+                env={
+                    "OPENAI_API_KEY": "ghs_test_token",
+                    "OPENAI_BASE_URL": "https://models.github.ai/inference",
+                    "GITHUB_TOKEN": "ghs_test_token",
+                },
+            )
+
+        mock.assert_awaited_once()
+        await_args = mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == "openai/openai/gpt-4.1-mini"
+        assert await_args.kwargs["env"] == {
+            "OPENAI_API_KEY": "ghs_test_token",
+            "OPENAI_BASE_URL": "https://models.github.ai/inference",
+        }
+
 
 # ------------------------------------------------------------------
 # Combined gate: realness AND judge

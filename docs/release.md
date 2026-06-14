@@ -109,6 +109,11 @@ Internal preview:
 4. `.github/workflows/internal-preview-release.yml` publishes to PyPI only if
    the integration gate passed.
 
+The integration gate uses GitHub Models through the workflow-scoped
+`GITHUB_TOKEN` with `models: read` permission, so it does not need provider API
+keys for the smoke rollout or judge. `DAYTONA_API_KEY` is optional and enables
+the Daytona parity and reaper checks.
+
 Public release:
 
 1. Update `pyproject.toml` from the next `.dev0` version to the final public

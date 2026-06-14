@@ -82,6 +82,11 @@ class TestInferEnvKey:
         """anthropic-vertex/ models use ADC, not API keys."""
         assert infer_env_key_for_model("anthropic-vertex/claude-sonnet-4-6") is None
 
+    def test_github_models_uses_github_token(self):
+        assert infer_env_key_for_model("github-models/openai/gpt-4.1-mini") == (
+            "GITHUB_TOKEN"
+        )
+
     def test_unknown_model_returns_none(self):
         assert infer_env_key_for_model("some-custom-model") is None
 

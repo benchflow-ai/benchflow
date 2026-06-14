@@ -60,6 +60,19 @@ class TestFindProvider:
         assert resolve_auth_env("us-openai/gpt-5.4-mini") == "OPENAI_API_KEY"
         assert strip_provider_prefix("us-openai/gpt-5.4-mini") == "gpt-5.4-mini"
 
+    def test_github_models_prefix(self):
+        name, cfg = find_provider("github-models/openai/gpt-4.1-mini")
+
+        assert name == "github-models"
+        assert cfg.api_protocol == "openai-completions"
+        assert cfg.auth_env == "GITHUB_TOKEN"
+        assert cfg.base_url == "https://models.github.ai/inference"
+        assert resolve_auth_env("github-models/openai/gpt-4.1-mini") == "GITHUB_TOKEN"
+        assert (
+            strip_provider_prefix("github-models/openai/gpt-4.1-mini")
+            == "openai/gpt-4.1-mini"
+        )
+
     @pytest.mark.parametrize(
         ("model", "expected_protocol"),
         [

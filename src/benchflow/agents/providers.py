@@ -192,6 +192,15 @@ PROVIDERS: dict[str, ProviderConfig] = {
             "openai-responses": "https://us.api.openai.com/v1",
         },
     ),
+    # GitHub Models exposes an OpenAI-compatible endpoint that GitHub Actions
+    # can call with the workflow-scoped GITHUB_TOKEN and `models: read`.
+    "github-models": ProviderConfig(
+        name="github-models",
+        base_url="https://models.github.ai/inference",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="GITHUB_TOKEN",
+    ),
     # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(

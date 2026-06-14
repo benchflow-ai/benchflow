@@ -76,6 +76,24 @@ class TestEnvMappingField:
 
         assert env["LLM_MODEL"] == "openai/glm-5"
 
+    def test_openhands_normalizes_github_models_model(self):
+        env = {"GITHUB_TOKEN": "ghs_test_token"}
+        resolve_provider_env(
+            agent="openhands",
+            model="github-models/openai/gpt-4.1-mini",
+            agent_env=env,
+        )
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "github-models"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "openai/gpt-4.1-mini"
+        assert (
+            env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://models.github.ai/inference"
+        )
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "ghs_test_token"
+        assert env["LLM_BASE_URL"] == "https://models.github.ai/inference"
+        assert env["LLM_API_KEY"] == "ghs_test_token"
+        assert env["LLM_MODEL"] == "openai/openai/gpt-4.1-mini"
+
     def test_openhands_bedrock_initial_env_marks_registered_provider(self):
         """Guards the LiteLLM runtime refactor: Bedrock is detected before runtime rewrite."""
         env = {
