@@ -960,6 +960,88 @@ class TestStagehandEvalAdapter:
         with pytest.raises(ValueError, match="instruction"):
             StagehandEvalAdapter.from_task_dir(task_dir)
 
+    @staticmethod
+    def _run_url_verifier(
+        tmp_path: Path,
+        *,
+        value: str,
+        trace: dict | None,
+    ) -> tuple[int, float | None]:
+        """Run the generated URL verifier with /logs redirected to tmp_path.
+
+        Returns ``(exit_code, reward)`` where ``reward`` is read back from the
+        emitted ``reward.json`` (``None`` if it was never written).
+        """
+        import subprocess
+        import sys
+
+        from benchflow.adapters.stagehand import _url_verifier_script
+
+        logs = tmp_path / "logs"
+        (logs / "artifacts").mkdir(parents=True, exist_ok=True)
+        (logs / "verifier").mkdir(parents=True, exist_ok=True)
+        if trace is not None:
+            (logs / "artifacts" / "browser-use-smoke-trace.json").write_text(
+                json.dumps(trace)
+            )
+
+        script = _url_verifier_script(check_type="url_exact", value=value)
+        # The generated verifier hard-codes the in-container /logs paths; redirect
+        # them under tmp_path so the same script runs unmodified on the host.
+        script = script.replace("/logs/", f"{logs}/")
+        script_path = tmp_path / "test.sh"
+        script_path.write_text(script)
+
+        proc = subprocess.run(
+            [sys.executable, str(script_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        reward_path = logs / "verifier" / "reward.json"
+        reward = None
+        if reward_path.is_file():
+            reward = float(json.loads(reward_path.read_text())["reward"])
+        return proc.returncode, reward
+
+    def test_url_verifier_missing_trace_scores_zero_without_crashing(
+        self, tmp_path: Path
+    ) -> None:
+        # A blocked/anti-bot run leaves no trace artifact; the verifier must emit
+        # reward 0 and exit 0 (a clean, comparable fail) rather than crash rc=1.
+        code, reward = self._run_url_verifier(
+            tmp_path,
+            value="https://example.com/done",
+            trace=None,
+        )
+
+        assert code == 0
+        assert reward == 0.0
+
+    def test_url_verifier_present_passing_trace_scores_one(
+        self, tmp_path: Path
+    ) -> None:
+        code, reward = self._run_url_verifier(
+            tmp_path,
+            value="https://example.com/done",
+            trace={"stagehand_current_url": "https://example.com/done"},
+        )
+
+        assert code == 0
+        assert reward == 1.0
+
+    def test_url_verifier_present_failing_trace_scores_zero(
+        self, tmp_path: Path
+    ) -> None:
+        code, reward = self._run_url_verifier(
+            tmp_path,
+            value="https://example.com/done",
+            trace={"stagehand_current_url": "https://example.com/elsewhere"},
+        )
+
+        assert code == 0
+        assert reward == 0.0
+
 
 # ComputerUseAdapter
 
