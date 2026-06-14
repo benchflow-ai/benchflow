@@ -383,28 +383,51 @@ def _url_verifier_script(*, check_type: object, value: str) -> str:
         import sys
         from pathlib import Path
 
-        artifact_path = Path("/logs/artifacts/browser-use-smoke-trace.json")
-        if not artifact_path.is_file():
-            print(f"missing Stagehand artifact: {{artifact_path}}", file=sys.stderr)
-            sys.exit(1)
-        artifact = json.loads(artifact_path.read_text())
-        current = str(artifact.get("stagehand_current_url") or "")
         expected = {value!r}
-        reward = 1.0 if ({predicate}) else 0.0
         Path("/logs/verifier").mkdir(parents=True, exist_ok=True)
         Path("/logs/artifacts").mkdir(parents=True, exist_ok=True)
-        Path("/logs/verifier/reward.txt").write_text(f"{{reward}}\\n")
-        Path("/logs/verifier/reward.json").write_text(
-            json.dumps({{"reward": reward}}) + "\\n"
-        )
-        Path("/logs/artifacts/stagehand-url-verifier.json").write_text(
-            json.dumps(
-                {{"reward": reward, "current_url": current, "expected_url": expected}},
-                indent=2,
+
+
+        def emit(reward, current, *, note=None):
+            Path("/logs/verifier/reward.txt").write_text(f"{{reward}}\\n")
+            Path("/logs/verifier/reward.json").write_text(
+                json.dumps({{"reward": reward}}) + "\\n"
             )
-            + "\\n"
-        )
-        print(json.dumps({{"reward": reward, "current_url": current}}))
+            payload = {{
+                "reward": reward,
+                "current_url": current,
+                "expected_url": expected,
+            }}
+            if note is not None:
+                payload["note"] = note
+            Path("/logs/artifacts/stagehand-url-verifier.json").write_text(
+                json.dumps(payload, indent=2) + "\\n"
+            )
+            print(json.dumps({{"reward": reward, "current_url": current}}))
+            sys.exit(0)
+
+
+        artifact_path = Path("/logs/artifacts/browser-use-smoke-trace.json")
+        # No trace (e.g. an anti-bot/Cloudflare page blocked the browser so the
+        # agent produced no artifact) is a clean reward-0 outcome, not a crash:
+        # the run stays comparable instead of going unscored.
+        if not artifact_path.is_file():
+            print(
+                f"missing Stagehand artifact: {{artifact_path}} -> reward 0",
+                file=sys.stderr,
+            )
+            emit(0.0, "", note="missing-trace")
+        try:
+            artifact = json.loads(artifact_path.read_text())
+        except (OSError, ValueError) as exc:
+            print(
+                f"unreadable Stagehand artifact: {{artifact_path}}: {{exc}} -> reward 0",
+                file=sys.stderr,
+            )
+            emit(0.0, "", note="unreadable-trace")
+        current = str(artifact.get("stagehand_current_url") or "")
+        reward = 1.0 if ({predicate}) else 0.0
+        emit(reward, current)
         """
     )
 
