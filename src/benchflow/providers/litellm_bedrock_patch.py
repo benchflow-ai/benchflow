@@ -1,6 +1,6 @@
 """LiteLLM startup patch for Bedrock Claude 4.8+ adaptive thinking.
 
-LiteLLM 1.88.0rc1 knows the direct Anthropic Claude 4.8+ IDs, but Bedrock
+LiteLLM 1.89.0 knows the direct Anthropic Claude 4.8+ IDs, but Bedrock
 inference-profile IDs such as ``us.anthropic.claude-opus-4-8`` still need to be
 classified as adaptive-thinking models before the Bedrock Converse transform is
 called. This module is loaded inside the LiteLLM proxy process via

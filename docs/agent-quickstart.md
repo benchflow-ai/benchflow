@@ -42,13 +42,11 @@ STEP 0 — Preflight
 STEP 1 — Install benchflow
 This prompt requires benchflow 0.6.0 or newer (the task.md authoring CLI and
 trainer artifacts shipped in 0.6.0). Install it from PyPI:
-    uv tool install --prerelease allow benchflow
-The `--prerelease allow` flag is REQUIRED: benchflow pins a litellm release
-candidate (litellm[proxy]==1.88.0rc1), and uv refuses prerelease transitive
-dependencies without it — 0.6.0 itself is a final release. If uv reports
+    uv tool install benchflow
+benchflow pins a stable litellm (no `--prerelease` flag needed). If uv reports
 "Executables already exist: bench, benchflow", rerun the same command with
 `--force`. Confirm with `bench --version` after install.
-and check `bench --version`. If the installed version is still older than
+If the installed version is still older than
 0.6.0, CONTINUE anyway in degraded mode: steps 0–6 work on 0.5.x too. Tell
 the user which version you got, then (a) in step 6, expect only
 `trainer/verifiers.jsonl` (the `atif.json`/`adp.jsonl` trainer artifacts
