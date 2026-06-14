@@ -268,50 +268,62 @@ def run_deep_agent(
 ) -> dict:
     """Build and invoke a deep agent, emitting ACP updates for its trajectory.
 
-    Returns a small metrics dict. Walks the resulting message list once,
-    emitting agent text, tool_call, and tool_call_update events keyed by tool
-    call id so BenchFlow's trajectory reconstructs the step sequence.
+    Returns a small metrics dict. Streams the LangGraph trajectory, emitting
+    agent text, tool_call, and tool_call_update events keyed by tool call id as
+    each step happens so BenchFlow's trajectory reconstructs the step sequence
+    and its idle watchdog stays fed during long model turns.
     """
     start = time.time()
     agent = build_deep_agent(model_id, cwd, env)
 
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": instruction}]},
-        config={"recursion_limit": _RECURSION_LIMIT},
-    )
-
-    messages = result.get("messages", []) if isinstance(result, dict) else []
+    # Stream the LangGraph trajectory so ACP updates emit incrementally per step,
+    # NOT one blocking invoke() that stays silent until it returns. BenchFlow's
+    # idle watchdog counts ACP updates (tool calls + message/thought chunks), so a
+    # long-but-productive model turn under a single invoke() emits nothing for
+    # >600s and false-fires the idle timeout; streaming also preserves the
+    # trajectory if the run is cancelled mid-flight (it was discarded before).
+    message_count = 0
     tool_call_count = 0
     text_count = 0
     # Track which tool_call ids we have already announced so a ToolMessage maps
-    # back onto its originating tool_call as a tool_call_update.
+    # back onto its originating tool_call as a tool_call_update (and so a repeated
+    # streamed update does not double-count).
     announced: set[str] = set()
 
-    for message in messages:
-        role = _message_role(message)
+    for chunk in agent.stream(
+        {"messages": [{"role": "user", "content": instruction}]},
+        config={"recursion_limit": _RECURSION_LIMIT},
+        stream_mode="updates",
+    ):
+        for node_update in (chunk or {}).values():
+            for message in (node_update or {}).get("messages", []):
+                message_count += 1
+                role = _message_role(message)
 
-        if role in ("ai", "aimessage", "assistant"):
-            text = _message_text(message)
-            if text.strip():
-                _emit_text(session_id, text)
-                text_count += 1
-            for call in _message_tool_calls(message):
-                tool_call_count += 1
-                call_id = call["id"] or f"tc_{tool_call_count}"
-                announced.add(call_id)
-                _emit_tool_call(session_id, call_id, call["name"], call["args"])
+                if role in ("ai", "aimessage", "assistant"):
+                    text = _message_text(message)
+                    if text.strip():
+                        _emit_text(session_id, text)
+                        text_count += 1
+                    for call in _message_tool_calls(message):
+                        call_id = call["id"] or f"tc_{tool_call_count + 1}"
+                        if call_id in announced:
+                            continue
+                        tool_call_count += 1
+                        announced.add(call_id)
+                        _emit_tool_call(session_id, call_id, call["name"], call["args"])
 
-        elif role in ("tool", "toolmessage"):
-            tool_call_id = (
-                message.get("tool_call_id")
-                if isinstance(message, dict)
-                else getattr(message, "tool_call_id", "")
-            ) or ""
-            _emit_tool_result(session_id, tool_call_id, _message_text(message))
+                elif role in ("tool", "toolmessage"):
+                    tool_call_id = (
+                        message.get("tool_call_id")
+                        if isinstance(message, dict)
+                        else getattr(message, "tool_call_id", "")
+                    ) or ""
+                    _emit_tool_result(session_id, tool_call_id, _message_text(message))
 
     elapsed = time.time() - start
     return {
-        "message_count": len(messages),
+        "message_count": message_count,
         "tool_call_count": tool_call_count,
         "text_count": text_count,
         "wall_clock_seconds": round(elapsed, 2),

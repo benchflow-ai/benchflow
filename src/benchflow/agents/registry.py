@@ -551,24 +551,39 @@ AGENTS: dict[str, AgentConfig] = {
         "deepseek-v4-pro through the OpenAI-compatible provider",
         install_cmd=(
             "export DEBIAN_FRONTEND=noninteractive && "
-            # deepagents is a Python package with heavy langchain deps; isolate
-            # it in its own venv so it never collides with task-image Python.
-            "( command -v pip3 >/dev/null 2>&1 || "
-            "  (apt-get update -qq && apt-get install -y -qq python3-pip >/dev/null 2>&1) ) && "
-            "( python3 -m venv /opt/benchflow/deepagents-venv 2>/dev/null || "
-            "  (apt-get update -qq && apt-get install -y -qq python3-venv >/dev/null 2>&1 && "
-            "   python3 -m venv /opt/benchflow/deepagents-venv) ) && "
+            # deepagents requires Python >=3.11, but task base images ship as low
+            # as 3.6/3.8 (ubuntu:20.04, cached CI images), so a system-python venv
+            # makes pip report "No matching distribution found for deepagents".
+            # Provision a pinned interpreter with uv (same pattern as the OpenHands
+            # install) so this works regardless of the base-image Python.
+            "( command -v curl >/dev/null 2>&1 || "
+            f"  {_apt_install('curl', 'ca-certificates')} ) && "
+            "( command -v uv >/dev/null 2>&1 || "
+            "  ( curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 ) ) && "
+            'export PATH="$HOME/.local/bin:$PATH" && '
+            "uv venv --python 3.12 /opt/benchflow/deepagents-venv && "
             # deepagents pulls in langchain/langchain-core/langchain-anthropic/
             # langchain-google-genai; langchain-openai is NOT a deepagents dep but
             # is required for the OpenAI-compatible deepseek-v4-pro chat model.
-            "/opt/benchflow/deepagents-venv/bin/python -m pip install -q "
+            "uv pip install -q --python /opt/benchflow/deepagents-venv/bin/python "
             "deepagents langchain-openai && "
-            # Let the sandbox user traverse + execute the venv interpreter.
+            # Let the sandbox user traverse + execute the venv interpreter and the
+            # uv-managed CPython it links to.
             "chmod -R a+rX /opt/benchflow/deepagents-venv && "
+            "chmod o+x /root /root/.local /root/.local/share "
+            "/root/.local/share/uv /root/.local/share/uv/python 2>/dev/null; "
             # Deploy ACP shim
             + _install_python_script(
                 f"{_BENCHFLOW_BIN_PREFIX}/deepagents-acp-shim", _DEEPAGENTS_SHIM
             )
+            # Verify deepagents actually imports through the pinned venv. Without
+            # this, install rc reflects only the shim-deploy's trailing `chmod +x`
+            # (the `;` above is intentionally non-fatal), so a failed `uv pip
+            # install deepagents` — the exact failure this block fixes — would
+            # report success and fail opaquely later at launch. Mirrors OpenHands'
+            # `command -v openhands` verification tail.
+            + " && /opt/benchflow/deepagents-venv/bin/python -c 'import deepagents' "
+            ">/dev/null 2>&1"
         ),
         launch_cmd=(
             f"/opt/benchflow/deepagents-venv/bin/python {_BENCHFLOW_BIN_PREFIX}/deepagents-acp-shim"

@@ -1255,12 +1255,16 @@ class Rollout:
             # Purge agent-injected conftest/sitecustomize/.pth without
             # killing processes or restoring workspace.
             # Honor per-task [verifier.hardening] opt-outs from task config.
+            # No timeout_sec here: the conftest purge walks the rootfs and can be
+            # slow on network-backed FS (Daytona), so its budget is owned by
+            # lockdown.cleanup_verifier_python_hooks (VERIFIER_SETUP_TIMEOUT_SEC),
+            # shared with the scoring path in harden_before_verify. The except
+            # below keeps the step fail-closed.
             await self._planes.cleanup_verifier_python_hooks(
                 self._env,
                 getattr(self._task, "task_dir", None),
                 "Soft verifier setup failed: purging Python injection hooks",
                 user="root",
-                timeout_sec=10,
             )
         except Exception as e:
             verifier_error = f"soft verifier crashed: {e}"

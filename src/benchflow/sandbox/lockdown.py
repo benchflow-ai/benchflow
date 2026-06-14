@@ -744,6 +744,16 @@ async def _checked_exec(env: Any, command: str, label: str, **kwargs: Any) -> An
     return result
 
 
+# Verifier-setup commands that walk the full rootfs (notably the conftest purge)
+# run on the verifier sandbox, whose filesystem can be slow/network-backed
+# (Daytona). The find is pruned (see _build_cleanup_cmd) so it completes well
+# within this budget; the larger-than-default ceiling keeps a slow-but-valid
+# setup from false-erroring the verifier. Owned here so every call site — the
+# scoring path (harden_before_verify) and the soft-verify path (rollout, via
+# cleanup_verifier_python_hooks) — shares one value rather than scattering it.
+VERIFIER_SETUP_TIMEOUT_SEC = 60
+
+
 async def clear_verifier_output_dir(
     env: Any,
     label: str = "Verifier setup failed: clearing verifier output directory",
@@ -771,11 +781,20 @@ async def cleanup_verifier_python_hooks(
     env: Any,
     task_dir: "Path | str | None",
     label: str = "Verifier setup failed: purging Python injection hooks",
+    *,
+    timeout_sec: int = VERIFIER_SETUP_TIMEOUT_SEC,
     **kwargs: Any,
 ) -> Any:
-    """Purge agent-injected Python hook files using task hardening settings."""
+    """Purge agent-injected Python hook files using task hardening settings.
+
+    The conftest purge walks the full rootfs, so the timeout defaults to
+    VERIFIER_SETUP_TIMEOUT_SEC (the same budget the scoring path uses in
+    harden_before_verify) rather than the caller guessing a value.
+    """
     hardening = _read_hardening_config(task_dir)
-    return await _checked_exec(env, _build_cleanup_cmd(hardening), label, **kwargs)
+    return await _checked_exec(
+        env, _build_cleanup_cmd(hardening), label, timeout_sec=timeout_sec, **kwargs
+    )
 
 
 # Per-task hardening opt-outs. Tasks declare these in task config under
@@ -845,7 +864,11 @@ def _build_cleanup_cmd(hardening: dict[str, bool] | None = None) -> str:
     parts: list[str] = []
     if h.get("cleanup_conftests", True):
         parts.append(
-            "find / -name conftest.py "
+            # Prune virtual filesystems so the full-rootfs walk stays bounded and
+            # fast — an unpruned `find /` over a slow network-backed FS (Daytona)
+            # routinely exceeds the setup timeout and false-errors a valid verifier.
+            "find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o "
+            "-name conftest.py "
             "-not -path '/verifier/*' -not -path '/tests/*' "
             "-delete 2>/dev/null"
         )
@@ -1109,9 +1132,16 @@ async def harden_before_verify(
     # 5. Purge symlinks + __pycache__, then chown the workspace to root.
     if workspace:
         await _freeze_workspace(env, workspace)
-    # 6. Remove injected conftest.py, sitecustomize.py, .pth files.
+    # 6. Remove injected conftest.py, sitecustomize.py, .pth files. The rootfs
+    #    conftest walk can be slow on network-backed FS, so use the shared
+    #    verifier-setup budget (not the default 10s) — same rationale as the
+    #    soft-verify path, on the path that actually scores.
     hardening = _read_hardening_config(getattr(task, "task_dir", None))
-    await env.exec(_build_cleanup_cmd(hardening), user="root", timeout_sec=10)
+    await env.exec(
+        _build_cleanup_cmd(hardening),
+        user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+    )
     # 7. Merge trusted env vars into task.config.verifier.env.
     task.config.verifier.env = await _build_verifier_env(
         env, task, sandbox_user, workspace
