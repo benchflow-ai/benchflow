@@ -197,7 +197,7 @@ Trajectories are written to `<jobs_dir>/<job_name>/<rollout_name>/trajectory/acp
 
 - [Getting started](./getting-started.md) — install, run your first eval.
 - [Task authoring (native task.md)](./task-authoring-task-md.md) — write a task as a single `task.md` document plus `environment/` and `verifier/`.
-- [Task authoring (legacy split layout)](./task-authoring.md) — write a task with `task.toml` + `tests/` + `solution/`.
+- [Migrating a legacy task](./task-authoring.md) — convert an existing `task.toml` + `instruction.md` split package to `task.md` (the split layout is no longer a first-class authoring path).
 - [LLM-as-judge](./llm-judge.md) — use an LLM to score subjective tasks against a rubric (see the [verifier file map](#verifier-file-map) for native vs legacy rubric paths).
 - [Progressive disclosure](./progressive-disclosure.md) — the User abstraction; SWE-bench Pro case study.
 - [Use cases](./use-cases.md) — multi-agent patterns (coder/reviewer, simulated user, BYOS, stateful environments).

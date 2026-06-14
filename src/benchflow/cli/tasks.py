@@ -45,13 +45,28 @@ def register_tasks(app: typer.Typer) -> None:
             ),
         ] = False,
         task_format: Annotated[
-            str, typer.Option("--format", help="Task format: legacy or task-md")
+            str,
+            typer.Option(
+                "--format",
+                help=(
+                    "Task format. New tasks use task-md; legacy scaffolding is "
+                    "retired in v0.6.2."
+                ),
+            ),
         ] = "task-md",
     ) -> None:
         """Scaffold a new benchmark task."""
         from benchflow._utils.task_authoring import scaffold_task
 
         try:
+            if task_format == "legacy":
+                print_error(
+                    "bench tasks init no longer scaffolds the legacy split layout. "
+                    "Use `bench tasks init <name>` for native task.md packages, or "
+                    "`bench tasks migrate <dir> --remove-legacy` for existing split tasks."
+                )
+                raise typer.Exit(1)
+
             result = scaffold_task(
                 name,
                 parent_dir=parent_dir,
@@ -250,7 +265,7 @@ def register_tasks(app: typer.Typer) -> None:
             ),
         ] = False,
     ) -> None:
-        """Export a task to a Harbor/Pier split layout with a loss report."""
+        """Export a task to a compatibility split layout with a loss report."""
         from benchflow.task import (
             build_compatibility_export_report,
             export_task_to_split_layout,

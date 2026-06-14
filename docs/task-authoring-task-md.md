@@ -3,9 +3,7 @@
 A native BenchFlow task is one `task.md` document plus sidecar directories.
 The YAML frontmatter carries the task configuration; the markdown body **is**
 the prompt. This page teaches the native format hands-on. For the normative
-standard see [the task standard](./task-standard.md); for the legacy split
-layout (`task.toml` + `instruction.md` + `tests/` + `solution/`) see
-[Authoring tasks](./task-authoring.md).
+standard see [the task standard](./task-standard.md).
 
 When a directory contains both layouts, `task.md` is the authoritative task
 definition — the runtime selects it and ignores the split pair.
@@ -23,10 +21,9 @@ my-task/
     └── test.sh            # verifier entry point
 ```
 
-That is the complete runnable surface: structural validation requires a task
-definition (`task.md`, or the legacy `task.toml` + `instruction.md` pair), an
-`environment/` directory with a `Dockerfile`, and a verifier directory with a
-runnable entrypoint. An `oracle/` directory is optional.
+That is the complete runnable surface: structural validation requires
+`task.md`, an `environment/` directory with a `Dockerfile`, and a verifier
+directory with a runnable entrypoint. An `oracle/` directory is optional.
 
 ```markdown
 ---
@@ -68,7 +65,7 @@ bench tasks check tasks/my-task --level schema   # frontmatter + prompt parse on
 frontmatter must be a mapping — a document without it fails to parse. The keys
 fall into three classes.
 
-**Task config keys** are the Harbor-compatible config surface, validated as
+**Task config keys** are the BenchFlow task config surface, validated as
 `TaskConfig`. Unknown keys are **rejected** (the schema is `extra="forbid"`),
 so typos fail at parse time instead of becoming silently-ignored config:
 
@@ -81,7 +78,7 @@ so typos fail at parse time instead of becoming silently-ignored config:
 | `verifier` | Verifier run policy: `timeout_sec` (default 600), `env`, `user`, `service`, … |
 | `environment` | Sandbox: `docker_image`, `cpus`, `memory_mb`, `storage_mb`, `network_mode`, `env`, `workdir`, … |
 | `oracle` | Oracle run policy: `env`, `timeout_sec` (import alias: `solution`) |
-| `source`, `artifacts`, `steps`, `multi_step_reward_strategy`, `reward` | Provenance and Harbor-compatible extras |
+| `source`, `artifacts`, `steps`, `multi_step_reward_strategy`, `reward` | Provenance, artifact, and reward metadata |
 
 `agent.timeout_sec` is **strongly recommended**: it is optional and defaults
 to unset, and a task that omits it runs the agent with no wall-clock cap
@@ -163,18 +160,15 @@ including real converted SkillsBench packages.
 
 ## Verifier package and strategy declaration
 
-The native verifier directory is `verifier/` (`tests/` remains the legacy
-alias; when both exist, `verifier/` wins and there is no fallback to
-`tests/`). At verify time the directory is uploaded into the sandbox at
-`/verifier` (legacy `tests/` uploads to `/tests`), and the verifier must write
-its reward to `/logs/verifier/reward.txt` (and optionally
+The native verifier directory is `verifier/`. At verify time the directory is
+uploaded into the sandbox at `/verifier`, and the verifier must write its
+reward to `/logs/verifier/reward.txt` (and optionally
 `/logs/verifier/reward.json`).
 
 A plain `verifier/test.sh` is a complete verifier: with no other declaration,
-the runtime executes it directly. The same contract as the legacy layout
-applies — write a float `0.0`–`1.0` to `/logs/verifier/reward.txt`, then exit
-`0`; a nonzero exit means verifier infrastructure failure, not a scored task
-failure.
+the runtime executes it directly. Write a float `0.0`–`1.0` to
+`/logs/verifier/reward.txt`, then exit `0`; a nonzero exit means verifier
+infrastructure failure, not a scored task failure.
 
 To declare *how* the task is scored, add `verifier/verifier.md`. Its
 frontmatter must contain a `verifier:` mapping with at least one entry under
@@ -239,6 +233,82 @@ A correct task scores `1.0` on its oracle run before any model sees it.
 
 ---
 
+## Multi-container tasks
+
+A task may ship an `environment/docker-compose.yaml` alongside the
+`Dockerfile`. The agent always runs in the `main` service; any additional
+services you declare become sibling containers on the same Docker network.
+This supports vulhub-style CVE tasks where the agent attacks a separate target
+container over the network.
+
+> `environment/Dockerfile` is always required — `bench tasks check` rejects a
+> task that ships only a `docker-compose.yaml`. If your `main` service uses a
+> prebuilt `image:` and needs no build context, still include a minimal
+> `Dockerfile` (e.g. `FROM <same-image>`) so structural validation and other
+> tooling agree on the task package shape.
+
+```yaml
+# environment/docker-compose.yaml
+services:
+  main: {}            # agent container — BenchFlow injects build/image/limits
+  target:             # vulnerable service the agent must exploit
+    image: vulhub/struts2-s2-001:latest
+    expose: ["8080"]
+```
+
+`main` reaches `target` by service name (`http://target:8080`). The verifier
+can inspect *target-side* state — not just the agent's workspace — by passing a
+`service` argument when running commands:
+
+```python
+# In a Python-driven run or pre/post hook
+await env.exec_in_service("target", "test -f /tmp/exploit_proof.txt")
+await env.exec("cat /flag", service="target")          # equivalent form
+services = await env.inner.services()                  # ["main", "target"]
+```
+
+`exec(..., service=...)` works on the Docker sandbox and the Daytona DinD
+(compose) sandbox. Single-container backends (Modal, direct Daytona) raise a
+clear error for any non-`main` service. This lets a verifier check write-based
+oracles (`/tmp/exploit.txt` in the target), database modifications, or RCE
+markers without trusting the agent container.
+
+### Target-side verifier with `verifier.service`
+
+For tasks whose success oracle lives in a target container — an RCE marker
+file, a modified database row — point the `verifier/test.sh` verifier at that
+service with the `service` key under `verifier` in the frontmatter:
+
+```yaml
+verifier:
+  service: target     # run verifier/test.sh inside the `target` container
+```
+
+With this set, BenchFlow uploads the task's `verifier/` directory into the
+**target** container, runs `test.sh` there, and copies the resulting
+`reward.txt` / `reward.json` back to the host. `service` defaults to `"main"`
+(the agent container), so single-container tasks are unaffected.
+
+`verifier.service` is the declarative, task-schema way to do cross-container
+verification; the `env.exec_in_service(...)` Python API above is the imperative
+equivalent for hook-driven runs.
+
+> Use the same `service` name you declared in `docker-compose.yaml`. A
+> `test.sh` running in the target reaches `main` (and vice versa) by service
+> name over the Docker network, just like the agent does.
+
+### Hardening policy for multi-container tasks
+
+BenchFlow's pre-verification hardening — killing the sandbox user's processes,
+scrubbing `PATH`/`PYTHONPATH`, restoring build-config files — applies **only to
+the `main` (agent) container**. Target containers are deliberately left
+unhardened: a vulhub-style target is *meant* to be vulnerable, the agent never
+has a shell inside it, and hardening it would risk breaking the very
+vulnerability the task exercises. `verifier.service` selects where `test.sh`
+*runs*; it does not move hardening off `main`.
+
+---
+
 ## Migrating a legacy task
 
 `bench tasks migrate` converts a `task.toml` + `instruction.md` pair into
@@ -264,13 +334,13 @@ bench tasks check tasks/my-task
 bench eval create --tasks-dir tasks/my-task --agent oracle --sandbox docker
 ```
 
-## Exporting to the split layout
+## Compatibility Export
 
-To go the other way — produce a Harbor/Pier-compatible split layout from a
-`task.md` package — use `bench tasks export`:
+To produce a compatibility split package from a `task.md` package, use
+`bench tasks export`:
 
 ```bash
-bench tasks export tasks/my-task out/my-task-split            # harbor target
+bench tasks export tasks/my-task out/my-task-split
 bench tasks export tasks/my-task --report-only                # loss report only
 ```
 

@@ -132,8 +132,9 @@ my-task/
 └── oracle/            # optional reference solution (solve.sh)
 ```
 
-`--format legacy` instead scaffolds the older split layout (`task.toml` +
-`instruction.md` + `tests/` + `solution/`).
+`--format legacy` is retired in v0.6.2: `bench tasks init` always scaffolds a
+native `task.md` package. To bring an existing split-layout task forward, run
+`bench tasks migrate <dir> --remove-legacy`.
 
 ### `skills` — discover and evaluate agent skills
 
