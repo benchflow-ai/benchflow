@@ -10,7 +10,7 @@ format picks it for you:
 
 | If the benchmark is… | Layer | What BenchFlow does |
 |----------------------|-------|---------------------|
-| In a framework BenchFlow speaks *inbound* — a task directory (task-dir adapter) or PrimeIntellect / Verifiers (hosted) | **1 — native** | Runs it in its supported form; correctness is inherited from the original format |
+| In a framework BenchFlow speaks *inbound* — Harbor (task-dir adapter) or PrimeIntellect / Verifiers (hosted) | **1 — native** | Runs it in its supported form; correctness is inherited from the original format |
 | In a variant of a known format, or a format BenchFlow has never seen | **2 — translated** | Translates it to the native `task.md` format, then *proves* equivalence with a parity gate |
 | A one-off harness with its own runner and scoring, no reusable adapter | **3 — as-is** | Runs the benchmark under its own harness and interfaces with its output only |
 
@@ -38,8 +38,9 @@ are pure format translators — none of them require the external framework's SD
 [`detect_adapter()`](../src/benchflow/adapters/inbound.py) sniffs a task
 directory by its signature file and returns the matching adapter:
 
-- A `task.toml` → [`HarborAdapter`](../src/benchflow/adapters/harbor.py). Such a
-  task directory is *already* in native shape; the adapter is a thin
+- A `task.toml` → [`HarborAdapter`](../src/benchflow/adapters/harbor.py). Harbor
+  is the upstream framework BenchFlow's own `TaskConfig` was internalized from, so
+  a Harbor task directory is *already* in native shape; the adapter is a thin
   normalizer.
 
 The adapter returns an `InboundTask`; the benchmark then runs on BenchFlow's
@@ -236,7 +237,5 @@ translation, or a bespoke harness.
 ## Where to go next
 
 - [Getting started](./getting-started.md) — install and run your first eval
-- [Concepts](./concepts.md) — Rollout / Scene / Role / Verifier
-- [Native `task.md` authoring](./task-authoring-task-md.md) — the translation target for Layer 2
 - [Benchmark conversion guide](../benchmarks/CONVERT.md) — the Layer 2 conversion + parity contract
 - [Architecture](./architecture.md) — adapters and trainers as the edges of the system

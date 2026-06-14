@@ -236,15 +236,13 @@ print(result.rewards)         # {'reward': 1.0}
 print(result.n_tool_calls)
 ```
 
-`Rollout` is decomposable — invoke each lifecycle phase individually for custom flows. See [Concepts: rollout lifecycle](./concepts.md#rollout-lifecycle).
+`Rollout` is decomposable — invoke each lifecycle phase individually for custom flows.
 
 ## What to read next
 
 | If you want to… | Read |
 |------------------|------|
 | Understand how BenchFlow runs *any* benchmark (the three-layer model) | [Run any benchmark](./running-any-benchmark.md) |
-| Understand the model — Rollout, Scene, Role, Verifier | [Concepts](./concepts.md) |
-| Author a task | [Task authoring](./task-authoring.md) |
 | Run multi-agent patterns (coder/reviewer, simulated user, BYOS) | [Use cases](./use-cases.md) |
 | Run multi-round single-agent (progressive disclosure) | [Progressive disclosure](./progressive-disclosure.md) |
 | Evaluate skills, not tasks | [Skill eval](./skill-eval.md) |

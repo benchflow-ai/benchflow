@@ -41,27 +41,6 @@ Unknown keys in `[verifier.hardening]` are warned and ignored. String values for
 
 See [`progressive-disclosure.md`](./progressive-disclosure.md#per-task-hardening-opt-outs) for the qutebrowser case study (legitimate `conftest.py` for circular-import fix).
 
-## Validation: the labs
-
-Two runnable research artifacts demonstrate the hardening's effectiveness. They are historical (0.2.x-era) and archived under [`docs/labs/`](https://github.com/benchflow-ai/benchflow/tree/main/docs/labs); the defenses they validate remain in place.
-
-### `docs/labs/benchjack-sandbox-hardening/`
-
-End-to-end demo that benchflow 0.2.1+ blocks three BenchJack-style exploits that work against 0.2.0. Each exploit flips the reward from 0.0 to 1.0 under 0.2.0 — under hardened benchflow, the same exploits fail and reward stays 0.0.
-
-Patterns covered:
-- `pattern1_conftest_hook/` — agent plants `conftest.py` with a pytest_runtest_makereport hook that overwrites the report
-- `pattern2_answer_lookup/` — agent reads `/solution/` directly
-- `pattern7_pth_injection/` — agent installs a `.pth` file that imports a sitecustomize-style shadow
-
-One-command repro: `cd docs/labs/benchjack-sandbox-hardening && ./run_comparison.py`. Output is `comparison.ipynb`-style diff: 0.2.0 reward=1.0 / hardened reward=0.0 per pattern.
-
-### `docs/labs/reward-hack-matrix/`
-
-Full reward-hack sweep across real benchmark tasks comparing 0.2.0 vs 0.2.2. Scope: 8 major benchmarks, ~100 tasks, multiple exploit families. Output: a sweep JSON (`sweep_0.2.0_vs_0.2.2.json`) showing the hardening rate by exploit class.
-
-Run with `cd docs/labs/reward-hack-matrix && python run_matrix.py`. The lab README documents the methodology and per-task results.
-
 ## Threat model and known gaps
 
 Benchflow's hardening assumes:
@@ -75,7 +54,4 @@ Known residual risk:
 
 ## Related
 
-- [`docs/labs/benchjack-sandbox-hardening/README.md`](https://github.com/benchflow-ai/benchflow/tree/main/docs/labs/benchjack-sandbox-hardening) — full BenchJack pattern catalog and repro instructions (historical, 0.2.x-era).
-- [`docs/labs/reward-hack-matrix/README.md`](https://github.com/benchflow-ai/benchflow/tree/main/docs/labs/reward-hack-matrix) — methodology, exploit taxonomy, sweep results (historical, 0.2.x-era).
 - [`progressive-disclosure.md`](./progressive-disclosure.md) — soft-verify (the relaxed hardening used between rounds in multi-round trials).
-- [`task-authoring.md`](./task-authoring.md) — the `task.toml` schema including `[verifier.hardening]` opt-outs.

@@ -226,8 +226,7 @@ def _check_publication_grade(task_dir: Path) -> list[str]:
         issues.append(
             "publication-grade validation requires native verifier/ — `bench tasks "
             "migrate` produces the native layout but not the verifier package; "
-            "author verifier/ (verifier.md + rubrics/) per "
-            "docs/task-authoring-task-md.md, then re-run check"
+            "author verifier/ (verifier.md + rubrics/), then re-run check"
         )
         return issues
     if paths.legacy_tests_dir.exists():
@@ -240,7 +239,7 @@ def _check_publication_grade(task_dir: Path) -> list[str]:
     if not verifier_md.exists():
         issues.append(
             "publication-grade validation requires verifier/verifier.md — author "
-            "the verifier strategy document (see docs/task-authoring-task-md.md); "
+            "the verifier strategy document; "
             "`bench tasks migrate` does not generate it"
         )
         return issues

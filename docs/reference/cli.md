@@ -43,8 +43,7 @@ Bring a third-party benchmark into the environment framework: scaffold a
 `benchmarks/<name>/` package, drive the codex `CONVERT.md` conversion, then
 parity-gate it (`init` → `convert` → `verify`). These commands were previously
 `bench agent create|run|verify`, which still work as hidden deprecated aliases
-through 0.6 (they print a one-line notice and are removed in 0.7). See
-[Benchmark adoption](../benchmark-adoption.md) for the full walkthrough.
+through 0.6 (they print a one-line notice and are removed in 0.7).
 
 ### bench eval adopt init
 
@@ -371,7 +370,7 @@ bench tasks normalize tasks/my-task -o normalized-task.md
 
 ### bench tasks export
 
-Export a `task.md` task to a split layout, with a
+Export a `task.md` task to a Harbor/Pier-compatible split layout, with a
 compatibility loss report written to `compatibility/export-report.json` in
 the export directory.
 

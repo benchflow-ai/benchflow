@@ -11,19 +11,13 @@
         "group": "Start here",
         "pages": [
           "docs/getting-started",
-          "docs/agent-quickstart",
-          "docs/concepts",
-          "docs/task-standard"
+          "docs/agent-quickstart"
         ]
       },
       {
         "group": "Guides",
         "pages": [
-          "docs/running-benchmarks",
-          "docs/benchmark-adoption",
           "docs/continue-runs",
-          "docs/task-authoring",
-          "docs/task-authoring-task-md",
           "docs/use-cases",
           "docs/progressive-disclosure",
           "docs/skill-eval",

@@ -57,17 +57,13 @@ Internal users wanting the newest preview from `main` install the [internal prev
 
 ## Documentation
 
-Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/concepts.md) for the mental model. Prefer to have an AI coding agent run the whole quickstart for you? Paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code, Codex CLI, or Gemini CLI. Then by goal:
+Start with [Getting started](./docs/getting-started.md). Prefer to have an AI coding agent run the whole quickstart for you? Paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code, Codex CLI, or Gemini CLI. Then by goal:
 
 | If you want to… | Read |
 |------------------|------|
 | Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
 | Understand how BenchFlow runs *any* benchmark (the three-layer model) | [Run any benchmark](./docs/running-any-benchmark.md) |
 | Have an AI agent install + run the quickstart end to end | [Agent quickstart prompt](./docs/agent-quickstart.md) |
-| Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
-| Author a new task | [Task authoring](./docs/task-authoring.md) |
-| Author a task in the native `task.md` format | [Native task.md authoring](./docs/task-authoring-task-md.md) |
-| Adopt an upstream benchmark into BenchFlow | [Benchmark adoption](./docs/benchmark-adoption.md) |
 | Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
@@ -140,29 +136,19 @@ the authoring lifecycle:
 bench tasks init my-task                 # scaffold a task.md package under tasks/
 bench tasks check tasks/my-task          # validate (default --level structural)
 bench tasks migrate legacy-task/         # convert task.toml + instruction.md → task.md
-bench tasks export tasks/my-task out/    # write a split layout (`task.toml` + `instruction.md`) + loss report
+bench tasks export tasks/my-task out/    # write a Harbor split layout + loss report
 ```
-
-See [Native task.md authoring](./docs/task-authoring-task-md.md) and the
-[task standard](./docs/task-standard.md).
 
 ## Featured
 
 - **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round rollout: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./docs/examples/swebench_pro_progressive_disclosure.ipynb). See [Progressive disclosure](./docs/progressive-disclosure.md).
 
-## Research artifacts
-
-Two runnable labs validate the security story (historical, 0.2.x-era — archived under [`docs/labs/`](./docs/labs/)):
-
-- [`docs/labs/benchjack-sandbox-hardening/`](./docs/labs/benchjack-sandbox-hardening/) — end-to-end demo that 0.2.1+ blocks three [BenchJack](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/) exploits that flip 0.2.0's reward from 0.0 to 1.0.
-- [`docs/labs/reward-hack-matrix/`](./docs/labs/reward-hack-matrix/) — full reward-hack sweep across real benchmarks comparing 0.2.0 vs 0.2.2.
-
 ## Audience
 
-- **Eval researchers / paper writers** → [Getting started](./docs/getting-started.md) → [Concepts](./docs/concepts.md) → [Use cases](./docs/use-cases.md)
-- **Task authors** → [Task authoring](./docs/task-authoring.md) → [Sandbox hardening](./docs/sandbox-hardening.md)
-- **Agent builders integrating with benchflow** → [Concepts](./docs/concepts.md) → [Python API reference](./docs/reference/python-api.md) → [`benchflow.agents.registry`](./src/benchflow/agents/registry.py)
-- **External benchmark adapters** → [Task authoring](./docs/task-authoring.md) → [Progressive disclosure](./docs/progressive-disclosure.md#comparison-with-multi-agent-simulated-user)
+- **Eval researchers / paper writers** → [Getting started](./docs/getting-started.md) → [Use cases](./docs/use-cases.md)
+- **Task authors** → [Sandbox hardening](./docs/sandbox-hardening.md)
+- **Agent builders integrating with benchflow** → [Python API reference](./docs/reference/python-api.md) → [`benchflow.agents.registry`](./src/benchflow/agents/registry.py)
+- **External benchmark adapters** → [Progressive disclosure](./docs/progressive-disclosure.md#comparison-with-multi-agent-simulated-user)
 
 ## Contributing
 

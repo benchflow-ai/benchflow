@@ -79,7 +79,7 @@ This is one model on one day, not a published comparison. The notebook at [`exam
 
 ## Where it lives in the rollout lifecycle
 
-`BaseUser` plugs into the existing `Rollout` lifecycle ([concepts](./concepts.md#rollout-lifecycle)) without changing any of the existing phases. When `RolloutConfig.user` is set, `Rollout._run_user_loop()` replaces the single-pass `connect → execute → disconnect` block with a per-round version:
+`BaseUser` plugs into the existing `Rollout` lifecycle without changing any of the existing phases. When `RolloutConfig.user` is set, `Rollout._run_user_loop()` replaces the single-pass `connect → execute → disconnect` block with a per-round version:
 
 ```
 setup() → start() → install_agent()

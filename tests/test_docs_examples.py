@@ -106,16 +106,3 @@ def test_use_cases_mcp_import_path_is_experimental() -> None:
         "use benchflow.experimental.mcp.hooks instead"
     )
     assert "benchflow.experimental.mcp.hooks" in text
-
-
-def test_task_authoring_docs_require_dockerfile() -> None:
-    """ENG-368: task-authoring.md must not say compose can replace Dockerfile.
-
-    `check_task` always requires `environment/Dockerfile`, so the multi-container
-    section must not promise compose-only tasks.
-    """
-    text = Path("docs/task-authoring.md").read_text()
-    assert "alongside (or instead of)" not in text, (
-        "task-authoring.md still claims docker-compose can replace the "
-        "Dockerfile, but `bench tasks check` rejects compose-only tasks"
-    )
