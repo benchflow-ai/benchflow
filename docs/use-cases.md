@@ -447,16 +447,14 @@ Each service:
 
 ```
 tasks/schedule-meeting-from-email/
-├── task.toml
-├── instruction.md          # "Read the email from Alice, create a calendar event..."
+├── task.md                 # YAML frontmatter + task prompt body
 ├── environment/
 │   ├── Dockerfile          # FROM benchflow/claws-base (has all claw-* binaries)
 │   ├── gmail.db            # Pre-seeded: email from Alice with meeting request
 │   └── gcal.db             # Pre-seeded: existing calendar entries
-├── solution/
+├── oracle/
 │   └── solve.sh            # Oracle: curl commands to Gmail + GCal APIs
-└── tests/
+└── verifier/
     └── test.sh             # Verify: check gcal.db has the new event
 ```
-
 
