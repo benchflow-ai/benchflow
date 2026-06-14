@@ -653,8 +653,8 @@ An interaction declares one **mode**. The modes form the Interaction axis:
 the exchange (by an assessor agent) rather than by a post-hoc verifier. It is
 declared in the schema so such tasks parse without loss; its runtime (an A2A bridge
 for the agent-under-test plus a concurrently-running assessor) is deferred to a
-later milestone (see *Open Primitives and Roadmap*). Note ACP (BenchFlow <-> agent)
-is not A2A (agent <-> agent); arena needs the A2A leg.
+later milestone (see *Open Primitives and Roadmap*). Note ACP (BenchFlow &lt;-&gt; agent)
+is not A2A (agent &lt;-&gt; agent); arena needs the A2A leg.
 
 The current executable slice is linear `scenes` that reference `agents.roles`.
 The first team handoff subset is intentionally narrow: a document-declared user
