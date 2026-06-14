@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
+from benchflow.agents.codex_config import CODEX_DEFAULT_AUTH_REQUEST_ENV
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_bedrock_preflight import BedrockPatchPreflightError
 from benchflow.providers.litellm_config import LITELLM_MODEL_ALIAS_ENV
@@ -44,6 +46,9 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
         agent_env={
             "AWS_BEARER_TOKEN_BEDROCK": "token",
             "AWS_REGION": "us-west-2",
+            CODEX_DEFAULT_AUTH_REQUEST_ENV: json.dumps(
+                {"methodId": "api-key", "_meta": {"api-key": {"apiKey": "old"}}}
+            ),
         },
         model="aws-bedrock/us.anthropic.claude-opus-4-8",
         runtime=None,
@@ -64,6 +69,17 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
         '"model":"benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"'
         in updated["CODEX_CONFIG"]
     )
+    auth_request = json.loads(updated[CODEX_DEFAULT_AUTH_REQUEST_ENV])
+    assert auth_request == {
+        "methodId": "gateway",
+        "_meta": {
+            "gateway": {
+                "baseUrl": "http://host.docker.internal:32123/v1",
+                "providerName": "BenchFlow LiteLLM",
+                "headers": {"Authorization": f"Bearer {provider_runtime.master_key}"},
+            }
+        },
+    }
 
 
 @pytest.mark.asyncio
