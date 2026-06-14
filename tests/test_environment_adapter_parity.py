@@ -525,6 +525,39 @@ def test_environment_adapter_parity_evidence_fails_on_cleanup_leak() -> None:
     assert [c.criterion_id for c in report.conversion.disagreements] == ["cleanup"]
 
 
+def test_environment_adapter_parity_cleanup_is_scoped_to_this_run() -> None:
+    # The cleanup counts are per-run leak counts (resources THIS run created and
+    # left behind). They are zero whenever the run reaped its own resources, even
+    # if unrelated pre-existing benchflow containers are still around globally, so
+    # an unrelated/concurrent container can no longer force a false cleanup fail.
+    evidence = build_environment_adapter_parity_experiment(
+        benchmark="computer-use-smoke",
+        original=_original(),
+        benchflow=_benchflow(),
+        artifact=_artifact(),
+        summary=_summary(
+            cleanup={
+                "docker_available": True,
+                # 0 = this run leaked nothing, regardless of unrelated benchflow
+                # containers that exist globally.
+                "benchflow_containers": 0,
+                "benchflow_networks": 0,
+            }
+        ),
+    )
+
+    report = build_verify_report("computer-use-smoke", evidence)
+
+    assert report.verdict == "parity-confirmed"
+    cleanup = next(
+        item
+        for task in evidence["conversion_parity"]["tasks"]
+        for item in task["criteria_results"]
+        if item["criterion_id"] == "cleanup"
+    )
+    assert cleanup["agreement"] is True
+
+
 def test_cli_agent_verify_accepts_environment_adapter_parity_file(
     tmp_path: Path,
 ) -> None:
