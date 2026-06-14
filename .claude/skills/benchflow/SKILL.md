@@ -196,10 +196,9 @@ asyncio.run(main())
 ## Setup
 
 ```bash
-# 0.6 is pre-release — not yet on PyPI. Install the RC wheel from GitHub releases:
-uv tool install --prerelease allow \
-  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
-# (replace rc.6 with the newest 0.6.0-rc.* release; or from source: uv sync --extra dev --locked)
+# Install benchflow 0.6.0 from PyPI (--prerelease allow is for the pinned LiteLLM rc dep):
+uv tool install --prerelease allow benchflow
+# (or from source: uv sync --extra dev --locked)
 export GEMINI_API_KEY=...     # or ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.
 export DAYTONA_API_KEY=...    # for cloud sandboxes
 ```

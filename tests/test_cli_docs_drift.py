@@ -9,13 +9,11 @@ live Typer parser so doc rot is caught in CI.
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
 from typing import cast
 
 import click
 import typer
-from packaging.version import Version
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
@@ -196,10 +194,12 @@ def test_documented_subcommands_exist() -> None:
         assert "Usage:" in out, f"bench {' '.join(cmd)} --help failed: {out}"
 
 
-# ── install-wheel URL drift guard (dev-ex #15) ───────────────────────────────
+# ── install-doc guard: no regression to pinned GitHub-release RC wheels ───────
 
-# Docs that pin a concrete RC-wheel install URL. The hand-pinned tag drifts when
-# one doc is bumped and the others aren't; nothing previously caught that.
+# Install docs that used to pin a concrete RC-wheel URL before 0.6.0 shipped to
+# PyPI. They now install from PyPI (`uv tool install … benchflow`); a hand-pinned
+# `releases/download/<tag>/benchflow-…rcN.whl` goes stale the instant a newer
+# release lands, so this guards against re-introducing that pattern.
 _INSTALL_URL_DOCS = (
     "README.md",
     "docs/getting-started.md",
@@ -208,47 +208,22 @@ _INSTALL_URL_DOCS = (
     "docs/skill-eval.md",
     ".claude/skills/benchflow/SKILL.md",
 )
-# Matches only CONCRETE pins, e.g.
-# releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl
-# The \d+ deliberately skips agent-quickstart.md's `rc.N`/`rcN` placeholders.
-_WHEEL_URL_RE = re.compile(
-    r"releases/download/(?P<tag>\d+\.\d+\.\d+-rc\.\d+)/"
-    r"benchflow-(?P<whl>\d+\.\d+\.\d+rc\d+)-py3-none-any\.whl"
+_RC_WHEEL_URL_RE = re.compile(
+    r"releases/download/\d+\.\d+\.\d+-rc\.\d+/"
+    r"benchflow-\d+\.\d+\.\d+rc\d+-py3-none-any\.whl"
 )
 
 
-def test_install_wheel_url_consistent_across_docs() -> None:
-    """Every pinned RC-wheel install URL must be mutually consistent: one shared
-    rc tag, each URL's tag matching its own wheel filename, and the base version
-    matching pyproject. Offline-only (no network / freshness check)."""
-    matches: list[tuple[str, str, str]] = []  # (doc, tag, wheel)
-    missing: list[str] = []
-    for rel in _INSTALL_URL_DOCS:
-        text = (_REPO_ROOT / rel).read_text()
-        found = list(_WHEEL_URL_RE.finditer(text))
-        if not found:
-            missing.append(rel)
-        matches.extend((rel, m["tag"], m["whl"]) for m in found)
-
-    # A doc that dropped/renamed its pinned URL (e.g. a 404-shaped path) must
-    # fail loudly rather than silently pass with zero matches.
-    assert not missing, f"docs with no concrete pinned wheel URL: {missing}"
-
-    # Per-URL: the release tag and its own wheel filename share the rc number
-    # (PEP 440 normalizes 0.6.0-rc.6 and 0.6.0rc6 to the same Version).
-    for doc, tag, whl in matches:
-        assert Version(tag) == Version(whl), (
-            f"{doc}: release tag {tag!r} and wheel filename {whl!r} disagree"
-        )
-
-    # Cross-doc: all pinned rc tags identical (the core drift).
-    by_tag = {Version(tag): doc for doc, tag, _ in matches}
-    assert len(by_tag) == 1, "install-wheel rc pins drift across docs: " + ", ".join(
-        f"{doc}={tag}" for tag, doc in by_tag.items()
+def test_install_docs_use_pypi_not_pinned_rc_wheel() -> None:
+    """Install docs must install benchflow from PyPI, not a pinned GitHub-release
+    RC wheel (which goes stale on every release). Catches regressions to the
+    pre-0.6.0 `releases/download/…rcN.whl` pattern."""
+    offenders = [
+        rel
+        for rel in _INSTALL_URL_DOCS
+        if _RC_WHEEL_URL_RE.search((_REPO_ROOT / rel).read_text())
+    ]
+    assert not offenders, (
+        "install docs pin a stale GitHub-release RC wheel instead of installing "
+        f"from PyPI: {offenders}"
     )
-
-    # Base version ties to pyproject (0.6.0); NOT the rc number — pyproject
-    # carries no rc, so only the base is sensibly assertable.
-    pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
-    pin = next(iter(by_tag))
-    assert pin.base_version == Version(pyproject["project"]["version"]).base_version

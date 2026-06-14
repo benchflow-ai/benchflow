@@ -4,9 +4,8 @@ Test whether your agent skill actually helps agents perform better.
 ## Install
 
 ```bash
-uv tool install --prerelease allow \
-  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
-# 0.6.0 is not on PyPI yet — install the newest 0.6.0-rc.* wheel from GitHub releases (replace rc.6 with the latest).
+uv tool install --prerelease allow benchflow
+# --prerelease allow is for the pinned LiteLLM rc dependency, not benchflow itself.
 ```
 
 ## Overview
@@ -397,9 +396,8 @@ BenchFlow generates everything ephemeral — only results persist.
 **CI integration:**
 ```bash
 # In your skill's CI pipeline
-uv tool install --prerelease allow \
-  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
-# 0.6.0 is not on PyPI yet — install the newest 0.6.0-rc.* wheel from GitHub releases (replace rc.6 with the latest).
+uv tool install --prerelease allow benchflow
+# --prerelease allow is for the pinned LiteLLM rc dependency, not benchflow itself.
 bench skills eval . --agent claude-agent-acp --no-baseline
 ```
 

@@ -10,32 +10,19 @@ A 5-minute path from install to first eval.
 
 ## Install
 
-`0.6.0` is in **release-candidate** testing and is **not on PyPI yet** (the
-newest build there is still `0.5.x`). While 0.6 is RC, install the latest
-`0.6.0-rc.*` wheel from the
-[GitHub releases page](https://github.com/benchflow-ai/benchflow/releases) —
-open it, pick the newest `0.6.0-rc.*` prerelease, and install its `.whl` asset:
+`0.6.0` is on PyPI. Install (or upgrade) with uv or pip:
 
 ```bash
-uv tool install --prerelease allow \
-  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
+uv tool install --prerelease allow benchflow            # add --upgrade to refresh
+pip install --pre --upgrade benchflow                   # pip equivalent
 ```
 
-The URL pins `0.6.0-rc.6` (newest at time of writing); if a later `0.6.0-rc.*`
-prerelease exists, use that tag and filename instead. The `--prerelease allow`
-flag is required for BenchFlow's pinned LiteLLM release-candidate dependency. If
-`uv` reports `Executables already exist: bench, benchflow`, rerun the same
-command with `--force` to replace older non-`uv` entrypoints.
-
-**Once `0.6.0` ships to PyPI**, the plain commands will work:
-
-```bash
-pip install --upgrade benchflow                                  # once 0.6.0 is on PyPI
-uv tool install --prerelease allow --upgrade 'benchflow==0.6.0'  # once 0.6.0 is on PyPI
-```
-
-Until then, `pip install --upgrade benchflow` resolves only to `0.5.x`. See
-[Release channels](./release.md) for the full command matrix.
+The `--prerelease allow` (uv) / `--pre` (pip) flag is required for BenchFlow's
+pinned LiteLLM release-candidate dependency, not for benchflow itself (`0.6.0`
+is a final release). If `uv` reports `Executables already exist: bench,
+benchflow`, rerun with `--force` to replace older non-`uv` entrypoints. Confirm
+with `bench --version`. See [Release channels](./release.md) for the full
+command matrix.
 
 This gives you the `benchflow` (alias `bench`) CLI plus the Python SDK. To install for editable development:
 
