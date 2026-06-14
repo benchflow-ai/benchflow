@@ -8,6 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
+
+import pytest
+
+from benchflow.agent_router_parity import build_verify_report
 
 
 def _load_stagehand_parity_module() -> ModuleType:
@@ -192,6 +197,259 @@ export default defineBenchTask(
     assert (
         adoption["parity"]["criteria_agreed"] == adoption["parity"]["criteria_compared"]
     )
+
+
+def _write_stagehand_repo(repo: Path) -> None:
+    """Materialize a minimal built Stagehand repo for the parity importer."""
+
+    source_dir = repo / "packages" / "evals" / "tasks" / "bench" / "agent"
+    source_dir.mkdir(parents=True)
+    (source_dir / "sign_in.ts").write_text(
+        """\
+import { defineBenchTask } from "../../../framework/defineTask.js";
+
+export default defineBenchTask(
+  { name: "agent/sign_in" },
+  async ({ agent, v3 }) => {
+    const page = v3.context.pages()[0];
+    await page.goto("https://v0-modern-login-flow.vercel.app/");
+    await agent.execute({
+      instruction:
+        "Sign in with the email address 'test@browserbaser.com' and the password 'stagehand=goated' ",
+      maxSteps: Number(process.env.AGENT_EVAL_MAX_STEPS) || 15,
+    });
+    const url = page.url();
+    return { _success: url === "https://v0-modern-login-flow.vercel.app/authorized", observations: url };
+  },
+);
+"""
+    )
+    runner = repo / "packages" / "evals" / "dist" / "esm" / "framework"
+    runner.mkdir(parents=True)
+    (runner / "runner.js").write_text("export {};\n")
+
+
+def _make_fake_run(
+    module: ModuleType,
+    *,
+    original_score: float = 1.0,
+    bench_reward: float = 1.0,
+    write_trace_artifact: bool = True,
+    eval_status: str = "completed",
+    eval_ok: bool = True,
+):
+    """Build a ``run_fn`` whose BenchFlow side is tunable for divergence cases."""
+
+    authorized = "https://v0-modern-login-flow.vercel.app/authorized"
+
+    def fake_run(cmd, **kwargs):
+        command = [str(part) for part in cmd]
+        if command[:3] == ["docker", "container", "ls"]:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["docker", "network", "ls"]:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:5] == ["node", "--import", "tsx", "--input-type=module", "-e"]:
+            payload = {
+                "summary": {"passed": 1, "failed": 0, "total": 1},
+                "results": [
+                    {
+                        "name": "agent/sign_in",
+                        "score": original_score,
+                        "output": {
+                            "_success": original_score >= 1.0,
+                            "observations": authorized,
+                            "logs": ["started", "done"],
+                            "metrics": {"total_ms": {"value": 1200}},
+                        },
+                    }
+                ],
+            }
+            stdout = (
+                "stagehand logs\n"
+                f"{module._ORIGINAL_RESULT_MARKER}{json.dumps(payload)}\n"
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+        if command[:4] == ["uv", "run", "bench", "eval"]:
+            jobs_dir = Path(command[command.index("--jobs-dir") + 1])
+            result_dir = jobs_dir / "run" / "agent-sign_in__fake"
+            artifacts = result_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (result_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "task_name": "agent-sign_in",
+                        "agent": "stagehand-agent",
+                        "rewards": {"reward": bench_reward},
+                        "trajectory_summary": {
+                            "steps": 3,
+                            "tool_call_steps": 1,
+                        },
+                        "n_tool_calls": 1,
+                        "timing": {"total": 12.0},
+                        "error": None,
+                        "verifier_error": None,
+                    }
+                )
+            )
+            if write_trace_artifact:
+                (artifacts / "browser-use-smoke-trace.json").write_text(
+                    json.dumps(
+                        {
+                            "framework": "benchflow-stagehand-agent",
+                            "steps": [{"i": 1}, {"i": 2}],
+                            "screenshots_b64": ["abc"],
+                            "stagehand_current_url": authorized,
+                            "duration_sec": 3.0,
+                        }
+                    )
+                )
+                (artifacts / "stagehand-url-verifier.json").write_text(
+                    json.dumps(
+                        {
+                            "reward": bench_reward,
+                            "current_url": authorized,
+                            "expected_url": authorized,
+                        }
+                    )
+                )
+            stdout = json.dumps(
+                {
+                    "status": eval_status,
+                    "ok": eval_ok,
+                    "result": {
+                        "total": 1,
+                        "errored": 0,
+                        "verifier_errored": 0,
+                        "elapsed_sec": 12.0,
+                    },
+                    "summary": {
+                        "total": 1,
+                        "errored": 0,
+                        "verifier_errored": 0,
+                        "agent": "stagehand-agent",
+                        "total_trajectory_steps": 3,
+                        "elapsed_sec": 12.0,
+                    },
+                    "summary_path": str(jobs_dir / "summary.json"),
+                }
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    return fake_run
+
+
+def _run_parity(module: ModuleType, repo: Path, parity_out: Path, fake_run) -> Any:
+    return module.run_parity(
+        stagehand_repo=repo,
+        task="agent/sign_in",
+        model="google/gemini-3.5-flash",
+        provider="google",
+        agent_mode="dom",
+        benchflow_agent="stagehand-agent",
+        sandbox="docker",
+        parity_out=parity_out,
+        upstream_commit="stagehand-test",
+        run_fn=fake_run,
+    )
+
+
+def test_stagehand_parity_records_no_trace_divergence_without_crashing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """No trace / no URL but eval completed with reward 0 -> recorded divergence.
+
+    Mirrors the real anti-bot case (original 1.0, BenchFlow 0.0, no trace): the
+    harness must RECORD the divergence as evidence (parity-recorded with a
+    reward delta) instead of raising AssertionError.
+    """
+
+    module = _load_stagehand_parity_module()
+    repo = tmp_path / "stagehand"
+    _write_stagehand_repo(repo)
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_run = _make_fake_run(
+        module,
+        original_score=1.0,
+        bench_reward=0.0,
+        write_trace_artifact=False,
+    )
+
+    parity_out = tmp_path / "evidence" / "parity_experiment.json"
+    summary = _run_parity(module, repo, parity_out, fake_run)
+
+    assert summary["ok"] is False
+    divergence = summary["divergence"]
+    assert divergence["status"] == "divergent"
+    assert divergence["original_reward"] == 1.0
+    assert divergence["benchflow_reward"] == 0.0
+    assert divergence["reward_delta"] == 1.0
+    assert any("no-trace" in note for note in divergence["notes"])
+    assert any("reward-mismatch" in note for note in divergence["notes"])
+
+    parity = json.loads(parity_out.read_text())
+    assert parity["status"] == "parity-recorded"
+    reward_sample = parity["agent_parity"]["results"][0]
+    assert reward_sample["legacy_reward"] == 1.0
+    assert reward_sample["converted_reward"] == 0.0
+    assert reward_sample["reward_delta"] == 1.0
+    report = build_verify_report("stagehand-smoke", parity)
+    assert report.verdict == "parity-divergent"
+
+
+def test_stagehand_parity_records_reward_mismatch_without_crashing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Reward mismatch (trace present) -> recorded divergence, not an exception."""
+
+    module = _load_stagehand_parity_module()
+    repo = tmp_path / "stagehand"
+    _write_stagehand_repo(repo)
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_run = _make_fake_run(
+        module,
+        original_score=1.0,
+        bench_reward=0.0,
+        write_trace_artifact=True,
+    )
+
+    parity_out = tmp_path / "evidence" / "parity_experiment.json"
+    summary = _run_parity(module, repo, parity_out, fake_run)
+
+    assert summary["ok"] is False
+    assert summary["divergence"]["reward_delta"] == 1.0
+    assert any("reward-mismatch" in note for note in summary["divergence"]["notes"])
+    # The trace criteria all agree (full trace, matching URL), so the raw
+    # experiment status stays parity-confirmed -- exactly as the browser-use
+    # harness records a reward-only divergence. The honest delta is preserved in
+    # agent_parity and the downstream verify verdict is parity-divergent.
+    parity = json.loads(parity_out.read_text())
+    reward_sample = parity["agent_parity"]["results"][0]
+    assert reward_sample["legacy_reward"] == 1.0
+    assert reward_sample["converted_reward"] == 0.0
+    assert reward_sample["reward_delta"] == 1.0
+    report = build_verify_report("stagehand-smoke", parity)
+    assert report.verdict == "parity-divergent"
+
+
+def test_stagehand_parity_hard_errors_when_eval_did_not_complete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Eval status != completed is an infra failure -> still a hard error."""
+
+    module = _load_stagehand_parity_module()
+    repo = tmp_path / "stagehand"
+    _write_stagehand_repo(repo)
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_run = _make_fake_run(
+        module,
+        eval_status="failed",
+        eval_ok=False,
+    )
+
+    parity_out = tmp_path / "evidence" / "parity_experiment.json"
+    with pytest.raises(AssertionError, match="did not complete cleanly"):
+        _run_parity(module, repo, parity_out, fake_run)
 
 
 def test_stagehand_original_runner_prefers_built_tasks_without_tsx(
