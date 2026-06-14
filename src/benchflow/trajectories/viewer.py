@@ -159,6 +159,29 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
         return _render_acp_trajectory(rollout_dir, acp_traj, prompts)
 
     if not turn_files:
+        # The given dir has no trajectory of its own. If it's a job directory
+        # (the natural value from `eval create`'s "Artifacts:" line), point at its
+        # rollout subdirectories instead of showing a blank page.
+        try:
+            rollouts = sorted(
+                d.name
+                for d in rollout_dir.iterdir()
+                if d.is_dir()
+                and (
+                    any(d.glob("turn*.txt"))
+                    or (d / "trajectory" / "acp_trajectory.jsonl").exists()
+                )
+            )
+        except OSError:
+            rollouts = []
+        if rollouts:
+            items = "".join(f"<li><code>{html.escape(r)}</code></li>" for r in rollouts)
+            return (
+                f"<p>No trajectory here — <code>{html.escape(rollout_dir.name)}</code> "
+                f"looks like a job directory with {len(rollouts)} rollout(s). "
+                f"View one with <code>bench eval view {html.escape(rollout_dir.name)}/"
+                f"&lt;rollout&gt;</code>:</p><ul>{items}</ul>"
+            )
         return "<p>No trajectory files found</p>"
 
     # Default prompts
