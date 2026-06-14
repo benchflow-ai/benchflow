@@ -98,16 +98,17 @@ def run_official_adoption(
         agent_idle_timeout=agent_idle_timeout,
     )
     docker_after = _wait_for_benchflow_docker_cleanup(expected=docker_before)
-    if docker_before != docker_after:
+    leaked = _leaked_benchflow_resources(before=docker_before, after=docker_after)
+    if leaked["containers"] or leaked["networks"]:
         raise AssertionError(
-            "BenchFlow-owned Docker resources changed after cleanup: "
-            f"before={docker_before} after={docker_after}"
+            "BenchFlow-owned Docker resources THIS run created were not cleaned "
+            f"up: leaked={leaked} (before={docker_before} after={docker_after})"
         )
 
     bench_result_path = _single_result_json(jobs_dir)
     bench_result = json.loads(bench_result_path.read_text())
-    artifact_path = bench_result_path.parent / "artifacts" / (
-        "browser-use-smoke-trace.json"
+    artifact_path = (
+        bench_result_path.parent / "artifacts" / ("browser-use-smoke-trace.json")
     )
     if not artifact_path.is_file():
         raise AssertionError(f"missing BenchFlow artifact: {artifact_path}")
@@ -136,8 +137,8 @@ def run_official_adoption(
     original = _original_from_probe(original_probe, task_id=task_id)
     cleanup = {
         "docker_available": docker_after["available"],
-        "docker_containers": len(docker_after["containers"]),
-        "docker_networks": len(docker_after["networks"]),
+        "docker_containers": len(leaked["containers"]),
+        "docker_networks": len(leaked["networks"]),
     }
     summary = _summary(
         original_probe=original_probe,
@@ -620,6 +621,34 @@ def _wait_for_benchflow_docker_cleanup(
         time.sleep(0.25)
         snapshot = _benchflow_docker_resources()
     return snapshot
+
+
+def _leaked_benchflow_resources(
+    *,
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> dict[str, list[str]]:
+    """Resources THIS run created and failed to clean up.
+
+    Scopes the cleanup check to the run: a resource counts as leaked only if it
+    is present after the run but was not present before it. Pre-existing or
+    concurrently-running benchflow-owned containers/networks (which this run did
+    not create) are tolerated, so an unrelated container can no longer turn a
+    clean run into a false leak failure.
+    """
+
+    before_containers = set(before.get("containers") or [])
+    before_networks = set(before.get("networks") or [])
+    return {
+        "containers": sorted(
+            cid
+            for cid in (after.get("containers") or [])
+            if cid not in before_containers
+        ),
+        "networks": sorted(
+            nid for nid in (after.get("networks") or []) if nid not in before_networks
+        ),
+    }
 
 
 def _docker_ids(resource: str, *args: str) -> list[str]:

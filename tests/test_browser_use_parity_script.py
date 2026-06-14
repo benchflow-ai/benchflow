@@ -81,3 +81,77 @@ def test_browser_use_parity_run_omits_model_when_not_requested(monkeypatch) -> N
     assert "--model" not in recorded["cmd"]
     assert "--json" in recorded["cmd"]
     assert recorded["kwargs"]["capture_output"] is True
+
+
+def test_leaked_benchflow_resources_tolerates_preexisting_containers() -> None:
+    # Per-run scoping: pre-existing/concurrent benchflow-owned containers that
+    # this run did not create must NOT count as a leak. Only resources present
+    # after the run that were absent before it are this run's leak.
+    module = _load_parity_script()
+
+    before = {
+        "available": True,
+        "containers": ["hello-world-task-main-1", "skillsbench-citation-main-1"],
+        "networks": ["benchflow-other_default"],
+    }
+    after = {
+        "available": True,
+        # Both pre-existing containers survive; a concurrent run's container
+        # appeared. None of these were created by THIS run.
+        "containers": [
+            "hello-world-task-main-1",
+            "skillsbench-citation-main-1",
+            "concurrent-run-main-1",
+        ],
+        "networks": ["benchflow-other_default"],
+    }
+
+    # The concurrent container was not in ``before``, so the raw diff would flag
+    # it. That is the documented residual; the realistic false-fail (pre-existing
+    # survivors) is gone: those are excluded.
+    leaked = module._leaked_benchflow_resources(before=before, after=after)
+    assert "hello-world-task-main-1" not in leaked["containers"]
+    assert "skillsbench-citation-main-1" not in leaked["containers"]
+    assert leaked["networks"] == []
+
+
+def test_leaked_benchflow_resources_clean_run_reports_no_leak() -> None:
+    # This run created and cleaned up its own container/network; even though
+    # unrelated benchflow containers persist, the leak set is empty.
+    module = _load_parity_script()
+
+    before = {
+        "available": True,
+        "containers": ["hello-world-task-main-1"],
+        "networks": [],
+    }
+    after = {
+        "available": True,
+        "containers": ["hello-world-task-main-1"],
+        "networks": [],
+    }
+
+    leaked = module._leaked_benchflow_resources(before=before, after=after)
+    assert leaked["containers"] == []
+    assert leaked["networks"] == []
+
+
+def test_leaked_benchflow_resources_detects_real_run_leak() -> None:
+    # This run created a container/network and failed to clean them up: they are
+    # present after but were absent before, so they ARE flagged as a real leak.
+    module = _load_parity_script()
+
+    before = {
+        "available": True,
+        "containers": ["hello-world-task-main-1"],
+        "networks": [],
+    }
+    after = {
+        "available": True,
+        "containers": ["hello-world-task-main-1", "benchflow-open-local-page-main-1"],
+        "networks": ["benchflow-open-local-page_default"],
+    }
+
+    leaked = module._leaked_benchflow_resources(before=before, after=after)
+    assert leaked["containers"] == ["benchflow-open-local-page-main-1"]
+    assert leaked["networks"] == ["benchflow-open-local-page_default"]
