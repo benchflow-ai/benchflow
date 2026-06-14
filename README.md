@@ -26,9 +26,8 @@ BenchFlow is a universal environment framework: it runs AI agents against task e
 ## Quickstart
 
 ```bash
-# Install the current 0.6 release candidate (see Install for why the wheel URL)
-uv tool install --prerelease allow \
-  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
+# Install benchflow 0.6.0 from PyPI
+uv tool install --prerelease allow benchflow
 
 # Run a benchmark: any task source, any ACP agent, any sandbox
 export GEMINI_API_KEY=...            # or claude login / codex --login for subscription auth
@@ -42,17 +41,15 @@ Each run writes a per-task `result.json` (rewards + trajectory + token usage) an
 
 ## Install
 
-`0.6.0` is in **release-candidate** testing and is **not on PyPI yet** (the newest PyPI build is still `0.5.x`). Until it ships, install the latest `0.6.0-rc.*` wheel from the [GitHub releases page](https://github.com/benchflow-ai/benchflow/releases) — the Quickstart pins `0.6.0-rc.6`; if a newer `rc.*` exists, swap the tag and filename. Confirm with `bench --version`.
-
-- `--prerelease allow` is required for BenchFlow's pinned LiteLLM release-candidate dependency.
-- If you see `Executables already exist: bench, benchflow`, re-run with `--force` to replace stale entrypoints from an older install.
-
-**Once `0.6.0` ships to PyPI**, the plain commands resolve (until then they pick up only `0.5.x`):
+`0.6.0` is on PyPI. Install (or upgrade) with uv or pip:
 
 ```bash
-pip install --upgrade benchflow                                  # once 0.6.0 is on PyPI
-uv tool install --prerelease allow --upgrade 'benchflow==0.6.0'  # once 0.6.0 is on PyPI
+uv tool install --prerelease allow benchflow            # add --upgrade to refresh an existing install
+pip install --pre --upgrade benchflow                   # pip equivalent
 ```
+
+- `--prerelease allow` (uv) / `--pre` (pip) is required for BenchFlow's pinned LiteLLM release-candidate dependency, not for benchflow itself (`0.6.0` is a final release). Confirm with `bench --version`.
+- If you see `Executables already exist: bench, benchflow`, re-run with `--force` to replace stale entrypoints from an older install.
 
 Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --prerelease allow --upgrade benchflow`).
 

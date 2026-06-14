@@ -10,35 +10,16 @@ BenchFlow uses two PyPI release channels with the same package name:
 
 Current release state:
 
-- `0.6.0` is in **release-candidate** testing. It is **not on PyPI yet** — the
-  newest PyPI build is still on the `0.5.x` line. The release candidates are
-  published as GitHub prereleases (`0.6.0-rc.*`) only.
-- The public PyPI `0.6.0` / tag `v0.6.0` step has **not happened yet**; the
-  commands below that pin `benchflow==0.6.0` from PyPI start working only after
-  that tag is cut.
-- After the public tag is cut, `main` should move to `0.6.1.dev0`, which
-  publishes internal preview builds as `0.6.1.dev<N>` after CI passes.
+- `0.6.0` is **published on PyPI** (tag `v0.6.0`). Use the public install
+  commands below.
+- `main` currently carries `0.6.0`. To resume internal-preview builds for the
+  next line, bump `main` to `0.6.1.dev0` — internal previews then publish as
+  `0.6.1.dev<N>` automatically after the `test` workflow passes on `main`.
 
-## Release-Candidate Install (current path)
-
-While `0.6.0` is RC, install the newest `0.6.0-rc.*` wheel from the
-[GitHub releases page](https://github.com/benchflow-ai/benchflow/releases) —
-open it, pick the newest `0.6.0-rc.*` prerelease, and install its `.whl` asset:
-
-```bash
-uv tool install --prerelease allow \
-  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.6/benchflow-0.6.0rc6-py3-none-any.whl'
-```
-
-The URL pins `0.6.0-rc.6` (newest at time of writing); use a later
-`0.6.0-rc.*` tag and filename if one exists. Confirm with `bench --version`.
-
-## Install and Upgrade Commands (once 0.6.0 ships to PyPI)
+## Install and Upgrade Commands
 
 Use the public channel by default. Opt into internal preview only when you want
-the newest build from `main` before the next public tag. The commands in this
-section that pin `benchflow==0.6.0` from PyPI only resolve **after** the public
-`v0.6.0` tag is cut — until then, use the Release-Candidate install above.
+the newest build from `main` before the next public tag.
 
 Public Python package users:
 
