@@ -109,10 +109,12 @@ Internal preview:
 4. `.github/workflows/internal-preview-release.yml` publishes to PyPI only if
    the integration gate passed.
 
-The integration gate uses GitHub Models through the workflow-scoped
-`GITHUB_TOKEN` with `models: read` permission, so it does not need provider API
-keys for the smoke rollout or judge. `DAYTONA_API_KEY` is optional and enables
-the Daytona parity and reaper checks.
+The integration gate selects the first configured live LLM provider that can
+answer a small probe request, then uses that same provider for the smoke rollout
+and agent judge. Configure at least one of `DEEPSEEK_API_KEY`, `GLM_API_KEY`,
+`QWEN_API_KEY`, `LITELLM_API_KEY`/`BF_TOKEN`, `OPENAI_API_KEY`, or
+`GITHUB_MODELS_TOKEN` in GitHub Actions secrets. `DAYTONA_API_KEY` is optional
+and enables the Daytona parity and reaper checks.
 
 Public release:
 
