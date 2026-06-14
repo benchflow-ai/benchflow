@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+- **`task.md` is now the sole task authoring format.** `bench tasks init`
+  scaffolds a native `task.md` package (`task.md` + `environment/` + `oracle/` +
+  `verifier/`). `bench tasks init --format legacy` is retired and now exits with
+  an error pointing at `bench tasks migrate <dir> --remove-legacy`. Existing
+  split-layout packages remain readable, and `bench tasks migrate` /
+  `bench tasks export` continue to cover the migration and compatibility paths.
+  Authoring docs now lead with `task.md`; the split layout is documented only as
+  a migration/export target.
+
 ### Fixed
 - `bench skills eval` now exits non-zero when any eval case errors (e.g. missing
   credentials), matching `bench eval create`. A 100%-error run printed `0/1`

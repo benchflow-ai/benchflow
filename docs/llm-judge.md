@@ -460,6 +460,6 @@ criterion, aggregates, and writes `reward.json` — no scripting required.
 ## Where to go next
 
 - [Concepts](./concepts.md) — the five primitives including Verifier
-- [Task authoring](./task-authoring.md) — `task.toml`, `tests/`, verifier contract
+- [Task authoring](./task-authoring-task-md.md) — `task.md` frontmatter, `verifier/`, verifier contract
 - [Running benchmarks](./running-benchmarks.md) — Harvey LAB uses LLM-as-judge
 - [Python API reference](./reference/python-api.md) — `LLMJudgeRewardFunc` and friends

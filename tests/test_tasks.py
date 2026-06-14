@@ -232,16 +232,25 @@ class TestScaffoldTaskReportedFiles:
         assert "verifier/test_outputs.py" in reported
         assert "verifier/rubrics/verifier.toml" in reported
 
+    def test_cli_init_rejects_legacy_scaffold(self, tmp_path):
+        from typer.testing import CliRunner
 
-class TestInitTaskLegacyScaffold:
-    """init_task(..., task_format="legacy") — the shipped legacy scaffold.
+        from benchflow.cli.main import app
 
-    `bench tasks init --format legacy` still ships on this release, and the
-    legacy code paths (render_task_md_from_legacy, the tests/ and solution/
-    aliases, legacy_solution_dir) remain in src/benchflow. These tests guard
-    the legacy split-scaffold contract — task.toml + instruction.md + tests/
-    + solution/ with fail-closed placeholder defaults — so the shipped path
-    can't silently regress while it is still reachable from the CLI.
+        out = CliRunner().invoke(
+            app, ["tasks", "init", "old", "--dir", str(tmp_path), "--format", "legacy"]
+        )
+        assert out.exit_code == 1
+        assert "no longer scaffolds the legacy split layout" in out.output
+        assert not (tmp_path / "old").exists()
+
+
+class TestLegacyScaffoldCompatibility:
+    """init_task(..., task_format="legacy") — compatibility scaffold coverage.
+
+    The CLI no longer creates new split-layout tasks in v0.6.2, but migration,
+    export, and adapter tests still depend on the compatibility scaffolder.
+    Keep these fail-closed defaults covered while the lower-level API remains.
     """
 
     def test_creates_complete_structure(self, tmp_path):
@@ -257,9 +266,9 @@ class TestInitTaskLegacyScaffold:
     def test_scaffold_fails_check_until_placeholders_replaced(self, tmp_path):
         """Freshly scaffolded legacy task must FAIL `bench tasks check` (#360).
 
-        Otherwise authors can `bench tasks init --format legacy foo &&
-        bench tasks check foo` and get a green check on a task that
-        auto-passes with reward 1.0 — silent false positives in eval sets.
+        Otherwise compatibility-generated fixtures can pass `bench tasks check`
+        before the placeholders are replaced, creating silent false positives in
+        eval sets.
         """
         task = init_task("scaffolded", parent_dir=tmp_path, task_format="legacy")
         issues = check_task(task)

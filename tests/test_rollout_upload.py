@@ -89,6 +89,29 @@ async def test_resolve_agent_cwd_falls_back_to_container_pwd() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_agent_cwd_avoids_root_workspace() -> None:
+    """Prebuilt images without WORKDIR must not snapshot the entire rootfs."""
+    env = MagicMock()
+    env.exec = AsyncMock(
+        side_effect=[
+            MagicMock(stdout="/\n", stderr="", return_code=0),
+            MagicMock(stdout="/root\n", stderr="", return_code=0),
+        ]
+    )
+    task = SimpleNamespace(
+        config=SimpleNamespace(environment=SimpleNamespace(workdir=None))
+    )
+
+    agent_cwd = await _resolve_agent_cwd(env, task)
+
+    assert agent_cwd == "/root"
+    assert env.exec.await_args_list[0].args == ("pwd",)
+    assert env.exec.await_args_list[0].kwargs == {"timeout_sec": 10}
+    assert env.exec.await_args_list[1].args == ("mkdir -p /root && cd /root && pwd",)
+    assert env.exec.await_args_list[1].kwargs == {"user": "root", "timeout_sec": 10}
+
+
+@pytest.mark.asyncio
 async def test_start_env_does_not_upload_task_environment_skills(
     tmp_path: Path,
 ) -> None:
