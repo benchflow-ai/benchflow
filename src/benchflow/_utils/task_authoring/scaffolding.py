@@ -236,7 +236,8 @@ def migrate_task_to_task_md(
         )
     if task_md.exists() and not overwrite:
         raise FileExistsError(
-            f"{task_md} already exists; pass overwrite=True to replace it"
+            f"{task_md} already exists; pass --overwrite (CLI) / overwrite=True "
+            "(API) to replace it"
         )
 
     legacy_config = import_task_config_toml(

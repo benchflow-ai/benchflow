@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- `bench skills eval` now exits non-zero when any eval case errors (e.g. missing
+  credentials), matching `bench eval create`. A 100%-error run printed `0/1`
+  but exited `0`, so CI/scripts read a total failure as success.
+- The "task.md already exists" migrate error now names both surfaces
+  (`--overwrite` for the CLI, `overwrite=True` for the Python API) instead of
+  only the API kwarg.
+
 ## 0.6.0 — 2026-06-13
 
 ### Added
