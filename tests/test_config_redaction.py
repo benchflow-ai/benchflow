@@ -88,6 +88,9 @@ def test_write_config_drops_secret_env_vars(tmp_path: Path) -> None:
         "MY_AUTH_HEADER": "Bearer secret",
         "GITHUB_TOKEN": "ghp_secret",
         "OPENAI_API_KEY": "sk-secret",
+        "DEFAULT_AUTH_REQUEST": (
+            '{"methodId":"api-key","_meta":{"api-key":{"apiKey":"sk-secret"}}}'
+        ),
         # Should be preserved.
         "NORMAL_VAR": "keep-me",
         "PATH": "/usr/bin:/bin",
@@ -119,6 +122,7 @@ def test_write_config_drops_secret_env_vars(tmp_path: Path) -> None:
         ("MY_AUTH_HEADER", "Bearer secret"),
         ("GITHUB_TOKEN", "ghp_secret"),
         ("OPENAI_API_KEY", "sk-secret"),
+        ("DEFAULT_AUTH_REQUEST", "apiKey"),
     ):
         assert redacted_name not in recorded
         assert redacted_value not in raw

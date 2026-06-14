@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from benchflow.agents.codex_config import CODEX_DEFAULT_AUTH_REQUEST_ENV
 from benchflow.agents.env import (
     auto_inherit_env,
     check_subscription_auth,
@@ -1037,6 +1038,10 @@ class TestResolveAgentEnvCodexOpenAIPrefix:
         )
         assert result["CODEX_API_KEY"] == "codex-key"
         assert result["OPENAI_API_KEY"] == "codex-key"
+        assert json.loads(result[CODEX_DEFAULT_AUTH_REQUEST_ENV]) == {
+            "methodId": "api-key",
+            "_meta": {"api-key": {"apiKey": "codex-key"}},
+        }
 
     def test_codex_access_token_works_for_openai_prefix(self, monkeypatch, tmp_path):
         self._patch_expanduser(monkeypatch, tmp_path)

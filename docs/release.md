@@ -104,8 +104,17 @@ Internal preview:
 
 1. Merge a PR to `main`.
 2. `.github/workflows/test.yml` runs.
-3. `.github/workflows/internal-preview-release.yml` publishes to PyPI only if
-   the tested `main` commit passed.
+3. `.github/workflows/integration-eval.yml` runs a real rollout after the
+   tested `main` commit passes.
+4. `.github/workflows/internal-preview-release.yml` publishes to PyPI only if
+   the integration gate passed.
+
+The integration gate selects the first configured live LLM provider that can
+answer a small probe request, then uses that same provider for the smoke rollout
+and agent judge. Configure at least one of `DEEPSEEK_API_KEY`, `GLM_API_KEY`,
+`QWEN_API_KEY`, `LITELLM_API_KEY`/`BF_TOKEN`, `OPENAI_API_KEY`, or
+`GITHUB_MODELS_TOKEN` as GitHub Actions secrets for the job environment.
+`DAYTONA_API_KEY` is optional and enables the Daytona parity and reaper checks.
 
 Public release:
 

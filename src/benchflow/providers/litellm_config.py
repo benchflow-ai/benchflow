@@ -336,10 +336,18 @@ def litellm_proxy_config(
         params.setdefault("input_cost_per_token", cost[0])
         params.setdefault("output_cost_per_token", cost[1])
     openai_alias = f"openai/{route.model_alias}"
+    bare_requested = strip_provider_prefix(route.requested_model)
     model_list: list[dict[str, object]] = [
         {"model_name": route.model_alias, "litellm_params": dict(params)},
         {"model_name": openai_alias, "litellm_params": dict(params)},
     ]
+    for model_name in (bare_requested, f"openai/{bare_requested}"):
+        if model_name and model_name not in {
+            entry["model_name"] for entry in model_list
+        }:
+            model_list.append(
+                {"model_name": model_name, "litellm_params": dict(params)}
+            )
     return {
         "model_list": model_list,
         "general_settings": {"master_key": master_key},
