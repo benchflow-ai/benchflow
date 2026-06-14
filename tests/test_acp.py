@@ -690,6 +690,45 @@ class TestIdleTimeoutDiagnostics:
         assert info["n_tool_calls"] == 1
 
     @pytest.mark.asyncio
+    async def test_in_flight_tool_call_defers_idle_to_wall_clock(self) -> None:
+        """A pending/in-progress tool call (agent running a long shell command)
+        must NOT trip the idle watchdog: such tools emit no ACP updates until
+        they return, so the idle path would otherwise false-kill real work. The
+        agent is alive (executing a tool), so it defers to the wall-clock
+        backstop. Contrast test_idle_timeout_info_reflects_activity_counts, where
+        a *completed* tool that then hangs still idles out."""
+        from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
+
+        class PendingToolThenHang:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_long",
+                        "title": "long running build",
+                        "kind": "bash",
+                    }
+                )
+                await asyncio.Future()  # hang while the "tool" runs
+
+        session = ACPSession("pending-idle-session")
+        # idle_timeout(1) < wall-clock(3): without the in-flight exemption this
+        # would raise IdleTimeoutError at ~1s. With it, the pending tool defers
+        # idle and the wall-clock backstop fires (AgentPromptTimeoutError) instead.
+        with pytest.raises(AgentPromptTimeoutError):
+            await execute_prompts(
+                PendingToolThenHang(session),  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=3,
+                idle_timeout=1,
+            )
+        assert session.pending_tool_call_ids() == ["tc_long"]
+
+    @pytest.mark.asyncio
     async def test_wall_clock_timeout_records_terminal_diagnostic(self) -> None:
         """Wall-clock timeouts record runner-owned terminal timeout evidence."""
         from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
