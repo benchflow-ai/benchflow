@@ -3,9 +3,7 @@
 A native BenchFlow task is one `task.md` document plus sidecar directories.
 The YAML frontmatter carries the task configuration; the markdown body **is**
 the prompt. This page teaches the native format hands-on. For the normative
-standard see [the task standard](./task-standard.md); for the legacy split
-layout (`task.toml` + `instruction.md` + `tests/` + `solution/`) see
-[Authoring tasks](./task-authoring.md).
+standard see [the task standard](./task-standard.md).
 
 When a directory contains both layouts, `task.md` is the authoritative task
 definition — the runtime selects it and ignores the split pair.
@@ -23,10 +21,9 @@ my-task/
     └── test.sh            # verifier entry point
 ```
 
-That is the complete runnable surface: structural validation requires a task
-definition (`task.md`, or the legacy `task.toml` + `instruction.md` pair), an
-`environment/` directory with a `Dockerfile`, and a verifier directory with a
-runnable entrypoint. An `oracle/` directory is optional.
+That is the complete runnable surface: structural validation requires
+`task.md`, an `environment/` directory with a `Dockerfile`, and a verifier
+directory with a runnable entrypoint. An `oracle/` directory is optional.
 
 ```markdown
 ---
@@ -68,7 +65,7 @@ bench tasks check tasks/my-task --level schema   # frontmatter + prompt parse on
 frontmatter must be a mapping — a document without it fails to parse. The keys
 fall into three classes.
 
-**Task config keys** are the Harbor-compatible config surface, validated as
+**Task config keys** are the BenchFlow task config surface, validated as
 `TaskConfig`. Unknown keys are **rejected** (the schema is `extra="forbid"`),
 so typos fail at parse time instead of becoming silently-ignored config:
 
@@ -81,7 +78,7 @@ so typos fail at parse time instead of becoming silently-ignored config:
 | `verifier` | Verifier run policy: `timeout_sec` (default 600), `env`, `user`, `service`, … |
 | `environment` | Sandbox: `docker_image`, `cpus`, `memory_mb`, `storage_mb`, `network_mode`, `env`, `workdir`, … |
 | `oracle` | Oracle run policy: `env`, `timeout_sec` (import alias: `solution`) |
-| `source`, `artifacts`, `steps`, `multi_step_reward_strategy`, `reward` | Provenance and Harbor-compatible extras |
+| `source`, `artifacts`, `steps`, `multi_step_reward_strategy`, `reward` | Provenance, artifact, and reward metadata |
 
 `agent.timeout_sec` is **strongly recommended**: it is optional and defaults
 to unset, and a task that omits it runs the agent with no wall-clock cap
@@ -163,18 +160,15 @@ including real converted SkillsBench packages.
 
 ## Verifier package and strategy declaration
 
-The native verifier directory is `verifier/` (`tests/` remains the legacy
-alias; when both exist, `verifier/` wins and there is no fallback to
-`tests/`). At verify time the directory is uploaded into the sandbox at
-`/verifier` (legacy `tests/` uploads to `/tests`), and the verifier must write
-its reward to `/logs/verifier/reward.txt` (and optionally
+The native verifier directory is `verifier/`. At verify time the directory is
+uploaded into the sandbox at `/verifier`, and the verifier must write its
+reward to `/logs/verifier/reward.txt` (and optionally
 `/logs/verifier/reward.json`).
 
 A plain `verifier/test.sh` is a complete verifier: with no other declaration,
-the runtime executes it directly. The same contract as the legacy layout
-applies — write a float `0.0`–`1.0` to `/logs/verifier/reward.txt`, then exit
-`0`; a nonzero exit means verifier infrastructure failure, not a scored task
-failure.
+the runtime executes it directly. Write a float `0.0`–`1.0` to
+`/logs/verifier/reward.txt`, then exit `0`; a nonzero exit means verifier
+infrastructure failure, not a scored task failure.
 
 To declare *how* the task is scored, add `verifier/verifier.md`. Its
 frontmatter must contain a `verifier:` mapping with at least one entry under
@@ -264,13 +258,13 @@ bench tasks check tasks/my-task
 bench eval create --tasks-dir tasks/my-task --agent oracle --sandbox docker
 ```
 
-## Exporting to the split layout
+## Compatibility Export
 
-To go the other way — produce a Harbor/Pier-compatible split layout from a
-`task.md` package — use `bench tasks export`:
+To produce a compatibility split package from a `task.md` package, use
+`bench tasks export`:
 
 ```bash
-bench tasks export tasks/my-task out/my-task-split            # harbor target
+bench tasks export tasks/my-task out/my-task-split
 bench tasks export tasks/my-task --report-only                # loss report only
 ```
 
