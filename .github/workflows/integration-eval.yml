@@ -4,10 +4,13 @@
 # (tests/integration/agent_judge.py) grade the resulting rollout. The job
 # fails if the run is not REAL (no tool calls / no tokens / null reward) or
 # if the judge fails the trajectory. It is kept to one task so the check
-# stays cheap; trigger it after main CI succeeds, on demand, or nightly.
+# stays cheap; trigger it for internal PRs, after main CI succeeds, on demand,
+# or nightly.
 name: integration-eval
 
 on:
+  pull_request:
+    branches: [main]
   workflow_run:
     workflows: ["test"]
     types: [completed]
@@ -33,14 +36,20 @@ concurrency:
 jobs:
   eval-and-judge:
     runs-on: ubuntu-latest
-    # Only run on the canonical repo. Forks lack the eval/judge secrets, so
-    # the scheduled and dispatched runs would otherwise fail-closed there.
+    # Only run where integration secrets are available. Fork PRs lack secrets,
+    # while internal PRs should fail visibly when the real eval path breaks.
     if: >-
       ${{
         github.repository == 'benchflow-ai/benchflow' &&
         (
-          github.event_name != 'workflow_run' ||
+          github.event_name == 'workflow_dispatch' ||
+          github.event_name == 'schedule' ||
           (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == 'benchflow-ai/benchflow'
+          ) ||
+          (
+            github.event_name == 'workflow_run' &&
             github.event.workflow_run.conclusion == 'success' &&
             github.event.workflow_run.event == 'push' &&
             github.event.workflow_run.head_branch == 'main'
@@ -57,7 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.sha }}
 
       - name: Check integration secrets
         run: |
@@ -91,7 +100,7 @@ jobs:
             --source-ref main \
             --include "$TASK" \
             --agent codex-acp \
-            --model openai/gpt-5.4-nano \
+            --model openai/gpt-5.4-mini \
             --sandbox docker \
             --concurrency 1 \
             --agent-idle-timeout 240 \
@@ -101,7 +110,7 @@ jobs:
         run: |
           uv run python tests/integration/agent_judge.py \
             jobs/integration-eval \
-            --model openai/gpt-5.4-nano \
+            --model openai/gpt-5.4-mini \
             --json
 
       - name: Run the live integration scenarios
