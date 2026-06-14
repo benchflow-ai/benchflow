@@ -220,10 +220,7 @@ class TestNoneToEmptyString:
         assert r.stdout == "hello"
 
 
-# read_file error handling
-
-
-class TestReadFileError:
+class TestExecResultReturnCode:
     def test_exec_result_failure_code(self):
         """ExecResult with non-zero return_code indicates failure."""
         r = ExecResult(return_code=1, stdout="", stderr="No such file")

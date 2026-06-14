@@ -17,8 +17,9 @@ from typing import Annotated, Literal, cast
 
 import typer
 from rich.console import Console
-from rich.markup import escape
 from rich.table import Table
+
+from benchflow.cli._shared import print_error
 
 console = Console()
 
@@ -131,12 +132,10 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         """
         sources = sum([from_local, from_file is not None, from_hf is not None])
         if sources == 0:
-            console.print(
-                "[red]Specify a source: --from-local, --from-file, or --from-hf[/red]"
-            )
+            print_error("Specify a source: --from-local, --from-file, or --from-hf")
             raise typer.Exit(1)
         if sources > 1:
-            console.print("[red]Only one source allowed at a time[/red]")
+            print_error("Only one source allowed at a time")
             raise typer.Exit(1)
 
         if from_local:
@@ -180,7 +179,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         from benchflow.traces.task_gen import generate_tasks_from_traces
 
         if task_format not in ("task-md", "legacy"):
-            console.print("[red]--task-format must be task-md or legacy[/red]")
+            print_error("--task-format must be task-md or legacy")
             raise typer.Exit(1)
 
         results = generate_tasks_from_traces(
@@ -248,7 +247,7 @@ def _load_file(path: Path, format: str) -> list:
     )
 
     if not path.exists():
-        console.print(f"[red]File not found: {escape(str(path))}[/red]")
+        print_error(f"File not found: {path}")
         raise typer.Exit(1)
 
     detected_format = format
@@ -263,7 +262,7 @@ def _load_file(path: Path, format: str) -> list:
     elif detected_format == "claude-messages":
         return _parse_hf_messages_file(path)
     else:
-        console.print(f"[red]Unknown format: {escape(str(detected_format))}[/red]")
+        print_error(f"Unknown format: {detected_format}")
         raise typer.Exit(1)
 
 

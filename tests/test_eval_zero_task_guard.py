@@ -105,8 +105,8 @@ def test_cli_zero_task_selection_exits_nonzero_no_summary(tmp_path):
         ],
     )
 
-    assert result.exit_code == 1, result.stdout
-    assert "No tasks selected" in result.stdout
+    assert result.exit_code == 1, result.output
+    assert "No tasks selected" in result.stderr
     # Critically: no 0/0 summary.json must exist.
     assert not (jobs_dir / "summary.json").exists(), (
         "zero-task selection must not publish a 0/0 summary.json — that "

@@ -1,6 +1,6 @@
 """``bench agent`` — agent management commands (list / show).
 
-The benchmark-adoption commands now live under ``bench adopt`` (see
+The benchmark-adoption commands now live under ``bench eval adopt`` (see
 :mod:`benchflow.cli.adopt`); the legacy ``bench agent create|run|verify`` are
 registered here as hidden deprecated aliases (one-release window) so existing
 scripts keep working, each emitting a deprecation notice.
@@ -31,7 +31,7 @@ def register_agent(app: typer.Typer) -> None:
     agent_app = typer.Typer(help="Agent management commands.")
     app.add_typer(agent_app, name="agent", rich_help_panel="Core")
     # Legacy adoption verbs (create/run/verify) — hidden + deprecated; canonical
-    # home is `bench adopt` (init/convert/verify).
+    # home is `bench eval adopt` (init/convert/verify).
     register_agent_router(agent_app, verbs=AGENT_ALIAS_VERBS, deprecated_as="agent")
 
     @agent_app.command("list")

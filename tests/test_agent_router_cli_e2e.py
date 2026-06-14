@@ -316,7 +316,11 @@ def test_cli_run_dry_run_prints_codex_command_with_context_markers(
         "--dry-run",
     )
     assert result.exit_code == 0, result.output
-    out = click.unstyle(result.output)
+    # Inspect pure stdout: the dry-run command prints to stdout, while the
+    # `bench agent run` deprecation notice goes to stderr. Using stdout keeps the
+    # verbatim/soft-wrap assertion below independent of whether an earlier test
+    # in the process already emitted (and deduped) that once-per-process notice.
+    out = click.unstyle(result.stdout)
     # The constructed (but un-launched) codex command carries the source and the
     # CONVERT.md adoption context — the prompt the live run would have used.
     assert "codex" in out

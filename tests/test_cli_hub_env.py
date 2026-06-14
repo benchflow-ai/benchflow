@@ -63,10 +63,21 @@ def test_environment_inspect_is_deprecated_alias(monkeypatch) -> None:
     assert "deprecation" in res.stderr and "bench hub env inspect" in res.stderr
 
 
-def test_environment_show_inspect_hidden_from_help() -> None:
-    out = runner.invoke(app, ["environment", "--help"]).output
-    assert "create" in out and "list" in out and "cleanup" in out
-    for hidden in ("show", "inspect"):
-        assert hidden not in out, (
-            f"deprecated {hidden!r} still shown in environment help"
-        )
+def test_environment_group_is_hidden_but_still_resolves() -> None:
+    # The whole `environment` group is now a hidden deprecated alias (local
+    # lifecycle → `bench sandbox`, hosted reads → `bench hub env`). It must not
+    # appear in top-level `bench --help`, but must still resolve for back-compat.
+    #
+    # Assert against the Click command registry (authoritative), NOT a regex over
+    # rendered `--help` rows: that text is environment-fragile (Rich emits ANSI
+    # color codes on CI that break a `│`-anchored match → empty set → false fail).
+    import typer
+
+    cmd = typer.main.get_command(app)
+    visible = {
+        name for name, sub in cmd.commands.items() if not getattr(sub, "hidden", False)
+    }
+    assert "sandbox" in visible  # canonical local group is visible
+    assert "environment" not in visible  # deprecated alias group is hidden
+    assert "environment" in cmd.commands  # …but still registered for back-compat
+    assert runner.invoke(app, ["environment", "create", "--help"]).exit_code == 0

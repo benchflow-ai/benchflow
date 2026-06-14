@@ -15,7 +15,7 @@ from typing import Annotated, Literal, cast
 import typer
 from rich.markup import escape
 
-from benchflow.cli._shared import console, print_error
+from benchflow.cli._shared import console, err_console, print_error
 from benchflow.cli.trace_import import register_tasks_generate
 from benchflow.sandbox.providers import SANDBOX_PROVIDERS
 
@@ -60,7 +60,7 @@ def register_tasks(app: typer.Typer) -> None:
                 no_oracle=no_oracle,
                 task_format=cast(Literal["legacy", "task-md"], task_format),
             )
-            console.print(f"[green]Created:[/green] {result.task_dir}/")
+            console.print(f"[green]Created:[/green] {escape(str(result.task_dir))}/")
             # List every file actually written, derived from the scaffold itself
             # so the summary can never under-report (e.g. omit
             # verifier/test_outputs.py or verifier/rubrics/verifier.toml, both of
@@ -296,7 +296,7 @@ def register_tasks(app: typer.Typer) -> None:
         )
 
         if target not in {"harbor", "pier"}:
-            console.print("[red]target must be 'harbor' or 'pier'[/red]")
+            print_error("target must be 'harbor' or 'pier'")
             raise typer.Exit(1)
 
         try:
@@ -363,7 +363,13 @@ def register_tasks(app: typer.Typer) -> None:
         if _is_task_dir(path):
             # typer.echo, not console.print: Rich wraps lines at terminal width,
             # which would corrupt piped machine-readable output.
-            typer.echo(task_digest(path))
+            try:
+                digest = task_digest(path)
+            except OSError as e:
+                # An unreadable file (permissions) otherwise dumps a raw traceback.
+                print_error(f"Cannot read task files under {path}: {e}")
+                raise typer.Exit(1) from None
+            typer.echo(digest)
             return
 
         task_dirs = sorted(d for d in path.iterdir() if d.is_dir() and _is_task_dir(d))
@@ -374,4 +380,13 @@ def register_tasks(app: typer.Typer) -> None:
             )
             raise typer.Exit(1)
         for task_dir in task_dirs:
-            typer.echo(f"{task_dir.name} {task_digest(task_dir)}")
+            # Batch: warn-and-skip an unreadable task (to stderr so the digest
+            # lines on stdout stay machine-readable) instead of aborting the run.
+            try:
+                digest = task_digest(task_dir)
+            except OSError as e:
+                err_console.print(
+                    f"[yellow]Skipping[/yellow] {escape(task_dir.name)}: {escape(str(e))}"
+                )
+                continue
+            typer.echo(f"{task_dir.name} {digest}")

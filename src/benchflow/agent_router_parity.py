@@ -1,9 +1,9 @@
-"""Parity gate for ``bench adopt verify`` — parsers, scoring, and verdict.
+"""Parity gate for ``bench eval adopt verify`` — parsers, scoring, and verdict.
 
 The ``verify`` subcommand in :mod:`benchflow.agent_router` scores an adopted
 benchmark's recorded ``parity_experiment.json`` and assigns a confidence
 verdict. That parser/scorer logic lives here so the router module stays focused
-on the create/run/verify CLI wiring; the public names are re-exported from
+on the adopt (init/convert/verify) CLI wiring; the public names are re-exported from
 :mod:`benchflow.agent_router` for backwards compatibility.
 
 The gate is *parity only*: a faithful translation must reproduce the original's

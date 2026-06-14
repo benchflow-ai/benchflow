@@ -80,12 +80,12 @@ matches what you are translating:
 | You are translating… | Command path | How the result is checked |
 |----------------------|--------------|---------------------------|
 | A task you already control, in the legacy split layout (`task.toml` + `instruction.md`) | `bench tasks migrate` → `bench tasks check` | Structural validation of the generated `task.md` (config equivalence is enforced at conversion time) |
-| A foreign benchmark with no reusable adapter | `bench adopt init` → `bench adopt convert` → `bench adopt verify` | The parity gate **proves** the converted benchmark reproduces the original's results |
+| A foreign benchmark with no reusable adapter | `bench eval adopt init` → `bench eval adopt convert` → `bench eval adopt verify` | The parity gate **proves** the converted benchmark reproduces the original's results |
 
-The two paths are not interchangeable: `bench adopt verify` runs only against a
-benchmark *adopted* with `bench adopt init`. It reads
+The two paths are not interchangeable: `bench eval adopt verify` runs only against a
+benchmark *adopted* with `bench eval adopt init`. It reads
 `benchmarks/<name>/parity_experiment.json` and errors `benchmark not adopted …
-run bench adopt init first` on anything else — including a migrated `task.md`.
+run bench eval adopt init first` on anything else — including a migrated `task.md`.
 A migrated `task.md` is validated with `bench tasks check`, never with `verify`.
 
 ### (a) Migrate a task you control → validate with `bench tasks check`
@@ -107,15 +107,15 @@ verifier package with no runnable entrypoint. This flow records no
 `parity_experiment.json` and runs no parity gate — it is a faithful in-place
 format conversion of a task you already own.
 
-### (b) Adopt a foreign benchmark → `bench adopt init`, then prove with `bench adopt verify`
+### (b) Adopt a foreign benchmark → `bench eval adopt init`, then prove with `bench eval adopt verify`
 
 For a foreign benchmark with no reusable adapter, the benchmark-adoption router
 in [`src/benchflow/agent_router.py`](../src/benchflow/agent_router.py) drives the
 work:
 
-- `bench adopt init <name>` scaffolds `benchmarks/<name>/` to the reference
+- `bench eval adopt init <name>` scaffolds `benchmarks/<name>/` to the reference
   layout and the contract in [`benchmarks/CONVERT.md`](../benchmarks/CONVERT.md).
-- `bench adopt convert <source>` drives that conversion workflow with an agent toward
+- `bench eval adopt convert <source>` drives that conversion workflow with an agent toward
   a `benchmarks/<name>/` pull request.
 
 Only a benchmark adopted this way carries the `benchmarks/<name>/` directory the
@@ -123,7 +123,7 @@ parity gate below requires.
 
 ### Prove — the parity gate
 
-`bench adopt verify <name>` closes the adopt → verify loop. It is a **parity-only**
+`bench eval adopt verify <name>` closes the adopt → verify loop. It is a **parity-only**
 gate (`build_verify_report` in
 [`agent_router.py`](../src/benchflow/agent_router.py)) over two layers:
 
@@ -150,8 +150,8 @@ returns `insufficient-evidence`). Two principles keep it honest:
 ### The artifacts
 
 Each adopted benchmark records its evidence in
-`benchmarks/<name>/parity_experiment.json`. `bench adopt verify <name>` reads and
-scores that file when it is a JSON object in the shape `bench adopt init`
+`benchmarks/<name>/parity_experiment.json`. `bench eval adopt verify <name>` reads and
+scores that file when it is a JSON object in the shape `bench eval adopt init`
 scaffolds (the example in [`benchmarks/CONVERT.md`](../benchmarks/CONVERT.md)): it
 pulls per-criterion verdict pairs and legacy-vs-converted reward samples from the
 object and emits a verdict. A file that records neither yields no comparisons, so
@@ -159,7 +159,7 @@ the gate returns `insufficient-evidence`.
 
 The repository ships several recorded experiments under
 [`benchmarks/*/parity_experiment.json`](../benchmarks/), and they are **not**
-uniform — do not assume `verify` scores all of them. `bench adopt verify
+uniform — do not assume `verify` scores all of them. `bench eval adopt verify
 programbench` reads recorded reward-distribution samples and reports
 `parity-confirmed` (max abs reward delta within the default `0.02` tolerance).
 Other shipped experiments record structural- and eval-parity notes the gate does

@@ -10,7 +10,12 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-import benchflow.cli.environment as cli_environment
+# The local-lifecycle command bodies + helpers (provider checks, the Cua runtime
+# probe, the docker/cua list/cleanup backends) live in ``cli/sandbox.py`` — the
+# canonical ``bench sandbox`` home. ``bench environment`` is the deprecated alias
+# group that delegates here, so these tests still drive it through the alias
+# while patching the helpers where they actually run.
+import benchflow.cli.sandbox as cli_environment
 from benchflow.cli.main import app
 
 
@@ -366,7 +371,7 @@ def test_environment_create_dry_run_does_not_create_environment(tmp_path: Path) 
         result = CliRunner().invoke(
             app,
             [
-                "environment",
+                "sandbox",
                 "create",
                 str(task_dir),
                 "--sandbox",
@@ -390,7 +395,7 @@ def test_environment_create_dry_run_accepts_foreign_adapter_task(
         result = CliRunner().invoke(
             app,
             [
-                "environment",
+                "sandbox",
                 "create",
                 str(task_dir),
                 "--sandbox",
@@ -415,7 +420,7 @@ def test_environment_create_dry_run_json_accepts_foreign_adapter_task(
         result = CliRunner().invoke(
             app,
             [
-                "environment",
+                "sandbox",
                 "create",
                 str(task_dir),
                 "--sandbox",
@@ -457,7 +462,7 @@ def test_environment_create_materializes_foreign_task_for_runtime(
     with patch("benchflow.runtime.Environment.from_task", side_effect=fake_from_task):
         result = CliRunner().invoke(
             app,
-            ["environment", "create", str(task_dir), "--sandbox", "cua"],
+            ["sandbox", "create", str(task_dir), "--sandbox", "cua"],
         )
 
     assert result.exit_code == 0, result.output
@@ -481,7 +486,7 @@ def test_environment_create_json_reports_materialized_foreign_task(
     with patch("benchflow.runtime.Environment.from_task", side_effect=fake_from_task):
         result = CliRunner().invoke(
             app,
-            ["environment", "create", str(task_dir), "--sandbox", "cua", "--json"],
+            ["sandbox", "create", str(task_dir), "--sandbox", "cua", "--json"],
         )
 
     assert result.exit_code == 0, result.output
@@ -512,7 +517,7 @@ def test_environment_check_validates_task_and_provider(
 
     result = CliRunner().invoke(
         app,
-        ["environment", "check", str(task_dir), "--sandbox", "cua"],
+        ["sandbox", "check", str(task_dir), "--sandbox", "cua"],
     )
 
     assert result.exit_code == 0
@@ -534,7 +539,7 @@ def test_environment_check_accepts_foreign_adapter_task(
 
     result = CliRunner().invoke(
         app,
-        ["environment", "check", str(task_dir), "--sandbox", "cua"],
+        ["sandbox", "check", str(task_dir), "--sandbox", "cua"],
     )
 
     assert result.exit_code == 0, result.output
@@ -564,7 +569,7 @@ def test_environment_check_json_reports_adapter_and_provider(
 
     result = CliRunner().invoke(
         app,
-        ["environment", "check", str(task_dir), "--sandbox", "cua", "--json"],
+        ["sandbox", "check", str(task_dir), "--sandbox", "cua", "--json"],
     )
 
     assert result.exit_code == 0, result.output
@@ -595,7 +600,7 @@ def test_environment_check_json_reports_local_cua_as_verified(
 
     result = CliRunner().invoke(
         app,
-        ["environment", "check", str(task_dir), "--sandbox", "cua", "--json"],
+        ["sandbox", "check", str(task_dir), "--sandbox", "cua", "--json"],
     )
 
     assert result.exit_code == 0, result.output
@@ -628,7 +633,7 @@ def test_environment_check_json_reports_browser_environment_adapter(
 
     result = CliRunner().invoke(
         app,
-        ["environment", "check", str(task_dir), "--sandbox", "docker", "--json"],
+        ["sandbox", "check", str(task_dir), "--sandbox", "docker", "--json"],
     )
 
     assert result.exit_code == 0, result.output
@@ -665,7 +670,7 @@ def test_environment_create_dry_run_reports_browser_environment_adapter(
         result = CliRunner().invoke(
             app,
             [
-                "environment",
+                "sandbox",
                 "create",
                 str(task_dir),
                 "--sandbox",
@@ -710,7 +715,7 @@ def test_environment_check_json_can_probe_cua_runtime(
     result = CliRunner().invoke(
         app,
         [
-            "environment",
+            "sandbox",
             "check",
             str(task_dir),
             "--sandbox",
@@ -903,7 +908,7 @@ def test_environment_check_reports_unsupported_foreign_adapter_task(
 
     result = CliRunner().invoke(
         app,
-        ["environment", "check", str(task_dir), "--sandbox", "cua"],
+        ["sandbox", "check", str(task_dir), "--sandbox", "cua"],
     )
 
     assert result.exit_code == 1
@@ -929,7 +934,7 @@ def test_environment_check_json_reports_unsupported_foreign_adapter_task(
 
     result = CliRunner().invoke(
         app,
-        ["environment", "check", str(task_dir), "--sandbox", "cua", "--json"],
+        ["sandbox", "check", str(task_dir), "--sandbox", "cua", "--json"],
     )
 
     assert result.exit_code == 1
@@ -967,7 +972,7 @@ def test_environment_check_json_reports_iosworld_provider_requirement(
 
     result = CliRunner().invoke(
         app,
-        ["environment", "check", str(task_dir), "--sandbox", "cua", "--json"],
+        ["sandbox", "check", str(task_dir), "--sandbox", "cua", "--json"],
     )
 
     assert result.exit_code == 1
@@ -994,7 +999,7 @@ def test_environment_check_json_reports_missing_task(tmp_path: Path) -> None:
 
     result = CliRunner().invoke(
         app,
-        ["environment", "check", str(missing), "--sandbox", "cua", "--json"],
+        ["sandbox", "check", str(missing), "--sandbox", "cua", "--json"],
     )
 
     assert result.exit_code == 1
@@ -1013,7 +1018,7 @@ def test_environment_list_docker_json_uses_owned_label(monkeypatch) -> None:
 
     result = CliRunner().invoke(
         app,
-        ["environment", "list", "--sandbox", "docker", "--json"],
+        ["sandbox", "list", "--sandbox", "docker", "--json"],
     )
 
     assert result.exit_code == 0, result.output
@@ -1045,7 +1050,7 @@ def test_environment_cleanup_docker_json_dry_run_reports_candidates(
     result = CliRunner().invoke(
         app,
         [
-            "environment",
+            "sandbox",
             "cleanup",
             "--sandbox",
             "docker",
@@ -1083,7 +1088,7 @@ def test_environment_cleanup_docker_deletes_matching_owned_resources(
     result = CliRunner().invoke(
         app,
         [
-            "environment",
+            "sandbox",
             "cleanup",
             "--sandbox",
             "docker",
@@ -1123,7 +1128,7 @@ def test_environment_list_cua_uses_sdk(monkeypatch) -> None:
     calls, _deleted = _install_fake_cua(monkeypatch, sandboxes)
     monkeypatch.setenv("CUA_API_KEY", "test-key")
 
-    result = CliRunner().invoke(app, ["environment", "list", "--sandbox", "cua"])
+    result = CliRunner().invoke(app, ["sandbox", "list", "--sandbox", "cua"])
 
     assert result.exit_code == 0
     assert "benchflow-old" in result.output
@@ -1147,7 +1152,7 @@ def test_environment_list_cua_json_is_parseable(monkeypatch) -> None:
 
     result = CliRunner().invoke(
         app,
-        ["environment", "list", "--sandbox", "cua", "--json"],
+        ["sandbox", "list", "--sandbox", "cua", "--json"],
     )
 
     assert result.exit_code == 0, result.output
@@ -1179,7 +1184,7 @@ def test_environment_cleanup_cua_dry_run_does_not_delete(monkeypatch) -> None:
     result = CliRunner().invoke(
         app,
         [
-            "environment",
+            "sandbox",
             "cleanup",
             "--sandbox",
             "cua",
@@ -1218,7 +1223,7 @@ def test_environment_cleanup_cua_json_dry_run_reports_candidates(monkeypatch) ->
     result = CliRunner().invoke(
         app,
         [
-            "environment",
+            "sandbox",
             "cleanup",
             "--sandbox",
             "cua",
@@ -1257,7 +1262,7 @@ def test_environment_cleanup_cua_deletes_matching_prefix(monkeypatch) -> None:
 
     result = CliRunner().invoke(
         app,
-        ["environment", "cleanup", "--sandbox", "cua", "--max-age", "60"],
+        ["sandbox", "cleanup", "--sandbox", "cua", "--max-age", "60"],
     )
 
     assert result.exit_code == 0
@@ -1280,7 +1285,7 @@ def test_environment_cleanup_cua_json_reports_deleted_names(monkeypatch) -> None
     result = CliRunner().invoke(
         app,
         [
-            "environment",
+            "sandbox",
             "cleanup",
             "--sandbox",
             "cua",

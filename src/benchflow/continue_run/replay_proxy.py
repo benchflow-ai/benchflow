@@ -77,10 +77,6 @@ class ReplayRouter:
         self.live_exchanges: list[LLMExchange] = []
 
     @property
-    def cursor(self) -> int:
-        return self._cursor
-
-    @property
     def exhausted(self) -> bool:
         return self._cursor >= len(self._recorded)
 
@@ -366,7 +362,6 @@ class ReplayProxy:
         advertise_host: str | None = None,
     ) -> None:
         self._router = router
-        self._host = host
         self._advertise_host = advertise_host or host
         self._server = _ReplayHTTPServer(
             (host, port), _ReplayHandler, _ProxyState(router=router)

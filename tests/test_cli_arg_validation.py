@@ -46,8 +46,8 @@ def test_concurrency_zero_rejected_not_deadlocked(tmp_path: Path):
     # Semaphore(0) would deadlock; the CLI must reject it up front instead.
     result = _invoke(tmp_path, "--sandbox", "docker", "--concurrency", "0")
     assert result.exit_code == 1
-    assert "--concurrency must be >= 1" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "--concurrency must be >= 1" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_build_concurrency_zero_rejected(tmp_path: Path):
@@ -61,14 +61,14 @@ def test_build_concurrency_zero_rejected(tmp_path: Path):
         "0",
     )
     assert result.exit_code == 1
-    assert "--build-concurrency must be >= 1" in result.stdout
+    assert "--build-concurrency must be >= 1" in result.stderr
 
 
 def test_skill_mode_bogus_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--skill-mode", "bogus")
     assert result.exit_code == 1
-    assert "Invalid --skill-mode" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "Invalid --skill-mode" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_sandbox_bogus_clean_error(tmp_path: Path):
@@ -76,15 +76,15 @@ def test_sandbox_bogus_clean_error(tmp_path: Path):
     # per-task traceback once the rollout starts.
     result = _invoke(tmp_path, "--sandbox", "nope")
     assert result.exit_code == 1
-    assert "Invalid --sandbox" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "Invalid --sandbox" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_reasoning_effort_bogus_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--reasoning-effort", "banana")
     assert result.exit_code == 1
-    assert "reasoning_effort must be one of" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "reasoning_effort must be one of" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_tasks_dir_missing_clean_error(tmp_path: Path):
@@ -103,16 +103,16 @@ def test_tasks_dir_missing_clean_error(tmp_path: Path):
             ],
         )
     assert result.exit_code == 1
-    assert "--tasks-dir not found" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "--tasks-dir not found" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_agent_without_default_model_clean_error(tmp_path: Path):
     # codex has no default model; omitting --model must report cleanly, not crash.
     result = _invoke(tmp_path, "--agent", "codex", "--sandbox", "docker")
     assert result.exit_code == 1
-    assert "no default model" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "no default model" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 @pytest.mark.skipif(
@@ -122,15 +122,15 @@ def test_agent_without_default_model_clean_error(tmp_path: Path):
 def test_sandbox_modal_without_extra_fails_fast(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "modal")
     assert result.exit_code == 1
-    assert "sandbox-modal" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "sandbox-modal" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_loop_strategy_bad_spec_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--loop-strategy", "bogus")
     assert result.exit_code == 1
-    assert "Invalid --loop-strategy" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "Invalid --loop-strategy" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_loop_strategy_k_out_of_range_rejected(tmp_path: Path):
@@ -138,7 +138,7 @@ def test_loop_strategy_k_out_of_range_rejected(tmp_path: Path):
         tmp_path, "--sandbox", "docker", "--loop-strategy", "verify-retry:k=99"
     )
     assert result.exit_code == 1
-    assert "k must be between 1 and 10" in result.stdout
+    assert "k must be between 1 and 10" in result.stderr
 
 
 def test_loop_strategy_conflicts_with_self_gen(tmp_path: Path):
@@ -152,7 +152,7 @@ def test_loop_strategy_conflicts_with_self_gen(tmp_path: Path):
         "verify-retry",
     )
     assert result.exit_code == 1
-    assert "not supported with --skill-mode self-gen" in result.stdout
+    assert "not supported with --skill-mode self-gen" in result.stderr
 
 
 def test_loop_strategy_conflicts_with_multiple_prompts(tmp_path: Path):
@@ -168,7 +168,7 @@ def test_loop_strategy_conflicts_with_multiple_prompts(tmp_path: Path):
         "verify-retry",
     )
     assert result.exit_code == 1
-    assert "conflicts with multiple" in result.stdout
+    assert "conflicts with multiple" in result.stderr
 
 
 def test_loop_strategy_accepted_and_plumbed(tmp_path: Path):

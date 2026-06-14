@@ -19,7 +19,6 @@ from uuid import uuid4
 try:
     from tenacity import (
         retry,
-        retry_if_exception_type,
         stop_after_attempt,
         wait_exponential,
     )
@@ -38,9 +37,6 @@ except ImportError:  # base install without ``sandbox-daytona`` extras (#358)
         return None
 
     def wait_exponential(*_args: Any, **_kwargs: Any) -> Any:
-        return None
-
-    def retry_if_exception_type(*_args: Any, **_kwargs: Any) -> Any:
         return None
 
 

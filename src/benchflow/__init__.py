@@ -130,7 +130,6 @@ from benchflow.task import (
     VerifierResult,
     render_task_md_from_legacy,
 )
-from benchflow.trajectories.otel import OTelCollector
 from benchflow.trajectories.types import Trajectory
 
 # Public API surface. Anything not in this list is implementation detail and
@@ -229,7 +228,6 @@ __all__ = [
     "discover_skills",
     "install_skill",
     "parse_skill",
-    "OTelCollector",
     "Trajectory",
     "InspectAdapter",
     "ORSAdapter",

@@ -87,10 +87,21 @@ def test_top_level_help_lists_public_groups() -> None:
     """Every public top-level group documented in cli.md is shown in --help."""
     out = _help([])
     commands = _help_command_names(out)
-    for group in ("eval", "skills", "tasks", "hub", "agent", "environment"):
+    for group in ("eval", "skills", "tasks", "hub", "agent", "sandbox"):
         assert group in commands, f"missing public group {group!r} in: {out}"
     # Deprecated, hidden, and removed commands must not show up in public help.
-    for hidden in ("run", "job", "agents", "metrics", "view", "eval-batch"):
+    # `environment` is now a hidden deprecated alias group (→ sandbox / hub env);
+    # `adopt` is a hidden deprecated alias group (→ eval adopt).
+    for hidden in (
+        "run",
+        "job",
+        "agents",
+        "metrics",
+        "view",
+        "eval-batch",
+        "environment",
+        "adopt",
+    ):
         assert hidden not in commands, (
             f"hidden command {hidden!r} unexpectedly shown: {out}"
         )
@@ -154,6 +165,10 @@ def test_documented_subcommands_exist() -> None:
         ["eval", "list"],
         ["eval", "metrics"],
         ["eval", "view"],
+        # Adoption is canonically under `eval` (cli.md documents `bench eval adopt`).
+        ["eval", "adopt", "init"],
+        ["eval", "adopt", "convert"],
+        ["eval", "adopt", "verify"],
         ["agent", "list"],
         ["agent", "show"],
         ["tasks", "init"],
@@ -162,10 +177,15 @@ def test_documented_subcommands_exist() -> None:
         ["tasks", "list-sources"],
         ["skills", "list"],
         ["skills", "eval"],
+        ["sandbox", "create"],
+        ["sandbox", "list"],
+        ["sandbox", "cleanup"],
+        # `environment` is now a hidden deprecated alias group; its commands
+        # still resolve for back-compat.
         ["environment", "create"],
         ["environment", "list"],
-        ["environment", "show"],  # hidden deprecated alias, still resolves
-        ["environment", "inspect"],  # hidden deprecated alias, still resolves
+        ["environment", "show"],
+        ["environment", "inspect"],
         ["environment", "cleanup"],
         ["hub", "check"],
         ["hub", "env", "list"],
@@ -227,8 +247,8 @@ def test_install_wheel_url_consistent_across_docs() -> None:
         f"{doc}={tag}" for tag, doc in by_tag.items()
     )
 
-    # Base version ties to pyproject (0.6.0); NOT the rc number — pyproject is
-    # 0.6.0.dev0 and carries no rc, so only the base is sensibly assertable.
+    # Base version ties to pyproject (0.6.0); NOT the rc number — pyproject
+    # carries no rc, so only the base is sensibly assertable.
     pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
     pin = next(iter(by_tag))
     assert pin.base_version == Version(pyproject["project"]["version"]).base_version

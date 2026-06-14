@@ -150,4 +150,12 @@ def validate_evals_json(data: object) -> _EvalsJsonModel:
     try:
         return _EvalsJsonModel.model_validate(data)
     except ValidationError as e:
-        raise ValueError(f"evals.json failed schema validation: {e}") from e
+        # Surface the actionable per-field messages only — not pydantic's raw
+        # str() (which leaks the private _EvalsJsonModel class name, the
+        # [type=..., input_value=..., input_type=...] plumbing, and an
+        # errors.pydantic.dev URL) to the CLI user.
+        details = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['msg']}"
+            for err in e.errors()
+        )
+        raise ValueError(f"evals.json failed schema validation: {details}") from e

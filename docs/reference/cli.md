@@ -13,7 +13,7 @@ bench --version
 > agent show` operate on **registered AI agents** (Claude Code, Gemini CLI,
 > Codex, OpenHands, …) — the programs that solve tasks. Onboarding a third-party
 > benchmark (scaffold → drive → parity-gate a `benchmarks/<name>/` adoption) is a
-> separate workflow under [`bench adopt`](#bench-adopt) (`init` → `convert` →
+> separate workflow under [`bench eval adopt`](#bench-eval-adopt) (`init` → `convert` →
 > `verify`). The legacy `bench agent create|run|verify` still work as hidden
 > deprecated aliases through 0.6, printing a one-line notice; they are removed in
 > 0.7.
@@ -37,7 +37,7 @@ about provider-specific credentials.
 bench agent show gemini
 ```
 
-## bench adopt
+## bench eval adopt
 
 Bring a third-party benchmark into the environment framework: scaffold a
 `benchmarks/<name>/` package, drive the codex `CONVERT.md` conversion, then
@@ -46,7 +46,7 @@ parity-gate it (`init` → `convert` → `verify`). These commands were previous
 through 0.6 (they print a one-line notice and are removed in 0.7). See
 [Benchmark adoption](../benchmark-adoption.md) for the full walkthrough.
 
-### bench adopt init
+### bench eval adopt init
 
 Scaffold `benchmarks/<name>/` for a new benchmark adoption. The layout mirrors
 the reference benchmark `benchmarks/programbench/` and the contract in
@@ -58,15 +58,15 @@ the reference benchmark `benchmarks/programbench/` and the contract in
 command refuses to overwrite an existing benchmark directory.
 
 ```bash
-bench adopt init my-bench
-bench adopt init my-bench --benchmarks-dir ./benchmarks
+bench eval adopt init my-bench
+bench eval adopt init my-bench --benchmarks-dir ./benchmarks
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--benchmarks-dir` | repo `benchmarks/` | Target benchmarks/ directory |
 
-### bench adopt convert
+### bench eval adopt convert
 
 Drive the `CONVERT.md` adoption workflow by launching the host `codex` CLI.
 The command assembles the adoption context (the source, the target
@@ -81,10 +81,10 @@ omitted the slug is derived from the source basename.
 
 ```bash
 # Print the codex launch command without running it
-bench adopt convert https://github.com/org/some-benchmark --dry-run
+bench eval adopt convert https://github.com/org/some-benchmark --dry-run
 
 # Launch the host codex driver against a local source
-bench adopt convert ./vendor/some-benchmark --name my-bench --model o3
+bench eval adopt convert ./vendor/some-benchmark --name my-bench --model o3
 ```
 
 | Flag | Default | Description |
@@ -95,7 +95,7 @@ bench adopt convert ./vendor/some-benchmark --name my-bench --model o3
 | `--codex-bin` | `codex` | Host codex binary |
 | `-c`, `--codex-config` | — | Codex config override as `key=value`, passed through to codex as `-c key=value`; repeatable. Use it to work around host `~/.codex/config.toml` drift without editing the file — e.g. `-c service_tier=flex` when an installed codex version rejects a stale value. |
 
-### bench adopt verify
+### bench eval adopt verify
 
 Run the parity gate for an adopted benchmark and emit a confidence verdict. It
 reads `benchmarks/<name>/parity_experiment.json` and scores two layers: a
@@ -120,12 +120,12 @@ a timeout, or output that is not in the scoreable `parity_experiment.json` shape
 all exit non-zero (rather than silently reporting `insufficient-evidence`).
 
 ```bash
-bench adopt verify my-bench
-bench adopt verify my-bench --tolerance 0.05 --issue-out divergence.md
-bench adopt verify my-bench --roundtrip-task benchmarks/my-bench/tasks/example
-bench adopt verify my-bench --rerun   # re-run parity_test.py, score fresh output
-bench adopt verify my-bench --json
-bench adopt verify my-bench --require-adoption-report --loop-report-out loop-report.json --json
+bench eval adopt verify my-bench
+bench eval adopt verify my-bench --tolerance 0.05 --issue-out divergence.md
+bench eval adopt verify my-bench --roundtrip-task benchmarks/my-bench/tasks/example
+bench eval adopt verify my-bench --rerun   # re-run parity_test.py, score fresh output
+bench eval adopt verify my-bench --json
+bench eval adopt verify my-bench --require-adoption-report --loop-report-out loop-report.json --json
 ```
 
 Use `--json` when an adapter-adoption loop needs a parseable parity verdict.
@@ -482,17 +482,20 @@ to `bench tasks generate --from-hf`.
 bench tasks list-sources
 ```
 
-## bench environment
+## bench sandbox
 
-### bench environment create
+Local sandbox lifecycle: provision a task on a docker/daytona/modal backend,
+list active sandboxes, and reap stale ones.
+
+### bench sandbox create
 
 Create an environment object from a task directory. This validates environment
 construction but does not start the sandbox.
 
 ```bash
-bench environment create tasks/my-task --sandbox daytona
-bench environment create tasks/my-task --sandbox cua --dry-run
-bench environment create tasks/my-task --sandbox cua --dry-run --json
+bench sandbox create tasks/my-task --sandbox daytona
+bench sandbox create tasks/my-task --sandbox cua --dry-run
+bench sandbox create tasks/my-task --sandbox cua --dry-run --json
 ```
 
 Use `--json` when an adapter-adoption loop needs a parseable create report.
@@ -503,16 +506,16 @@ Dry runs emit `{"status": "dry-run", "adapter": ..., "environment_adapter":
 `environment_adapter.name = "browser"`; computer-use and use-computer cookbook
 tasks report `environment_adapter.name = "desktop"`.
 
-### bench environment check
+### bench sandbox check
 
 Check task runtime compatibility and provider readiness without starting a
 sandbox.
 
 ```bash
-bench environment check tasks/my-task --sandbox docker
-bench environment check tasks/my-task --sandbox cua
-bench environment check tasks/my-task --sandbox cua --json
-bench environment check tasks/my-task --sandbox cua --probe-runtime --json
+bench sandbox check tasks/my-task --sandbox docker
+bench sandbox check tasks/my-task --sandbox cua
+bench sandbox check tasks/my-task --sandbox cua --json
+bench sandbox check tasks/my-task --sandbox cua --probe-runtime --json
 ```
 
 Use `--json` to capture task compatibility and provider readiness in one record.
@@ -541,24 +544,19 @@ captures SDK background readiness errors under `background_errors`. It also
 includes SDK/version metadata, request metadata such as `linux_kind`, and a
 normalized `failure_class` when a known cloud-runtime pattern is detected.
 
-### bench environment list
+### bench sandbox list
 
 List active local sandboxes for the selected `--sandbox` backend. Listing is
 supported for Docker, Daytona, and Cua. Docker listing is scoped to
 BenchFlow-owned resources labeled `benchflow.owned=true`.
 
 ```bash
-bench environment list
-bench environment list --sandbox docker --json
-bench environment list --sandbox cua --json
+bench sandbox list
+bench sandbox list --sandbox docker --json
+bench sandbox list --sandbox cua --json
 ```
 
-> Browsing a hosted provider's environments moved to [`bench hub env`](#bench-hub-env). The
-> old `bench environment list --provider`/`--hub`, `bench environment show`, and `bench
-> environment inspect` still work as **deprecated aliases** through 0.6 (one-line stderr
-> notice; removed in 0.7).
-
-### bench environment cleanup
+### bench sandbox cleanup
 
 Clean up orphaned provider sandboxes. By default this deletes sandboxes older
 than 24 hours; use `--dry-run` to preview what would be deleted. Provider
@@ -566,10 +564,10 @@ cleanup is supported for Docker, Daytona, and Cua. Docker cleanup is scoped to
 BenchFlow-owned containers and networks labeled `benchflow.owned=true`.
 
 ```bash
-bench environment cleanup --dry-run --max-age 1440
-bench environment cleanup --sandbox docker --dry-run --max-age 60 --json
-bench environment cleanup --sandbox cua --dry-run --max-age 60
-bench environment cleanup --sandbox cua --dry-run --max-age 60 --json
+bench sandbox cleanup --dry-run --max-age 1440
+bench sandbox cleanup --sandbox docker --dry-run --max-age 60 --json
+bench sandbox cleanup --sandbox cua --dry-run --max-age 60
+bench sandbox cleanup --sandbox cua --dry-run --max-age 60 --json
 ```
 
 Daytona-backed evals also reap orphaned sandboxes automatically at run start
@@ -581,6 +579,14 @@ to disable that automatic pass and rely on the manual command above.
 For Docker and Cua, `--json` emits a cleanup report with `found`, `matched`,
 `skipped`, `deleted`, and `candidates` fields. Use it in adapter dogfood to
 prove cleanup would leave no BenchFlow-owned resources behind before scaling.
+
+## bench environment (deprecated)
+
+`bench environment` is a hidden **deprecated alias group**, removed in 0.7. The
+local lifecycle moved to [`bench sandbox`](#bench-sandbox) (`create`/`check`/`list`/`cleanup`)
+and hosted-provider browsing to [`bench hub env`](#bench-hub-env). The old
+`bench environment create|check|list|cleanup` and `show|inspect` (plus `list
+--provider`/`--hub`) still work, each printing a one-line stderr notice.
 
 ## bench hub
 

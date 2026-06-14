@@ -1,13 +1,22 @@
-"""The benchmark-adoption verbs moved from ``bench agent`` to ``bench adopt``.
+"""Benchmark adoption is canonically ``bench eval adopt init|convert|verify``.
 
-`bench adopt init|convert|verify` is canonical; the legacy
-`bench agent create|run|verify` stay as hidden deprecated aliases (one-release
-window) emitting a stderr deprecation notice, and `--hub` is the deprecated
-spelling of `environment list --provider`. These tests pin both the new surface
-and the back-compat behavior so the rename is additive (no hard break).
+Adoption lives under ``eval`` because ``eval`` is the universal benchmark entry
+point (``eval create`` runs a benchmark; ``eval adopt`` makes a foreign one
+runnable). Two prior spellings stay as hidden deprecated aliases for one release
+(removed in 0.7), each emitting a one-line stderr notice that points at
+``bench eval adopt``:
+
+* the top-level ``bench adopt`` (the 0.6-dev intermediate name), and
+* the original ``bench agent create|run|verify``.
+
+``--hub`` likewise remains the deprecated spelling of ``environment list
+--provider`` (hosted browsing moved to ``bench hub env list``). These tests pin
+the canonical surface and every back-compat path so the renames stay additive.
 """
 
 from __future__ import annotations
+
+import re
 
 from typer.testing import CliRunner
 
@@ -16,16 +25,41 @@ from benchflow.cli.main import app
 
 runner = CliRunner()
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-def test_adopt_group_exposes_init_convert_verify() -> None:
-    res = runner.invoke(app, ["adopt", "--help"])
+
+def _panel_command_names(out: str) -> set[str]:
+    """Command names from Rich help panel rows (``│ <name>  <desc>``) only.
+
+    The top-level tagline prose contains the word "adopt" (``run, author, and
+    adopt agent benchmarks``), so a naive substring check would false-positive;
+    parse the command-panel rows the way the docs-drift guard does.
+    """
+    names: set[str] = set()
+    for line in _ANSI_RE.sub("", out).splitlines():
+        m = re.match(r"^\s*│\s+([A-Za-z][\w-]*)\s", line)
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def test_eval_adopt_group_exposes_init_convert_verify() -> None:
+    res = runner.invoke(app, ["eval", "adopt", "--help"])
     assert res.exit_code == 0
     for verb in ("init", "convert", "verify"):
-        assert verb in res.output, f"`bench adopt` missing {verb!r}: {res.output}"
+        assert verb in res.output, f"`bench eval adopt` missing {verb!r}: {res.output}"
     # each subcommand resolves
     for verb in ("init", "convert", "verify"):
-        sub = runner.invoke(app, ["adopt", verb, "--help"])
-        assert sub.exit_code == 0, f"`bench adopt {verb} --help` failed: {sub.output}"
+        sub = runner.invoke(app, ["eval", "adopt", verb, "--help"])
+        assert sub.exit_code == 0, (
+            f"`bench eval adopt {verb} --help` failed: {sub.output}"
+        )
+
+
+def test_eval_help_shows_adopt_subgroup() -> None:
+    res = runner.invoke(app, ["eval", "--help"])
+    assert res.exit_code == 0
+    assert "adopt" in res.output, f"`bench eval` should list adopt: {res.output}"
 
 
 def test_agent_help_shows_management_hides_adoption() -> None:
@@ -37,6 +71,37 @@ def test_agent_help_shows_management_hides_adoption() -> None:
         assert verb not in res.output, f"deprecated {verb!r} still shown in agent help"
 
 
+def test_adopt_is_hidden_from_top_level_help() -> None:
+    # The intermediate top-level `bench adopt` is now a hidden deprecated alias:
+    # absent from the command panels (the tagline prose still says "adopt").
+    res = runner.invoke(app, ["--help"], terminal_width=200)
+    assert res.exit_code == 0
+    assert "adopt" not in _panel_command_names(res.output), (
+        f"deprecated top-level adopt still shown as a command: {res.output}"
+    )
+
+
+def test_eval_adopt_init_is_canonical_and_silent(tmp_path) -> None:
+    shared._DEPRECATION_WARNED.clear()
+    res = runner.invoke(
+        app,
+        ["eval", "adopt", "init", "canonical-bench", "--benchmarks-dir", str(tmp_path)],
+    )
+    assert res.exit_code == 0
+    assert "deprecation" not in res.stderr
+
+
+def test_legacy_top_level_adopt_still_works_and_warns(tmp_path) -> None:
+    shared._DEPRECATION_WARNED.clear()
+    res = runner.invoke(
+        app, ["adopt", "init", "legacy-adopt", "--benchmarks-dir", str(tmp_path)]
+    )
+    assert res.exit_code == 0  # the alias still scaffolds
+    assert "Scaffolded" in res.output  # real work happened on stdout
+    # the notice is on stderr (res.output mixes both streams; res.stderr is pure)
+    assert "deprecation" in res.stderr and "bench eval adopt init" in res.stderr
+
+
 def test_legacy_agent_create_still_works_and_warns(tmp_path) -> None:
     shared._DEPRECATION_WARNED.clear()
     res = runner.invoke(
@@ -44,17 +109,8 @@ def test_legacy_agent_create_still_works_and_warns(tmp_path) -> None:
     )
     assert res.exit_code == 0  # the alias still scaffolds
     assert "Scaffolded" in res.output  # real work happened on stdout
-    # the notice is on stderr (res.output mixes both streams; res.stderr is pure)
-    assert "deprecation" in res.stderr and "bench adopt init" in res.stderr
-
-
-def test_adopt_init_is_canonical_and_silent(tmp_path) -> None:
-    shared._DEPRECATION_WARNED.clear()
-    res = runner.invoke(
-        app, ["adopt", "init", "canonical-bench", "--benchmarks-dir", str(tmp_path)]
-    )
-    assert res.exit_code == 0
-    assert "deprecation" not in res.stderr
+    # the notice is on stderr and points at the canonical command
+    assert "deprecation" in res.stderr and "bench eval adopt init" in res.stderr
 
 
 def test_deprecation_fires_once_per_process(tmp_path) -> None:

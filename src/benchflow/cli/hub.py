@@ -6,6 +6,7 @@ only wires the call.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -17,7 +18,7 @@ from benchflow.cli._hosted_env import (
     hosted_env_list,
     hosted_env_show,
 )
-from benchflow.cli._shared import console
+from benchflow.cli._shared import console, print_error
 from benchflow.hub.harbor_registry import DEFAULT_HARBOR_REGISTRY_URL
 
 
@@ -84,13 +85,18 @@ def register_hub(app: typer.Typer) -> None:
                 cache_dir=cache_dir,
                 limit=limit,
             )
+        # Surface a user-meaningful message instead of a raw stdlib repr: a bad
+        # --registry otherwise leaks `Expecting value: line 1 column 1 (char 0)`
+        # (JSONDecodeError) or `[Errno 2] ...` (OSError). print_error escapes the
+        # path + routes to stderr.
+        except json.JSONDecodeError:
+            print_error(f"--registry {registry} is not valid JSON")
+            raise typer.Exit(1) from None
+        except OSError as exc:
+            print_error(f"--registry {registry}: {exc.strerror or exc}")
+            raise typer.Exit(1) from None
         except Exception as exc:
-            # escape(): the message echoes the user-supplied --registry path,
-            # which can contain Rich markup (`[`, `[/red]`) — an unescaped
-            # interpolation makes the error handler itself raise MarkupError.
-            console.print(
-                f"[red]Harbor compatibility check failed:[/red] {escape(str(exc))}"
-            )
+            print_error(f"Harbor compatibility check failed: {exc}")
             raise typer.Exit(1) from exc
 
         summary = records_summary(records)
