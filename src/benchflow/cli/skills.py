@@ -185,3 +185,14 @@ def register_skills(app: typer.Typer) -> None:
             console.print(
                 f"[green]GEPA traces exported to {escape(str(gepa_dir))}[/green]"
             )
+
+        # Match `eval create`'s _exit_if_evaluation_had_errors: a run with any
+        # errored case is a failure for CI/scripting — exit non-zero so a
+        # 100%-error run (e.g. missing credentials) is not reported as success.
+        errored = sum(1 for c in result.case_results if c.error)
+        if errored:
+            print_error(
+                f"{errored}/{len(result.case_results)} eval case(s) errored — "
+                "the eval did not complete cleanly."
+            )
+            raise typer.Exit(1)

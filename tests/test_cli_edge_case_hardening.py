@@ -423,3 +423,39 @@ def test_arg_validation_errors_route_to_stderr(argv, needle):
     assert res.exit_code == 1
     assert needle in res.stderr
     assert needle not in res.stdout
+
+
+def test_skills_eval_exits_nonzero_when_cases_error(tmp_path, monkeypatch):
+    # A run where cases errored (e.g. missing credentials) must exit non-zero,
+    # matching `eval create` — a 100%-error run printed `0/1` but exited 0, so CI
+    # read a total failure as success.
+    from benchflow.skill_eval._core import CaseResult, SkillEvalResult, SkillEvaluator
+
+    evals = tmp_path / "evals"
+    evals.mkdir()
+    (evals / "evals.json").write_text(
+        '{"skill_name":"s","cases":[{"id":"c","question":"q",'
+        '"ground_truth":"g","expected_behavior":["x"]}]}'
+    )
+
+    async def fake_run(self, **kwargs):
+        return SkillEvalResult(
+            skill_name="s",
+            n_cases=1,
+            agents=["oracle"],
+            case_results=[
+                CaseResult(
+                    case_id="c",
+                    agent="oracle",
+                    model="",
+                    with_skill=True,
+                    reward=None,
+                    error="boom",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(SkillEvaluator, "run", fake_run)
+    res = runner.invoke(app, ["skills", "eval", str(tmp_path), "--agent", "oracle"])
+    assert res.exit_code == 1
+    assert "errored" in res.stderr
