@@ -143,18 +143,21 @@ def run_parity(
         artifact_path = (
             result_path.parent / "artifacts" / "browser-use-smoke-trace.json"
         )
-        if not artifact_path.is_file():
-            raise AssertionError(
-                f"missing Stagehand BenchFlow artifact: {artifact_path}"
-            )
-        artifact = json.loads(artifact_path.read_text())
+        # A genuine agent failure (e.g. a live anti-bot 403 that blocks the
+        # browser) leaves the BenchFlow eval completed with a reward but no
+        # trace artifact. That is an honest parity DIVERGENCE, not an infra
+        # error: record it as evidence rather than crashing, matching the
+        # browser-use harness. The eval-completed contract is still enforced
+        # below by ``_assert_eval_report``.
+        artifact = _load_optional_json(artifact_path)
         verifier_artifact = _load_optional_json(
             result_path.parent / "artifacts" / "stagehand-url-verifier.json"
         )
+        bench_url = _stagehand_current_url(artifact, verifier_artifact)
         parity_artifact = {
             **artifact,
             "final_result": _semantic_final_result(
-                _stagehand_current_url(artifact, verifier_artifact),
+                bench_url if bench_url is not None else "",
                 descriptor,
             ),
         }
@@ -628,54 +631,73 @@ def _compare(
     expected_agent: str,
     descriptor: Mapping[str, Any],
 ) -> dict[str, Any]:
+    # The BenchFlow eval must COMPLETE cleanly: that is an infra contract, not a
+    # parity question, so it stays a hard error (mirrors the browser-use
+    # harness's _assert_eval_report). Everything past this point is an
+    # original-vs-BenchFlow comparison: a legitimate agent failure (anti-bot
+    # 403, no trace, reward 0.0 from the now-fixed verifier) is an honest
+    # DIVERGENCE that we RECORD as evidence instead of crashing.
+    _assert_eval_report(bench_eval, expected_agent=expected_agent)
+
     original_score = float(original["score"])
     raw_bench_reward = _number(_mapping(bench_result.get("rewards")).get("reward"))
     if raw_bench_reward is None:
+        # No reward at all means the eval did not actually score the task; that
+        # is an infra failure, not a divergence, and must stay a hard error.
         raise AssertionError(f"BenchFlow result has no numeric reward: {bench_result}")
     bench_reward = float(raw_bench_reward)
     original_url = str(original["final_url"])
+    # Use the reward from result.json even when no trace exists; the URL may be
+    # absent (no trace) without aborting the comparison.
     bench_url = _stagehand_current_url(artifact, verifier_artifact)
-    if original_score != bench_reward:
-        raise AssertionError(
-            f"reward mismatch: original={original_score} benchflow={bench_reward}"
-        )
-    if not _url_satisfies_success_check(original_url, descriptor):
-        raise AssertionError(
-            f"original final URL does not satisfy Stagehand success check: {original_url!r}"
-        )
-    if not _url_satisfies_success_check(bench_url, descriptor):
-        raise AssertionError(
-            f"BenchFlow final URL does not satisfy Stagehand success check: {bench_url!r}"
-        )
-    if bench_result.get("agent") != expected_agent:
-        raise AssertionError(f"unexpected BenchFlow agent: {bench_result.get('agent')}")
-    if bench_result.get("error") is not None:
-        raise AssertionError(f"BenchFlow error was not clean: {bench_result['error']}")
-    if bench_result.get("verifier_error") is not None:
-        raise AssertionError(
-            f"BenchFlow verifier_error was not clean: {bench_result['verifier_error']}"
-        )
+
     trajectory = _mapping(bench_result.get("trajectory_summary"))
     tool_calls = int(
         bench_result.get("n_tool_calls") or trajectory.get("tool_call_steps") or 0
     )
-    steps = artifact.get("steps")
-    screenshots = artifact.get("screenshots_b64")
-    if int(trajectory.get("steps") or 0) < 3:
-        raise AssertionError(f"BenchFlow trajectory is too thin: {bench_result}")
+    steps = _sequence_or_empty(artifact.get("steps"))
+    screenshots = _sequence_or_empty(artifact.get("screenshots_b64"))
+    trajectory_steps = int(trajectory.get("steps") or 0)
+
+    # Collect divergence notes. Any non-empty note flips the summary to a
+    # recorded divergence (parity-recorded -> verdict parity-divergent), with
+    # the original reward, the BenchFlow reward, and the reward delta kept as
+    # honest evidence rather than raising AssertionError.
+    divergences: list[str] = []
+    if original_score != bench_reward:
+        divergences.append(
+            f"reward-mismatch: original={original_score} benchflow={bench_reward}"
+        )
+    if not _url_satisfies_success_check(original_url, descriptor):
+        divergences.append(
+            f"original-url-fails-success-check: {original_url!r}"
+        )
+    if bench_url is None:
+        divergences.append("benchflow-no-trace: BenchFlow artifact has no current URL")
+    elif not _url_satisfies_success_check(bench_url, descriptor):
+        divergences.append(f"benchflow-url-fails-success-check: {bench_url!r}")
+    if bench_result.get("agent") != expected_agent:
+        divergences.append(
+            f"unexpected-benchflow-agent: {bench_result.get('agent')}"
+        )
+    if bench_result.get("error") is not None:
+        divergences.append(f"benchflow-error: {bench_result['error']}")
+    if bench_result.get("verifier_error") is not None:
+        divergences.append(f"benchflow-verifier-error: {bench_result['verifier_error']}")
+    if trajectory_steps < 3:
+        divergences.append("benchflow-thin-trajectory")
     if tool_calls < 1:
-        raise AssertionError(f"BenchFlow agent emitted no tool calls: {bench_result}")
-    if not isinstance(steps, Sequence) or isinstance(steps, (str, bytes)) or not steps:
-        raise AssertionError(f"Stagehand artifact has no steps: {artifact}")
-    if (
-        not isinstance(screenshots, Sequence)
-        or isinstance(screenshots, (str, bytes))
-        or not screenshots
-    ):
-        raise AssertionError(f"Stagehand artifact has no screenshots: {artifact}")
-    _assert_eval_report(bench_eval, expected_agent=expected_agent)
-    return {
-        "ok": True,
+        divergences.append("benchflow-no-tool-calls")
+    if not steps:
+        divergences.append("benchflow-no-trace: Stagehand artifact has no steps")
+    if not screenshots:
+        divergences.append(
+            "benchflow-no-trace: Stagehand artifact has no screenshots"
+        )
+
+    reward_delta = abs(bench_reward - original_score)
+    summary: dict[str, Any] = {
+        "ok": not divergences,
         "task_id": original["task_id"],
         "original": {
             "score": original_score,
@@ -686,8 +708,8 @@ def _compare(
         },
         "benchflow": {
             "reward": bench_reward,
-            "agent": bench_result["agent"],
-            "trajectory_steps": trajectory["steps"],
+            "agent": bench_result.get("agent"),
+            "trajectory_steps": trajectory_steps,
             "tool_calls": tool_calls,
             "artifact_steps": len(steps),
             "screenshots_b64": len(screenshots),
@@ -700,6 +722,15 @@ def _compare(
         },
         "benchflow_eval": dict(bench_eval),
     }
+    if divergences:
+        summary["divergence"] = {
+            "status": "divergent",
+            "notes": divergences,
+            "original_reward": original_score,
+            "benchflow_reward": bench_reward,
+            "reward_delta": reward_delta,
+        }
+    return summary
 
 
 def _semantic_final_result(url: str, descriptor: Mapping[str, Any]) -> str:
@@ -726,15 +757,20 @@ def _url_satisfies_success_check(url: str, descriptor: Mapping[str, Any]) -> boo
 
 def _stagehand_current_url(
     artifact: Mapping[str, Any], verifier_artifact: Mapping[str, Any]
-) -> str:
+) -> str | None:
+    """Return the BenchFlow current URL, or ``None`` when no trace produced one.
+
+    A genuine agent failure (e.g. an anti-bot 403 that blocks the browser)
+    leaves no trace and hence no current URL. That is an honest divergence the
+    caller RECORDS as evidence, so this returns ``None`` instead of raising.
+    """
+
     value = artifact.get("stagehand_current_url") or verifier_artifact.get(
         "current_url"
     )
     if isinstance(value, str) and value.startswith("http"):
         return value
-    raise AssertionError(
-        f"Stagehand BenchFlow artifact has no current URL: {artifact!r} {verifier_artifact!r}"
-    )
+    return None
 
 
 def _assert_eval_report(payload: Mapping[str, Any], *, expected_agent: str) -> None:
@@ -851,6 +887,12 @@ def _docker_ids(cmd: list[str], *, run_fn: RunFn) -> list[str]:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _sequence_or_empty(value: Any) -> Sequence[Any]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return value
+    return []
 
 
 def _number(value: Any) -> float | None:
