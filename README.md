@@ -26,30 +26,31 @@ BenchFlow is a universal environment framework: it runs AI agents against task e
 ## Quickstart
 
 ```bash
-# Install benchflow 0.6.0 from PyPI
-uv tool install --prerelease allow benchflow
+# Install the latest stable BenchFlow CLI (0.6.2)
+uv tool install benchflow
 
 # Run a benchmark: any task source, any ACP agent, any sandbox
 export GEMINI_API_KEY=...            # or claude login / codex --login for subscription auth
 bench eval create \
     --source-repo benchflow-ai/skillsbench --source-path tasks \
     --agent gemini --model gemini-3.1-flash-lite-preview \
-    --sandbox daytona --concurrency 64
+    --sandbox docker
 ```
 
 Each run writes a per-task `result.json` (rewards + trajectory + token usage) and a job `summary.json` (pass-rate, cost, and — for looped runs — a pass@iteration convergence curve). New here? Start with [Getting started](./docs/getting-started.md), or paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code / Codex / Gemini CLI and let it drive the whole thing.
 
 ## Install
 
-`0.6.0` is on PyPI. Install (or upgrade) with uv or pip:
+`0.6.2` is the latest stable release on PyPI. Install (or upgrade) with uv or pip:
 
 ```bash
-uv tool install --prerelease allow benchflow            # add --upgrade to refresh an existing install
-pip install --pre --upgrade benchflow                   # pip equivalent
+uv tool install benchflow                  # add --upgrade to refresh an existing install
+pip install --upgrade benchflow            # pip equivalent
 ```
 
-- `--prerelease allow` (uv) / `--pre` (pip) is required for BenchFlow's pinned LiteLLM release-candidate dependency, not for benchflow itself (`0.6.0` is a final release). Confirm with `bench --version`.
+- Confirm with `bench --version`; the stable line should report `0.6.2`.
 - If you see `Executables already exist: bench, benchflow`, re-run with `--force` to replace stale entrypoints from an older install.
+- For Daytona or Modal extras, install the relevant optional package, for example `uv tool install 'benchflow[sandbox-daytona]'`.
 
 Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --prerelease allow --upgrade benchflow`).
 

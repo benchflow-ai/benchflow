@@ -4,8 +4,7 @@ Test whether your agent skill actually helps agents perform better.
 ## Install
 
 ```bash
-uv tool install --prerelease allow benchflow
-# --prerelease allow is for the pinned LiteLLM rc dependency, not benchflow itself.
+uv tool install benchflow
 ```
 
 ## Overview
@@ -396,8 +395,7 @@ BenchFlow generates everything ephemeral — only results persist.
 **CI integration:**
 ```bash
 # In your skill's CI pipeline
-uv tool install --prerelease allow benchflow
-# --prerelease allow is for the pinned LiteLLM rc dependency, not benchflow itself.
+uv tool install benchflow
 bench skills eval . --agent claude-agent-acp --no-baseline
 ```
 

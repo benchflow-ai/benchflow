@@ -62,7 +62,7 @@ The kernel is **three subsystems** — Rollout lifecycle, reward, trajectory —
 
 | Han's component | BenchFlow | Plane |
 |---|---|---|
-| **T** — Tasks | Task / `task.toml` | kernel concept |
+| **T** — Tasks | Native `task.md` package | kernel concept |
 | **H** — Harness | the agent + the kernel scaffolding around it | **Agent plane** |
 | **V** — Verifier | `RewardFunc` / `Rubric` / verifier | **Reward plane** |
 | **S** — State | the stateful world | **Environment plane** |
@@ -241,7 +241,7 @@ The manifest is BenchFlow's native format; **adapters translate every other form
 
 ## How a Task flows through the architecture
 
-A **Task** (Han's T) is the problem spec — `task.toml` + instruction + the environment package + the verifier. It is a kernel concept, and it is what wires the planes together for one run:
+A **Task** (Han's T) is the problem spec — one `task.md` plus the environment package and verifier. It is a kernel concept, and it is what wires the planes together for one run:
 
 ```
 Task ─┬─→ selects the Environment package + manifest  ───→ Environment plane provisions S

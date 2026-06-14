@@ -194,7 +194,7 @@ bench eval create -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lit
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config` | — | YAML config file |
-| `--tasks-dir` | — | Local task dir (single task with task.toml, or parent of many) |
+| `--tasks-dir` | — | Local task dir (single native `task.md` package, compatibility split-layout task, or parent of many) |
 | `-d`, `--dataset` | — | Registry dataset to run as `<name>@<version>` (e.g. `skillsbench@1.1`). Resolves the pinned snapshot from the registry, clones tasks at their pinned commit, verifies each task's sha256 content digest, and checks the dataset's `bench_version` range against the installed benchflow. Each `result.json`/`config.json` is stamped with `dataset_name`, `dataset_version`, and the task's `task_digest`. |
 | `--registry` | skillsbench registry | Dataset registry JSON URL or local file. Only valid with `--dataset`. |
 | `--source-repo` | — | Remote repo as `org/repo` (e.g. `benchflow-ai/skillsbench`) |
@@ -214,7 +214,7 @@ bench eval create -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lit
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |
 | `--environment-manifest` | — | Path to an Environment-plane manifest (`environment.toml`); applied to every rollout in the batch |
-| `--prompt` | `instruction.md` | Prompt to send to the agent; repeatable for multi-prompt runs |
+| `--prompt` | task prompt | Prompt to send to the agent; repeatable for multi-prompt runs |
 | `--concurrency` | `4` | Max concurrent tasks (batch mode only) |
 | `--build-concurrency` | `--concurrency` | Max concurrent docker image builds; set lower (e.g. `8`) when `--concurrency` is high to avoid overwhelming the docker daemon |
 | `--worker-concurrency` | — | Run batch eval through isolated worker subprocesses, each with at most this many concurrent tasks; `--concurrency` remains the aggregate target |

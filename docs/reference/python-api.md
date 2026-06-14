@@ -4,7 +4,7 @@ The Rollout/Scene API is the primary way to run agent benchmarks programmaticall
 ## Install
 
 ```bash
-uv tool install --prerelease allow 'benchflow==0.6.0'
+uv tool install benchflow
 ```
 
 ## Quick Start
@@ -72,7 +72,7 @@ scene = Scene(
         Role("reviewer", "gemini", "gemini-3.1-flash-lite-preview"),
     ],
     turns=[
-        Turn("coder"),                    # None prompt = instruction.md
+        Turn("coder"),                    # None prompt = native task goal
         Turn("reviewer", "Review the current workspace."),
         Turn("coder", "Fix the issues."),
     ],
