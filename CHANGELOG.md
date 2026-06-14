@@ -9,6 +9,15 @@
 - The "task.md already exists" migrate error now names both surfaces
   (`--overwrite` for the CLI, `overwrite=True` for the Python API) instead of
   only the API kwarg.
+- `bench eval view <job-dir>` no longer shows a blank "No trajectory files
+  found" when given a job directory (the natural value from `eval create`'s
+  "Artifacts:" line) — it now indexes the rollout subdirectories to drill into.
+- `bench hub env list` prints a footer (`Showing N…`) with how to refine
+  (`--search`/`--owner`/`--limit`/`--json`), so a small page of a large catalog
+  no longer reads as "the provider only has N environments".
+- `bench tasks check --level publication-grade` errors for a missing verifier
+  package now include a remediation hint (author `verifier/verifier.md`; note
+  that `bench tasks migrate` does not generate it), instead of a dead-end.
 
 ## 0.6.0 — 2026-06-13
 

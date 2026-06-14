@@ -459,3 +459,20 @@ def test_skills_eval_exits_nonzero_when_cases_error(tmp_path, monkeypatch):
     res = runner.invoke(app, ["skills", "eval", str(tmp_path), "--agent", "oracle"])
     assert res.exit_code == 1
     assert "errored" in res.stderr
+
+
+def test_viewer_job_dir_indexes_rollout_subdirs(tmp_path):
+    # `eval view <job_dir>` used to render a blank "No trajectory files found"
+    # (the natural value from create's "Artifacts:" line); now it indexes the
+    # rollout subdirectories so the user knows to drill in.
+    from benchflow.trajectories.viewer import render_rollout
+
+    rollout = tmp_path / "task-a__trial-1"
+    rollout.mkdir()
+    (rollout / "turn1.txt").write_text(
+        '{"type":"system","session_id":"s","model":"m"}\n'
+    )
+    html_out = render_rollout(tmp_path)
+    assert "job directory" in html_out
+    assert "task-a__trial-1" in html_out
+    assert "No trajectory files found" not in html_out

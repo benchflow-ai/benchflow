@@ -76,6 +76,16 @@ def hosted_env_list(
             escape(str(name)), escape(version), escape(visibility), escape(updated)
         )
     console.print(table)
+    # The table is a (often small) page of a much larger catalog; without this
+    # footer a user reasonably concludes the provider has only these few.
+    total = (
+        data.get("total") or data.get("totalCount") if isinstance(data, dict) else None
+    )
+    suffix = f" of {total}" if isinstance(total, int) and total > len(rows) else ""
+    console.print(
+        f"[dim]Showing {len(rows)}{suffix} environment(s). Refine with "
+        "--search/--owner, raise --limit, or use --json for the full payload.[/dim]"
+    )
 
 
 def hosted_env_show(*, source_env: str, version: str | None) -> None:
