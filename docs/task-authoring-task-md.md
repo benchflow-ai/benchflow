@@ -233,6 +233,82 @@ A correct task scores `1.0` on its oracle run before any model sees it.
 
 ---
 
+## Multi-container tasks
+
+A task may ship an `environment/docker-compose.yaml` alongside the
+`Dockerfile`. The agent always runs in the `main` service; any additional
+services you declare become sibling containers on the same Docker network.
+This supports vulhub-style CVE tasks where the agent attacks a separate target
+container over the network.
+
+> `environment/Dockerfile` is always required — `bench tasks check` rejects a
+> task that ships only a `docker-compose.yaml`. If your `main` service uses a
+> prebuilt `image:` and needs no build context, still include a minimal
+> `Dockerfile` (e.g. `FROM <same-image>`) so structural validation and other
+> tooling agree on the task package shape.
+
+```yaml
+# environment/docker-compose.yaml
+services:
+  main: {}            # agent container — BenchFlow injects build/image/limits
+  target:             # vulnerable service the agent must exploit
+    image: vulhub/struts2-s2-001:latest
+    expose: ["8080"]
+```
+
+`main` reaches `target` by service name (`http://target:8080`). The verifier
+can inspect *target-side* state — not just the agent's workspace — by passing a
+`service` argument when running commands:
+
+```python
+# In a Python-driven run or pre/post hook
+await env.exec_in_service("target", "test -f /tmp/exploit_proof.txt")
+await env.exec("cat /flag", service="target")          # equivalent form
+services = await env.inner.services()                  # ["main", "target"]
+```
+
+`exec(..., service=...)` works on the Docker sandbox and the Daytona DinD
+(compose) sandbox. Single-container backends (Modal, direct Daytona) raise a
+clear error for any non-`main` service. This lets a verifier check write-based
+oracles (`/tmp/exploit.txt` in the target), database modifications, or RCE
+markers without trusting the agent container.
+
+### Target-side verifier with `verifier.service`
+
+For tasks whose success oracle lives in a target container — an RCE marker
+file, a modified database row — point the `verifier/test.sh` verifier at that
+service with the `service` key under `verifier` in the frontmatter:
+
+```yaml
+verifier:
+  service: target     # run verifier/test.sh inside the `target` container
+```
+
+With this set, BenchFlow uploads the task's `verifier/` directory into the
+**target** container, runs `test.sh` there, and copies the resulting
+`reward.txt` / `reward.json` back to the host. `service` defaults to `"main"`
+(the agent container), so single-container tasks are unaffected.
+
+`verifier.service` is the declarative, task-schema way to do cross-container
+verification; the `env.exec_in_service(...)` Python API above is the imperative
+equivalent for hook-driven runs.
+
+> Use the same `service` name you declared in `docker-compose.yaml`. A
+> `test.sh` running in the target reaches `main` (and vice versa) by service
+> name over the Docker network, just like the agent does.
+
+### Hardening policy for multi-container tasks
+
+BenchFlow's pre-verification hardening — killing the sandbox user's processes,
+scrubbing `PATH`/`PYTHONPATH`, restoring build-config files — applies **only to
+the `main` (agent) container**. Target containers are deliberately left
+unhardened: a vulhub-style target is *meant* to be vulnerable, the agent never
+has a shell inside it, and hardening it would risk breaking the very
+vulnerability the task exercises. `verifier.service` selects where `test.sh`
+*runs*; it does not move hardening off `main`.
+
+---
+
 ## Migrating a legacy task
 
 `bench tasks migrate` converts a `task.toml` + `instruction.md` pair into
