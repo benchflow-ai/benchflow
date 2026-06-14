@@ -675,6 +675,11 @@ async def _prompt_with_idle_watchdog(
     # short overall budgets don't overshoot (e.g. timeout=30s with default
     # poll_interval=30s could overshoot 100%). Cap at 30s, floor at 1s.
     poll_interval = max(1, min(30, idle_timeout // 4, max(1, timeout // 4)))
+    # deadline is loop-INVARIANT (fixed at loop start), NOT re-derived from
+    # last_progress inside the loop. This is load-bearing: the idle branch below
+    # resets last_progress while a tool call is in-flight, so re-deriving the
+    # deadline from it would let an agent that emits a tool_call and then hangs
+    # forever push the wall-clock backstop out indefinitely. Keep this fixed.
     deadline = last_progress + timeout
 
     try:
@@ -690,6 +695,16 @@ async def _prompt_with_idle_watchdog(
             if cur_count > last_count:
                 last_progress = now
                 last_count = cur_count
+            # An in-flight tool call means the agent is actively executing a tool
+            # (e.g. a long build/test/solver shell command), not hung. Those tools
+            # emit no ACP updates until they return, so a >idle_timeout run would
+            # otherwise false-fire the watchdog and discard real work. Treat a
+            # pending tool call as progress and defer to the wall-clock `timeout`
+            # backstop below for a tool that never returns. A genuine model-side
+            # hang has no pending tool call (the prior tool already completed via
+            # tool_call_update), so it still trips the idle path.
+            elif session.pending_tool_call_ids():
+                last_progress = now
             if now - last_progress >= idle_timeout:
                 diag = IdleTimeoutDiagnostic(
                     idle_timeout_sec=idle_timeout,
