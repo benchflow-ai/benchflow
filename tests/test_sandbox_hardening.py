@@ -1678,7 +1678,10 @@ Use task.md as the canonical task entrypoint.
         from benchflow.sandbox.lockdown import _build_cleanup_cmd
 
         cmd = _build_cleanup_cmd()
-        assert "find / -name conftest.py" in cmd
+        # Rootfs conftest purge is present (pruning /proc /sys /dev to stay fast).
+        assert "-name conftest.py" in cmd
+        assert "-delete" in cmd
+        assert "-path /proc -prune" in cmd
         assert "find /tmp /var/tmp" in cmd
         assert "sitecustomize.py" in cmd
 
