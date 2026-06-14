@@ -206,7 +206,6 @@ _INSTALL_URL_DOCS = (
     "docs/release.md",
     "docs/agent-quickstart.md",
     "docs/skill-eval.md",
-    ".claude/skills/benchflow/SKILL.md",
 )
 _RC_WHEEL_URL_RE = re.compile(
     r"releases/download/\d+\.\d+\.\d+-rc\.\d+/"

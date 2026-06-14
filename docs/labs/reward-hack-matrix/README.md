@@ -53,8 +53,6 @@ Full per-cell results: [`sweep_0.2.0_vs_0.2.2.json`](sweep_0.2.0_vs_0.2.2.json).
 | pre-verify scrub (`CLEANUP_CMD`) | `find / -name conftest.py -not -path '/tests/*' -delete`; `.pth` / `sitecustomize.py` walk on `sys.path`; `*.py` purge in `/tmp`, `/var/tmp` | agent-planted hooks at any depth (P1, P7) |
 | `VERIFIER_ENV` re-pin | hardened `PYTEST_ADDOPTS`, `PYTHONPATH=""`, `PYTHONDONTWRITEBYTECODE=1`, `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, etc. | env-var injection, plugin entry-point loading |
 
-See [`.claude/dev-docs/harden-sandbox.md`](../../.claude/dev-docs/harden-sandbox.md) for the full hardening audit.
-
 ## Reproducing
 
 ```sh
@@ -83,8 +81,7 @@ and **P7 (path-trojan / pth-injection)**. The others:
   not yet swept against real benchmarks (per-benchmark answer-file shape varies).
 - **P3 / P4 / P5** — verifier-code-quality issues, not runtime-hardening issues. benchflow doesn't
   `eval()` agent input, doesn't ship an in-tree LLM judge, and uses reward-based scoring rather
-  than substring matching. Out of scope per the threat model in
-  [`harden-sandbox.md`](../../.claude/dev-docs/harden-sandbox.md).
+  than substring matching. Out of scope per the threat model.
 - **P6 (trivial verifier)** — addressed architecturally via the `verifier_error` field, not as a
   pattern blocked at runtime.
 
