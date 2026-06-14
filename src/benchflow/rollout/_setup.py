@@ -131,7 +131,16 @@ async def _resolve_agent_cwd(env: Any, task: Any) -> str:
     configured = _configured_task_workdir(task)
     if configured is None:
         cwd_result = await env.exec("pwd", timeout_sec=10)
-        return (cwd_result.stdout or "").strip() or "/app"
+        probed = (cwd_result.stdout or "").strip()
+        if probed and probed != "/":
+            return probed
+        fallback = "/root"
+        result = await env.exec(
+            f"mkdir -p {fallback} && cd {fallback} && pwd",
+            user="root",
+            timeout_sec=10,
+        )
+        return (getattr(result, "stdout", "") or "").strip() or fallback
 
     _validate_agent_workdir(configured)
     quoted = shlex.quote(configured)
