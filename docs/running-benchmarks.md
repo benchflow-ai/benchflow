@@ -1,6 +1,6 @@
 # Running Adapted Benchmarks
 
-How to run benchmarks that have been converted into Harbor-format tasks for BenchFlow.
+How to run benchmarks that have been converted into BenchFlow tasks.
 
 BenchFlow ships with adapted benchmarks under `benchmarks/<name>/`. Each benchmark
 includes a converter, parity tests, metadata, and one or more YAML job configs.
@@ -520,7 +520,7 @@ BenchFlow-native shape; the rollout then runs natively:
 
 | Source format | Signature file | Adapter |
 |---------------|----------------|---------|
-| Harbor | `task.toml` | `HarborAdapter` |
+| Task directory | `task.toml` | `HarborAdapter` |
 
 `benchflow.adapters.inbound.detect_adapter()` sniffs a task directory and
 picks the adapter whose format it matches. The adapter is a pure
@@ -694,6 +694,6 @@ All fields from [CLI reference](./reference/cli.md#yaml-config-format) apply:
 ## Adding a new benchmark
 
 See the [Benchmark Conversion Guide](../benchmarks/CONVERT.md) for the 9-step
-process to convert a new benchmark into Harbor-format tasks for BenchFlow. Harvey LAB
+process to convert a new benchmark into BenchFlow tasks. Harvey LAB
 (`benchmarks/harvey-lab/`) and ProgramBench (`benchmarks/programbench/`) are
 reference implementations.

@@ -140,7 +140,7 @@ the authoring lifecycle:
 bench tasks init my-task                 # scaffold a task.md package under tasks/
 bench tasks check tasks/my-task          # validate (default --level structural)
 bench tasks migrate legacy-task/         # convert task.toml + instruction.md → task.md
-bench tasks export tasks/my-task out/    # write a Harbor/Pier split layout + loss report
+bench tasks export tasks/my-task out/    # write a split layout (`task.toml` + `instruction.md`) + loss report
 ```
 
 See [Native task.md authoring](./docs/task-authoring-task-md.md) and the

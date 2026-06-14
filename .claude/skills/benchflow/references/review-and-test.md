@@ -25,7 +25,7 @@ Launch 4 independent subagents in parallel to review different subsystems:
 - `src/benchflow/agents/registry.py` — agent configs
 - `src/benchflow/viewer.py` — trajectory viewer
 - `src/benchflow/cli/main.py` — CLI
-- Focus: resource leaks, Harbor private attrs, CLI issues
+- Focus: resource leaks, upstream private attrs, CLI issues
 
 ### Agent 4: Test Coverage
 - All files in `tests/`

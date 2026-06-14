@@ -27,7 +27,7 @@ This architecture rests on three sources, kept honest against each other.
 - *"The harness is not meant to be intelligent"* — self-improvement targets the **model and skills**, never the harness; *"skill 是属于 memory"* (skills are memory).
 - ACP is the mechanism for modelling human interaction inside a rollout.
 
-**The agentic-RL literature** — agentic RL is a *"temporally extended, partially observable MDP"* (*The Landscape of Agentic RL*, 2509.02547) — definitionally a branching structure. Tree-structured rollouts give *"step-wise process supervised signals even using only the outcome reward"* and *"more rollouts within a fixed budget of tokens or tool calls"* (*Tree Search for LLM Agent RL* / Tree-GRPO, ICLR 2026). A scan of 13 RL libraries (verifiers, prime-rl, SkyRL, verl, NeMo-RL, Tinker, OpenEnv, Harbor, Terminal-Bench, Inspect, ORS, Gymnasium, agent-lightning) found **all model rollouts linearly** — so a tree-native rollout with environment snapshot/restore is genuine, defensible novelty, and the load-bearing hard part is snapshot/restore of *heavy* environment state (see "The hard part").
+**The agentic-RL literature** — agentic RL is a *"temporally extended, partially observable MDP"* (*The Landscape of Agentic RL*, 2509.02547) — definitionally a branching structure. Tree-structured rollouts give *"step-wise process supervised signals even using only the outcome reward"* and *"more rollouts within a fixed budget of tokens or tool calls"* (*Tree Search for LLM Agent RL* / Tree-GRPO, ICLR 2026). A scan of 12 RL libraries (verifiers, prime-rl, SkyRL, verl, NeMo-RL, Tinker, OpenEnv, Terminal-Bench, Inspect, ORS, Gymnasium, agent-lightning) found **all model rollouts linearly** — so a tree-native rollout with environment snapshot/restore is genuine, defensible novelty, and the load-bearing hard part is snapshot/restore of *heavy* environment state (see "The hard part").
 
 ## Design principles
 
@@ -207,7 +207,7 @@ hidden_from_agent = ["expectations.json", "tasks/*/fixtures"]
 
 **State is a real database**; tools are read-write ops over the schema — which is what makes state snapshot-able, diffable, and verifiable. Two topologies behind one contract: **in-sandbox** (the environment runs in the rollout's own sandbox — the default) and **shared-fleet / sidecar** (a long-lived service fleet + a `TaskDatabase` + `AccountBroker` for multi-tenant per-task accounts — the scale path).
 
-**The Stateful Multi-Service Benchmark (SMSB).** ClawsBench and chi-bench are structurally the same machine; the plane hosts both. ClawsBench is the internal dogfood (the manifest's design partner); chi-bench is the external proof — a ~25k-LOC heavy simulator with a thin MCP transport, onboarded via a ~25-line manifest with its environment **untouched**, its ~920 LOC of Harbor coupling collapsing into the manifest.
+**The Stateful Multi-Service Benchmark (SMSB).** ClawsBench and chi-bench are structurally the same machine; the plane hosts both. ClawsBench is the internal dogfood (the manifest's design partner); chi-bench is the external proof — a ~25k-LOC heavy simulator with a thin MCP transport, onboarded via a ~25-line manifest with its environment **untouched**, its ~920 LOC of adapter coupling collapsing into the manifest.
 
 ## Evaluation — the five spaces
 
@@ -235,7 +235,7 @@ Human interaction is modelled through ACP's role split: **BenchFlow is the ACP C
 
 The manifest is BenchFlow's native format; **adapters translate every other format to it.**
 
-**Inbound env adapters** — Harbor, Inspect, ORS, PrimeIntellect/Verifiers environments → run foreign benchmarks natively. **Terminal-Bench tasks run through the Harbor adapter** (Harbor is itself terminal-bench-derived).
+**Inbound env adapters** — Inspect, ORS, PrimeIntellect/Verifiers environments → run foreign benchmarks natively. **Terminal-Bench tasks run through the task-dir adapter**.
 
 **Outbound — the trainer seam.** A scored trajectory exports as a **Verifiers / ORS JSONL record** (`prompt / completion / reward / metrics / info`). Being a Verifiers/ORS-compatible producer yields a trainer — prime-rl — with zero trainer code. BenchFlow is a rollout *service*; trainers (Tinker, verl, NeMo-RL) stay external. The trajectory is the seam.
 
@@ -271,7 +271,7 @@ The architecture is one shape; these are the eight things it must carry. Capabil
 | 5 | **Continual learning** | A **Job run in `sequential-shared` mode**: Rollouts run in order over a persistent **learner store** (memory + skills). The store is versioned (a generation stamped per rollout) and rollback-capable; the **Memory space** tracks improvement, drift, and adoption. Skills stay useful *only if continuously evolved* (Han). The learner store is the one snapshot layer that does not roll back with a `Branch`. |
 | 6 | **RL-native** | The whole execution model: the Rollout is a tree, the Trajectory is a path, the Reward contract scores any node, and the trajectory exports as a trainer-ready record. Agentic RL is a temporally-extended POMDP — and the architecture is shaped like one. |
 | 7 | **Branching, rollback, Han's framework** | *Not a benchmark — the RL-native substrate itself.* First-class `Branch`; `Environment.snapshot`/`restore` as definitional roll-back; the value-function purpose of the tree; the five spaces; eval = monitoring = reward; the non-intelligent harness. Capabilities 4–6 ride on it. |
-| 8 | **Env adapters — Harbor / PrimeIntellect / OpenReward** | The **edges**: inbound adapters translate foreign formats to the manifest; **Terminal-Bench backward compatibility** rides the Harbor adapter; outbound, the trajectory exports to Verifiers/ORS. |
+| 8 | **Env adapters — PrimeIntellect / OpenReward** | The **edges**: inbound adapters translate foreign formats to the manifest; **Terminal-Bench backward compatibility** rides the task-dir adapter; outbound, the trajectory exports to Verifiers/ORS. |
 
 All eight land on one architecture — four planes, a tree-native Rollout, an adapter edge. None requires a new top-level concept.
 
@@ -306,7 +306,7 @@ So decisions are not re-litigated.
 Checked against the recent agentic-RL literature; the field's shape matches.
 - Agentic RL = a temporally-extended POMDP — definitionally a branching structure. *(The Landscape of Agentic RL, 2509.02547)*
 - Tree-structured rollouts yield process supervision from a single outcome reward and more rollouts per token/tool budget. *(Tree Search for LLM Agent RL / Tree-GRPO, ICLR 2026, 2509.21240)*
-- All 13 surveyed RL libraries model rollouts linearly with no environment snapshot/restore — tree-native + heavy-environment snapshot is real novelty, not a reinvention.
+- All 12 surveyed RL libraries model rollouts linearly with no environment snapshot/restore — tree-native + heavy-environment snapshot is real novelty, not a reinvention.
 - Rollout-as-a-service decoupled from training; the trajectory is the seam. *(ProRL Agent; PrimeIntellect Environments Hub)*
 - Continual learning = a base policy + a persistent, evolving skill library; version and roll back the store. *(MetaClaw, MemSkill, SkillLearnBench)*
 

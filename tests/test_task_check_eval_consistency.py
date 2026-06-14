@@ -21,7 +21,6 @@ from benchflow.cli.main import app
 from benchflow.evaluation import Evaluation, EvaluationConfig, MalformedTaskError
 
 SCHEMA_ONLY_TASK_MD_EXAMPLES = (
-    Path("docs/examples/task-md/harbor-parity"),
     Path("docs/examples/task-md/multi-scene"),
     Path("docs/examples/task-md/nudgebench-team"),
 )

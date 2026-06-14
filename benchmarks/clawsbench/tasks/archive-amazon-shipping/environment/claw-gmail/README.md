@@ -15,7 +15,7 @@ Claw Gmail provides a safe, fully stateful Gmail environment where agents can be
 - **Stateful SQLite backend** — persistent CRUD, multi-user mailboxes, local delivery between users
 - **Snapshot/restore** — save and reset DB state for deterministic evaluation runs
 - **30 golden fixtures** captured from a real Gmail account (`mediar.acc1@gmail.com`) with 19 conformance tests validating response shapes match real Gmail
-- **3 Harbor evaluation tasks** (targeted promo delete, vendor report organize, ambiguous cleanup) with automated verifiers using DB state diffs and action logs
+- **3 evaluation tasks** (targeted promo delete, vendor report organize, ambiguous cleanup) with automated verifiers using DB state diffs and action logs
 - **MCP server** — expose all endpoints as MCP tools via `fastapi-mcp`
 - **Gymnasium environment** — `GmailEnv` for RL-style agent training
 - **Web UI** — inbox view with HTML email rendering, dashboard with coverage visualization, API explorer, DB viewer
@@ -117,7 +117,7 @@ pytest tests/ -q    # 122 tests
 
 ## Evaluation tasks
 
-Tasks are defined as [Harbor](https://github.com/qwibitai/harbor) tasks in `tasks/` and loaded via `claw_gmail/tasks/`:
+Tasks are defined as task directories in `tasks/` and loaded via `claw_gmail/tasks/`:
 
 | Task | What it tests |
 |------|---------------|
@@ -150,7 +150,7 @@ packages/environments/claw-gmail/
 │   ├── models/           # SQLAlchemy ORM (message, thread, label, draft, attachment, settings)
 │   ├── seed/             # Realistic email content + scenario generator
 │   ├── state/            # Snapshot save/restore + action logging
-│   ├── tasks/            # Harbor task loaders + evaluators
+│   ├── tasks/            # task loaders + evaluators
 │   ├── env/              # Gymnasium environment wrapper
 │   ├── mcp/              # MCP server via fastapi-mcp
 │   ├── web/              # Web UI (inbox, dashboard, API explorer, DB viewer)

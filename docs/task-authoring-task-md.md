@@ -68,7 +68,7 @@ bench tasks check tasks/my-task --level schema   # frontmatter + prompt parse on
 frontmatter must be a mapping — a document without it fails to parse. The keys
 fall into three classes.
 
-**Task config keys** are the Harbor-compatible config surface, validated as
+**Task config keys** are the task config surface, validated as
 `TaskConfig`. Unknown keys are **rejected** (the schema is `extra="forbid"`),
 so typos fail at parse time instead of becoming silently-ignored config:
 
@@ -81,7 +81,7 @@ so typos fail at parse time instead of becoming silently-ignored config:
 | `verifier` | Verifier run policy: `timeout_sec` (default 600), `env`, `user`, `service`, … |
 | `environment` | Sandbox: `docker_image`, `cpus`, `memory_mb`, `storage_mb`, `network_mode`, `env`, `workdir`, … |
 | `oracle` | Oracle run policy: `env`, `timeout_sec` (import alias: `solution`) |
-| `source`, `artifacts`, `steps`, `multi_step_reward_strategy`, `reward` | Provenance and Harbor-compatible extras |
+| `source`, `artifacts`, `steps`, `multi_step_reward_strategy`, `reward` | Provenance and compatibility extras |
 
 `agent.timeout_sec` is **strongly recommended**: it is optional and defaults
 to unset, and a task that omits it runs the agent with no wall-clock cap
@@ -266,7 +266,7 @@ bench eval create --tasks-dir tasks/my-task --agent oracle --sandbox docker
 
 ## Exporting to the split layout
 
-To go the other way — produce a Harbor/Pier-compatible split layout from a
+To go the other way — produce a split layout from a
 `task.md` package — use `bench tasks export`:
 
 ```bash

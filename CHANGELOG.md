@@ -376,7 +376,7 @@
 - **OpenClaw ACP shim hardcodes `anthropic/` prefix** (#95) — now routes correctly for Gemini/GLM models.
 - **Oracle agent `PermissionError`** writing `agent/oracle.txt` (#91).
 - **Oracle path skips `pre_agent_hooks`** (#92) — services now start before oracle runs.
-- **Trial data parity with Harbor** (#90) — richer `result.json`, agent logs, per-phase timing.
+- **Trial data parity with the upstream format** (#90) — richer `result.json`, agent logs, per-phase timing.
 - **`SDK.run()` `PermissionError`** — `jobs_dir` subdirectories created as root (#88).
 - **Partial trajectory lost on timeout** — saved before timeout raises.
 - **Redundant `--version` binary check** removed — was wasting 30s per trial.

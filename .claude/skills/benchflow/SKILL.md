@@ -146,7 +146,7 @@ bench skills eval skills/citation-management \
 ### `hub` — check external-environment-hub compatibility
 
 ```bash
-bench hub check          # inventory/structurally-check representative Harbor-registry tasks
+bench hub check          # inventory/structurally-check representative hub-registry tasks
 ```
 
 ### `agents` — list available agents

@@ -10,7 +10,7 @@ conformance bar.
 `environment.toml` is the **manifest** — the entire framework-integration
 surface. BenchFlow's `ManifestEnvironment` adapter reads it; the chi-bench
 image, Dockerfile, and entrypoint are otherwise unmodified. The ~920 LOC of
-Harbor coupling chi-bench previously carried collapses into this manifest.
+adapter coupling chi-bench previously carried collapses into this manifest.
 
 ## How it maps to chi-bench
 

@@ -2,10 +2,10 @@
 
 ## System Overview
 
-BenchFlow runs AI coding agents inside isolated sandboxes, evaluates their output with a task-specific verifier, and returns structured results. The SDK wraps Harbor environments (Docker or Daytona) and communicates with agents via ACP (Agent Client Protocol) — JSON-RPC 2.0 over stdio. Each trial is one task run by one agent; a `Job` fans out many trials concurrently and aggregates results.
+BenchFlow runs AI coding agents inside isolated sandboxes, evaluates their output with a task-specific verifier, and returns structured results. The SDK wraps task environments (Docker or Daytona) and communicates with agents via ACP (Agent Client Protocol) — JSON-RPC 2.0 over stdio. Each trial is one task run by one agent; a `Job` fans out many trials concurrently and aggregates results.
 
 ```
-  Task (Harbor format) + TrialConfig (YAML or Python)
+  Task (split format) + TrialConfig (YAML or Python)
        |
        v
   bf.run(config) → Trial.create(config) → trial.run()
@@ -28,7 +28,7 @@ BenchFlow runs AI coding agents inside isolated sandboxes, evaluates their outpu
        |
        |  VERIFY
        |    harden_before_verify
-       |    _verify ──> Harbor Verifier
+       |    _verify ──> the verifier
        |
        v
   RuntimeResult (rewards, trajectory, error, timing)
@@ -251,7 +251,7 @@ jobs/{job_name}/{trial_name}/
 │   └── {agent_name}.txt     # Agent stderr / non-JSON lines
 ├── trajectory/
 │   └── acp_trajectory.jsonl # One JSON event per line
-└── verifier/                # Written by Harbor verifier
+└── verifier/                # Written by the verifier
     ├── reward.txt
     ├── test-stdout.txt
     └── ctrf.json            # pytest results (if verifier uses pytest)

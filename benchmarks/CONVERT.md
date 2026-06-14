@@ -1,6 +1,6 @@
 # Benchmark Conversion Guide
 
-How to convert a new benchmark into Harbor-format tasks for BenchFlow.
+How to convert a new benchmark into BenchFlow-format tasks for BenchFlow.
 
 ## Overview
 
@@ -24,7 +24,7 @@ Clone the benchmark repo and study its structure:
 
 ### 2. Write the converter (`benchflow.py`)
 
-Create `benchmarks/<name>/benchflow.py` that maps the source format to Harbor-format task directories for BenchFlow.
+Create `benchmarks/<name>/benchflow.py` that maps the source format to BenchFlow task directories for BenchFlow.
 
 Each generated task directory must contain:
 ```

@@ -7,7 +7,6 @@ Use `--level schema` for fixtures that intentionally contain only `task.md`:
 
 ```bash
 uv run --extra dev bench tasks check docs/examples/task-md/clean-body-roles-scenes --level schema
-uv run --extra dev bench tasks check docs/examples/task-md/harbor-parity --level schema
 uv run --extra dev bench tasks check docs/examples/task-md/multi-scene --level schema
 uv run --extra dev bench tasks check docs/examples/task-md/nudgebench-team --level schema
 ```

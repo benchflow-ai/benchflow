@@ -371,7 +371,7 @@ bench tasks normalize tasks/my-task -o normalized-task.md
 
 ### bench tasks export
 
-Export a `task.md` task to a Harbor/Pier-compatible split layout, with a
+Export a `task.md` task to a split layout, with a
 compatibility loss report written to `compatibility/export-report.json` in
 the export directory.
 
