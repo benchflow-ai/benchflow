@@ -205,13 +205,14 @@ def _model_selection_owned_by_env(
     agent_cfg = AGENTS.get(agent)
     if not agent_cfg:
         return False
-    # LiteLLM routing: when the model is delivered purely through env
-    # (LLM_MODEL/ANTHROPIC_MODEL + BENCHFLOW_LITELLM_MODEL_VIA_ENV) the agent
-    # must not also receive ACP model config. An alias present WITHOUT VIA_ENV
-    # (e.g. opencode) means ACP model config still runs — _format_acp_model maps
-    # it to the proxy's registered openai/<alias> route.
+    # LiteLLM routing: when the model is delivered through an agent-native env
+    # var (e.g. LLM_MODEL/ANTHROPIC_MODEL + BENCHFLOW_LITELLM_MODEL_VIA_ENV)
+    # the agent must not also receive ACP model config. Agents without a native
+    # model env mapping (codex-acp) still need ACP configuration so they do not
+    # fall back to their own defaults.
     if agent_env.get("BENCHFLOW_LITELLM_MODEL_VIA_ENV") in {"1", "true", "True"}:
-        return True
+        mapped_model_env = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
+        return bool(mapped_model_env and agent_env.get(mapped_model_env))
     if agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS"):
         return False
     provider = find_provider(model)
@@ -234,7 +235,7 @@ def _model_selection_owned_by_env(
 def _resolve_acp_model_input(agent: str, model: str, agent_env: dict[str, str]) -> str:
     """Pick the model string that should be sent through ACP model config."""
     litellm_alias = agent_env.get("BENCHFLOW_LITELLM_MODEL_ALIAS")
-    if litellm_alias:
+    if litellm_alias and agent != "codex-acp":
         return litellm_alias
     agent_cfg = AGENTS.get(agent)
     if not agent_cfg:

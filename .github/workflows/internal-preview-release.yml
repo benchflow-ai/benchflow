@@ -2,7 +2,7 @@ name: internal-preview-release
 
 on:
   workflow_run:
-    workflows: ["test"]
+    workflows: ["integration-eval"]
     types: [completed]
 
 # PyPI Trusted Publishing uses OIDC, so no PyPI token is stored in GitHub.
@@ -16,7 +16,7 @@ jobs:
     if: >-
       ${{
         github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.event == 'workflow_run' &&
         github.event.workflow_run.head_branch == 'main'
       }}
     runs-on: ubuntu-latest
@@ -38,9 +38,10 @@ jobs:
 
       - name: Compute internal preview version
         id: version
-        env:
-          TEST_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
-        run: uv run --with packaging --no-project python tools/release_version.py internal-preview
+        run: >-
+          uv run --with packaging --no-project python tools/release_version.py
+          internal-preview
+          --run-number "${{ github.event.workflow_run.run_number }}"
 
       - name: Apply internal preview version
         if: steps.version.outputs.publish == 'true'

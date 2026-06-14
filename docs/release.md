@@ -104,8 +104,10 @@ Internal preview:
 
 1. Merge a PR to `main`.
 2. `.github/workflows/test.yml` runs.
-3. `.github/workflows/internal-preview-release.yml` publishes to PyPI only if
-   the tested `main` commit passed.
+3. `.github/workflows/integration-eval.yml` runs a real rollout after the
+   tested `main` commit passes.
+4. `.github/workflows/internal-preview-release.yml` publishes to PyPI only if
+   the integration gate passed.
 
 Public release:
 

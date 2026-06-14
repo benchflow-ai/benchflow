@@ -94,6 +94,18 @@ def test_proxy_config_registers_plain_and_openai_aliases():
     names = [entry["model_name"] for entry in config["model_list"]]
     assert route.model_alias in names
     assert f"openai/{route.model_alias}" in names
+    assert "us.anthropic.claude-opus-4-8" in names
+    assert "openai/us.anthropic.claude-opus-4-8" in names
     assert config["litellm_settings"]["callbacks"] == [
         "benchflow_litellm_callback.proxy_handler_instance"
     ]
+
+
+def test_proxy_config_registers_requested_bare_model_name():
+    """Codex ACP sends the bare selected model name to the proxy."""
+    route = resolve_litellm_route("openai/gpt-5.4-mini", {"OPENAI_API_KEY": "key"})
+    config = litellm_proxy_config(route, master_key="sk-local")
+
+    names = [entry["model_name"] for entry in config["model_list"]]
+    assert "gpt-5.4-mini" in names
+    assert "openai/gpt-5.4-mini" in names
