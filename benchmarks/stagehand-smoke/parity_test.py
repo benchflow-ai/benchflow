@@ -111,7 +111,9 @@ def run_parity(
             upstream_commit=upstream_commit,
         )
         if unsupported:
-            raise AssertionError(f"selected Stagehand task is unsupported: {unsupported}")
+            raise AssertionError(
+                f"selected Stagehand task is unsupported: {unsupported}"
+            )
         if len(imported) != 1:
             raise AssertionError(f"expected one imported task dir, got {imported}")
         descriptor = _load_stagehand_descriptor(imported[0])
@@ -126,17 +128,25 @@ def run_parity(
             run_fn=run_fn,
         )
         docker_after = _benchflow_docker_resources(run_fn=run_fn)
-        if docker_after != docker_before:
+        docker_leaked = _leaked_benchflow_resources(
+            before=docker_before, after=docker_after
+        )
+        if docker_leaked["containers"] or docker_leaked["networks"]:
             raise AssertionError(
-                "BenchFlow-owned Docker resources changed after cleanup: "
-                f"before={docker_before} after={docker_after}"
+                "BenchFlow-owned Docker resources THIS run created were not "
+                f"cleaned up: leaked={docker_leaked} "
+                f"(before={docker_before} after={docker_after})"
             )
 
         result_path = _single_result_json(jobs_dir)
         bench_result = json.loads(result_path.read_text())
-        artifact_path = result_path.parent / "artifacts" / "browser-use-smoke-trace.json"
+        artifact_path = (
+            result_path.parent / "artifacts" / "browser-use-smoke-trace.json"
+        )
         if not artifact_path.is_file():
-            raise AssertionError(f"missing Stagehand BenchFlow artifact: {artifact_path}")
+            raise AssertionError(
+                f"missing Stagehand BenchFlow artifact: {artifact_path}"
+            )
         artifact = json.loads(artifact_path.read_text())
         verifier_artifact = _load_optional_json(
             result_path.parent / "artifacts" / "stagehand-url-verifier.json"
@@ -153,7 +163,7 @@ def run_parity(
             bench_result,
             artifact,
             verifier_artifact,
-            docker_after,
+            docker_leaked,
             bench_eval=bench_eval,
             expected_agent=benchflow_agent,
             descriptor=descriptor,
@@ -250,7 +260,15 @@ def run_original_stagehand(
     agent_mode: str,
     run_fn: RunFn = subprocess.run,
 ) -> dict[str, Any]:
-    runner = stagehand_repo / "packages" / "evals" / "dist" / "esm" / "framework" / "runner.js"
+    runner = (
+        stagehand_repo
+        / "packages"
+        / "evals"
+        / "dist"
+        / "esm"
+        / "framework"
+        / "runner.js"
+    )
     if not runner.is_file():
         raise FileNotFoundError(
             f"Stagehand built runner not found: {runner}. Run pnpm install/build first."
@@ -432,11 +450,17 @@ def _normalize_original_result(
     fallback_duration_sec: float | None = None,
 ) -> dict[str, Any]:
     results = raw.get("results")
-    if not isinstance(results, Sequence) or isinstance(results, (str, bytes)) or not results:
+    if (
+        not isinstance(results, Sequence)
+        or isinstance(results, (str, bytes))
+        or not results
+    ):
         raise AssertionError(f"Stagehand original result has no results: {raw!r}")
     first = results[0]
     if not isinstance(first, Mapping):
-        raise AssertionError(f"Stagehand original result entry is not a mapping: {first!r}")
+        raise AssertionError(
+            f"Stagehand original result entry is not a mapping: {first!r}"
+        )
     output = first.get("output")
     if not isinstance(output, Mapping):
         raise AssertionError(f"Stagehand original output is not a mapping: {first!r}")
@@ -444,7 +468,11 @@ def _normalize_original_result(
     if score is None:
         score = 1.0 if output.get("_success") is True else 0.0
     logs = output.get("logs")
-    log_count = len(logs) if isinstance(logs, Sequence) and not isinstance(logs, (str, bytes)) else 0
+    log_count = (
+        len(logs)
+        if isinstance(logs, Sequence) and not isinstance(logs, (str, bytes))
+        else 0
+    )
     final_url = _extract_original_final_url(output)
     duration = _metric_seconds(output, "total_ms")
     if duration is None:
@@ -628,7 +656,9 @@ def _compare(
             f"BenchFlow verifier_error was not clean: {bench_result['verifier_error']}"
         )
     trajectory = _mapping(bench_result.get("trajectory_summary"))
-    tool_calls = int(bench_result.get("n_tool_calls") or trajectory.get("tool_call_steps") or 0)
+    tool_calls = int(
+        bench_result.get("n_tool_calls") or trajectory.get("tool_call_steps") or 0
+    )
     steps = artifact.get("steps")
     screenshots = artifact.get("screenshots_b64")
     if int(trajectory.get("steps") or 0) < 3:
@@ -697,7 +727,9 @@ def _url_satisfies_success_check(url: str, descriptor: Mapping[str, Any]) -> boo
 def _stagehand_current_url(
     artifact: Mapping[str, Any], verifier_artifact: Mapping[str, Any]
 ) -> str:
-    value = artifact.get("stagehand_current_url") or verifier_artifact.get("current_url")
+    value = artifact.get("stagehand_current_url") or verifier_artifact.get(
+        "current_url"
+    )
     if isinstance(value, str) and value.startswith("http"):
         return value
     raise AssertionError(
@@ -773,6 +805,34 @@ def _benchflow_docker_resources(*, run_fn: RunFn) -> dict[str, Any]:
         "available": True,
         "containers": _docker_ids(["docker", "container", "ls", "-aq"], run_fn=run_fn),
         "networks": _docker_ids(["docker", "network", "ls", "-q"], run_fn=run_fn),
+    }
+
+
+def _leaked_benchflow_resources(
+    *,
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Resources THIS run created and failed to clean up.
+
+    A resource counts as leaked only if it is present after the run but was not
+    present before it. Pre-existing or concurrently-running benchflow-owned
+    containers/networks are tolerated so an unrelated container cannot turn a
+    clean run into a false leak failure.
+    """
+
+    before_containers = set(before.get("containers") or [])
+    before_networks = set(before.get("networks") or [])
+    return {
+        "available": after.get("available", False),
+        "containers": sorted(
+            cid
+            for cid in (after.get("containers") or [])
+            if cid not in before_containers
+        ),
+        "networks": sorted(
+            nid for nid in (after.get("networks") or []) if nid not in before_networks
+        ),
     }
 
 

@@ -309,3 +309,31 @@ def test_stagehand_artifact_manifest_uses_contains_for_contains_url_checks() -> 
             }
         },
     )
+
+
+def test_stagehand_leaked_resources_tolerates_preexisting_and_detects_leak() -> None:
+    # Per-run scoping: the stagehand parity script's cleanup check must tolerate
+    # pre-existing/concurrent benchflow-owned containers (they are in ``before``)
+    # while still flagging a container/network THIS run created and left behind.
+    module = _load_stagehand_parity_module()
+
+    before = {
+        "available": True,
+        "containers": ["hello-world-task-main-1", "skillsbench-citation-main-1"],
+        "networks": [],
+    }
+
+    # Clean run: pre-existing survivors persist, nothing new -> no leak.
+    clean = module._leaked_benchflow_resources(before=before, after=dict(before))
+    assert clean["containers"] == []
+    assert clean["networks"] == []
+
+    # Real leak: a new benchflow container/network from THIS run remains.
+    after = {
+        "available": True,
+        "containers": [*before["containers"], "benchflow-agent-sign-in-main-1"],
+        "networks": ["benchflow-agent-sign-in_default"],
+    }
+    leaked = module._leaked_benchflow_resources(before=before, after=after)
+    assert leaked["containers"] == ["benchflow-agent-sign-in-main-1"]
+    assert leaked["networks"] == ["benchflow-agent-sign-in_default"]

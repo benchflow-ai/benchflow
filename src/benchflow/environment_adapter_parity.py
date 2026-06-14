@@ -101,10 +101,10 @@ def build_environment_adapter_parity_experiment(
     criteria.append(
         _criterion(
             "cleanup",
-            "Provider cleanup left no tracked resources behind",
+            "This run's provider resources were all cleaned up (no per-run leak)",
             True,
             _cleanup_complete(summary.get("cleanup")),
-            "no leaked resources",
+            "no resources leaked by this run",
             _cleanup_detail(summary.get("cleanup")),
         )
     )
@@ -650,6 +650,15 @@ def _benchflow_elapsed_sec(benchflow: Mapping[str, Any]) -> Any:
 
 
 def _cleanup_complete(value: Any) -> bool:
+    """Cleanup is complete when THIS run leaked no tracked resources.
+
+    The ``*containers``/``*networks`` counts in the cleanup summary are scoped
+    to the resources the run itself created (present after the run but not
+    before). They are therefore zero whenever the run cleaned up after itself,
+    regardless of unrelated pre-existing or concurrently-running benchflow-owned
+    resources. A non-zero count is a real per-run leak.
+    """
+
     if not isinstance(value, Mapping):
         return False
     counts: list[int] = []
