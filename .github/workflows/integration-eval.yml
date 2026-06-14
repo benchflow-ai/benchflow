@@ -99,8 +99,8 @@ jobs:
             --source-path tasks \
             --source-ref main \
             --include "$TASK" \
-            --agent codex-acp \
-            --model openai/gpt-5.4-mini \
+            --agent openhands \
+            --model openai/gpt-4.1-mini \
             --sandbox docker \
             --concurrency 1 \
             --agent-idle-timeout 240 \
@@ -110,7 +110,7 @@ jobs:
         run: |
           uv run python tests/integration/agent_judge.py \
             jobs/integration-eval \
-            --model openai/gpt-5.4-mini \
+            --model openai/gpt-4.1-mini \
             --json
 
       - name: Run the live integration scenarios
