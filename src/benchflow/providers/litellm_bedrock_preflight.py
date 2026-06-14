@@ -24,7 +24,7 @@ class BedrockPatchPreflightError(RuntimeError):
 BEDROCK_PATCH_PREFLIGHT_SOURCE = """\
 import sys
 
-# Probe with versioned/profile-shaped Bedrock IDs: stock litellm 1.88.0rc1
+# Probe with versioned/profile-shaped Bedrock IDs: stock litellm 1.89.0
 # resolves the Opus bare alias through its cost map, so only the versioned form
 # discriminates patched from stock (#602). Fable 5 is profile-shaped today.
 PROBES = [

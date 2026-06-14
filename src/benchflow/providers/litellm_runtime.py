@@ -53,7 +53,7 @@ from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
 logger = logging.getLogger(__name__)
 
-LITELLM_VERSION_SPEC = "litellm[proxy]==1.88.0rc1"
+LITELLM_VERSION_SPEC = "litellm[proxy]==1.89.0"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
