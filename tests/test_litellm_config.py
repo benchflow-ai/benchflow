@@ -21,6 +21,7 @@ def test_bedrock_model_maps_to_litellm_bedrock_route():
 
 
 def test_bedrock_model_honors_max_thinking_effort_env():
+    """Guards PR #739 against #737's route-config effort ceiling regression."""
     route = resolve_litellm_route(
         "aws-bedrock/us.anthropic.claude-opus-4-8",
         {
@@ -30,7 +31,10 @@ def test_bedrock_model_honors_max_thinking_effort_env():
         },
     )
 
-    assert route.litellm_params["reasoning_effort"] == "max"
+    # `max` is honored as "the highest supported effort": LiteLLM 1.88.0rc1
+    # rejects `max`/`xhigh` for opus-4-8, so BenchFlow clamps to the accepted
+    # ceiling `high` rather than erroring at request time (#737).
+    assert route.litellm_params["reasoning_effort"] == "high"
 
 
 def test_azure_openai_route_uses_resource_and_preview_version():

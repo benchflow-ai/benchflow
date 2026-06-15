@@ -68,7 +68,29 @@ _BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
     r"claude-(?:(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)|fable-5(?!\d))",
     re.IGNORECASE,
 )
-_BEDROCK_THINKING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"}
+_BEDROCK_LITELLM_EFFORT_LIMIT_RE = re.compile(
+    r"claude-(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)",
+    re.IGNORECASE,
+)
+# Efforts a user may *request*, low→high. LiteLLM 1.88.0rc1's Bedrock Converse
+# transform only accepts up to ``high`` for the Claude 4.x Bedrock IDs covered
+# by ``_BEDROCK_LITELLM_EFFORT_LIMIT_RE`` and raises BadRequestError on
+# ``xhigh``/``max`` (#737), so those requested values are clamped to the
+# accepted ceiling below before they reach the wire. Other adaptive-thinking
+# Bedrock models, such as Fable 5, keep their requested effort. Kept in sync
+# with the standalone proxy patch ``litellm_bedrock_patch`` (which cannot import
+# this module — it is deployed into the sandbox alone).
+_BEDROCK_EFFORT_LADDER = ("minimal", "low", "medium", "high", "xhigh", "max")
+_BEDROCK_THINKING_EFFORTS = set(_BEDROCK_EFFORT_LADDER)
+_BEDROCK_LITELLM_MAX_EFFORT = "high"
+
+
+def _clamp_bedrock_effort(effort: str) -> str:
+    """Clamp a requested effort to the highest LiteLLM-accepted rung (#737)."""
+    ladder = _BEDROCK_EFFORT_LADDER
+    if effort not in ladder:
+        return effort
+    return ladder[min(ladder.index(effort), ladder.index(_BEDROCK_LITELLM_MAX_EFFORT))]
 
 
 @dataclass(frozen=True)
@@ -148,6 +170,8 @@ def _bedrock_thinking_effort(model: str, env: dict[str, str]) -> str | None:
     effort = (env.get(BEDROCK_THINKING_EFFORT_ENV) or "high").strip().lower()
     if effort not in _BEDROCK_THINKING_EFFORTS:
         effort = "high"
+    if _BEDROCK_LITELLM_EFFORT_LIMIT_RE.search(model):
+        return _clamp_bedrock_effort(effort)
     return effort
 
 
