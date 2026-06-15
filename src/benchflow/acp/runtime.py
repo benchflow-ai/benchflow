@@ -170,7 +170,7 @@ def _format_acp_model(model: str, agent: str) -> str:
         return f"openai/{bare}"
     # Provider ownership lives in the registry: if a ProviderConfig claims this
     # bare model family via its declared model_prefixes, route through it
-    # (e.g. mimo-v2.5-pro -> xiaomi, deepseek-v4-flash -> deepseek). This keeps
+    # (e.g. mimo-v2.5 -> xiaomi, deepseek-v4-flash -> deepseek). This keeps
     # provider/model-family knowledge in the provider registry instead of
     # growing provider-specific branches in the runtime.
     registry_match = find_provider_for_bare_model(bare)

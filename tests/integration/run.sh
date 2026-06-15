@@ -42,7 +42,7 @@ model_for_agent() {
   case "$1" in
     claude-agent-acp) echo "claude-haiku-4-5-20251001" ;;
     codex-acp)        echo "gpt-5.4-nano" ;;
-    mimo)             echo "xiaomi/mimo-v2.5-pro" ;;
+    mimo)             echo "xiaomi/mimo-v2.5" ;;
     *)                echo "$DEFAULT_MODEL" ;;
   esac
 }

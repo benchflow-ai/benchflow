@@ -86,7 +86,7 @@ def test_mimo_registered_xiaomi_model_keeps_provider_prefix():
     # removes the prefix; the models.dev heuristic must restore "xiaomi/",
     # not fall back to "anthropic/" — the MiMo CLI catalog id is
     # "xiaomi/<model>" (#679).
-    assert _format_acp_model("xiaomi/mimo-v2.5-pro", "mimo") == "xiaomi/mimo-v2.5-pro"
+    assert _format_acp_model("xiaomi/mimo-v2.5", "mimo") == "xiaomi/mimo-v2.5"
 
 
 def test_format_acp_model_routes_via_provider_registry_not_runtime_branches():
@@ -100,7 +100,7 @@ def test_format_acp_model_routes_via_provider_registry_not_runtime_branches():
         _format_acp_model("deepseek-v4-flash", "opencode")
         == "deepseek/deepseek-v4-flash"
     )
-    assert _format_acp_model("mimo-v2.5-pro", "mimo") == "xiaomi/mimo-v2.5-pro"
+    assert _format_acp_model("mimo-v2.5", "mimo") == "xiaomi/mimo-v2.5"
     # No provider-specific tuples leaked into the runtime heuristics.
     assert "xiaomi" not in {provider for _, provider in _MODELSDEV_PROVIDER_HEURISTICS}
 

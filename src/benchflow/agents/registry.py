@@ -546,7 +546,7 @@ AGENTS: dict[str, AgentConfig] = {
         acp_model_format="provider/model",
         # MiMo Code is an OpenCode fork: `mimo acp` reports agentInfo.name="OpenCode"
         # and uses models.dev "provider/model" ids, so set_model must send e.g.
-        # "openai/benchflow-<alias>" in proxy mode, or "xiaomi/mimo-v2.5-pro" in
+        # "openai/benchflow-<alias>" in proxy mode, or "xiaomi/mimo-v2.5" in
         # non-proxy mode via the registered xiaomi provider (the ("mimo","xiaomi")
         # models.dev heuristic in acp/runtime.py keeps that prefix intact).
         env_mapping={
