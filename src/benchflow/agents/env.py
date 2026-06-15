@@ -628,6 +628,25 @@ def _drop_inherited_generic_provider_overrides(
         agent_env.pop(key, None)
 
 
+def _bridge_explicit_openhands_provider_env(
+    agent_env: dict[str, str],
+    explicit_agent_env_keys: set[str],
+) -> None:
+    """Let explicit OpenHands endpoint/key flags configure the provider route."""
+    if (
+        "LLM_BASE_URL" in explicit_agent_env_keys
+        and agent_env.get("LLM_BASE_URL")
+        and "BENCHFLOW_PROVIDER_BASE_URL" not in agent_env
+    ):
+        agent_env["BENCHFLOW_PROVIDER_BASE_URL"] = agent_env["LLM_BASE_URL"]
+    if (
+        "LLM_API_KEY" in explicit_agent_env_keys
+        and agent_env.get("LLM_API_KEY")
+        and "BENCHFLOW_PROVIDER_API_KEY" not in agent_env
+    ):
+        agent_env["BENCHFLOW_PROVIDER_API_KEY"] = agent_env["LLM_API_KEY"]
+
+
 def resolve_agent_env(
     agent: str,
     model: str | None,
@@ -652,6 +671,11 @@ def resolve_agent_env(
             model=model,
             explicit_agent_env_keys=explicit_agent_env_keys,
         )
+        if agent == "openhands":
+            _bridge_explicit_openhands_provider_env(
+                agent_env,
+                explicit_agent_env_keys,
+            )
         resolve_provider_env(agent_env, model, agent)
         from benchflow.agents.providers import find_provider
 
@@ -695,6 +719,15 @@ def resolve_agent_env(
             agent_env["BENCHFLOW_PROVIDER_API_KEY"] = pre_provider_env[
                 mapped_provider_key
             ]
+        has_explicit_generic_provider_key = bool(
+            required_key
+            and "BENCHFLOW_PROVIDER_API_KEY" in explicit_agent_env_keys
+            and agent_env.get("BENCHFLOW_PROVIDER_API_KEY")
+            and (
+                "BENCHFLOW_PROVIDER_BASE_URL" in explicit_agent_env_keys
+                or "LLM_BASE_URL" in explicit_agent_env_keys
+            )
+        )
         has_oauth = any(
             key in agent_env and _shares_auth_context(required_key, key)
             for key in (
@@ -720,6 +753,7 @@ def resolve_agent_env(
             and required_key not in agent_env
             and not has_oauth
             and not has_agent_native_bridge_key
+            and not has_explicit_generic_provider_key
             and not has_codex_access_token
             and not has_codex_auth_json
         ):

@@ -235,17 +235,22 @@ def _route_registered_provider(
         if "openai-completions" in provider_cfg.all_endpoints
         else provider_cfg.api_protocol
     )
-    try:
-        api_base = resolve_base_url(
-            provider_cfg,
-            env,
-            protocol=protocol,
-        )
-    except KeyError as exc:
-        missing = ", ".join(sorted(provider_cfg.url_params.values()))
-        raise ValueError(
-            f"Provider {provider_name!r} for model {model!r} requires {missing}."
-        ) from exc
+    explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
+    explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
+    if explicit_api_base and explicit_api_key:
+        api_base = explicit_api_base
+    else:
+        try:
+            api_base = resolve_base_url(
+                provider_cfg,
+                env,
+                protocol=protocol,
+            )
+        except KeyError as exc:
+            missing = ", ".join(sorted(provider_cfg.url_params.values()))
+            raise ValueError(
+                f"Provider {provider_name!r} for model {model!r} requires {missing}."
+            ) from exc
 
     # User-supplied-base_url providers (e.g. vllm) carry an empty config base_url
     # and resolve to "". Honor the runtime-supplied BENCHFLOW_PROVIDER_BASE_URL
@@ -260,10 +265,16 @@ def _route_registered_provider(
     params = {"model": upstream}
     if api_base:
         params["api_base"] = api_base
-    api_key_ref = _registered_api_key_ref(provider_cfg)
+    api_key_ref = (
+        _env_ref("BENCHFLOW_PROVIDER_API_KEY")
+        if explicit_api_base and explicit_api_key
+        else _registered_api_key_ref(provider_cfg)
+    )
     if api_key_ref:
         params["api_key"] = api_key_ref
-        if provider_cfg.auth_env:
+        if api_key_ref == _env_ref("BENCHFLOW_PROVIDER_API_KEY"):
+            required_env.append("BENCHFLOW_PROVIDER_API_KEY")
+        elif provider_cfg.auth_env:
             required_env.append(provider_cfg.auth_env)
 
     return LiteLLMRoute(
