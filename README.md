@@ -68,7 +68,6 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |
 | Author a task in the native `task.md` format | [Native task.md authoring](./docs/task-authoring-task-md.md) |
-| Adopt an upstream benchmark into BenchFlow | [Benchmark adoption](./docs/benchmark-adoption.md) |
 | Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
@@ -83,7 +82,8 @@ Notebooks and runnable example scripts live under [`docs/examples/`](./docs/exam
 > **`bench agent` vs `bench eval adopt`.** `bench agent list` / `bench agent show`
 > inspect **registered AI agents** (the solver programs like Claude Code or
 > Gemini CLI). Onboarding a third-party benchmark into `benchmarks/<name>/` is a
-> separate workflow — `bench eval adopt init` → `convert` → `verify`. (The legacy
+> separate workflow — `bench eval adopt <source>` scaffolds and drives the
+> conversion, and `bench eval adopt <name> --verify` parity-gates it. (The legacy
 > `bench agent create|run|verify` still work as deprecated aliases through 0.6.)
 > See the [CLI reference](./docs/reference/cli.md#bench-eval-adopt) for details.
 
@@ -150,13 +150,6 @@ See [Native task.md authoring](./docs/task-authoring-task-md.md) and the
 ## Featured
 
 - **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round rollout: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./docs/examples/swebench_pro_progressive_disclosure.ipynb). See [Progressive disclosure](./docs/progressive-disclosure.md).
-
-## Research artifacts
-
-Two runnable labs validate the security story (historical, 0.2.x-era — archived under [`docs/labs/`](./docs/labs/)):
-
-- [`docs/labs/benchjack-sandbox-hardening/`](./docs/labs/benchjack-sandbox-hardening/) — end-to-end demo that 0.2.1+ blocks three [BenchJack](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/) exploits that flip 0.2.0's reward from 0.0 to 1.0.
-- [`docs/labs/reward-hack-matrix/`](./docs/labs/reward-hack-matrix/) — full reward-hack sweep across real benchmarks comparing 0.2.0 vs 0.2.2.
 
 ## Audience
 
