@@ -418,10 +418,12 @@ def _source_hash_truth_issues(source: object, label: str) -> list[str]:
     source_dict = cast(dict[str, Any], source)
     local_path_raw = source_dict.get("local_path")
     file_hashes = source_dict.get("file_hashes")
-    if not isinstance(local_path_raw, str):
-        return [f"{label}: source.local_path must be a string for hash audit"]
     if not isinstance(file_hashes, dict):
         return []
+    if local_path_raw is None:
+        return []
+    if not isinstance(local_path_raw, str):
+        return [f"{label}: source.local_path must be a string for hash audit"]
     local_path = Path(local_path_raw)
     if not local_path.exists():
         return [f"{label}: source.local_path does not exist for hash audit"]

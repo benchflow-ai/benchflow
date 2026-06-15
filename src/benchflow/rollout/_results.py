@@ -27,6 +27,7 @@ from benchflow._utils.result_metadata import (
 )
 from benchflow._utils.reward_events import build_rewards_jsonl_events
 from benchflow._utils.scoring import classify_error, classify_verifier_error
+from benchflow._utils.source_provenance import artifact_source_provenance
 from benchflow.contracts import (
     BaseUser,
     DocumentNudgeUser,
@@ -161,11 +162,17 @@ def _write_config(
     """Write config.json to rollout_dir with secrets filtered out."""
     from benchflow.agents.install import effective_install_timeout
 
+    artifact_source = artifact_source_provenance(source_provenance)
+    recorded_task_path = (
+        str(artifact_source.get("path"))
+        if artifact_source and artifact_source.get("path")
+        else task_path.name
+    )
     recorded_env = {
         k: v for k, v in agent_env.items() if _should_record_env_entry(k, v)
     }
     config_data = {
-        "task_path": str(task_path),
+        "task_path": recorded_task_path,
         "agent": agent,
         "model": model,
         "reasoning_effort": reasoning_effort,
@@ -189,8 +196,8 @@ def _write_config(
     }
     if usage_tracking is not None:
         config_data["usage_tracking"] = usage_tracking.to_config_artifact()
-    if source_provenance is not None:
-        config_data["source"] = source_provenance
+    if artifact_source is not None:
+        config_data["source"] = artifact_source
     if dataset is not None:
         config_data["dataset_name"] = dataset.get("name")
         config_data["dataset_version"] = dataset.get("version")
@@ -387,7 +394,7 @@ def _build_rollout_result(
                 "scenes": _scene_metadata(scenes or []),
                 "loop": loop or loop_block(None),
                 **(
-                    {"source": source_provenance}
+                    {"source": artifact_source_provenance(source_provenance)}
                     if source_provenance is not None
                     else {}
                 ),

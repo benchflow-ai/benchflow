@@ -12,6 +12,7 @@ from benchflow._utils.reward_events import (
     memory_score_from_events,
     reward_event_to_dict,
 )
+from benchflow._utils.source_provenance import artifact_source_provenance
 from benchflow.models import RolloutResult
 from benchflow.trajectories.metrics import (
     count_skill_invocations,
@@ -93,7 +94,7 @@ def rollout_result_payload(
             else {}
         ),
         **({"memory_score": memory_score} if memory_score is not None else {}),
-        **({"source": task_source} if task_source else {}),
+        **({"source": artifact_source_provenance(task_source)} if task_source else {}),
     }
 
 
