@@ -820,6 +820,8 @@ class TestResolveAgentEnvHostProviderEndpoint:
         for k in (
             "BENCHFLOW_PROVIDER_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
             "GEMINI_API_KEY",
             "GOOGLE_API_KEY",
             "LLM_API_KEY",
@@ -916,6 +918,50 @@ class TestResolveAgentEnvHostProviderEndpoint:
         assert result["BENCHFLOW_PROVIDER_API_KEY"] == "sk-explicit-proxy"
         assert result["LLM_BASE_URL"] == "http://explicit-proxy:9000/v1"
         assert result["LLM_API_KEY"] == "sk-explicit-proxy"
+
+    def test_explicit_openhands_llm_env_can_override_registered_provider_without_native_key(
+        self,
+    ):
+        """Guards PR #780: OpenHands proxy flags must not require native DeepSeek env."""
+        result = resolve_agent_env(
+            "openhands",
+            "deepseek/deepseek-v4-flash",
+            {
+                "LLM_BASE_URL": "https://llm-proxy.example.test/v1",
+                "LLM_API_KEY": "sk-explicit-proxy",
+            },
+        )
+
+        assert (
+            result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://llm-proxy.example.test/v1"
+        )
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "sk-explicit-proxy"
+        assert result["LLM_BASE_URL"] == "https://llm-proxy.example.test/v1"
+        assert result["LLM_API_KEY"] == "sk-explicit-proxy"
+        assert result["LLM_MODEL"] == "openai/deepseek-v4-flash"
+        assert "DEEPSEEK_API_KEY" not in result
+        assert "DEEPSEEK_BASE_URL" not in result
+
+    def test_explicit_generic_proxy_env_can_override_registered_provider_without_native_key(
+        self,
+    ):
+        """Guards PR #780: generic provider proxy env is a valid explicit route."""
+        result = resolve_agent_env(
+            "openhands",
+            "deepseek/deepseek-v4-flash",
+            {
+                "BENCHFLOW_PROVIDER_BASE_URL": "https://llm-proxy.example.test/v1",
+                "BENCHFLOW_PROVIDER_API_KEY": "sk-explicit-proxy",
+            },
+        )
+
+        assert (
+            result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://llm-proxy.example.test/v1"
+        )
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "sk-explicit-proxy"
+        assert result["LLM_BASE_URL"] == "https://llm-proxy.example.test/v1"
+        assert result["LLM_API_KEY"] == "sk-explicit-proxy"
+        assert "DEEPSEEK_API_KEY" not in result
 
     def test_no_host_override_keeps_resolved_provider_url(self, monkeypatch):
         """Sanity counterpart: without a host override zai's own endpoint is used."""

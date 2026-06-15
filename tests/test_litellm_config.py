@@ -83,6 +83,22 @@ def test_common_provider_routes(model, upstream, required_env):
     assert route.required_env == required_env
 
 
+def test_registered_provider_route_honors_explicit_generic_proxy_env():
+    """Guards PR #780: external LiteLLM proxies can back registered providers."""
+    route = resolve_litellm_route(
+        "deepseek/deepseek-v4-flash",
+        {
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://llm-proxy.example.test/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "sk-proxy",
+        },
+    )
+
+    assert route.upstream_model == "openai/deepseek-v4-flash"
+    assert route.litellm_params["api_base"] == "https://llm-proxy.example.test/v1"
+    assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
+    assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
+
+
 def test_proxy_config_registers_plain_and_openai_aliases():
     route = resolve_litellm_route(
         "aws-bedrock/us.anthropic.claude-opus-4-8",

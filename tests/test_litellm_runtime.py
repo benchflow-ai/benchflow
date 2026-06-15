@@ -135,6 +135,42 @@ async def test_daytona_uses_sandbox_local_litellm(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openhands_registered_provider_can_route_via_explicit_proxy(monkeypatch):
+    """Guards PR #780: OpenHands keeps BenchFlow tracking over explicit proxy env."""
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://172.17.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="openhands",
+        agent_env={
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://llm-proxy.example.test/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "sk-proxy",
+        },
+        model="deepseek/deepseek-v4-flash",
+        runtime=None,
+        environment="docker",
+        session_id="run-1",
+        usage_tracking="required",
+    )
+
+    assert provider_runtime is not None
+    route = starts[0]["route"]
+    assert route.litellm_params["api_base"] == "https://llm-proxy.example.test/v1"
+    assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
+    assert updated["LLM_BASE_URL"] == "http://172.17.0.1:45678/v1"
+    assert updated["LLM_API_KEY"] == provider_runtime.master_key
+    assert updated["LLM_MODEL"] == "openai/benchflow-deepseek-deepseek-v4-flash"
+    assert updated["BENCHFLOW_PROVIDER_MODEL"] == (
+        "benchflow-deepseek-deepseek-v4-flash"
+    )
+
+
+@pytest.mark.asyncio
 async def test_runtime_reuse_and_stop(monkeypatch):
     created = []
 
