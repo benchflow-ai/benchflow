@@ -12,9 +12,9 @@ Current release state:
 
 - `0.6.2` is the latest stable release **published on PyPI** (tag `v0.6.2`).
   Use the public install commands below.
-- `main` currently carries `0.6.2`. To resume internal-preview builds for the
-  next line, bump `main` to `0.6.3.dev0` — internal previews then publish as
-  `0.6.3.dev<N>` automatically after the `test` workflow passes on `main`.
+- `main` tracks the next preview line, currently `0.6.3.dev0`. Internal
+  previews publish as `0.6.3.dev<N>` automatically after the `test` workflow
+  and integration gate pass on `main`.
 
 ## Install and Upgrade Commands
 
@@ -143,6 +143,10 @@ Create matching GitHub environments:
 
 - `pypi-internal-preview`: used for automatic preview publishing from `main`.
 - `pypi-public`: used for tag-driven public releases.
+- `integration-eval-secrets`: used by the integration-eval gate for provider
+  credentials. Do not reuse `pypi-internal-preview` here, because every Actions
+  job environment creates a GitHub deployment record and can make the PyPI
+  preview environment appear stale or inactive.
 
 The workflows build with `uv build --no-sources`, check distributions with
 `twine check`, and publish with `uv publish`.

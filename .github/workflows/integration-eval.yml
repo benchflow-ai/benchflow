@@ -41,9 +41,10 @@ concurrency:
 jobs:
   eval-and-judge:
     runs-on: ubuntu-latest
-    # Provider credentials are stored as environment secrets so they can be
-    # rotated without requiring repo-admin access to Actions secrets.
-    environment: pypi-internal-preview
+    # Provider credentials are stored in a dedicated CI environment so they can
+    # be rotated without repo-admin access and without polluting PyPI preview
+    # deployment status in the GitHub Deployments sidebar.
+    environment: integration-eval-secrets
     # Only run where integration secrets are available. Fork PRs lack secrets,
     # while internal PRs should fail visibly when the real eval path breaks.
     if: >-
