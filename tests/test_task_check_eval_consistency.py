@@ -244,7 +244,7 @@ def test_eval_create_enumerates_real_skillsbench_native_examples(tmp_path):
 
 
 def test_citation_check_oracle_self_answers_static_fixture(tmp_path):
-    """Guards issue #772: citation-check oracle must not depend on live APIs."""
+    """Guards the fix from PR #773 for issue #772 against live API drift."""
     task = Path("docs/examples/task-md/real-skillsbench/citation-check")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
