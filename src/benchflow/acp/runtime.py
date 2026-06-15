@@ -671,6 +671,7 @@ async def _prompt_with_idle_watchdog(
 
     prompt_task = asyncio.create_task(acp_client.prompt(prompt))
     last_progress = asyncio.get_event_loop().time()
+    last_activity_at = datetime.now(UTC)
     last_count = _activity_count()
     # poll_interval considers BOTH idle_timeout and wall-clock timeout so that
     # short overall budgets don't overshoot (e.g. timeout=30s with default
@@ -695,6 +696,7 @@ async def _prompt_with_idle_watchdog(
             cur_count = _activity_count()
             if cur_count > last_count:
                 last_progress = now
+                last_activity_at = datetime.now(UTC)
                 last_count = cur_count
             # An in-flight tool call means the agent is actively executing a tool
             # (e.g. a long build/test/solver shell command), not hung. Those tools
@@ -706,6 +708,7 @@ async def _prompt_with_idle_watchdog(
             # tool_call_update), so it still trips the idle path.
             elif session.pending_tool_call_ids():
                 last_progress = now
+                last_activity_at = datetime.now(UTC)
             if now - last_progress >= idle_timeout:
                 diag = IdleTimeoutDiagnostic(
                     idle_timeout_sec=idle_timeout,
@@ -714,7 +717,7 @@ async def _prompt_with_idle_watchdog(
                     n_tool_calls=len(session.tool_calls),
                     n_message_chunks=len(session.message_chunks),
                     n_thought_chunks=len(session.thought_chunks),
-                    last_activity_at=datetime.now(UTC).isoformat(),
+                    last_activity_at=last_activity_at.isoformat(),
                 )
                 raise IdleTimeoutError(
                     f"Agent idle for {idle_timeout}s with no new tool call, "

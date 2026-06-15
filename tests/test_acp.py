@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -688,6 +689,40 @@ class TestIdleTimeoutDiagnostics:
             )
         info = exc_info.value.diagnostic.to_dict()
         assert info["n_tool_calls"] == 1
+
+    @pytest.mark.asyncio
+    async def test_idle_timeout_last_activity_reports_progress_time(self) -> None:
+        """Guards issue #525: last_activity_at is last progress, not timeout fire."""
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        class OneMessageThenHang:
+            def __init__(self, session):
+                self._session = session
+                self._called = False
+
+            async def prompt(self, _prompt: str):
+                if not self._called:
+                    self._called = True
+                    self._session.message_chunks.append("working")
+                    await asyncio.sleep(0.1)
+                await asyncio.Future()
+
+        session = ACPSession("diag-last-activity")
+        client = OneMessageThenHang(session)
+        with pytest.raises(IdleTimeoutError) as exc_info:
+            await execute_prompts(
+                client,  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=30,
+                idle_timeout=1,
+            )
+        finished_at = datetime.now(UTC)
+        info = exc_info.value.diagnostic.to_dict()
+        last_activity_at = datetime.fromisoformat(info["last_activity_at"])
+
+        assert info["n_message_chunks"] == 1
+        assert (finished_at - last_activity_at).total_seconds() >= 0.75
 
     @pytest.mark.asyncio
     async def test_in_flight_tool_call_defers_idle_to_wall_clock(self) -> None:
