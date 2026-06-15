@@ -19,6 +19,7 @@ from uuid import uuid4
 try:
     from tenacity import (
         retry,
+        retry_if_exception,
         stop_after_attempt,
         wait_exponential,
     )
@@ -32,6 +33,9 @@ except ImportError:  # base install without ``sandbox-daytona`` extras (#358)
             return fn
 
         return _decorator
+
+    def retry_if_exception(*_args: Any, **_kwargs: Any) -> None:
+        return None
 
     def stop_after_attempt(*_args: Any, **_kwargs: Any) -> Any:
         return None
@@ -218,6 +222,26 @@ _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
 # (``None``, or a non-positive value — both previously meant "no deadline");
 # an explicit positive ``timeout_sec`` is honored byte-for-byte as before.
 _DAYTONA_EXEC_HARD_CAP_SEC = 3600
+_DAYTONA_TRANSIENT_RETRY_CLASS_NAMES = frozenset(
+    {
+        "DaytonaConnectionError",
+        "DaytonaRateLimitError",
+        "DaytonaTimeoutError",
+    }
+)
+
+
+def _is_daytona_transient_retry_error(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    exc_type = type(exc)
+    return (
+        exc_type.__module__.startswith("daytona.")
+        and exc_type.__name__ in _DAYTONA_TRANSIENT_RETRY_CLASS_NAMES
+    )
+
+
+_DAYTONA_TRANSIENT_RETRY: Any = retry_if_exception(_is_daytona_transient_retry_error)
 
 # Shared tenacity policy for the idempotent Daytona SDK calls — session-command
 # polling and filesystem up/download. Three attempts with exponential backoff,
@@ -228,6 +252,7 @@ _DAYTONA_EXEC_HARD_CAP_SEC = 3600
 _SDK_RETRY = retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=_DAYTONA_TRANSIENT_RETRY,
     reraise=True,
 )
 
@@ -405,6 +430,7 @@ class DaytonaSandbox(BaseSandbox):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=_DAYTONA_TRANSIENT_RETRY,
         reraise=True,
     )
     async def _create_sandbox(
@@ -464,6 +490,7 @@ class DaytonaSandbox(BaseSandbox):
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=_DAYTONA_TRANSIENT_RETRY,
         reraise=True,
     )
     async def _stop_sandbox(self) -> None:
