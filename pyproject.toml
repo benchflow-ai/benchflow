@@ -118,6 +118,7 @@ target-version = "py312"
 # smolclaws claw-* sources copied under a ClawsBench task's environment/) are
 # not BenchFlow code — do not lint them.
 extend-exclude = [
+    ".agents/skills/skill-creator",
     ".claude/skills/skill-creator",
     "benchmarks/**/tasks/**/environment/claw-*",
     "tests/fixtures/skillsbench_slice",

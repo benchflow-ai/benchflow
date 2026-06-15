@@ -446,8 +446,9 @@ run at MAX. LiteLLM writes the provider call metadata to
 
 A finished command is **not** a healthy trial. After each batch, audit the
 trajectories with the **`benchflow-experiment-review`** skill (repo copy at
-`.claude/skills/benchflow-experiment-review`; see the Experiment-guidance notes in
-`AGENTS.md`). A trial counts as healthy only when **every** check passes: complete
+`.agents/skills/benchflow-experiment-review`, also reachable through the
+`.claude/skills` symlink; see the Experiment-guidance notes in `AGENTS.md`). A
+trial counts as healthy only when **every** check passes: complete
 trajectory + metadata (timing, token usage, tool usage), correct
 pass/fail/timeout status, verifier isolation (verifier starts after the agent
 exits), no reward hacking, and the right skill posture — with-skills cells must
@@ -463,7 +464,7 @@ J=jobs/opus-skill
 find $J -name rewards.jsonl -exec tail -1 {} \;                                  # reward
 grep -ho '"usage_source": "[a-z_]*"' $(find $J -name result.json)                # expect provider_response
 grep -ho '"effort": "[a-z]*"' $(find $J -name llm_trajectory.jsonl) | sort -u    # Opus MAX -> "max"
-python3 .claude/skills/benchflow-experiment-review/scripts/extract_harness_skills.py \
+python3 .agents/skills/benchflow-experiment-review/scripts/extract_harness_skills.py \
   "$(find $J -name llm_trajectory.jsonl | head -1)" --task-skill <task-skill-name>
 ```
 
