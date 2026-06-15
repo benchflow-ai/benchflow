@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.scoring import pass_rate, pass_rate_excl_errors
 from benchflow.evaluation import Evaluation, EvaluationConfig, EvaluationResult
 from benchflow.loop_strategies import LoopStrategySpec
 
@@ -266,7 +267,12 @@ def _aggregate_result(
         "errored": result.errored,
         "verifier_errored": result.verifier_errored,
         "score": result.score,
+        "score_ratio": pass_rate(passed=result.passed, total=result.total),
         "score_excl_errors": result.score_excl_errors,
+        "score_excl_errors_ratio": pass_rate_excl_errors(
+            passed=result.passed,
+            failed=result.failed,
+        ),
         "elapsed_sec": result.elapsed_sec,
         "concurrency": plan.total_concurrency,
         "worker_concurrency": plan.worker_concurrency,
