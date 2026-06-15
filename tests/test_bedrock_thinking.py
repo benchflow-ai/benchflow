@@ -130,9 +130,11 @@ def _wire_output_config_effort(reasoning_effort: str, env_override: str | None) 
 
 
 def test_run_level_effort_from_route_lands_in_bedrock_wire_payload(monkeypatch):
-    """#599 end-to-end (route path): a run-level effort baked into config.yaml
-    reaches the Bedrock Converse ``output_config.effort`` — with the host
-    process env empty, proving it is sourced from the run, not os.environ.
+    """Guards PR #613 against #599's run-env regression on the route path.
+
+    A run-level effort baked into config.yaml reaches the Bedrock Converse
+    ``output_config.effort`` with the host process env empty, proving it is
+    sourced from the run, not os.environ.
 
     Uses ``medium`` (litellm-accepted and distinct from the ``high`` default)
     so the assertion fails if the effort silently falls back.
@@ -142,18 +144,23 @@ def test_run_level_effort_from_route_lands_in_bedrock_wire_payload(monkeypatch):
 
 
 def test_run_level_effort_via_proxy_process_env_overrides_stale_route(monkeypatch):
-    """#599 end-to-end (proxy-env path): even if config.yaml carried a stale
-    default (``high``), the run-level value present in the proxy process env
-    (os.environ + agent_env) overrides it in the wire payload — this is the
-    exact divergence the old Docker translator got wrong."""
+    """Guards PR #613 against #599's run-env regression on the proxy-env path.
+
+    Even if config.yaml carried a stale default (``high``), the run-level value
+    present in the proxy process env (os.environ + agent_env) overrides it in
+    the wire payload, matching the divergence the old Docker translator got
+    wrong.
+    """
     monkeypatch.delenv(BEDROCK_THINKING_EFFORT_ENV, raising=False)
     assert _wire_output_config_effort("high", env_override="medium") == "medium"
 
 
 def test_docker_and_daytona_resolve_identical_bedrock_effort_from_run_env(monkeypatch):
-    """#599 parity: Docker (host proxy) and Daytona (sandbox proxy) build the
-    route from the SAME ``resolve_litellm_route(model, agent_env)`` call, so the
-    effort in config.yaml is identical and independent of the host's os.environ.
+    """Guards PR #613 against #599's Docker/Daytona run-env parity regression.
+
+    Docker (host proxy) and Daytona (sandbox proxy) build the route from the
+    SAME ``resolve_litellm_route(model, agent_env)`` call, so the effort in
+    config.yaml is identical and independent of the host's os.environ.
 
     The old bug was Docker-only because a host-side translator read process
     os.environ; here, with that env scrubbed, the run-level value still flows
