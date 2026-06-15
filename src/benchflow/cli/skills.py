@@ -115,6 +115,12 @@ def register_skills(app: typer.Typer) -> None:
             raise typer.Exit(1)
         if agent is None:
             agent = ["claude-agent-acp"]
+        if model is not None and len(model) not in {1, len(agent)}:
+            print_error(
+                "--model may be provided once for all agents or once per --agent; "
+                f"got {len(model)} models for {len(agent)} agents"
+            )
+            raise typer.Exit(1)
         if not (skill_dir / "evals" / "evals.json").exists():
             print_error(
                 f"No evals/evals.json found in {skill_dir}\n"
