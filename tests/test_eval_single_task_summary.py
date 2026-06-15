@@ -55,6 +55,7 @@ async def test_evaluation_run_writes_summary_for_single_task(tmp_path):
     assert payload["total"] == 1
     assert payload["passed"] == 1
     assert payload["score"] == "100.0%"
+    assert payload["score_ratio"] == 1.0
     assert result.total == 1
     assert result.passed == 1
 

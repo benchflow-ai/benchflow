@@ -160,8 +160,8 @@ def cell_result_from_summary(
       ``total_cost_usd`` / ``telemetry_coverage`` are top-level keys (not nested).
     - ``loop_summary(...)`` is spread too but is itself ``{"loop_summary": {...}}``,
       so the convergence block lives at ``summary["loop_summary"]``.
-    - ``score`` is a formatted percentage string ("70.0%"), so pass-rate is
-      recomputed from the integer ``passed`` / ``total`` counts instead.
+    - ``score_ratio`` is the numeric pass rate. Older summaries only have
+      formatted ``score`` strings, so those still fall back to integer counts.
 
     Token totals are read only when usage telemetry is **complete**
     (``telemetry_coverage == 1.0``); otherwise ``total_tokens`` /
@@ -177,10 +177,15 @@ def cell_result_from_summary(
     has_usage = coverage is not None and coverage >= 1.0
     passed = int(summary.get("passed") or 0)
     total = int(summary.get("total") or 0)
+    score_ratio = summary.get("score_ratio")
+    if isinstance(score_ratio, int | float) and not isinstance(score_ratio, bool):
+        pass_rate_value = float(score_ratio)
+    else:
+        pass_rate_value = passed / total if total else 0.0
     return CellResult(
         model=model,
         loop=loop,
-        pass_rate=(passed / total if total else 0.0),
+        pass_rate=pass_rate_value,
         passed=passed,
         total=total,
         total_tokens=(summary.get("total_tokens") if has_usage else None),

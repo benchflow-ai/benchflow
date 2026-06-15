@@ -461,6 +461,8 @@ async def test_sequential_shared_surfaces_memory_scores_in_summary_and_artifacts
 
     summary = json.loads((job._jobs_dir / "summary.json").read_text())
     assert summary["score"] == "100.0%"
+    assert summary["score_ratio"] == 1.0
+    assert summary["score_excl_errors_ratio"] == 1.0
     assert summary["memory"] == {
         "scored": 1,
         "avg_score": 0.5,

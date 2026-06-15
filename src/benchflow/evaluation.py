@@ -1761,7 +1761,13 @@ class Evaluation:
             "error_categories": error_category_counts or None,
             "verifier_error_categories": verifier_error_category_counts or None,
             "score": f"{pass_rate(passed=audit_counts['passed'], total=job_result.total):.1%}",
+            "score_ratio": pass_rate(
+                passed=audit_counts["passed"], total=job_result.total
+            ),
             "score_excl_errors": f"{pass_rate_excl_errors(passed=audit_counts['passed'], failed=audit_counts['failed']):.1%}",
+            "score_excl_errors_ratio": pass_rate_excl_errors(
+                passed=audit_counts["passed"], failed=audit_counts["failed"]
+            ),
             "elapsed_sec": elapsed,
             "memory_score": job_result.memory_score,
             "memory_score_coverage": (

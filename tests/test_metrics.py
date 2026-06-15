@@ -109,6 +109,8 @@ def test_collect_metrics_basic(results_dir):
     assert s["failed"] == 1
     assert s["errored"] == 1
     assert s["score"].startswith("33")
+    assert s["score_ratio"] == pytest.approx(1 / 3)
+    assert s["score_excl_errors_ratio"] == pytest.approx(0.5)
     assert "task-a" in s["passed_tasks"]
     assert "task-b" in s["failed_tasks"]
     assert "task-c" in s["errored_tasks"]
@@ -305,6 +307,7 @@ def test_collect_metrics_aggregates_memory_scores_without_changing_output_score(
     summary = metrics.summary()
 
     assert summary["score"] == "66.7%"
+    assert summary["score_ratio"] == pytest.approx(2 / 3)
     assert summary["passed"] == 2
     assert summary["failed"] == 1
     assert summary["memory"] == {
