@@ -599,7 +599,7 @@ class TestJobRunLogs:
 
     @pytest.mark.asyncio
     async def test_summary_json_includes_legacy_count_aliases(self, job_factory):
-        """Guards issue #543: legacy pass/fail/error aliases stay populated."""
+        """Guards the fix from PR #775 for issue #543 against alias regressions."""
         job, _ = job_factory(n_tasks=3)
         results = [
             RunResult(task_name="task-0", rewards={"reward": 1.0}),
