@@ -621,6 +621,31 @@ def _patch_docker_dind() -> None:
     _DIND_PATCH_APPLIED = True
 
 
+def _lift_agent_network_to_public(env_config: Any, sandbox_type: str) -> Any:
+    """Lift a restrictive network policy to public for in-sandbox LLM agents.
+
+    LLM agents run inside the sandbox and need outbound network for model APIs
+    and first-run agent installation. For most sandboxes BenchFlow enforces the
+    task's no-web policy at the agent layer and lifts ANY restrictive policy
+    (no-network or allowlist) to public here.
+
+    Docker is excluded: it preserves the restrictive policy and instead carves
+    out a dedicated lane to the model proxy (see ``network_policy.model_lane`` +
+    ``_egress``), so the agent reaches the model without opening the sandbox to
+    the public internet. Returns a possibly-copied ``env_config`` (the original
+    is never mutated).
+    """
+    if sandbox_type == "docker" or not _network_policy_is_restrictive(env_config):
+        return env_config
+    from benchflow.task.config import NetworkMode
+
+    env_config = env_config.model_copy(deep=True)
+    env_config.allow_internet = True
+    env_config.network_mode = NetworkMode.PUBLIC
+    env_config.allowed_hosts = None
+    return env_config
+
+
 def _create_sandbox_environment(
     sandbox_type: str,
     task: Task,
@@ -649,18 +674,8 @@ def _create_sandbox_environment(
         sandbox_type=sandbox_type,
         task_path=task_path,
     )
-    if preserve_agent_network and _network_policy_is_restrictive(env_config):
-        # LLM agents run inside the sandbox and need outbound network for model
-        # APIs and first-run agent installation. BenchFlow enforces the task's
-        # no-web policy at the agent layer instead of applying the container
-        # network block for these runs, so lift ANY restrictive policy
-        # (no-network or allowlist) to public for them.
-        from benchflow.task.config import NetworkMode
-
-        env_config = env_config.model_copy(deep=True)
-        env_config.allow_internet = True
-        env_config.network_mode = NetworkMode.PUBLIC
-        env_config.allowed_hosts = None
+    if preserve_agent_network:
+        env_config = _lift_agent_network_to_public(env_config, sandbox_type)
 
     manifest_env: dict[str, str] = {}
     if environment_manifest is not None:

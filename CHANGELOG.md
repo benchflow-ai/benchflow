@@ -13,6 +13,19 @@
   (`daytona`, `modal`) an `allowlist` task fails closed at preflight with a
   clear message instead of running unrestricted (previously `allowlist` was
   validated but unenforceable everywhere). (ENG-219)
+- **Wildcard `allowed_hosts`.** An `allowed_hosts` entry may use a single leading
+  `*.` label (e.g. `*.example.com`) to match subdomains at any depth (Harbor /
+  nginx semantics); the bare apex (`example.com`) is **not** matched by the
+  wildcard. Mid- or trailing-wildcard entries (`a.*.com`, `*example.com`,
+  `ex*mple.com`) are rejected at config parse time. (ENG-219)
+- **Dedicated model lane under a restrictive `network_mode` on `docker`.** A
+  restrictive task (`no-network` or `allowlist`) now keeps a single always-allow
+  lane open to the host-side benchflow model proxy, so an agent run reaches the
+  model without opening the sandbox to the public internet (a `no-network` run
+  becomes model-only egress). This replaces the previous blanket lift-to-`public`
+  for web-disabled `docker` runs; the other sandboxes keep the lift. Set
+  `environment.allow_model_endpoint: false` to close the lane for a fully
+  hermetic, no-model run. (ENG-219)
 
 
 ### Changed

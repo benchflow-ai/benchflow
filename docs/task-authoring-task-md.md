@@ -142,13 +142,22 @@ environment:
   `allowlist` task is **rejected at preflight** rather than run unrestricted —
   use `docker`, `no-network`, or `public` there. Wider per-sandbox allowlist
   support is tracked in ENG-219.
-- For **agent runs with web tools disabled**, the agent still needs the model
-  API, so a restrictive `network_mode` (`no-network` or `allowlist`) is lifted
-  to `public` and the no-web policy is enforced at the agent layer instead.
-  `allowlist` therefore governs oracle/verifier and non-web-disabled runs.
+- **Model access under a restrictive policy.** An agent run still needs the
+  model API. On **`docker`**, a restrictive `network_mode` (`no-network` or
+  `allowlist`) is kept intact and a single always-allow lane to the host-side
+  model proxy is added, so the agent reaches the model without opening the
+  sandbox to the public internet (a `no-network` run becomes model-only egress).
+  Set `allow_model_endpoint: false` on `[environment]` (default `true`) to close
+  that lane for a fully hermetic, no-model run. On the other sandboxes the
+  restrictive policy is instead lifted to `public` for web-disabled agent runs,
+  with the no-web policy enforced at the agent layer.
 
 `allowed_hosts` entries are hostnames only (no scheme, port, or path) and match
 the host exactly or as a parent domain (`example.com` matches `api.example.com`).
+A single leading `*.` label is also allowed: `*.example.com` matches subdomains
+at any depth (`api.example.com`, `a.b.example.com`) but **not** the bare apex
+`example.com`. The wildcard must be the leading label only — `a.*.com`,
+`*example.com`, and `ex*mple.com` are rejected at parse time.
 
 ## Prompt body and prompts/ sidecars
 

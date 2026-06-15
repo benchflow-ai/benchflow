@@ -30,13 +30,27 @@ _ALLOWED: tuple[str, ...] = tuple(
 )
 _PORT = int(os.environ.get("PORT", "8080"))
 _BUF = 65536
+#: Dedicated always-allow target (the benchflow model proxy) — permitted even
+#: when the task allowlist is empty (no-network + model-only egress).
+_LANE = os.environ.get("BENCHFLOW_EGRESS_LANE_HOST", "").strip().lower().rstrip(".")
 
 
 def _host_allowed(host: str) -> bool:
     host = host.strip().lower().rstrip(".")
-    if not host or not _ALLOWED:
+    if not host:
         return False
-    return any(host == a or host.endswith("." + a) for a in _ALLOWED)
+    if _LANE and host == _LANE:  # the model lane, allowed regardless of _ALLOWED
+        return True
+    if not _ALLOWED:
+        return False
+    for a in _ALLOWED:
+        if a.startswith("*."):
+            # leading-label wildcard: any subdomain at any depth, never the apex
+            if host.endswith("." + a[2:]):
+                return True
+        elif host == a or host.endswith("." + a):
+            return True
+    return False
 
 
 def _recv_headers(sock: socket.socket) -> bytes:

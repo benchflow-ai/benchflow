@@ -9,8 +9,10 @@ backends when the resolved policy is ``ALLOWLIST`` (see ``network_policy.py``).
 
 from __future__ import annotations
 
+import ipaddress
 import json
 from pathlib import Path
+from typing import Any
 
 #: Minimal image used for the proxy sidecar. Pinned; only needs stdlib python3.
 DEFAULT_EGRESS_PROXY_IMAGE = "python:3.12-alpine"
@@ -26,6 +28,7 @@ def build_egress_override(
     *,
     out_dir: Path,
     proxy_image: str = DEFAULT_EGRESS_PROXY_IMAGE,
+    model_lane: str | None = None,
 ) -> Path:
     """Write the allowlist egress compose override into *out_dir*; return its path.
 
@@ -38,6 +41,30 @@ def build_egress_override(
     script_dst = out_dir / "egress_proxy.py"
     script_dst.write_text(_PROXY_SCRIPT.read_text())
     proxy_url = f"http://{_EGRESS_SERVICE}:{_EGRESS_PORT}"
+    egress_env: dict[str, str] = {
+        "ALLOWED_HOSTS": ",".join(allowed_hosts),
+        "PORT": str(_EGRESS_PORT),
+    }
+    egress_service: dict[str, Any] = {
+        "image": proxy_image,
+        "networks": [_EGRESS_INTERNAL_NET, _EGRESS_EXTERNAL_NET],
+        "command": ["python3", "/egress_proxy.py"],
+        "environment": egress_env,
+        "volumes": [f"{script_dst.resolve()}:/egress_proxy.py:ro"],
+        "labels": {"benchflow.owned": "true"},
+        "restart": "on-failure",
+    }
+    if model_lane:
+        # Always-allow lane to the host-side model proxy. The agent's base_url
+        # already targets the docker host (_docker_host_address():port), so we only
+        # need the sidecar to (a) permit that host and (b) be able to route to it.
+        egress_env["BENCHFLOW_EGRESS_LANE_HOST"] = model_lane
+        try:
+            ipaddress.ip_address(model_lane)
+        except ValueError:
+            # Hostname (e.g. host.docker.internal on macOS): give the sidecar the
+            # blessed container->host route. IP literals are already routable.
+            egress_service["extra_hosts"] = [f"{model_lane}:host-gateway"]
     override = {
         "services": {
             "main": {
@@ -53,18 +80,7 @@ def build_egress_override(
                 },
                 "depends_on": [_EGRESS_SERVICE],
             },
-            _EGRESS_SERVICE: {
-                "image": proxy_image,
-                "networks": [_EGRESS_INTERNAL_NET, _EGRESS_EXTERNAL_NET],
-                "command": ["python3", "/egress_proxy.py"],
-                "environment": {
-                    "ALLOWED_HOSTS": ",".join(allowed_hosts),
-                    "PORT": str(_EGRESS_PORT),
-                },
-                "volumes": [f"{script_dst.resolve()}:/egress_proxy.py:ro"],
-                "labels": {"benchflow.owned": "true"},
-                "restart": "on-failure",
-            },
+            _EGRESS_SERVICE: egress_service,
         },
         "networks": {
             _EGRESS_INTERNAL_NET: {

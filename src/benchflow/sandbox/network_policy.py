@@ -51,6 +51,9 @@ class NetworkDecision:
     allowed_hosts: tuple[str, ...] = ()
     downgraded_from: NetworkMode | None = None  # set when allowlist failed closed
     note: str = ""
+    model_lane: bool = (
+        False  # keep a lane to the model proxy under a restrictive policy
+    )
 
 
 def resolve_network_mode(env_config: SandboxConfig) -> NetworkMode:
@@ -72,12 +75,15 @@ def resolve_network_decision(
 ) -> NetworkDecision:
     """Resolve the effective policy a *sandbox* should enforce for *env_config*."""
     mode = resolve_network_mode(env_config)
+    lane = bool(getattr(env_config, "allow_model_endpoint", True))
     if mode is NetworkMode.NO_NETWORK:
-        return NetworkDecision(EffectivePolicy.BLOCK_ALL)
+        return NetworkDecision(EffectivePolicy.BLOCK_ALL, model_lane=lane)
     if mode is NetworkMode.ALLOWLIST:
         hosts = tuple(env_config.allowed_hosts or ())
         if sandbox_supports_allowlist(sandbox):
-            return NetworkDecision(EffectivePolicy.ALLOWLIST, allowed_hosts=hosts)
+            return NetworkDecision(
+                EffectivePolicy.ALLOWLIST, allowed_hosts=hosts, model_lane=lane
+            )
         # Defense in depth: runtime_capabilities rejects allowlist at preflight on
         # these sandboxes, but if that gate is bypassed we fail CLOSED (never open).
         return NetworkDecision(
@@ -88,6 +94,7 @@ def resolve_network_decision(
                 f"network_mode='allowlist' is not enforceable on sandbox "
                 f"'{sandbox}' — failing closed to no-network"
             ),
+            model_lane=lane,
         )
     return NetworkDecision(EffectivePolicy.OPEN)
 

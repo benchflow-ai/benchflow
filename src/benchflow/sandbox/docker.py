@@ -276,13 +276,29 @@ class DockerSandbox(BaseSandbox):
         decision = resolve_network_decision(self.task_env_config, "docker")
         if decision.policy is EffectivePolicy.OPEN:
             return []
-        if decision.policy is EffectivePolicy.ALLOWLIST and self.rollout_paths:
+        lane = None
+        if decision.model_lane:
+            from benchflow.providers.litellm_runtime import _docker_host_address
+
+            lane = _docker_host_address()
+        # An allowlist, or a no-network run that keeps only the model lane open, is
+        # enforced by the egress sidecar; both need a writable rollout dir to stage
+        # the proxy compose override.
+        if self.rollout_paths and (
+            decision.policy is EffectivePolicy.ALLOWLIST or lane
+        ):
+            hosts = (
+                decision.allowed_hosts
+                if decision.policy is EffectivePolicy.ALLOWLIST
+                else ()
+            )
             override = build_egress_override(
-                decision.allowed_hosts,
+                hosts,
                 out_dir=self.rollout_paths.rollout_dir,
+                model_lane=lane,
             )
             return [override]
-        # BLOCK_ALL, or allowlist with nowhere to stage the proxy → fail closed.
+        # BLOCK_ALL with no lane, or nowhere to stage the proxy → fail closed.
         return [self._DOCKER_COMPOSE_NO_NETWORK_PATH]
 
     def _write_mounts_compose_file(self) -> Path:
