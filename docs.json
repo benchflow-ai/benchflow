@@ -20,7 +20,6 @@
         "group": "Guides",
         "pages": [
           "docs/running-benchmarks",
-          "docs/benchmark-adoption",
           "docs/continue-runs",
           "docs/task-authoring",
           "docs/task-authoring-task-md",

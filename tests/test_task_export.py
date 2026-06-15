@@ -429,7 +429,7 @@ def test_build_report_detects_task_md_instruction_prompt_drift(tmp_path: Path) -
 
 
 def test_legacy_split_export_is_lossless(tmp_path: Path) -> None:
-    """Existing Harbor/Pier split packages remain first-class compatibility input."""
+    """Existing Harbor split packages remain first-class compatibility input."""
     task_dir = tmp_path / "legacy"
     out_dir = tmp_path / "exported"
     _write_legacy_task(task_dir)

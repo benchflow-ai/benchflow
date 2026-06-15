@@ -1,12 +1,15 @@
-"""Benchmark adoption is canonically ``bench eval adopt init|convert|verify``.
+"""Benchmark adoption is canonically the single ``bench eval adopt`` command.
 
 Adoption lives under ``eval`` because ``eval`` is the universal benchmark entry
 point (``eval create`` runs a benchmark; ``eval adopt`` makes a foreign one
-runnable). Two prior spellings stay as hidden deprecated aliases for one release
-(removed in 0.7), each emitting a one-line stderr notice that points at
-``bench eval adopt``:
+runnable). ``bench eval adopt`` is one multi-mode command: ``<source>`` to
+scaffold+convert, ``<name> --scaffold-only`` to only scaffold, and
+``<name> --verify`` to run the parity gate. Two prior spellings stay as hidden
+deprecated aliases for one release (removed in 0.7), each emitting a one-line
+stderr notice that points at the new canonical shape:
 
-* the top-level ``bench adopt`` (the 0.6-dev intermediate name), and
+* the top-level ``bench adopt init|convert|verify`` (the 0.6-dev intermediate
+  name), and
 * the original ``bench agent create|run|verify``.
 
 ``--hub`` likewise remains the deprecated spelling of ``environment list
@@ -16,11 +19,15 @@ the canonical surface and every back-compat path so the renames stay additive.
 
 from __future__ import annotations
 
+import json
 import re
 
+import click
+from typer.main import get_command
 from typer.testing import CliRunner
 
 import benchflow.cli._shared as shared
+from benchflow.agent_router import create_benchmark
 from benchflow.cli.main import app
 
 runner = CliRunner()
@@ -43,23 +50,31 @@ def _panel_command_names(out: str) -> set[str]:
     return names
 
 
-def test_eval_adopt_group_exposes_init_convert_verify() -> None:
-    res = runner.invoke(app, ["eval", "adopt", "--help"])
-    assert res.exit_code == 0
-    for verb in ("init", "convert", "verify"):
-        assert verb in res.output, f"`bench eval adopt` missing {verb!r}: {res.output}"
-    # each subcommand resolves
-    for verb in ("init", "convert", "verify"):
-        sub = runner.invoke(app, ["eval", "adopt", verb, "--help"])
-        assert sub.exit_code == 0, (
-            f"`bench eval adopt {verb} --help` failed: {sub.output}"
-        )
+def _eval_adopt_command() -> click.Command:
+    """The ``bench eval adopt`` Click command, read from the registered command
+    tree rather than parsed from ``--help`` output — Rich wraps the help under a
+    narrow/no-TTY CI terminal, so a flag like ``--verify`` is not a reliable
+    substring of the rendered text (cf. the #750 help-parse fix)."""
+    cli = get_command(app)
+    return cli.commands["eval"].commands["adopt"]  # type: ignore[attr-defined]
 
 
-def test_eval_help_shows_adopt_subgroup() -> None:
-    res = runner.invoke(app, ["eval", "--help"])
-    assert res.exit_code == 0
-    assert "adopt" in res.output, f"`bench eval` should list adopt: {res.output}"
+def test_eval_adopt_is_single_command_with_modes() -> None:
+    adopt = _eval_adopt_command()
+    # One multi-mode command, NOT a subgroup with init/convert/verify subcommands.
+    assert not isinstance(adopt, click.Group), (
+        "`bench eval adopt` should be a single command, not a subgroup"
+    )
+    opts: set[str] = set()
+    for param in adopt.params:
+        opts.update(param.opts)
+    for flag in ("--verify", "--scaffold-only", "--name", "--dry-run"):
+        assert flag in opts, f"`bench eval adopt` missing {flag!r}: {sorted(opts)}"
+
+
+def test_eval_help_shows_adopt_command() -> None:
+    cli = get_command(app)
+    assert "adopt" in cli.commands["eval"].commands  # type: ignore[attr-defined]
 
 
 def test_agent_help_shows_management_hides_adoption() -> None:
@@ -81,14 +96,149 @@ def test_adopt_is_hidden_from_top_level_help() -> None:
     )
 
 
-def test_eval_adopt_init_is_canonical_and_silent(tmp_path) -> None:
+def test_eval_adopt_scaffold_only_is_canonical_and_silent(tmp_path) -> None:
     shared._DEPRECATION_WARNED.clear()
     res = runner.invoke(
         app,
-        ["eval", "adopt", "init", "canonical-bench", "--benchmarks-dir", str(tmp_path)],
+        [
+            "eval",
+            "adopt",
+            "canonical-bench",
+            "--scaffold-only",
+            "--benchmarks-dir",
+            str(tmp_path),
+        ],
     )
     assert res.exit_code == 0
     assert "deprecation" not in res.stderr
+
+
+# ── the three canonical modes of the single command ───────────────────
+
+
+def test_eval_adopt_convert_dry_run_prints_codex_command() -> None:
+    """Convert mode (default): `bench eval adopt <source> --dry-run` prints the
+    codex launch command without running it."""
+    shared._DEPRECATION_WARNED.clear()
+    res = runner.invoke(
+        app,
+        ["eval", "adopt", "github.com/foo/bar", "--name", "my-bench", "--dry-run"],
+    )
+    assert res.exit_code == 0, res.output
+    out = click.unstyle(res.stdout)
+    assert "codex" in out
+    assert "exec" in out
+    assert "benchmarks/my-bench/" in out
+    # canonical command — no deprecation notice
+    assert "deprecation" not in res.stderr
+
+
+def test_eval_adopt_convert_auto_scaffolds_missing_package(
+    tmp_path, monkeypatch
+) -> None:
+    """Convert mode scaffolds `benchmarks/<name>/` when it does not yet exist,
+    before driving the conversion. We point the auto-scaffold at a tmp
+    benchmarks dir and stub the live launch (no codex needed)."""
+    import benchflow.agent_router as agent_router
+
+    shared._DEPRECATION_WARNED.clear()
+    # Make the live launch a no-op success so the test isolates the scaffold step.
+    monkeypatch.setattr(
+        agent_router, "run_agent_adoption", lambda *a, **k: 0, raising=True
+    )
+    res = runner.invoke(
+        app,
+        [
+            "eval",
+            "adopt",
+            "github.com/foo/auto-bench",
+            "--benchmarks-dir",
+            str(tmp_path),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    # The package was auto-scaffolded under the tmp benchmarks dir.
+    assert (tmp_path / "auto-bench" / "benchflow.py").exists()
+    assert "Scaffolded" in click.unstyle(res.output)
+
+
+def test_eval_adopt_convert_does_not_rescaffold_existing(tmp_path, monkeypatch) -> None:
+    """If the package already exists, convert mode does NOT re-scaffold (no
+    BenchmarkExistsError) — it proceeds straight to the conversion."""
+    import benchflow.agent_router as agent_router
+
+    shared._DEPRECATION_WARNED.clear()
+    create_benchmark("auto-bench", tmp_path)
+    sentinel = tmp_path / "auto-bench" / "README.md"
+    original = sentinel.read_text()
+    monkeypatch.setattr(
+        agent_router, "run_agent_adoption", lambda *a, **k: 0, raising=True
+    )
+    res = runner.invoke(
+        app,
+        [
+            "eval",
+            "adopt",
+            "github.com/foo/auto-bench",
+            "--benchmarks-dir",
+            str(tmp_path),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    # Existing scaffold untouched, and no "already exists" failure.
+    assert sentinel.read_text() == original
+    assert "already exists" not in click.unstyle(res.output)
+    assert "Scaffolded" not in click.unstyle(res.output)
+
+
+def test_eval_adopt_verify_runs_the_gate(tmp_path) -> None:
+    """Verify mode: `bench eval adopt <name> --verify` scores the parity record."""
+    shared._DEPRECATION_WARNED.clear()
+    create_benchmark("my-bench", tmp_path)
+    parity = tmp_path / "my-bench" / "parity_experiment.json"
+    parity.write_text(
+        json.dumps(
+            {
+                "conversion_parity": {
+                    "tasks": [
+                        {
+                            "task_id": "t1",
+                            "criteria_results": [
+                                {
+                                    "criterion_id": "C-1",
+                                    "original_verdict": "pass",
+                                    "adapted_verdict": "pass",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    res = runner.invoke(
+        app,
+        ["eval", "adopt", "my-bench", "--verify", "--benchmarks-dir", str(tmp_path)],
+    )
+    assert res.exit_code == 0, res.output
+    assert "parity-confirmed" in click.unstyle(res.output)
+
+
+def test_eval_adopt_verify_and_scaffold_only_together_errors(tmp_path) -> None:
+    """The two mode flags are mutually exclusive → friendly error, exit 2."""
+    res = runner.invoke(
+        app,
+        ["eval", "adopt", "my-bench", "--verify", "--scaffold-only"],
+    )
+    assert res.exit_code == 2
+    assert "mutually exclusive" in click.unstyle(res.output)
+
+
+def test_eval_adopt_missing_target_errors(tmp_path) -> None:
+    """No positional target in any mode → friendly error, exit 2."""
+    res = runner.invoke(app, ["eval", "adopt", "--scaffold-only"])
+    assert res.exit_code == 2
+    assert "missing target" in click.unstyle(res.output)
 
 
 def test_legacy_top_level_adopt_still_works_and_warns(tmp_path) -> None:
@@ -99,7 +249,11 @@ def test_legacy_top_level_adopt_still_works_and_warns(tmp_path) -> None:
     assert res.exit_code == 0  # the alias still scaffolds
     assert "Scaffolded" in res.output  # real work happened on stdout
     # the notice is on stderr (res.output mixes both streams; res.stderr is pure)
-    assert "deprecation" in res.stderr and "bench eval adopt init" in res.stderr
+    # and points at the new canonical scaffold shape. Collapse rich's
+    # line-wrapping (the hint can wrap mid-string on narrow consoles).
+    assert "deprecation" in res.stderr
+    stderr = " ".join(_ANSI_RE.sub("", res.stderr).split())
+    assert "bench eval adopt <name> --scaffold-only" in stderr
 
 
 def test_legacy_agent_create_still_works_and_warns(tmp_path) -> None:
@@ -109,8 +263,11 @@ def test_legacy_agent_create_still_works_and_warns(tmp_path) -> None:
     )
     assert res.exit_code == 0  # the alias still scaffolds
     assert "Scaffolded" in res.output  # real work happened on stdout
-    # the notice is on stderr and points at the canonical command
-    assert "deprecation" in res.stderr and "bench eval adopt init" in res.stderr
+    # the notice is on stderr and points at the new canonical scaffold shape
+    # (collapse rich's line-wrapping before the substring check).
+    assert "deprecation" in res.stderr
+    stderr = " ".join(_ANSI_RE.sub("", res.stderr).split())
+    assert "bench eval adopt <name> --scaffold-only" in stderr
 
 
 def test_deprecation_fires_once_per_process(tmp_path) -> None:
