@@ -21,6 +21,7 @@ def test_bedrock_model_maps_to_litellm_bedrock_route():
 
 
 def test_bedrock_model_honors_max_thinking_effort_env():
+    """Guards PR #739 against #737's route-config effort ceiling regression."""
     route = resolve_litellm_route(
         "aws-bedrock/us.anthropic.claude-opus-4-8",
         {
