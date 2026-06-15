@@ -159,6 +159,9 @@ def register_eval_adopt(eval_app: typer.Typer) -> None:
 
         # Convert mode: resolve the slug, auto-scaffold if the package is
         # missing (a no-op if it already exists), then drive the conversion.
+        # --benchmarks-dir (when given) is honored end-to-end — it sets both the
+        # scaffold location and the target the codex prompt points at — so the
+        # scaffolded package and the conversion target stay consistent.
         # --dry-run only prints the command, so it must not write any files.
         try:
             slug = name or derive_name_from_source(target)
@@ -175,6 +178,7 @@ def register_eval_adopt(eval_app: typer.Typer) -> None:
             dry_run=dry_run,
             codex_bin=codex_bin,
             codex_config=codex_config,
+            benchmarks_dir=benchmarks_dir,
             console=console,
         )
 

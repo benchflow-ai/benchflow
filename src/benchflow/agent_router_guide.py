@@ -17,8 +17,8 @@ instance into a BenchFlow *task package*, plus the *evidence* that the
 conversion is faithful (a parity gate reproducing the original's scoring).
 
 The single `bench eval adopt` command runs this pipeline:
-- `bench eval adopt <source>` scaffolded `benchmarks/<name>/` (if missing) and is
-  driving this conversion: implement the converter, generate tasks, record parity.
+- `bench eval adopt <source>` scaffolds `benchmarks/<name>/` (if missing) and
+  drives this conversion: implement the converter, generate tasks, record parity.
 - `bench eval adopt <name> --verify`: the parity gate scores
   `parity_experiment.json` and emits a verdict.
 
@@ -60,7 +60,7 @@ any reward-hackability the original has — parity reproduces, it does not fix).
 ## 2. Implement the converter (`benchflow.py`)
 
 `benchflow.py` reads the source benchmark and writes task dirs under
-`--output-dir`. Two entry points are already stubbed by `init`:
+`--output-dir`. Two entry points are already stubbed by the scaffold:
 - `convert(source_instance, output_dir, *, overwrite=False) -> Path` — one
   instance -> one task dir.
 - `convert_all(source_dir, output_dir, *, overwrite=False, limit=None,

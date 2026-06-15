@@ -275,13 +275,18 @@ def assemble_adoption_context(
     name: str,
     *,
     skills: Sequence[AdoptionSkill],
+    target_dir: str | None = None,
 ) -> str:
     """Assemble the full codex prompt for adopting ``source`` (pure function).
 
-    Includes the source, the target ``benchmarks/<name>/`` path, the adoption
-    skills (reference benchmark + parity harness), and the embedded conversion
-    guide (:data:`agent_router_guide.CONVERSION_GUIDE`).
+    Includes the source, the target benchmark path, the adoption skills
+    (reference benchmark + parity harness), and the embedded conversion guide
+    (:data:`agent_router_guide.CONVERSION_GUIDE`). ``target_dir`` overrides the
+    default ``benchmarks/<name>/`` path (e.g. when ``--benchmarks-dir`` points the
+    conversion at a non-default root) so the prompt matches where the package was
+    scaffolded.
     """
+    target = target_dir or f"benchmarks/{name}/"
     skill_lines = "\n".join(f"- {s.name}: {s.reference}" for s in skills)
     return "\n".join(
         [
@@ -292,7 +297,7 @@ def assemble_adoption_context(
             "tests, metadata, and task directories, then open a pull request.",
             "",
             f"Source benchmark: {source}",
-            f"Target directory: benchmarks/{name}/",
+            f"Target directory: {target}",
             "",
             "## Adoption skills",
             skill_lines,
@@ -349,15 +354,23 @@ def prepare_adoption_launch(
     name: str,
     *,
     repo_root: Path,
+    benchmarks_dir: Path | None = None,
     codex_bin: str = "codex",
     model: str | None = None,
     sandbox: str = "workspace-write",
     config_overrides: Sequence[str] = (),
 ) -> AdoptionLaunch:
-    """Assemble context + build the codex command (no exec, no credentials)."""
+    """Assemble context + build the codex command (no exec, no credentials).
+
+    ``benchmarks_dir`` (when set) points the conversion at a non-default root, so
+    the prompt's target path matches where the package was scaffolded.
+    """
     name = validate_benchmark_name(name)
     skills = collect_adoption_skills()
-    prompt = assemble_adoption_context(source, name, skills=skills)
+    target_dir = f"{benchmarks_dir}/{name}/" if benchmarks_dir is not None else None
+    prompt = assemble_adoption_context(
+        source, name, skills=skills, target_dir=target_dir
+    )
     command = build_codex_launch_command(
         prompt,
         workdir=repo_root,
@@ -404,6 +417,7 @@ def run_agent_adoption(
     exec_fn: ExecFn,
     env: Mapping[str, str] | None = None,
     auth_file: Path | None = None,
+    benchmarks_dir: Path | None = None,
     codex_bin: str = "codex",
     model: str | None = None,
     sandbox: str = "workspace-write",
@@ -427,6 +441,7 @@ def run_agent_adoption(
         source,
         name,
         repo_root=repo_root,
+        benchmarks_dir=benchmarks_dir,
         codex_bin=codex_bin,
         model=model,
         sandbox=sandbox,
@@ -637,8 +652,13 @@ def run_convert_action(
     codex_bin: str,
     codex_config: list[str] | None,
     console: Console,
+    benchmarks_dir: Path | None = None,
 ) -> None:
-    """Drive the conversion workflow by launching the host codex CLI."""
+    """Drive the conversion workflow by launching the host codex CLI.
+
+    ``benchmarks_dir`` (when set) is threaded into the codex prompt so the
+    conversion target matches where the package was scaffolded.
+    """
     import shlex
 
     repo_root = default_repo_root()
@@ -650,6 +670,7 @@ def run_convert_action(
                 source,
                 resolved,
                 repo_root=repo_root,
+                benchmarks_dir=benchmarks_dir,
                 codex_bin=codex_bin,
                 model=model,
                 config_overrides=overrides,
@@ -668,6 +689,7 @@ def run_convert_action(
             resolved,
             repo_root=repo_root,
             exec_fn=_subprocess_exec,
+            benchmarks_dir=benchmarks_dir,
             codex_bin=codex_bin,
             model=model,
             config_overrides=overrides,

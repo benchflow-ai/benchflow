@@ -241,6 +241,30 @@ def test_eval_adopt_missing_target_errors(tmp_path) -> None:
     assert "missing target" in click.unstyle(res.output)
 
 
+def test_eval_adopt_convert_honors_benchmarks_dir_in_prompt(tmp_path) -> None:
+    """`--benchmarks-dir` is honored end-to-end in convert: the codex prompt's
+    target path reflects the custom root, matching where the package is
+    scaffolded — not the default `benchmarks/`. Regression for the dropped-root
+    bug where the scaffold went to the custom dir but codex was told to edit the
+    repo's benchmarks/."""
+    res = runner.invoke(
+        app,
+        [
+            "eval",
+            "adopt",
+            "github.com/foo/bar",
+            "--name",
+            "my-bench",
+            "--benchmarks-dir",
+            str(tmp_path),
+            "--dry-run",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    out = click.unstyle(res.output)
+    assert f"{tmp_path}/my-bench" in out
+
+
 def test_legacy_top_level_adopt_still_works_and_warns(tmp_path) -> None:
     shared._DEPRECATION_WARNED.clear()
     res = runner.invoke(
