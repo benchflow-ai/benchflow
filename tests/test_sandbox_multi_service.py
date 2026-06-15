@@ -34,7 +34,7 @@ class TestDockerSandboxServiceExec:
 
     @pytest.mark.asyncio
     async def test_exec_defaults_to_main_service(self) -> None:
-        """#248: default exec still targets the agent's ``main`` container."""
+        """Guards the fix from PR #345 while preserving #248 default service."""
         sandbox = self._make_sandbox()
         captured: list[list[str]] = []
 
@@ -45,11 +45,11 @@ class TestDockerSandboxServiceExec:
         sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
         await sandbox.exec("echo hi")
 
-        assert captured[0] == ["exec", "main", "sh", "-c", "echo hi"]
+        assert captured[0] == ["exec", "-T", "main", "sh", "-c", "echo hi"]
 
     @pytest.mark.asyncio
     async def test_exec_targets_named_service(self) -> None:
-        """#248: exec(service=...) runs the command in the named target container."""
+        """Guards the fix from PR #345 for #248 named-service exec."""
         sandbox = self._make_sandbox()
         captured: list[list[str]] = []
 
@@ -60,11 +60,18 @@ class TestDockerSandboxServiceExec:
         sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
         await sandbox.exec("test -f /tmp/pwned", service="target")
 
-        assert captured[0] == ["exec", "target", "sh", "-c", "test -f /tmp/pwned"]
+        assert captured[0] == [
+            "exec",
+            "-T",
+            "target",
+            "sh",
+            "-c",
+            "test -f /tmp/pwned",
+        ]
 
     @pytest.mark.asyncio
     async def test_exec_in_service_wrapper(self) -> None:
-        """#248: exec_in_service is sugar for exec(..., service=...)."""
+        """Guards the fix from PR #345 for #248 exec_in_service."""
         sandbox = self._make_sandbox()
         captured: list[list[str]] = []
 
@@ -75,11 +82,11 @@ class TestDockerSandboxServiceExec:
         sandbox._run_docker_compose_command = fake_run  # type: ignore[method-assign]
         await sandbox.exec_in_service("db", "mysql -e 'SELECT 1'")
 
-        assert captured[0] == ["exec", "db", "sh", "-c", "mysql -e 'SELECT 1'"]
+        assert captured[0] == ["exec", "-T", "db", "sh", "-c", "mysql -e 'SELECT 1'"]
 
     @pytest.mark.asyncio
     async def test_exec_service_with_user_and_cwd(self) -> None:
-        """#248: service selection composes with user/cwd/env flags."""
+        """Guards the fix from PR #345 with #248 service/user/cwd/env flags."""
         sandbox = self._make_sandbox()
         captured: list[list[str]] = []
 
@@ -93,6 +100,7 @@ class TestDockerSandboxServiceExec:
         )
 
         cmd = captured[0]
+        assert cmd[:2] == ["exec", "-T"]
         # service name precedes `sh -c`, after all flags
         assert cmd[cmd.index("sh") - 1] == "attacker"
         assert "-w" in cmd and "/work" in cmd
