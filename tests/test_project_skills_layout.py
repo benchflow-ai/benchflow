@@ -7,7 +7,7 @@ def test_project_skills_are_single_sourced_for_agent_discovery() -> None:
     """Project skills are single-sourced under .agents/skills with .claude/skills
     as the Claude Code compatibility alias.
 
-    Guards this PR's repository layout against drift between the portable agent
+    Guards the repository layout from PR #764 against drift between the portable agent
     and Claude Code skill discovery paths.
     """
     agent_skills = _REPO_ROOT / ".agents" / "skills"
