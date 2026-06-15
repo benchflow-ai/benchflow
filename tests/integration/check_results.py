@@ -280,6 +280,7 @@ def _expected_config_concurrency(
     if expected_concurrency is _MISSING:
         return _MISSING
     if _is_worker_sharded_summary(summary):
+        assert summary is not None
         return summary["worker_concurrency"]
     return expected_concurrency
 
@@ -898,7 +899,7 @@ def check_agent(agent_dir: Path) -> dict:
 
     infra_errors: list[str] = []
     invalidated_by_category: dict[str, list[str]] = {}
-    for r in results:
+    for r in latest_results:
         err = r.get("error")
         cat = r.get("error_category") or (classify_error(str(err)) if err else None)
         if cat and cat in INFRA_ERROR_CATEGORIES:
@@ -923,7 +924,7 @@ def check_agent(agent_dir: Path) -> dict:
 
     # Verifier dependency install failures (ENG-151)
     dep_install_tasks: list[str] = []
-    for r in results:
+    for r in latest_results:
         verifier_err = r.get("verifier_error")
         vcat = r.get("verifier_error_category") or (
             classify_verifier_error(verifier_err) if verifier_err else None
@@ -950,7 +951,7 @@ def check_agent(agent_dir: Path) -> dict:
         d.category: d for d in DIAGNOSTIC_REGISTRY if d.channel == "verifier_error"
     }
     verifier_timeout_tasks: list[str] = []
-    for r in results:
+    for r in latest_results:
         verifier_err = r.get("verifier_error")
         vcat = classify_verifier_error(verifier_err) if verifier_err else None
         if vcat == "verifier_timeout":
