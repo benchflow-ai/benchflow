@@ -461,6 +461,43 @@ def test_skills_eval_exits_nonzero_when_cases_error(tmp_path, monkeypatch):
     assert "errored" in res.stderr
 
 
+def test_skills_eval_rejects_model_agent_length_mismatch_before_header(tmp_path):
+    """Guards PR #650 against #550's raw model/agent cardinality failure."""
+    evals = tmp_path / "evals"
+    evals.mkdir()
+    (evals / "evals.json").write_text(
+        '{"skill_name":"citation-management",'
+        '"cases":[{"id":"case-1","question":"Q?","ground_truth":"A"}]}'
+    )
+
+    res = runner.invoke(
+        app,
+        [
+            "skills",
+            "eval",
+            str(tmp_path),
+            "--agent",
+            "gemini",
+            "--model",
+            "gemini-2.5-flash",
+            "--model",
+            "extra-model",
+            "--no-baseline",
+            "--jobs-dir",
+            str(tmp_path / "jobs"),
+        ],
+    )
+
+    assert res.exit_code == 1
+    assert (
+        "--model may be provided once for all agents or once per --agent" in res.stderr
+    )
+    assert "got 2 models" in res.stderr
+    assert "for 1 agents" in res.stderr
+    assert "Skill eval:" not in res.stdout
+    assert "Traceback" not in res.output
+
+
 def test_viewer_job_dir_indexes_rollout_subdirs(tmp_path):
     # `eval view <job_dir>` used to render a blank "No trajectory files found"
     # (the natural value from create's "Artifacts:" line); now it indexes the
