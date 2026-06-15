@@ -248,7 +248,9 @@ def test_citation_check_oracle_self_answers_static_fixture(tmp_path):
     task = Path("docs/examples/task-md/real-skillsbench/citation-check")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "test.bib").write_bytes((task / "environment" / "test.bib").read_bytes())
+    (workspace / "test.bib").write_bytes(
+        (task / "environment" / "test.bib").read_bytes()
+    )
 
     result = subprocess.run(
         ["bash", str(task / "oracle" / "solve.sh")],
