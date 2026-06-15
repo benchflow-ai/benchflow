@@ -750,11 +750,6 @@ benchflow:
         prompt: instruction.md
         oracle: solution/
         verifier: tests/
-    pier:
-      export: degraded
-      losses:
-        - benchflow.teams
-        - benchflow.nudges
 ```
 
 Target compatibility rules:

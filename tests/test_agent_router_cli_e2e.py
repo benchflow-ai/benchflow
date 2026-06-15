@@ -322,11 +322,10 @@ def test_cli_run_dry_run_prints_codex_command_with_context_markers(
     # in the process already emitted (and deduped) that once-per-process notice.
     out = click.unstyle(result.stdout)
     # The constructed (but un-launched) codex command carries the source and the
-    # CONVERT.md adoption context — the prompt the live run would have used.
+    # adoption context — the prompt the live run would have used.
     assert "codex" in out
     assert "exec" in out
     assert "github.com/foo/bar" in out
-    assert "CONVERT.md" in out
     assert "Benchmark adoption" in out
     assert "benchmarks/my-bench/" in out
     # The command must be printed verbatim (soft_wrap): console-width hard

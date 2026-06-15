@@ -1,9 +1,10 @@
-"""Parity gate for ``bench eval adopt verify`` — parsers, scoring, and verdict.
+"""Parity gate for ``bench eval adopt --verify`` — parsers, scoring, and verdict.
 
-The ``verify`` subcommand in :mod:`benchflow.agent_router` scores an adopted
-benchmark's recorded ``parity_experiment.json`` and assigns a confidence
-verdict. That parser/scorer logic lives here so the router module stays focused
-on the adopt (init/convert/verify) CLI wiring; the public names are re-exported from
+The verify mode of ``bench eval adopt`` (``run_verify_action`` in
+:mod:`benchflow.agent_router`) scores an adopted benchmark's recorded
+``parity_experiment.json`` and assigns a confidence verdict. That parser/scorer
+logic lives here so the router module stays focused on the adopt action wiring
+(scaffold / convert / verify); the public names are re-exported from
 :mod:`benchflow.agent_router` for backwards compatibility.
 
 The gate is *parity only*: a faithful translation must reproduce the original's
@@ -195,7 +196,7 @@ def _metric_comparisons(records: Sequence[Any]) -> list[CriterionComparison]:
 def extract_criterion_comparisons(data: Any) -> list[CriterionComparison]:
     """Pull per-criterion verdict pairs from a parity_experiment.json payload.
 
-    Tolerant of the scaffold shape (``conversion_parity.tasks``), the CONVERT.md
+    Tolerant of the scaffold shape (``conversion_parity.tasks``), the legacy
     example shape (top-level ``tasks``), the deterministic-summary blocks the
     in-repo benchmarks ship (``structural_parity`` / ``eval_parity`` /
     ``live_parity`` / ``e2e_parity`` / ``pipeline_parity`` / ``security_parity``

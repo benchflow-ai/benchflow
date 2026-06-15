@@ -188,8 +188,8 @@ def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
 
 eval_app = typer.Typer(help="Evaluation commands.")
 app.add_typer(eval_app, name="eval", rich_help_panel="Core")
-# Canonical `bench eval adopt init|convert|verify` (eval is the universal
-# benchmark entry point; adopt makes a foreign benchmark runnable).
+# Canonical single `bench eval adopt` command (eval is the universal benchmark
+# entry point; adopt makes a foreign benchmark runnable).
 register_eval_adopt(eval_app)
 
 

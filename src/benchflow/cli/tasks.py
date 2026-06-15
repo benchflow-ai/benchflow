@@ -251,7 +251,7 @@ def register_tasks(app: typer.Typer) -> None:
         ] = None,
         target: Annotated[
             str,
-            typer.Option("--target", help="Compatibility target: harbor or pier"),
+            typer.Option("--target", help="Compatibility target: harbor"),
         ] = "harbor",
         overwrite: Annotated[
             bool,
@@ -271,15 +271,15 @@ def register_tasks(app: typer.Typer) -> None:
             export_task_to_split_layout,
         )
 
-        if target not in {"harbor", "pier"}:
-            print_error("target must be 'harbor' or 'pier'")
+        if target != "harbor":
+            print_error("target must be 'harbor'")
             raise typer.Exit(1)
 
         try:
             if report_only:
                 report = build_compatibility_export_report(
                     task_dir,
-                    target=cast(Literal["harbor", "pier"], target),
+                    target=cast(Literal["harbor"], target),
                 )
                 typer.echo(report.to_json(), nl=False)
                 return
@@ -291,7 +291,7 @@ def register_tasks(app: typer.Typer) -> None:
             report = export_task_to_split_layout(
                 task_dir,
                 output_dir,
-                target=cast(Literal["harbor", "pier"], target),
+                target=cast(Literal["harbor"], target),
                 overwrite=overwrite,
             )
         except (

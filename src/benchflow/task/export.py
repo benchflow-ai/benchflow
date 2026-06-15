@@ -18,7 +18,7 @@ from benchflow.task.package import TaskPackage
 from benchflow.task.paths import TaskPaths
 from benchflow.task.runtime_view import TaskRuntimeView
 
-CompatibilityTarget = Literal["harbor", "pier"]
+CompatibilityTarget = Literal["harbor"]
 
 
 @dataclass(frozen=True)
@@ -88,7 +88,7 @@ def build_harbor_roundtrip_conformance_report(
 ) -> HarborRoundTripConformanceReport:
     """Compare a split task against its migrated task.md split export.
 
-    This is the first pure conformance check for Harbor/Pier parity. It does
+    This is the first pure conformance check for Harbor parity. It does
     not execute the task. Instead it proves that the supported compatibility
     surface survives the native authoring hop: canonical ``task.toml`` config,
     normalized ``instruction.md`` prompt, and file maps for environment,
@@ -222,7 +222,7 @@ def export_task_to_split_layout(
     target: CompatibilityTarget = "harbor",
     overwrite: bool = False,
 ) -> CompatibilityExportReport:
-    """Materialize a Harbor/Pier-compatible split task layout.
+    """Materialize a Harbor-compatible split task layout.
 
     The export preserves supported split-layout surfaces:
     ``task.toml``, ``instruction.md``, ``environment/``, ``solution/``, and

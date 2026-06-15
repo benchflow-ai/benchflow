@@ -1,32 +1,37 @@
-"""Benchmark adoption router — ``bench eval adopt init | convert | verify``.
+"""Benchmark adoption router behind ``bench eval adopt``.
 
-This module is the real logic behind the ``bench eval adopt`` subcommands that adopt
-an upstream benchmark into a BenchFlow benchmark (canonically ``bench eval adopt``;
-the legacy ``bench agent create|run|verify`` remain as hidden deprecated
+This module is the real logic behind ``bench eval adopt``, the single command
+that adopts an upstream benchmark into a BenchFlow benchmark (canonically
+``bench eval adopt``; the legacy ``bench agent create|run|verify`` and the
+intermediate ``bench adopt init|convert|verify`` remain as hidden deprecated
 aliases). It sits downstream of every environment framework: a benchmark is
 *routed* into the repo here, while ``bench eval create`` *runs* the tasks.
 
-Three cohesive subcommands, registered by :func:`register_agent_router` onto the
-``eval adopt`` group (canonical) and the hidden deprecated alias groups
-(top-level ``adopt`` and ``agent``):
+Three cohesive action bodies — module-level functions so the canonical command
+and the deprecated alias closures share one implementation:
 
-``init``     Deterministic scaffold of ``benchmarks/<name>/`` matching the
-             reference layout (``benchmarks/programbench/``) and the contract in
-             ``benchmarks/CONVERT.md``. Fail-closed: refuses to overwrite an
-             existing benchmark and validates the slug.
-``convert``  Driver that assembles the adoption context (source + CONVERT.md +
-             adoption skills) and launches the host ``codex`` CLI to drive the
-             conversion toward a ``benchmarks/<name>/`` pull request. Context
-             assembly and launch-command construction are pure functions so they
-             are unit-testable with a fake exec layer; the live ``codex`` run is
-             a manual-validation step.
-``verify``   Closes the adopt->verify loop. Runs the parity gate for an adopted
-            benchmark and emits a confidence verdict. The gate is *parity only*:
-            a faithful translation must reproduce the original's behavior on
-            identical inputs (including any reward-hackability the original
-            has — parity never "improves" or sanitizes the source). On a
-            divergence it prints a draft GitHub issue body for human support
-            instead of filing anything automatically.
+:func:`run_scaffold_action`  Deterministic scaffold of ``benchmarks/<name>/``
+             matching the reference layout (``benchmarks/programbench/``).
+             Fail-closed: refuses to overwrite an existing benchmark and
+             validates the slug.
+:func:`run_convert_action`   Driver that assembles the adoption context (source
+             + adoption skills + conversion guide) and launches the host
+             ``codex`` CLI to drive the conversion toward a ``benchmarks/<name>/``
+             pull request. Context assembly and launch-command construction are
+             pure functions so they are unit-testable with a fake exec layer; the
+             live ``codex`` run is a manual-validation step.
+:func:`run_verify_action`    Closes the adopt->verify loop. Runs the parity gate
+             for an adopted benchmark and emits a confidence verdict. The gate is
+             *parity only*: a faithful translation must reproduce the original's
+             behavior on identical inputs (including any reward-hackability the
+             original has — parity never "improves" or sanitizes the source). On
+             a divergence it prints a draft GitHub issue body for human support
+             instead of filing anything automatically.
+
+The canonical surface is the single ``bench eval adopt`` command in
+:mod:`benchflow.cli.adopt`; :func:`register_agent_router` registers the hidden
+deprecated alias groups (``bench agent``, ``bench adopt``) that still expose the
+three verbs and forward to these same action functions.
 """
 
 from __future__ import annotations
@@ -40,12 +45,14 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from rich.console import Console
 from rich.markup import escape
 
 # The parity gate (parsers, scoring, verdict) lives in agent_router_parity to
-# keep this module focused on adopt (init/convert/verify) CLI wiring. Re-exported here
-# (see __all__) so the public API is unchanged, e.g.
+# keep this module focused on the adopt action wiring (scaffold/convert/verify).
+# Re-exported here (see __all__) so the public API is unchanged, e.g.
 # ``from benchflow.agent_router import build_verify_report``.
+from benchflow.agent_router_guide import CONVERSION_GUIDE
 from benchflow.agent_router_parity import (  # noqa: F401
     DEFAULT_REWARD_TOLERANCE,
     ConversionParity,
@@ -170,7 +177,7 @@ def derive_name_from_source(source: str) -> str:
 def _scaffold_parity_experiment(name: str) -> str:
     """Templated, empty parity_experiment.json (status ``template``).
 
-    The schema is what ``bench eval adopt verify`` reads: per-criterion verdict pairs
+    The schema is what ``bench eval adopt --verify`` reads: per-criterion verdict pairs
     (the deterministic conversion-faithfulness floor) and reward-distribution
     samples (the statistical legacy-vs-converted layer).
     """
@@ -254,7 +261,6 @@ class AdoptionSkill:
 def collect_adoption_skills() -> list[AdoptionSkill]:
     """The adoption skills surfaced to the driver (static references, no I/O)."""
     return [
-        AdoptionSkill("conversion-guide", "benchmarks/CONVERT.md"),
         AdoptionSkill(
             "reference-benchmark", "benchmarks/programbench/ (worked example)"
         ),
@@ -264,50 +270,39 @@ def collect_adoption_skills() -> list[AdoptionSkill]:
     ]
 
 
-def load_convert_guide(repo_root: Path) -> str:
-    """Read ``benchmarks/CONVERT.md`` (fail-closed if missing)."""
-    path = Path(repo_root) / "benchmarks" / "CONVERT.md"
-    if not path.exists():
-        raise FileNotFoundError(f"conversion guide not found: {path}")
-    return path.read_text()
-
-
 def assemble_adoption_context(
     source: str,
     name: str,
     *,
-    convert_guide: str,
     skills: Sequence[AdoptionSkill],
+    target_dir: str | None = None,
 ) -> str:
     """Assemble the full codex prompt for adopting ``source`` (pure function).
 
-    Includes the source, the target ``benchmarks/<name>/`` path, the adoption
-    skills, and the embedded ``benchmarks/CONVERT.md`` guide.
+    Includes the source, the target benchmark path, the adoption skills
+    (reference benchmark + parity harness), and the embedded conversion guide
+    (:data:`agent_router_guide.CONVERSION_GUIDE`). ``target_dir`` overrides the
+    default ``benchmarks/<name>/`` path (e.g. when ``--benchmarks-dir`` points the
+    conversion at a non-default root) so the prompt matches where the package was
+    scaffolded.
     """
+    target = target_dir or f"benchmarks/{name}/"
     skill_lines = "\n".join(f"- {s.name}: {s.reference}" for s in skills)
     return "\n".join(
         [
             f"# Benchmark adoption: {name}",
             "",
             "Adopt the source benchmark below into a BenchFlow benchmark by",
-            "following the conversion guide. Produce the converter, parity tests,",
-            "metadata, and task directories, then open a pull request.",
+            "following the conversion guide. Produce the converter, parity",
+            "tests, metadata, and task directories, then open a pull request.",
             "",
             f"Source benchmark: {source}",
-            f"Target directory: benchmarks/{name}/",
+            f"Target directory: {target}",
             "",
             "## Adoption skills",
             skill_lines,
             "",
-            "## Conversion guide (benchmarks/CONVERT.md)",
-            "",
-            convert_guide,
-            "",
-            "## Definition of done",
-            f"- benchmarks/{name}/ has benchflow.py, parity_test.py,",
-            f"  parity_experiment.json, benchmark.yaml, run_{_module_suffix(name)}.py,",
-            "  README.md",
-            f"- `bench eval adopt verify {name}` reports parity-confirmed",
+            CONVERSION_GUIDE,
         ]
     )
 
@@ -359,19 +354,22 @@ def prepare_adoption_launch(
     name: str,
     *,
     repo_root: Path,
-    convert_guide: str | None = None,
+    benchmarks_dir: Path | None = None,
     codex_bin: str = "codex",
     model: str | None = None,
     sandbox: str = "workspace-write",
     config_overrides: Sequence[str] = (),
 ) -> AdoptionLaunch:
-    """Assemble context + build the codex command (no exec, no credentials)."""
+    """Assemble context + build the codex command (no exec, no credentials).
+
+    ``benchmarks_dir`` (when set) points the conversion at a non-default root, so
+    the prompt's target path matches where the package was scaffolded.
+    """
     name = validate_benchmark_name(name)
-    if convert_guide is None:
-        convert_guide = load_convert_guide(repo_root)
     skills = collect_adoption_skills()
+    target_dir = f"{benchmarks_dir}/{name}/" if benchmarks_dir is not None else None
     prompt = assemble_adoption_context(
-        source, name, convert_guide=convert_guide, skills=skills
+        source, name, skills=skills, target_dir=target_dir
     )
     command = build_codex_launch_command(
         prompt,
@@ -419,6 +417,7 @@ def run_agent_adoption(
     exec_fn: ExecFn,
     env: Mapping[str, str] | None = None,
     auth_file: Path | None = None,
+    benchmarks_dir: Path | None = None,
     codex_bin: str = "codex",
     model: str | None = None,
     sandbox: str = "workspace-write",
@@ -442,6 +441,7 @@ def run_agent_adoption(
         source,
         name,
         repo_root=repo_root,
+        benchmarks_dir=benchmarks_dir,
         codex_bin=codex_bin,
         model=model,
         sandbox=sandbox,
@@ -465,7 +465,7 @@ def load_parity_experiment(benchmarks_root: Path, name: str) -> Any:
     if not benchmark_dir.exists():
         raise BenchmarkNotFound(
             f"benchmark not adopted: {benchmark_dir} — run "
-            f"`bench eval adopt init {name}` first"
+            f"`bench eval adopt {name} --scaffold-only` first"
         )
     parity_file = benchmark_dir / "parity_experiment.json"
     if not parity_file.exists():
@@ -513,13 +513,14 @@ def rerun_parity_experiment(
     if not benchmark_dir.exists():
         raise BenchmarkNotFound(
             f"benchmark not adopted: {benchmark_dir} — run "
-            f"`bench eval adopt init {name}` first"
+            f"`bench eval adopt {name} --scaffold-only` first"
         )
     script = benchmark_dir / "parity_test.py"
     if not script.exists():
         raise ParityRerunError(
             f"no parity_test.py in {benchmark_dir} — cannot --rerun "
-            "(scaffold it with `bench eval adopt init` and implement side-by-side)"
+            "(scaffold it with `bench eval adopt <name> --scaffold-only` and "
+            "implement side-by-side)"
         )
     command = ["python", str(script), "--mode", "side-by-side"]
     returncode, stdout, stderr = (runner or _run_parity_script)(command, benchmark_dir)
@@ -615,13 +616,188 @@ def roundtrip_conformance_status(
     return report.status, reasons
 
 
+# ── Action bodies (shared by the canonical command and deprecated aliases) ──
+#
+# These are the real logic for the three adoption actions. The canonical single
+# ``bench eval adopt`` command (cli/adopt.py) calls them directly; the deprecated
+# alias closures in register_agent_router below call them after emitting a
+# deprecation notice. Each takes an explicit ``console`` so the caller controls
+# the output sink.
+
+
+def run_scaffold_action(
+    name: str,
+    benchmarks_dir: Path | None,
+    *,
+    console: Console,
+) -> None:
+    """Scaffold ``benchmarks/<name>/`` for a new benchmark adoption."""
+    root = benchmarks_dir or default_benchmarks_dir()
+    try:
+        target, written = create_benchmark(name, root)
+    except (InvalidBenchmarkName, BenchmarkExistsError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(f"[green]Scaffolded[/green] {target}")
+    for rel in written:
+        console.print(f"  {rel}")
+
+
+def run_convert_action(
+    source: str,
+    name: str | None,
+    *,
+    model: str | None,
+    dry_run: bool,
+    codex_bin: str,
+    codex_config: list[str] | None,
+    console: Console,
+    benchmarks_dir: Path | None = None,
+) -> None:
+    """Drive the conversion workflow by launching the host codex CLI.
+
+    ``benchmarks_dir`` (when set) is threaded into the codex prompt so the
+    conversion target matches where the package was scaffolded.
+    """
+    import shlex
+
+    repo_root = default_repo_root()
+    overrides = tuple(codex_config or ())
+    try:
+        resolved = name or derive_name_from_source(source)
+        if dry_run:
+            launch = prepare_adoption_launch(
+                source,
+                resolved,
+                repo_root=repo_root,
+                benchmarks_dir=benchmarks_dir,
+                codex_bin=codex_bin,
+                model=model,
+                config_overrides=overrides,
+            )
+            # Verbatim, copy-pasteable command: no console-width hard
+            # wrapping (which would split tokens like the --cd path) and
+            # no rich-markup interpretation of the prompt text.
+            console.print(
+                " ".join(shlex.quote(c) for c in launch.command),
+                soft_wrap=True,
+                markup=False,
+            )
+            return
+        code = run_agent_adoption(
+            source,
+            resolved,
+            repo_root=repo_root,
+            exec_fn=_subprocess_exec,
+            benchmarks_dir=benchmarks_dir,
+            codex_bin=codex_bin,
+            model=model,
+            config_overrides=overrides,
+        )
+    except (InvalidBenchmarkName, CodexLaunchError) as exc:
+        # escape(): CodexLaunchError embeds the user-supplied --codex-bin
+        # and InvalidBenchmarkName the benchmark name — either can contain
+        # Rich markup that would make this handler itself raise MarkupError.
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    raise typer.Exit(code)
+
+
+def run_verify_action(
+    name: str,
+    *,
+    benchmarks_dir: Path | None,
+    tolerance: float,
+    issue_out: Path | None,
+    roundtrip_task: Path | None,
+    rerun: bool,
+    console: Console,
+) -> None:
+    """Run the parity gate for an adopted benchmark; emit a verdict."""
+    root = benchmarks_dir or default_benchmarks_dir()
+    try:
+        name = validate_benchmark_name(name)
+        if rerun:
+            console.print("[dim]Re-executing parity_test.py --mode side-by-side…[/dim]")
+            data: Any = rerun_parity_experiment(root, name)
+        else:
+            data = load_parity_experiment(root, name)
+    except InvalidBenchmarkName as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    except BenchmarkNotFound as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    except ParityRerunError as exc:
+        console.print(f"[red]--rerun failed: {escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    except ParityExperimentMissing as exc:
+        console.print(f"[yellow]{escape(str(exc))}[/yellow]")
+        data = {}
+
+    report = build_verify_report(name, data, tolerance=tolerance)
+    console.print(f"[bold]Verdict:[/bold] {report.verdict}")
+    console.print(
+        f"  conversion: {report.conversion.agreed}/{report.conversion.compared} "
+        f"criteria agree (rate {report.conversion.agreement_rate:.4f})"
+    )
+    if report.reward is not None:
+        console.print(
+            f"  reward: max abs delta {report.reward.max_abs_delta:.4f} "
+            f"(tolerance {report.reward.tolerance:.4f})"
+        )
+    console.print(confidence_line(report))
+
+    if roundtrip_task is not None:
+        if not roundtrip_task.is_dir():
+            console.print(
+                f"[red]  round-trip: error: task dir not found: {roundtrip_task}[/red]"
+            )
+            raise typer.Exit(1)
+        try:
+            status, reasons = roundtrip_conformance_status(roundtrip_task)
+        except OSError as exc:
+            console.print(
+                f"[red]  round-trip: error: could not check "
+                f"{roundtrip_task}: {exc}[/red]"
+            )
+            raise typer.Exit(1) from exc
+        console.print(f"  round-trip: {status}")
+        for reason in reasons:
+            console.print(f"    [yellow]- {reason}[/yellow]")
+
+    if report.passed:
+        return
+    if report.verdict == "insufficient-evidence":
+        # No parity data recorded yet — nothing diverged, so do not emit a
+        # "parity could not be closed" divergence issue draft. confidence_line
+        # above already told the author to run parity_test.py and record results.
+        raise typer.Exit(1)
+    issue = render_divergence_issue(report)
+    if issue_out is not None:
+        Path(issue_out).write_text(issue)
+        console.print(f"[dim]Issue draft written to {escape(str(issue_out))}[/dim]")
+    else:
+        console.print(issue)
+    raise typer.Exit(1)
+
+
 # ── CLI registration (thin; real logic lives above) ───────────────────
 
 
-# Canonical adoption verbs (``bench eval adopt``) and the deprecated ``bench agent``
-# aliases they replace. The same command bodies register under both name sets.
+# Canonical adoption verbs (the single ``bench eval adopt`` command flattens
+# these into modes) and the deprecated ``bench adopt`` / ``bench agent`` alias
+# groups that still expose them as subcommands. The same action functions back
+# both surfaces.
 ADOPT_VERBS = {"scaffold": "init", "drive": "convert", "verify": "verify"}
 AGENT_ALIAS_VERBS = {"scaffold": "create", "drive": "run", "verify": "verify"}
+
+# Where each deprecated verb now lives on the flattened canonical command.
+_CANONICAL_HINTS = {
+    "scaffold": "bench eval adopt <name> --scaffold-only",
+    "drive": "bench eval adopt <source>",
+    "verify": "bench eval adopt <name> --verify",
+}
 
 
 def register_agent_router(
@@ -630,17 +806,16 @@ def register_agent_router(
     verbs: dict[str, str] | None = None,
     deprecated_as: str | None = None,
 ) -> None:
-    """Register the benchmark-adoption commands onto ``agent_app``.
+    """Register the deprecated benchmark-adoption alias subcommands onto ``agent_app``.
 
-    Canonical home is ``bench eval adopt`` (verbs ``init`` / ``convert`` / ``verify``).
-    When ``deprecated_as`` is set (e.g. ``"agent"``) the commands are registered
-    hidden and each emits a one-line deprecation notice pointing at the new name,
-    so the legacy ``bench agent create|run|verify`` keep working through 0.6.
+    The canonical surface is the single ``bench eval adopt`` command
+    (:mod:`benchflow.cli.adopt`). This registers the hidden deprecated alias
+    groups (``bench adopt init|convert|verify`` and ``bench agent
+    create|run|verify``): ``deprecated_as`` is the alias group name, and each
+    closure emits a one-line deprecation notice pointing at the new canonical
+    shape before forwarding to the shared action function, so legacy scripts keep
+    working through 0.6.
     """
-    import shlex
-
-    from rich.console import Console
-
     from benchflow.cli._shared import warn_deprecated
 
     console = Console()
@@ -651,7 +826,7 @@ def register_agent_router(
         if deprecated_as is not None:
             warn_deprecated(
                 f"bench {deprecated_as} {verbs[slot]}",
-                f"bench eval adopt {ADOPT_VERBS[slot]}",
+                _CANONICAL_HINTS[slot],
             )
 
     @agent_app.command(verbs["scaffold"], hidden=hidden)
@@ -664,17 +839,9 @@ def register_agent_router(
             typer.Option("--benchmarks-dir", help="Target benchmarks/ directory"),
         ] = None,
     ) -> None:
-        """Scaffold benchmarks/<name>/ for a new benchmark adoption (step 1 of init → convert → verify)."""
+        """Scaffold benchmarks/<name>/ for a new benchmark adoption (deprecated alias)."""
         _maybe_warn("scaffold")
-        root = benchmarks_dir or default_benchmarks_dir()
-        try:
-            target, written = create_benchmark(name, root)
-        except (InvalidBenchmarkName, BenchmarkExistsError) as exc:
-            console.print(f"[red]{escape(str(exc))}[/red]")
-            raise typer.Exit(1) from exc
-        console.print(f"[green]Scaffolded[/green] {target}")
-        for rel in written:
-            console.print(f"  {rel}")
+        run_scaffold_action(name, benchmarks_dir, console=console)
 
     @agent_app.command(verbs["drive"], hidden=hidden)
     def adopt_convert(
@@ -706,46 +873,17 @@ def register_agent_router(
             ),
         ] = None,
     ) -> None:
-        """Drive the CONVERT.md workflow by launching the host codex CLI."""
+        """Drive the conversion workflow by launching the host codex CLI (deprecated alias)."""
         _maybe_warn("drive")
-        repo_root = default_repo_root()
-        overrides = tuple(codex_config or ())
-        try:
-            resolved = name or derive_name_from_source(source)
-            if dry_run:
-                launch = prepare_adoption_launch(
-                    source,
-                    resolved,
-                    repo_root=repo_root,
-                    codex_bin=codex_bin,
-                    model=model,
-                    config_overrides=overrides,
-                )
-                # Verbatim, copy-pasteable command: no console-width hard
-                # wrapping (which would split tokens like the --cd path) and
-                # no rich-markup interpretation of the prompt text.
-                console.print(
-                    " ".join(shlex.quote(c) for c in launch.command),
-                    soft_wrap=True,
-                    markup=False,
-                )
-                return
-            code = run_agent_adoption(
-                source,
-                resolved,
-                repo_root=repo_root,
-                exec_fn=_subprocess_exec,
-                codex_bin=codex_bin,
-                model=model,
-                config_overrides=overrides,
-            )
-        except (InvalidBenchmarkName, CodexLaunchError) as exc:
-            # escape(): CodexLaunchError embeds the user-supplied --codex-bin
-            # and InvalidBenchmarkName the benchmark name — either can contain
-            # Rich markup that would make this handler itself raise MarkupError.
-            console.print(f"[red]{escape(str(exc))}[/red]")
-            raise typer.Exit(1) from exc
-        raise typer.Exit(code)
+        run_convert_action(
+            source,
+            name,
+            model=model,
+            dry_run=dry_run,
+            codex_bin=codex_bin,
+            codex_config=codex_config,
+            console=console,
+        )
 
     @agent_app.command(verbs["verify"], hidden=hidden)
     def adopt_verify(
@@ -779,74 +917,14 @@ def register_agent_router(
             ),
         ] = False,
     ) -> None:
-        """Run the parity gate for an adopted benchmark; emit a verdict."""
+        """Run the parity gate for an adopted benchmark; emit a verdict (deprecated alias)."""
         _maybe_warn("verify")
-        root = benchmarks_dir or default_benchmarks_dir()
-        try:
-            name = validate_benchmark_name(name)
-            if rerun:
-                console.print(
-                    "[dim]Re-executing parity_test.py --mode side-by-side…[/dim]"
-                )
-                data: Any = rerun_parity_experiment(root, name)
-            else:
-                data = load_parity_experiment(root, name)
-        except InvalidBenchmarkName as exc:
-            console.print(f"[red]{escape(str(exc))}[/red]")
-            raise typer.Exit(1) from exc
-        except BenchmarkNotFound as exc:
-            console.print(f"[red]{escape(str(exc))}[/red]")
-            raise typer.Exit(1) from exc
-        except ParityRerunError as exc:
-            console.print(f"[red]--rerun failed: {escape(str(exc))}[/red]")
-            raise typer.Exit(1) from exc
-        except ParityExperimentMissing as exc:
-            console.print(f"[yellow]{escape(str(exc))}[/yellow]")
-            data = {}
-
-        report = build_verify_report(name, data, tolerance=tolerance)
-        console.print(f"[bold]Verdict:[/bold] {report.verdict}")
-        console.print(
-            f"  conversion: {report.conversion.agreed}/{report.conversion.compared} "
-            f"criteria agree (rate {report.conversion.agreement_rate:.4f})"
+        run_verify_action(
+            name,
+            benchmarks_dir=benchmarks_dir,
+            tolerance=tolerance,
+            issue_out=issue_out,
+            roundtrip_task=roundtrip_task,
+            rerun=rerun,
+            console=console,
         )
-        if report.reward is not None:
-            console.print(
-                f"  reward: max abs delta {report.reward.max_abs_delta:.4f} "
-                f"(tolerance {report.reward.tolerance:.4f})"
-            )
-        console.print(confidence_line(report))
-
-        if roundtrip_task is not None:
-            if not roundtrip_task.is_dir():
-                console.print(
-                    f"[red]  round-trip: error: task dir not found: "
-                    f"{roundtrip_task}[/red]"
-                )
-                raise typer.Exit(1)
-            try:
-                status, reasons = roundtrip_conformance_status(roundtrip_task)
-            except OSError as exc:
-                console.print(
-                    f"[red]  round-trip: error: could not check "
-                    f"{roundtrip_task}: {exc}[/red]"
-                )
-                raise typer.Exit(1) from exc
-            console.print(f"  round-trip: {status}")
-            for reason in reasons:
-                console.print(f"    [yellow]- {reason}[/yellow]")
-
-        if report.passed:
-            return
-        if report.verdict == "insufficient-evidence":
-            # No parity data recorded yet — nothing diverged, so do not emit a
-            # "parity could not be closed" divergence issue draft. confidence_line
-            # above already told the author to run parity_test.py and record results.
-            raise typer.Exit(1)
-        issue = render_divergence_issue(report)
-        if issue_out is not None:
-            Path(issue_out).write_text(issue)
-            console.print(f"[dim]Issue draft written to {escape(str(issue_out))}[/dim]")
-        else:
-            console.print(issue)
-        raise typer.Exit(1)
