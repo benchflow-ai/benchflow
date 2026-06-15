@@ -83,6 +83,26 @@ def test_from_native_yaml(native_yaml):
     assert job._jobs_dir == Path("output")
 
 
+def test_native_yaml_reads_skip_install(tmp_path):
+    """Guards #588: native eval YAML skip_install reaches runtime config."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+    (tasks / "instruction.md").write_text("Do something")
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+tasks_dir: tasks
+agent: claude-agent-acp
+model: claude-haiku-4-5-20251001
+skip_install: true
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.skip_agent_install is True
+
+
 def test_native_yaml_normalizes_agent_alias_and_root_sandbox_user(tmp_path):
     """Guards ENG-91 P0 dogfood config-boundary regression."""
     tasks = tmp_path / "tasks" / "task-a"
@@ -324,6 +344,27 @@ def test_from_legacy_yaml(legacy_yaml):
     assert cfg.sandbox_setup_timeout == 75
     assert job._tasks_dir == Path("tasks")
     assert job._jobs_dir == Path("output")
+
+
+def test_legacy_yaml_reads_agent_skip_install(tmp_path):
+    """Guards #588: legacy agents[].skip_install reaches runtime config."""
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"')
+
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+agents:
+  - name: claude-agent-acp
+    model_name: anthropic/claude-haiku-4-5-20251001
+    skip_install: true
+datasets:
+  - path: tasks
+""")
+
+    job = Evaluation.from_yaml(config)
+
+    assert job._config.skip_agent_install is True
 
 
 def test_legacy_yaml_preserves_provider_prefix(tmp_path):

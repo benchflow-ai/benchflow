@@ -145,6 +145,7 @@ def _write_config(
     context_root: str | Path | None,
     sandbox_locked_paths: list[str] | None = None,
     sandbox_setup_timeout: int = 120,
+    skip_agent_install: bool = False,
     timeout: int,
     started_at: datetime,
     agent_env: dict[str, str],
@@ -182,9 +183,10 @@ def _write_config(
         "sandbox_user": sandbox_user,
         "sandbox_locked_paths": sandbox_locked_paths,
         "sandbox_setup_timeout": sandbox_setup_timeout,
-        "agent_install_timeout": effective_install_timeout(
-            agent, sandbox_setup_timeout
-        ),
+        "skip_install": skip_agent_install,
+        "agent_install_timeout": None
+        if skip_agent_install
+        else effective_install_timeout(agent, sandbox_setup_timeout),
         "context_root": str(context_root) if context_root else None,
         "timeout_sec": timeout,
         "concurrency": concurrency,
