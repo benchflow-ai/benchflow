@@ -10,7 +10,10 @@ None) so both commands return the same verdict.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -38,6 +41,11 @@ REAL_SKILLSBENCH_TASK_MD_EXAMPLES = (
 USER_RUNTIME_TASK_MD_EXAMPLES = (
     Path("docs/examples/task-md/user-runtime/private-facts-nudges"),
 )
+EXPECTED_CITATION_CHECK_FAKES = [
+    "Advances in Artificial Intelligence for Natural Language Processing",
+    "Blockchain Applications in Supply Chain Management",
+    "Neural Networks in Deep Learning: A Comprehensive Review",
+]
 
 
 def _make_task_missing_agent(
@@ -86,6 +94,27 @@ def _make_malformed_task_md(parent: Path, name: str = "malformed-task-md") -> Pa
         "---\ntask:\n  name: [unclosed\n---\n\n## prompt\n\nhi\n"
     )
     return task
+
+
+def test_citation_check_oracle_uses_fixture_ground_truth(tmp_path: Path):
+    """Guards the PR #767 integration gate from live citation API flakiness."""
+    task = Path("docs/examples/task-md/real-skillsbench/citation-check")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "test.bib").write_text((task / "environment" / "test.bib").read_text())
+
+    proc = subprocess.run(
+        ["bash", str(task / "oracle" / "solve.sh")],
+        cwd=Path.cwd(),
+        env={**os.environ, "BENCHFLOW_WORKSPACE": str(workspace)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr[-1000:]
+    answer = json.loads((workspace / "answer.json").read_text())
+    assert answer == {"fake_citations": EXPECTED_CITATION_CHECK_FAKES}
 
 
 def test_check_task_accepts_missing_agent(tmp_path):
