@@ -45,6 +45,7 @@ from benchflow.scenes import (
     scene_step_role,
     scene_step_skills_dir,
 )
+from benchflow.skill_policy import SKILL_MODE_SELF_GEN
 from benchflow.trajectories.tree import Step
 from benchflow.usage_tracking import is_token_usage_available
 
@@ -108,6 +109,14 @@ async def _export_generated_skills(rollout: Rollout) -> None:
     from benchflow.learner_skills import capture_skills
 
     rollout._evolved_skills = capture_skills(target)
+    if (
+        rollout._config.recorded_skill_mode == SKILL_MODE_SELF_GEN
+        and not rollout._evolved_skills
+    ):
+        raise RuntimeError(
+            "self-gen creator produced no generated skills; aborting empty "
+            "self-gen result"
+        )
 
 
 async def _activate_step_skills(rollout: Rollout, step: Step) -> None:

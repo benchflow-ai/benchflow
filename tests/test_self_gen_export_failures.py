@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from benchflow.rollout import Rollout, RolloutConfig
+from benchflow.skill_policy import SKILL_MODE_SELF_GEN
 
 
 def _bare_rollout(tmp_path: Path, export_target: Path | None) -> Rollout:
@@ -119,6 +120,25 @@ async def test_cleanup_successful_export_leaves_errors_empty(tmp_path):
     assert rollout._error is None
     assert rollout._export_error is None
     assert rollout._evolved_skills == {"skill-a": "# Skill A\n"}
+
+
+@pytest.mark.asyncio
+async def test_cleanup_self_gen_empty_export_is_not_success(tmp_path):
+    """Guards #533: self-gen cannot silently continue with zero generated skills."""
+    rollout = _bare_rollout(tmp_path, export_target=tmp_path / "exports")
+    rollout._config.artifact_skill_mode = SKILL_MODE_SELF_GEN
+
+    async def fake_download_dir(source_dir, target_dir):
+        Path(target_dir).mkdir(parents=True, exist_ok=True)
+
+    rollout._env.download_dir = fake_download_dir
+
+    await rollout.cleanup()
+
+    assert rollout._error is None
+    assert rollout._export_error is not None
+    assert "self-gen creator produced no generated skills" in rollout._export_error
+    assert rollout._evolved_skills is None
 
 
 @pytest.mark.asyncio

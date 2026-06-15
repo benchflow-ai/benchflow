@@ -88,15 +88,33 @@ def _resolve_skill_creator_root(path: str | Path | None) -> tuple[Path, str]:
     )
 
 
+def _format_task_prompts(task_prompts: list[str]) -> str:
+    if len(task_prompts) == 1:
+        return task_prompts[0].strip()
+
+    blocks = []
+    for index, prompt in enumerate(task_prompts, start=1):
+        blocks.append(f'<prompt index="{index}">\n{prompt.strip()}\n</prompt>')
+    return "\n\n".join(blocks)
+
+
 def _self_gen_prompt(
-    task_path: Path, generated_skills_root: str, skill_creator_name: str
+    task_path: Path,
+    generated_skills_root: str,
+    skill_creator_name: str,
+    task_prompts: list[str],
 ) -> str:
     """Prompt the clean creator agent to use the mounted skill-creator skill."""
     skill_dir_name = f"{_safe_skill_name(task_path.name)}-skill"
     target_dir = f"{generated_skills_root}/{skill_dir_name}"
+    formatted_prompts = _format_task_prompts(task_prompts)
     return f"""Use the {skill_creator_name} skill exactly as provided.
 
-Read /instruction.md and inspect the task environment only as needed to understand the reusable workflow. Do not solve the task directly.
+Create reusable skills for the task prompts below. Inspect the task environment only as needed to understand the reusable workflow. Do not solve the task directly.
+
+<task-prompts>
+{formatted_prompts}
+</task-prompts>
 
 Create one or more complete Anthropic-standard skill packs as immediate child directories under:
 
