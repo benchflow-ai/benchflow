@@ -15,7 +15,8 @@ import datetime
 import tomllib
 from pathlib import Path
 
-COOLDOWN_DAYS = 7
+from tools.lock import COOLDOWN_DAYS
+
 _PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
 

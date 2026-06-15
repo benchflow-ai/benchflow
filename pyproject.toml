@@ -177,9 +177,11 @@ exclude = [
 
 [tool.uv]
 # Dependency cooldown (hard rule): never resolve to a release younger than ~7
-# days. `exclude-newer` caps every `uv lock` at this timestamp; bump it to a date
-# >= 7 days in the past when intentionally taking updates. The CI check
-# `tests/test_dep_cooldown.py` fails if this date is ever within the last 7 days.
+# days. `exclude-newer` caps every `uv lock` at this timestamp. Don't hand-edit
+# it — run `python tools/lock.py` to set it to `now - 7d` and re-lock in one
+# step (the value stays static so CI's `uv sync --locked` is deterministic; the
+# helper just rolls it forward). The CI check `tests/test_dep_cooldown.py` fails
+# if this date is ever within the last 7 days.
 #
 # Security exception: a freshly-published CVE fix (younger than the cap) is
 # allowed via a per-package override in `exclude-newer-package` below, with a
