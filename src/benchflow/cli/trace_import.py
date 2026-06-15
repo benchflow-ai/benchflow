@@ -138,6 +138,16 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             print_error("Only one source allowed at a time")
             raise typer.Exit(1)
 
+        # --outcome is an equality filter; an unrecognized value would silently
+        # match nothing and exit 0, hiding a typo. Reject it up front against the
+        # set the help text advertises.
+        if outcome is not None and outcome not in {"success", "failure", "unknown"}:
+            print_error(
+                f"Invalid --outcome {outcome!r}; expected one of: "
+                "success, failure, unknown"
+            )
+            raise typer.Exit(1)
+
         if from_local:
             traces = _load_local(projects_dir, project_filter, limit)
         elif from_file is not None:
@@ -248,6 +258,12 @@ def _load_file(path: Path, format: str) -> list:
 
     if not path.exists():
         print_error(f"File not found: {path}")
+        raise typer.Exit(1)
+    if not path.is_file():
+        # A directory (or other non-file) passes exists() but makes the format
+        # sniff's path.open() raise IsADirectoryError. Reject it with a clean
+        # message instead of a traceback.
+        print_error(f"Not a file (expected a JSONL trace file): {path}")
         raise typer.Exit(1)
 
     detected_format = format

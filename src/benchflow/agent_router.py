@@ -672,6 +672,15 @@ def register_agent_router(
         except (InvalidBenchmarkName, BenchmarkExistsError) as exc:
             console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
+        except OSError as exc:
+            # A bad --benchmarks-dir (e.g. a regular file, or an unwritable path)
+            # makes create_benchmark's mkdir raise NotADirectoryError/OSError.
+            # Surface it as a clean one-liner, not a raw traceback.
+            console.print(
+                f"[red]could not scaffold benchmark under {escape(str(root))}: "
+                f"{escape(str(exc))}[/red]"
+            )
+            raise typer.Exit(1) from exc
         console.print(f"[green]Scaffolded[/green] {target}")
         for rel in written:
             console.print(f"  {rel}")
@@ -845,7 +854,17 @@ def register_agent_router(
             raise typer.Exit(1)
         issue = render_divergence_issue(report)
         if issue_out is not None:
-            Path(issue_out).write_text(issue)
+            # A missing parent dir (or unwritable path) for --issue-out must
+            # fail-fast with a clean message, matching the round-trip OSError
+            # guard above — not dump a FileNotFoundError traceback.
+            try:
+                Path(issue_out).write_text(issue)
+            except OSError as exc:
+                console.print(
+                    f"[red]cannot write issue draft to {escape(str(issue_out))}: "
+                    f"{escape(str(exc))}[/red]"
+                )
+                raise typer.Exit(1) from exc
             console.print(f"[dim]Issue draft written to {escape(str(issue_out))}[/dim]")
         else:
             console.print(issue)

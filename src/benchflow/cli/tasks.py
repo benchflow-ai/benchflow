@@ -330,7 +330,14 @@ def register_tasks(app: typer.Typer) -> None:
         # A task directory is either a legacy task.toml task or a native task.md
         # task (the universal-adapter format) — recognize both, not just legacy.
         def _is_task_dir(p: Path) -> bool:
-            return (p / "task.toml").is_file() or (p / "task.md").is_file()
+            # is_file() can raise (e.g. PermissionError) when p is an unreadable
+            # directory — stat'ing p/task.toml needs +x on p. Treat anything we
+            # cannot stat as "not a task dir" so the directory scan below skips it
+            # instead of dumping a raw traceback.
+            try:
+                return (p / "task.toml").is_file() or (p / "task.md").is_file()
+            except OSError:
+                return False
 
         if not path.is_dir():
             print_error(f"Not a directory: {path}")

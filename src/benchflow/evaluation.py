@@ -1654,8 +1654,16 @@ class Evaluation:
 
             DockerSandbox.set_build_concurrency(cfg.build_concurrency)
 
+        # The denominator is the number of tasks that will appear in the summary:
+        # the resumed-complete set plus the to-run set (disjoint by construction).
+        # This equals len(task_dirs) for a clean run, but a resume whose jobs_dir
+        # holds results from a *wider* prior selection has more completed rows than
+        # the current selection — keying off len(task_dirs) there rendered nonsense
+        # like "11/1 · 1100%" and a denominator that disagreed with the final
+        # "Score: 8/11". completed-plus-remaining is exactly what gets scored.
+        planned_total = len(completed) + len(remaining)
         logger.info(
-            f"Job: {len(task_dirs)} tasks, {len(completed)} done, "
+            f"Job: {planned_total} tasks, {len(completed)} done, "
             f"{len(remaining)} to run (concurrency={cfg.concurrency})"
         )
         # Hand the live dashboard an honest denominator: total / already-done /
@@ -1665,7 +1673,7 @@ class Evaluation:
         # counts + pass-rate cover the whole job, not just this process's tasks.
         self._fire_progress(
             self._on_plan,
-            len(task_dirs),
+            planned_total,
             len(completed),
             len(remaining),
             _classify_completed_outcomes(completed),

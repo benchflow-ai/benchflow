@@ -513,3 +513,98 @@ def test_viewer_job_dir_indexes_rollout_subdirs(tmp_path):
     assert "job directory" in html_out
     assert "task-a__trial-1" in html_out
     assert "No trajectory files found" not in html_out
+
+
+# ── round-3 sweep: error-handling defects found by the CLI audit workflow ─────
+
+
+def test_tasks_digest_skips_unreadable_subdir_without_traceback(tmp_path):
+    # P0: the directory scan stat'd task.toml inside an unreadable subdir and
+    # dumped a raw PermissionError traceback. It must skip what it cannot stat.
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "task.toml").write_text("")
+    locked.chmod(0o000)
+    try:
+        res = runner.invoke(app, ["tasks", "digest", str(tmp_path)])
+    finally:
+        locked.chmod(0o755)  # restore so pytest tmp cleanup can recurse in
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "No tasks under" in res.output
+
+
+def test_tasks_generate_from_file_directory_is_clean_error(tmp_path):
+    # P0: a directory passed exists() then raised IsADirectoryError in the format
+    # sniff's path.open(). It must be rejected with a clean message.
+    res = runner.invoke(
+        app, ["tasks", "generate", "--from-file", str(tmp_path), "--dry-run"]
+    )
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "Not a file" in res.output
+
+
+def test_tasks_generate_rejects_invalid_outcome(tmp_path):
+    # P3: a bogus --outcome silently matched nothing and exited 0; it must be
+    # rejected against the advertised choice set.
+    trace = tmp_path / "t.jsonl"
+    trace.write_text('{"foo":"bar"}\n')
+    res = runner.invoke(
+        app,
+        ["tasks", "generate", "--from-file", str(trace), "--outcome", "zzz", "--dry-run"],
+    )
+    assert res.exit_code == 1
+    assert "Invalid --outcome" in res.output
+
+
+def test_continue_batch_rejects_nonexistent_root(tmp_path):
+    # P1: a typo'd ROOT exited 0 "No timeout run folders found." (silent success).
+    res = runner.invoke(app, ["continue-batch", str(tmp_path / "nope-12345")])
+    assert res.exit_code == 1
+    assert "does not exist" in res.output
+
+
+def test_continue_batch_rejects_file_root(tmp_path):
+    # P1: a regular-file ROOT also exited 0; it must fail like `bench continue`.
+    f = tmp_path / "a-file.txt"
+    f.write_text("x")
+    res = runner.invoke(app, ["continue-batch", str(f)])
+    assert res.exit_code == 1
+    assert "not a directory" in res.output
+
+
+def test_environment_create_empty_dir_names_task_md(tmp_path):
+    # P2: the error named the legacy instruction.md; it must name the formats the
+    # author can actually create (task.md / task.toml).
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    res = runner.invoke(
+        app, ["environment", "create", str(empty), "--sandbox", "docker"]
+    )
+    assert res.exit_code == 1
+    assert "task.md" in res.output
+
+
+def test_eval_view_empty_dir_fails_fast_without_writing(tmp_path):
+    # P3: `eval view` wrote a blank trajectory.html into an unrelated dir and
+    # started a server; an empty dir must fail fast and write nothing.
+    res = runner.invoke(app, ["eval", "view", str(tmp_path), "--port", "0"])
+    assert res.exit_code == 1
+    assert "No trajectories found" in res.output
+    assert not (tmp_path / "trajectory.html").exists()
+
+
+def test_print_error_echoes_colon_tokens_verbatim_no_emoji(monkeypatch):
+    # P3: print_error rendered user input through Rich with emoji=True, so a
+    # hosted-env ref like primeintellect:a:b had :a: swapped for an emoji. The
+    # echoed value must be literal.
+    import io
+
+    import benchflow.cli._shared as shared
+
+    rec = Console(file=io.StringIO(), width=200)
+    monkeypatch.setattr(shared, "err_console", rec)
+    shared.print_error("Invalid hosted environment reference: primeintellect:a:b")
+    out = rec.file.getvalue()
+    assert "primeintellect:a:b" in out

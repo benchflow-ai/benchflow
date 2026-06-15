@@ -56,8 +56,38 @@ def sandbox_create(task_dir: Path, sandbox: str) -> None:
     )
 
 
+def _daytona_sdk_available() -> bool:
+    """True if the optional Daytona SDK can be imported.
+
+    A plain import rather than ``importlib.util.find_spec``: the test suite
+    injects a fake ``daytona`` module into ``sys.modules`` that has no
+    ``__spec__``, which makes ``find_spec`` raise/return None. An import sees the
+    fake (and a real install) alike.
+    """
+    try:
+        import daytona  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def sandbox_list_local() -> None:
-    """List active Daytona sandboxes."""
+    """List active off-box sandboxes (Daytona).
+
+    Daytona is the only backend with persistent, listable sandboxes; Docker
+    sandboxes are ephemeral (built and torn down per run). When the optional
+    Daytona SDK is not installed there is nothing to list — an empty result, not
+    an error (mirroring how ``sandbox create`` degrades on a missing extra).
+    """
+    if not _daytona_sdk_available():
+        console.print(
+            "No active sandboxes. Daytona is the only backend with persistent, "
+            "listable sandboxes, and its SDK is not installed "
+            "([cyan]uv sync --extra sandbox-daytona[/cyan]). Docker sandboxes are "
+            "ephemeral and created per run."
+        )
+        return
     from benchflow.cli import main as cli_main
 
     d = cli_main._daytona_client_or_exit()
@@ -85,7 +115,18 @@ def sandbox_list_local() -> None:
 
 
 def sandbox_cleanup(*, dry_run: bool, max_age_minutes: int) -> None:
-    """Clean up orphaned Daytona sandboxes."""
+    """Clean up orphaned Daytona sandboxes.
+
+    Like ``sandbox list``, this is a no-op (not an error) when the optional
+    Daytona SDK is absent: only Daytona has persistent sandboxes to reap.
+    """
+    if not _daytona_sdk_available():
+        console.print(
+            "Nothing to clean up. The Daytona SDK is not installed "
+            "([cyan]uv sync --extra sandbox-daytona[/cyan]); only Daytona has "
+            "persistent sandboxes to reap. Docker sandboxes are torn down per run."
+        )
+        return
     from benchflow.cli import main as cli_main
 
     cli_main._cleanup_daytona_sandboxes(
@@ -113,7 +154,7 @@ def register_sandbox(app: typer.Typer) -> None:
 
     @sandbox_app.command("list")
     def sandbox_list_cmd() -> None:
-        """List active local sandboxes."""
+        """List active sandboxes (Daytona; Docker sandboxes are ephemeral)."""
         sandbox_list_local()
 
     @sandbox_app.command("cleanup")

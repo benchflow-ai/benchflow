@@ -46,7 +46,11 @@ def print_error(message: str) -> None:
        non-JSON line on the JSON channel); the same stderr rule the deprecation
        notices follow. Exit codes are unchanged, so failures stay detectable.
     """
-    err_console.print(f"[red]{escape(str(message))}[/red]")
+    # emoji=False: interpolated user input often contains ``:token:`` patterns
+    # (e.g. a hosted-env ref ``primeintellect:a:b``). With Rich's default
+    # emoji=True, err_console would substitute ``:a:`` with an emoji, corrupting
+    # the echoed-back value. escape() neutralizes [..] markup but not shortcodes.
+    err_console.print(f"[red]{escape(str(message))}[/red]", emoji=False)
 
 
 _DEPRECATION_WARNED: set[str] = set()
