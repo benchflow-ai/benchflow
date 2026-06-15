@@ -319,6 +319,7 @@ AGENTS: dict[str, AgentConfig] = {
         name="claude-agent-acp",
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
+        home_dirs=[".claude"],
         # Pinned to 0.40.0: the config-option wiring below (set_config_option +
         # the "model"/"effort" ids) targets this version's ACP protocol (sdk
         # 0.24, which dropped session/set_model). The option ids are coupled to
