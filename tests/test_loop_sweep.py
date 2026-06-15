@@ -107,6 +107,7 @@ def test_single_shot_cell_label():
 def _summary(
     *,
     score=0.0,
+    score_ratio=None,
     passed=0,
     total=0,
     usage=None,
@@ -116,6 +117,8 @@ def _summary(
     score is a formatted "%"-string, usage_summary fields are spread flat at the
     top level, and the loop block is nested under "loop_summary"."""
     out = {"score": f"{score:.1%}", "passed": passed, "total": total}
+    if score_ratio is not None:
+        out["score_ratio"] = score_ratio
     if usage is not None:
         out.update(usage)  # usage_summary(...) is spread flat in summary.json
     if loop_summary is not None:
@@ -151,6 +154,19 @@ def test_cell_from_summary_extracts_full_loop_and_usage():
     assert cell.pass_at_iteration == [0.4, 0.6, 0.72]
     assert cell.fraction_converged == 0.72
     assert cell.telemetry_coverage == 1.0
+
+
+def test_cell_from_summary_prefers_numeric_score_ratio():
+    """Guards the fix from PR #778: sweep aggregation reads numeric score_ratio."""
+    summary = _summary(score=0.0, score_ratio=0.75, passed=1, total=2)
+    cell = cell_result_from_summary("m", "single-shot", summary)
+    assert cell.pass_rate == pytest.approx(0.75)
+
+
+def test_cell_from_summary_keeps_legacy_count_fallback():
+    summary = _summary(score=0.0, passed=1, total=2)
+    cell = cell_result_from_summary("m", "single-shot", summary)
+    assert cell.pass_rate == pytest.approx(0.5)
 
 
 def test_cell_from_summary_no_usage_yields_none_tokens_not_zero():
