@@ -18,7 +18,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
@@ -155,8 +155,8 @@ class DockerSandbox(BaseSandbox):
         task_env_config: SandboxConfig,
         keep_containers: bool = False,
         mounts_json: list[dict[str, str]] | None = None,
-        *args: object,
-        **kwargs: object,
+        *args: Any,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             environment_dir=environment_dir,
@@ -768,7 +768,7 @@ class DockerSandbox(BaseSandbox):
         user = self._resolve_user(user)
         env = self._merge_env(env)
 
-        exec_command: list[str] = ["exec"]
+        exec_command: list[str] = ["exec", "-T"]
 
         if cwd:
             exec_command.extend(["-w", cwd])
