@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from benchflow.sandbox.providers import SANDBOX_PROVIDERS
+
 
 @dataclass(frozen=True)
 class EnvironmentAdapterReport:
@@ -69,7 +71,7 @@ def environment_adapter_report(
                 status="ready",
                 provider_support="native",
                 required_capabilities=("shell", "filesystem"),
-                verified_sandboxes=("docker", "daytona", "modal", "cua"),
+                verified_sandboxes=SANDBOX_PROVIDERS,
             )
 
 

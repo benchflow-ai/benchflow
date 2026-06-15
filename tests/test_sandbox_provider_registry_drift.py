@@ -1,10 +1,10 @@
 """Drift guard for the canonical sandbox-provider registry (dev-ex #14).
 
-Before ``benchflow.sandbox.providers`` the set ``{docker, daytona, modal}`` (and
-its ``{daytona, modal}`` off-box subset) was hand-copied across ~10 sites with no
-single source of truth. These tests fail if (a) a literal provider set reappears
-outside the registry, (b) the derived facts (phrase, extras, off-box subset) go
-stale, or (c) the registry and the dispatch table drift apart.
+Before ``benchflow.sandbox.providers`` the provider set (and its off-box subset)
+was hand-copied across ~10 sites with no single source of truth. These tests fail
+if (a) a literal provider set reappears outside the registry, (b) the derived
+facts (phrase, extras, off-box subset) go stale, or (c) the registry and the
+dispatch table drift apart.
 """
 
 from __future__ import annotations
@@ -28,15 +28,24 @@ _REGISTRY = _SRC / "sandbox" / "providers.py"
 def test_registry_is_the_single_source_of_truth() -> None:
     # Locks the current set + docker-first order; adding a provider is then a
     # deliberate edit here + a test update, never a silent scatter.
-    assert SANDBOX_PROVIDERS == ("docker", "daytona", "modal")
+    assert SANDBOX_PROVIDERS == (
+        "docker",
+        "daytona",
+        "modal",
+        "cua",
+        "cua-cloud",
+    )
     assert frozenset(SANDBOX_PROVIDERS) == SANDBOX_PROVIDER_SET
 
 
 def test_providers_phrase_is_byte_identical() -> None:
     # The refactor must be behavior-preserving for every help/error string that
     # used to hand-write this phrase.
-    assert providers_phrase() == "docker, daytona, or modal"
-    assert providers_phrase(quote=True) == "'docker', 'daytona', or 'modal'"
+    assert providers_phrase() == "docker, daytona, modal, cua, or cua-cloud"
+    assert (
+        providers_phrase(quote=True)
+        == "'docker', 'daytona', 'modal', 'cua', or 'cua-cloud'"
+    )
 
 
 def test_off_box_subset_is_exactly_the_non_docker_providers() -> None:
