@@ -649,13 +649,18 @@ def _create_sandbox_environment(
         sandbox_type=sandbox_type,
         task_path=task_path,
     )
-    if preserve_agent_network and env_config.allow_internet is False:
+    if preserve_agent_network and _network_policy_is_restrictive(env_config):
         # LLM agents run inside the sandbox and need outbound network for model
         # APIs and first-run agent installation. BenchFlow enforces the task's
         # no-web policy at the agent layer instead of applying the container
-        # network block for these runs.
+        # network block for these runs, so lift ANY restrictive policy
+        # (no-network or allowlist) to public for them.
+        from benchflow.task.config import NetworkMode
+
         env_config = env_config.model_copy(deep=True)
         env_config.allow_internet = True
+        env_config.network_mode = NetworkMode.PUBLIC
+        env_config.allowed_hosts = None
 
     manifest_env: dict[str, str] = {}
     if environment_manifest is not None:
@@ -756,6 +761,16 @@ def _create_sandbox_environment(
         raise ValueError(
             f"Unknown sandbox_type: {sandbox_type!r} (use {providers_phrase(quote=True)})"
         )
+
+
+def _network_policy_is_restrictive(env_config: object) -> bool:
+    """True when the resolved network policy is no-network or allowlist."""
+    from benchflow.sandbox.network_policy import resolve_network_mode
+    from benchflow.task.config import NetworkMode, SandboxConfig
+
+    if not isinstance(env_config, SandboxConfig):
+        return getattr(env_config, "allow_internet", True) is False
+    return resolve_network_mode(env_config) is not NetworkMode.PUBLIC
 
 
 def _validate_task_runtime_for_launch(

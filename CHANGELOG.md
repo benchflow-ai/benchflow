@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+- **`network_mode: allowlist` is now enforced on the `docker` sandbox.** A task
+  that sets `environment.network_mode: allowlist` + `allowed_hosts` runs behind
+  an internal network and an egress-proxy sidecar that forwards only to those
+  hosts; every other destination (other hosts, raw-IP connections, tools that
+  ignore the proxy) has no route off-box. `network_mode` is now the
+  authoritative network field across the launch path and `allow_internet` is a
+  derived back-compat shim. On sandboxes without per-host egress control
+  (`daytona`, `modal`) an `allowlist` task fails closed at preflight with a
+  clear message instead of running unrestricted (previously `allowlist` was
+  validated but unenforceable everywhere). (ENG-219)
+
+
 ### Changed
 - **`task.md` is now the sole task authoring format.** `bench tasks init`
   scaffolds a native `task.md` package (`task.md` + `environment/` + `oracle/` +

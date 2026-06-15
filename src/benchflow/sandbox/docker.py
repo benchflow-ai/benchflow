@@ -256,10 +256,34 @@ class DockerSandbox(BaseSandbox):
         if self._mounts_compose_path:
             paths.append(self._mounts_compose_path)
 
-        if not self.task_env_config.allow_internet:
-            paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
-
+        paths.extend(self._network_policy_compose_paths())
         return paths
+
+    def _network_policy_compose_paths(self) -> list[Path]:
+        """Compose overrides enforcing the task's resolved network policy.
+
+        ``no-network`` detaches the container network; ``allowlist`` confines
+        egress to ``allowed_hosts`` via an internal network + proxy sidecar
+        (see ``_egress.build_egress_override``); ``public`` adds nothing. An
+        allowlist with no writable rollout dir fails closed to no-network.
+        """
+        from benchflow.sandbox._egress import build_egress_override
+        from benchflow.sandbox.network_policy import (
+            EffectivePolicy,
+            resolve_network_decision,
+        )
+
+        decision = resolve_network_decision(self.task_env_config, "docker")
+        if decision.policy is EffectivePolicy.OPEN:
+            return []
+        if decision.policy is EffectivePolicy.ALLOWLIST and self.rollout_paths:
+            override = build_egress_override(
+                decision.allowed_hosts,
+                out_dir=self.rollout_paths.rollout_dir,
+            )
+            return [override]
+        # BLOCK_ALL, or allowlist with nowhere to stage the proxy → fail closed.
+        return [self._DOCKER_COMPOSE_NO_NETWORK_PATH]
 
     def _write_mounts_compose_file(self) -> Path:
         compose = {"services": {"main": {"volumes": self._mounts_json}}}

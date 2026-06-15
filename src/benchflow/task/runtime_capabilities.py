@@ -269,12 +269,19 @@ def _append_network_issue(
     sandbox: str,
 ) -> None:
     if mode == NetworkMode.ALLOWLIST:
-        _issue(
-            unsupported,
-            path=path,
-            reason="network allowlists are parsed but not enforced per sandbox",
-            sandbox=sandbox,
-        )
+        from benchflow.sandbox.network_policy import sandbox_supports_allowlist
+
+        if not sandbox_supports_allowlist(sandbox):
+            _issue(
+                unsupported,
+                path=path,
+                reason=(
+                    "network_mode='allowlist' is enforced only on the 'docker' "
+                    "sandbox (egress proxy); not available on this sandbox — use "
+                    "'docker', 'no-network', or 'public' (ENG-219)"
+                ),
+                sandbox=sandbox,
+            )
 
 
 def _append_document_issues(

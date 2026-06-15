@@ -113,6 +113,43 @@ a minimal authored file and its canonical form never drift apart.
 
 ---
 
+## Network policy
+
+`network_mode` (on `[environment]`, and optionally per-`agent`/`verifier`)
+controls outbound network access. It is the authoritative field; the legacy
+`allow_internet` boolean is deprecated and derived from it.
+
+| `network_mode` | Behavior | `allowed_hosts` |
+|---|---|---|
+| `public` *(default)* | Unrestricted egress | must be omitted |
+| `no-network` | Container fully detached from the network | must be omitted |
+| `allowlist` | Egress confined to `allowed_hosts` | required, non-empty |
+
+```yaml
+environment:
+  network_mode: allowlist
+  allowed_hosts: [pypi.org, files.pythonhosted.org]
+```
+
+**Enforcement**
+
+- `no-network` and `public` are enforced on every sandbox.
+- `allowlist` is enforced on the **`docker`** sandbox: the container joins an
+  internal (no-egress) network and its HTTP(S) traffic is routed through a proxy
+  sidecar that forwards only to `allowed_hosts`. Any other host, a raw-IP
+  connection, or a tool that ignores the proxy has no route off-box (default
+  deny). On sandboxes without per-host egress control (`daytona`, `modal`) an
+  `allowlist` task is **rejected at preflight** rather than run unrestricted —
+  use `docker`, `no-network`, or `public` there. Wider per-sandbox allowlist
+  support is tracked in ENG-219.
+- For **agent runs with web tools disabled**, the agent still needs the model
+  API, so a restrictive `network_mode` (`no-network` or `allowlist`) is lifted
+  to `public` and the no-web policy is enforced at the agent layer instead.
+  `allowlist` therefore governs oracle/verifier and non-web-disabled runs.
+
+`allowed_hosts` entries are hostnames only (no scheme, port, or path) and match
+the host exactly or as a parent domain (`example.com` matches `api.example.com`).
+
 ## Prompt body and prompts/ sidecars
 
 The body below the frontmatter is the base prompt — free-form markdown, no
