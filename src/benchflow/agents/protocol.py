@@ -20,6 +20,7 @@ adapter that makes ``ACPClient`` honour the ``Session`` contract.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -111,7 +112,12 @@ class Session(Protocol):
     turn, registers an ``on_ask_user`` handler for agent-initiated
     branches, and reads ``steps`` for the session's contribution to the
     trajectory.
+
+    ``on_change`` is an assignable streaming hook the rollout kernel wires
+    after connect. Implementations call it after appending trajectory events.
     """
+
+    on_change: Callable[[Session], None] | None
 
     async def prompt(self, text: str) -> StopReason:
         """Send the task instruction or a nudge; block until the turn ends.
@@ -187,6 +193,27 @@ class ACPSessionAdapter:
     def __init__(self, client: ACPClient) -> None:
         self._client = client
         self._ask_user_handler: AskUserHandler | None = None
+        self._on_change_handler: Callable[[Session], None] | None = None
+
+    @property
+    def on_change(self) -> Callable[[Session], None] | None:
+        """Assignable streaming hook, bridged onto the current ACP session."""
+        return self._on_change_handler
+
+    @on_change.setter
+    def on_change(self, handler: Callable[[Session], None] | None) -> None:
+        self._on_change_handler = handler
+        session = getattr(self._client, "session", None)
+        if session is None:
+            return
+        if handler is None:
+            session.on_change = None
+            return
+
+        def _bridge(_session: Any) -> None:
+            handler(self)
+
+        session.on_change = _bridge
 
     async def prompt(self, text: str) -> StopReason:
         """Send the task instruction or a nudge; return the stop reason.

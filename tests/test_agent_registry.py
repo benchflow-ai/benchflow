@@ -252,6 +252,7 @@ class TestRegisterAgent:
         )
         assert cfg.default_model == ""
         assert cfg.api_protocol == ""
+        assert cfg.session_factory == ""
         assert cfg.disallow_web_tools_setup_cmd == ""
         assert cfg.disallow_web_tools_launch_suffix == ""
 
@@ -261,11 +262,15 @@ class TestRegisterAgent:
             name="rt-full-agent",
             install_cmd="install rt",
             launch_cmd="launch rt",
+            protocol="session-factory",
+            session_factory="my_agent.factory:create_agent",
             default_model="rt-model-1",
             api_protocol="openai-completions",
             disallow_web_tools_setup_cmd="printf 'no web' > /tmp/policy",
             disallow_web_tools_launch_suffix=" --no-web",
         )
+        assert cfg.protocol == "session-factory"
+        assert cfg.session_factory == "my_agent.factory:create_agent"
         assert cfg.default_model == "rt-model-1"
         assert cfg.api_protocol == "openai-completions"
         assert cfg.disallow_web_tools_setup_cmd == "printf 'no web' > /tmp/policy"
@@ -273,6 +278,8 @@ class TestRegisterAgent:
 
         # And the registered entry reflects them.
         registered = AGENTS["rt-full-agent"]
+        assert registered.protocol == "session-factory"
+        assert registered.session_factory == "my_agent.factory:create_agent"
         assert registered.default_model == "rt-model-1"
         assert registered.api_protocol == "openai-completions"
         assert registered.disallow_web_tools_launch_suffix == " --no-web"
