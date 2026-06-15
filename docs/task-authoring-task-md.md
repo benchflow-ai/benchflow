@@ -159,6 +159,8 @@ at any depth (`api.example.com`, `a.b.example.com`) but **not** the bare apex
 `example.com`. The wildcard must be the leading label only — `a.*.com`,
 `*example.com`, and `ex*mple.com` are rejected at parse time.
 
+For the full mode/mechanism taxonomy and credits to the platforms this design draws on, see [Network access: design and prior art](./network-mode-prior-art.md).
+
 ## Prompt body and prompts/ sidecars
 
 The body below the frontmatter is the base prompt — free-form markdown, no

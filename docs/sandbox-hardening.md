@@ -79,3 +79,4 @@ Known residual risk:
 - [`docs/labs/reward-hack-matrix/README.md`](https://github.com/benchflow-ai/benchflow/tree/main/docs/labs/reward-hack-matrix) — methodology, exploit taxonomy, sweep results (historical, 0.2.x-era).
 - [`progressive-disclosure.md`](./progressive-disclosure.md) — soft-verify (the relaxed hardening used between rounds in multi-round trials).
 - [`task-authoring.md`](./task-authoring.md) — the `task.toml` schema including `[verifier.hardening]` opt-outs.
+- [`network-mode-prior-art.md`](./network-mode-prior-art.md) — network-access design model, mode/mechanism taxonomy, and credits to prior-art platforms.

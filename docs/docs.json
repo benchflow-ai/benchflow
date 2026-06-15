@@ -29,6 +29,7 @@
           "skill-eval",
           "llm-judge",
           "sandbox-hardening",
+          "network-mode-prior-art",
           "architecture",
           "environment-plane"
         ]
