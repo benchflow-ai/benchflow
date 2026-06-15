@@ -192,6 +192,12 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             print_error("--task-format must be task-md or legacy")
             raise typer.Exit(1)
 
+        if output_dir.exists() and not output_dir.is_dir():
+            # An existing --output *file* otherwise makes the per-task mkdir raise
+            # a raw NotADirectoryError deep inside generation.
+            print_error(f"--output {output_dir} is not a directory")
+            raise typer.Exit(1)
+
         results = generate_tasks_from_traces(
             traces,
             output_dir,
@@ -200,6 +206,16 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
             outcome_filter=outcome,
             output_format=cast(Literal["task-md", "legacy"], task_format),
         )
+
+        if not results:
+            # Every trace was filtered out (e.g. by --min-steps/--outcome). Don't
+            # report a green "Generated 0 tasks" success — signal it as a failure
+            # so a scripted caller notices nothing was produced.
+            console.print(
+                "[yellow]No tasks generated — every trace was filtered out by "
+                "--min-steps/--outcome.[/yellow]"
+            )
+            raise typer.Exit(1)
 
         console.print(f"\n[green]Generated {len(results)} tasks[/green] → {output_dir}")
         _print_task_summary(results)

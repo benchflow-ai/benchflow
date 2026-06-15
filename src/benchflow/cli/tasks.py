@@ -231,7 +231,10 @@ def register_tasks(app: typer.Typer) -> None:
 
         try:
             result = normalize_task_md(task_dir, output_path=output, write=write)
-        except (FileNotFoundError, NotADirectoryError, ValueError) as e:
+        except (OSError, ValueError) as e:
+            # OSError (covers IsADirectoryError when --output is an existing dir,
+            # plus FileNotFoundError/NotADirectoryError) → clean error, no
+            # traceback. Mirrors `tasks init`'s (OSError, ValueError) handler.
             print_error(f"{e}")
             raise typer.Exit(1) from None
 

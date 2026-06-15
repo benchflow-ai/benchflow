@@ -121,7 +121,9 @@ def register_skills(app: typer.Typer) -> None:
                 f"got {len(model)} models for {len(agent)} agents"
             )
             raise typer.Exit(1)
-        if not (skill_dir / "evals" / "evals.json").exists():
+        if not (skill_dir / "evals" / "evals.json").is_file():
+            # is_file (not exists): a directory named evals.json otherwise passes
+            # this guard, then read_text() raises a raw IsADirectoryError.
             print_error(
                 f"No evals/evals.json found in {skill_dir}\n"
                 "Create one with test cases. See: benchflow skills eval --help"

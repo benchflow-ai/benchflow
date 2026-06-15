@@ -684,6 +684,8 @@ def run_batch_eval(
 
 def _run_config_file_eval(plan: "EvalPlan") -> None:
     """Apply CLI overrides onto a YAML-loaded Evaluation, then run and report it."""
+    import subprocess
+
     import yaml
 
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
@@ -737,6 +739,15 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # the config file.
         if plan.eval_env_manifest is not None:
             j._config.environment_manifest = plan.eval_env_manifest
+    except subprocess.CalledProcessError as e:
+        # A source.repo clone/fetch failure (git exits non-zero) otherwise escapes
+        # as a raw traceback — it is not a config-parse error, so give it its own
+        # clean message. Mirrors the --source-repo guard's CalledProcessError catch.
+        console.print(
+            f"[red]Failed to fetch source repo for {escape(str(config_file))}:[/red] "
+            f"{escape(str(e))}"
+        )
+        raise typer.Exit(1) from None
     except (yaml.YAMLError, ValueError, TypeError, LookupError, OSError) as e:
         # LookupError covers missing source.repo (KeyError) and empty legacy
         # agents:/datasets: lists (IndexError). Type-mismatch cases (e.g. a
@@ -861,8 +872,14 @@ def eval_list(
 ) -> None:
     """List completed evaluations."""
     if not jobs_dir.exists():
-        console.print(f"[yellow]No jobs directory: {escape(str(jobs_dir))}[/yellow]")
-        return
+        # The default "jobs" dir simply not existing yet is a benign first-run
+        # state (exit 0). But an *explicit* path that doesn't exist is a typo —
+        # fail like `eval metrics` does, so scripts don't read it as success.
+        if jobs_dir == Path("jobs"):
+            console.print("[yellow]No jobs yet.[/yellow]")
+            return
+        print_error(f"No such jobs directory: {jobs_dir}")
+        raise typer.Exit(1)
     if not jobs_dir.is_dir():
         # exists() is True for a file; iterdir() below would NotADirectoryError.
         console.print(f"[red]Not a directory: {escape(str(jobs_dir))}[/red]")

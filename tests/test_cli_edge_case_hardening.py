@@ -608,3 +608,80 @@ def test_print_error_echoes_colon_tokens_verbatim_no_emoji(monkeypatch):
     shared.print_error("Invalid hosted environment reference: primeintellect:a:b")
     out = rec.file.getvalue()
     assert "primeintellect:a:b" in out
+
+
+# ── round-4 sweep: deep fix-hunt regressions across the merged CLI ─────────────
+
+_MIN_TRACE = (
+    '{"type":"user","sessionId":"s1","message":{"role":"user","content":"x"}}\n'
+    '{"type":"assistant","sessionId":"s1","message":'
+    '{"role":"assistant","content":[{"type":"text","text":"y"}]}}\n'
+)
+
+
+def test_tasks_normalize_output_is_dir_clean_error(tmp_path):
+    # P0: --output an existing directory raised a raw IsADirectoryError.
+    assert runner.invoke(
+        app, ["tasks", "init", "demotask", "--dir", str(tmp_path)]
+    ).exit_code == 0
+    outdir = tmp_path / "outdir"
+    outdir.mkdir()
+    res = runner.invoke(
+        app, ["tasks", "normalize", str(tmp_path / "demotask"), "--output", str(outdir)]
+    )
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "directory" in res.output.lower()
+
+
+def test_skills_eval_evals_json_as_dir_clean_error(tmp_path):
+    # P0: evals/evals.json being a directory raised a raw IsADirectoryError.
+    (tmp_path / "evals" / "evals.json").mkdir(parents=True)
+    res = runner.invoke(app, ["skills", "eval", str(tmp_path)])
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "No evals/evals.json found" in res.output
+
+
+def test_sandbox_create_task_file_as_dir_clean_error(tmp_path):
+    # P0: task.md itself being a directory raised a raw IsADirectoryError.
+    (tmp_path / "task.md").mkdir()
+    res = runner.invoke(app, ["sandbox", "create", str(tmp_path), "--sandbox", "docker"])
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "Not a valid task directory" in res.output
+
+
+def test_tasks_generate_output_is_file_clean_error(tmp_path):
+    # P0: --output an existing file raised a raw NotADirectoryError.
+    trace = tmp_path / "t.jsonl"
+    trace.write_text(_MIN_TRACE)
+    outfile = tmp_path / "outfile"
+    outfile.write_text("x")
+    res = runner.invoke(
+        app, ["tasks", "generate", "--from-file", str(trace), "--output", str(outfile)]
+    )
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "is not a directory" in res.output
+
+
+def test_tasks_generate_zero_results_exits_nonzero(tmp_path):
+    # P2: generating 0 tasks (everything filtered) used to print a green
+    # "Generated 0 tasks" and exit 0 — a silent no-op success.
+    trace = tmp_path / "t.jsonl"
+    trace.write_text(_MIN_TRACE)
+    res = runner.invoke(
+        app,
+        ["tasks", "generate", "--from-file", str(trace), "--min-steps", "999",
+         "--output", str(tmp_path / "out")],
+    )
+    assert res.exit_code == 1
+    assert "No tasks generated" in res.output
+
+
+def test_eval_list_explicit_nonexistent_dir_exits_nonzero(tmp_path):
+    # P3: a typo'd explicit jobs-dir exited 0 (silent) while `eval metrics` exits 1.
+    res = runner.invoke(app, ["eval", "list", str(tmp_path / "nope-xyz")])
+    assert res.exit_code == 1
+    assert "No such jobs directory" in res.output

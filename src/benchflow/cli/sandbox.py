@@ -36,9 +36,11 @@ def sandbox_create(task_dir: Path, sandbox: str) -> None:
         raise typer.Exit(1)
     try:
         env = Environment.from_task(task_dir, sandbox=sandbox)
-    except (FileNotFoundError, NotADirectoryError, ValueError) as e:
-        # An existing dir with no task document reaches Task.__init__'s unguarded
-        # read_text() — surface a clean error instead of a raw traceback.
+    except (OSError, ValueError) as e:
+        # An existing dir with no task document — or one where task.md/task.toml
+        # is itself a directory — reaches Task's unguarded read_text(), raising
+        # FileNotFoundError / IsADirectoryError (both OSError). Surface a clean
+        # error instead of a raw traceback.
         print_error(f"Not a valid task directory {task_dir}: {e}")
         raise typer.Exit(1) from None
     except RuntimeError as e:

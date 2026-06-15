@@ -468,7 +468,9 @@ def load_parity_experiment(benchmarks_root: Path, name: str) -> Any:
             f"`bench eval adopt {name} --scaffold-only` first"
         )
     parity_file = benchmark_dir / "parity_experiment.json"
-    if not parity_file.exists():
+    if not parity_file.is_file():
+        # is_file (not exists): a directory named parity_experiment.json otherwise
+        # passes, then read_text() raises a raw IsADirectoryError.
         raise ParityExperimentMissing(
             f"no parity_experiment.json in {benchmark_dir} — run parity_test.py first"
         )
@@ -765,7 +767,9 @@ def run_verify_action(
             raise typer.Exit(1)
         try:
             status, reasons = roundtrip_conformance_status(roundtrip_task)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
+            # ValueError covers tomllib.TOMLDecodeError from a malformed task.toml;
+            # OSError covers unreadable/missing files. Both → clean one-liner.
             console.print(
                 f"[red]  round-trip: error: could not check "
                 f"{roundtrip_task}: {exc}[/red]"
