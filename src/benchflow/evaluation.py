@@ -462,6 +462,7 @@ class EvaluationConfig:
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
+    skip_agent_install: bool = False
     agent_idle_timeout: int | None = 600
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
@@ -833,6 +834,7 @@ class Evaluation:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            skip_agent_install=bool(raw.get("skip_install", False)),
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
@@ -925,6 +927,7 @@ class Evaluation:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            skip_agent_install=bool(agent_cfg.get("skip_install", False)),
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
@@ -1183,6 +1186,7 @@ class Evaluation:
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            skip_agent_install=cfg.skip_agent_install,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
             skill_mode=skill_mode,

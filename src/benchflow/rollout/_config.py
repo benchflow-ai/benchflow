@@ -101,6 +101,7 @@ class RolloutConfig:
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
+    skip_agent_install: bool = False
     services: list[str] | None = None
     job_name: str | None = None
     rollout_name: str | None = None

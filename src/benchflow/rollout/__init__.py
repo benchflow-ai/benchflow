@@ -578,6 +578,7 @@ class Rollout:
             context_root=cfg.context_root,
             sandbox_locked_paths=self._effective_locked,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            skip_agent_install=cfg.skip_agent_install,
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
@@ -687,12 +688,15 @@ class Rollout:
             return
 
         agent_name = cfg.primary_agent
-        self._agent_cfg = await self._planes.install_agent(
-            self._env,
-            agent_name,
-            rollout_dir,
-            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
-        )
+        if cfg.skip_agent_install:
+            self._agent_cfg = None
+        else:
+            self._agent_cfg = await self._planes.install_agent(
+                self._env,
+                agent_name,
+                rollout_dir,
+                sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            )
         if cfg.sandbox_user:
             self._agent_cwd = await self._planes.setup_sandbox_user(
                 self._env,
@@ -1638,12 +1642,15 @@ class Rollout:
             role_agent_differs or role.model != cfg.primary_model or bool(role.env)
         )
         if role_agent_differs:
-            agent_cfg = await self._planes.install_agent(
-                self._env,
-                role.agent,
-                rollout_dir,
-                sandbox_setup_timeout=cfg.sandbox_setup_timeout,
-            )
+            if cfg.skip_agent_install:
+                agent_cfg = None
+            else:
+                agent_cfg = await self._planes.install_agent(
+                    self._env,
+                    role.agent,
+                    rollout_dir,
+                    sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+                )
         else:
             agent_cfg = getattr(self, "_agent_cfg", None)
         if needs_role_credentials:
