@@ -15,6 +15,8 @@ def test_session_is_runtime_checkable_protocol():
     """Tracer bullet — a trivial class structurally satisfies ``Session``."""
 
     class Dummy:
+        on_change = None
+
         async def prompt(self, text): ...
         async def cancel(self): ...
         def on_ask_user(self, handler): ...
@@ -156,6 +158,30 @@ def test_adapter_steps_empty_without_session():
     client._session = None
     adapter = ACPSessionAdapter(client)
     assert adapter.steps == []
+
+
+def test_adapter_on_change_bridges_to_acp_session():
+    """Guards PR #753: ``Session.on_change`` remains true for ACP adapters."""
+    from benchflow.acp.client import ACPClient
+    from benchflow.acp.session import ACPSession
+
+    client = ACPClient.__new__(ACPClient)
+    acp_session = ACPSession("s1")
+    client._session = acp_session
+    adapter = ACPSessionAdapter(client)
+    seen: list[Session] = []
+
+    def handler(session: Session) -> None:
+        seen.append(session)
+
+    adapter.on_change = handler
+    assert adapter.on_change is handler
+
+    acp_session.record_user_prompt("first instruction")
+    assert seen == [adapter]
+
+    adapter.on_change = None
+    assert acp_session.on_change is None
 
 
 def test_adapter_on_ask_user_stores_and_forwards_handler():

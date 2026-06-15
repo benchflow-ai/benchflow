@@ -15,7 +15,10 @@ Required fields
 
 Common optional fields
 ----------------------
-- ``protocol``           "acp" (default) or "cli". Almost always "acp".
+- ``protocol``           "acp" (default), "cli", or "session-factory".
+                         Almost always "acp".
+- ``session_factory``    Non-ACP "module:callable" entrypoint used only when
+                         ``protocol="session-factory"``.
 - ``requires_env``       List of env var names the SDK must propagate into the
                          sandbox (e.g. ``["ANTHROPIC_API_KEY"]``). Validated at
                          run start; missing keys raise before the container
@@ -259,7 +262,10 @@ class AgentConfig:
     name: str
     install_cmd: str
     launch_cmd: str
-    protocol: str = "acp"  # "acp" or "cli"
+    protocol: str = "acp"  # "acp", "cli", or "session-factory"
+    session_factory: str = ""
+    # Non-ACP only. When protocol == "session-factory", this is a
+    # "module:callable" entrypoint that builds an Agent Protocol object.
     requires_env: list[str] = field(default_factory=list)
     description: str = ""
     skill_paths: list[str] = field(default_factory=list)
@@ -768,7 +774,7 @@ AGENT_ALIASES: dict[str, str] = {
     "deepagents": "deepagents",
 }
 
-VALID_PROTOCOLS = {"acp", "acpx"}
+VALID_PROTOCOLS = {"acp", "acpx", "session-factory"}
 
 # ---------------------------------------------------------------------------
 # The ``acpx:`` runtime-key namespace
@@ -856,6 +862,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
             f'export PATH="{_JS_AGENT_PATH}" && acpx {acpx_agent_name} --approve-all'
         ),
         protocol="acp",
+        session_factory=config.session_factory,
         requires_env=config.requires_env,
         description=f"{config.description} (via acpx)",
         skill_paths=config.skill_paths,
@@ -962,6 +969,7 @@ def register_agent(
     launch_cmd: str,
     *,
     protocol: str = "acp",
+    session_factory: str = "",
     requires_env: list[str] | None = None,
     description: str = "",
     skill_paths: list[str] | None = None,
@@ -1000,6 +1008,7 @@ def register_agent(
         install_cmd=install_cmd,
         launch_cmd=launch_cmd,
         protocol=protocol,
+        session_factory=session_factory,
         requires_env=requires_env or [],
         description=description,
         skill_paths=skill_paths or [],

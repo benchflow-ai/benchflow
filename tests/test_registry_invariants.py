@@ -29,7 +29,7 @@ from benchflow.agents.registry import (
     _js_agent_install,
 )
 
-VALID_AGENT_PROTOCOLS = {"acp", "cli"}
+VALID_AGENT_PROTOCOLS = {"acp", "cli", "session-factory"}
 # Empty api_protocol is valid for agents (they infer from the model name at
 # runtime); providers must always declare an explicit protocol.
 VALID_API_PROTOCOLS = {
