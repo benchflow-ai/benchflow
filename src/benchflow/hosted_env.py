@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 
 PRIME_SIMPLE_INDEX = "https://hub.primeintellect.ai/primeintellect/simple/"
 PRIME_HUB_ENV_URL = "https://app.primeintellect.ai/dashboard/environments"
+OPENREWARD_HUB_URL = "https://openreward.ai"
+_SUPPORTED_HOSTED_PROVIDERS = frozenset({"primeintellect", "openreward"})
 
 
 class HostedEnvError(RuntimeError):
@@ -71,6 +73,11 @@ class HostedEnvRef:
         - ``primeintellect/general-agent@0.1.1``
         - ``primeintellect:general-agent@0.1.1``
         - ``primeintellect:primeintellect/general-agent@0.1.1``
+        - ``openreward:GeneralReasoning/KellyBench``
+
+        Non-default providers require the explicit ``provider:`` prefix. For
+        example, ``openreward/KellyBench`` is rejected instead of being
+        misparsed as a PrimeIntellect owner/name reference.
         """
         provider = default_provider
         value = raw.strip()
@@ -83,6 +90,14 @@ class HostedEnvRef:
                 raise HostedEnvError(f"Invalid hosted environment reference: {raw}")
             provider = prefix
             value = rest
+        else:
+            head = value.split("/", 1)[0].lower()
+            if head != default_provider and head in _SUPPORTED_HOSTED_PROVIDERS:
+                raise HostedEnvError(
+                    f"Ambiguous hosted environment reference: {raw!r}. "
+                    f"{head!r} is a provider, not an owner. Use the explicit "
+                    f"form {head}:owner/name."
+                )
 
         if "@" in value:
             value, embedded_version = value.rsplit("@", 1)
@@ -100,10 +115,11 @@ class HostedEnvRef:
             owner, name = None, value
 
         provider = provider.lower()
-        if provider != "primeintellect":
+        if provider not in _SUPPORTED_HOSTED_PROVIDERS:
+            supported = ", ".join(sorted(_SUPPORTED_HOSTED_PROVIDERS))
             raise HostedEnvError(
                 f"Unsupported hosted environment provider: {provider}. "
-                "Only primeintellect Verifiers environments are executable today."
+                f"Supported: {supported}."
             )
         if not name:
             raise HostedEnvError(f"Invalid hosted environment reference: {raw}")
@@ -128,6 +144,12 @@ class HostedEnvRef:
     @property
     def hub_url(self) -> str:
         """Canonical hosted hub URL."""
+        if self.provider == "openreward":
+            return (
+                f"{OPENREWARD_HUB_URL}/{self.owner}/{self.name}"
+                if self.owner
+                else OPENREWARD_HUB_URL
+            )
         if self.provider == "primeintellect" and self.owner:
             return f"{PRIME_HUB_ENV_URL}/{self.owner}/{self.name}"
         return PRIME_HUB_ENV_URL
@@ -218,6 +240,12 @@ def normalize_verifiers_model(model: str) -> str:
 
 def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
     """Run a hosted environment using a controlled local Verifiers install."""
+    if config.source_env.provider != "primeintellect":
+        raise HostedEnvError(
+            f"Hosted environment provider {config.source_env.provider!r} is "
+            "recognized but not executable in this path yet. Rebuild the "
+            "OpenReward driver as a separate current-main PR."
+        )
     if config.runner != "verifiers":
         raise HostedEnvError(
             "Only runner='verifiers' is implemented. Use Prime CLI directly for "
@@ -357,6 +385,7 @@ def prime_env_list(
 
 def prime_env_info(ref: HostedEnvRef) -> str:
     """Return Prime environment info output."""
+    _require_prime_env(ref)
     cmd = ["prime", "--plain", "env", "info", ref.env_id]
     if ref.version:
         cmd.extend(["-v", ref.version])
@@ -365,6 +394,7 @@ def prime_env_info(ref: HostedEnvRef) -> str:
 
 def prime_env_inspect(ref: HostedEnvRef, path: str = "README.md") -> str:
     """Return a file from a Prime environment package."""
+    _require_prime_env(ref)
     return _run_prime(
         ["prime", "--plain", "env", "inspect", ref.versioned_env_id, path]
     )
@@ -400,6 +430,13 @@ def _run_prime(cmd: list[str]) -> str:
         detail = (proc.stderr or proc.stdout).strip()
         raise HostedEnvError(detail or f"prime command failed: {' '.join(cmd)}")
     return proc.stdout
+
+
+def _require_prime_env(ref: HostedEnvRef) -> None:
+    if ref.provider != "primeintellect":
+        raise HostedEnvError(
+            f"Provider {ref.provider!r} does not use the PrimeIntellect CLI."
+        )
 
 
 def _run_checked(cmd: list[str], *, cwd: Path) -> None:
