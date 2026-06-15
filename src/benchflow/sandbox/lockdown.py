@@ -138,7 +138,8 @@ async def setup_sandbox_user(
         f"{_legacy_root_tool_link_cmd('/root/.local/bin', f'{home}/.local/bin')} && "
         f"{_legacy_root_tool_link_cmd('/root/.nvm', f'{home}/.nvm')} && "
         f"for d in {' '.join(home_dirs)}; do "
-        f"if [ -d /root/$d ]; then mkdir -p {home}/$d && "
+        f"mkdir -p {home}/$d && "
+        f"if [ -d /root/$d ]; then "
         f"cp -a /root/$d/. {home}/$d/ 2>/dev/null || true; fi; done && "
         f"chown -R {sandbox_user}:{sandbox_user} {home} && "
         f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)}",
