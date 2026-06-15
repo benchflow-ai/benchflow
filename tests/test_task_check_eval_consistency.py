@@ -10,7 +10,10 @@ None) so both commands return the same verdict.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -238,6 +241,34 @@ def test_eval_create_enumerates_real_skillsbench_native_examples(tmp_path):
         assert check_task(task, validation_level="publication-grade") == []
 
     assert ev._get_task_dirs() == list(REAL_SKILLSBENCH_TASK_MD_EXAMPLES)
+
+
+def test_citation_check_oracle_self_answers_static_fixture(tmp_path):
+    """Guards the fix from PR #773 for issue #772 against live API drift."""
+    task = Path("docs/examples/task-md/real-skillsbench/citation-check")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "test.bib").write_bytes(
+        (task / "environment" / "test.bib").read_bytes()
+    )
+
+    result = subprocess.run(
+        ["bash", str(task / "oracle" / "solve.sh")],
+        cwd=Path.cwd(),
+        env={**os.environ, "BENCHFLOW_WORKSPACE": str(workspace)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads((workspace / "answer.json").read_text()) == {
+        "fake_citations": [
+            "Advances in Artificial Intelligence for Natural Language Processing",
+            "Blockchain Applications in Supply Chain Management",
+            "Neural Networks in Deep Learning: A Comprehensive Review",
+        ]
+    }
 
 
 def test_eval_create_enumerates_user_runtime_native_examples(tmp_path):
