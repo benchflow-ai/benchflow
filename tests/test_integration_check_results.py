@@ -2222,6 +2222,59 @@ def test_check_results_transport_error_without_info_still_flagged(
     )
 
 
+def test_check_results_invalidates_latest_retry_once_per_task(tmp_path: Path) -> None:
+    """Guards issue #526: retry rollout dirs do not duplicate invalidated tasks."""
+    agent_dir = tmp_path / "agentA"
+    run_root = agent_dir / "2026-05-18__00-00-00"
+    for retry in range(1, 4):
+        run_dir = run_root / f"task-a__retry{retry}"
+        run_dir.mkdir(parents=True)
+        (run_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": "task-a",
+                    "agent": "agentA",
+                    "model": "test-model",
+                    "rewards": None,
+                    "error": "Agent idle timeout after 600s",
+                    "error_category": "idle_timeout",
+                    "verifier_error": None,
+                    "source": _source(),
+                }
+            )
+        )
+        _write_config(run_dir)
+    (agent_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "agent": "agentA",
+                "model": "test-model",
+                "environment": "daytona",
+                "concurrency": 64,
+                "agent_idle_timeout_sec": 600,
+                "total": 1,
+                "passed": 0,
+                "failed": 0,
+                "errored": 1,
+                "verifier_errored": 0,
+                "score": "0.0%",
+                "source": _source(),
+            }
+        )
+    )
+
+    findings = check_agent(agent_dir)
+
+    invalidated = [
+        issue
+        for issue in findings["issues"]
+        if issue.startswith("INVALIDATED:") and "idle timeout" in issue
+    ]
+    assert invalidated == [
+        "INVALIDATED: 1 task(s) hit idle timeout and should be rerun: task-a"
+    ]
+
+
 def test_check_results_flags_verifier_dep_install_failure(
     tmp_path: Path,
 ) -> None:
