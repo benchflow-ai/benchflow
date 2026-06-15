@@ -30,6 +30,7 @@ import datetime
 import re
 import subprocess
 import sys
+import tomllib
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -79,6 +80,70 @@ def rewrite_exclude_newer(pyproject_text: str, cutoff: str) -> str:
             f"pyproject.toml, found {len(matches)}."
         )
     return _EXCLUDE_NEWER_RE.sub(rf'\g<prefix>"{cutoff}"', pyproject_text)
+
+
+def _parse_lock_timestamp(raw: str) -> datetime.datetime:
+    ts = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=datetime.UTC)
+    return ts
+
+
+def newest_upload_times(
+    lock: dict,
+) -> dict[str, tuple[str, datetime.datetime]]:
+    """Map each locked package to `(version, newest sdist/wheel upload time)`.
+
+    Packages with no registry `upload-time` (git/local/editable sources) are
+    skipped — they have no PyPI release subject to the cooldown.
+    """
+    newest: dict[str, tuple[str, datetime.datetime]] = {}
+    for pkg in lock.get("package", []):
+        name = pkg.get("name")
+        if not name:
+            continue
+        version = str(pkg.get("version", ""))
+        raw_times: list[str] = []
+        sdist = pkg.get("sdist")
+        if isinstance(sdist, dict) and sdist.get("upload-time"):
+            raw_times.append(sdist["upload-time"])
+        for wheel in pkg.get("wheels") or []:
+            if isinstance(wheel, dict) and wheel.get("upload-time"):
+                raw_times.append(wheel["upload-time"])
+        for raw in raw_times:
+            ts = _parse_lock_timestamp(raw)
+            if name not in newest or ts > newest[name][1]:
+                newest[name] = (version, ts)
+    return newest
+
+
+def find_cooldown_violations(
+    lock_text: str,
+    exempt: set[str],
+    now: datetime.datetime,
+    cooldown_days: int = COOLDOWN_DAYS,
+) -> list[tuple[str, str, datetime.datetime]]:
+    """Return locked packages published less than `cooldown_days` before `now`.
+
+    This is the dynamic half of the cooldown: it reads the `upload-time` uv bakes
+    into `uv.lock` and compares each resolved package against `now - cooldown_days`
+    — so the window tracks the current date with no stored date to trust and no
+    network calls. `exempt` is the set of package names that carry a documented
+    `[tool.uv.exclude-newer-package]` override (allowed to be younger).
+
+    Returns `(name, version, upload_time)` tuples, newest first. Never flags an
+    unchanged lock over time: upload times are immutable, so packages only age
+    past the window.
+    """
+    floor = now.astimezone(datetime.UTC) - datetime.timedelta(days=cooldown_days)
+    lock = tomllib.loads(lock_text)
+    violations = [
+        (name, version, ts)
+        for name, (version, ts) in newest_upload_times(lock).items()
+        if ts > floor and name not in exempt
+    ]
+    violations.sort(key=lambda item: item[2], reverse=True)
+    return violations
 
 
 def _run_uv_lock(pyproject_path: Path) -> int:
