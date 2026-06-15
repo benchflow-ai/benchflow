@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from tenacity import retry, stop_after_attempt, wait_none
 
 import benchflow.sandbox.daytona as daytona_mod
 from benchflow.sandbox._base import ExecResult
@@ -65,11 +66,59 @@ class _FakeMissingFs(_FakeFs):
         raise FileNotFoundError(source)
 
 
+_FakeDaytonaConnectionError = type(
+    "DaytonaConnectionError",
+    (Exception,),
+    {"__module__": "daytona.common.errors"},
+)
+
+
 def _fake_daytona_sandbox(fake_fs):
     sandbox = object.__new__(DaytonaSandbox)
     sandbox._sandbox = SimpleNamespace(fs=fake_fs)
     sandbox.logger = logging.getLogger("test.daytona")
     return sandbox
+
+
+def _retry_with_daytona_policy(fn):
+    return retry(
+        stop=stop_after_attempt(3),
+        wait=wait_none(),
+        retry=daytona_mod._DAYTONA_TRANSIENT_RETRY,
+        reraise=True,
+    )(fn)
+
+
+def test_daytona_retry_filter_does_not_retry_permanent_errors() -> None:
+    """Guards issue #538: permanent SDK/file errors fail immediately."""
+    calls = 0
+
+    @_retry_with_daytona_policy
+    def fail_permanently() -> None:
+        nonlocal calls
+        calls += 1
+        raise FileNotFoundError("/logs/missing")
+
+    with pytest.raises(FileNotFoundError):
+        fail_permanently()
+
+    assert calls == 1
+
+
+def test_daytona_retry_filter_retries_transient_daytona_errors() -> None:
+    """Guards issue #538: transient Daytona SDK errors still retry."""
+    calls = 0
+
+    @_retry_with_daytona_policy
+    def fail_transiently() -> None:
+        nonlocal calls
+        calls += 1
+        raise _FakeDaytonaConnectionError("temporary Daytona connection failure")
+
+    with pytest.raises(_FakeDaytonaConnectionError):
+        fail_transiently()
+
+    assert calls == 3
 
 
 @pytest.mark.asyncio
