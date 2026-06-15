@@ -111,7 +111,7 @@ def test_runtime_view_selects_task_md_and_native_aliases(tmp_path: Path) -> None
 
 
 def test_runtime_view_preserves_legacy_split_packages(tmp_path: Path) -> None:
-    """Legacy Harbor/Pier split packages remain executable compatibility input."""
+    """Legacy Harbor split packages remain executable compatibility input."""
     task_dir = tmp_path / "legacy"
     _write_legacy_task(task_dir)
 

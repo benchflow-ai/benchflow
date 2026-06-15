@@ -736,7 +736,8 @@ All fields from [CLI reference](./reference/cli.md#yaml-config-format) apply:
 
 ## Adding a new benchmark
 
-See the [Benchmark Conversion Guide](../benchmarks/CONVERT.md) for the 9-step
-process to convert a new benchmark into BenchFlow task directories. Harvey LAB
+Use `bench eval adopt <source>` to scaffold and drive the conversion of a new
+benchmark into a `benchmarks/<name>/` package, then `bench eval adopt <name> --verify`
+to parity-gate it; the conversion guide is embedded in that command. Harvey LAB
 (`benchmarks/harvey-lab/`) and ProgramBench (`benchmarks/programbench/`) are
 reference implementations.

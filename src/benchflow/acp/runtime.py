@@ -27,7 +27,11 @@ from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.protocol import ACPSessionAdapter
-from benchflow.agents.providers import find_provider, strip_provider_prefix
+from benchflow.agents.providers import (
+    find_provider,
+    find_provider_for_bare_model,
+    strip_provider_prefix,
+)
 from benchflow.agents.registry import AGENTS
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
@@ -164,7 +168,16 @@ def _format_acp_model(model: str, agent: str) -> str:
     # the proxy never serves (the heuristic would default to anthropic/).
     if bare.startswith("benchflow-"):
         return f"openai/{bare}"
-    # Infer the models.dev provider from the bare model name
+    # Provider ownership lives in the registry: if a ProviderConfig claims this
+    # bare model family via its declared model_prefixes, route through it
+    # (e.g. mimo-v2.5 -> xiaomi, deepseek-v4-flash -> deepseek). This keeps
+    # provider/model-family knowledge in the provider registry instead of
+    # growing provider-specific branches in the runtime.
+    registry_match = find_provider_for_bare_model(bare)
+    if registry_match is not None:
+        return f"{registry_match[0]}/{bare}"
+    # Fallback: infer a models.dev provider for families without a registered
+    # ProviderConfig (e.g. openai/anthropic/google) from the bare model name.
     m = bare.lower()
     for substring, provider in _MODELSDEV_PROVIDER_HEURISTICS:
         if substring in m:

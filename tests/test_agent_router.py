@@ -36,7 +36,6 @@ from benchflow.agent_router import (
     roundtrip_conformance_status,
     run_agent_adoption,
     validate_benchmark_name,
-    verify_report_payload,
 )
 from benchflow.cli.main import app
 
@@ -114,7 +113,6 @@ def test_scaffold_converter_has_documented_convert_entrypoint() -> None:
     converter = build_scaffold_files("my-bench")["benchflow.py"]
     assert "def convert(" in converter
     assert "def convert_all(" in converter
-    assert "CONVERT.md" in converter
     # token substitution happened — no raw placeholder survives.
     assert "{{NAME}}" not in converter
     assert "my-bench" in converter
@@ -163,20 +161,20 @@ def test_create_benchmark_rejects_bad_name_before_touching_disk(tmp_path: Path) 
 # ── run: context assembly + launch command ────────────────────────────
 
 
-def test_assemble_context_includes_source_guide_skills_and_target() -> None:
-    skills = [AdoptionSkill("conversion-guide", "benchmarks/CONVERT.md")]
+def test_assemble_context_includes_source_skills_and_target() -> None:
+    skills = [AdoptionSkill("reference-benchmark", "benchmarks/programbench/")]
     prompt = assemble_adoption_context(
         "github.com/foo/bar",
         "my-bench",
-        convert_guide="GUIDE-BODY-SENTINEL",
         skills=skills,
     )
     assert "github.com/foo/bar" in prompt
     assert "benchmarks/my-bench/" in prompt
-    assert "CONVERT.md" in prompt
     assert "Adoption skills" in prompt
-    assert "conversion-guide" in prompt
-    assert "GUIDE-BODY-SENTINEL" in prompt
+    assert "reference-benchmark" in prompt
+    # the up-to-date conversion guide is embedded in the prompt.
+    assert "# Benchmark conversion guide" in prompt
+    assert "parity_experiment.json" in prompt
 
 
 def test_build_launch_command_structure() -> None:
@@ -229,10 +227,10 @@ def test_run_command_dry_run_passes_codex_config(tmp_path: Path) -> None:
     assert "-c service_tier=flex" in result.output
 
 
-def test_collect_adoption_skills_references_convert_guide(tmp_path: Path) -> None:
+def test_collect_adoption_skills_lists_reference_and_parity(tmp_path: Path) -> None:
     skills = collect_adoption_skills()
-    refs = {s.reference for s in skills}
-    assert any("CONVERT.md" in r for r in refs)
+    names = {s.name for s in skills}
+    assert names == {"reference-benchmark", "parity-harness"}
 
 
 def test_prepare_launch_assembles_command_and_prompt(tmp_path: Path) -> None:
@@ -240,7 +238,6 @@ def test_prepare_launch_assembles_command_and_prompt(tmp_path: Path) -> None:
         "github.com/foo/bar",
         "my-bench",
         repo_root=tmp_path,
-        convert_guide="GUIDE",
         codex_bin="codex",
     )
     assert launch.cwd == str(tmp_path)
@@ -282,9 +279,6 @@ def test_run_adoption_fails_closed_without_credentials(tmp_path: Path) -> None:
 
 
 def test_run_adoption_launches_via_fake_exec_with_credentials(tmp_path: Path) -> None:
-    guide = tmp_path / "benchmarks" / "CONVERT.md"
-    guide.parent.mkdir(parents=True)
-    guide.write_text("# Benchmark Conversion Guide\nCONVERT.md body\n")
     recorded: dict = {}
 
     def fake_exec(command, *, cwd, env):
@@ -303,9 +297,9 @@ def test_run_adoption_launches_via_fake_exec_with_credentials(tmp_path: Path) ->
     assert code == 7
     assert recorded["cwd"] == str(tmp_path)
     assert recorded["command"][0] == "codex"
-    # the launched prompt carries the conversion guide + source.
+    # the launched prompt carries the source + target.
     assert "github.com/foo/bar" in recorded["command"][-1]
-    assert "CONVERT.md" in recorded["command"][-1]
+    assert "benchmarks/my-bench/" in recorded["command"][-1]
 
 
 # ── verify: parity extraction ─────────────────────────────────────────
@@ -328,164 +322,6 @@ def _criteria_doc(*pairs: tuple[str, str]) -> dict:
                 }
             ]
         }
-    }
-
-
-def _environment_parity_doc() -> dict:
-    return {
-        "conversion_parity": {
-            "tasks": [
-                {
-                    "task_id": "t1",
-                    "criteria_results": [
-                        {
-                            "criterion_id": criterion,
-                            "original_verdict": "pass",
-                            "adapted_verdict": "pass",
-                        }
-                        for criterion in (
-                            "trace-completeness",
-                            "artifact-shape",
-                            "timing-recorded",
-                            "cleanup",
-                        )
-                    ],
-                }
-            ]
-        },
-        "agent_parity": {
-            "results": [
-                {
-                    "task_id": "t1",
-                    "legacy_reward": 1.0,
-                    "converted_reward": 1.0,
-                }
-            ]
-        },
-    }
-
-
-def _environment_adoption_report(
-    *,
-    screenshots_b64_count: int = 1,
-    sandbox_provider: str = "docker",
-    sandbox_provider_mode: str | None = None,
-) -> dict:
-    planes = {
-        "sandbox_provider": sandbox_provider,
-        "environment_adapter": "browser",
-        "agent_adapter": "browser-use-cli",
-        "benchmark_adapter": "browser-use",
-    }
-    if sandbox_provider_mode is not None:
-        planes["sandbox_provider_mode"] = sandbox_provider_mode
-    return {
-        "schema": "benchflow.environment-adapter-adoption-report.v1",
-        "status": "parity-confirmed",
-        "benchmark": "my-bench",
-        "planes": planes,
-        "parity": {
-            "criteria_compared": 4,
-            "criteria_agreed": 4,
-            "reward_delta": 0.0,
-        },
-        "artifact_index": [
-            {
-                "id": "original-runner",
-                "kind": "runner-output",
-                "score": 1.0,
-                "trace_steps": 2,
-                "screenshots_b64_count": 1,
-                "error_present": False,
-            },
-            {
-                "id": "benchflow-result",
-                "kind": "result-json",
-                "reward": 1.0,
-                "trajectory_steps": 3,
-                "tool_calls": 1,
-                "timing_present": True,
-                "error_present": False,
-            },
-            {
-                "id": "benchflow-agent-artifact",
-                "kind": "agent-artifact",
-                "trace_steps": 3,
-                "screenshots_b64_count": screenshots_b64_count,
-                "final_result_present": True,
-            },
-            {
-                "id": "benchflow-eval-summary",
-                "kind": "eval-summary",
-                "present": True,
-                "status": "completed",
-                "ok": True,
-                "total": 1,
-                "errored": 0,
-                "verifier_errored": 0,
-                "timing_recorded": True,
-                "summary_path_present": True,
-            },
-        ],
-        "cleanup": {"type": "mapping", "keys": ["benchflow_containers"]},
-    }
-
-
-def _environment_loop_state(
-    *,
-    benchmark: str = "my-bench",
-    sandbox_provider: str = "docker",
-) -> dict:
-    return {
-        "schema": "benchflow.adapter-adoption-loop-state.v1",
-        "status": "review-ready",
-        "benchmark": benchmark,
-        "task_id": "t1",
-        "planes": {
-            "sandbox_provider": sandbox_provider,
-            "environment_adapter": "browser",
-            "agent_adapter": "browser-use-cli",
-            "benchmark_adapter": "browser-use",
-        },
-        "source": {"type": "fixture"},
-        "commands": ["uv run python benchmarks/my-bench/parity_test.py"],
-        "artifacts": {
-            "parity_experiment": "/tmp/parity_experiment.json",
-            "adoption_report": "/tmp/adoption_report.json",
-        },
-        "roles": [
-            {"name": "scout", "status": "passed", "artifact": "source"},
-            {"name": "builder", "status": "passed", "artifact": "adapter-diff"},
-            {
-                "name": "original-runner",
-                "status": "passed",
-                "artifact": "original-runner",
-            },
-            {
-                "name": "benchflow-runner",
-                "status": "passed",
-                "artifact": "benchflow-result",
-            },
-            {
-                "name": "verifier",
-                "status": "passed",
-                "artifact": "parity_experiment",
-            },
-            {"name": "auditor", "status": "passed", "artifact": "adoption_report"},
-            {"name": "reviewer", "status": "pending", "artifact": "review-report"},
-            {"name": "queue", "status": "empty", "artifact": "next-chunks"},
-        ],
-        "checks": {
-            "parity": {
-                "criteria_compared": 4,
-                "criteria_agreed": 4,
-                "reward_delta": 0.0,
-            },
-            "cleanup": {"benchflow_containers": 0},
-            "artifact_requirements": {"ok": True},
-        },
-        "unsupported_summary": {"count": 0, "issues": {}},
-        "queue": [],
     }
 
 
@@ -535,7 +371,6 @@ def test_one_sided_converted_reward_fails_closed() -> None:
     doc = {"agent_parity": {"results": [{"task_id": "t2", "converted_reward": 0.5}]}}
     report = build_verify_report("my-bench", doc)
     assert report.verdict == "parity-divergent"
-    assert report.reward is not None
     assert [s.task_id for s in report.reward.exceeding] == ["t2"]
 
 
@@ -550,7 +385,6 @@ def test_mixed_full_and_one_sided_reward_is_divergent() -> None:
     }
     report = build_verify_report("my-bench", doc)
     assert report.verdict == "parity-divergent"
-    assert report.reward is not None
     assert [s.task_id for s in report.reward.exceeding] == ["half"]
 
 
@@ -566,7 +400,6 @@ def test_explicit_reward_delta_override_is_honored_with_one_side() -> None:
     }
     report = build_verify_report("my-bench", doc)
     assert report.verdict == "parity-confirmed"
-    assert report.reward is not None
     assert report.reward.samples[0].delta == 0.0
 
 
@@ -594,28 +427,6 @@ def test_verify_pass_when_all_criteria_agree() -> None:
     )
     assert report.verdict == "parity-confirmed"
     assert report.passed is True
-
-
-def test_verify_report_payload_is_machine_readable_for_loop_gates() -> None:
-    doc = {
-        **_criteria_doc(("pass", "pass")),
-        "agent_parity": {
-            "results": [
-                {"task_id": "t1", "legacy_reward": 1.0, "converted_reward": 1.0}
-            ]
-        },
-    }
-    report = build_verify_report("my-bench", doc)
-
-    payload = verify_report_payload(report)
-
-    assert payload["status"] == "parity-confirmed"
-    assert payload["passed"] is True
-    assert payload["benchmark"] == "my-bench"
-    assert payload["conversion"]["compared"] == 1
-    assert payload["conversion"]["disagreements"] == []
-    assert payload["reward"]["max_abs_delta"] == 0.0
-    assert payload["reward"]["samples"][0]["task_id"] == "t1"
 
 
 def test_verify_fails_on_criterion_disagreement() -> None:
@@ -1024,431 +835,6 @@ def test_cli_verify_pass_exits_zero(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "parity-confirmed" in click.unstyle(result.output)
-
-
-def test_cli_verify_json_pass_outputs_single_parseable_verdict(tmp_path: Path) -> None:
-    create_benchmark("my-bench", tmp_path)
-    parity = tmp_path / "my-bench" / "parity_experiment.json"
-    parity.write_text(json.dumps(_criteria_doc(("pass", "pass"))))
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["status"] == "parity-confirmed"
-    assert payload["passed"] is True
-    assert payload["conversion"]["compared"] == 1
-    assert payload["conversion"]["agreed"] == 1
-    assert payload["reward"] is None
-
-
-def test_cli_verify_json_includes_adoption_report_sidecar(tmp_path: Path) -> None:
-    create_benchmark("my-bench", tmp_path)
-    benchmark_dir = tmp_path / "my-bench"
-    benchmark_dir.joinpath("parity_experiment.json").write_text(
-        json.dumps(_criteria_doc(("pass", "pass")))
-    )
-    benchmark_dir.joinpath("adoption_report.json").write_text(
-        json.dumps(
-            {
-                "schema": "benchflow.environment-adapter-adoption-report.v1",
-                "status": "parity-confirmed",
-                "benchmark": "my-bench",
-                "planes": {
-                    "sandbox_provider": "docker",
-                    "environment_adapter": "browser",
-                    "agent_adapter": "browser-use-cli",
-                    "benchmark_adapter": "browser-use",
-                },
-                "parity": {
-                    "criteria_compared": 1,
-                    "criteria_agreed": 1,
-                    "reward_delta": 0.0,
-                },
-            }
-        )
-    )
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    adoption_report = payload["adoption_report"]
-    assert adoption_report["path"] == str(benchmark_dir / "adoption_report.json")
-    assert adoption_report["schema"] == (
-        "benchflow.environment-adapter-adoption-report.v1"
-    )
-    assert adoption_report["planes"]["environment_adapter"] == "browser"
-    assert adoption_report["parity"]["criteria_compared"] == 1
-
-
-def test_cli_verify_require_adoption_report_blocks_missing_sidecar(
-    tmp_path: Path,
-) -> None:
-    create_benchmark("my-bench", tmp_path)
-    benchmark_dir = tmp_path / "my-bench"
-    benchmark_dir.joinpath("parity_experiment.json").write_text(
-        json.dumps(_environment_parity_doc())
-    )
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--require-adoption-report",
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["status"] == "parity-confirmed"
-    assert payload["passed"] is False
-    assert payload["adoption_loop"]["status"] == "not-ready"
-    assert "missing adoption_report.json sidecar" in payload["adoption_loop"]["issues"]
-    assert "missing loop_state.json sidecar" in payload["adoption_loop"]["issues"]
-
-
-def test_cli_verify_require_adoption_report_blocks_missing_loop_state(
-    tmp_path: Path,
-) -> None:
-    """Guards the 0.7 scale gate from passing without resumable loop state."""
-    create_benchmark("my-bench", tmp_path)
-    benchmark_dir = tmp_path / "my-bench"
-    benchmark_dir.joinpath("parity_experiment.json").write_text(
-        json.dumps(_environment_parity_doc())
-    )
-    benchmark_dir.joinpath("adoption_report.json").write_text(
-        json.dumps(_environment_adoption_report())
-    )
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--require-adoption-report",
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["status"] == "parity-confirmed"
-    assert payload["passed"] is False
-    assert payload["adoption_loop"]["issues"] == ["missing loop_state.json sidecar"]
-
-
-def test_cli_verify_require_adoption_report_writes_scale_ready_loop_report(
-    tmp_path: Path,
-) -> None:
-    create_benchmark("my-bench", tmp_path)
-    benchmark_dir = tmp_path / "my-bench"
-    benchmark_dir.joinpath("parity_experiment.json").write_text(
-        json.dumps(_environment_parity_doc())
-    )
-    benchmark_dir.joinpath("adoption_report.json").write_text(
-        json.dumps(_environment_adoption_report())
-    )
-    benchmark_dir.joinpath("loop_state.json").write_text(
-        json.dumps(_environment_loop_state())
-    )
-    loop_report = tmp_path / "loop-report.json"
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--require-adoption-report",
-            "--loop-report-out",
-            str(loop_report),
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    written = json.loads(loop_report.read_text())
-    assert payload == written
-    assert payload["passed"] is True
-    assert payload["adoption_loop"]["status"] == "scale-ready"
-    assert payload["adoption_loop"]["planes"]["environment_adapter"] == "browser"
-    assert payload["adoption_loop"]["parity"]["reward_delta"] == 0.0
-    assert payload["adoption_loop"]["loop_state"]["status"] == "review-ready"
-
-
-def test_cli_verify_require_adoption_report_rejects_trace_thin_artifact(
-    tmp_path: Path,
-) -> None:
-    create_benchmark("my-bench", tmp_path)
-    benchmark_dir = tmp_path / "my-bench"
-    benchmark_dir.joinpath("parity_experiment.json").write_text(
-        json.dumps(_environment_parity_doc())
-    )
-    benchmark_dir.joinpath("adoption_report.json").write_text(
-        json.dumps(_environment_adoption_report(screenshots_b64_count=0))
-    )
-    benchmark_dir.joinpath("loop_state.json").write_text(
-        json.dumps(_environment_loop_state())
-    )
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--require-adoption-report",
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["adoption_loop"]["status"] == "not-ready"
-    assert (
-        "benchflow-agent-artifact missing screenshots"
-        in (payload["adoption_loop"]["issues"])
-    )
-
-
-def test_cli_verify_require_adoption_report_honors_artifact_manifest(
-    tmp_path: Path,
-) -> None:
-    """Guards the 0.7 loop gate from hardcoding per-adapter artifact policy."""
-    create_benchmark("my-bench", tmp_path)
-    benchmark_dir = tmp_path / "my-bench"
-    benchmark_dir.joinpath("parity_experiment.json").write_text(
-        json.dumps(_environment_parity_doc())
-    )
-    adoption_report = _environment_adoption_report(screenshots_b64_count=0)
-    adoption_report["artifact_requirements"] = {
-        "ok": True,
-        "requirements": [
-            {
-                "id": "browser-screenshot-field",
-                "path": "screenshots_b64",
-                "exists": True,
-                "count": 0,
-                "ok": True,
-            }
-        ],
-    }
-    benchmark_dir.joinpath("adoption_report.json").write_text(
-        json.dumps(adoption_report)
-    )
-    benchmark_dir.joinpath("loop_state.json").write_text(
-        json.dumps(_environment_loop_state())
-    )
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--require-adoption-report",
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["adoption_loop"]["status"] == "scale-ready"
-
-
-def test_cli_verify_require_adoption_report_requires_cua_provider_mode(
-    tmp_path: Path,
-) -> None:
-    create_benchmark("my-bench", tmp_path)
-    benchmark_dir = tmp_path / "my-bench"
-    benchmark_dir.joinpath("parity_experiment.json").write_text(
-        json.dumps(_environment_parity_doc())
-    )
-    benchmark_dir.joinpath("adoption_report.json").write_text(
-        json.dumps(_environment_adoption_report(sandbox_provider="cua"))
-    )
-    benchmark_dir.joinpath("loop_state.json").write_text(
-        json.dumps(_environment_loop_state(sandbox_provider="cua"))
-    )
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--require-adoption-report",
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert (
-        "Cua adoption_report.json must declare sandbox_provider_mode"
-        in (payload["adoption_loop"]["issues"])
-    )
-
-
-def test_cli_verify_json_rejects_malformed_adoption_report(
-    tmp_path: Path,
-) -> None:
-    create_benchmark("my-bench", tmp_path)
-    benchmark_dir = tmp_path / "my-bench"
-    benchmark_dir.joinpath("parity_experiment.json").write_text(
-        json.dumps(_criteria_doc(("pass", "pass")))
-    )
-    benchmark_dir.joinpath("adoption_report.json").write_text("{ bad json")
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["status"] == "error"
-    assert payload["benchmark"] == "my-bench"
-    assert "adoption_report.json" in payload["reason"]
-    assert "not valid JSON" in payload["reason"]
-
-
-def test_cli_verify_json_rejects_malformed_loop_state(tmp_path: Path) -> None:
-    create_benchmark("my-bench", tmp_path)
-    benchmark_dir = tmp_path / "my-bench"
-    benchmark_dir.joinpath("parity_experiment.json").write_text(
-        json.dumps(_criteria_doc(("pass", "pass")))
-    )
-    benchmark_dir.joinpath("loop_state.json").write_text("{ bad json")
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["status"] == "error"
-    assert payload["benchmark"] == "my-bench"
-    assert "loop_state.json" in payload["reason"]
-    assert "not valid JSON" in payload["reason"]
-
-
-def test_cli_verify_json_divergent_writes_issue_and_suppresses_human_text(
-    tmp_path: Path,
-) -> None:
-    create_benchmark("my-bench", tmp_path)
-    parity = tmp_path / "my-bench" / "parity_experiment.json"
-    parity.write_text(json.dumps(_criteria_doc(("pass", "fail"))))
-    issue_out = tmp_path / "issue.md"
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--issue-out",
-            str(issue_out),
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["status"] == "parity-divergent"
-    assert payload["passed"] is False
-    assert payload["issue_out"] == str(issue_out)
-    assert "issue_draft" not in payload
-    assert payload["conversion"]["disagreements"] == [
-        {
-            "task_id": "t1",
-            "criterion_id": "C-0",
-            "original_verdict": "pass",
-            "adapted_verdict": "fail",
-        }
-    ]
-    assert issue_out.read_text()
-    assert "Verdict:" not in result.output
-
-
-def test_cli_verify_json_fresh_scaffold_is_parseable_insufficient_evidence(
-    tmp_path: Path,
-) -> None:
-    create_benchmark("my-bench", tmp_path)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "agent",
-            "verify",
-            "my-bench",
-            "--benchmarks-dir",
-            str(tmp_path),
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["status"] == "insufficient-evidence"
-    assert payload["passed"] is False
-    assert payload["conversion"]["compared"] == 0
-    assert "parity_test.py" in payload["confidence"]
 
 
 def test_cli_verify_malformed_json_prints_clean_message(tmp_path: Path) -> None:

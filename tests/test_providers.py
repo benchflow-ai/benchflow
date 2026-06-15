@@ -99,7 +99,7 @@ class TestFindProvider:
             ),
             ("glm/glm-5.1", "glm", "GLM_API_KEY"),
             ("deepseek/deepseek-v4-pro", "deepseek", "DEEPSEEK_API_KEY"),
-            ("xiaomi/mimo-v2.5-pro", "xiaomi", "XIAOMI_API_KEY"),
+            ("xiaomi/mimo-v2.5", "xiaomi", "XIAOMI_API_KEY"),
             (
                 "doubao-seed-2-lite/ep-test",
                 "doubao-seed-2-lite",
