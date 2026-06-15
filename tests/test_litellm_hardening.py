@@ -89,6 +89,22 @@ def test_mimo_registered_xiaomi_model_keeps_provider_prefix():
     assert _format_acp_model("xiaomi/mimo-v2.5-pro", "mimo") == "xiaomi/mimo-v2.5-pro"
 
 
+def test_format_acp_model_routes_via_provider_registry_not_runtime_branches():
+    # Provider ownership lives in the registry: any ProviderConfig that claims
+    # a bare model family via model_prefixes routes correctly, with no
+    # provider-specific branch in acp/runtime.py (#679 review). deepseek-v4-flash
+    # previously fell through to the anthropic/ default; the registry now owns it.
+    from benchflow.acp.runtime import _MODELSDEV_PROVIDER_HEURISTICS, _format_acp_model
+
+    assert (
+        _format_acp_model("deepseek-v4-flash", "opencode")
+        == "deepseek/deepseek-v4-flash"
+    )
+    assert _format_acp_model("mimo-v2.5-pro", "mimo") == "xiaomi/mimo-v2.5-pro"
+    # No provider-specific tuples leaked into the runtime heuristics.
+    assert "xiaomi" not in {provider for _, provider in _MODELSDEV_PROVIDER_HEURISTICS}
+
+
 def test_mimo_litellm_alias_formats_to_registered_openai_route():
     from benchflow.acp.runtime import _format_acp_model
 
