@@ -30,10 +30,13 @@ permissions:
   contents: read
   models: read
 
-# One in-flight integration run at a time; newer dispatches supersede older.
+# One in-flight integration run at a time. Do not cancel an in-progress gate:
+# delayed workflow_run events can otherwise interrupt a real rollout after it
+# has already passed the rollout and judge steps, leaving a cancelled check on
+# the tested commit.
 concurrency:
   group: integration-eval-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   eval-and-judge:
