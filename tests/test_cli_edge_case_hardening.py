@@ -149,7 +149,7 @@ def test_parse_skill_coerces_scalar_frontmatter(tmp_path, frontmatter, field, ex
     assert info.description[:60] == info.description[:60]
 
 
-# ── eval create --config: malformed YAML (H7) + prompts string-split (H8) ─────
+# ── eval run --config: malformed YAML (H7) + prompts string-split (H8) ─────
 
 
 def test_from_yaml_rejects_non_mapping(tmp_path):
@@ -428,7 +428,7 @@ def test_arg_validation_errors_route_to_stderr(argv, needle):
 
 def test_skills_eval_exits_nonzero_when_cases_error(tmp_path, monkeypatch):
     # A run where cases errored (e.g. missing credentials) must exit non-zero,
-    # matching `eval create` — a 100%-error run printed `0/1` but exited 0, so CI
+    # matching `eval run` — a 100%-error run printed `0/1` but exited 0, so CI
     # read a total failure as success.
     from benchflow.skill_eval._core import CaseResult, SkillEvalResult, SkillEvaluator
 

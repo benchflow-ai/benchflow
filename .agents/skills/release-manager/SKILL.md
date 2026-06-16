@@ -105,7 +105,7 @@ patch, the CI gate + a smoke may suffice.
   `uv lock --check`. Run pytest with `env -u FORCE_COLOR -u COLORTERM` — a set
   `FORCE_COLOR` leaks ANSI into Rich-output assertions and shows false failures.
 - **e2e live smoke** — a real Docker eval on the release branch
-  (`bench eval create --sandbox docker …`); confirm it's REAL (tool calls > 0,
+  (`bench eval run --sandbox docker …`); confirm it's REAL (tool calls > 0,
   tokens > 0, reward written) and the expected artifacts emit.
 - **Structural / adversarial audit** — for a big release, fan out reviewers over
   the `vLAST..HEAD` diff (correctness, security/secrets, claims-vs-code,

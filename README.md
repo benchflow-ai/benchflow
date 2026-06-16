@@ -31,7 +31,7 @@ uv tool install benchflow
 
 # Run a benchmark: any task source, any ACP agent, any sandbox
 export GEMINI_API_KEY=...            # or claude login / codex --login for subscription auth
-bench eval create \
+bench eval run \
     --source-repo benchflow-ai/skillsbench --source-path tasks \
     --agent gemini --model gemini-3.1-flash-lite-preview \
     --sandbox docker
@@ -105,10 +105,10 @@ Run any benchmark via the CLI:
 
 ```bash
 # From a YAML config (shipped with the repo)
-bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
 # Inline — mirrors the YAML source fields
-bench eval create \
+bench eval run \
     --source-repo benchflow-ai/skillsbench --source-path tasks \
     --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
 ```
@@ -121,7 +121,7 @@ own native harness — BenchFlow preserves the hosted identity (`env_uid`,
 `hub_url`) and still writes the shared rollout output contract:
 
 ```bash
-bench eval create \
+bench eval run \
     --source-env primeintellect/general-agent \
     --source-env-version 0.1.1 \
     --model google/gemini-2.5-flash-lite

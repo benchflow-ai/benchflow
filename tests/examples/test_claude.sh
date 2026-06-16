@@ -159,7 +159,7 @@ for label in "${SELECTED[@]}"; do
   extra="${EXTRA_ARGS[$label]:-}"
 
   # shellcheck disable=SC2086
-  if uv run bench eval create \
+  if uv run bench eval run \
     --tasks-dir "$TASK" \
     --agent "$AGENT" \
     --model "$model" \

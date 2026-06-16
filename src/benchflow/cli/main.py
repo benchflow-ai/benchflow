@@ -1,9 +1,10 @@
 """benchflow CLI — agent benchmarking framework.
 
 This module owns the top-level Typer ``app``, the global callback/version flag,
-and the ``eval`` command group (``eval create`` / ``eval list``). ``eval create``
+and the ``eval`` command group (``eval run`` / ``eval list``). ``eval run``
 is defined here on purpose: tests pin its callback ``__module__`` to
 ``benchflow.cli.main`` and import it (plus the Daytona helpers) from here.
+(``eval create`` remains as a deprecated alias of ``eval run``.)
 
 Every other command group lives in a sibling ``cli/<group>.py`` module and is
 attached through a ``register_<group>(app)`` call below, mirroring the
@@ -69,7 +70,8 @@ __all__ = [
     "_daytona_client_or_exit",
     "app",
     "eval_app",
-    "eval_create",
+    "eval_run",
+    "eval_create",  # deprecated import alias of eval_run
 ]
 
 # Show progress messages (logger.info) from benchflow internals by default.
@@ -193,8 +195,8 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 register_eval_adopt(eval_app)
 
 
-@eval_app.command("create")
-def eval_create(
+@eval_app.command("run")
+def eval_run(
     config_file: Annotated[
         Path | None,
         typer.Option("--config", help="YAML config file"),
@@ -618,7 +620,7 @@ def run_batch_eval(
 ):
     """Run the source-repo / tasks-dir batch path and report its result.
 
-    Promoted from the ``eval_create`` ``_run_batch_eval`` closure: the worker /
+    Promoted from the ``eval_run`` ``_run_batch_eval`` closure: the worker /
     jobs-dir / manifest knobs it used to capture now ride in on ``plan``.
     """
     from benchflow.eval_sharding import ShardWorkerError
@@ -861,6 +863,18 @@ def _run_source_env_eval(
     if run_result.error:
         console.print(f"[red]Error:[/red] {escape(str(run_result.error))}")
         raise typer.Exit(1)
+
+
+# `bench eval create` was renamed to `bench eval run`. Keep the old name as a
+# visible, deprecated alias so existing scripts, configs, and downstream repos
+# (e.g. benchflow-ai/skillsbench) keep working; Click prints a deprecation
+# notice when the alias is invoked.
+eval_app.command("create", deprecated=True)(eval_run)
+
+# Back-compat for the Python symbol: `eval_create` was part of this module's
+# public surface (``__all__``). Keep it as an import alias of ``eval_run`` so any
+# `from benchflow.cli.main import eval_create` keeps resolving.
+eval_create = eval_run
 
 
 @eval_app.command("list")

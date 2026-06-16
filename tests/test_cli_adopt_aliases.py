@@ -1,7 +1,7 @@
 """Benchmark adoption is canonically the single ``bench eval adopt`` command.
 
 Adoption lives under ``eval`` because ``eval`` is the universal benchmark entry
-point (``eval create`` runs a benchmark; ``eval adopt`` makes a foreign one
+point (``eval run`` runs a benchmark; ``eval adopt`` makes a foreign one
 runnable). ``bench eval adopt`` is one multi-mode command: ``<source>`` to
 scaffold+convert, ``<name> --scaffold-only`` to only scaffold, and
 ``<name> --verify`` to run the parity gate. Two prior spellings stay as hidden

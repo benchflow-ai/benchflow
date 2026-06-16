@@ -19,7 +19,7 @@ GUARDRAILS (apply to every step):
 - Never print, echo, log, or commit API keys. Never write keys into any file
   except a local .env (if the working directory is a git repo, confirm .env
   is gitignored; never commit it anywhere).
-- Every `bench eval create` invocation — including retries — must use a FRESH
+- Every `bench eval run` invocation — including retries — must use a FRESH
   --jobs-dir. Reusing a jobs dir triggers resume logic and skips the run.
 - A `[FAIL]` line with a fractional reward (e.g. reward 0.4, Score: 0/1) means
   the pipeline is HEALTHY: the agent ran and the verifier scored it below the
@@ -92,7 +92,7 @@ settings automatically.
 STEP 4 — Run the eval in a Docker sandbox
 Use a fresh, timestamped jobs dir and concurrency 1:
     JOBS_DIR="jobs/quickstart-$(date +%Y%m%d-%H%M%S)"
-    bench eval create \
+    bench eval run \
       --tasks-dir skillsbench/tasks/tictoc-unnecessary-abort-detection \
       --agent openhands \
       --model <provider>/<model> \
@@ -178,7 +178,7 @@ Fix anything it flags (it rejects unreplaced [REPLACE: ...] placeholders).
 Then run the task with the built-in oracle agent — it executes
 oracle/solve.sh directly, needs no model or API key, and proves the task +
 verifier loop:
-    bench eval create \
+    bench eval run \
       --tasks-dir tasks/my-first-task \
       --agent oracle \
       --sandbox docker \

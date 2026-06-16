@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reusable building blocks for BenchFlow's integration scenarios.
 
-These helpers layer on BenchFlow's own primitives — ``bench eval create``, the
+These helpers layer on BenchFlow's own primitives — ``bench eval run``, the
 :mod:`tests.integration.agent_judge` realness+judge gate, and the
 ``result.json`` / ATIF / ADP artifact contracts — so the integration suite
 (:mod:`tests.test_integration_suite`) reads as a set of end-to-end assertions
@@ -66,7 +66,7 @@ _SECRET_PATTERNS = (
 
 @dataclass(frozen=True)
 class EvalOutcome:
-    """The result of a ``bench eval create`` subprocess."""
+    """The result of a ``bench eval run`` subprocess."""
 
     returncode: int
     jobs_dir: Path
@@ -90,7 +90,7 @@ def run_eval(
     env: Mapping[str, str] | None = None,
     timeout: float = 1800.0,
 ) -> EvalOutcome:
-    """Run ``bench eval create`` and return its outcome.
+    """Run ``bench eval run`` and return its outcome.
 
     A thin, explicit wrapper so every scenario invokes the real CLI the same
     way a user would, with a per-batch ``jobs_dir`` (the resume trap: a reused
@@ -101,7 +101,7 @@ def run_eval(
         "run",
         "bench",
         "eval",
-        "create",
+        "run",
         "--agent",
         agent,
         "--sandbox",
