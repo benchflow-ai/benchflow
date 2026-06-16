@@ -235,6 +235,7 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
     (preserves existing config); no-op outside proxy mode.
     """
     real = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
+    agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
     target = f"{_BENCHFLOW_BIN_PREFIX}/{binary}-proxy"
     register_py = "\n".join(
         [
@@ -259,7 +260,15 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
         f"{register_py}\n"
         "PYEOF\n"
         "fi\n"
-        f'exec {real} "$@"\n'
+        # Exec the agent. A node-shim bin (shebang) goes through the isolated node
+        # launcher; a native binary (e.g. opencode-ai 1.17.x ships its bin as a
+        # native ELF, bin/opencode.exe) must run DIRECTLY — running it via `node`
+        # parses the ELF as JS and crashes at startup with a SyntaxError.
+        f'if [ "$(head -c2 {agent_bin} 2>/dev/null)" = "#!" ]; then\n'
+        f'  exec {real} "$@"\n'
+        "else\n"
+        f'  PATH="{_BENCHFLOW_NODE_PREFIX}/bin:$PATH" exec {agent_bin} "$@"\n'
+        "fi\n"
     )
     b64 = base64.b64encode(wrapper.encode()).decode()
     return f"printf '%s' '{b64}' | base64 -d > {target} && chmod +x {target}"

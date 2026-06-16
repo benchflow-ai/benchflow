@@ -67,3 +67,12 @@ def test_launch_entrypoint_stays_under_isolated_bin(agent, wrapper_bin, cfg):
     # /opt/benchflow/bin)
     assert lc.split()[0] == f"/opt/benchflow/bin/{wrapper_bin}"
     assert "acp" in lc
+
+
+def test_wrapper_runs_native_binary_directly_not_via_node():
+    """opencode-ai ships its bin as a native ELF (bin/opencode.exe); the wrapper
+    must detect non-shebang bins and exec them directly (running an ELF via
+    `node` crashes with a SyntaxError at startup)."""
+    w = _wrapper_script("opencode", "opencode-proxy")
+    assert "head -c2" in w  # detect shebang vs native
+    assert "/opt/benchflow/js-agents/bin/opencode" in w  # direct native-exec path
