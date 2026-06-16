@@ -25,12 +25,17 @@ reproducibility contract from "Decouple the task from the harness."
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from benchflow._utils.content_address import sha256_prefixed
+
+if TYPE_CHECKING:
+    from benchflow.environment.manifest import EnvironmentManifest
 
 #: Env var naming the local environment registry directory.
 ENV_REGISTRY_VAR = "BENCHFLOW_ENV_REGISTRY"
@@ -142,3 +147,47 @@ def resolve_environment(
     return ResolvedEnvironment(
         name=name, version=version, manifest_path=path, env_hash=env_hash
     )
+
+
+def resolve_state(value: str, registry: str | os.PathLike[str] | None = None):
+    """Resolve a ``--state`` value (the ``S`` axis) to an ``EnvironmentManifest``.
+
+    Accepts the two forms Han's whiteboard sketched:
+
+    * **inline JSON** — ``{"name": "env0", "tools": ["gmail", "gcal"]}`` resolves
+      ``env0`` from the registry and **filters its services to the tool subset**
+      (start only gmail + gcal this run).
+    * **a ``name@version`` spec or a manifest file path** — resolved as-is.
+
+    The result is the same ``EnvironmentManifest`` the run binds, so ``--state`` is
+    a richer front-end to ``--environment-manifest`` (which stays for back-compat).
+    """
+    from benchflow.environment.manifest import load_manifest
+
+    text = value.strip()
+    if not text.startswith("{"):
+        return load_manifest(text)  # name / name@version / path
+
+    try:
+        spec = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise EnvironmentRegistryError(f"invalid --state JSON: {exc}") from None
+    if not isinstance(spec, dict) or "name" not in spec:
+        raise EnvironmentRegistryError(
+            '--state JSON must be a mapping with a "name", e.g. '
+            '{"name": "env0", "tools": ["gmail", "gcal"]}'
+        )
+
+    manifest: EnvironmentManifest = load_manifest(str(spec["name"]))
+    tools = spec.get("tools")
+    if tools:
+        available = {s.name for s in manifest.services}
+        missing = [t for t in tools if t not in available]
+        if missing:
+            raise EnvironmentRegistryError(
+                f"--state tools {missing} not in environment "
+                f"{spec['name']!r} (available: {sorted(available)})"
+            )
+        kept = [s for s in manifest.services if s.name in set(tools)]
+        manifest = manifest.model_copy(update={"services": kept})
+    return manifest

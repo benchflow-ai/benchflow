@@ -197,7 +197,7 @@ register_eval_adopt(eval_app)
 def eval_create(
     config_file: Annotated[
         Path | None,
-        typer.Option("--config", help="YAML config file"),
+        typer.Option("--run-config", help="YAML run-config file (the whole run spec)"),
     ] = None,
     tasks_dir: Annotated[
         Path | None,
@@ -298,6 +298,18 @@ def eval_create(
             ),
         ),
     ] = None,
+    state: Annotated[
+        str | None,
+        typer.Option(
+            "--state",
+            help=(
+                "S-axis environment binding, decoupled from the task. Inline JSON "
+                'with an optional tool subset (e.g. {"name": "env0", "tools": '
+                '["gmail", "gcal"]}), OR a name@version spec, OR a manifest path. '
+                "Takes precedence over --environment-manifest."
+            ),
+        ),
+    ] = None,
     prompt: Annotated[
         list[str] | None,
         typer.Option("--prompt", help="Prompt(s) to send (default: instruction.md)"),
@@ -305,13 +317,14 @@ def eval_create(
     config_override: Annotated[
         str | None,
         typer.Option(
+            "--config",
             "--config-override",
             help=(
                 "C-axis overlay: deep-merge a config patch into each task's "
                 "resolved config for this run. Inline JSON/YAML/TOML or an @file "
-                'ref, e.g. --config-override \'{"agent":{"timeout_sec":120}}\'. '
-                "Varies one knob (budget/skills/stopping rules) while T/A/M/S/R "
-                "stay fixed; recorded by content hash for replay."
+                'ref, e.g. --config \'{"agent":{"timeout_sec":120}}\'. Varies one '
+                "knob (budget/skills/stopping rules) while T/A/M/S/R stay fixed; "
+                "recorded by content hash for replay. (--config-override is an alias.)"
             ),
         ),
     ] = None,
@@ -475,6 +488,7 @@ def eval_create(
         environment=environment,
         usage_tracking=usage_tracking,
         environment_manifest=environment_manifest,
+        state=state,
         config_override=config_override,
         prompt=prompt,
         concurrency=concurrency,

@@ -88,6 +88,7 @@ class EvalCreateRequest:
     environment: str | None = None
     usage_tracking: str | None = None
     environment_manifest: Path | None = None
+    state: str | None = None
     config_override: str | None = None
     prompt: list[str] | None = None
     concurrency: int | None = None
@@ -379,7 +380,14 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     # Resolve the optional Environment-plane manifest once and reuse across
     # every source branch (config / source_repo / tasks_dir / source_env).
     eval_env_manifest = None
-    if request.environment_manifest is not None:
+    if request.state is not None:
+        from benchflow._utils.env_registry import resolve_state
+
+        try:
+            eval_env_manifest = resolve_state(request.state)
+        except (OSError, ValueError) as exc:
+            raise EvalPlanError(f"Invalid --state: {exc}") from None
+    elif request.environment_manifest is not None:
         from benchflow.environment.manifest import load_manifest
 
         try:

@@ -8,6 +8,7 @@ from benchflow._utils.env_registry import (
     EnvironmentRegistryError,
     looks_like_env_spec,
     resolve_environment,
+    resolve_state,
 )
 from benchflow.environment.manifest import load_manifest
 
@@ -127,3 +128,55 @@ def test_load_manifest_yaml_spec_via_registry(tmp_path, monkeypatch):
 def test_load_manifest_yaml_file_path(tmp_path):
     p = _write_env_yaml(tmp_path, "plain", base_image="img:yfile")
     assert load_manifest(p).base_image == "img:yfile"
+
+
+# ---- resolve_state — the --state axis (inline JSON + tool subset) ----------
+
+
+def _write_multi_service_env(registry, name="env0"):
+    (registry / f"{name}.toml").write_text(
+        '[environment]\nname = "env-0"\nbase_image = "img"\nowns_lifecycle = false\n'
+        '[[environment.services]]\nname = "gmail"\ncommand = "gmail serve"\nport = 9001\n'
+        '[[environment.services]]\nname = "slack"\ncommand = "slack serve"\nport = 9002\n'
+        '[[environment.services]]\nname = "gcal"\ncommand = "gcal serve"\nport = 9003\n'
+    )
+
+
+def test_resolve_state_inline_json_filters_to_tool_subset(tmp_path):
+    _write_multi_service_env(tmp_path)
+    import os
+
+    os.environ["BENCHFLOW_ENV_REGISTRY"] = str(tmp_path)
+    try:
+        m = resolve_state('{"name":"env0","tools":["gmail","gcal"]}')
+        assert sorted(s.name for s in m.services) == ["gcal", "gmail"]  # slack dropped
+    finally:
+        del os.environ["BENCHFLOW_ENV_REGISTRY"]
+
+
+def test_resolve_state_missing_tool_errors(tmp_path):
+    _write_multi_service_env(tmp_path)
+    import os
+
+    os.environ["BENCHFLOW_ENV_REGISTRY"] = str(tmp_path)
+    try:
+        with pytest.raises(EnvironmentRegistryError, match="not in environment"):
+            resolve_state('{"name":"env0","tools":["nope"]}')
+    finally:
+        del os.environ["BENCHFLOW_ENV_REGISTRY"]
+
+
+def test_resolve_state_ref_form_no_filter(tmp_path):
+    _write_env(tmp_path, "env0@v1", base_image="img:ref")
+    import os
+
+    os.environ["BENCHFLOW_ENV_REGISTRY"] = str(tmp_path)
+    try:
+        assert resolve_state("env0@v1").base_image == "img:ref"
+    finally:
+        del os.environ["BENCHFLOW_ENV_REGISTRY"]
+
+
+def test_resolve_state_bad_json_errors():
+    with pytest.raises(EnvironmentRegistryError, match=r"must be a mapping"):
+        resolve_state('{"tools":["gmail"]}')  # no name (mapping without "name")
