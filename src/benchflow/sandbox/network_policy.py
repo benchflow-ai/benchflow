@@ -116,3 +116,22 @@ def blockall_enforcement_violation(*, block_all: bool, canary_reachable: bool) -
     abort rather than produce a falsely-rewarded "offline" result.
     """
     return block_all and canary_reachable
+
+
+def network_is_restrictive(env_config: SandboxConfig, sandbox: str) -> bool:
+    """True iff the resolved policy is anything other than fully-open egress."""
+    return (
+        resolve_network_decision(env_config, sandbox).policy is not EffectivePolicy.OPEN
+    )
+
+
+def proxy_unavailable_is_fatal(*, usage_mode: str, network_restrictive: bool) -> bool:
+    """Whether an unavailable LiteLLM usage proxy must abort the run instead of
+    silently falling back to the direct provider.
+
+    Fatal when usage tracking is ``required``, or when the network policy is
+    restrictive (the direct provider would be blocked by the egress allowlist, so
+    skipping the proxy leaves the model unreachable). ``off`` is an explicit
+    opt-out and is never forced fatal here.
+    """
+    return usage_mode == "required" or (network_restrictive and usage_mode != "off")

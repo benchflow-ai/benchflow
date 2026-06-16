@@ -47,6 +47,10 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
+from benchflow.sandbox.network_policy import (
+    network_is_restrictive,
+    proxy_unavailable_is_fatal,
+)
 from benchflow.sandbox.providers import OFF_BOX_MODEL_PROVIDERS
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
@@ -960,12 +964,17 @@ async def _skip_litellm_runtime(
 async def _fallback_or_raise_for_unavailable_litellm(
     *,
     usage_cfg: UsageTrackingConfig,
+    network_restrictive: bool = False,
     agent_env: dict[str, str],
     runtime: Any | None,
     required_error: str,
     fallback_reason: str,
 ) -> tuple[dict[str, str], Any | None]:
-    if usage_cfg.mode == "required":
+    if proxy_unavailable_is_fatal(
+        usage_mode=usage_cfg.mode, network_restrictive=network_restrictive
+    ):
+        # A restrictive network policy can't silently fall back to the direct
+        # provider (the egress allowlist would block it) — fail closed.
         raise RuntimeError(required_error)
     return await _skip_litellm_runtime(
         agent_env,
@@ -1010,6 +1019,12 @@ async def ensure_litellm_runtime(
         return await _skip_litellm_runtime(agent_env, runtime)
     assert model is not None
 
+    network_restrictive = bool(
+        sandbox is not None
+        and getattr(sandbox, "task_env_config", None) is not None
+        and network_is_restrictive(sandbox.task_env_config, environment)
+    )
+
     if environment in _SANDBOX_LOCAL_ENVIRONMENTS and sandbox is None:
         raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
 
@@ -1018,6 +1033,7 @@ async def ensure_litellm_runtime(
     except ValueError as exc:
         return await _fallback_or_raise_for_unavailable_litellm(
             usage_cfg=usage_cfg,
+            network_restrictive=network_restrictive,
             agent_env=agent_env,
             runtime=runtime,
             required_error=(
@@ -1037,6 +1053,7 @@ async def ensure_litellm_runtime(
         )
         return await _fallback_or_raise_for_unavailable_litellm(
             usage_cfg=usage_cfg,
+            network_restrictive=network_restrictive,
             agent_env=agent_env,
             runtime=runtime,
             required_error=required_error,
@@ -1092,6 +1109,7 @@ async def ensure_litellm_runtime(
     except Exception as exc:
         return await _fallback_or_raise_for_unavailable_litellm(
             usage_cfg=usage_cfg,
+            network_restrictive=network_restrictive,
             agent_env=agent_env,
             runtime=None,
             required_error=(
