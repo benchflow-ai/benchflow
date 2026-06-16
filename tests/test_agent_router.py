@@ -113,7 +113,6 @@ def test_scaffold_converter_has_documented_convert_entrypoint() -> None:
     converter = build_scaffold_files("my-bench")["benchflow.py"]
     assert "def convert(" in converter
     assert "def convert_all(" in converter
-    assert "CONVERT.md" in converter
     # token substitution happened — no raw placeholder survives.
     assert "{{NAME}}" not in converter
     assert "my-bench" in converter
@@ -162,20 +161,20 @@ def test_create_benchmark_rejects_bad_name_before_touching_disk(tmp_path: Path) 
 # ── run: context assembly + launch command ────────────────────────────
 
 
-def test_assemble_context_includes_source_guide_skills_and_target() -> None:
-    skills = [AdoptionSkill("conversion-guide", "benchmarks/CONVERT.md")]
+def test_assemble_context_includes_source_skills_and_target() -> None:
+    skills = [AdoptionSkill("reference-benchmark", "benchmarks/programbench/")]
     prompt = assemble_adoption_context(
         "github.com/foo/bar",
         "my-bench",
-        convert_guide="GUIDE-BODY-SENTINEL",
         skills=skills,
     )
     assert "github.com/foo/bar" in prompt
     assert "benchmarks/my-bench/" in prompt
-    assert "CONVERT.md" in prompt
     assert "Adoption skills" in prompt
-    assert "conversion-guide" in prompt
-    assert "GUIDE-BODY-SENTINEL" in prompt
+    assert "reference-benchmark" in prompt
+    # the up-to-date conversion guide is embedded in the prompt.
+    assert "# Benchmark conversion guide" in prompt
+    assert "parity_experiment.json" in prompt
 
 
 def test_build_launch_command_structure() -> None:
@@ -228,10 +227,10 @@ def test_run_command_dry_run_passes_codex_config(tmp_path: Path) -> None:
     assert "-c service_tier=flex" in result.output
 
 
-def test_collect_adoption_skills_references_convert_guide(tmp_path: Path) -> None:
+def test_collect_adoption_skills_lists_reference_and_parity(tmp_path: Path) -> None:
     skills = collect_adoption_skills()
-    refs = {s.reference for s in skills}
-    assert any("CONVERT.md" in r for r in refs)
+    names = {s.name for s in skills}
+    assert names == {"reference-benchmark", "parity-harness"}
 
 
 def test_prepare_launch_assembles_command_and_prompt(tmp_path: Path) -> None:
@@ -239,7 +238,6 @@ def test_prepare_launch_assembles_command_and_prompt(tmp_path: Path) -> None:
         "github.com/foo/bar",
         "my-bench",
         repo_root=tmp_path,
-        convert_guide="GUIDE",
         codex_bin="codex",
     )
     assert launch.cwd == str(tmp_path)
@@ -281,9 +279,6 @@ def test_run_adoption_fails_closed_without_credentials(tmp_path: Path) -> None:
 
 
 def test_run_adoption_launches_via_fake_exec_with_credentials(tmp_path: Path) -> None:
-    guide = tmp_path / "benchmarks" / "CONVERT.md"
-    guide.parent.mkdir(parents=True)
-    guide.write_text("# Benchmark Conversion Guide\nCONVERT.md body\n")
     recorded: dict = {}
 
     def fake_exec(command, *, cwd, env):
@@ -302,9 +297,9 @@ def test_run_adoption_launches_via_fake_exec_with_credentials(tmp_path: Path) ->
     assert code == 7
     assert recorded["cwd"] == str(tmp_path)
     assert recorded["command"][0] == "codex"
-    # the launched prompt carries the conversion guide + source.
+    # the launched prompt carries the source + target.
     assert "github.com/foo/bar" in recorded["command"][-1]
-    assert "CONVERT.md" in recorded["command"][-1]
+    assert "benchmarks/my-bench/" in recorded["command"][-1]
 
 
 # ── verify: parity extraction ─────────────────────────────────────────

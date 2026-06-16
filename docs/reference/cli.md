@@ -13,10 +13,9 @@ bench --version
 > agent show` operate on **registered AI agents** (Claude Code, Gemini CLI,
 > Codex, OpenHands, …) — the programs that solve tasks. Onboarding a third-party
 > benchmark (scaffold → drive → parity-gate a `benchmarks/<name>/` adoption) is a
-> separate workflow under [`bench eval adopt`](#bench-eval-adopt) (`init` → `convert` →
-> `verify`). The legacy `bench agent create|run|verify` still work as hidden
-> deprecated aliases through 0.6, printing a one-line notice; they are removed in
-> 0.7.
+> separate workflow under [`bench eval adopt`](#bench-eval-adopt). The legacy
+> `bench agent create|run|verify` still work as hidden deprecated aliases through
+> 0.6, printing a one-line notice; they are removed in 0.7.
 
 ### bench agent list
 
@@ -39,18 +38,60 @@ bench agent show gemini
 
 ## bench eval adopt
 
-Bring a third-party benchmark into the environment framework: scaffold a
-`benchmarks/<name>/` package, drive the codex `CONVERT.md` conversion, then
-parity-gate it (`init` → `convert` → `verify`). These commands were previously
-`bench agent create|run|verify`, which still work as hidden deprecated aliases
-through 0.6 (they print a one-line notice and are removed in 0.7). See
-[Benchmark adoption](../benchmark-adoption.md) for the full walkthrough.
+Bring a third-party benchmark into the environment framework. `bench eval adopt`
+is a **single multi-mode command**: it scaffolds a `benchmarks/<name>/` package,
+drives the codex conversion, and parity-gates the result. The conversion guide is
+embedded in the command itself. It was previously a subgroup with
+`init`/`convert`/`verify` subcommands, and before that `bench agent
+create|run|verify`; both `bench adopt init|convert|verify` and `bench agent
+create|run|verify` still work as hidden deprecated aliases through 0.6 (they print
+a one-line notice and are removed in 0.7).
 
-### bench eval adopt init
+The mode is selected by flags:
 
-Scaffold `benchmarks/<name>/` for a new benchmark adoption. The layout mirrors
-the reference benchmark `benchmarks/programbench/` and the contract in
-[`benchmarks/CONVERT.md`](../../benchmarks/CONVERT.md): it writes
+- `bench eval adopt <source>` (default, **convert**) — scaffold
+  `benchmarks/<name>/` if it is missing, then drive the codex conversion of the
+  upstream benchmark at `<source>`. Use `--dry-run` to preview the launch command
+  without running it (and without writing any files).
+- `bench eval adopt <name> --scaffold-only` — only scaffold the package, do not
+  convert.
+- `bench eval adopt <name> --verify` — run the parity gate for the named
+  benchmark.
+
+In convert mode the argument is the SOURCE repo/path to adopt; in `--verify` /
+`--scaffold-only` mode it is the benchmark SLUG. `--verify` and `--scaffold-only`
+are mutually exclusive.
+
+**Convert (default).** The command resolves the slug (`--name`, else derived from
+the source basename), auto-scaffolds `benchmarks/<name>/` if it does not exist
+(a no-op if it already does), then launches the host `codex` CLI to drive the
+conversion toward a `benchmarks/<name>/` pull request. It assembles the adoption
+context — the source, the target path, the adoption skills, and the embedded
+conversion guide — and runs `codex exec` against the repo root. It is fail-closed
+on credentials: `codex` needs `OPENAI_API_KEY` (or `CODEX_API_KEY`) in the
+environment, or a `~/.codex/auth.json` from `codex login`, otherwise the command
+exits before assembling any context. `--dry-run` prints the exact launch command
+without running it (no credentials required) and writes no files.
+
+```bash
+# Print the codex launch command without running it
+bench eval adopt https://github.com/org/some-benchmark --dry-run
+
+# Scaffold-if-missing, then launch the host codex driver against a local source
+bench eval adopt ./vendor/some-benchmark --name my-bench --model o3
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name` | derived from source | Benchmark slug (default: from source basename) |
+| `--model` | codex default | Model for the codex driver |
+| `--dry-run` | `false` | Print the launch command, do not run (writes no files) |
+| `--codex-bin` | `codex` | Host codex binary |
+| `-c`, `--codex-config` | — | Codex config override as `key=value`, passed through to codex as `-c key=value`; repeatable. Use it to work around host `~/.codex/config.toml` drift without editing the file — e.g. `-c service_tier=flex` when an installed codex version rejects a stale value. |
+| `--benchmarks-dir` | repo `benchmarks/` | Target benchmarks/ directory (used by the auto-scaffold) |
+
+**Scaffold only.** `bench eval adopt <name> --scaffold-only` writes only the
+package layout, which mirrors the reference benchmark `benchmarks/programbench/`:
 `benchflow.py` (converter), `main.py`, `parity_test.py`, `run_<name>.py`,
 `<name>.yaml`, `benchmark.yaml`, `parity_experiment.json` (status `template`),
 `README.md`, and `__init__.py`. It is fail-closed: the slug is validated
@@ -58,59 +99,28 @@ the reference benchmark `benchmarks/programbench/` and the contract in
 command refuses to overwrite an existing benchmark directory.
 
 ```bash
-bench eval adopt init my-bench
-bench eval adopt init my-bench --benchmarks-dir ./benchmarks
+bench eval adopt my-bench --scaffold-only
+bench eval adopt my-bench --scaffold-only --benchmarks-dir ./benchmarks
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--benchmarks-dir` | repo `benchmarks/` | Target benchmarks/ directory |
 
-### bench eval adopt convert
-
-Drive the `CONVERT.md` adoption workflow by launching the host `codex` CLI.
-The command assembles the adoption context (the source, the target
-`benchmarks/<name>/` path, the adoption skills, and the embedded
-`benchmarks/CONVERT.md` guide) and runs `codex exec` against the repo root to
-drive the conversion toward a `benchmarks/<name>/` pull request. It is
-fail-closed on credentials: `codex` needs `OPENAI_API_KEY` (or `CODEX_API_KEY`)
-in the environment, or a `~/.codex/auth.json` from `codex login`, otherwise the
-command exits before assembling any context. Use `--dry-run` to print the exact
-launch command without running it (no credentials required). When `--name` is
-omitted the slug is derived from the source basename.
-
-```bash
-# Print the codex launch command without running it
-bench eval adopt convert https://github.com/org/some-benchmark --dry-run
-
-# Launch the host codex driver against a local source
-bench eval adopt convert ./vendor/some-benchmark --name my-bench --model o3
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--name` | derived from source | Benchmark slug (default: from source basename) |
-| `--model` | codex default | Model for the codex driver |
-| `--dry-run` | `false` | Print the launch command, do not run |
-| `--codex-bin` | `codex` | Host codex binary |
-| `-c`, `--codex-config` | — | Codex config override as `key=value`, passed through to codex as `-c key=value`; repeatable. Use it to work around host `~/.codex/config.toml` drift without editing the file — e.g. `-c service_tier=flex` when an installed codex version rejects a stale value. |
-
-### bench eval adopt verify
-
-Run the parity gate for an adopted benchmark and emit a confidence verdict. It
-reads `benchmarks/<name>/parity_experiment.json` and scores two layers: a
-deterministic conversion-faithfulness floor (every compared criterion's
-converted verdict must match the original's verdict on identical inputs) and a
-statistical reward-distribution layer (every legacy-vs-converted reward delta
-must sit within `--tolerance`). The gate is parity-only — a faithful conversion
-reproduces the original's behavior, including any reward-hackability the source
-has; it never "improves" or sanitizes the source. The verdict is one of
-`parity-confirmed`, `parity-divergent`, or `insufficient-evidence` (no recorded
-comparisons). On any non-confirmed verdict the command exits non-zero and emits
-a draft GitHub issue body for human support — printed to stdout, or written to
-`--issue-out`. The draft is never filed automatically. Pass `--roundtrip-task`
-to also run the structural round-trip conformance check on a concrete task
-directory.
+**Verify.** `bench eval adopt <name> --verify` runs the parity gate for an
+adopted benchmark and emits a confidence verdict. It reads
+`benchmarks/<name>/parity_experiment.json` and scores two layers: a deterministic
+conversion-faithfulness floor (every compared criterion's converted verdict must
+match the original's verdict on identical inputs) and a statistical
+reward-distribution layer (every legacy-vs-converted reward delta must sit within
+`--tolerance`). The gate is parity-only — a faithful conversion reproduces the
+original's behavior, including any reward-hackability the source has; it never
+"improves" or sanitizes the source. The verdict is one of `parity-confirmed`,
+`parity-divergent`, or `insufficient-evidence` (no recorded comparisons). On any
+non-confirmed verdict the command exits non-zero and emits a draft GitHub issue
+body for human support — printed to stdout, or written to `--issue-out`. The
+draft is never filed automatically. Pass `--roundtrip-task` to also run the
+structural round-trip conformance check on a concrete task directory.
 
 By default the gate **scores the recorded** `parity_experiment.json` — fast, but
 it trusts an artifact the conversion produced about itself. Pass `--rerun` to
@@ -120,10 +130,10 @@ a timeout, or output that is not in the scoreable `parity_experiment.json` shape
 all exit non-zero (rather than silently reporting `insufficient-evidence`).
 
 ```bash
-bench eval adopt verify my-bench
-bench eval adopt verify my-bench --tolerance 0.05 --issue-out divergence.md
-bench eval adopt verify my-bench --roundtrip-task benchmarks/my-bench/tasks/example
-bench eval adopt verify my-bench --rerun   # re-run parity_test.py, score fresh output
+bench eval adopt my-bench --verify
+bench eval adopt my-bench --verify --tolerance 0.05 --issue-out divergence.md
+bench eval adopt my-bench --verify --roundtrip-task benchmarks/my-bench/tasks/example
+bench eval adopt my-bench --verify --rerun   # re-run parity_test.py, score fresh output
 ```
 
 | Flag | Default | Description |
@@ -386,7 +396,7 @@ Arguments: `TASK_DIR` (task directory to export) and optional `OUTPUT_DIR`
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--target` | `harbor` | Compatibility target: `harbor` or `pier` |
+| `--target` | `harbor` | Compatibility target: `harbor` |
 | `--overwrite` | `false` | Replace an existing export directory |
 | `--report-only` | `false` | Print the compatibility loss report without writing files |
 

@@ -1,0 +1,32 @@
+# Integration test: mimo
+source:
+  repo: benchflow-ai/skillsbench
+  path: tasks
+  ref: main
+
+jobs_dir: jobs/integration/mimo
+agent: mimo
+# MiMo Code runs the Xiaomi MiMo models via the registered `xiaomi` provider
+# (set XIAOMI_BASE_URL + XIAOMI_API_KEY). The old `mimo/mimo-auto` did not
+# resolve — there is no `mimo` provider, and `mimo-auto` is not a served model
+# (the endpoint returns 400). `mimo-v2.5` is the default smoke model because it
+# is cheaper than the pro tier while still exercising the same MiMo ACP path.
+model: xiaomi/mimo-v2.5
+environment: daytona
+# Non-proxy path required: the MiMo CLI validates model ids against its own
+# models.dev catalog and rejects LiteLLM proxy aliases (openai/benchflow-*),
+# so the eval must send the native xiaomi/<model> id directly.
+usage_tracking: "off"
+concurrency: 64
+max_retries: 1
+
+include:
+  - jax-computing-basics
+  - python-scala-translation
+  - jpg-ocr-stat
+  - grid-dispatch-operator
+  - threejs-to-obj
+  - data-to-d3
+  - lake-warming-attribution
+  - weighted-gdp-calc
+  - shock-analysis-supply

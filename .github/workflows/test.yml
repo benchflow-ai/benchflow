@@ -59,4 +59,9 @@ jobs:
       - name: Audit locked dependencies for known advisories
         run: |
           uv export --locked --extra dev --extra sandbox-daytona --extra sandbox-modal --format requirements-txt --no-hashes --output-file /tmp/req-audit
-          uv run --with pip-audit pip-audit -r /tmp/req-audit --no-deps --disable-pip
+          # GHSA-537c-gmf6-5ccf (cryptography <48.0.1): un-fixable while we use
+          # litellm[proxy], which hard-pins cryptography>=46.0.7,<47 in every
+          # release (incl. the latest, 1.89.0). Remove this ignore once litellm
+          # relaxes that pin so cryptography can reach the fixed 48.0.1.
+          uv run --with pip-audit pip-audit -r /tmp/req-audit --no-deps --disable-pip \
+            --ignore-vuln GHSA-537c-gmf6-5ccf
