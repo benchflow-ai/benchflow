@@ -135,3 +135,22 @@ def proxy_unavailable_is_fatal(*, usage_mode: str, network_restrictive: bool) ->
     opt-out and is never forced fatal here.
     """
     return usage_mode == "required" or (network_restrictive and usage_mode != "off")
+
+
+def lockdown_complete(
+    attached_networks: set[str], default_net: str, internal_net: str | None
+) -> bool:
+    """True iff a docker relock actually took effect.
+
+    After install-before-lockdown swaps the container's networks, it must be
+    detached from the public bridge (*default_net*) and, when an egress sidecar
+    is in use, attached to *internal_net*. If a ``network connect``/``disconnect``
+    silently failed the container could sit on BOTH nets (egress proxy bypassed)
+    or on NONE (stranded) — callers fail closed when this returns ``False``
+    rather than running with an unenforced policy.
+    """
+    on_public_bridge = default_net in attached_networks
+    missing_internal = (
+        internal_net is not None and internal_net not in attached_networks
+    )
+    return not (on_public_bridge or missing_internal)

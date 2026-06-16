@@ -67,3 +67,23 @@ def test_proxy_unavailable_is_fatal():
     assert not proxy_unavailable_is_fatal(usage_mode="auto", network_restrictive=False)
     # 'off' is an explicit opt-out — the caller owns provider reachability
     assert not proxy_unavailable_is_fatal(usage_mode="off", network_restrictive=True)
+
+
+# ---- Fix #1b: relock fail-closed verification (greptile P1) ------------------
+
+
+def test_lockdown_complete_docker_relock():
+    from benchflow.sandbox.network_policy import lockdown_complete
+
+    default = "proj_default"
+    internal = "proj_bf_egress_internal"
+    # allowlist / model-lane: detached from the public bridge, on the internal net
+    assert lockdown_complete({internal}, default, internal) is True
+    # disconnect silently failed -> still on default + internal -> egress BYPASS
+    assert lockdown_complete({default, internal}, default, internal) is False
+    # connect silently failed -> sidecar expected but not on internal -> stranded
+    assert lockdown_complete(set(), default, internal) is False
+    # hermetic (no sidecar): detached, attached to nothing -> fully dark, ok
+    assert lockdown_complete(set(), default, None) is True
+    # hermetic but disconnect failed -> still on default -> not locked down
+    assert lockdown_complete({default}, default, None) is False

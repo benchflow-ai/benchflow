@@ -357,6 +357,30 @@ class DockerSandbox(BaseSandbox):
         await self._docker_cli(
             ["network", "disconnect", f"{project}_default", cid], check=False
         )
+        # Fail closed: confirm the swap actually took effect. A silently-failed
+        # connect/disconnect could leave the container bypassing the proxy (still
+        # on the public bridge) or stranded (on no network); inspect the real
+        # attachments and refuse to run an unenforced policy.
+        from benchflow.sandbox.network_policy import lockdown_complete
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        inspect_res = await self._docker_cli(
+            [
+                "inspect",
+                cid,
+                "--format",
+                "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
+            ],
+            check=False,
+        )
+        attached = set(inspect_res.stdout.split())
+        internal_net = f"{project}_{_EGRESS_INTERNAL_NET}" if use_sidecar else None
+        if not lockdown_complete(attached, f"{project}_default", internal_net):
+            raise SandboxStartupError(
+                f"relock_network: {decision.policy.name} lockdown did not take "
+                f"effect (container networks={sorted(attached)}); refusing to run "
+                "with an unenforced network policy"
+            )
         self.logger.info(
             "relock_network: %s applied (sidecar=%s)", decision.policy.name, use_sidecar
         )
