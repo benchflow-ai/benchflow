@@ -7,8 +7,33 @@ import pytest
 from benchflow.adapters.osworld_metrics import (
     check_include_exclude,
     exact_match,
+    is_utc_0,
     resolve_metric,
 )
+
+
+class TestIsUtc0:
+    def test_utc_line_passes(self) -> None:
+        out = (
+            "               Local time: Thu 2024-01-25 12:56:06 UTC\n"
+            "           Universal time: Thu 2024-01-25 12:56:06 UTC\n"
+            "                 RTC time: Thu 2024-01-25 12:56:05\n"
+            "                Time zone: Etc/UTC (UTC, +0000)\n"
+        )
+        assert is_utc_0(out) == 1.0
+
+    def test_non_utc_fails(self) -> None:
+        out = (
+            "               Local time: Thu 2024-01-25 12:56:06 WET\n"
+            "           Universal time: Thu 2024-01-25 12:56:06 UTC\n"
+            "                 RTC time: Thu 2024-01-25 12:56:05\n"
+            "                Time zone: Atlantic/Faroe (WET, +0100)\n"
+        )
+        assert is_utc_0(out) == 0.0
+
+    def test_empty_or_short_fails(self) -> None:
+        assert is_utc_0("") == 0.0
+        assert is_utc_0("one\ntwo\n") == 0.0
 
 
 class TestCheckIncludeExclude:

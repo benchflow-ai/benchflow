@@ -44,12 +44,28 @@ def exact_match(result: Any, rules: Mapping[str, Any]) -> float:
     return 1.0 if result == rules["expected"] else 0.0
 
 
+def is_utc_0(timedatectl_output: str | None, rules: Any = None) -> float:
+    """1.0 iff ``timedatectl`` reports the Universal-time line ends in ``+0000)``.
+
+    Faithful to OSWorld ``metrics/basic_os.py::is_utc_0`` (checks line index 3 of
+    the ``timedatectl status`` output). ``rules`` is unused (this metric takes no
+    expected value) but accepted for a uniform ``metric(result, expected)`` call.
+    """
+    if not timedatectl_output:
+        return 0.0
+    lines = timedatectl_output.split("\n")
+    if len(lines) <= 3:
+        return 0.0
+    return 1.0 if lines[3].endswith("+0000)") else 0.0
+
+
 # OSWorld metric funcs are referenced by name in a task's ``evaluator.func``. This
 # registry resolves the name → callable, mirroring upstream's ``getattr(metrics, func)``.
 # Extend as real adopted tasks require more funcs (faithfully ported from upstream).
 METRICS: dict[str, Callable[..., float]] = {
     "check_include_exclude": check_include_exclude,
     "exact_match": exact_match,
+    "is_utc_0": is_utc_0,
 }
 
 
