@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.6.3 — 2026-06-16
+
 ### Changed
 - **`bench eval create` renamed to `bench eval run`.** The verb now matches what
   the command does (it runs an evaluation, single task or batch). `bench eval
