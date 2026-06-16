@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -563,9 +564,25 @@ class TestACPIdleWatchdog:
     async def test_idle_watchdog_returns_even_when_prompt_cancel_drain_stalls(
         self,
     ) -> None:
-        """Guards the 2026-05-22 Daytona/Gemini blocker fix against stuck cancel drain."""
-        from benchflow.acp.runtime import execute_prompts
+        """Guards the 2026-05-22 Daytona/Gemini blocker fix against stuck cancel drain.
 
+        When the idle watchdog fires it cancels the prompt task and drains it.
+        A non-cooperative agent — here one that swallows the cancellation and
+        blocks on an event that never arrives — must not be able to wedge the
+        watchdog: it bounds the drain and raises ``IdleTimeoutError`` anyway.
+
+        Determinism: this asserts the *behaviour* (idle error raised; the stuck
+        prompt task abandoned while still pending) rather than a wall-clock upper
+        bound, so it cannot be squeezed into a spurious failure when the full
+        suite loads the event loop. The outer ``wait_for`` is only a hang guard;
+        its timeout is deliberately loose (far above the real ~1.25s runtime), so
+        load can never trip it, while a regression to an unbounded drain hangs
+        past it and fails.
+        """
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        # release is never set while the watchdog runs, so the prompt task stays
+        # wedged in its cancellation handler — exactly the stuck-drain scenario.
         class StubbornPromptClient:
             def __init__(self) -> None:
                 self.release = asyncio.Event()
@@ -582,9 +599,12 @@ class TestACPIdleWatchdog:
         client = StubbornPromptClient()
         session = ACPSession("idle-session")
 
+        # Loose hang guard: ~4x the real runtime (1s idle detect + 0.25s bounded
+        # drain). Not a tight assertion — it only catches a true hang/regression.
+        hang_guard_sec = 5.0
+
         try:
-            started = asyncio.get_running_loop().time()
-            with pytest.raises(TimeoutError, match="Agent idle for 1s"):
+            with pytest.raises(IdleTimeoutError, match="Agent idle for 1s"):
                 await asyncio.wait_for(
                     execute_prompts(
                         client,  # type: ignore[arg-type]
@@ -593,10 +613,13 @@ class TestACPIdleWatchdog:
                         timeout=30,
                         idle_timeout=1,
                     ),
-                    timeout=1.8,
+                    timeout=hang_guard_sec,
                 )
-            elapsed = asyncio.get_running_loop().time() - started
-            assert elapsed < 1.35
+            # The watchdog returned while the stuck prompt task is still wedged on
+            # release.wait(): proves it bounded the drain instead of waiting for a
+            # cancellation that never completes. Load-independent — no clock math.
+            assert client.task is not None
+            assert not client.task.done()
         finally:
             client.release.set()
             if client.task is not None:
@@ -668,9 +691,83 @@ class TestIdleTimeoutDiagnostics:
         assert info["n_tool_calls"] == 1
 
     @pytest.mark.asyncio
-    async def test_wall_clock_timeout_has_no_idle_info(self) -> None:
-        """Wall-clock timeouts (not idle) must NOT carry an idle diagnostic."""
-        from benchflow.acp.runtime import execute_prompts
+    async def test_idle_timeout_last_activity_reports_progress_time(self) -> None:
+        """Guards issue #525: last_activity_at is last progress, not timeout fire."""
+        from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
+
+        class OneMessageThenHang:
+            def __init__(self, session):
+                self._session = session
+                self._called = False
+
+            async def prompt(self, _prompt: str):
+                if not self._called:
+                    self._called = True
+                    self._session.message_chunks.append("working")
+                    await asyncio.sleep(0.1)
+                await asyncio.Future()
+
+        session = ACPSession("diag-last-activity")
+        client = OneMessageThenHang(session)
+        with pytest.raises(IdleTimeoutError) as exc_info:
+            await execute_prompts(
+                client,  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=30,
+                idle_timeout=1,
+            )
+        finished_at = datetime.now(UTC)
+        info = exc_info.value.diagnostic.to_dict()
+        last_activity_at = datetime.fromisoformat(info["last_activity_at"])
+
+        assert info["n_message_chunks"] == 1
+        assert (finished_at - last_activity_at).total_seconds() >= 0.75
+
+    @pytest.mark.asyncio
+    async def test_in_flight_tool_call_defers_idle_to_wall_clock(self) -> None:
+        """A pending/in-progress tool call (agent running a long shell command)
+        must NOT trip the idle watchdog: such tools emit no ACP updates until
+        they return, so the idle path would otherwise false-kill real work. The
+        agent is alive (executing a tool), so it defers to the wall-clock
+        backstop. Contrast test_idle_timeout_info_reflects_activity_counts, where
+        a *completed* tool that then hangs still idles out."""
+        from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
+
+        class PendingToolThenHang:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_long",
+                        "title": "long running build",
+                        "kind": "bash",
+                    }
+                )
+                await asyncio.Future()  # hang while the "tool" runs
+
+        session = ACPSession("pending-idle-session")
+        # idle_timeout(1) < wall-clock(3): without the in-flight exemption this
+        # would raise IdleTimeoutError at ~1s. With it, the pending tool defers
+        # idle and the wall-clock backstop fires (AgentPromptTimeoutError) instead.
+        with pytest.raises(AgentPromptTimeoutError):
+            await execute_prompts(
+                PendingToolThenHang(session),  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=3,
+                idle_timeout=1,
+            )
+        assert session.pending_tool_call_ids() == ["tc_long"]
+
+    @pytest.mark.asyncio
+    async def test_wall_clock_timeout_records_terminal_diagnostic(self) -> None:
+        """Wall-clock timeouts record runner-owned terminal timeout evidence."""
+        from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
+        from benchflow.diagnostics import AgentPromptTimeoutDiagnostic
 
         class SlowClient:
             async def prompt(self, _prompt: str):
@@ -679,7 +776,7 @@ class TestIdleTimeoutDiagnostics:
         session = ACPSession("wall-clock-session")
         # Add continuous activity to prevent idle timeout
         session.tool_calls.append(MagicMock(status=ToolCallStatus.COMPLETED))
-        with pytest.raises(TimeoutError) as exc_info:
+        with pytest.raises(AgentPromptTimeoutError) as exc_info:
             await execute_prompts(
                 SlowClient(),  # type: ignore[arg-type]
                 session,
@@ -687,9 +784,55 @@ class TestIdleTimeoutDiagnostics:
                 timeout=2,
                 idle_timeout=None,
             )
-        # Wall-clock TimeoutErrors don't carry a structured diagnostic;
-        # only the idle watchdog raises IdleTimeoutError with one attached.
-        assert not hasattr(exc_info.value, "diagnostic")
+        assert isinstance(exc_info.value.diagnostic, AgentPromptTimeoutDiagnostic)
+        assert exc_info.value.diagnostic.timeout_sec == 2
+        assert exc_info.value.diagnostic.pending_tool_call_ids == []
+        assert exc_info.value.terminal_trajectory_complete is True
+        assert exc_info.value.n_tool_calls == 1
+        assert [event["type"] for event in exc_info.value.trajectory] == [
+            "user_message",
+            "agent_timeout",
+        ]
+        assert exc_info.value.trajectory[-1]["terminal_trajectory_complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_wall_clock_timeout_with_pending_tool_stays_partial(self) -> None:
+        """Guards PR #640: pending tool calls cannot become healthy timeouts."""
+        from benchflow.acp.runtime import AgentPromptTimeoutError, execute_prompts
+
+        class PendingToolThenHang:
+            def __init__(self, session: ACPSession):
+                self._session = session
+
+            async def prompt(self, _prompt: str):
+                self._session.handle_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc_pending",
+                        "title": "long running command",
+                        "kind": "bash",
+                    }
+                )
+                await asyncio.Future()
+
+        session = ACPSession("pending-wall-clock-session")
+        with pytest.raises(AgentPromptTimeoutError) as exc_info:
+            await execute_prompts(
+                PendingToolThenHang(session),  # type: ignore[arg-type]
+                session,
+                ["solve"],
+                timeout=2,
+                idle_timeout=None,
+            )
+
+        assert exc_info.value.terminal_trajectory_complete is False
+        assert exc_info.value.diagnostic.pending_tool_call_ids == ["tc_pending"]
+        assert [event["type"] for event in exc_info.value.trajectory] == [
+            "user_message",
+            "tool_call",
+            "agent_timeout",
+        ]
+        assert exc_info.value.trajectory[1]["status"] == ToolCallStatus.PENDING.value
 
 
 class TestConnectAcpModelSelection:
@@ -1340,6 +1483,61 @@ class TestTransportErrorDiagnostics:
         rj = __import__("json").loads((tmp_path / "result.json").read_text())
         assert rj["transport_error_info"] is None
         assert result.rewards == {"reward": 1.0}
+
+    def test_agent_timeout_diagnostic_round_trips_through_result_json(
+        self, tmp_path
+    ) -> None:
+        """Guards PR #640: normal timeouts carry terminal trajectory evidence."""
+        from benchflow.diagnostics import (
+            AgentPromptTimeoutDiagnostic,
+            RolloutDiagnostics,
+        )
+        from benchflow.rollout import _build_rollout_result
+
+        diagnostics = RolloutDiagnostics()
+        diag = AgentPromptTimeoutDiagnostic(
+            timeout_sec=900.0,
+            n_tool_calls=2,
+            terminal_event_recorded=True,
+            terminal_trajectory_complete=True,
+        )
+        diagnostics.set(diag)
+
+        result = _build_rollout_result(
+            tmp_path,
+            task_name="hello-world",
+            rollout_name="hello__timeout",
+            agent="openhands",
+            agent_name="openhands",
+            model="test-model",
+            n_tool_calls=2,
+            prompts=["solve"],
+            error="Agent prompt exceeded wall-clock budget 900s",
+            verifier_error=None,
+            trajectory=[
+                {"type": "user_message", "text": "solve"},
+                {
+                    "type": "agent_timeout",
+                    "reason": "wall_clock_timeout",
+                    "timeout_sec": 900.0,
+                    "pending_tool_call_ids": [],
+                    "terminal_trajectory_complete": True,
+                },
+            ],
+            partial_trajectory=False,
+            trajectory_source="acp",
+            rewards={"reward": 0.0},
+            started_at=__import__("datetime").datetime.now(),
+            timing={"agent": 900.0},
+            diagnostics=diagnostics,
+        )
+
+        rj = __import__("json").loads((tmp_path / "result.json").read_text())
+        assert rj["agent_timeout_info"] == diag.to_dict()
+        assert rj["trajectory_summary"]["event_type_counts"]["agent_timeout"] == 1
+        assert rj["trajectory_summary"]["partial_trajectory"] is False
+        assert rj["error_category"] == "timeout"
+        assert result.error_category == "timeout"
 
 
 class TestDiagnosticRegistry:

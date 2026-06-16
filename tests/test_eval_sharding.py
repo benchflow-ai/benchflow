@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from benchflow.eval_sharding import plan_eval_shards
+from benchflow.eval_sharding import (
+    EvalShard,
+    EvalShardPlan,
+    _aggregate_result,
+    _config_payload,
+    plan_eval_shards,
+)
+from benchflow.eval_worker import _evaluation_config
+from benchflow.evaluation import EvaluationConfig
+from benchflow.loop_strategies import LoopStrategySpec
 
 
 def test_plan_eval_shards_caps_worker_concurrency() -> None:
@@ -36,3 +47,77 @@ def test_plan_eval_shards_rejects_invalid_concurrency() -> None:
 
     with pytest.raises(ValueError, match="worker_concurrency"):
         plan_eval_shards(["task"], total_concurrency=1, worker_concurrency=0)
+
+
+def test_worker_payload_round_trips_loop_strategy() -> None:
+    config = EvaluationConfig(loop_strategy="verify-retry:k=2,feedback=raw")
+    shard = EvalShard(index=0, task_names=("task-a",), concurrency=1)
+
+    payload = _config_payload(config, shard=shard, environment_manifest_path=None)
+    restored = _evaluation_config(json.loads(json.dumps(payload)))
+
+    assert restored.loop_strategy == config.loop_strategy
+    assert restored.loop_strategy == LoopStrategySpec(
+        "verify-retry", {"k": 2, "feedback": "raw"}
+    )
+
+
+def test_worker_payload_without_loop_strategy_stays_none() -> None:
+    config = EvaluationConfig()
+    shard = EvalShard(index=0, task_names=("task-a",), concurrency=1)
+
+    payload = _config_payload(config, shard=shard, environment_manifest_path=None)
+
+    assert payload["loop_strategy"] is None
+    assert _evaluation_config(json.loads(json.dumps(payload))).loop_strategy is None
+
+
+def test_worker_payload_rejects_unparsed_loop_strategy() -> None:
+    """A spec string here means EvaluationConfig validation was bypassed —
+    fail loudly instead of silently dropping the strategy from the payload."""
+    config = EvaluationConfig()
+    config.loop_strategy = "verify-retry:k=2"  # bypasses __post_init__ parsing
+    shard = EvalShard(index=0, task_names=("task-a",), concurrency=1)
+
+    with pytest.raises(TypeError, match="LoopStrategySpec"):
+        _config_payload(config, shard=shard, environment_manifest_path=None)
+
+
+def test_worker_sharded_summary_includes_numeric_score_ratios(tmp_path) -> None:
+    """Guards the fix from PR #778 against sharded summary schema drift."""
+    plan = EvalShardPlan(
+        total_concurrency=3,
+        worker_concurrency=2,
+        shards=(
+            EvalShard(index=0, task_names=("task-a", "task-c"), concurrency=2),
+            EvalShard(index=1, task_names=("task-b",), concurrency=1),
+        ),
+    )
+
+    result = _aggregate_result(
+        jobs_dir=tmp_path,
+        config=EvaluationConfig(),
+        plan=plan,
+        shard_results=[
+            {
+                "total": 2,
+                "passed": 1,
+                "failed": 0,
+                "errored": 1,
+                "verifier_errored": 0,
+            },
+            {
+                "total": 1,
+                "passed": 0,
+                "failed": 1,
+                "errored": 0,
+                "verifier_errored": 0,
+            },
+        ],
+        elapsed_sec=1.25,
+    )
+
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert result.score == pytest.approx(1 / 3)
+    assert summary["score_ratio"] == pytest.approx(1 / 3)
+    assert summary["score_excl_errors_ratio"] == pytest.approx(1 / 2)

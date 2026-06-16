@@ -64,6 +64,7 @@ from benchflow._types import Role, Scene, Turn
 # the ``Rollout`` methods that call those names, because those methods stay
 # defined in this module.
 from benchflow._utils.scoring import classify_error as classify_error
+from benchflow.acp.types import McpServerSpec
 from benchflow.contracts import (
     AgentProtocolError,
     AskUserRequest,
@@ -74,46 +75,36 @@ from benchflow.contracts import (
 )
 from benchflow.contracts import RoundResult as RoundResult
 from benchflow.diagnostics import (
+    AgentPromptTimeoutError,
     ProviderApiErrorDiagnostic,
     RolloutDiagnostics,
     SuspectedApiErrorDiagnostic,
 )
+from benchflow.loop_strategies import (
+    LoopStrategyUser,
+    collect_loop_metadata,
+    loop_block,
+)
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
-from benchflow.rollout._config import _task_document_scenes as _task_document_scenes
-from benchflow.rollout._config import (
-    _task_document_user_runtime as _task_document_user_runtime,
-)
 from benchflow.rollout._results import _DIAG_TRUNCATE as _DIAG_TRUNCATE
 from benchflow.rollout._results import _build_rollout_result as _build_rollout_result
 from benchflow.rollout._results import (
-    _compose_scene_user_prompt as _compose_scene_user_prompt,
-)
-from benchflow.rollout._results import (
     _environment_manifest_metadata as _environment_manifest_metadata,
 )
-from benchflow.rollout._results import _is_document_user as _is_document_user
 from benchflow.rollout._results import _is_secret_env_key as _is_secret_env_key
-from benchflow.rollout._results import _is_secret_env_value as _is_secret_env_value
 from benchflow.rollout._results import (
     _least_permissive_option_id as _least_permissive_option_id,
-)
-from benchflow.rollout._results import _role_metadata as _role_metadata
-from benchflow.rollout._results import _scene_metadata as _scene_metadata
-from benchflow.rollout._results import (
-    _should_record_env_entry as _should_record_env_entry,
 )
 from benchflow.rollout._results import (
     _user_confirmation_policy as _user_confirmation_policy,
 )
-from benchflow.rollout._results import _user_handoff_kind as _user_handoff_kind
 from benchflow.rollout._results import _write_config as _write_config
 from benchflow.rollout._results import _write_rewards_jsonl as _write_rewards_jsonl
 from benchflow.rollout._results import (
     _write_trainer_artifact as _write_trainer_artifact,
 )
-from benchflow.rollout._setup import _DISALLOW_WEB_TOOLS_ENV as _DISALLOW_WEB_TOOLS_ENV
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
 )
@@ -136,7 +127,6 @@ from benchflow.rollout._setup import _install_docker_compat as _install_docker_c
 from benchflow.rollout._setup import (
     _publish_trajectory_for_verifier as _publish_trajectory_for_verifier,
 )
-from benchflow.rollout._setup import _read_task_instruction as _read_task_instruction
 from benchflow.rollout._setup import _resolve_agent_cwd as _resolve_agent_cwd
 from benchflow.rollout._setup import _resolve_prompts as _resolve_prompts
 from benchflow.rollout._setup import _run_oracle as _run_oracle
@@ -145,7 +135,6 @@ from benchflow.rollout._setup import _start_env_and_upload as _start_env_and_upl
 from benchflow.rollout._setup import (
     _task_disallows_internet as _task_disallows_internet,
 )
-from benchflow.rollout._setup import _validate_agent_workdir as _validate_agent_workdir
 from benchflow.rollout._setup import _verify_rollout as _verify_rollout
 from benchflow.rollout._skills import (
     _resolve_skill_creator_root as _resolve_skill_creator_root,
@@ -156,6 +145,9 @@ from benchflow.rollout._skills import _skill_frontmatter_name as _skill_frontmat
 from benchflow.rollout._usage import (
     _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT as _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT,
 )
+from benchflow.rollout._usage import (
+    ProviderFailure as ProviderFailure,
+)
 from benchflow.rollout._usage import _as_nonnegative_int as _as_nonnegative_int
 from benchflow.rollout._usage import _native_acp_usage_delta as _native_acp_usage_delta
 from benchflow.rollout._usage import (
@@ -163,6 +155,12 @@ from benchflow.rollout._usage import (
 )
 from benchflow.rollout._usage import (
     _provider_auth_status_from_runtime as _provider_auth_status_from_runtime,
+)
+from benchflow.rollout._usage import (
+    _provider_failure_from_runtime as _provider_failure_from_runtime,
+)
+from benchflow.rollout._usage import (
+    _provider_failure_from_status as _provider_failure_from_status,
 )
 from benchflow.rollout._usage import (
     _zero_native_acp_usage_metrics as _zero_native_acp_usage_metrics,
@@ -210,6 +208,38 @@ from benchflow.usage_tracking import (
 logger = logging.getLogger(__name__)
 
 
+_MCP_TRANSPORT_TO_ACP_TYPE = {
+    "stdio": "stdio",
+    "sse": "sse",
+    "streamable-http": "http",
+}
+
+
+def _task_mcp_specs(task: Any) -> list[McpServerSpec]:
+    """Map the task's ``[[environment.mcp_servers]]`` entries to ACP specs.
+
+    This is the composition seam between the task-config layer
+    (``MCPServerConfig``) and the ACP protocol layer (``McpServerSpec``) — kept
+    here, in the rollout, so ``acp/`` stays free of any task-config dependency.
+    The resulting specs are attached to every ACP session the rollout opens
+    (``session/new``), making task-declared MCP servers — e.g. a Playwright MCP
+    — reachable by the agent. Returns ``[]`` when the task declares none,
+    preserving the historical default of attaching no MCP servers.
+    """
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    configs = getattr(env_config, "mcp_servers", None) or []
+    return [
+        McpServerSpec(
+            name=config.name,
+            type=_MCP_TRANSPORT_TO_ACP_TYPE.get(config.transport, config.transport),
+            command=config.command,
+            args=list(config.args),
+            url=config.url,
+        )
+        for config in configs
+    ]
+
+
 class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
@@ -255,10 +285,13 @@ class Rollout:
         self._usage_metrics: dict[str, Any] = self._planes.extract_usage(None)
         self._native_usage_metrics: dict[str, Any] = _zero_native_acp_usage_metrics()
         self._native_usage_checkpoint: dict[str, int | None] | None = None
-        # Provider 401/403 status snapshotted during cleanup, after the usage
-        # proxy imports its captures (Daytona's SandboxUsageProxy only fills
-        # trajectory on stop()). Read by _provider_auth_status() so ACP-error
-        # classification can fail fast on auth failures (#546/#564).
+        # Provider failure snapshotted during cleanup, after the usage proxy
+        # imports its captures (Daytona's SandboxUsageProxy only fills trajectory
+        # on stop()). Read by _provider_failure() so ACP-error classification can
+        # expose a provider auth/rate-limit/outage failure (status code only)
+        # instead of a generic ACP internal error (#546/#564).
+        self._provider_failure_cached: ProviderFailure | None = None
+        # Auth-only (401/403) view kept for callers added by PR #564.
         self._provider_auth_status_cached: int | None = None
         # Provider API failure summary (all statuses >= 400), snapshotted in
         # cleanup() alongside the auth status — consumed by the post-rollout
@@ -305,11 +338,20 @@ class Rollout:
         self._n_tool_calls: int = 0
         self._trajectory_source: TrajectorySource | None = None
         self._partial_trajectory: bool = False
+        # Set when a clean wall-clock prompt timeout (AgentPromptTimeoutError
+        # with no pending tool calls) fired — its captured trajectory is a
+        # complete terminal one, not a rerunnable partial (#640).
+        self._terminal_timeout: bool = False
         # Every prompt actually sent to the agent across all execute() calls —
         # this is what `n_prompts` and `prompts.json` should reflect for Scene
         # rollouts where each turn issues its own prompt. The original
         # `_resolved_prompts` is only the static base task prompt set.
         self._executed_prompts: list[str] = []
+        # The user-loop engine's per-round log (aliased by _run_user_loop).
+        # Rounds are appended as soon as their soft verify completes, so
+        # _loop_strategy_metadata() can summarize whatever rounds finished
+        # even when a later round timed out or crashed.
+        self._user_rounds_log: list[dict[str, Any]] = []
 
         # The tree-native execution model (architecture.md, "tree-native").
         # A linear rollout is a degree-1 tree; execute() grows it one Step at a
@@ -547,6 +589,7 @@ class Rollout:
             context_root=cfg.context_root,
             sandbox_locked_paths=self._effective_locked,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            skip_agent_install=cfg.skip_agent_install,
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
@@ -558,6 +601,7 @@ class Rollout:
             dataset=cfg.dataset,
             task_digest=cfg.task_digest,
             config_override=cfg.config_override,
+            loop_strategy=cfg.loop_strategy_spec,
         )
 
         self._phase = "setup"
@@ -656,12 +700,15 @@ class Rollout:
             return
 
         agent_name = cfg.primary_agent
-        self._agent_cfg = await self._planes.install_agent(
-            self._env,
-            agent_name,
-            rollout_dir,
-            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
-        )
+        if cfg.skip_agent_install:
+            self._agent_cfg = None
+        else:
+            self._agent_cfg = await self._planes.install_agent(
+                self._env,
+                agent_name,
+                rollout_dir,
+                sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            )
         if cfg.sandbox_user:
             self._agent_cwd = await self._planes.setup_sandbox_user(
                 self._env,
@@ -748,6 +795,7 @@ class Rollout:
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
             reasoning_effort=cfg.primary_reasoning_effort,
+            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
         )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
@@ -898,8 +946,13 @@ class Rollout:
             return
         self._trajectory.extend(delta)
         self._session_traj_count = len(captured)
-        self._partial_trajectory = True
-        self._trajectory_source = "partial_acp"
+        if getattr(self, "_terminal_timeout", False):
+            # Clean wall-clock terminal timeout (#640): the captured tail is the
+            # complete trajectory, so leave _partial_trajectory False.
+            self._trajectory_source = "acp"
+        else:
+            self._partial_trajectory = True
+            self._trajectory_source = "partial_acp"
         prior_session_tools = getattr(self, "_session_tool_count", 0)
         new_tools = len(session.tool_calls) - prior_session_tools
         if new_tools > 0:
@@ -940,13 +993,49 @@ class Rollout:
             else self._config.agent_idle_timeout
         )
 
-        trajectory, n_tool_calls = await self._planes.execute_prompts(
-            self._acp_client,
-            self._session,
-            effective_prompts,
-            timeout,
-            idle_timeout=idle_timeout,
+        try:
+            trajectory, n_tool_calls = await self._planes.execute_prompts(
+                self._acp_client,
+                self._session,
+                effective_prompts,
+                timeout,
+                idle_timeout=idle_timeout,
+            )
+        except AgentPromptTimeoutError as e:
+            self._diagnostics.set(e.diagnostic)
+            self._commit_acp_execution(
+                trajectory=e.trajectory,
+                n_tool_calls=e.n_tool_calls,
+                prev_session_tools=prev_session_tools,
+                effective_prompts=e.executed_prompts or effective_prompts,
+                started_at=t0,
+                node=node,
+                partial_trajectory=not e.terminal_trajectory_complete,
+            )
+            raise
+
+        self._commit_acp_execution(
+            trajectory=trajectory,
+            n_tool_calls=n_tool_calls,
+            prev_session_tools=prev_session_tools,
+            effective_prompts=effective_prompts,
+            started_at=t0,
+            node=node,
         )
+        return trajectory, n_tool_calls
+
+    def _commit_acp_execution(
+        self,
+        *,
+        trajectory: list[dict],
+        n_tool_calls: int,
+        prev_session_tools: int,
+        effective_prompts: list[str],
+        started_at: datetime,
+        node: RolloutNode | None,
+        partial_trajectory: bool = False,
+    ) -> None:
+        """Commit a finalized ACP snapshot into rollout state."""
 
         # trajectory and n_tool_calls are cumulative for this session.
         # Compute the delta since last execute() on this session.
@@ -958,7 +1047,11 @@ class Rollout:
         self._trajectory.extend(new_events)
         self._n_tool_calls += new_tools
         self._executed_prompts.extend(effective_prompts)
-        self._trajectory_source = "acp"
+        if partial_trajectory:
+            self._partial_trajectory = True
+            self._trajectory_source = "partial_acp"
+        elif not self._partial_trajectory:
+            self._trajectory_source = "acp"
         self._collect_native_acp_usage()
 
         # Grow the tree at Step-level granularity — one Step per ACP event
@@ -984,13 +1077,12 @@ class Rollout:
         # Accumulate execution time across all execute() calls — Scene rollouts
         # invoke execute() once per turn, and the previous "set only on first
         # call" behaviour undercounted multi-turn agent time.
-        elapsed = (datetime.now() - t0).total_seconds()
+        elapsed = (datetime.now() - started_at).total_seconds()
         self._timing["agent_execution"] = (
             self._timing.get("agent_execution", 0.0) + elapsed
         )
 
         self._phase = "executed"
-        return trajectory, n_tool_calls
 
     def _collect_native_acp_usage(self) -> None:
         """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
@@ -1179,12 +1271,16 @@ class Rollout:
             # Purge agent-injected conftest/sitecustomize/.pth without
             # killing processes or restoring workspace.
             # Honor per-task [verifier.hardening] opt-outs from task config.
+            # No timeout_sec here: the conftest purge walks the rootfs and can be
+            # slow on network-backed FS (Daytona), so its budget is owned by
+            # lockdown.cleanup_verifier_python_hooks (VERIFIER_SETUP_TIMEOUT_SEC),
+            # shared with the scoring path in harden_before_verify. The except
+            # below keeps the step fail-closed.
             await self._planes.cleanup_verifier_python_hooks(
                 self._env,
                 getattr(self._task, "task_dir", None),
                 "Soft verifier setup failed: purging Python injection hooks",
                 user="root",
-                timeout_sec=10,
             )
         except Exception as e:
             verifier_error = f"soft verifier crashed: {e}"
@@ -1258,11 +1354,11 @@ class Rollout:
             except Exception as e:
                 logger.warning(f"Usage telemetry runtime stop failed: {e}")
                 self._usage_metrics = self._planes.extract_usage(None)
-            # Snapshot any provider 401/403 now that captures are imported
-            # (stop() populated the trajectory). This must happen before we drop
-            # the runtime reference below, and is read later by ACP-error
-            # classification — for Daytona the trajectory is empty until here
-            # (#546/#564).
+            # Snapshot any provider failure (401/403/429/503) now that captures
+            # are imported (stop() populated the trajectory). This must happen
+            # before we drop the runtime reference below, and is read later by
+            # ACP-error classification — for Daytona the trajectory is empty
+            # until here (#546/#564).
             #
             # Coverage gap: only `self._usage_runtime` is scanned here. Bedrock
             # auth failures flow through `self._provider_runtime`, whose server
@@ -1270,8 +1366,14 @@ class Rollout:
             # fallback scan of it would always return None — useless, so it's
             # not implemented. The direct-AWS-Bedrock case (remote sandbox,
             # runtime=None) bypasses both proxies entirely and is out of scope.
-            self._provider_auth_status_cached = _provider_auth_status_from_runtime(
+            self._provider_failure_cached = _provider_failure_from_runtime(
                 usage_runtime
+            )
+            self._provider_auth_status_cached = (
+                self._provider_failure_cached.status
+                if self._provider_failure_cached is not None
+                and self._provider_failure_cached.marker == "provider auth failed"
+                else None
             )
             self._api_failure_summary_cached = (
                 _provider_api_failure_summary_from_runtime(usage_runtime)
@@ -1342,10 +1444,19 @@ class Rollout:
         handler. Preserves the watchdog's diagnostic message ("Agent idle
         for 600s with no new tool call ...") when it raised one, falling
         back to the generic wall-clock message only when there's no detail.
+
+        A BenchFlow-owned wall-clock prompt timeout (``AgentPromptTimeoutError``)
+        that fired with no pending tool calls is a *clean terminal* timeout:
+        the trajectory is complete, not a rerunnable partial. Record that so
+        the partial-capture path leaves ``_partial_trajectory`` False (#640).
         """
         detail = str(e).strip()
         self._error = detail or f"Agent timed out after {self._timeout}s"
         self._diagnostics.capture_idle(e)
+        if isinstance(e, AgentPromptTimeoutError) and getattr(
+            e, "terminal_trajectory_complete", False
+        ):
+            self._terminal_timeout = True
         logger.error(self._error)
 
     async def run(self) -> RolloutResult:
@@ -1543,12 +1654,15 @@ class Rollout:
             role_agent_differs or role.model != cfg.primary_model or bool(role.env)
         )
         if role_agent_differs:
-            agent_cfg = await self._planes.install_agent(
-                self._env,
-                role.agent,
-                rollout_dir,
-                sandbox_setup_timeout=cfg.sandbox_setup_timeout,
-            )
+            if cfg.skip_agent_install:
+                agent_cfg = None
+            else:
+                agent_cfg = await self._planes.install_agent(
+                    self._env,
+                    role.agent,
+                    rollout_dir,
+                    sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+                )
         else:
             agent_cfg = getattr(self, "_agent_cfg", None)
         if needs_role_credentials:
@@ -1591,6 +1705,7 @@ class Rollout:
             environment=cfg.environment,
             agent_cwd=self._agent_cwd,
             reasoning_effort=role.reasoning_effort,
+            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
         )
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
@@ -1655,16 +1770,28 @@ class Rollout:
                     f"Subscription auth credentials exist — unset the env var "
                     f"to use them: env -u {key} <command>"
                 )
-        # A real invalid-key failure often surfaces only as a generic
+        # A real provider failure often surfaces only as a generic
         # "ACP error -32603: Internal error" at this layer — the provider's
-        # actual 401/403 is visible only in the proxy-captured trajectory
-        # (#546/#564). Surface a sanitized auth marker (status code only — never
-        # the response body or headers) so RetryConfig.should_retry classifies
-        # it as provider_auth and fails fast instead of burning retries.
-        auth_status = self._provider_auth_status()
-        if auth_status is not None:
-            return f"{e} | provider auth failed (HTTP {auth_status})"
+        # actual 401/403/429/503 is visible only in the proxy-captured
+        # trajectory (#546/#564). Surface a sanitized marker (status code only —
+        # never the response body or headers) so RetryConfig.should_retry can
+        # classify it (auth/rate-limit fail fast; 503 stays retryable infra)
+        # instead of burning retries on a generic ACP error.
+        provider_failure = self._provider_failure()
+        if provider_failure is not None:
+            return f"{e} | {provider_failure.error_suffix}"
         return str(e)
+
+    def _provider_failure(self) -> ProviderFailure | None:
+        """Return the provider failure snapshotted during cleanup.
+
+        Falls back to the auth-only status cache for partial Rollout doubles in
+        tests that set ``_provider_auth_status_cached`` directly (#564).
+        """
+        failure = getattr(self, "_provider_failure_cached", None)
+        if failure is not None:
+            return failure
+        return _provider_failure_from_status(self._provider_auth_status())
 
     def _provider_auth_status(self) -> int | None:
         """Return the provider 401/403 status snapshotted during cleanup.
@@ -1779,6 +1906,27 @@ class Rollout:
         # excluded from score denominators (rerun-able, never counted).
         self._rewards = None
 
+    def _loop_strategy_metadata(self) -> dict[str, Any] | None:
+        """Loop-strategy run summary for the result.json ``loop`` block.
+
+        Computed at result-build time — after run() has finalized
+        ``self._error`` on every path (agent timeout, ACP error, success) —
+        from the engine's in-loop round log, so a mid-round crash still
+        reports the rounds that completed. getattr() keeps tests that bypass
+        __init__ via Rollout.__new__() working.
+        """
+        user = self._config.user
+        if self._config.loop_strategy_spec is None or not isinstance(
+            user, LoopStrategyUser
+        ):
+            return None
+        return collect_loop_metadata(
+            user,
+            getattr(self, "_user_rounds_log", []),
+            max_rounds=self._config.max_user_rounds,
+            error=getattr(self, "_error", None),
+        )
+
     def _build_result(self) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         self._maybe_classify_api_error()
@@ -1822,6 +1970,10 @@ class Rollout:
                 declared_sandbox_skills_dir=None,
             ),
             sandbox_id=self._current_sandbox_id(),
+            loop=loop_block(
+                self._config.loop_strategy_spec,
+                self._loop_strategy_metadata(),
+            ),
             **self._usage_metrics,
         )
 

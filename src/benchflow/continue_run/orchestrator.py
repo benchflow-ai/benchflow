@@ -37,6 +37,7 @@ from benchflow.continue_run.sandbox_proxy import (
     sandbox_replay_base_url,
 )
 from benchflow.contracts import AgentProtocolError, SandboxStartupFailure
+from benchflow.sandbox.providers import OFF_BOX_MODEL_PROVIDERS
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.trajectories.types import LLMExchange, redact_trajectory_text
 
@@ -48,7 +49,9 @@ logger = logging.getLogger(__name__)
 # OpenAI-compatible endpoint.
 _REPLAY_API_KEY = "sk-benchflow-replay"
 _REPLAY_MODEL = "openai/replay"
-_SANDBOX_LOCAL_REPLAY_ENVIRONMENTS = frozenset({"daytona", "modal"})
+# Off-box-model providers (≡ non-docker) — derived from the canonical registry
+# so this replay-routing subset can't drift from litellm_runtime's copy.
+_SANDBOX_LOCAL_REPLAY_ENVIRONMENTS = OFF_BOX_MODEL_PROVIDERS
 _PROXY_MODES = frozenset({"auto", "host", "sandbox"})
 
 

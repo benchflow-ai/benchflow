@@ -280,6 +280,7 @@ def _expected_config_concurrency(
     if expected_concurrency is _MISSING:
         return _MISSING
     if _is_worker_sharded_summary(summary):
+        assert summary is not None
         return summary["worker_concurrency"]
     return expected_concurrency
 
@@ -418,10 +419,12 @@ def _source_hash_truth_issues(source: object, label: str) -> list[str]:
     source_dict = cast(dict[str, Any], source)
     local_path_raw = source_dict.get("local_path")
     file_hashes = source_dict.get("file_hashes")
-    if not isinstance(local_path_raw, str):
-        return [f"{label}: source.local_path must be a string for hash audit"]
     if not isinstance(file_hashes, dict):
         return []
+    if local_path_raw is None:
+        return []
+    if not isinstance(local_path_raw, str):
+        return [f"{label}: source.local_path must be a string for hash audit"]
     local_path = Path(local_path_raw)
     if not local_path.exists():
         return [f"{label}: source.local_path does not exist for hash audit"]
@@ -898,7 +901,7 @@ def check_agent(agent_dir: Path) -> dict:
 
     infra_errors: list[str] = []
     invalidated_by_category: dict[str, list[str]] = {}
-    for r in results:
+    for r in latest_results:
         err = r.get("error")
         cat = r.get("error_category") or (classify_error(str(err)) if err else None)
         if cat and cat in INFRA_ERROR_CATEGORIES:
@@ -923,7 +926,7 @@ def check_agent(agent_dir: Path) -> dict:
 
     # Verifier dependency install failures (ENG-151)
     dep_install_tasks: list[str] = []
-    for r in results:
+    for r in latest_results:
         verifier_err = r.get("verifier_error")
         vcat = r.get("verifier_error_category") or (
             classify_verifier_error(verifier_err) if verifier_err else None
@@ -950,7 +953,7 @@ def check_agent(agent_dir: Path) -> dict:
         d.category: d for d in DIAGNOSTIC_REGISTRY if d.channel == "verifier_error"
     }
     verifier_timeout_tasks: list[str] = []
-    for r in results:
+    for r in latest_results:
         verifier_err = r.get("verifier_error")
         vcat = classify_verifier_error(verifier_err) if verifier_err else None
         if vcat == "verifier_timeout":

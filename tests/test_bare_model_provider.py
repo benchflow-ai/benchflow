@@ -50,7 +50,7 @@ class TestFindProviderForBareModel:
             ("kimi-k2.6", "kimi"),
             ("moonshot-v1-8k", "kimi"),
             ("minimax-m2.7", "minimax"),
-            ("mimo-v2.5-pro", "xiaomi"),
+            ("mimo-v2.5", "xiaomi"),
             ("hunyuan-turbo", "hunyuan"),
         ],
     )

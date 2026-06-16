@@ -93,6 +93,22 @@ def scaffold_task(
         no_oracle = no_solution
     if task_format not in ("legacy", "task-md"):
         raise ValueError("task_format must be 'legacy' or 'task-md'")
+    # The name is a single directory segment under parent_dir, never a path. Reject
+    # separators / '..' / leading dots / whitespace so `init "../escape"` can't write
+    # outside parent_dir and names stay safe for HF/registry/shell tooling.
+    if (
+        not name
+        or name in (".", "..")
+        or "/" in name
+        or "\\" in name
+        or name != name.strip()
+        or name.startswith(".")
+        or any(c.isspace() for c in name)
+    ):
+        raise ValueError(
+            "task name must be a single path segment "
+            f"(no '/', '..', leading dot, or spaces); got {name!r}"
+        )
 
     task_dir = parent_dir / name
     if task_dir.exists():
@@ -220,7 +236,8 @@ def migrate_task_to_task_md(
         )
     if task_md.exists() and not overwrite:
         raise FileExistsError(
-            f"{task_md} already exists; pass overwrite=True to replace it"
+            f"{task_md} already exists; pass --overwrite (CLI) / overwrite=True "
+            "(API) to replace it"
         )
 
     legacy_config = import_task_config_toml(

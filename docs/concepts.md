@@ -131,11 +131,11 @@ Between agent and verifier, benchflow **hardens** the sandbox to prevent the age
 - Restore build-config files (setup.py, pyproject.toml, …) to their pre-agent snapshots
 - Delete agent-injected `conftest.py`, `sitecustomize.py`, `.pth` files
 - Lock the workspace to root, set restrictive PYTHONPATH/PATH for the verifier process
-- Run pytest with plugin auto-discovery off, only allowing plugins declared in the task config (`[verifier] pytest_plugins` in `task.toml`, or auto-discovered root-owned plugins)
+- Run pytest with plugin auto-discovery off, only allowing plugins declared in the task config (`[verifier] pytest_plugins` in the `task.md` front-matter, or `task.toml` for split-layout tasks, or auto-discovered root-owned plugins)
 
-This catches the BenchJack and Meerkat exploit families documented in the historical (0.2.x-era) labs [`docs/labs/benchjack-sandbox-hardening/`](../docs/labs/benchjack-sandbox-hardening/) and [`docs/labs/reward-hack-matrix/`](../docs/labs/reward-hack-matrix/).
+This catches the BenchJack and Meerkat exploit families.
 
-When a task ships a legitimate `conftest.py` (e.g. qutebrowser uses one to break a real circular import), the task opts out via `task.toml`:
+When a task ships a legitimate `conftest.py` (e.g. qutebrowser uses one to break a real circular import), the task opts out in its task config (`task.md` front-matter, or `task.toml` for split-layout tasks):
 
 ```toml
 [verifier.hardening]
@@ -189,7 +189,7 @@ Every agent action is captured as an event in the **trajectory** — tool calls,
 
 `rewards` is a dict produced by the task's verifier. Convention: `{"reward": float}` where 1.0 = pass, 0.0 = fail. Tasks may add additional metrics (e.g. `exact_match`, `partial_credit`).
 
-Trajectories are written to `<evaluations_dir>/<evaluation_name>/<rollout_name>/trajectory/acp_trajectory.jsonl`. Use them for replay, debugging, or training data.
+Trajectories are written to `<jobs_dir>/<job_name>/<rollout_name>/trajectory/acp_trajectory.jsonl` (the `--jobs-dir` directory, default `jobs/`). Use them for replay, debugging, or training data.
 
 ---
 
@@ -197,7 +197,7 @@ Trajectories are written to `<evaluations_dir>/<evaluation_name>/<rollout_name>/
 
 - [Getting started](./getting-started.md) — install, run your first eval.
 - [Task authoring (native task.md)](./task-authoring-task-md.md) — write a task as a single `task.md` document plus `environment/` and `verifier/`.
-- [Task authoring (legacy split layout)](./task-authoring.md) — write a task with `task.toml` + `tests/` + `solution/`.
+- [Migrating a legacy task](./task-authoring.md) — convert an existing `task.toml` + `instruction.md` split package to `task.md` (the split layout is no longer a first-class authoring path).
 - [LLM-as-judge](./llm-judge.md) — use an LLM to score subjective tasks against a rubric (see the [verifier file map](#verifier-file-map) for native vs legacy rubric paths).
 - [Progressive disclosure](./progressive-disclosure.md) — the User abstraction; SWE-bench Pro case study.
 - [Use cases](./use-cases.md) — multi-agent patterns (coder/reviewer, simulated user, BYOS, stateful environments).

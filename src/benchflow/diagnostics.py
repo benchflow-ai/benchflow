@@ -24,10 +24,36 @@ exceptions without pulling Daytona/Modal SDKs.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar
 
 # Diagnostic value objects
+
+
+class AgentPromptTimeoutError(TimeoutError):
+    """BenchFlow-owned prompt wall-clock timeout with captured ACP state.
+
+    This is distinct from provider/client ``TimeoutError`` exceptions. It is
+    raised only when BenchFlow's prompt budget expires and the ACP prompt task
+    can be cancelled/drained cleanly enough to snapshot the session. The
+    attached diagnostic says whether that snapshot is a complete terminal
+    timeout trajectory or still has pending tool calls and must remain partial.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        trajectory: list[dict],
+        diagnostic: AgentPromptTimeoutDiagnostic,
+        executed_prompts: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.trajectory = trajectory
+        self.diagnostic = diagnostic
+        self.n_tool_calls = diagnostic.n_tool_calls
+        self.terminal_trajectory_complete = diagnostic.terminal_trajectory_complete
+        self.executed_prompts = executed_prompts or []
 
 
 @dataclass
@@ -105,6 +131,31 @@ class IdleTimeoutDiagnostic(Diagnostic):
             f"{self.idle_duration_sec}s idle "
             f"({self.n_tool_calls} tool calls, "
             f"{self.wall_clock_elapsed_sec}s wall)"
+        )
+
+
+@dataclass
+class AgentPromptTimeoutDiagnostic(Diagnostic):
+    """BenchFlow hit the prompt wall-clock budget and wrote timeout evidence."""
+
+    reason: str = "wall_clock_timeout"
+    timeout_sec: float = 0.0
+    n_tool_calls: int = 0
+    pending_tool_call_ids: list[str] = field(default_factory=list)
+    terminal_event_recorded: bool = False
+    terminal_trajectory_complete: bool = False
+
+    field: ClassVar[str] = "agent_timeout_info"
+    category: ClassVar[str | None] = "timeout"
+    summary_description: ClassVar[str] = "hit agent wall-clock timeout"
+
+    def format_issue(self, task_name: str) -> str:
+        pending = len(self.pending_tool_call_ids)
+        complete = "complete" if self.terminal_trajectory_complete else "partial"
+        return (
+            f"{task_name}: agent wall-clock timeout after "
+            f"{self.timeout_sec}s ({complete}, {self.n_tool_calls} tool calls, "
+            f"{pending} pending)"
         )
 
 
@@ -274,6 +325,7 @@ class SuspectedApiErrorDiagnostic(Diagnostic):
 # Public registry — every diagnostic kind goes here exactly once.
 DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     IdleTimeoutDiagnostic,
+    AgentPromptTimeoutDiagnostic,
     SandboxStartupDiagnostic,
     TransportClosedDiagnostic,
     VerifierTimeoutDiagnostic,
@@ -346,15 +398,19 @@ class RolloutDiagnostics:
     def get(self, field_name: str) -> Diagnostic | None:
         return self._events.get(field_name)
 
-    def capture_idle(self, exc: BaseException) -> None:
-        """Extract the IdleTimeoutDiagnostic from a TimeoutError, if present.
+    def capture_timeout(self, exc: BaseException) -> None:
+        """Extract a structured timeout diagnostic from a TimeoutError, if present.
 
-        Wall-clock TimeoutErrors carry no diagnostic; only idle-watchdog
-        timeouts attach one via ``.diagnostic`` (issue #503).
+        Idle-watchdog and BenchFlow-owned wall-clock prompt timeouts both carry
+        typed diagnostics. Provider/client ``TimeoutError`` exceptions do not.
         """
         diag = getattr(exc, "diagnostic", None)
-        if isinstance(diag, IdleTimeoutDiagnostic):
+        if isinstance(diag, (IdleTimeoutDiagnostic, AgentPromptTimeoutDiagnostic)):
             self.set(diag)
+
+    def capture_idle(self, exc: BaseException) -> None:
+        """Backward-compatible alias for older call sites."""
+        self.capture_timeout(exc)
 
     def capture_transport(self, exc: ConnectionError) -> None:
         """Record the transport-closed diagnostic.

@@ -42,7 +42,7 @@ def register_monitor(app: typer.Typer) -> None:
             "API surface scaffold; runtime not yet implemented."
         ),
     )
-    app.add_typer(monitor_app, name="monitor")
+    app.add_typer(monitor_app, name="monitor", hidden=True)
 
     @monitor_app.command("run")
     def monitor_run(
@@ -64,7 +64,7 @@ def register_monitor(app: typer.Typer) -> None:
             typer.Option("--run-name", help="Human-readable id for this monitor run."),
         ] = None,
     ) -> None:
-        """Score one trajectory under monitor semantics. **Not yet implemented (#386).**"""
+        """Score one trajectory under monitor semantics. [bold]Not yet implemented (#386).[/bold]"""
         del source, rubric, jobs_dir, run_name  # accepted for API stability
         _monitor_not_implemented()
 
@@ -76,7 +76,7 @@ def register_monitor(app: typer.Typer) -> None:
         ],
         jobs_dir: MonitorJobsDirOption = "jobs/monitor",
     ) -> None:
-        """Re-score a persisted rollout under monitor semantics. **Not yet implemented (#386).**"""
+        """Re-score a persisted rollout under monitor semantics. [bold]Not yet implemented (#386).[/bold]"""
         del trajectory_path, jobs_dir  # accepted for API stability
         _monitor_not_implemented()
 
@@ -90,6 +90,6 @@ def register_monitor(app: typer.Typer) -> None:
         ],
         jobs_dir: MonitorJobsDirOption = "jobs/monitor",
     ) -> None:
-        """Stream-score live production events. **Not yet implemented (#386).**"""
+        """Stream-score live production events. [bold]Not yet implemented (#386).[/bold]"""
         del source, jobs_dir  # accepted for API stability
         _monitor_not_implemented()

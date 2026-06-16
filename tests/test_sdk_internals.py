@@ -427,6 +427,7 @@ class TestWriteConfig:
             f"missing keys: {expected_keys - data.keys()}"
         )
         assert data["agent"] == "claude-agent-acp"
+        assert data["task_path"] == "foo"
         assert data["model"] == "claude-haiku-4-5-20251001"
         assert data["environment"] == "docker"
         assert data["skill_mode"] == "no-skill"
@@ -527,7 +528,7 @@ class TestWriteConfig:
         assert recorded["SAFE_VAR"] == "visible"
 
     def test_config_json_includes_source_provenance(self, tmp_path):
-        """Guards v0.5-integration@cb8759e against unaudited rollout config."""
+        """Guards PR #779: config artifacts keep portable source provenance."""
         source = {
             "type": "github",
             "repo": "acme/benchmarks",
@@ -557,7 +558,11 @@ class TestWriteConfig:
         )
 
         data = json.loads((tmp_path / "config.json").read_text())
-        assert data["source"] == source
+        assert data["task_path"] == "datasets/programbench/tasks/task-a"
+        assert data["source"] == {
+            key: value for key, value in source.items() if key != "local_path"
+        }
+        assert "/cache/acme" not in (tmp_path / "config.json").read_text()
 
     def test_config_json_records_agent_idle_timeout(self, tmp_path):
         """Guards v0.5-integration@219906c against unaudited ACP hang budgets."""
@@ -821,7 +826,7 @@ class TestBuildResult:
         assert "role-secret-value" not in text
 
     def test_result_json_includes_source_provenance(self, tmp_path):
-        """Guards v0.5-integration@cb8759e against split provenance artifacts."""
+        """Guards PR #779: result artifacts keep portable source provenance."""
         source = {
             "type": "github",
             "repo": "acme/benchmarks",
@@ -840,7 +845,10 @@ class TestBuildResult:
         result = self._build(tmp_path, source_provenance=source)
 
         data = json.loads((tmp_path / "result.json").read_text())
-        assert data["source"] == source
+        assert data["source"] == {
+            key: value for key, value in source.items() if key != "local_path"
+        }
+        assert "/cache/acme" not in (tmp_path / "result.json").read_text()
         assert result.source_provenance == source
 
     def test_timing_json_written(self, tmp_path):

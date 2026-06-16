@@ -310,6 +310,7 @@ def test_self_gen_mode_uses_custom_creator_skill_name(tmp_path: Path) -> None:
         Path("tasks/fake"),
         "/app/generated-skills",
         skill_name,
+        ["solve the fake task"],
     )
 
     assert resolved_root == skills_root

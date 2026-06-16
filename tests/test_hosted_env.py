@@ -45,6 +45,28 @@ def test_hosted_env_ref_accepts_provider_prefix_without_owner():
     assert ref.verifiers_env_id == "general-agent"
 
 
+def test_hosted_env_ref_keeps_openreward_identity():
+    """Guards the #701 rebuild: OpenReward refs are not parsed as Prime owners."""
+    ref = HostedEnvRef.parse("openreward:GeneralReasoning/KellyBench")
+
+    assert ref.provider == "openreward"
+    assert ref.owner == "GeneralReasoning"
+    assert ref.name == "KellyBench"
+    assert ref.env_id == "GeneralReasoning/KellyBench"
+    assert ref.env_uid == "openreward:GeneralReasoning/KellyBench@latest"
+    assert ref.hub_url == "https://openreward.ai/GeneralReasoning/KellyBench"
+
+
+def test_hosted_env_ref_rejects_openreward_slash_without_provider_prefix():
+    """Guards #701 against silently routing OpenReward refs to PrimeIntellect."""
+    try:
+        HostedEnvRef.parse("openreward/KellyBench")
+    except HostedEnvError as exc:
+        assert "Use the explicit form openreward:owner/name" in str(exc)
+    else:
+        raise AssertionError("expected HostedEnvError")
+
+
 def test_hosted_env_ref_rejects_extra_colons():
     try:
         HostedEnvRef.parse("primeintellect:general-agent:bad")
@@ -131,6 +153,23 @@ def test_run_hosted_env_uses_controlled_verifiers_venv(tmp_path, monkeypatch):
     assert payload["source"]["env_uid"] == (
         "primeintellect:primeintellect/general-agent@0.1.1"
     )
+
+
+def test_run_hosted_env_rejects_openreward_until_driver_lands(tmp_path):
+    """OpenReward identity is supported before the #701 runtime driver lands."""
+    config = HostedEnvRunConfig(
+        source_env=HostedEnvRef.parse("openreward:GeneralReasoning/KellyBench"),
+        model="gpt-5.4-mini",
+        jobs_dir=tmp_path,
+    )
+
+    try:
+        run_hosted_env(config)
+    except HostedEnvError as exc:
+        assert "recognized but not executable" in str(exc)
+        assert "OpenReward driver" in str(exc)
+    else:
+        raise AssertionError("expected HostedEnvError")
 
 
 def test_run_hosted_env_uses_unique_collision_safe_run_dirs(tmp_path, monkeypatch):

@@ -1,4 +1,4 @@
-"""``bench skills`` — skill discovery, installation, and evaluation.
+"""``bench skills`` — skill discovery and evaluation.
 
 Registered onto the top-level app by :func:`register_skills`; ``cli/main.py``
 only wires the call.
@@ -7,10 +7,12 @@ only wires the call.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from benchflow.cli._options import (
@@ -18,13 +20,14 @@ from benchflow.cli._options import (
     JobsDirOption,
     SandboxOption,
 )
-from benchflow.cli._shared import console
+from benchflow.cli._shared import console, print_error
+from benchflow.sandbox.providers import is_known_provider, providers_phrase
 
 
 def register_skills(app: typer.Typer) -> None:
     """Attach the ``skills`` command group to the top-level benchflow app."""
-    skills_app = typer.Typer(help="Skill discovery, installation, and evaluation.")
-    app.add_typer(skills_app, name="skills")
+    skills_app = typer.Typer(help="Skill discovery and evaluation.")
+    app.add_typer(skills_app, name="skills", rich_help_panel="Core")
 
     @skills_app.command("list")
     def skills_list(
@@ -44,7 +47,7 @@ def register_skills(app: typer.Typer) -> None:
         found = discover_skills(*search_dirs)
         if not found:
             console.print(
-                "No skills found. Install with: benchflow skills install owner/repo@skill-name"
+                "No skills found. Add skill directories under .claude/skills/ or skills/."
             )
             return
 
@@ -55,31 +58,17 @@ def register_skills(app: typer.Typer) -> None:
         table.add_column("Path", style="dim")
 
         for s in found:
-            table.add_row(s.name, s.version or "-", s.description[:60], str(s.path))
+            # escape(): SKILL.md metadata is author/third-party controlled (e.g.
+            # a description mentioning "[/INST]") and would otherwise raise a Rich
+            # MarkupError that crashes the listing — matching `skills eval`.
+            table.add_row(
+                escape(s.name),
+                escape(s.version or "-"),
+                escape(s.description[:60]),
+                escape(str(s.path)),
+            )
 
         console.print(table)
-
-    @skills_app.command("install", hidden=True, deprecated=True)
-    def skills_install(
-        spec: Annotated[
-            str,
-            typer.Argument(help="Skill spec (e.g. anthropics/skills@find-skills)"),
-        ],
-        directory: Annotated[
-            Path | None,
-            typer.Option("--dir", help="Target directory"),
-        ] = None,
-    ) -> None:
-        """Install a skill from the registry."""
-        from benchflow.skills import DEFAULT_SKILLS_DIR, install_skill
-
-        target = directory or DEFAULT_SKILLS_DIR
-        result = install_skill(spec, target_dir=target)
-        if result:
-            console.print(f"[green]Installed:[/green] {result}")
-        else:
-            console.print(f"[red]Failed to install {spec}[/red]")
-            raise typer.Exit(1)
 
     @skills_app.command("eval")
     def skills_eval(
@@ -119,18 +108,38 @@ def register_skills(app: typer.Typer) -> None:
         """
         from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
+        if not is_known_provider(environment):
+            print_error(
+                f"Invalid --sandbox {environment!r}: choose {providers_phrase()}"
+            )
+            raise typer.Exit(1)
         if agent is None:
             agent = ["claude-agent-acp"]
+        if model is not None and len(model) not in {1, len(agent)}:
+            print_error(
+                "--model may be provided once for all agents or once per --agent; "
+                f"got {len(model)} models for {len(agent)} agents"
+            )
+            raise typer.Exit(1)
         if not (skill_dir / "evals" / "evals.json").exists():
-            console.print(
-                f"[red]No evals/evals.json found in {skill_dir}[/red]\n"
-                f"Create one with test cases. See: benchflow skills eval --help"
+            print_error(
+                f"No evals/evals.json found in {skill_dir}\n"
+                "Create one with test cases. See: benchflow skills eval --help"
             )
             raise typer.Exit(1)
 
-        evaluator = SkillEvaluator(skill_dir)
+        try:
+            evaluator = SkillEvaluator(skill_dir)
+        except (
+            json.JSONDecodeError,
+            ValueError,
+            FileNotFoundError,
+            NotADirectoryError,
+        ) as e:
+            print_error(f"{e}")
+            raise typer.Exit(1) from None
         console.print(
-            f"[bold]Skill eval:[/bold] {evaluator.dataset.skill_name} "
+            f"[bold]Skill eval:[/bold] {escape(str(evaluator.dataset.skill_name))} "
             f"({len(evaluator.dataset.cases)} cases)"
         )
         console.print(f"  Agents: {', '.join(agent)}")
@@ -138,16 +147,25 @@ def register_skills(app: typer.Typer) -> None:
         if no_baseline:
             console.print("  [dim]Baseline skipped (--no-baseline)[/dim]")
 
-        result = asyncio.run(
-            evaluator.run(
-                agents=agent,
-                models=model,
-                environment=environment,
-                jobs_dir=jobs_dir,
-                no_baseline=no_baseline,
-                concurrency=concurrency,
+        try:
+            result = asyncio.run(
+                evaluator.run(
+                    agents=agent,
+                    models=model,
+                    environment=environment,
+                    jobs_dir=jobs_dir,
+                    no_baseline=no_baseline,
+                    concurrency=concurrency,
+                )
             )
-        )
+        except (
+            json.JSONDecodeError,
+            ValueError,
+            FileNotFoundError,
+            NotADirectoryError,
+        ) as e:
+            print_error(f"{e}")
+            raise typer.Exit(1) from None
 
         # Display results
         table = Table(title=f"Skill Eval: {result.skill_name}")
@@ -170,4 +188,17 @@ def register_skills(app: typer.Typer) -> None:
                 evaluator.dataset,
                 output_dir=f"{jobs_dir}/skill-eval/{result.skill_name}/gepa",
             )
-            console.print(f"[green]GEPA traces exported to {gepa_dir}[/green]")
+            console.print(
+                f"[green]GEPA traces exported to {escape(str(gepa_dir))}[/green]"
+            )
+
+        # Match `eval create`'s _exit_if_evaluation_had_errors: a run with any
+        # errored case is a failure for CI/scripting — exit non-zero so a
+        # 100%-error run (e.g. missing credentials) is not reported as success.
+        errored = sum(1 for c in result.case_results if c.error)
+        if errored:
+            print_error(
+                f"{errored}/{len(result.case_results)} eval case(s) errored — "
+                "the eval did not complete cleanly."
+            )
+            raise typer.Exit(1)

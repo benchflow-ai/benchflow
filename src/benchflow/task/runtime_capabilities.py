@@ -12,9 +12,10 @@ import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import cast
 
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
+from benchflow.sandbox.providers import SANDBOX_PROVIDER_SET, providers_phrase
 from benchflow.task.config import (
     NetworkMode,
     TaskConfig,
@@ -30,8 +31,9 @@ from benchflow.task.prompts import (
 )
 from benchflow.task.verifier_document import load_verifier_document
 
-SandboxBackend = Literal["docker", "daytona", "modal"]
-SUPPORTED_SANDBOX_BACKENDS = {"docker", "daytona", "modal"}
+# Back-compat name kept for this module's existing membership check; the
+# canonical set lives in benchflow.sandbox.providers.
+SUPPORTED_SANDBOX_BACKENDS = SANDBOX_PROVIDER_SET
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,7 @@ def validate_task_runtime_support(
         _issue(
             unsupported,
             path="sandbox",
-            reason="unknown sandbox backend; use docker, daytona, or modal",
+            reason=f"unknown sandbox backend; use {providers_phrase()}",
             sandbox=sandbox,
         )
         return unsupported

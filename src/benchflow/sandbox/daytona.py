@@ -19,7 +19,7 @@ from uuid import uuid4
 try:
     from tenacity import (
         retry,
-        retry_if_exception_type,
+        retry_if_exception,
         stop_after_attempt,
         wait_exponential,
     )
@@ -34,13 +34,13 @@ except ImportError:  # base install without ``sandbox-daytona`` extras (#358)
 
         return _decorator
 
+    def retry_if_exception(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
     def stop_after_attempt(*_args: Any, **_kwargs: Any) -> Any:
         return None
 
     def wait_exponential(*_args: Any, **_kwargs: Any) -> Any:
-        return None
-
-    def retry_if_exception_type(*_args: Any, **_kwargs: Any) -> Any:
         return None
 
 
@@ -222,16 +222,44 @@ _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
 # (``None``, or a non-positive value — both previously meant "no deadline");
 # an explicit positive ``timeout_sec`` is honored byte-for-byte as before.
 _DAYTONA_EXEC_HARD_CAP_SEC = 3600
+_DAYTONA_TRANSIENT_RETRY_CLASS_NAMES = frozenset(
+    {
+        "DaytonaConnectionError",
+        "DaytonaRateLimitError",
+        "DaytonaTimeoutError",
+    }
+)
+
+
+def _is_daytona_transient_retry_error(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    exc_type = type(exc)
+    return (
+        exc_type.__module__.startswith("daytona.")
+        and exc_type.__name__ in _DAYTONA_TRANSIENT_RETRY_CLASS_NAMES
+    )
+
+
+_DAYTONA_TRANSIENT_RETRY: Any = retry_if_exception(_is_daytona_transient_retry_error)
+
+# Retry-attempt budgets for transient Daytona failures, named here so the
+# repeated ``3`` cannot silently drift between the idempotent-SDK policy and
+# sandbox creation (#532). ``_stop_sandbox`` deliberately uses a smaller budget.
+_DAYTONA_RETRY_ATTEMPTS = 3
+_DAYTONA_STOP_RETRY_ATTEMPTS = 2
 
 # Shared tenacity policy for the idempotent Daytona SDK calls — session-command
 # polling and filesystem up/download. Three attempts with exponential backoff,
 # re-raising the final failure. ``_create_sandbox`` and ``_stop_sandbox`` keep
-# their own policies (different attempt counts and backoff bounds), so they are
-# intentionally not folded in here. Reusing one ``retry(...)`` decorator across
-# methods is safe: tenacity builds a fresh controller per decorated function.
+# their own policies (different backoff bounds, and ``_stop_sandbox`` a smaller
+# attempt budget), so they are intentionally not folded in here. Reusing one
+# ``retry(...)`` decorator across methods is safe: tenacity builds a fresh
+# controller per decorated function.
 _SDK_RETRY = retry(
-    stop=stop_after_attempt(3),
+    stop=stop_after_attempt(_DAYTONA_RETRY_ATTEMPTS),
     wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=_DAYTONA_TRANSIENT_RETRY,
     reraise=True,
 )
 
@@ -407,8 +435,9 @@ class DaytonaSandbox(BaseSandbox):
         persist_sandbox_info(self, self.rollout_paths.rollout_dir)
 
     @retry(
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(_DAYTONA_RETRY_ATTEMPTS),
         wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=_DAYTONA_TRANSIENT_RETRY,
         reraise=True,
     )
     async def _create_sandbox(
@@ -466,8 +495,9 @@ class DaytonaSandbox(BaseSandbox):
             raise
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(_DAYTONA_STOP_RETRY_ATTEMPTS),
         wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=_DAYTONA_TRANSIENT_RETRY,
         reraise=True,
     )
     async def _stop_sandbox(self) -> None:

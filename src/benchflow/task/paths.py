@@ -64,14 +64,6 @@ class TaskPaths:
         return self.task_dir / self.DOCUMENT_FILENAME
 
     @property
-    def readme_path(self) -> Path:
-        return self.task_dir / "README.md"
-
-    @property
-    def gitignore_path(self) -> Path:
-        return self.task_dir / ".gitignore"
-
-    @property
     def config_path(self) -> Path:
         return self.task_dir / self.CONFIG_FILENAME
 
@@ -122,10 +114,6 @@ class TaskPaths:
     @property
     def test_path(self) -> Path:
         return self.tests_dir / "test.sh"
-
-    @property
-    def verifier_document_path(self) -> Path:
-        return self.tests_dir / "verifier.md"
 
     def has_verifier_entrypoint(self) -> bool:
         """Return whether the selected verifier package has something runnable.
@@ -353,10 +341,6 @@ class RolloutPaths:
         return self.rollout_dir / "artifacts"
 
     @property
-    def artifacts_manifest_path(self) -> Path:
-        return self.artifacts_dir / "manifest.json"
-
-    @property
     def verifier_dir(self) -> Path:
         return self.rollout_dir / "verifier"
 
@@ -383,18 +367,6 @@ class RolloutPaths:
     @property
     def reward_kit_manifest_path(self) -> Path:
         return self.verifier_dir / "reward-kit-manifest.json"
-
-    @property
-    def result_path(self) -> Path:
-        return self.rollout_dir / "result.json"
-
-    @property
-    def exception_message_path(self) -> Path:
-        return self.rollout_dir / "exception.txt"
-
-    @property
-    def log_path(self) -> Path:
-        return self.rollout_dir / "rollout.log"
 
 
 @dataclass(frozen=True)

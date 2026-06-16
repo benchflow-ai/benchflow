@@ -12,15 +12,17 @@ from pathlib import Path
 from typing import Annotated, Literal, cast
 
 import typer
+from rich.markup import escape
 
-from benchflow.cli._shared import console
+from benchflow.cli._shared import console, err_console, print_error
 from benchflow.cli.trace_import import register_tasks_generate
+from benchflow.sandbox.providers import providers_phrase
 
 
 def register_tasks(app: typer.Typer) -> None:
     """Attach the ``tasks`` command group to the top-level benchflow app."""
     tasks_app = typer.Typer(help="Task authoring commands")
-    app.add_typer(tasks_app, name="tasks")
+    app.add_typer(tasks_app, name="tasks", rich_help_panel="Core")
 
     register_tasks_generate(tasks_app)
 
@@ -43,13 +45,28 @@ def register_tasks(app: typer.Typer) -> None:
             ),
         ] = False,
         task_format: Annotated[
-            str, typer.Option("--format", help="Task format: legacy or task-md")
+            str,
+            typer.Option(
+                "--format",
+                help=(
+                    "Task format. New tasks use task-md; legacy scaffolding is "
+                    "retired in v0.6.2."
+                ),
+            ),
         ] = "task-md",
     ) -> None:
         """Scaffold a new benchmark task."""
         from benchflow._utils.task_authoring import scaffold_task
 
         try:
+            if task_format == "legacy":
+                print_error(
+                    "bench tasks init no longer scaffolds the legacy split layout. "
+                    "Use `bench tasks init <name>` for native task.md packages, or "
+                    "`bench tasks migrate <dir> --remove-legacy` for existing split tasks."
+                )
+                raise typer.Exit(1)
+
             result = scaffold_task(
                 name,
                 parent_dir=parent_dir,
@@ -57,15 +74,20 @@ def register_tasks(app: typer.Typer) -> None:
                 no_oracle=no_oracle,
                 task_format=cast(Literal["legacy", "task-md"], task_format),
             )
-            console.print(f"[green]Created:[/green] {result.task_dir}/")
+            console.print(f"[green]Created:[/green] {escape(str(result.task_dir))}/")
             # List every file actually written, derived from the scaffold itself
             # so the summary can never under-report (e.g. omit
             # verifier/test_outputs.py or verifier/rubrics/verifier.toml, both of
             # which `bench tasks check` validates).
             for rel in result.files:
                 console.print(f"  {rel}")
-        except (FileExistsError, ValueError) as e:
-            console.print(f"[red]{e}[/red]")
+        except (OSError, ValueError) as e:
+            # OSError covers FileExistsError plus the NotADirectoryError /
+            # PermissionError that mkdir() raises for `--dir <file>` or a
+            # read-only parent — siblings (migrate/normalize/export) already
+            # degrade gracefully; init was the outlier that dumped a traceback.
+            # escape(): the OSError message echoes the user-supplied path.
+            print_error(str(e))
             raise typer.Exit(1) from None
 
     @tasks_app.command("check")
@@ -92,7 +114,7 @@ def register_tasks(app: typer.Typer) -> None:
             str | None,
             typer.Option(
                 "--sandbox",
-                help="Also validate parsed runtime semantics for docker, daytona, or modal",
+                help=f"Also validate parsed runtime semantics for {providers_phrase()}",
             ),
         ] = None,
         report_output: Annotated[
@@ -118,8 +140,6 @@ def register_tasks(app: typer.Typer) -> None:
         ] = False,
     ) -> None:
         """Validate a task directory structure."""
-        from rich.markup import escape
-
         from benchflow._utils.task_authoring import check_task
 
         issues = check_task(
@@ -131,10 +151,12 @@ def register_tasks(app: typer.Typer) -> None:
         )
         if not issues:
             console.print(
-                f"[green]✓[/green] {task_dir.name} — valid ({validation_level})"
+                f"[green]✓[/green] {escape(task_dir.name)} — valid ({validation_level})"
             )
         else:
-            console.print(f"[red]✗[/red] {task_dir.name} — {len(issues)} issue(s):")
+            console.print(
+                f"[red]✗[/red] {escape(task_dir.name)} — {len(issues)} issue(s):"
+            )
             for issue in issues:
                 # Escape Rich markup so literal section names like "[agent]"
                 # render verbatim instead of being parsed as styling (#379).
@@ -174,7 +196,7 @@ def register_tasks(app: typer.Typer) -> None:
             NotADirectoryError,
             ValueError,
         ) as e:
-            console.print(f"[red]{e}[/red]")
+            print_error(f"{e}")
             raise typer.Exit(1) from None
 
         console.print(f"[green]Created:[/green] {result.task_md}")
@@ -210,7 +232,7 @@ def register_tasks(app: typer.Typer) -> None:
         try:
             result = normalize_task_md(task_dir, output_path=output, write=write)
         except (FileNotFoundError, NotADirectoryError, ValueError) as e:
-            console.print(f"[red]{e}[/red]")
+            print_error(f"{e}")
             raise typer.Exit(1) from None
 
         if result.output_path is None:
@@ -229,7 +251,7 @@ def register_tasks(app: typer.Typer) -> None:
         ] = None,
         target: Annotated[
             str,
-            typer.Option("--target", help="Compatibility target: harbor or pier"),
+            typer.Option("--target", help="Compatibility target: harbor"),
         ] = "harbor",
         overwrite: Annotated[
             bool,
@@ -243,21 +265,21 @@ def register_tasks(app: typer.Typer) -> None:
             ),
         ] = False,
     ) -> None:
-        """Export a task to a Harbor/Pier split layout with a loss report."""
+        """Export a task to a compatibility split layout with a loss report."""
         from benchflow.task import (
             build_compatibility_export_report,
             export_task_to_split_layout,
         )
 
-        if target not in {"harbor", "pier"}:
-            console.print("[red]target must be 'harbor' or 'pier'[/red]")
+        if target != "harbor":
+            print_error("target must be 'harbor'")
             raise typer.Exit(1)
 
         try:
             if report_only:
                 report = build_compatibility_export_report(
                     task_dir,
-                    target=cast(Literal["harbor", "pier"], target),
+                    target=cast(Literal["harbor"], target),
                 )
                 typer.echo(report.to_json(), nl=False)
                 return
@@ -269,7 +291,7 @@ def register_tasks(app: typer.Typer) -> None:
             report = export_task_to_split_layout(
                 task_dir,
                 output_dir,
-                target=cast(Literal["harbor", "pier"], target),
+                target=cast(Literal["harbor"], target),
                 overwrite=overwrite,
             )
         except (
@@ -278,10 +300,10 @@ def register_tasks(app: typer.Typer) -> None:
             NotADirectoryError,
             ValueError,
         ) as e:
-            console.print(f"[red]{e}[/red]")
+            print_error(f"{e}")
             raise typer.Exit(1) from None
 
-        console.print(f"[green]Exported:[/green] {output_dir}")
+        console.print(f"[green]Exported:[/green] {escape(str(output_dir))}")
         console.print(f"  target: {report.target}")
         console.print(f"  status: {report.status}")
         console.print(f"  losses: {len(report.losses)}")
@@ -311,21 +333,36 @@ def register_tasks(app: typer.Typer) -> None:
             return (p / "task.toml").is_file() or (p / "task.md").is_file()
 
         if not path.is_dir():
-            console.print(f"[red]Not a directory: {path}[/red]")
+            print_error(f"Not a directory: {path}")
             raise typer.Exit(1)
 
         if _is_task_dir(path):
             # typer.echo, not console.print: Rich wraps lines at terminal width,
             # which would corrupt piped machine-readable output.
-            typer.echo(task_digest(path))
+            try:
+                digest = task_digest(path)
+            except OSError as e:
+                # An unreadable file (permissions) otherwise dumps a raw traceback.
+                print_error(f"Cannot read task files under {path}: {e}")
+                raise typer.Exit(1) from None
+            typer.echo(digest)
             return
 
         task_dirs = sorted(d for d in path.iterdir() if d.is_dir() and _is_task_dir(d))
         if not task_dirs:
-            console.print(
-                f"[red]No tasks under {path} — expected task.toml or task.md "
-                f"in it or in its immediate subdirectories[/red]"
+            print_error(
+                f"No tasks under {path} — expected task.toml or task.md "
+                "in it or in its immediate subdirectories"
             )
             raise typer.Exit(1)
         for task_dir in task_dirs:
-            typer.echo(f"{task_dir.name} {task_digest(task_dir)}")
+            # Batch: warn-and-skip an unreadable task (to stderr so the digest
+            # lines on stdout stay machine-readable) instead of aborting the run.
+            try:
+                digest = task_digest(task_dir)
+            except OSError as e:
+                err_console.print(
+                    f"[yellow]Skipping[/yellow] {escape(task_dir.name)}: {escape(str(e))}"
+                )
+                continue
+            typer.echo(f"{task_dir.name} {digest}")

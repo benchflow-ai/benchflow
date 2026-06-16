@@ -29,7 +29,7 @@ from benchflow.agents.registry import (
     _js_agent_install,
 )
 
-VALID_AGENT_PROTOCOLS = {"acp", "cli"}
+VALID_AGENT_PROTOCOLS = {"acp", "cli", "session-factory"}
 # Empty api_protocol is valid for agents (they infer from the model name at
 # runtime); providers must always declare an explicit protocol.
 VALID_API_PROTOCOLS = {
@@ -128,7 +128,14 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
     launch_cmd = AGENTS[name].launch_cmd
 
     assert "/opt/benchflow/node" in install_cmd
-    assert "BF_NODE_VERSION=22.14.0" in install_cmd
+    # Node >=22.19 is required by current openclaw (JS agents install @latest);
+    # assert the floor, not a brittle exact pin (BF-10).
+    pin = re.search(r"BF_NODE_VERSION=(\d+)\.(\d+)\.\d+", install_cmd)
+    assert pin, "BF_NODE_VERSION pin missing from JS agent bootstrap"
+    major, minor = int(pin.group(1)), int(pin.group(2))
+    assert (major, minor) >= (22, 19), (
+        f"pinned node {pin.group(0)} is below openclaw's >=22.19 floor"
+    )
     assert "/opt/benchflow/js-agents" in install_cmd
     assert "/opt/benchflow/bin" in install_cmd
     assert "--prefix /opt/benchflow/js-agents" in install_cmd
@@ -444,6 +451,7 @@ def test_provider_model_prefixes_unique_and_resolvable():
         ("azure-foundry-openai/gpt-5.5", "azure-foundry-openai"),
         ("azure-foundry-anthropic/claude-opus-4-5", "azure-foundry-anthropic"),
         ("aws-bedrock/openai.gpt-oss-20b-1:0", "aws-bedrock"),
+        ("github-models/openai/gpt-4.1-mini", "github-models"),
         ("zai/glm-5", "zai"),
         ("vllm/local-model", "vllm"),
         ("kimi/kimi-k2.6", "kimi"),

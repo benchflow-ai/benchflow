@@ -69,6 +69,7 @@ scenes:
 
 ```python
 from pathlib import Path
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -146,6 +147,7 @@ For stronger isolation, use the MCP reviewer server pattern. The reviewer runs a
 from pathlib import Path
 
 from benchflow.experimental.mcp.hooks import mcp_reviewer_hook
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -168,7 +170,7 @@ The MCP reviewer server (`benchflow.experimental.mcp.reviewer_server`) runs as a
 
 ### Results
 
-Use `experiments/reviewer_ablation.py` to compare reviewer variants on your task set. The experiment template covers three conditions:
+Compare reviewer variants on your task set across three conditions:
 
 | Condition | Description |
 |-----------|-------------|
@@ -226,6 +228,7 @@ scenes:
 
 ```python
 from pathlib import Path
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -287,6 +290,7 @@ scenes:
 
 ```python
 from pathlib import Path
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -357,6 +361,7 @@ scenes:
 
 ```python
 from pathlib import Path
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 
 config = RolloutConfig(
@@ -401,6 +406,7 @@ Tasks that require agents to interact with live services -- Gmail, Calendar, Doc
 
 ```python
 from pathlib import Path
+import benchflow as bf
 from benchflow.rollout import RolloutConfig, Scene, Role, Turn
 from benchflow import SERVICES, build_service_hooks
 
@@ -441,16 +447,14 @@ Each service:
 
 ```
 tasks/schedule-meeting-from-email/
-├── task.toml
-├── instruction.md          # "Read the email from Alice, create a calendar event..."
+├── task.md                 # YAML frontmatter + task prompt body
 ├── environment/
 │   ├── Dockerfile          # FROM benchflow/claws-base (has all claw-* binaries)
 │   ├── gmail.db            # Pre-seeded: email from Alice with meeting request
 │   └── gcal.db             # Pre-seeded: existing calendar entries
-├── solution/
+├── oracle/
 │   └── solve.sh            # Oracle: curl commands to Gmail + GCal APIs
-└── tests/
+└── verifier/
     └── test.sh             # Verify: check gcal.db has the new event
 ```
-
 

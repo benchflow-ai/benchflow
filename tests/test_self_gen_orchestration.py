@@ -18,6 +18,7 @@ from benchflow.rollout import (
 )
 from benchflow.runtime import run as runtime_run
 from benchflow.sdk import SDK
+from benchflow.self_gen import run_self_gen
 
 
 def _make_task(tmp_path: Path) -> Path:
@@ -28,6 +29,14 @@ def _make_task(tmp_path: Path) -> Path:
     task_skills = task / "environment" / "skills" / "task-bundled"
     task_skills.mkdir(parents=True)
     (task_skills / "SKILL.md").write_text("# Task bundled\n")
+    return task
+
+
+def _make_task_with_workdir(tmp_path: Path, workdir: str) -> Path:
+    task = _make_task(tmp_path)
+    (task / "task.toml").write_text(
+        f'schema_version = "1.1"\n\n[environment]\nworkdir = "{workdir}"\n'
+    )
     return task
 
 
@@ -148,11 +157,11 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
     await trial_cfg.pre_agent_hooks[0](FakeEnv())
     assert env_commands == [
         (
-            "mkdir -p /app/generated-skills && chmod 777 /app/generated-skills",
+            "mkdir -p /root/generated-skills && chmod 777 /root/generated-skills",
             {"timeout_sec": 10},
         )
     ]
-    assert all("/root/generated-skills" not in cmd for cmd, _ in env_commands)
+    assert all("/home/worker/generated-skills" not in cmd for cmd, _ in env_commands)
     assert all("/root/skills" not in cmd for cmd, _ in env_commands)
     assert all("/app/workspace/generated-skills" not in cmd for cmd, _ in env_commands)
 
@@ -167,12 +176,16 @@ async def test_sdk_self_gen_runs_creator_then_solver_in_one_trial_with_isolated_
     assert _skill_dir_names(Path(creator_scene.skills_dir)) == {"skill-creator"}
     assert creator_scene.turns[0].prompt is not None
     assert "skill-creator" in creator_scene.turns[0].prompt
-    assert "/instruction.md" in creator_scene.turns[0].prompt
+    assert "solve the task" in creator_scene.turns[0].prompt
+    assert "instruction.md" not in creator_scene.turns[0].prompt
+    assert "task.md" not in creator_scene.turns[0].prompt
+    assert "/instruction.md" not in creator_scene.turns[0].prompt
     assert "/app/instruction.md" not in creator_scene.turns[0].prompt
+    assert "/root/generated-skills" in creator_scene.turns[0].prompt
     assert str(original_skills) not in creator_scene.turns[0].prompt
 
     assert solver_scene.name == "self-gen-solver"
-    assert solver_scene.skills_dir == "/app/generated-skills"
+    assert solver_scene.skills_dir == "/root/generated-skills"
     assert solver_scene.turns[0].prompt is None
 
 
@@ -283,11 +296,51 @@ async def test_job_self_gen_uses_strict_orchestration(
     assert seen_configs[0].artifact_skill_mode == SKILL_MODE_SELF_GEN
     assert seen_configs[0].skills_dir is None
     assert len(seen_configs[0].pre_agent_hooks or []) == 1
+    assert seen_configs[0].generated_skills_root == "/root/generated-skills"
     assert [scene.name for scene in seen_configs[0].scenes] == [
         "self-gen-creator",
         "self-gen-solver",
     ]
-    assert seen_configs[0].scenes[1].skills_dir == "/app/generated-skills"
+    assert seen_configs[0].scenes[1].skills_dir == "/root/generated-skills"
+
+
+@pytest.mark.asyncio
+async def test_self_gen_default_root_uses_declared_task_workdir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Guards #533: generated skills stay inside the ACP workspace allowlist."""
+    task = _make_task_with_workdir(tmp_path, "/workspace")
+    skill_creator_root = _make_skill_creator_root(tmp_path)
+    seen_configs = []
+
+    class FakeTrial:
+        def __init__(self, config):
+            self._config = config
+
+        @classmethod
+        async def create(cls, config):
+            seen_configs.append(config)
+            return cls(config)
+
+        async def run(self):
+            return RunResult(task_name="task", rewards={"reward": 1.0})
+
+    monkeypatch.setattr("benchflow.self_gen.Rollout", FakeTrial)
+
+    await SDK().run(
+        task_path=task,
+        agent="opencode",
+        model="google/gemini-3.1-pro-preview",
+        jobs_dir=tmp_path / "jobs",
+        environment="daytona",
+        skill_mode="self-gen",
+        skill_creator_dir=skill_creator_root,
+    )
+
+    assert seen_configs[0].generated_skills_root == "/workspace/generated-skills"
+    assert seen_configs[0].scenes[0].turns[0].prompt is not None
+    assert "/workspace/generated-skills" in seen_configs[0].scenes[0].turns[0].prompt
+    assert seen_configs[0].scenes[1].skills_dir == "/workspace/generated-skills"
 
 
 @pytest.mark.asyncio
@@ -315,6 +368,24 @@ async def test_runtime_trial_config_self_gen_routes_to_orchestrator(
 
     assert result is expected
     assert captured["config"] is config
+
+
+@pytest.mark.asyncio
+async def test_self_gen_rejects_unsafe_generated_skills_root(tmp_path: Path) -> None:
+    """Guards #533/#427: self-gen generated-skill roots stay sandbox-local."""
+    task = _make_task(tmp_path)
+    skill_creator_root = _make_skill_creator_root(tmp_path)
+    config = RolloutConfig.from_legacy(
+        task_path=task,
+        agent="opencode",
+        model="google/gemini-3.1-pro-preview",
+        skill_mode="self-gen",
+        skill_creator_dir=skill_creator_root,
+        generated_skills_root="/tmp/../generated-skills",
+    )
+
+    with pytest.raises(ValueError, match="generated_skills_root"):
+        await run_self_gen(config)
 
 
 @pytest.mark.asyncio

@@ -18,7 +18,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.scoring import pass_rate, pass_rate_excl_errors
 from benchflow.evaluation import Evaluation, EvaluationConfig, EvaluationResult
+from benchflow.loop_strategies import LoopStrategySpec
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,16 @@ def _config_payload(
     shard: EvalShard,
     environment_manifest_path: Path | None,
 ) -> dict[str, Any]:
+    if config.loop_strategy is not None and not isinstance(
+        config.loop_strategy, LoopStrategySpec
+    ):
+        # EvaluationConfig.__post_init__ parses spec strings; anything else
+        # here means the config bypassed validation — fail loudly rather
+        # than silently dropping the strategy from the worker payload.
+        raise TypeError(
+            "EvaluationConfig.loop_strategy must be a parsed LoopStrategySpec "
+            f"by sharding time, got {type(config.loop_strategy).__name__}"
+        )
     payload = {
         "agent": config.agent,
         "model": config.model,
@@ -129,6 +141,9 @@ def _config_payload(
             str(environment_manifest_path) if environment_manifest_path else None
         ),
         "config_override": config.config_override,
+        "loop_strategy": (
+            config.loop_strategy.to_mapping() if config.loop_strategy else None
+        ),
     }
     payload.update(config.usage_tracking.to_mapping())
     return payload
@@ -253,7 +268,12 @@ def _aggregate_result(
         "errored": result.errored,
         "verifier_errored": result.verifier_errored,
         "score": result.score,
+        "score_ratio": pass_rate(passed=result.passed, total=result.total),
         "score_excl_errors": result.score_excl_errors,
+        "score_excl_errors_ratio": pass_rate_excl_errors(
+            passed=result.passed,
+            failed=result.failed,
+        ),
         "elapsed_sec": result.elapsed_sec,
         "concurrency": plan.total_concurrency,
         "worker_concurrency": plan.worker_concurrency,

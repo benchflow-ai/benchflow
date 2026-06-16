@@ -38,7 +38,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -57,19 +57,6 @@ _SECRET_PATTERNS = (
     re.compile(r"AQ\.[A-Za-z0-9_\-]{16,}"),  # Google/Gemini AQ. keys
     re.compile(r"AKIA[0-9A-Z]{12,}"),  # AWS access key ids
 )
-
-
-@dataclass(frozen=True)
-class ScenarioResult:
-    """The outcome of one integration scenario."""
-
-    name: str
-    passed: bool
-    detail: str
-    evidence: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 # ------------------------------------------------------------------

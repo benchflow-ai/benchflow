@@ -11,7 +11,6 @@ SOURCE_REQUIRED = {
     "requested_ref",
     "resolved_sha",
     "path",
-    "local_path",
     "dirty",
     "file_hashes",
 }
@@ -64,6 +63,11 @@ def source_issues(
     elif require_clean and dirty:
         issues.append(f"{label}: source.dirty must be false for validation evidence")
     file_hashes = source_dict.get("file_hashes")
+    local_path = source_dict.get("local_path")
+    if "local_path" in source_dict and (
+        not isinstance(local_path, str) or not local_path
+    ):
+        issues.append(f"{label}: source.local_path must be a string")
     if not isinstance(file_hashes, dict):
         issues.append(f"{label}: source.file_hashes must be an object")
     elif require_file_hashes and not file_hashes:
@@ -102,9 +106,12 @@ def source_matches_parent(
         return False
     parent_local = parent_source.get("local_path")
     result_local = result_source.get("local_path")
-    if isinstance(parent_local, str) and parent_local:
-        if not isinstance(result_local, str) or not result_local:
-            return False
+    if (
+        isinstance(parent_local, str)
+        and parent_local
+        and isinstance(result_local, str)
+        and result_local
+    ):
         parent_local_path = Path(parent_local).resolve(strict=False)
         result_local_path = Path(result_local).resolve(strict=False)
         if (
@@ -113,6 +120,24 @@ def source_matches_parent(
         ):
             return False
     return True
+
+
+def artifact_source_provenance(
+    source: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return source provenance safe for persisted, shareable artifacts.
+
+    ``local_path`` is useful while a run is live: validators can recompute file
+    hashes and git state from it. Persisted artifacts are commonly shared in PRs,
+    Hugging Face datasets, and review zips, where a host absolute path leaks user
+    identity and is not portable. The remaining repo/ref/path/hash fields carry
+    the stable provenance contract.
+    """
+    if source is None:
+        return None
+    artifact = dict(source)
+    artifact.pop("local_path", None)
+    return artifact
 
 
 def summary_source_fields(
@@ -128,4 +153,5 @@ def summary_source_fields(
     ]
     if mismatches:
         return {"source_mismatch_tasks": mismatches}
-    return {"source": parent_source}
+    artifact_source = artifact_source_provenance(parent_source)
+    return {"source": artifact_source} if artifact_source else {}

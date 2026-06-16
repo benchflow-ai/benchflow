@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
+from benchflow.agents.codex_config import CODEX_DEFAULT_AUTH_REQUEST_ENV
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_bedrock_preflight import BedrockPatchPreflightError
 from benchflow.providers.litellm_config import LITELLM_MODEL_ALIAS_ENV
@@ -44,6 +46,9 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
         agent_env={
             "AWS_BEARER_TOKEN_BEDROCK": "token",
             "AWS_REGION": "us-west-2",
+            CODEX_DEFAULT_AUTH_REQUEST_ENV: json.dumps(
+                {"methodId": "api-key", "_meta": {"api-key": {"apiKey": "old"}}}
+            ),
         },
         model="aws-bedrock/us.anthropic.claude-opus-4-8",
         runtime=None,
@@ -64,6 +69,17 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
         '"model":"benchflow-aws-bedrock-us.anthropic.claude-opus-4-8"'
         in updated["CODEX_CONFIG"]
     )
+    auth_request = json.loads(updated[CODEX_DEFAULT_AUTH_REQUEST_ENV])
+    assert auth_request == {
+        "methodId": "gateway",
+        "_meta": {
+            "gateway": {
+                "baseUrl": "http://host.docker.internal:32123/v1",
+                "providerName": "BenchFlow LiteLLM",
+                "headers": {"Authorization": f"Bearer {provider_runtime.master_key}"},
+            }
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -116,6 +132,42 @@ async def test_daytona_uses_sandbox_local_litellm(monkeypatch):
     assert provider_runtime.base_url == "http://127.0.0.1:45678"
     assert updated["LLM_BASE_URL"] == "http://127.0.0.1:45678/v1"
     assert updated["LLM_MODEL"].startswith("openai/benchflow-aws-bedrock")
+
+
+@pytest.mark.asyncio
+async def test_openhands_registered_provider_can_route_via_explicit_proxy(monkeypatch):
+    """Guards PR #780: OpenHands keeps BenchFlow tracking over explicit proxy env."""
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://172.17.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="openhands",
+        agent_env={
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://llm-proxy.example.test/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "sk-proxy",
+        },
+        model="deepseek/deepseek-v4-flash",
+        runtime=None,
+        environment="docker",
+        session_id="run-1",
+        usage_tracking="required",
+    )
+
+    assert provider_runtime is not None
+    route = starts[0]["route"]
+    assert route.litellm_params["api_base"] == "https://llm-proxy.example.test/v1"
+    assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
+    assert updated["LLM_BASE_URL"] == "http://172.17.0.1:45678/v1"
+    assert updated["LLM_API_KEY"] == provider_runtime.master_key
+    assert updated["LLM_MODEL"] == "openai/benchflow-deepseek-deepseek-v4-flash"
+    assert updated["BENCHFLOW_PROVIDER_MODEL"] == (
+        "benchflow-deepseek-deepseek-v4-flash"
+    )
 
 
 @pytest.mark.asyncio

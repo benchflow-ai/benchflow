@@ -13,7 +13,6 @@ from typing import Any
 
 from benchflow._utils.reward_events import memory_score_from_result
 from benchflow._utils.scoring import (
-    classify_audit_outcome,
     classify_error,
     classify_score_outcome,
     classify_verifier_error,
@@ -60,11 +59,6 @@ class TaskMetrics:
         exhaustive — the same classification used by ``EvaluationResult``.
         """
         return classify_score_outcome(self._result_shape)
-
-    @property
-    def audit_outcome(self) -> str:
-        """Audit bucket that surfaces verifier-error evidence first."""
-        return classify_audit_outcome(self._result_shape)
 
     @property
     def _result_shape(self) -> dict[str, Any]:
@@ -293,7 +287,9 @@ class BenchmarkMetrics:
             "errored": self.errored,
             "verifier_errored": self.verifier_errored,
             "score": f"{self.score:.1%}",
+            "score_ratio": self.score,
             "score_excl_errors": f"{self.score_excl_errors:.1%}",
+            "score_excl_errors_ratio": self.score_excl_errors,
             "avg_tool_calls": round(self.avg_tool_calls, 1),
             "avg_skill_invocations": round(self.avg_skill_invocations, 1),
             "avg_duration_sec": round(self.avg_duration, 1),

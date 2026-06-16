@@ -16,7 +16,6 @@ class ToolCall:
 
     name: str
     input: dict[str, object] = field(default_factory=dict)
-    output: str | None = None
 
 
 @dataclass
@@ -36,7 +35,6 @@ class GitContext:
     repo: str | None = None
     branch: str | None = None
     commit_before: str | None = None
-    commit_after: str | None = None
 
 
 @dataclass

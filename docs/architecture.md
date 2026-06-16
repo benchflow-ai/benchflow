@@ -62,7 +62,7 @@ The kernel is **three subsystems** — Rollout lifecycle, reward, trajectory —
 
 | Han's component | BenchFlow | Plane |
 |---|---|---|
-| **T** — Tasks | Task / `task.toml` | kernel concept |
+| **T** — Tasks | Native `task.md` package | kernel concept |
 | **H** — Harness | the agent + the kernel scaffolding around it | **Agent plane** |
 | **V** — Verifier | `RewardFunc` / `Rubric` / verifier | **Reward plane** |
 | **S** — State | the stateful world | **Environment plane** |
@@ -235,13 +235,13 @@ Human interaction is modelled through ACP's role split: **BenchFlow is the ACP C
 
 The manifest is BenchFlow's native format; **adapters translate every other format to it.**
 
-**Inbound env adapters** — Harbor, Inspect, ORS, PrimeIntellect/Verifiers environments → run foreign benchmarks natively. **Terminal-Bench is backward-compatible** through the Harbor adapter (Harbor is itself terminal-bench-derived) or a direct Terminal-Bench adapter — old terminal tasks keep running.
+**Inbound env adapters** — Harbor, Inspect, ORS, PrimeIntellect/Verifiers environments → run foreign benchmarks natively. **Terminal-Bench tasks run through the Harbor adapter** (Harbor is itself terminal-bench-derived).
 
 **Outbound — the trainer seam.** A scored trajectory exports as a **Verifiers / ORS JSONL record** (`prompt / completion / reward / metrics / info`). Being a Verifiers/ORS-compatible producer yields a trainer — prime-rl — with zero trainer code. BenchFlow is a rollout *service*; trainers (Tinker, verl, NeMo-RL) stay external. The trajectory is the seam.
 
 ## How a Task flows through the architecture
 
-A **Task** (Han's T) is the problem spec — `task.toml` + instruction + the environment package + the verifier. It is a kernel concept, and it is what wires the planes together for one run:
+A **Task** (Han's T) is the problem spec — one `task.md` plus the environment package and verifier. It is a kernel concept, and it is what wires the planes together for one run:
 
 ```
 Task ─┬─→ selects the Environment package + manifest  ───→ Environment plane provisions S

@@ -16,13 +16,20 @@ from benchflow.skill_policy import (
 )
 
 
-def _make_trial(tmp_path, *, agent: str, sandbox_setup_timeout: int) -> Rollout:
+def _make_trial(
+    tmp_path,
+    *,
+    agent: str,
+    sandbox_setup_timeout: int,
+    skip_agent_install: bool = False,
+) -> Rollout:
     config = RolloutConfig.from_legacy(
         task_path=tmp_path / "task",
         agent=agent,
         prompts=[None],
         sandbox_user="agent",
         sandbox_setup_timeout=sandbox_setup_timeout,
+        skip_agent_install=skip_agent_install,
     )
     trial = Rollout(config)
     trial._env = MagicMock()
@@ -97,6 +104,44 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
     snapshot_build_config_mock.assert_awaited_once()
     seed_verifier_workspace_mock.assert_awaited_once()
     lockdown_paths_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_install_agent_honors_skip_agent_install(tmp_path, monkeypatch):
+    """Guards #588: skip_install skips installer but keeps setup/credentials."""
+    trial = _make_trial(
+        tmp_path,
+        agent="claude-agent-acp",
+        sandbox_setup_timeout=41,
+        skip_agent_install=True,
+    )
+
+    install_agent_mock = AsyncMock(return_value=MagicMock())
+    write_credential_files_mock = AsyncMock()
+    deploy_skills_mock = AsyncMock()
+    setup_sandbox_user_mock = AsyncMock(return_value="/home/agent")
+
+    monkeypatch.setattr(trial._planes, "install_agent", install_agent_mock)
+    monkeypatch.setattr(
+        trial._planes, "write_credential_files", write_credential_files_mock
+    )
+    monkeypatch.setattr(trial._planes, "upload_subscription_auth", AsyncMock())
+    monkeypatch.setattr(trial._planes, "snapshot_build_config", AsyncMock())
+    monkeypatch.setattr(trial._planes, "seed_verifier_workspace", AsyncMock())
+    monkeypatch.setattr(trial._planes, "deploy_skills", deploy_skills_mock)
+    monkeypatch.setattr(trial._planes, "lockdown_paths", AsyncMock())
+    monkeypatch.setattr(trial._planes, "setup_sandbox_user", setup_sandbox_user_mock)
+    monkeypatch.setattr(trial._planes, "apply_web_tool_policy", AsyncMock())
+
+    await trial.install_agent()
+
+    install_agent_mock.assert_not_awaited()
+    setup_sandbox_user_mock.assert_awaited_once()
+    write_credential_files_mock.assert_awaited_once()
+    assert write_credential_files_mock.await_args.args[3] is None
+    deploy_skills_mock.assert_awaited_once()
+    assert trial._agent_cfg is None
+    assert trial._agent_cwd == "/home/agent"
 
 
 @pytest.mark.asyncio
@@ -240,6 +285,34 @@ def test_recorded_install_timeout_is_none_without_installer(tmp_path):
 
     assert config["agent_install_timeout"] is None
     assert config["sandbox_setup_timeout"] == 120
+
+
+def test_recorded_install_timeout_is_none_when_install_skipped(tmp_path):
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir(parents=True, exist_ok=True)
+    _write_config(
+        rollout_dir,
+        task_path=tmp_path / "task",
+        agent="claude-agent-acp",
+        model=None,
+        environment="daytona",
+        skill_policy=resolve_task_skill_policy(
+            task_path=tmp_path / "task",
+            skill_mode=SKILL_MODE_NO_SKILL,
+            runtime_skills_dir=None,
+            declared_sandbox_skills_dir=None,
+        ),
+        sandbox_user=None,
+        context_root=None,
+        sandbox_setup_timeout=41,
+        skip_agent_install=True,
+        timeout=300,
+        started_at=datetime(2026, 1, 1),
+        agent_env={},
+    )
+    config = json.loads((rollout_dir / "config.json").read_text())
+    assert config["skip_install"] is True
+    assert config["agent_install_timeout"] is None
 
 
 @pytest.mark.asyncio

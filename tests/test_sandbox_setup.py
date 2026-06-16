@@ -87,7 +87,19 @@ class TestSetupSandboxUser:
         )
         assert ".local" not in copy_loop_dirs
         assert "mkdir -p /home/agent/$d" in cmd
+        assert "mkdir -p /home/agent/$d && if [ -d /root/$d ]; then" in cmd
         assert "cp -a /root/$d/. /home/agent/$d/ 2>/dev/null || true" in cmd
+
+    @pytest.mark.asyncio
+    async def test_setup_command_creates_claude_home_for_no_skill_runs(self):
+        """Guards the fix from PR #777: no-skill Claude runs get writable ~/.claude."""
+        cmd, _ = await _run_setup_sandbox_user()
+
+        copy_loop_dirs = _get_copy_loop_dirs(cmd)
+
+        assert ".claude" in copy_loop_dirs
+        assert "mkdir -p /home/agent/$d && if [ -d /root/$d ]; then" in cmd
+        assert "chown -R agent:agent /home/agent" in cmd
 
     @pytest.mark.asyncio
     async def test_setup_command_does_not_copy_heavy_tool_trees_into_home(self):

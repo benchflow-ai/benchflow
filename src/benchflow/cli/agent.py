@@ -1,5 +1,9 @@
-"""``bench agent`` — agent management commands (list / show) plus the adoption
-router subcommands wired from :mod:`benchflow.agent_router`.
+"""``bench agent`` — agent management commands (list / show).
+
+The benchmark-adoption commands now live under ``bench eval adopt`` (see
+:mod:`benchflow.cli.adopt`); the legacy ``bench agent create|run|verify`` are
+registered here as hidden deprecated aliases (one-release window) so existing
+scripts keep working, each emitting a deprecation notice.
 
 Registered onto the top-level app by :func:`register_agent`; ``cli/main.py``
 only wires the call.
@@ -12,20 +16,23 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from benchflow.agent_router import register_agent_router
+from benchflow.agent_router import AGENT_ALIAS_VERBS, register_agent_router
 from benchflow.cli._shared import (
     _PROVIDER_AUTH_MESSAGE,
     _REQUIRES_AUTH_NOTE,
     _format_requires,
     console,
+    print_error,
 )
 
 
 def register_agent(app: typer.Typer) -> None:
     """Attach the ``agent`` command group to the top-level benchflow app."""
     agent_app = typer.Typer(help="Agent management commands.")
-    app.add_typer(agent_app, name="agent")
-    register_agent_router(agent_app)
+    app.add_typer(agent_app, name="agent", rich_help_panel="Core")
+    # Legacy adoption verbs (create/run/verify) — hidden + deprecated; canonical
+    # home is the single `bench eval adopt` command.
+    register_agent_router(agent_app, verbs=AGENT_ALIAS_VERBS, deprecated_as="agent")
 
     @agent_app.command("list")
     def agent_list() -> None:
@@ -64,7 +71,7 @@ def register_agent(app: typer.Typer) -> None:
         resolved = AGENT_ALIASES.get(name, name)
         cfg = AGENTS.get(resolved)
         if not cfg:
-            console.print(f"[red]Unknown agent: {name}[/red]")
+            print_error(f"Unknown agent: {name}")
             raise typer.Exit(1)
 
         # Collect aliases that point to this agent

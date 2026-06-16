@@ -76,6 +76,24 @@ class TestEnvMappingField:
 
         assert env["LLM_MODEL"] == "openai/glm-5"
 
+    def test_openhands_normalizes_github_models_model(self):
+        env = {"GITHUB_TOKEN": "ghs_test_token"}
+        resolve_provider_env(
+            agent="openhands",
+            model="github-models/openai/gpt-4.1-mini",
+            agent_env=env,
+        )
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "github-models"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "openai/gpt-4.1-mini"
+        assert (
+            env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://models.github.ai/inference"
+        )
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "ghs_test_token"
+        assert env["LLM_BASE_URL"] == "https://models.github.ai/inference"
+        assert env["LLM_API_KEY"] == "ghs_test_token"
+        assert env["LLM_MODEL"] == "openai/openai/gpt-4.1-mini"
+
     def test_openhands_bedrock_initial_env_marks_registered_provider(self):
         """Guards the LiteLLM runtime refactor: Bedrock is detected before runtime rewrite."""
         env = {
@@ -234,6 +252,7 @@ class TestRegisterAgent:
         )
         assert cfg.default_model == ""
         assert cfg.api_protocol == ""
+        assert cfg.session_factory == ""
         assert cfg.disallow_web_tools_setup_cmd == ""
         assert cfg.disallow_web_tools_launch_suffix == ""
 
@@ -243,11 +262,15 @@ class TestRegisterAgent:
             name="rt-full-agent",
             install_cmd="install rt",
             launch_cmd="launch rt",
+            protocol="session-factory",
+            session_factory="my_agent.factory:create_agent",
             default_model="rt-model-1",
             api_protocol="openai-completions",
             disallow_web_tools_setup_cmd="printf 'no web' > /tmp/policy",
             disallow_web_tools_launch_suffix=" --no-web",
         )
+        assert cfg.protocol == "session-factory"
+        assert cfg.session_factory == "my_agent.factory:create_agent"
         assert cfg.default_model == "rt-model-1"
         assert cfg.api_protocol == "openai-completions"
         assert cfg.disallow_web_tools_setup_cmd == "printf 'no web' > /tmp/policy"
@@ -255,6 +278,8 @@ class TestRegisterAgent:
 
         # And the registered entry reflects them.
         registered = AGENTS["rt-full-agent"]
+        assert registered.protocol == "session-factory"
+        assert registered.session_factory == "my_agent.factory:create_agent"
         assert registered.default_model == "rt-model-1"
         assert registered.api_protocol == "openai-completions"
         assert registered.disallow_web_tools_launch_suffix == " --no-web"

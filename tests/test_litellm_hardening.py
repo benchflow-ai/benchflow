@@ -79,6 +79,43 @@ def test_format_acp_model_passes_through_existing_provider_prefix():
     )
 
 
+def test_mimo_registered_xiaomi_model_keeps_provider_prefix():
+    from benchflow.acp.runtime import _format_acp_model
+
+    # "xiaomi" IS a registered benchflow provider, so strip_provider_prefix
+    # removes the prefix; the models.dev heuristic must restore "xiaomi/",
+    # not fall back to "anthropic/" — the MiMo CLI catalog id is
+    # "xiaomi/<model>" (#679).
+    assert _format_acp_model("xiaomi/mimo-v2.5", "mimo") == "xiaomi/mimo-v2.5"
+
+
+def test_format_acp_model_routes_via_provider_registry_not_runtime_branches():
+    # Provider ownership lives in the registry: any ProviderConfig that claims
+    # a bare model family via model_prefixes routes correctly, with no
+    # provider-specific branch in acp/runtime.py (#679 review). deepseek-v4-flash
+    # previously fell through to the anthropic/ default; the registry now owns it.
+    from benchflow.acp.runtime import _MODELSDEV_PROVIDER_HEURISTICS, _format_acp_model
+
+    assert (
+        _format_acp_model("deepseek-v4-flash", "opencode")
+        == "deepseek/deepseek-v4-flash"
+    )
+    assert _format_acp_model("mimo-v2.5", "mimo") == "xiaomi/mimo-v2.5"
+    # No provider-specific tuples leaked into the runtime heuristics.
+    assert "xiaomi" not in {provider for _, provider in _MODELSDEV_PROVIDER_HEURISTICS}
+
+
+def test_mimo_litellm_alias_formats_to_registered_openai_route():
+    from benchflow.acp.runtime import _format_acp_model
+
+    # Proxy mode is untouched by the heuristic: aliases still route to the
+    # proxy-registered "openai/<alias>" form.
+    assert (
+        _format_acp_model("benchflow-deepseek-deepseek-v4-flash", "mimo")
+        == "openai/benchflow-deepseek-deepseek-v4-flash"
+    )
+
+
 def test_vllm_route_honors_runtime_supplied_base_url():
     route = resolve_litellm_route(
         "vllm/Qwen/Qwen3-Coder",
@@ -434,6 +471,7 @@ _BEDROCK_ENV = {"AWS_BEARER_TOKEN_BEDROCK": "tok", "AWS_REGION": "us-east-1"}
     [
         ("aws-bedrock/us.anthropic.claude-opus-4-8-20251101-v1:0", True),
         ("aws-bedrock/eu.anthropic.claude-sonnet-4-9-20260301-v1:0", True),
+        ("aws-bedrock/us.anthropic.claude-fable-5", True),
         ("aws-bedrock/us.anthropic.claude-opus-4-7-20251101-v1:0", False),
     ],
 )

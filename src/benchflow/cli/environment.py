@@ -1,36 +1,47 @@
-"""``bench environment`` — environment management commands.
+"""``bench environment`` — DEPRECATED alias group (removed in 0.7).
 
-Covers local Daytona sandbox lifecycle (create / list / cleanup) and the
-read-only hosted-environment hub views (list / show / inspect).
+The local sandbox lifecycle moved to ``bench sandbox`` (create / list / cleanup;
+see :mod:`benchflow.cli.sandbox`) and hosted-provider browsing to ``bench hub
+env`` (see :mod:`benchflow.cli._hosted_env`). Every command here is a hidden
+deprecated alias that emits a one-line stderr notice and delegates to the new
+home, so existing scripts keep working through 0.6.
 
-Registered onto the top-level app by :func:`register_environment`;
-``cli/main.py`` only wires the call. The Daytona client + cleanup helpers
-deliberately live in ``cli/main.py`` (``_daytona_client_or_exit`` /
-``_cleanup_daytona_sandboxes``); these commands resolve them through the
-``benchflow.cli.main`` module so tests that monkeypatch those names on
-``cli.main`` keep working.
+Registered onto the top-level app by :func:`register_environment`; ``cli/main.py``
+only wires the call.
 """
 
 from __future__ import annotations
 
-import json
-from datetime import UTC
 from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.table import Table
 
+from benchflow.cli._hosted_env import (
+    hosted_env_inspect,
+    hosted_env_list,
+    hosted_env_show,
+)
 from benchflow.cli._options import SandboxOption
-from benchflow.cli._shared import console
+from benchflow.cli._shared import warn_deprecated
+from benchflow.cli.sandbox import sandbox_cleanup, sandbox_create, sandbox_list_local
 
 
 def register_environment(app: typer.Typer) -> None:
-    """Attach the ``environment`` command group to the top-level benchflow app."""
-    env_app = typer.Typer(help="Environment management commands.")
-    app.add_typer(env_app, name="environment")
+    """Attach the deprecated ``environment`` alias group (hidden from help).
 
-    @env_app.command("create")
+    Each command uses ``hidden=True`` only — NOT Typer's ``deprecated=True``.
+    ``deprecated=True`` would (a) print its own generic ``DeprecationWarning: The
+    command 'X' is deprecated.`` line that omits the canonical replacement and
+    re-fires every invocation, doubling up with our ``warn_deprecated`` one-liner,
+    and (b) surface the aliased verbs in ``environment --help``. ``hidden=True``
+    alone matches the ``adopt`` / ``agent`` alias families: exactly one
+    once-per-process stderr notice, verbs hidden from help.
+    """
+    env_app = typer.Typer(help="Deprecated; use `bench sandbox` / `bench hub env`.")
+    app.add_typer(env_app, name="environment", hidden=True)
+
+    @env_app.command("create", hidden=True)
     def environment_create(
         task_dir: Annotated[
             Path,
@@ -40,111 +51,61 @@ def register_environment(app: typer.Typer) -> None:
         ],
         sandbox: SandboxOption = "daytona",
     ) -> None:
-        """Create an environment from a task directory (does not start it)."""
-        from benchflow.runtime import Environment
+        """Deprecated; use `bench sandbox create`."""
+        warn_deprecated("bench environment create", "bench sandbox create")
+        sandbox_create(task_dir, sandbox)
 
-        env = Environment.from_task(task_dir, sandbox=sandbox)
-        console.print(f"[green]Environment created:[/green] {env}")
-        console.print(f"  Task:    {env.task_path}")
-        console.print(f"  Sandbox: {env.sandbox}")
-        console.print(
-            "  Use [cyan]bench eval create[/cyan] for CLI runs, or pass to [cyan]bf.run()[/cyan]"
-        )
-
-    @env_app.command("list")
+    @env_app.command("list", hidden=True)
     def environment_list(
+        provider: Annotated[
+            str | None,
+            typer.Option(
+                "--provider", hidden=True, help="Deprecated; use `bench hub env list`"
+            ),
+        ] = None,
         hub: Annotated[
             str | None,
-            typer.Option("--hub", help="Hosted environment hub to list"),
+            typer.Option(
+                "--hub", hidden=True, help="Deprecated; use `bench hub env list`"
+            ),
         ] = None,
         owner: Annotated[
             str | None,
-            typer.Option("--owner", help="Hosted hub owner/namespace filter"),
+            typer.Option("--owner", hidden=True, help="Hosted provider owner filter"),
         ] = None,
         search: Annotated[
             str | None,
-            typer.Option("--search", help="Hosted hub search query"),
+            typer.Option("--search", hidden=True, help="Hosted provider search query"),
         ] = None,
         limit: Annotated[
             int | None,
-            typer.Option("--limit", help="Maximum hosted hub results"),
+            typer.Option("--limit", hidden=True, help="Maximum hosted results"),
         ] = None,
         output_json: Annotated[
             bool,
-            typer.Option("--json", help="Emit raw JSON for hosted hub results"),
+            typer.Option(
+                "--json", hidden=True, help="Emit raw JSON for hosted results"
+            ),
         ] = False,
     ) -> None:
-        """List active Daytona sandboxes or hosted hub environments."""
-        from datetime import datetime
-
-        from benchflow.cli import main as cli_main
-
-        if hub:
-            if hub != "primeintellect":
-                console.print("[red]Only --hub primeintellect is supported today[/red]")
-                raise typer.Exit(1)
-            from benchflow.hosted_env import HostedEnvError, prime_env_list
-
-            try:
-                raw = prime_env_list(owner=owner, search=search, limit=limit)
-            except HostedEnvError as e:
-                console.print(f"[red]{e}[/red]")
-                raise typer.Exit(1) from None
-            if output_json:
-                console.print(raw)
-                return
-            data = json.loads(raw)
-            rows = (
-                data
-                if isinstance(data, list)
-                else data.get("environments", data.get("items", []))
+        """Deprecated; use `bench sandbox list` (local) or `bench hub env list` (hosted)."""
+        provider = provider or hub
+        if provider:
+            warn_deprecated(
+                "bench environment list --provider", "bench hub env list --provider"
             )
-            table = Table(title="PrimeIntellect Environments")
-            table.add_column("Environment", style="cyan")
-            table.add_column("Version", style="green")
-            table.add_column("Visibility")
-            table.add_column("Updated", style="dim")
-            for item in rows:
-                name = (
-                    item.get("environment")
-                    or item.get("fullName")
-                    or item.get("name")
-                    or item.get("id")
-                    or ""
-                )
-                version = str(item.get("version") or item.get("latestVersion") or "")
-                visibility = str(item.get("visibility") or item.get("private") or "")
-                updated = str(item.get("updated_at") or item.get("updatedAt") or "")
-                table.add_row(name, version, visibility, updated)
-            console.print(table)
+            hosted_env_list(
+                provider=provider,
+                owner=owner,
+                search=search,
+                limit=limit,
+                output_json=output_json,
+            )
             return
+        warn_deprecated("bench environment list", "bench sandbox list")
+        sandbox_list_local()
 
-        d = cli_main._daytona_client_or_exit()
-        table = Table(title="Active Sandboxes")
-        table.add_column("ID", style="cyan")
-        table.add_column("State", style="green")
-        table.add_column("Age")
-        table.add_column("Target")
-
-        now = datetime.now(UTC)
-        total = 0
-        # daytona SDK >=0.18: ``list()`` yields an auto-paginating
-        # Iterator[Sandbox] (was a paged ``list(page=, limit=)`` -> page object
-        # with ``.items``).
-        for sb in d.list():
-            total += 1
-            age = ""
-            if sb.created_at:
-                created = datetime.fromisoformat(sb.created_at.replace("Z", "+00:00"))
-                mins = (now - created).total_seconds() / 60
-                age = f"{mins:.0f}m"
-            target = getattr(sb, "target", "") or ""
-            table.add_row(sb.id[:12] + "…", str(sb.state), age, str(target)[:40])
-
-        console.print(table)
-        console.print(f"\n[bold]{total} sandbox(es)[/bold]")
-
-    @env_app.command("show")
+    @env_app.command("show", hidden=True)
     def environment_show(
         source_env: Annotated[
             str,
@@ -153,21 +114,14 @@ def register_environment(app: typer.Typer) -> None:
             ),
         ],
         version: Annotated[
-            str | None,
-            typer.Option("--version", help="Hosted environment version"),
+            str | None, typer.Option("--version", help="Hosted environment version")
         ] = None,
     ) -> None:
-        """Show hosted environment metadata."""
-        from benchflow.hosted_env import HostedEnvError, HostedEnvRef, prime_env_info
+        """Deprecated; use `bench hub env show`."""
+        warn_deprecated("bench environment show", "bench hub env show")
+        hosted_env_show(source_env=source_env, version=version)
 
-        try:
-            ref = HostedEnvRef.parse(source_env, version=version)
-            console.print(prime_env_info(ref))
-        except HostedEnvError as e:
-            console.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from None
-
-    @env_app.command("inspect")
+    @env_app.command("inspect", hidden=True)
     def environment_inspect(
         source_env: Annotated[
             str,
@@ -176,42 +130,26 @@ def register_environment(app: typer.Typer) -> None:
             ),
         ],
         version: Annotated[
-            str | None,
-            typer.Option("--version", help="Hosted environment version"),
+            str | None, typer.Option("--version", help="Hosted environment version")
         ] = None,
         path: Annotated[
             str,
             typer.Option("--path", help="File inside the hosted environment package"),
         ] = "README.md",
     ) -> None:
-        """Inspect a file from a hosted environment package."""
-        from benchflow.hosted_env import (
-            HostedEnvError,
-            HostedEnvRef,
-            prime_env_inspect,
-        )
+        """Deprecated; use `bench hub env inspect`."""
+        warn_deprecated("bench environment inspect", "bench hub env inspect")
+        hosted_env_inspect(source_env=source_env, version=version, path=path)
 
-        try:
-            ref = HostedEnvRef.parse(source_env, version=version)
-            console.print(prime_env_inspect(ref, path=path))
-        except HostedEnvError as e:
-            console.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from None
-
-    @env_app.command("cleanup")
+    @env_app.command("cleanup", hidden=True)
     def environment_cleanup(
         dry_run: Annotated[
-            bool,
-            typer.Option("--dry-run", help="List sandboxes without deleting"),
+            bool, typer.Option("--dry-run", help="List sandboxes without deleting")
         ] = False,
         max_age_minutes: Annotated[
-            int,
-            typer.Option("--max-age", help="Delete sandboxes older than N minutes"),
+            int, typer.Option("--max-age", help="Delete sandboxes older than N minutes")
         ] = 1440,
     ) -> None:
-        """Clean up orphaned Daytona sandboxes."""
-        from benchflow.cli import main as cli_main
-
-        cli_main._cleanup_daytona_sandboxes(
-            dry_run=dry_run, max_age_minutes=max_age_minutes
-        )
+        """Deprecated; use `bench sandbox cleanup`."""
+        warn_deprecated("bench environment cleanup", "bench sandbox cleanup")
+        sandbox_cleanup(dry_run=dry_run, max_age_minutes=max_age_minutes)

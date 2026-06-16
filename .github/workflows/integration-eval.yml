@@ -4,49 +4,90 @@
 # (tests/integration/agent_judge.py) grade the resulting rollout. The job
 # fails if the run is not REAL (no tool calls / no tokens / null reward) or
 # if the judge fails the trajectory. It is kept to one task so the check
-# stays cheap; trigger it on demand or nightly.
+# stays cheap; trigger it for internal PRs, after main CI succeeds, on demand,
+# or nightly.
 name: integration-eval
 
 on:
+  pull_request:
+    branches: [main]
+  workflow_run:
+    workflows: ["test"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       task:
         description: SkillsBench task to run.
         type: string
-        default: jax-computing-basics
+        default: dialogue-parser
   schedule:
     # Nightly at 07:00 UTC. Disabled automatically on forks by the job guard.
     - cron: "0 7 * * *"
 
-# Least-privilege default. This job only reads the repo.
+# Least-privilege default. This job reads the repo and can call GitHub Models
+# when a token with model access is configured.
 permissions:
   contents: read
+  models: read
 
-# One in-flight integration run at a time; newer dispatches supersede older.
+# One in-flight integration run at a time. Do not cancel an in-progress gate:
+# delayed workflow_run events can otherwise interrupt a real rollout after it
+# has already passed the rollout and judge steps, leaving a cancelled check on
+# the tested commit.
 concurrency:
   group: integration-eval-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   eval-and-judge:
     runs-on: ubuntu-latest
-    # Only run on the canonical repo. Forks lack the eval/judge secrets, so
-    # the scheduled and dispatched runs would otherwise fail-closed there.
-    if: github.repository == 'benchflow-ai/benchflow'
+    # Provider credentials are stored as environment secrets so they can be
+    # rotated without requiring repo-admin access to Actions secrets.
+    environment: pypi-internal-preview
+    # Only run where integration secrets are available. Fork PRs lack secrets,
+    # while internal PRs should fail visibly when the real eval path breaks.
+    if: >-
+      ${{
+        github.repository == 'benchflow-ai/benchflow' &&
+        (
+          github.event_name == 'workflow_dispatch' ||
+          github.event_name == 'schedule' ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == 'benchflow-ai/benchflow'
+          ) ||
+          (
+            github.event_name == 'workflow_run' &&
+            github.event.workflow_run.conclusion == 'success' &&
+            github.event.workflow_run.event == 'push' &&
+            github.event.workflow_run.head_branch == 'main'
+          )
+        )
+      }}
     timeout-minutes: 45
     env:
-      # Agent (run) model. Keys are referenced from repo secrets; their
-      # values never appear in logs or files.
+      # Provider candidates. The selector probes these in order and exports
+      # only the first usable provider to the rollout/judge steps.
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
-      # Judge model key (gemini-3.1-flash-lite). call_judge reads GEMINI_API_KEY.
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      # Daytona key for the parity + reaper scenarios; scenarios that need it
-      # skip cleanly when it is absent.
+      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+      GLM_BASE_URL: ${{ secrets.GLM_BASE_URL }}
+      QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+      QWEN_BASE_URL: ${{ secrets.QWEN_BASE_URL }}
+      LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY || secrets.BF_TOKEN }}
+      LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL || 'http://llm-proxy.eval.all-hands.dev/v1' }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN || github.token }}
+      # Optional Daytona key for the parity + reaper scenarios.
       DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-      TASK: ${{ github.event.inputs.task || 'jax-computing-basics' }}
+      TASK: ${{ github.event.inputs.task || 'dialogue-parser' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.sha }}
+
+      - name: Select integration provider
+        run: python .github/scripts/select_integration_provider.py
 
       - name: Install uv
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
@@ -66,24 +107,24 @@ jobs:
             --source-path tasks \
             --source-ref main \
             --include "$TASK" \
-            --agent openhands \
-            --model deepseek/deepseek-v4-flash \
+            --agent "$BENCHFLOW_INTEGRATION_AGENT" \
+            --model "$BENCHFLOW_INTEGRATION_MODEL" \
             --sandbox docker \
             --concurrency 1 \
+            --agent-idle-timeout 240 \
             --jobs-dir jobs/integration-eval
 
       - name: Agent-judge the rollout and enforce the gate
         run: |
           uv run python tests/integration/agent_judge.py \
             jobs/integration-eval \
-            --model gemini-3.1-flash-lite \
+            --model "$BENCHFLOW_JUDGE_MODEL" \
             --json
 
       - name: Run the live integration scenarios
         # Oracle determinism, docker<->daytona parity, and reaper safety. The
         # agent-rollout scenario is skipped here because the step above already
-        # runs a real agent + judge; scenarios needing a key absent from secrets
-        # skip cleanly.
+        # runs a real agent + judge.
         run: |
           uv run pytest tests/test_integration_suite.py \
             -m integration -k "not agent_rollout" \

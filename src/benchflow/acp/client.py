@@ -16,6 +16,7 @@ from .types import (
     FsCapabilities,
     InitializeParams,
     InitializeResult,
+    McpServerSpec,
     NewSessionParams,
     PromptParams,
     PromptResult,
@@ -291,9 +292,24 @@ class ACPClient:
             )
         return self._initialize_result
 
-    async def session_new(self, cwd: str = "/app") -> ACPSession:
-        """Create a new agent session."""
-        params = NewSessionParams(cwd=cwd, mcp_servers=[])
+    async def session_new(
+        self, cwd: str = "/app", mcp_servers: list[McpServerSpec] | None = None
+    ) -> ACPSession:
+        """Create a new agent session.
+
+        ``mcp_servers`` are attached to the session via ``session/new`` so the
+        agent connects to them (e.g. a task-declared Playwright MCP). Each spec
+        is projected to its per-transport wire shape by
+        :meth:`McpServerSpec.to_new_session_param`. ``None`` attaches no
+        servers — the historical benchmark default.
+        """
+        server_params = [spec.to_new_session_param() for spec in mcp_servers or []]
+        # Validate through model_validate (not the constructor) so the SDK's
+        # discriminated mcp_servers union coerces each per-transport dict — the
+        # constructor's static type rejects the dict list.
+        params = NewSessionParams.model_validate(
+            {"cwd": cwd, "mcpServers": server_params}
+        )
         result = await self._send_request(
             "session/new", params.model_dump(by_alias=True, exclude_none=True)
         )
@@ -309,10 +325,18 @@ class ACPClient:
         return self._session
 
     async def session_load(
-        self, session_id: str, cwd: str = "/app"
+        self,
+        session_id: str,
+        cwd: str = "/app",
+        mcp_servers: list[McpServerSpec] | None = None,
     ) -> ACPSession:  # ACP spec; unused until session resume is wired
-        """Load an existing session (used by agents like openclaw that need pre-created sessions)."""
-        params = {"sessionId": session_id, "cwd": cwd, "mcpServers": []}
+        """Load an existing session (used by agents like openclaw that need pre-created sessions).
+
+        ``mcp_servers`` mirrors :meth:`session_new` — the same task-configured
+        servers are attached to the resumed session.
+        """
+        server_params = [spec.to_new_session_param() for spec in mcp_servers or []]
+        params = {"sessionId": session_id, "cwd": cwd, "mcpServers": server_params}
         result = await self._send_request("session/load", params)
         loaded_id = result.get("sessionId", session_id)
         self._session = ACPSession(loaded_id)

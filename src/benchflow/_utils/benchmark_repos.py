@@ -495,16 +495,6 @@ TASK_ALIASES: dict[str, tuple[str, str | None, str | None]] = {
     "harvey-lab": ("benchflow-ai/benchmarks", "main", "datasets/harvey-lab/tasks"),
 }
 
-# Old dict shape kept for imports that reference TASK_REPOS.
-TASK_REPOS = {
-    name: {
-        "repo": f"https://github.com/{org_repo}.git",
-        **({"ref": branch} if branch else {}),
-        **({"subdir": subdir} if subdir else {}),
-    }
-    for name, (org_repo, branch, subdir) in TASK_ALIASES.items()
-}
-
 
 def ensure_tasks(benchmark: str) -> Path:
     """Clone task repo if not present. Supports aliases and org/repo strings."""

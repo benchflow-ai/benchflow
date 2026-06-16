@@ -5,7 +5,7 @@ from __future__ import annotations
 import shlex
 import shutil
 from dataclasses import replace
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from uuid import uuid4
 
 from benchflow.rollout import (
@@ -22,11 +22,17 @@ from benchflow.rollout import (
     _self_gen_prompt,
     _skill_frontmatter_name,
 )
+from benchflow.rollout._setup import (
+    _configured_task_workdir,
+    _resolve_prompts,
+    _validate_agent_workdir,
+)
+from benchflow.skill_policy import validate_container_mount_path
+from benchflow.task import Task
 
 
 def _normalize_sandbox_path(path: str) -> str:
-    normalized = PurePosixPath(path).as_posix().rstrip("/")
-    return normalized or "/"
+    return validate_container_mount_path(path, "generated_skills_root")
 
 
 def _find_skill_creator_dir(skills_root: Path, skill_name: str) -> Path:
@@ -67,9 +73,29 @@ def _self_gen_artifact_root(config: RolloutConfig) -> Path:
     )
 
 
+def _default_generated_skills_root(task_path: Path) -> str:
+    workspace = _configured_task_workdir(Task(task_path))
+    if workspace is None:
+        workspace = "/root"
+    else:
+        _validate_agent_workdir(workspace)
+        workspace = _normalize_sandbox_path(workspace)
+    return f"{workspace}/generated-skills"
+
+
+def _generated_skills_root(config: RolloutConfig) -> str:
+    configured = _normalize_sandbox_path(
+        config.generated_skills_root or GENERATED_SKILLS_ROOT
+    )
+    if configured == _normalize_sandbox_path(GENERATED_SKILLS_ROOT):
+        return _default_generated_skills_root(config.task_path)
+    return configured
+
+
 def _creator_scene(
     config: RolloutConfig, creator_skills_root: Path, skill_creator_name: str
 ) -> Scene:
+    task_prompts = _resolve_prompts(config.task_path, config.prompts)
     return Scene(
         name="self-gen-creator",
         roles=[Role("skill_creator", config.agent, config.model)],
@@ -80,6 +106,7 @@ def _creator_scene(
                     config.task_path,
                     config.generated_skills_root or GENERATED_SKILLS_ROOT,
                     skill_creator_name,
+                    task_prompts,
                 ),
             )
         ],
@@ -127,19 +154,22 @@ def _single_trial_config(
     skill_creator_name: str,
     artifact_root: Path,
 ) -> RolloutConfig:
+    generated_skills_root = _generated_skills_root(config)
+    scene_config = replace(config, generated_skills_root=generated_skills_root)
     return replace(
         config,
         scenes=[
-            _creator_scene(config, creator_skills_root, skill_creator_name),
-            _solver_scene(config),
+            _creator_scene(scene_config, creator_skills_root, skill_creator_name),
+            _solver_scene(scene_config),
         ],
         skills_dir=None,
         skill_mode=SKILL_MODE_NO_SKILL,
         artifact_skill_mode=config.artifact_skill_mode or SKILL_MODE_SELF_GEN,
         skill_creator_dir=None,
+        generated_skills_root=generated_skills_root,
         pre_agent_hooks=[
             *(config.pre_agent_hooks or []),
-            _ensure_generated_skills_hook(config),
+            _ensure_generated_skills_hook(scene_config),
         ],
         export_generated_skills_to=(
             config.export_generated_skills_to or artifact_root / "generated-skills"

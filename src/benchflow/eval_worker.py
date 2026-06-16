@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
+from benchflow.loop_strategies import LoopStrategySpec
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -66,6 +67,11 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         usage_tracking=UsageTrackingConfig.from_mapping(raw),
         environment_manifest=_environment_manifest(raw),
         config_override=raw.get("config_override"),
+        loop_strategy=(
+            LoopStrategySpec.from_mapping(raw["loop_strategy"])
+            if raw.get("loop_strategy")
+            else None
+        ),
     )
 
 

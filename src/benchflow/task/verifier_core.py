@@ -291,10 +291,6 @@ class Verifier:
             return await self._verify_llm_judge()
         return await self._verify_test_script()
 
-    def _selected_verifier_strategy(self) -> VerifierStrategy | None:
-        document = self._selected_verifier_document()
-        return None if document is None else document.selected_strategy
-
     def _selected_verifier_document(self) -> VerifierDocument | None:
         paths = getattr(self._task, "paths", None)
         verifier_dir = getattr(paths, "tests_dir", None)
@@ -1148,6 +1144,10 @@ class Verifier:
         self,
         strategy: VerifierStrategy,
     ) -> list[dict[str, Any]]:
+        if not strategy.inputs:
+            raise AgentJudgeInputError(
+                f"agent-judge strategy {strategy.name!r} must declare inputs"
+            )
         inputs_dir = self._rollout_paths.verifier_dir / "agent-judge-inputs"
         if inputs_dir.exists():
             if inputs_dir.is_dir() and not inputs_dir.is_symlink():

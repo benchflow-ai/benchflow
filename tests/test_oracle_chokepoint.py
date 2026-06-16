@@ -286,7 +286,7 @@ class TestEvalCreateRouting:
         result = CliRunner().invoke(app, ["eval", "create", "--config", str(config)])
 
         assert result.exit_code == 1
-        assert "Unsupported eval agent protocol: openai" in result.stdout
+        assert "Unsupported eval agent protocol: openai" in result.stderr
 
     def test_eval_create_config_recomputes_model_after_agent_normalization(
         self, tmp_path: Path

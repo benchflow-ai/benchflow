@@ -446,8 +446,9 @@ run at MAX. LiteLLM writes the provider call metadata to
 
 A finished command is **not** a healthy trial. After each batch, audit the
 trajectories with the **`benchflow-experiment-review`** skill (repo copy at
-`.claude/skills/benchflow-experiment-review`; see the Experiment-guidance notes in
-`AGENTS.md`). A trial counts as healthy only when **every** check passes: complete
+`.agents/skills/benchflow-experiment-review`, also reachable through the
+`.claude/skills` symlink; see the Experiment-guidance notes in `AGENTS.md`). A
+trial counts as healthy only when **every** check passes: complete
 trajectory + metadata (timing, token usage, tool usage), correct
 pass/fail/timeout status, verifier isolation (verifier starts after the agent
 exits), no reward hacking, and the right skill posture — with-skills cells must
@@ -463,14 +464,14 @@ J=jobs/opus-skill
 find $J -name rewards.jsonl -exec tail -1 {} \;                                  # reward
 grep -ho '"usage_source": "[a-z_]*"' $(find $J -name result.json)                # expect provider_response
 grep -ho '"effort": "[a-z]*"' $(find $J -name llm_trajectory.jsonl) | sort -u    # Opus MAX -> "max"
-python3 .claude/skills/benchflow-experiment-review/scripts/extract_harness_skills.py \
+python3 .agents/skills/benchflow-experiment-review/scripts/extract_harness_skills.py \
   "$(find $J -name llm_trajectory.jsonl | head -1)" --task-skill <task-skill-name>
 ```
 
 Notes:
 - `--usage-tracking required` records provider-reported token usage into each trajectory.
 - `--agent-idle-timeout none` disables the idle watchdog (the task wall-clock still applies).
-- Opus-4.8 on Bedrock needs the adaptive-thinking shim (`opus-4.8 bedrock thinking shim ACTIVE` in the install log); see `AGENTS.md`.
+- Opus-4.8 on Bedrock needs the adaptive-thinking patch, which LiteLLM loads into its proxy process (`src/benchflow/providers/litellm_bedrock_patch.py`); see `AGENTS.md`.
 - For heavy tasks, replace `--sandbox daytona` with `--sandbox docker` — same flags otherwise.
 
 ---
@@ -516,20 +517,16 @@ for the full manifest schema, both onboarded benchmarks, and the
 
 BenchFlow runs benchmarks authored in other formats without converting them
 first. An **inbound adapter** translates a foreign task directory into
-BenchFlow-native shape; the rollout then runs natively. Two adapters ship:
+BenchFlow-native shape; the rollout then runs natively:
 
 | Source format | Signature file | Adapter |
 |---------------|----------------|---------|
 | Harbor | `task.toml` | `HarborAdapter` |
-| Terminal-Bench | `task.yaml` | `TerminalBenchAdapter` |
 
 `benchflow.adapters.inbound.detect_adapter()` sniffs a task directory and
-picks the adapter whose format it matches (`task.toml` is checked first, so a
-directory carrying both is treated as Harbor — the native superset). Each
-adapter is a pure `Path -> InboundTask` translation: it reads a directory and
-returns an in-memory native task, building no sandboxes and running nothing.
-Terminal-Bench tasks are backward-compatible this way — old terminal-style
-tasks keep running on BenchFlow unchanged.
+picks the adapter whose format it matches. The adapter is a pure
+`Path -> InboundTask` translation: it reads a directory and returns an
+in-memory native task, building no sandboxes and running nothing.
 
 ---
 
@@ -697,7 +694,8 @@ All fields from [CLI reference](./reference/cli.md#yaml-config-format) apply:
 
 ## Adding a new benchmark
 
-See the [Benchmark Conversion Guide](../benchmarks/CONVERT.md) for the 9-step
-process to convert a new benchmark into Harbor-format tasks for BenchFlow. Harvey LAB
+Use `bench eval adopt <source>` to scaffold and drive the conversion of a new
+benchmark into a `benchmarks/<name>/` package, then `bench eval adopt <name> --verify`
+to parity-gate it; the conversion guide is embedded in that command. Harvey LAB
 (`benchmarks/harvey-lab/`) and ProgramBench (`benchmarks/programbench/`) are
 reference implementations.

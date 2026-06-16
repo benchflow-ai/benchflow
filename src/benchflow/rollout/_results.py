@@ -27,6 +27,7 @@ from benchflow._utils.result_metadata import (
 )
 from benchflow._utils.reward_events import build_rewards_jsonl_events
 from benchflow._utils.scoring import classify_error, classify_verifier_error
+from benchflow._utils.source_provenance import artifact_source_provenance
 from benchflow.contracts import (
     BaseUser,
     DocumentNudgeUser,
@@ -34,6 +35,7 @@ from benchflow.contracts import (
 )
 from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.environment.manifest import EnvironmentManifest
+from benchflow.loop_strategies import LoopStrategySpec, loop_block
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
@@ -143,6 +145,7 @@ def _write_config(
     context_root: str | Path | None,
     sandbox_locked_paths: list[str] | None = None,
     sandbox_setup_timeout: int = 120,
+    skip_agent_install: bool = False,
     timeout: int,
     started_at: datetime,
     agent_env: dict[str, str],
@@ -156,15 +159,22 @@ def _write_config(
     task_digest: str | None = None,
     environment_manifest: EnvironmentManifest | None = None,
     config_override: dict | None = None,
+    loop_strategy: LoopStrategySpec | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
     from benchflow.agents.install import effective_install_timeout
 
+    artifact_source = artifact_source_provenance(source_provenance)
+    recorded_task_path = (
+        str(artifact_source.get("path"))
+        if artifact_source and artifact_source.get("path")
+        else task_path.name
+    )
     recorded_env = {
         k: v for k, v in agent_env.items() if _should_record_env_entry(k, v)
     }
     config_data = {
-        "task_path": str(task_path),
+        "task_path": recorded_task_path,
         "agent": agent,
         "model": model,
         "reasoning_effort": reasoning_effort,
@@ -174,9 +184,10 @@ def _write_config(
         "sandbox_user": sandbox_user,
         "sandbox_locked_paths": sandbox_locked_paths,
         "sandbox_setup_timeout": sandbox_setup_timeout,
-        "agent_install_timeout": effective_install_timeout(
-            agent, sandbox_setup_timeout
-        ),
+        "skip_install": skip_agent_install,
+        "agent_install_timeout": None
+        if skip_agent_install
+        else effective_install_timeout(agent, sandbox_setup_timeout),
         "context_root": str(context_root) if context_root else None,
         "timeout_sec": timeout,
         "concurrency": concurrency,
@@ -184,11 +195,12 @@ def _write_config(
         "started_at": str(started_at),
         "agent_env": recorded_env,
         "scenes": _scene_metadata(scenes or []),
+        "loop": loop_block(loop_strategy),
     }
     if usage_tracking is not None:
         config_data["usage_tracking"] = usage_tracking.to_config_artifact()
-    if source_provenance is not None:
-        config_data["source"] = source_provenance
+    if artifact_source is not None:
+        config_data["source"] = artifact_source
     if dataset is not None:
         config_data["dataset_name"] = dataset.get("name")
         config_data["dataset_version"] = dataset.get("version")
@@ -274,6 +286,7 @@ def _build_rollout_result(
     diagnostics: RolloutDiagnostics | None = None,
     skill_policy: TaskSkillPolicy | None = None,
     sandbox_id: str | None = None,
+    loop: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -393,8 +406,9 @@ def _build_rollout_result(
                 "finished_at": str(result.finished_at),
                 "timing": timing,
                 "scenes": _scene_metadata(scenes or []),
+                "loop": loop or loop_block(None),
                 **(
-                    {"source": source_provenance}
+                    {"source": artifact_source_provenance(source_provenance)}
                     if source_provenance is not None
                     else {}
                 ),

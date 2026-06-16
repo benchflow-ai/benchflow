@@ -133,14 +133,6 @@ class TestModalSnapshotCapability:
 # 3. Default fails closed with SandboxSnapshotNotSupported
 
 
-class _UnsupportedSandbox:
-    """Bare object exercising BaseSandbox's default snapshot/restore."""
-
-    # Inherit the methods directly off BaseSandbox so the default path is
-    # what's under test — without dragging the whole __init__ in.
-    pass
-
-
 async def test_base_sandbox_default_snapshot_raises_unsupported():
     """The default ``snapshot`` raises so naive new backends fail closed."""
     from benchflow.sandbox._base import BaseSandbox

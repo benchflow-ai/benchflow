@@ -22,11 +22,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
 from benchflow._utils.evaluation_results import (
+    loop_summary,
     phase_timing_summary,
     rollout_result_payload,
     skill_invocation_summary,
@@ -50,6 +51,7 @@ from benchflow._utils.scoring import (
     INSTALL_FAILED,
     PIPE_CLOSED,
     PROVIDER_AUTH,
+    PROVIDER_RATE_LIMIT,
     SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
@@ -67,6 +69,11 @@ from benchflow._utils.text import truncate_end
 from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.learner_store import LearnerState, LearnerStore
+from benchflow.loop_strategies import (
+    LoopStrategySpec,
+    loop_block,
+    parse_loop_strategy_spec,
+)
 from benchflow.models import RolloutResult
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
@@ -142,6 +149,15 @@ class EmptyTaskSelectionError(ValueError):
     """
 
 
+class MalformedTaskError(ValueError):
+    """A single-task input whose ``task.md`` exists but fails to parse (#3).
+
+    Subclasses ``ValueError`` so the CLI's existing run-error handlers surface it
+    as a clean red message + exit 1. The message names the offending file —
+    silently treating a typo'd task.md as "not a task" would make the task vanish.
+    """
+
+
 @dataclass
 class RetryConfig:
     """Configuration for retry behavior.
@@ -167,7 +183,7 @@ class RetryConfig:
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
     exclude_categories: set[str] = field(
-        default_factory=lambda: {"timeout", PROVIDER_AUTH}
+        default_factory=lambda: {"timeout", PROVIDER_AUTH, PROVIDER_RATE_LIMIT}
     )
 
     @classmethod
@@ -332,6 +348,68 @@ JOB_MODES = ("parallel-independent", "sequential-shared")
 DEFAULT_JOB_MODE = "parallel-independent"
 
 
+def _warn_on_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
+    """Warn when resuming a jobs_dir whose completed tasks ran differently.
+
+    Reads one completed rollout's config.json (written by SDK.run) and
+    compares its agent and ``loop`` block against the resuming config.
+    Pre-loop-strategy config.json files have no ``loop`` key — they ran
+    single-shot, so they default to ``loop_block(None)`` and still warn
+    when the resume requests a strategy.
+    """
+    sample_dir = (
+        next((d for d in job_dir.iterdir() if d.is_dir()), None)
+        if job_dir.exists()
+        else None
+    )
+    prev_agent = ""
+    prev_loop: dict | None = None
+    if sample_dir:
+        for cfg_file in sample_dir.rglob("config.json"):
+            try:
+                cfg = json.loads(cfg_file.read_text())
+                prev_agent = cfg.get("agent", "")
+                prev_loop = cfg.get("loop") or loop_block(None)
+                break
+            except (json.JSONDecodeError, OSError):
+                logger.debug("Could not read %s", cfg_file)
+    if prev_agent and prev_agent != config.agent:
+        logger.warning(
+            f"Resuming with agent={config.agent!r} but "
+            f"completed tasks used agent={prev_agent!r}. "
+            f"Use a different jobs_dir to avoid mixing results."
+        )
+    current_loop = loop_block(config.loop_strategy)
+    if prev_loop is not None and prev_loop != current_loop:
+        logger.warning(
+            f"Resuming with loop_strategy={current_loop} but "
+            f"completed tasks used loop_strategy={prev_loop}. "
+            f"Use a different jobs_dir to avoid mixing results."
+        )
+
+
+def _classify_completed_outcomes(
+    completed: dict[str, dict],
+) -> tuple[int, int, int]:
+    """(passed, failed, errored) over already-complete (resumed) result payloads.
+
+    Mirrors ``_log_and_report``'s classification (reward==1 → passed, reward not
+    None → failed, else errored) so the live dashboard's resumed-seeded counts
+    match how this-run results are tallied.
+    """
+    passed = failed = errored = 0
+    for r in completed.values():
+        rewards = r.get("rewards") if isinstance(r, dict) else None
+        reward = rewards.get("reward") if rewards else None
+        if reward == 1:
+            passed += 1
+        elif reward is not None:
+            failed += 1
+        else:
+            errored += 1
+    return passed, failed, errored
+
+
 def effective_model(agent: str, model: str | None) -> str | None:
     """Resolve the model an agent should run with.
 
@@ -384,6 +462,7 @@ class EvaluationConfig:
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
+    skip_agent_install: bool = False
     agent_idle_timeout: int | None = 600
     context_root: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
@@ -409,6 +488,11 @@ class EvaluationConfig:
     environment_manifest: EnvironmentManifest | None = None
     # C-axis overlay (parsed dict) deep-merged into each task's resolved config.
     config_override: dict | None = None
+    # Harness loop strategy applied to every rollout (e.g.
+    # "verify-retry:k=3,feedback=names"). Threaded to RolloutConfig.from_legacy
+    # and stamped in summary.json; None = single-shot. A dict (the to_mapping()
+    # shape) is also accepted at runtime — __post_init__ materializes it.
+    loop_strategy: LoopStrategySpec | str | None = None
 
     def __post_init__(self):
         from benchflow._utils.config import (
@@ -425,6 +509,25 @@ class EvaluationConfig:
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
         self.skill_mode = normalize_skill_mode(self.skill_mode)
+        if isinstance(self.loop_strategy, str):
+            self.loop_strategy = parse_loop_strategy_spec(self.loop_strategy)
+        elif isinstance(self.loop_strategy, dict):
+            # The to_mapping() dict shape (e.g. a stamped spec round-tripped back
+            # through a --config YAML, or an SDK EvaluationConfig(loop_strategy={...}))
+            # must materialize too — not silently fall through and mislabel the run
+            # single-shot. Mirror the sharding guard's loud-failure stance.
+            # cast: isinstance narrows to dict[Unknown, Unknown]; from_mapping
+            # validates the keys at runtime.
+            self.loop_strategy = LoopStrategySpec.from_mapping(
+                cast("dict[str, Any]", self.loop_strategy)
+            )
+        elif self.loop_strategy is not None and not isinstance(
+            self.loop_strategy, LoopStrategySpec
+        ):
+            raise ValueError(
+                "loop_strategy must be a spec string, mapping, or LoopStrategySpec, "
+                f"got {type(self.loop_strategy).__name__}"
+            )
         if self.skills_dir is not None and self.skill_mode != SKILL_MODE_WITH_SKILL:
             raise ValueError("skills_dir requires skill_mode='with-skill'")
         if self.job_mode not in JOB_MODES:
@@ -481,7 +584,7 @@ class Evaluation:
         print(result.score)
 
     Or from YAML:
-        evaluation = Evaluation.from_yaml("experiments/tb2.yaml")
+        evaluation = Evaluation.from_yaml("tb2.yaml")
         result = await evaluation.run()
     """
 
@@ -524,13 +627,18 @@ class Evaluation:
         config: EvaluationConfig | None = None,
         job_name: str | None = None,
         on_result: Callable[[str, RunResult], None] | None = None,
+        on_task_start: Callable[[str], None] | None = None,
+        on_plan: Callable[[int, int, int, tuple[int, int, int]], None] | None = None,
     ):
         self._tasks_dir = Path(tasks_dir)
         self._jobs_dir = Path(jobs_dir)
         self._config = config or EvaluationConfig()
         self._job_name = job_name or self._resolve_job_name(self._jobs_dir)
-        self._explicit_job_name = job_name is not None
         self._on_result = on_result
+        # UI-progress hooks (the CLI live dashboard; None everywhere else). Fired
+        # best-effort via _fire_progress so a display bug never aborts a run.
+        self._on_task_start = on_task_start
+        self._on_plan = on_plan
         # Kept for test mocking compat; _run_task prefers Rollout
         from benchflow.sdk import SDK
 
@@ -631,6 +739,18 @@ class Evaluation:
         with open(path) as f:
             raw = yaml.safe_load(f)
 
+        # A non-mapping document (empty file → None, or a top-level list/scalar)
+        # is not a valid config. Reject it up front: the membership tests below
+        # would otherwise TypeError on None, or silently substring-match a scalar
+        # string that happens to contain "agents"/"datasets" and mis-route to
+        # the legacy parser.
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"Eval config {path} must be a YAML mapping with 'source' or "
+                f"'tasks_dir' (or legacy 'agents'/'datasets'); got "
+                f"{type(raw).__name__}."
+            )
+
         # Detect format: legacy uses "agents" + "datasets", benchflow uses "agent"
         if "agents" in raw or "datasets" in raw:
             return cls._from_legacy_yaml(raw, **kwargs)
@@ -649,8 +769,18 @@ class Evaluation:
         source_provenance = None
         if "source" in raw:
             src = raw["source"]
+            if not isinstance(src, dict):
+                raise ValueError(
+                    f"YAML 'source' must be a mapping with a 'repo' key; got "
+                    f"{type(src).__name__}."
+                )
+            repo = src.get("repo")
+            if not isinstance(repo, str) or not repo:
+                raise ValueError(
+                    "YAML 'source.repo' must be a non-empty string (e.g. 'org/repo')."
+                )
             resolved = resolve_source_with_metadata(
-                repo=src["repo"],
+                repo=repo,
                 path=src.get("path"),
                 ref=src.get("ref"),
             )
@@ -667,8 +797,13 @@ class Evaluation:
 
         jobs_dir = Path(raw.get("jobs_dir", "jobs"))
 
-        # Parse prompts — YAML null becomes Python None
-        prompts = raw.get("prompts")
+        # Parse prompts — YAML null becomes Python None. A bare string must be
+        # wrapped: otherwise Scene.single iterates it character-by-character into
+        # one garbage turn per character (mirrors the SDK YAML loader).
+        raw_prompts = raw.get("prompts")
+        prompts: list[str | None] | None = (
+            [raw_prompts] if isinstance(raw_prompts, str) else raw_prompts
+        )
 
         agent_env_raw = raw.get("agent_env", {})
         exclude = set(raw.get("exclude", []))
@@ -701,6 +836,7 @@ class Evaluation:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            skip_agent_install=bool(raw.get("skip_install", False)),
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
@@ -718,6 +854,7 @@ class Evaluation:
             usage_tracking=UsageTrackingConfig.from_mapping(raw),
             environment_manifest=env_manifest,
             config_override=raw.get("config_override"),
+            loop_strategy=raw.get("loop_strategy"),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -793,6 +930,7 @@ class Evaluation:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            skip_agent_install=bool(agent_cfg.get("skip_install", False)),
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
@@ -810,7 +948,19 @@ class Evaluation:
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
     def _get_task_dirs(self) -> list[Path]:
-        """Get all valid task directories."""
+        """Get all valid task directories.
+
+        A directory whose ``task.md`` *exists but fails to parse* is a malformed
+        task, not a non-task: in the single-task case that is a hard error (the
+        user named exactly one thing and it is broken); in the batch case it is
+        loudly warned and skipped (a typo must never make a task silently vanish
+        from a 50-task suite, #3) while the healthy tasks still run. A task.md
+        that PARSES but is structurally incomplete (e.g. a schema-only fixture)
+        keeps its existing silent skip.
+        """
+        from benchflow._utils.task_authoring import task_document_parse_error
+
+        # A valid task at the root → that IS the whole job (single-task input).
         if _is_task_dir(self._tasks_dir):
             if self._tasks_dir.name in self._config.exclude_tasks:
                 return []
@@ -820,14 +970,49 @@ class Evaluation:
             ):
                 return []
             return [self._tasks_dir]
-        return sorted(
-            d
-            for d in self._tasks_dir.iterdir()
-            if d.is_dir()
-            and _is_task_dir(d)
-            and d.name not in self._config.exclude_tasks
-            and (not self._config.include_tasks or d.name in self._config.include_tasks)
-        )
+
+        # Batch input: collect valid child tasks; warn (don't silently drop) on
+        # any child whose task.md fails to PARSE. Selection filters are applied
+        # first, so excluded dirs are never warned about. A child task.md that
+        # PARSES but is structurally incomplete (schema-only fixture) keeps its
+        # silent skip.
+        selected: list[Path] = []
+        for d in sorted(self._tasks_dir.iterdir()):
+            if not d.is_dir():
+                continue
+            if d.name in self._config.exclude_tasks:
+                continue
+            if self._config.include_tasks and d.name not in self._config.include_tasks:
+                continue
+            if _is_task_dir(d):
+                selected.append(d)
+                continue
+            task_md = d / "task.md"
+            if task_md.is_file():
+                parse_error = task_document_parse_error(task_md)
+                if parse_error is not None:
+                    logger.warning(
+                        "Skipping malformed task %r: %s", d.name, parse_error
+                    )
+
+        # A malformed task.md at the tasks-dir ROOT is a hard error ONLY when no
+        # valid child tasks were found — i.e. the root was meant as a single
+        # task and it is broken. If the dir is a batch container that also
+        # happens to carry a stray broken root task.md, warn but still run the
+        # healthy children rather than aborting the whole batch.
+        root_task_md = self._tasks_dir / "task.md"
+        if root_task_md.is_file():
+            parse_error = task_document_parse_error(root_task_md)
+            if parse_error is not None:
+                if selected:
+                    logger.warning(
+                        "Ignoring malformed task.md at the tasks-dir root %r: %s",
+                        self._tasks_dir.name,
+                        parse_error,
+                    )
+                else:
+                    raise MalformedTaskError(f"{root_task_md}: {parse_error}")
+        return selected
 
     def _get_completed_tasks(self) -> dict[str, dict]:
         """Load tasks that already have results with rewards or verifier errors.
@@ -1005,6 +1190,7 @@ class Evaluation:
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            skip_agent_install=cfg.skip_agent_install,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
             skill_mode=skill_mode,
@@ -1015,6 +1201,7 @@ class Evaluation:
             dataset=dataset,
             task_digest=task_digest_value,
             usage_tracking=cfg.usage_tracking,
+            loop_strategy=cfg.loop_strategy,
         )
         if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen
@@ -1106,6 +1293,21 @@ class Evaluation:
         assert last_result is not None
         return last_result
 
+    @staticmethod
+    def _fire_progress(callback, *args) -> None:
+        """Invoke a UI-progress hook, swallowing any error.
+
+        A live-display callback must never abort or perturb the run, so failures
+        are logged at debug and ignored.
+        """
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception as exc:
+            # Display is best-effort: a render bug must never abort the run.
+            logger.debug("progress callback failed: %s", exc)
+
     def _log_and_report(self, td: Path, result: RunResult) -> None:
         """Log one rollout's outcome and fire the on_result callback."""
         reward = result.rewards.get("reward") if result.rewards else None
@@ -1113,15 +1315,17 @@ class Evaluation:
         err_msg = result.error or result.verifier_error
         err = f" ({truncate_end(err_msg, 50)})" if err_msg else ""
         logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
-        if self._on_result:
-            self._on_result(td.name, result)
+        self._fire_progress(self._on_result, td.name, result)
 
     async def _run_parallel_independent(
         self, remaining: list[Path]
     ) -> list[tuple[str, RunResult]]:
         """The default schedule — rollouts run concurrently and isolated."""
         cfg = self._config
-        sem = asyncio.Semaphore(cfg.concurrency)
+        # Floor at 1: Semaphore(0) deadlocks on first acquire. eval-create already
+        # rejects <1 at plan time, but this guards every other caller (skills eval,
+        # SDK) against a silent forever-hang on a bad concurrency.
+        sem = asyncio.Semaphore(max(1, cfg.concurrency))
 
         breaker = ApiErrorCircuitBreaker()
 
@@ -1141,6 +1345,7 @@ class Evaluation:
                 if cfg.concurrency > 16:
                     jitter_max = max(cfg.concurrency / 2, 8.0)
                     await asyncio.sleep(random.uniform(0, jitter_max))
+                self._fire_progress(self._on_task_start, td.name)
                 result = await self._run_task(td)
                 breaker.record(result)
                 self._log_and_report(td, result)
@@ -1159,12 +1364,12 @@ class Evaluation:
                     raise r
                 task_name = remaining[i].name
                 logger.error(f"[ERR] {task_name}: unexpected exception: {r}")
-                pairs.append(
-                    (
-                        task_name,
-                        RunResult(task_name=task_name, error=f"Unexpected: {r}"),
-                    )
-                )
+                err_result = RunResult(task_name=task_name, error=f"Unexpected: {r}")
+                # _run_task raised after on_task_start fired, so the live
+                # dashboard still has this task "running" — fire on_result to
+                # remove it and count it errored.
+                self._fire_progress(self._on_result, task_name, err_result)
+                pairs.append((task_name, err_result))
             else:
                 pairs.append(r)
         return pairs
@@ -1222,18 +1427,16 @@ class Evaluation:
                 self._learner_skills_dir = skills_dir
                 self._learner_export_dir = export_dir
 
+                self._fire_progress(self._on_task_start, td.name)
                 try:
                     result = await self._run_task(td)
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     raise
                 except Exception as e:  # mirror the parallel path's catch
                     logger.error(f"[ERR] {td.name}: unexpected exception: {e}")
-                    pairs.append(
-                        (
-                            td.name,
-                            RunResult(task_name=td.name, error=f"Unexpected: {e}"),
-                        )
-                    )
+                    err_result = RunResult(task_name=td.name, error=f"Unexpected: {e}")
+                    self._fire_progress(self._on_result, td.name, err_result)
+                    pairs.append((td.name, err_result))
                     continue
                 finally:
                     self._learner_skills_dir = None
@@ -1395,8 +1598,8 @@ class Evaluation:
         threading.Thread(target=_reap, name="daytona-auto-reap", daemon=True).start()
 
     async def run(self) -> EvaluationResult:
-        self._maybe_start_daytona_reap()
         """Execute the job."""
+        self._maybe_start_daytona_reap()
         task_dirs = self._get_task_dirs()
         if not task_dirs:
             # Fail fast on an empty selection (#407). Silently writing a
@@ -1443,31 +1646,7 @@ class Evaluation:
 
         # Warn if resuming with different config than completed tasks
         if completed:
-            # Check config.json (written by SDK.run) for the registry agent name
-            job_dir = self._jobs_dir / self._job_name
-            sample_dir = (
-                next(
-                    (d for d in job_dir.iterdir() if d.is_dir()),
-                    None,
-                )
-                if job_dir.exists()
-                else None
-            )
-            prev_agent = ""
-            if sample_dir:
-                for cfg_file in sample_dir.rglob("config.json"):
-                    try:
-                        cfg = json.loads(cfg_file.read_text())
-                        prev_agent = cfg.get("agent", "")
-                        break
-                    except (json.JSONDecodeError, OSError):
-                        logger.debug("Could not read %s", cfg_file)
-            if prev_agent and prev_agent != self._config.agent:
-                logger.warning(
-                    f"Resuming with agent={self._config.agent!r} but "
-                    f"completed tasks used agent={prev_agent!r}. "
-                    f"Use a different jobs_dir to avoid mixing results."
-                )
+            _warn_on_resume_mismatch(self._jobs_dir / self._job_name, self._config)
 
         self._jobs_dir.mkdir(parents=True, exist_ok=True)
         self._prune_docker()
@@ -1482,6 +1661,18 @@ class Evaluation:
         logger.info(
             f"Job: {len(task_dirs)} tasks, {len(completed)} done, "
             f"{len(remaining)} to run (concurrency={cfg.concurrency})"
+        )
+        # Hand the live dashboard an honest denominator: total / already-done /
+        # to-run. Resumed-complete tasks fold in below without a finish event, so
+        # a finish-event-only counter would mis-read the total on resume. Pass the
+        # resumed tasks' (passed, failed, errored) breakdown too, so the live
+        # counts + pass-rate cover the whole job, not just this process's tasks.
+        self._fire_progress(
+            self._on_plan,
+            len(task_dirs),
+            len(completed),
+            len(remaining),
+            _classify_completed_outcomes(completed),
         )
 
         start = time.time()
@@ -1568,16 +1759,26 @@ class Evaluation:
             "concurrency": cfg.concurrency,
             "agent_idle_timeout_sec": cfg.agent_idle_timeout,
             "usage_tracking": cfg.usage_tracking.with_env_defaults().to_config_artifact(),
+            "loop": loop_block(cfg.loop_strategy),
             "total": job_result.total,
             "passed": audit_counts["passed"],
             "failed": audit_counts["failed"],
             "errored": audit_counts["errored"],
+            "pass": audit_counts["passed"],
+            "fail": audit_counts["failed"],
+            "error": audit_counts["errored"],
             "verifier_errored": audit_counts["verifier_errored"],
             "idle_timeout": error_category_counts.get(IDLE_TIMEOUT, 0),
             "error_categories": error_category_counts or None,
             "verifier_error_categories": verifier_error_category_counts or None,
             "score": f"{pass_rate(passed=audit_counts['passed'], total=job_result.total):.1%}",
+            "score_ratio": pass_rate(
+                passed=audit_counts["passed"], total=job_result.total
+            ),
             "score_excl_errors": f"{pass_rate_excl_errors(passed=audit_counts['passed'], failed=audit_counts['failed']):.1%}",
+            "score_excl_errors_ratio": pass_rate_excl_errors(
+                passed=audit_counts["passed"], failed=audit_counts["failed"]
+            ),
             "elapsed_sec": elapsed,
             "memory_score": job_result.memory_score,
             "memory_score_coverage": (
@@ -1587,6 +1788,7 @@ class Evaluation:
             "memory_scores": memory_scores,
             **skill_invocation_summary(all_results),
             **usage_summary(all_results),
+            **loop_summary(all_results),
             **tool_call_summary(all_results),
             **trajectory_step_summary(all_results),
             **phase_timing_summary(all_results),

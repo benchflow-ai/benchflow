@@ -598,6 +598,34 @@ class TestJobRunLogs:
         assert summary["verifier_errored"] == 1
 
     @pytest.mark.asyncio
+    async def test_summary_json_includes_legacy_count_aliases(self, job_factory):
+        """Guards the fix from PR #775 for issue #543 against alias regressions."""
+        job, _ = job_factory(n_tasks=3)
+        results = [
+            RunResult(task_name="task-0", rewards={"reward": 1.0}),
+            RunResult(task_name="task-1", rewards={"reward": 0.0}),
+            RunResult(task_name="task-2", error="agent failed"),
+        ]
+        idx = 0
+
+        async def make_result(**kwargs):
+            nonlocal idx
+            _ = kwargs
+            result = results[idx]
+            idx += 1
+            return result
+
+        job._sdk = AsyncMock()
+        job._sdk.run = make_result
+
+        await job.run()
+
+        summary = json.loads((job._jobs_dir / "summary.json").read_text())
+        assert summary["passed"] == summary["pass"] == 1
+        assert summary["failed"] == summary["fail"] == 1
+        assert summary["errored"] == summary["error"] == 1
+
+    @pytest.mark.asyncio
     async def test_verifier_error_takes_precedence_over_agent_error_in_counts(
         self, job_factory
     ):

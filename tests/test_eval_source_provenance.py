@@ -641,6 +641,33 @@ def test_eval_create_source_repo_writes_requested_concurrency_to_rollout_config(
     assert summary["agent_idle_timeout_sec"] == 45
 
 
+def test_summary_source_omits_host_local_path() -> None:
+    """Guards PR #779: summary.json source provenance is portable."""
+    from benchflow._utils.source_provenance import summary_source_fields
+
+    parent_source = {
+        "type": "github",
+        "repo": "acme/benchmarks",
+        "requested_ref": "main",
+        "resolved_sha": "0123456789abcdef0123456789abcdef01234567",
+        "path": "tasks",
+        "local_path": "/Users/dev/private/tasks",
+        "dirty": False,
+        "file_hashes": {},
+    }
+    result_source = {
+        **parent_source,
+        "path": "tasks/task-a",
+        "local_path": "/Users/dev/private/tasks/task-a",
+        "file_hashes": {"task.toml": "sha256:" + "0" * 64},
+    }
+
+    fields = summary_source_fields(parent_source, {"task-a": {"source": result_source}})
+
+    assert fields["source"]["path"] == "tasks"
+    assert "local_path" not in fields["source"]
+
+
 def test_evaluation_yaml_source_records_source_provenance(monkeypatch, tmp_path):
     """Guards v0.5-integration@cb8759e against YAML source provenance loss."""
     tasks_root = tmp_path / "tasks"

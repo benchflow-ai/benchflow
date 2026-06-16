@@ -2,7 +2,7 @@
 
 On-demand end-to-end tests that validate BenchFlow against real benchmark suites. Not part of CI — invoke manually before trial-ready releases and before large runtime refactors.
 
-The core matrix runs 9 SkillsBench tasks across all 8 registered agents on Daytona. Release readiness also requires smoke coverage for the current adapter release set, the current feature release set, hosted environment compatibility, and Terminal-Bench-style tasks so BenchFlow keeps running existing suites even as public API names move to Rollout/Sandbox terminology.
+The core matrix runs 9 SkillsBench tasks across all 9 registered agents on Daytona. Release readiness also requires smoke coverage for the current adapter release set, the current feature release set, hosted environment compatibility, and Terminal-Bench-style tasks so BenchFlow keeps running existing suites even as public API names move to Rollout/Sandbox terminology.
 
 ## Prerequisites
 
@@ -18,6 +18,7 @@ uv sync --extra dev --extra sandbox-daytona --locked
 | `DAYTONA_API_KEY` | all agents (sandbox) |
 | `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | claude-agent-acp |
 | `OPENAI_API_KEY` | codex-acp |
+| `XIAOMI_API_KEY` + `XIAOMI_BASE_URL` | mimo |
 
 This table covers the default integration suite models. Provider-specific
 integration lanes may require different credentials; Azure Foundry lanes use
@@ -284,7 +285,7 @@ The 9 tasks (3 low / 3 medium / 3 high complexity):
 
 ## Agents
 
-All 8 registered agents run by default:
+All 9 registered agents run by default:
 
 | Agent | Default Model | Notes |
 |---|---|---|
@@ -318,7 +319,7 @@ uv run bench eval create --config tests/integration/configs/gemini.yaml
 `check_results.py` checks:
 - Every `result.json` has required fields (`task_name`, `agent`, `rewards`, `error`, `verifier_error`)
 - No infrastructure errors (sandbox failures vs. task failures)
-- `summary.json` exists with required keys (`total`, `passed`, `failed`, `errored`, `score`)
+- `summary.json` exists with required keys (`total`, `passed`, `failed`, `errored`, `verifier_errored`, `score`)
 
 ```bash
 # Run validator standalone

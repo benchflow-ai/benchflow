@@ -4,7 +4,7 @@ The Rollout/Scene API is the primary way to run agent benchmarks programmaticall
 ## Install
 
 ```bash
-uv tool install --prerelease allow 'benchflow==0.6.0'
+uv tool install benchflow
 ```
 
 ## Quick Start
@@ -72,7 +72,7 @@ scene = Scene(
         Role("reviewer", "gemini", "gemini-3.1-flash-lite-preview"),
     ],
     turns=[
-        Turn("coder"),                    # None prompt = instruction.md
+        Turn("coder"),                    # None prompt = native task goal
         Turn("reviewer", "Review the current workspace."),
         Turn("coder", "Fix the issues."),
     ],
@@ -316,11 +316,12 @@ from benchflow import Sandbox, ImageBuilder, ImageConfig, ImageRef
 
 # Sandbox is a runtime-checkable Protocol
 class MySandbox:
-    async def exec(self, cmd: list[str], ...) -> SandboxExecResult: ...
-    async def read_file(self, path: str) -> str: ...
-    async def write_file(self, path: str, content: str) -> None: ...
-    async def stop(self) -> None: ...
-    # ... see sandbox/ package for full protocol
+    async def exec(self, cmd: str, *, user: str = "root", timeout_sec: int = 30) -> ExecResult: ...
+    async def upload_file(self, src: Path, dst: str) -> None: ...
+    async def download_file(self, src: str, dst: Path) -> None: ...
+    async def start(self) -> None: ...
+    async def stop(self, *, delete: bool = True) -> None: ...
+    # ... plus snapshot/restore + host/expose_ports; see sandbox/protocol.py
 
 assert isinstance(my_sandbox, Sandbox)  # works at runtime
 ```
@@ -368,13 +369,16 @@ ors_payload = to_ors_reward(verify_result)
 Batch orchestration with concurrency and retries.
 
 ```python
-from benchflow import Evaluation, EvaluationConfig, EvaluationResult
+from benchflow import Evaluation, EvaluationConfig, EvaluationResult, RetryConfig
 
-# EvaluationConfig wraps multiple RolloutConfigs
+# EvaluationConfig holds the per-job settings (agent/model/environment/...)
+# applied to every task discovered under tasks_dir.
 config = EvaluationConfig(
-    rollouts=[rollout_config_1, rollout_config_2, ...],
+    model="gemini-3.1-flash-lite-preview",
+    environment="daytona",
     concurrency=8,
     retry=RetryConfig(max_retries=2),
 )
-eval_result: EvaluationResult = await Evaluation.run(config)
+evaluation = Evaluation(tasks_dir="tasks", jobs_dir="jobs/my-run", config=config)
+eval_result: EvaluationResult = await evaluation.run()
 ```

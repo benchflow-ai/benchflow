@@ -16,6 +16,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from benchflow.acp.client import ACPClient
+from benchflow.providers.litellm_config import (
+    LITELLM_MODEL_ALIAS_ENV,
+    LITELLM_MODEL_VIA_ENV,
+)
 
 
 def _make_mocks(config_options=None, model_state=None):
@@ -49,7 +53,9 @@ def _runtime_patches(mock_acp):
         yield
 
 
-async def _connect(mock_acp, *, agent, model, tmp_path, reasoning_effort=None):
+async def _connect(
+    mock_acp, *, agent, model, tmp_path, agent_env=None, reasoning_effort=None
+):
     from benchflow.acp.runtime import connect_acp
 
     with _runtime_patches(mock_acp):
@@ -57,7 +63,7 @@ async def _connect(mock_acp, *, agent, model, tmp_path, reasoning_effort=None):
             env=AsyncMock(),
             agent=agent,
             agent_launch=agent,
-            agent_env={},
+            agent_env={} if agent_env is None else agent_env,
             sandbox_user=None,
             model=model,
             rollout_dir=tmp_path,
@@ -75,6 +81,39 @@ async def test_codex_with_only_fastmode_option_uses_set_model(tmp_path):
     await _connect(mock_acp, agent="codex-acp", model="gpt-5.5", tmp_path=tmp_path)
 
     mock_acp.set_model.assert_awaited_once_with("gpt-5.5")
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_litellm_alias_uses_bare_model_for_set_model(tmp_path):
+    """Codex validates set_model against its own model catalog, not proxy aliases.
+
+    This guards against a false-green CI path where BenchFlow recorded the
+    requested model but codex-acp fell back to its own default at request time.
+    """
+    mock_acp = _make_mocks(
+        config_options=[{"id": "fast-mode"}],
+        model_state={
+            "availableModels": [
+                {"modelId": "gpt-5.4-mini[low]"},
+                {"modelId": "gpt-5.4-mini[medium]"},
+            ],
+            "currentModelId": "gpt-5.5[medium]",
+        },
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="openai/gpt-5.4-mini",
+        tmp_path=tmp_path,
+        agent_env={
+            "BENCHFLOW_PROVIDER_MODEL": "benchflow-openai-gpt-5.4-mini",
+            LITELLM_MODEL_ALIAS_ENV: "benchflow-openai-gpt-5.4-mini",
+            LITELLM_MODEL_VIA_ENV: "1",
+        },
+    )
+
+    mock_acp.set_model.assert_awaited_once_with("gpt-5.4-mini[medium]")
     mock_acp.set_config_option.assert_not_awaited()
 
 

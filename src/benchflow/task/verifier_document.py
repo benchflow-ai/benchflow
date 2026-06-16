@@ -223,7 +223,12 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
     frontmatter_text = "".join(lines[1:closing_index])
     body = "".join(lines[closing_index + 1 :]).lstrip("\n")
-    loaded = yaml.safe_load(frontmatter_text) if frontmatter_text.strip() else {}
+    try:
+        loaded = yaml.safe_load(frontmatter_text) if frontmatter_text.strip() else {}
+    except yaml.YAMLError as exc:
+        raise VerifierDocumentParseError(
+            f"verifier.md frontmatter is not valid YAML: {exc}"
+        ) from exc
     if loaded is None:
         loaded = {}
     if not isinstance(loaded, dict):
@@ -323,16 +328,20 @@ def _validate_strategy(
                 f"{prefix}.isolation must be 'verifier-only'"
             )
         inputs = config.get("inputs")
-        if not isinstance(inputs, list) or not all(
-            isinstance(item, str) and item for item in inputs
+        if (
+            not isinstance(inputs, list)
+            or not inputs
+            or not all(isinstance(item, str) and item for item in inputs)
         ):
             raise VerifierDocumentParseError(
                 f"{prefix}.inputs must be a non-empty list of strings"
             )
     elif strategy_type == "ors-episode":
         inputs = config.get("inputs")
-        if not isinstance(inputs, list) or not all(
-            isinstance(item, str) and item for item in inputs
+        if (
+            not isinstance(inputs, list)
+            or not inputs
+            or not all(isinstance(item, str) and item for item in inputs)
         ):
             raise VerifierDocumentParseError(
                 f"{prefix}.inputs must be a non-empty list of strings"

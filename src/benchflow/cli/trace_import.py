@@ -19,6 +19,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from benchflow.cli._shared import print_error
+
 console = Console()
 
 
@@ -130,12 +132,10 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         """
         sources = sum([from_local, from_file is not None, from_hf is not None])
         if sources == 0:
-            console.print(
-                "[red]Specify a source: --from-local, --from-file, or --from-hf[/red]"
-            )
+            print_error("Specify a source: --from-local, --from-file, or --from-hf")
             raise typer.Exit(1)
         if sources > 1:
-            console.print("[red]Only one source allowed at a time[/red]")
+            print_error("Only one source allowed at a time")
             raise typer.Exit(1)
 
         if from_local:
@@ -179,7 +179,7 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         from benchflow.traces.task_gen import generate_tasks_from_traces
 
         if task_format not in ("task-md", "legacy"):
-            console.print("[red]--task-format must be task-md or legacy[/red]")
+            print_error("--task-format must be task-md or legacy")
             raise typer.Exit(1)
 
         results = generate_tasks_from_traces(
@@ -247,7 +247,7 @@ def _load_file(path: Path, format: str) -> list:
     )
 
     if not path.exists():
-        console.print(f"[red]File not found: {path}[/red]")
+        print_error(f"File not found: {path}")
         raise typer.Exit(1)
 
     detected_format = format
@@ -262,7 +262,7 @@ def _load_file(path: Path, format: str) -> list:
     elif detected_format == "claude-messages":
         return _parse_hf_messages_file(path)
     else:
-        console.print(f"[red]Unknown format: {detected_format}[/red]")
+        print_error(f"Unknown format: {detected_format}")
         raise typer.Exit(1)
 
 
@@ -322,6 +322,13 @@ def _detect_format(path: Path) -> str:
     try:
         data = json.loads(first_line)
     except json.JSONDecodeError:
+        return "claude-code"
+
+    # A non-dict first line (list / bare scalar) is not any known trace shape;
+    # the membership tests and `.get` below assume a mapping. Route to the
+    # claude-code loader, which returns [] for unrecognized rows so the caller
+    # surfaces the clean "No traces found" message instead of a raw traceback.
+    if not isinstance(data, dict):
         return "claude-code"
 
     if "schema_version" in data or ("agent" in data and "steps" in data):

@@ -46,8 +46,8 @@ def test_concurrency_zero_rejected_not_deadlocked(tmp_path: Path):
     # Semaphore(0) would deadlock; the CLI must reject it up front instead.
     result = _invoke(tmp_path, "--sandbox", "docker", "--concurrency", "0")
     assert result.exit_code == 1
-    assert "--concurrency must be >= 1" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "--concurrency must be >= 1" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_build_concurrency_zero_rejected(tmp_path: Path):
@@ -61,14 +61,14 @@ def test_build_concurrency_zero_rejected(tmp_path: Path):
         "0",
     )
     assert result.exit_code == 1
-    assert "--build-concurrency must be >= 1" in result.stdout
+    assert "--build-concurrency must be >= 1" in result.stderr
 
 
 def test_skill_mode_bogus_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--skill-mode", "bogus")
     assert result.exit_code == 1
-    assert "Invalid --skill-mode" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "Invalid --skill-mode" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_sandbox_bogus_clean_error(tmp_path: Path):
@@ -76,15 +76,15 @@ def test_sandbox_bogus_clean_error(tmp_path: Path):
     # per-task traceback once the rollout starts.
     result = _invoke(tmp_path, "--sandbox", "nope")
     assert result.exit_code == 1
-    assert "Invalid --sandbox" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "Invalid --sandbox" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_reasoning_effort_bogus_clean_error(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "docker", "--reasoning-effort", "banana")
     assert result.exit_code == 1
-    assert "reasoning_effort must be one of" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "reasoning_effort must be one of" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_tasks_dir_missing_clean_error(tmp_path: Path):
@@ -103,16 +103,16 @@ def test_tasks_dir_missing_clean_error(tmp_path: Path):
             ],
         )
     assert result.exit_code == 1
-    assert "--tasks-dir not found" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "--tasks-dir not found" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 def test_agent_without_default_model_clean_error(tmp_path: Path):
     # codex has no default model; omitting --model must report cleanly, not crash.
     result = _invoke(tmp_path, "--agent", "codex", "--sandbox", "docker")
     assert result.exit_code == 1
-    assert "no default model" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "no default model" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
 
 
 @pytest.mark.skipif(
@@ -122,8 +122,78 @@ def test_agent_without_default_model_clean_error(tmp_path: Path):
 def test_sandbox_modal_without_extra_fails_fast(tmp_path: Path):
     result = _invoke(tmp_path, "--sandbox", "modal")
     assert result.exit_code == 1
-    assert "sandbox-modal" in result.stdout
-    assert "Traceback (most recent call last)" not in result.stdout
+    assert "sandbox-modal" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
+
+
+def test_loop_strategy_bad_spec_clean_error(tmp_path: Path):
+    result = _invoke(tmp_path, "--sandbox", "docker", "--loop-strategy", "bogus")
+    assert result.exit_code == 1
+    assert "Invalid --loop-strategy" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
+
+
+def test_loop_strategy_k_out_of_range_rejected(tmp_path: Path):
+    result = _invoke(
+        tmp_path, "--sandbox", "docker", "--loop-strategy", "verify-retry:k=99"
+    )
+    assert result.exit_code == 1
+    assert "k must be between 1 and 10" in result.stderr
+
+
+def test_loop_strategy_conflicts_with_self_gen(tmp_path: Path):
+    result = _invoke(
+        tmp_path,
+        "--sandbox",
+        "docker",
+        "--skill-mode",
+        "self-gen",
+        "--loop-strategy",
+        "verify-retry",
+    )
+    assert result.exit_code == 1
+    assert "not supported with --skill-mode self-gen" in result.stderr
+
+
+def test_loop_strategy_conflicts_with_multiple_prompts(tmp_path: Path):
+    result = _invoke(
+        tmp_path,
+        "--sandbox",
+        "docker",
+        "--prompt",
+        "first",
+        "--prompt",
+        "second",
+        "--loop-strategy",
+        "verify-retry",
+    )
+    assert result.exit_code == 1
+    assert "conflicts with multiple" in result.stderr
+
+
+def test_loop_strategy_accepted_and_plumbed(tmp_path: Path):
+    result = _invoke(
+        tmp_path,
+        "--sandbox",
+        "docker",
+        "--loop-strategy",
+        "verify-retry:k=3,feedback=names",
+    )
+    assert result.exit_code == 0
+
+    from benchflow.loop_strategies import LoopStrategySpec
+
+    plumb_dir = tmp_path / "plumb"
+    plumb_dir.mkdir()
+    plan = build_eval_plan(
+        EvalCreateRequest(
+            tasks_dir=_task_dir(plumb_dir),
+            loop_strategy="verify-retry:k=3,feedback=names",
+        )
+    )
+    expected = LoopStrategySpec("verify-retry", {"k": 3, "feedback": "names"})
+    assert plan.eval_loop_strategy == expected
+    assert plan.make_eval_config().loop_strategy == expected
 
 
 @pytest.mark.parametrize("value", ["banana", "fastest", "9", "lowish"])
@@ -155,9 +225,9 @@ def test_agent_timeout_sec_rejects_nonpositive(bad):
 def test_config_file_with_no_default_model_agent_not_rejected(tmp_path: Path):
     # Regression: --config supplies the model from YAML, so build_eval_plan must
     # NOT pre-reject a no-default-model agent (e.g. codex) when --model is omitted.
-    plan = build_eval_plan(
-        EvalCreateRequest(config_file=tmp_path / "cfg.yaml", agent="codex")
-    )
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text("model: some-model\n")  # must exist (B1 guard); content unused here
+    plan = build_eval_plan(EvalCreateRequest(config_file=cfg, agent="codex"))
     assert plan is not None
 
 
@@ -212,3 +282,45 @@ def test_source_env_skips_sandbox_preflight(monkeypatch):
 @pytest.mark.parametrize("ok", [None, 1, 900.0])
 def test_agent_timeout_sec_accepts_positive_or_none(ok):
     assert AgentConfig(timeout_sec=ok).timeout_sec == ok
+
+
+# --- v0.6 CLI-dogfood guards: clean fail-fast instead of raw tracebacks -------
+
+
+def test_config_missing_path_rejected_cleanly(tmp_path: Path):
+    # Was: a raw FileNotFoundError traceback from Evaluation.from_yaml's open().
+    with pytest.raises(EvalPlanError, match="--config not found"):
+        build_eval_plan(
+            EvalCreateRequest(config_file=tmp_path / "nope.yaml", agent="gemini")
+        )
+
+
+@pytest.mark.parametrize("bad", ["notaslash", "/leading", "trailing/", "org/"])
+def test_source_repo_bad_shape_rejected_cleanly(bad: str):
+    # Was: a raw ValueError traceback from resolve_source_with_metadata, after
+    # planning. Now caught at plan time with the org/repo guidance.
+    with pytest.raises(EvalPlanError, match="Invalid --source-repo"):
+        build_eval_plan(EvalCreateRequest(source_repo=bad, agent="gemini"))
+
+
+@pytest.mark.parametrize(
+    # "org/repo/subpath" must NOT be newly rejected — the canonical resolver
+    # splits "/" once and accepts a two-part shape, so the guard matches it.
+    "ok",
+    ["benchflow-ai/skillsbench", "benchflow-ai/repo/subpath"],
+)
+def test_source_repo_valid_shape_accepted(ok: str):
+    assert (
+        build_eval_plan(EvalCreateRequest(source_repo=ok, agent="gemini")) is not None
+    )
+
+
+def test_empty_sandbox_rejected_not_silently_defaulted(tmp_path: Path):
+    # "" is falsy: it used to slip past `or "docker"` and silently run docker,
+    # swallowing a typo'd --sandbox. It must hit the Invalid --sandbox check.
+    task = tmp_path / "t"
+    task.mkdir()
+    with pytest.raises(EvalPlanError, match="Invalid --sandbox"):
+        build_eval_plan(
+            EvalCreateRequest(tasks_dir=task, environment="", agent="gemini")
+        )

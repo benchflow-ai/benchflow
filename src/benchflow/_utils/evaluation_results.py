@@ -12,6 +12,7 @@ from benchflow._utils.reward_events import (
     memory_score_from_events,
     reward_event_to_dict,
 )
+from benchflow._utils.source_provenance import artifact_source_provenance
 from benchflow.models import RolloutResult
 from benchflow.trajectories.metrics import (
     count_skill_invocations,
@@ -93,7 +94,7 @@ def rollout_result_payload(
             else {}
         ),
         **({"memory_score": memory_score} if memory_score is not None else {}),
-        **({"source": task_source} if task_source else {}),
+        **({"source": artifact_source_provenance(task_source)} if task_source else {}),
     }
 
 
@@ -130,6 +131,76 @@ def usage_summary(results: dict[str, dict]) -> dict[str, Any]:
             round(total_cost / len(covered), 10) if covered else None
         ),
         "telemetry_coverage": (len(covered) / len(completed) if completed else 0.0),
+    }
+
+
+def loop_summary(results: dict[str, dict]) -> dict[str, Any]:
+    """Aggregate per-rollout ``loop`` blocks into a job-level convergence report.
+
+    The headline loopbench artifact: the **pass@iteration curve** (cumulative
+    fraction of tasks passed by each loop iteration) plus convergence rates and
+    iteration economics. Returns ``{}`` when no result carries a real
+    (non-single-shot) loop strategy, so ordinary jobs never gain empty keys.
+    """
+    looped = [
+        loop
+        for r in results.values()
+        if isinstance((loop := r.get("loop")), dict)
+        and loop.get("strategy") not in (None, "single-shot")
+    ]
+    if not looped:
+        return {}
+
+    n = len(looped)
+    first_pass = [
+        loop["first_pass_iteration"]
+        for loop in looped
+        if loop.get("first_pass_iteration") is not None
+    ]
+    iters_run = [loop.get("iterations_run") or 0 for loop in looped]
+    max_iter = max(
+        (len(loop.get("reward_trajectory") or []) for loop in looped), default=0
+    )
+    # pass@iteration: cumulative fraction of tasks passed BY iteration i.
+    pass_at_iteration = [
+        sum(
+            1
+            for loop in looped
+            if loop.get("first_pass_iteration") is not None
+            and loop["first_pass_iteration"] <= i
+        )
+        / n
+        for i in range(max_iter)
+    ]
+    stop_reasons: dict[str, int] = {}
+    for loop in looped:
+        sr = loop.get("stop_reason") or "unknown"
+        stop_reasons[sr] = stop_reasons.get(sr, 0) + 1
+    # Cost-to-converge economics (the cost-curve money axis), over the converged
+    # tasks that actually captured token usage. None when nothing converged with
+    # usage data (e.g. a LiteLLM path that doesn't surface native tokens).
+    tokens_to_pass = [
+        loop["tokens_to_pass"]
+        for loop in looped
+        if loop.get("tokens_to_pass") is not None
+    ]
+    mean_tokens_to_converge = (
+        round(sum(tokens_to_pass) / len(tokens_to_pass), 1) if tokens_to_pass else None
+    )
+
+    return {
+        "loop_summary": {
+            "strategy": looped[0].get("strategy"),
+            "n_tasks": n,
+            "fraction_converged": len(first_pass) / n,
+            "mean_iterations_to_converge": (
+                round(sum(first_pass) / len(first_pass), 4) if first_pass else None
+            ),
+            "mean_iterations_run": round(sum(iters_run) / n, 4),
+            "mean_tokens_to_converge": mean_tokens_to_converge,
+            "pass_at_iteration": [round(p, 4) for p in pass_at_iteration],
+            "stop_reasons": stop_reasons,
+        }
     }
 
 

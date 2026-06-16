@@ -9,14 +9,11 @@ folder linked to the parent. See :mod:`benchflow.continue_run`.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from pathlib import Path
 from typing import Annotated
 
 import typer
-
-logger = logging.getLogger(__name__)
 
 
 def _load_env_defaults() -> None:
@@ -29,7 +26,7 @@ def _load_env_defaults() -> None:
 def register_continue(app: typer.Typer) -> None:
     """Attach the ``continue`` command to the top-level benchflow app."""
 
-    @app.command("continue")
+    @app.command("continue", hidden=True)
     def continue_cmd(
         folder: Annotated[
             Path,
@@ -139,8 +136,13 @@ def register_continue(app: typer.Typer) -> None:
             typer.echo(f"  rewards: {result.rewards}")
         if result.error:
             typer.secho(f"  agent error: {result.error}", fg=typer.colors.YELLOW)
+            # A failed continuation must report failure to $? — matches
+            # `continue-batch` (exits 1 if any continuation failed) and the
+            # `eval create` run-error contract. Without this a scripted caller
+            # reads the green ✓ + exit 0 as success.
+            raise typer.Exit(1)
 
-    @app.command("continue-batch")
+    @app.command("continue-batch", hidden=True)
     def continue_batch_cmd(
         root: Annotated[
             Path,
@@ -175,6 +177,7 @@ def register_continue(app: typer.Typer) -> None:
             typer.Option(
                 "--concurrency",
                 help="Maximum number of continuation runs in flight.",
+                min=1,
             ),
         ] = 100,
         limit: Annotated[

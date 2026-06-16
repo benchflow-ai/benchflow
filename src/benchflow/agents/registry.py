@@ -15,7 +15,10 @@ Required fields
 
 Common optional fields
 ----------------------
-- ``protocol``           "acp" (default) or "cli". Almost always "acp".
+- ``protocol``           "acp" (default), "cli", or "session-factory".
+                         Almost always "acp".
+- ``session_factory``    Non-ACP "module:callable" entrypoint used only when
+                         ``protocol="session-factory"``.
 - ``requires_env``       List of env var names the SDK must propagate into the
                          sandbox (e.g. ``["ANTHROPIC_API_KEY"]``). Validated at
                          run start; missing keys raise before the container
@@ -113,10 +116,13 @@ _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
 )
+# Node >=22.19 is required by current openclaw (the JS agents install
+# @latest); keep this pin at or above that floor or the openclaw ACP
+# bootstrap aborts at its runtime version check (BF-10).
 _NODE_INSTALL = (
     "export DEBIAN_FRONTEND=noninteractive; "
     f"BF_NODE_DIR={_BENCHFLOW_NODE_PREFIX}; "
-    "BF_NODE_VERSION=22.14.0; "
+    "BF_NODE_VERSION=22.20.0; "
     'if [ ! -x "$BF_NODE_DIR/bin/node" ]; then '
     "  if ! command -v curl >/dev/null 2>&1 || "
     "     ! command -v tar >/dev/null 2>&1 || "
@@ -197,6 +203,9 @@ _PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
 # Path to the Harvey LAB ACP shim (runs Harvey LAB harness as an ACP agent)
 _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text()
 
+# Path to the deepagents ACP shim (runs LangChain's create_deep_agent as an ACP agent)
+_DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text()
+
 
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
@@ -253,7 +262,10 @@ class AgentConfig:
     name: str
     install_cmd: str
     launch_cmd: str
-    protocol: str = "acp"  # "acp" or "cli"
+    protocol: str = "acp"  # "acp", "cli", or "session-factory"
+    session_factory: str = ""
+    # Non-ACP only. When protocol == "session-factory", this is a
+    # "module:callable" entrypoint that builds an Agent Protocol object.
     requires_env: list[str] = field(default_factory=list)
     description: str = ""
     skill_paths: list[str] = field(default_factory=list)
@@ -313,6 +325,7 @@ AGENTS: dict[str, AgentConfig] = {
         name="claude-agent-acp",
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
+        home_dirs=[".claude"],
         # Pinned to 0.40.0: the config-option wiring below (set_config_option +
         # the "model"/"effort" ids) targets this version's ACP protocol (sdk
         # 0.24, which dropped session/set_model). The option ids are coupled to
@@ -505,6 +518,49 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/opencode"],
     ),
+    "mimo": AgentConfig(
+        name="mimo",
+        description="MiMo Code via ACP — Xiaomi's OpenCode fork (TypeScript)",
+        skill_paths=["$HOME/.mimocode/skills"],
+        home_dirs=[".mimocode", ".config/mimocode"],
+        install_cmd=_js_agent_install("mimo", "@mimo-ai/cli@0.1.0"),
+        launch_cmd=_js_agent_launch("mimo", "acp"),
+        protocol="acp",
+        requires_env=[],  # inferred from --model at runtime
+        # MiMo Code ships a fixed endpoint for its native models.dev "xiaomi"
+        # provider, so token-plan/regional keys (XIAOMI_BASE_URL) need a config
+        # override. Written only when XIAOMI_API_KEY is present; the file holds
+        # {env:...} references (resolved by the CLI at runtime), never the key
+        # itself. The no-web-tools setup_cmd merges into this same file.
+        credential_files=[
+            CredentialFile(
+                path="{home}/.config/mimocode/mimocode.json",
+                env_source="XIAOMI_API_KEY",
+                template=(
+                    '{{"provider": {{"xiaomi": {{"options": '
+                    '{{"baseURL": "{{env:XIAOMI_BASE_URL}}", '
+                    '"apiKey": "{{env:XIAOMI_API_KEY}}"}}}}}}}}'
+                ),
+            ),
+        ],
+        acp_model_format="provider/model",
+        # MiMo Code is an OpenCode fork: `mimo acp` reports agentInfo.name="OpenCode"
+        # and uses models.dev "provider/model" ids, so set_model must send e.g.
+        # "openai/benchflow-<alias>" in proxy mode, or "xiaomi/mimo-v2.5" in
+        # non-proxy mode via the registered xiaomi provider (the ("mimo","xiaomi")
+        # models.dev heuristic in acp/runtime.py keeps that prefix intact).
+        env_mapping={
+            # Map BOTH base_url and api_key (codex-acp precedent) so the non-proxy
+            # path wires the key without an `if agent == "mimo"` core edit.
+            "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
+        },
+        disallow_web_tools_setup_cmd=_json_settings_merge(
+            "$BENCHFLOW_AGENT_HOME/.config/mimocode/mimocode.json",
+            'd.setdefault("tools",{})["webfetch"]=False',
+        ),
+        disallow_web_tools_owned_paths=["$HOME/.config/mimocode"],
+    ),
     "harvey-lab-harness": AgentConfig(
         name="harvey-lab-harness",
         description="Harvey LAB harness — runs the original Harvey LAB agent loop "
@@ -537,6 +593,61 @@ AGENTS: dict[str, AgentConfig] = {
         # env_mapping intentionally empty — Harvey LAB adapters read
         # provider-specific env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY,
         # GOOGLE_API_KEY) directly; auto_inherit_env propagates these.
+    ),
+    "deepagents": AgentConfig(
+        name="deepagents",
+        description="deepagents harness — runs LangChain's create_deep_agent loop "
+        "(planning, sub-agents, filesystem + shell tools) via ACP shim, driving "
+        "deepseek-v4-pro through the OpenAI-compatible provider",
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            # deepagents requires Python >=3.11, but task base images ship as low
+            # as 3.6/3.8 (ubuntu:20.04, cached CI images), so a system-python venv
+            # makes pip report "No matching distribution found for deepagents".
+            # Provision a pinned interpreter with uv (same pattern as the OpenHands
+            # install) so this works regardless of the base-image Python.
+            "( command -v curl >/dev/null 2>&1 || "
+            f"  {_apt_install('curl', 'ca-certificates')} ) && "
+            "( command -v uv >/dev/null 2>&1 || "
+            "  ( curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 ) ) && "
+            'export PATH="$HOME/.local/bin:$PATH" && '
+            "uv venv --python 3.12 /opt/benchflow/deepagents-venv && "
+            # deepagents pulls in langchain/langchain-core/langchain-anthropic/
+            # langchain-google-genai; langchain-openai is NOT a deepagents dep but
+            # is required for the OpenAI-compatible deepseek-v4-pro chat model.
+            "uv pip install -q --python /opt/benchflow/deepagents-venv/bin/python "
+            "deepagents langchain-openai && "
+            # Let the sandbox user traverse + execute the venv interpreter and the
+            # uv-managed CPython it links to.
+            "chmod -R a+rX /opt/benchflow/deepagents-venv && "
+            "chmod o+x /root /root/.local /root/.local/share "
+            "/root/.local/share/uv /root/.local/share/uv/python 2>/dev/null; "
+            # Deploy ACP shim
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/deepagents-acp-shim", _DEEPAGENTS_SHIM
+            )
+            # Verify deepagents actually imports through the pinned venv. Without
+            # this, install rc reflects only the shim-deploy's trailing `chmod +x`
+            # (the `;` above is intentionally non-fatal), so a failed `uv pip
+            # install deepagents` — the exact failure this block fixes — would
+            # report success and fail opaquely later at launch. Mirrors OpenHands'
+            # `command -v openhands` verification tail.
+            + " && /opt/benchflow/deepagents-venv/bin/python -c 'import deepagents' "
+            ">/dev/null 2>&1"
+        ),
+        launch_cmd=(
+            f"/opt/benchflow/deepagents-venv/bin/python {_BENCHFLOW_BIN_PREFIX}/deepagents-acp-shim"
+        ),
+        protocol="acp",
+        requires_env=[],  # inferred from --model at runtime (DEEPSEEK_API_KEY, etc.)
+        # api_protocol intentionally empty — the shim builds an OpenAI-compatible
+        # ChatOpenAI from BENCHFLOW_PROVIDER_BASE_URL/API_KEY (with DEEPSEEK_*
+        # fallback). Leaving it empty avoids pinning provider endpoint selection
+        # so any OpenAI-compatible provider for the requested model works.
+        # env_mapping intentionally empty — the shim reads BENCHFLOW_PROVIDER_*
+        # directly (set unconditionally by resolve_provider_env when the model
+        # carries a registered provider prefix), with DEEPSEEK_* as a fallback
+        # (auto_inherit_env propagates those).
     ),
     "openhands": AgentConfig(
         name="openhands",
@@ -703,9 +814,10 @@ AGENT_ALIASES: dict[str, str] = {
     "openhands": "openhands",
     "oh": "openhands",
     "harvey-lab": "harvey-lab-harness",
+    "deepagents": "deepagents",
 }
 
-VALID_PROTOCOLS = {"acp", "acpx"}
+VALID_PROTOCOLS = {"acp", "acpx", "session-factory"}
 
 # ---------------------------------------------------------------------------
 # The ``acpx:`` runtime-key namespace
@@ -793,6 +905,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
             f'export PATH="{_JS_AGENT_PATH}" && acpx {acpx_agent_name} --approve-all'
         ),
         protocol="acp",
+        session_factory=config.session_factory,
         requires_env=config.requires_env,
         description=f"{config.description} (via acpx)",
         skill_paths=config.skill_paths,
@@ -899,6 +1012,7 @@ def register_agent(
     launch_cmd: str,
     *,
     protocol: str = "acp",
+    session_factory: str = "",
     requires_env: list[str] | None = None,
     description: str = "",
     skill_paths: list[str] | None = None,
@@ -937,6 +1051,7 @@ def register_agent(
         install_cmd=install_cmd,
         launch_cmd=launch_cmd,
         protocol=protocol,
+        session_factory=session_factory,
         requires_env=requires_env or [],
         description=description,
         skill_paths=skill_paths or [],

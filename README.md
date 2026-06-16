@@ -1,6 +1,6 @@
 <div align="center">
   <h1>BenchFlow</h1>
-  <p>Multi-turn agent benchmarking — Scene-based lifecycle for any ACP agent</p>
+  <p>The universal environment framework — a benchmark is just a frozen environment.</p>
   <a href="https://pypi.org/project/benchflow/" target="_blank">
     <img src="https://img.shields.io/badge/PyPI-benchflow-3775A9?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI package">
   </a>
@@ -11,59 +11,50 @@
 
 ## What
 
-BenchFlow runs AI agents against benchmark tasks in sandboxed environments. Single-agent, multi-agent, and multi-round patterns share one Scene-based lifecycle.
+BenchFlow is a universal environment framework: it runs AI agents against task environments and scores them through one hardened contract. **A benchmark is just a frozen environment** — point BenchFlow at any of them, drive it with *any* ACP agent, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
 
 - **Run any benchmark** — three-layer routing runs supported frameworks natively, translates unknown formats and proves equivalence with a parity gate, or runs a bespoke harness as-is; every layer emits one scored-trajectory contract. See [Run any benchmark](./docs/running-any-benchmark.md)
 - **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, Pi, or your own
 - **Single + multi + progressive** — single-agent / multi-agent (coder + reviewer, simulated user) / multi-round with a Python `BaseUser` callback
+- **Loop strategies** — wrap any agent in a `--loop-strategy` (`verify-retry`, `self-review`); every rollout captures a per-iteration reward + token trajectory, so you can plot capability against cost (can a cheap model + loops match an expensive one at equal token spend?)
 - **`task.md` tasks** — one file (YAML frontmatter + prompt body) replaces the split `task.toml` + `instruction.md` layout; author with `bench tasks init` / `check` / `migrate` / `export`
 - **Hosted environments** — run external PrimeIntellect / Verifiers environments through `--source-env`, without converting them to BenchFlow tasks
 - **Sandboxes** — Docker locally, Daytona for parallel cloud runs (orphaned sandboxes auto-reaped at eval start), Modal for serverless/GPU-backed task environments
 - **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
 - **Training-ready output** — every scored rollout emits ATIF (`trainer/atif.json`) and ADP (`trainer/adp.jsonl`) trajectory records next to the Verifiers/ORS (OpenReward) reward record
 
+## Quickstart
+
+```bash
+# Install the latest stable BenchFlow CLI (0.6.2)
+uv tool install benchflow
+
+# Run a benchmark: any task source, any ACP agent, any sandbox
+export GEMINI_API_KEY=...            # or claude login / codex --login for subscription auth
+bench eval create \
+    --source-repo benchflow-ai/skillsbench --source-path tasks \
+    --agent gemini --model gemini-3.1-flash-lite-preview \
+    --sandbox docker
+```
+
+Each run writes a per-task `result.json` (rewards + trajectory + token usage) and a job `summary.json` (pass-rate, cost, and — for looped runs — a pass@iteration convergence curve). New here? Start with [Getting started](./docs/getting-started.md), or paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code / Codex / Gemini CLI and let it drive the whole thing.
+
 ## Install
 
-`0.6.0` is in **release-candidate** testing and is **not on PyPI yet** — the
-newest build published there is still `0.5.x`. While 0.6 is RC, install the
-latest `0.6.0-rc.*` wheel from the
-[GitHub releases page](https://github.com/benchflow-ai/benchflow/releases)
-(open it, pick the newest `0.6.0-rc.*` prerelease, and install its `.whl`
-asset):
+`0.6.2` is the latest stable release on PyPI. Install (or upgrade) with uv or pip:
 
 ```bash
-uv tool install --prerelease allow \
-  'benchflow @ https://github.com/benchflow-ai/benchflow/releases/download/0.6.0-rc.3/benchflow-0.6.0rc3-py3-none-any.whl'
+uv tool install benchflow                  # add --upgrade to refresh an existing install
+pip install --upgrade benchflow            # pip equivalent
 ```
 
-The URL above pins `0.6.0-rc.3` (the newest at time of writing); if a later
-`0.6.0-rc.*` prerelease exists, use that tag and filename instead. Confirm with
-`bench --version`.
+- Confirm with `bench --version`; the stable line should report `0.6.2`.
+- If you see `Executables already exist: bench, benchflow`, re-run with `--force` to replace stale entrypoints from an older install.
+- For Daytona or Modal extras, install the relevant optional package, for example `uv tool install 'benchflow[sandbox-daytona]'`.
 
-The `--prerelease allow` flag is required for BenchFlow's pinned LiteLLM
-release-candidate dependency. If the command reports `Executables already
-exist: bench, benchflow`, the machine has old entrypoints from a previous
-install; rerun the same command with `--force` to let `uv` replace them.
+Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --prerelease allow --upgrade benchflow`).
 
-**Once `0.6.0` ships to PyPI**, the plain install commands will work:
-
-```bash
-pip install --upgrade benchflow                                  # once 0.6.0 is on PyPI
-uv tool install --prerelease allow --upgrade 'benchflow==0.6.0'  # once 0.6.0 is on PyPI
-```
-
-Until then, `pip install --upgrade benchflow` resolves only to `0.5.x`, and
-`benchflow==0.6.0` does not resolve at all.
-
-Internal users who want the newest preview published from `main` can install
-the internal preview channel (currently a `0.5.3.dev<N>` build; it becomes
-`0.6.1.dev<N>` once `0.6.0` is tagged):
-
-```bash
-uv tool install --prerelease allow --upgrade benchflow
-```
-
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona runs or configure Modal auth for Modal runs; export the relevant agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) or run `claude login` / `codex --login` for subscription auth. Provider-prefixed models may use provider-specific credentials; Azure Foundry models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
+**Requirements & auth.** Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal; export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use subscription auth (`claude login` / `codex --login`). Provider-prefixed models may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` + `AZURE_API_ENDPOINT`.
 
 ## Documentation
 
@@ -77,7 +68,6 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |
 | Author a task in the native `task.md` format | [Native task.md authoring](./docs/task-authoring-task-md.md) |
-| Adopt an upstream benchmark into BenchFlow | [Benchmark adoption](./docs/benchmark-adoption.md) |
 | Run a hosted PrimeIntellect / Verifiers environment | [CLI reference](./docs/reference/cli.md) |
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
@@ -89,12 +79,13 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 
 Notebooks and runnable example scripts live under [`docs/examples/`](./docs/examples/) so examples stay versioned with the docs that explain them.
 
-> **Heads-up on `bench agent`.** Two different nouns share this command group:
-> `bench agent list` / `bench agent show` inspect **registered AI agents** (the
-> solver programs like Claude Code or Gemini CLI), while `bench agent create` /
-> `run` / `verify` drive **benchmark adoptions** (onboarding a third-party
-> benchmark into `benchmarks/<name>/`). See the
-> [CLI reference](./docs/reference/cli.md#bench-agent) for details.
+> **`bench agent` vs `bench eval adopt`.** `bench agent list` / `bench agent show`
+> inspect **registered AI agents** (the solver programs like Claude Code or
+> Gemini CLI). Onboarding a third-party benchmark into `benchmarks/<name>/` is a
+> separate workflow — `bench eval adopt <source>` scaffolds and drives the
+> conversion, and `bench eval adopt <name> --verify` parity-gates it. (The legacy
+> `bench agent create|run|verify` still work as deprecated aliases through 0.6.)
+> See the [CLI reference](./docs/reference/cli.md#bench-eval-adopt) for details.
 
 ## Benchmark task sources
 
@@ -149,8 +140,8 @@ the authoring lifecycle:
 ```bash
 bench tasks init my-task                 # scaffold a task.md package under tasks/
 bench tasks check tasks/my-task          # validate (default --level structural)
-bench tasks migrate legacy-task/         # convert task.toml + instruction.md → task.md
-bench tasks export tasks/my-task out/    # write a Harbor/Pier split layout + loss report
+bench tasks migrate legacy-task/ --remove-legacy  # convert old split packages to task.md
+bench tasks export tasks/my-task out/             # write a compatibility export + loss report
 ```
 
 See [Native task.md authoring](./docs/task-authoring-task-md.md) and the
@@ -159,13 +150,6 @@ See [Native task.md authoring](./docs/task-authoring-task-md.md) and the
 ## Featured
 
 - **Progressive disclosure on SWE-bench Pro** — the `BaseUser` abstraction drives a multi-round rollout: terse round-0 prompt → failing-test hints → full spec. 5/5 oracle on Daytona, runnable demo at [`docs/examples/swebench_pro_progressive_disclosure.ipynb`](./docs/examples/swebench_pro_progressive_disclosure.ipynb). See [Progressive disclosure](./docs/progressive-disclosure.md).
-
-## Research artifacts
-
-Two runnable labs validate the security story (historical, 0.2.x-era — archived under [`docs/labs/`](./docs/labs/)):
-
-- [`docs/labs/benchjack-sandbox-hardening/`](./docs/labs/benchjack-sandbox-hardening/) — end-to-end demo that 0.2.1+ blocks three [BenchJack](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/) exploits that flip 0.2.0's reward from 0.0 to 1.0.
-- [`docs/labs/reward-hack-matrix/`](./docs/labs/reward-hack-matrix/) — full reward-hack sweep across real benchmarks comparing 0.2.0 vs 0.2.2.
 
 ## Audience
 
