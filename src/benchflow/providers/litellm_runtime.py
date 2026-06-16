@@ -287,7 +287,7 @@ def _find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _harden_litellm_proxy_env(env: dict[str, str]) -> dict[str, str]:
+def _harden_litellm_proxy_env(env: dict[str, str]) -> None:
     """Stop inherited FastAPI app-config env vars from crashing the proxy at boot.
 
     The LiteLLM proxy reads ``DOCS_URL``/``REDOC_URL``/``OPENAPI_URL``/
@@ -312,7 +312,6 @@ def _harden_litellm_proxy_env(env: dict[str, str]) -> dict[str, str]:
         env[key] = ""
     for key in ("NO_DOCS", "NO_REDOC", "NO_OPENAPI"):
         env[key] = "true"
-    return env
 
 
 async def _await_log_stable(

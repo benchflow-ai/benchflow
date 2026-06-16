@@ -423,10 +423,11 @@ async def test_sandbox_litellm_startup_failure_tears_down():
 
 
 def test_harden_litellm_proxy_env_neutralizes_inherited_docs_url():
-    """A sandbox image (e.g. env0-base) that exports a slash-less DOCS_URL for
-    its own services must not leak into the proxy's FastAPI(docs_url=...) and
-    crash boot with 'Routed paths must start with /'. The URL vars are shadowed
-    (empty, falsy) and the docs endpoints forced off; creds/unrelated vars stay."""
+    """Guards the fix from PR #794: a sandbox image (e.g. env0-base) that exports
+    a slash-less DOCS_URL for its own services must not leak into the proxy's
+    FastAPI(docs_url=...) and crash boot with 'Routed paths must start with /'.
+    The URL vars are shadowed (empty, falsy) and the docs endpoints forced off;
+    creds/unrelated vars stay."""
     env = {
         "DEEPSEEK_API_KEY": "sk-keep",
         "SOME_TASK_VAR": "keep-me",
@@ -449,10 +450,11 @@ def test_harden_litellm_proxy_env_neutralizes_inherited_docs_url():
 
 @pytest.mark.asyncio
 async def test_sandbox_litellm_launch_env_hardens_inherited_docs_url():
-    """The sandbox launcher merges launch_config["env"] over the image's
-    os.environ, so a leaked DOCS_URL must be shadowed in the uploaded launch
-    config — otherwise the in-sandbox proxy crashes at boot and every rollout
-    silently reports usage_source='unavailable'."""
+    """Guards the fix from PR #794: the sandbox launcher merges
+    launch_config["env"] over the image's os.environ, so a leaked DOCS_URL must
+    be shadowed in the uploaded launch config — otherwise the in-sandbox proxy
+    crashes at boot and every rollout silently reports
+    usage_source='unavailable'."""
     route = resolve_litellm_route(
         "minimax/MiniMax-M3",
         {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
@@ -479,6 +481,57 @@ async def test_sandbox_litellm_launch_env_hardens_inherited_docs_url():
     assert proxy_env["NO_DOCS"] == "true"
     # The provider base url (a legit agent var) survives the hardening.
     assert proxy_env["MINIMAX_BASE_URL"] == "https://api.minimax.io/v1"
+
+
+@pytest.mark.asyncio
+async def test_host_litellm_launch_env_hardens_inherited_docs_url(monkeypatch):
+    """Guards the fix from PR #794 on the *host* launch path. It builds the proxy
+    env from dict(os.environ), so it is the more likely place a stray DOCS_URL
+    (no leading '/') leaks in and crashes FastAPI.setup() at boot. Pins the
+    hardening to run *after* env is assembled from os.environ + agent_env, so a
+    refactor that reorders the helper relative to env.update() is caught."""
+    import shutil
+
+    monkeypatch.setenv("DOCS_URL", "docs")  # leaked from the host process env
+    monkeypatch.setattr(runtime_mod, "_host_litellm_executable", lambda: "litellm")
+
+    async def _skip_health(_runner):
+        return None
+
+    monkeypatch.setattr(runtime_mod, "_poll_host_health", _skip_health)
+
+    captured: dict[str, dict[str, str]] = {}
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs):
+            captured["env"] = kwargs["env"]
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(runtime_mod.subprocess, "Popen", _FakePopen)
+
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    runner = await runtime_mod._start_host_litellm(
+        route=route,
+        master_key="sk-master",
+        agent_env={
+            "MINIMAX_API_KEY": "k",
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        },
+        environment="local",
+        session_id="s",
+        agent_name="openhands",
+    )
+    shutil.rmtree(runner.runtime_dir, ignore_errors=True)
+
+    assert captured["env"]["DOCS_URL"] == ""
+    assert captured["env"]["NO_DOCS"] == "true"
+    # A legit provider var assembled from agent_env survives the hardening.
+    assert captured["env"]["MINIMAX_BASE_URL"] == "https://api.minimax.io/v1"
 
 
 # #
