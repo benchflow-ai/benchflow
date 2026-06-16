@@ -3,8 +3,10 @@
 A git-tracked [environment registry](../../src/benchflow/_utils/env_registry.py)
 so the env-axis pins from PR #790 resolve from the repo instead of a `/tmp` dir.
 
-Each `<name>@<version>.toml` is an Environment-plane manifest. Bind one at the
-command line, decoupled from the task:
+Each `<name>@<version>.toml` **or** `<name>@<version>.yaml` is an Environment-plane
+manifest. YAML is canonical for new manifests (consistent with the task / run /
+job configs); TOML stays supported for back-compat. Bind one at the command line,
+decoupled from the task:
 
 ```bash
 export BENCHFLOW_ENV_REGISTRY=benchmarks/_environments

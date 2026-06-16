@@ -40,6 +40,11 @@ _SPEC_RE = re.compile(
     r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:@(?P<version>[A-Za-z0-9][A-Za-z0-9._-]*))?$"
 )
 
+#: Manifest extensions the registry resolves, in preference order. TOML first for
+#: back-compat; YAML/YML are the canonical going-forward format (consistent with
+#: the task / run / job configs).
+_MANIFEST_EXTS = (".toml", ".yaml", ".yml")
+
 
 class EnvironmentRegistryError(ValueError):
     """Raised when an environment spec cannot be resolved."""
@@ -62,10 +67,10 @@ class ResolvedEnvironment:
 def looks_like_env_spec(value: str) -> bool:
     """True when ``value`` is a registry spec rather than a filesystem path.
 
-    A path (contains a separator or ends in ``.toml``) is never a spec, so the
-    historical file-path behavior of :func:`load_manifest` is preserved.
+    A path (contains a separator or ends in a manifest extension) is never a
+    spec, so the historical file-path behavior of :func:`load_manifest` is kept.
     """
-    if os.sep in value or "/" in value or value.endswith(".toml"):
+    if os.sep in value or "/" in value or value.endswith(_MANIFEST_EXTS):
         return False
     return bool(_SPEC_RE.match(value))
 
@@ -83,6 +88,15 @@ def _registry_dir(registry: str | os.PathLike[str] | None) -> Path:
             f"environment registry {directory} is not a directory"
         )
     return directory
+
+
+def _find_manifest(directory: Path, stem: str) -> Path | None:
+    """Return ``directory/stem.<ext>`` for the first existing manifest extension."""
+    for ext in _MANIFEST_EXTS:
+        candidate = directory / f"{stem}{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def resolve_environment(
@@ -103,15 +117,20 @@ def resolve_environment(
     directory = _registry_dir(registry)
 
     if version is not None:
-        path = directory / f"{name}@{version}.toml"
-        if not path.is_file():
-            raise EnvironmentRegistryError(f"environment {spec!r} not found at {path}")
+        path = _find_manifest(directory, f"{name}@{version}")
+        if path is None:
+            raise EnvironmentRegistryError(
+                f"environment {spec!r} not found in {directory} "
+                f"(looked for {name}@{version}{{.toml,.yaml,.yml}})"
+            )
     else:
-        default = directory / f"{name}.toml"
-        if default.is_file():
-            path, version = default, "default"
+        path = _find_manifest(directory, name)
+        if path is not None:
+            version = "default"
         else:
-            candidates = sorted(directory.glob(f"{name}@*.toml"))
+            candidates = sorted(
+                p for ext in _MANIFEST_EXTS for p in directory.glob(f"{name}@*{ext}")
+            )
             if not candidates:
                 raise EnvironmentRegistryError(
                     f"no versions of environment {name!r} found in {directory}"

@@ -172,6 +172,34 @@ class EnvironmentManifest(BaseModel):
             raise ValueError("manifest must have an [environment] table")
         return cls.model_validate(env)
 
+    @classmethod
+    def model_validate_yaml(cls, yaml_data: str) -> EnvironmentManifest:
+        """Parse a manifest from a YAML string — the canonical format.
+
+        Mirrors :meth:`model_validate_toml`: the benchmark-facing keys live under
+        an ``environment:`` mapping. YAML is canonical (consistent with the task /
+        run / job configs); TOML stays supported for back-compat.
+        """
+        import yaml
+
+        data = yaml.safe_load(yaml_data) or {}
+        env = data.get("environment")
+        if env is None:
+            raise ValueError("manifest must have an `environment:` mapping")
+        return cls.model_validate(env)
+
+    @classmethod
+    def model_validate_path(cls, path: str | Path) -> EnvironmentManifest:
+        """Load + validate a manifest file, picking the parser by extension.
+
+        ``.yaml`` / ``.yml`` → YAML (canonical); anything else → TOML (back-compat).
+        """
+        p = Path(path)
+        text = p.read_text()
+        if p.suffix in {".yaml", ".yml"}:
+            return cls.model_validate_yaml(text)
+        return cls.model_validate_toml(text)
+
 
 def load_manifest(path: str | Path) -> EnvironmentManifest:
     """Load and validate an environment manifest.
@@ -198,10 +226,8 @@ def load_manifest(path: str | Path) -> EnvironmentManifest:
                 resolved.manifest_path,
                 resolved.env_hash,
             )
-            return EnvironmentManifest.model_validate_toml(
-                resolved.manifest_path.read_text()
-            )
-    return EnvironmentManifest.model_validate_toml(p.read_text())
+            return EnvironmentManifest.model_validate_path(resolved.manifest_path)
+    return EnvironmentManifest.model_validate_path(p)
 
 
 def resolve_manifest_runtime_env(

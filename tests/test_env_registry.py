@@ -18,12 +18,20 @@ def _write_env(registry, name_version: str, base_image: str = "img:1"):
     return p
 
 
+def _write_env_yaml(registry, name_version: str, base_image: str = "img:1"):
+    p = registry / f"{name_version}.yaml"
+    p.write_text(f"environment:\n  name: env0\n  base_image: {base_image}\n")
+    return p
+
+
 def test_looks_like_env_spec_discriminates_spec_from_path():
     assert looks_like_env_spec("env0")
     assert looks_like_env_spec("env0@v2")
     assert not looks_like_env_spec("../_manifests/env0.toml")  # path → not a spec
     assert not looks_like_env_spec("a/b")
     assert not looks_like_env_spec("env0.toml")
+    assert not looks_like_env_spec("env0.yaml")  # yaml path → not a spec
+    assert not looks_like_env_spec("env0.yml")
 
 
 def test_resolve_pinned_version(tmp_path):
@@ -91,3 +99,31 @@ def test_load_manifest_still_loads_a_real_file(tmp_path):
     p = _write_env(tmp_path, "plain", base_image="img:file")
     m = load_manifest(p)  # real path → loaded directly, no registry needed
     assert m.base_image == "img:file"
+
+
+# ---- YAML manifests (canonical) alongside TOML (back-compat) ---------------
+
+
+def test_resolve_yaml_manifest(tmp_path):
+    _write_env_yaml(tmp_path, "env0@v1", base_image="img:yaml")
+    r = resolve_environment("env0@v1", registry=tmp_path)
+    assert r.manifest_path.name == "env0@v1.yaml"
+    assert r.version == "v1"
+
+
+def test_resolve_prefers_toml_for_back_compat_when_both_exist(tmp_path):
+    _write_env(tmp_path, "env0@v1", base_image="img:toml")
+    _write_env_yaml(tmp_path, "env0@v1", base_image="img:yaml")
+    r = resolve_environment("env0@v1", registry=tmp_path)
+    assert r.manifest_path.suffix == ".toml"
+
+
+def test_load_manifest_yaml_spec_via_registry(tmp_path, monkeypatch):
+    _write_env_yaml(tmp_path, "env0@v2", base_image="img:y")
+    monkeypatch.setenv("BENCHFLOW_ENV_REGISTRY", str(tmp_path))
+    assert load_manifest("env0@v2").base_image == "img:y"
+
+
+def test_load_manifest_yaml_file_path(tmp_path):
+    p = _write_env_yaml(tmp_path, "plain", base_image="img:yfile")
+    assert load_manifest(p).base_image == "img:yfile"
