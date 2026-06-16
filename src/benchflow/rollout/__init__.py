@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import shlex
 import shutil
@@ -757,8 +758,11 @@ class Rollout:
         relock = getattr(self._env, "relock_network", None)
         if relock is None:
             return
-        proxy_env = await relock()
-        if proxy_env:
+        proxy_env = relock()
+        if inspect.isawaitable(proxy_env):
+            proxy_env = await proxy_env
+        # Tolerate mock sandboxes in tests: only merge a real dict result.
+        if isinstance(proxy_env, dict) and proxy_env:
             self._agent_env = {**self._agent_env, **proxy_env}
 
     # Phase 3b: CONNECT (ACP session — re-entrant)
