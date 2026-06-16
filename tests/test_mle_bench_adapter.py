@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -43,9 +44,9 @@ def _write_fake_source(tmp_path: Path) -> tuple[Path, Path]:
         """
 import importlib
 import logging
+import csv
 from pathlib import Path
 
-import pandas as pd
 import yaml
 
 
@@ -72,7 +73,9 @@ def load_yaml(path):
 
 
 def read_csv(path, **kwargs):
-    return pd.read_csv(path, **kwargs)
+    del kwargs
+    with open(path, newline="") as handle:
+        return list(csv.DictReader(handle))
 
 
 def load_answers(path):
@@ -329,6 +332,75 @@ def test_mle_bench_converter_keeps_private_data_out_of_environment(tmp_path: Pat
 
     dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
     assert 'CMD ["sleep", "infinity"]' in dockerfile
+
+    test_sh = (task_dir / "tests" / "test.sh").read_text()
+    assert test_sh.startswith("#!/bin/bash\n")
+    assert (
+        subprocess.run(
+            ["bash", "-n", str(task_dir / "tests" / "test.sh")],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def test_mle_bench_converter_fails_when_core_package_file_is_missing(tmp_path: Path):
+    converter = _load_converter()
+    source, data = _write_fake_source(tmp_path)
+    (source / "mlebench" / "grade.py").unlink()
+
+    try:
+        converter.convert_all(
+            source,
+            tmp_path / "out",
+            data_dir=data,
+            split="split75",
+            overwrite=True,
+        )
+    except FileNotFoundError as exc:
+        assert "Required MLE-bench core file missing" in str(exc)
+    else:
+        raise AssertionError("missing MLE-bench core file should fail conversion")
+
+
+def test_mle_bench_verifier_fails_loudly_when_grader_package_is_broken(tmp_path: Path):
+    converter = _load_converter()
+    source, data = _write_fake_source(tmp_path)
+    task_dir = converter.convert_all(
+        source,
+        tmp_path / "out",
+        data_dir=data,
+        split="split75",
+        overwrite=True,
+    )[0]
+    (task_dir / "tests" / "mlebench" / "grade.py").unlink()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(task_dir / "tests" / "verify.py"),
+            "--competition-id",
+            "Fake-Kaggle",
+            "--submission",
+            str(task_dir / "environment" / "data" / "sample_submission.csv"),
+            "--data-dir",
+            str(task_dir / "tests" / "private-data"),
+            "--reward-file",
+            str(tmp_path / "reward.txt"),
+            "--reward-json",
+            str(tmp_path / "reward.json"),
+            "--report-file",
+            str(tmp_path / "grading_report.json"),
+        ],
+        cwd=task_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not (tmp_path / "reward.txt").exists()
+    assert "mlebench.grade" in result.stderr
 
 
 def test_mle_bench_converter_accepts_sanitized_task_ids(tmp_path: Path):

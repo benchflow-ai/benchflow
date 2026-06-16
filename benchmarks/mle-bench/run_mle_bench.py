@@ -6,7 +6,10 @@ import argparse
 import asyncio
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
+
+import yaml
 
 _HERE = Path(__file__).resolve().parent
 
@@ -43,9 +46,14 @@ async def run(args: argparse.Namespace) -> None:
     from benchflow.evaluation import Evaluation
 
     tasks_dir = ensure_converted_tasks(args)
-    job = Evaluation.from_yaml(str(_HERE / "mle-bench.yaml"))
-    job._tasks_dir = tasks_dir  # type: ignore[attr-defined]
-    result = await job.run()
+    config = yaml.safe_load((_HERE / "mle-bench.yaml").read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        raise ValueError("mle-bench.yaml must contain a YAML mapping")
+    config["tasks_dir"] = str(tasks_dir)
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", encoding="utf-8") as handle:
+        yaml.safe_dump(config, handle, sort_keys=False)
+        handle.flush()
+        result = await Evaluation.from_yaml(handle.name).run()
     print(f"Score: {result.passed}/{result.total} ({result.score:.1%})")
 
 

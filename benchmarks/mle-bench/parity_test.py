@@ -277,7 +277,10 @@ def _run_converted_verifier(
                 "error": (proc.stderr or proc.stdout).strip()[-4000:],
             }
         if not report_file.is_file() or not reward_file.is_file():
-            return {"ok": False, "error": "converted verifier produced no report/reward"}
+            return {
+                "ok": False,
+                "error": "converted verifier produced no report/reward",
+            }
         try:
             return {
                 "ok": True,
@@ -315,8 +318,12 @@ def _criteria_for_reports(
     ):
         original_value = original.get(field)
         converted_value = converted.get(field)
-        if isinstance(original_value, (float, int)) and isinstance(converted_value, (float, int)):
-            agreement = math.isclose(float(original_value), float(converted_value), abs_tol=1e-9)
+        if isinstance(original_value, (float, int)) and isinstance(
+            converted_value, (float, int)
+        ):
+            agreement = math.isclose(
+                float(original_value), float(converted_value), abs_tol=1e-9
+            )
         else:
             agreement = original_value == converted_value
         criteria.append(

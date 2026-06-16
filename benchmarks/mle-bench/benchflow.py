@@ -74,7 +74,9 @@ def _toml_list(values: list[str]) -> str:
 def _copytree(src: Path, dst: Path) -> None:
     if dst.exists():
         shutil.rmtree(dst)
-    shutil.copytree(src, dst, symlinks=False, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+    shutil.copytree(
+        src, dst, symlinks=False, ignore=shutil.ignore_patterns(".git", "__pycache__")
+    )
 
 
 def _resolve_source_dir(source_dir: Path | None) -> Path:
@@ -133,7 +135,11 @@ def _load_splits(source_dir: Path) -> dict[str, set[str]]:
 
     splits: dict[str, set[str]] = {}
     for path in sorted(splits_dir.glob("*.txt")):
-        ids = {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+        ids = {
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
         splits[path.stem] = ids
     return splits
 
@@ -183,7 +189,9 @@ def load_competitions(source_dir: Path | None = None) -> list[MLEBenchCompetitio
         dataset = {str(k): str(v) for k, v in dict(config.get("dataset", {})).items()}
         grader = dict(config.get("grader", {}))
         meta = category_meta.get(competition_id, {})
-        splits = sorted(name for name, ids in split_map.items() if competition_id in ids)
+        splits = sorted(
+            name for name, ids in split_map.items() if competition_id in ids
+        )
         complexity = meta.get("complexity") or _infer_complexity_from_splits(splits)
 
         competitions.append(
@@ -233,8 +241,12 @@ def _select_competitions(
         split_map = _load_splits(source_dir)
         if split not in split_map:
             valid = ", ".join(["all", *sorted(split_map)])
-            raise ValueError(f"Unknown MLE-bench split {split!r}; expected one of: {valid}")
-        selected = [task for task in selected if task.competition_id in split_map[split]]
+            raise ValueError(
+                f"Unknown MLE-bench split {split!r}; expected one of: {valid}"
+            )
+        selected = [
+            task for task in selected if task.competition_id in split_map[split]
+        ]
 
     if limit is not None:
         selected = selected[:limit]
@@ -253,7 +265,9 @@ def _answers_path(data_dir: Path, competition: MLEBenchCompetition) -> Path:
     return data_dir / competition.dataset["answers"]
 
 
-def _sample_submission_path(data_dir: Path, competition: MLEBenchCompetition) -> Path | None:
+def _sample_submission_path(
+    data_dir: Path, competition: MLEBenchCompetition
+) -> Path | None:
     sample = competition.dataset.get("sample_submission")
     if not sample:
         return None
@@ -272,7 +286,9 @@ def _copy_prepared_data(
 
     if not include_data:
         public_dst.mkdir(parents=True, exist_ok=True)
-        (public_dst / "description.md").write_text(competition.description, encoding="utf-8")
+        (public_dst / "description.md").write_text(
+            competition.description, encoding="utf-8"
+        )
         return
 
     public_src = _public_dir(data_dir, competition)
@@ -296,7 +312,9 @@ def _copy_prepared_data(
 
     _copytree(public_src, public_dst)
     if not (public_dst / "description.md").is_file():
-        (public_dst / "description.md").write_text(competition.description, encoding="utf-8")
+        (public_dst / "description.md").write_text(
+            competition.description, encoding="utf-8"
+        )
     sample_src = _sample_submission_path(data_dir, competition)
     if sample_src is not None and sample_src.is_file():
         canonical_sample = public_dst / "sample_submission.csv"
@@ -322,17 +340,24 @@ def _copy_mlebench_package(
 
     for filename in _CORE_MLEBENCH_FILES:
         src = src_pkg / filename
-        if src.is_file():
-            shutil.copy2(src, dst_pkg / filename)
+        if not src.is_file():
+            raise FileNotFoundError(f"Required MLE-bench core file missing: {src}")
+        shutil.copy2(src, dst_pkg / filename)
 
     competitions_dst = dst_pkg / "competitions"
     competitions_dst.mkdir(exist_ok=True)
     init = src_pkg / "competitions" / "__init__.py"
-    if init.is_file():
-        shutil.copy2(init, competitions_dst / "__init__.py")
+    if not init.is_file():
+        raise FileNotFoundError(
+            f"Required MLE-bench competitions package file missing: {init}"
+        )
+    shutil.copy2(init, competitions_dst / "__init__.py")
     utils = src_pkg / "competitions" / "utils.py"
-    if utils.is_file():
-        shutil.copy2(utils, competitions_dst / "utils.py")
+    if not utils.is_file():
+        raise FileNotFoundError(
+            f"Required MLE-bench competitions utility file missing: {utils}"
+        )
+    shutil.copy2(utils, competitions_dst / "utils.py")
 
     comp_src = src_pkg / "competitions" / competition.competition_id
     if not comp_src.is_dir():
@@ -557,7 +582,8 @@ def _render_validate_submission_sh() -> str:
 
 def _render_test_sh(competition: MLEBenchCompetition) -> str:
     return Template(
-        """\
+        textwrap.dedent(
+            """\
         #!/bin/bash
         set -euo pipefail
 
@@ -571,6 +597,7 @@ def _render_test_sh(competition: MLEBenchCompetition) -> str:
           --reward-json /logs/verifier/reward.json \\
           --report-file /logs/verifier/grading_report.json
         """
+        )
     ).substitute(competition_id=competition.competition_id)
 
 
@@ -582,7 +609,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import traceback
 from pathlib import Path
 
 
@@ -595,6 +621,8 @@ def _write_outputs(
     report_file: Path,
 ) -> None:
     reward_file.parent.mkdir(parents=True, exist_ok=True)
+    reward_json.parent.mkdir(parents=True, exist_ok=True)
+    report_file.parent.mkdir(parents=True, exist_ok=True)
     reward_file.write_text(f"{reward:.6f}\\n")
     report_file.write_text(json.dumps(report, indent=2, sort_keys=True))
     reward_json.write_text(
@@ -626,30 +654,14 @@ def main() -> None:
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-    try:
-        from mlebench.grade import grade_csv
-        from mlebench.registry import registry
+    from mlebench.grade import grade_csv
+    from mlebench.registry import registry
 
-        competition = registry.set_data_dir(args.data_dir).get_competition(
-            args.competition_id
-        )
-        report = grade_csv(args.submission, competition).to_dict()
-        reward = 1.0 if report.get("any_medal") else 0.0
-    except Exception as exc:
-        report = {
-            "competition_id": args.competition_id,
-            "submission_path": str(args.submission),
-            "submission_exists": args.submission.is_file(),
-            "valid_submission": False,
-            "any_medal": False,
-            "gold_medal": False,
-            "silver_medal": False,
-            "bronze_medal": False,
-            "above_median": False,
-            "error": str(exc),
-            "traceback": traceback.format_exc(),
-        }
-        reward = 0.0
+    competition = registry.set_data_dir(args.data_dir).get_competition(
+        args.competition_id
+    )
+    report = grade_csv(args.submission, competition).to_dict()
+    reward = 1.0 if report.get("any_medal") else 0.0
 
     _write_outputs(
         reward=reward,
@@ -723,9 +735,15 @@ def convert(
     )
     _copy_mlebench_package(root, task_dir, competition)
 
-    (task_dir / "task.toml").write_text(_render_task_toml(competition), encoding="utf-8")
-    (task_dir / "instruction.md").write_text(_render_instruction(competition), encoding="utf-8")
-    (task_dir / "environment" / "Dockerfile").write_text(_render_dockerfile(), encoding="utf-8")
+    (task_dir / "task.toml").write_text(
+        _render_task_toml(competition), encoding="utf-8"
+    )
+    (task_dir / "instruction.md").write_text(
+        _render_instruction(competition), encoding="utf-8"
+    )
+    (task_dir / "environment" / "Dockerfile").write_text(
+        _render_dockerfile(), encoding="utf-8"
+    )
     (task_dir / "environment" / "instructions.txt").write_text(
         _render_environment_instructions(),
         encoding="utf-8",
@@ -791,7 +809,9 @@ def _parse_task_ids(raw: str | None) -> list[str] | None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Convert OpenAI MLE-bench to BenchFlow.")
+    parser = argparse.ArgumentParser(
+        description="Convert OpenAI MLE-bench to BenchFlow."
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--source-dir", type=Path, default=None)
     parser.add_argument(
@@ -807,7 +827,9 @@ def main() -> None:
     )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--task-ids", default=None, help="Comma-separated competition IDs or slugs")
+    parser.add_argument(
+        "--task-ids", default=None, help="Comma-separated competition IDs or slugs"
+    )
     parser.add_argument(
         "--metadata-only",
         action="store_true",
