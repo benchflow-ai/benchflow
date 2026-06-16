@@ -77,6 +77,10 @@ from benchflow.sandbox.daytona_reaper import (
 )
 from benchflow.sandbox.daytona_strategies import _DaytonaDirect, _DaytonaStrategy
 from benchflow.sandbox.metadata import persist_sandbox_info
+from benchflow.sandbox.network_policy import (
+    blockall_enforcement_violation,
+    network_blocks_all,
+)
 from benchflow.sandbox.protocol import (
     SandboxImage,
     SandboxStartupError,
@@ -96,6 +100,11 @@ from benchflow.task.paths import RolloutPaths
 # modules; they are re-exported above so every name previously importable from
 # ``benchflow.sandbox.daytona`` keeps resolving from this path unchanged.
 __all__ = ["DaytonaSandbox", "SandboxStartupError"]
+
+#: Raw-TCP egress canary (no DNS) used to verify a block-all policy is actually
+#: enforced on daytona; reachable under block-all => the platform leaked.
+_EGRESS_CANARY_HOST = "1.1.1.1"
+_EGRESS_CANARY_PORT = 53
 
 
 def _ensure_daytona_anyio_compat() -> None:
@@ -347,14 +356,14 @@ class DaytonaSandbox(BaseSandbox):
         self._snapshot_template_name = snapshot_template_name
         if network_block_all is not None:
             self._network_block_all = network_block_all
-            expected = not task_env_config.allow_internet
+            expected = network_blocks_all(task_env_config, "daytona")
             if network_block_all != expected:
                 self.logger.warning(
                     f"network_block_all={network_block_all} overrides task config "
                     f"allow_internet={task_env_config.allow_internet}"
                 )
         else:
-            self._network_block_all = not task_env_config.allow_internet
+            self._network_block_all = network_blocks_all(task_env_config, "daytona")
 
         self._sandbox: AsyncSandbox | None = None  # pyright: ignore[reportInvalidTypeForm]
         self._client_manager: DaytonaClientManager | None = None
@@ -769,7 +778,45 @@ class DaytonaSandbox(BaseSandbox):
     # Public interface — delegates to strategy
 
     async def start(self, force_build: bool) -> None:
-        return await self._strategy.start(force_build)
+        await self._strategy.start(force_build)
+        await self._verify_network_enforcement()
+
+    async def _verify_network_enforcement(self) -> None:
+        """Fail closed if a block-all policy resolves but egress still works.
+
+        Daytona delegates the block to a platform ``network_block_all`` flag with
+        no in-guest fallback or verification; if the platform ignores it, a
+        ``no-network`` task would silently run with full internet and produce a
+        falsely-rewarded result. Probe a raw-TCP canary and abort if reachable.
+        """
+        if not self._network_block_all:
+            return
+        if blockall_enforcement_violation(
+            block_all=True, canary_reachable=await self._egress_reachable()
+        ):
+            raise SandboxStartupError(
+                "network resolves to block-all but the sandbox reached "
+                f"{_EGRESS_CANARY_HOST}:{_EGRESS_CANARY_PORT} — the daytona "
+                "platform did not enforce the egress block; failing closed instead "
+                "of running with leaked network"
+            )
+
+    async def _egress_reachable(self) -> bool:
+        probe = (
+            "python3 - <<'PYEOF' 2>/dev/null || true\n"
+            "import socket\n"
+            "s = socket.socket(); s.settimeout(6)\n"
+            "try:\n"
+            f"    s.connect(({_EGRESS_CANARY_HOST!r}, {_EGRESS_CANARY_PORT})); print('REACH')\n"
+            "except Exception:\n"
+            "    pass\n"
+            "PYEOF"
+        )
+        try:
+            res = await self.exec(probe, timeout_sec=20, user="root")
+        except Exception:
+            return False
+        return "REACH" in (res.stdout or "")
 
     async def stop(self, delete: bool) -> None:
         return await self._strategy.stop(delete)

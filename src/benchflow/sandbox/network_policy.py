@@ -105,3 +105,14 @@ def network_blocks_all(env_config: SandboxConfig, sandbox: str) -> bool:
         resolve_network_decision(env_config, sandbox).policy
         is EffectivePolicy.BLOCK_ALL
     )
+
+
+def blockall_enforcement_violation(*, block_all: bool, canary_reachable: bool) -> bool:
+    """Fail-closed check for a block-all policy.
+
+    A sandbox that resolves to ``BLOCK_ALL`` must have no off-box route. If an
+    external canary is still reachable from inside, the platform did not honor the
+    block (e.g. daytona's ``network_block_all`` flag was ignored) — the run should
+    abort rather than produce a falsely-rewarded "offline" result.
+    """
+    return block_all and canary_reachable

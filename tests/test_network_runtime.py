@@ -1,0 +1,38 @@
+"""ENG-263: runtime network-control behavior.
+
+TDD for the three runtime fixes: daytona fail-closed enforcement, forcing the
+host-side usage proxy under a restrictive policy, and the docker relock plan.
+Tests exercise pure decision functions through public interfaces.
+"""
+
+from benchflow.task.config import SandboxConfig
+
+
+# ---- Fix #2: daytona fail-closed enforcement -------------------------------
+
+
+def test_network_blocks_all_for_daytona():
+    from benchflow.sandbox.network_policy import network_blocks_all
+
+    assert (
+        network_blocks_all(SandboxConfig(network_mode="no-network"), "daytona") is True
+    )
+    assert network_blocks_all(SandboxConfig(), "daytona") is False  # public default
+    # allowlist is unenforceable on daytona → resolve fails closed to block-all
+    assert (
+        network_blocks_all(
+            SandboxConfig(network_mode="allowlist", allowed_hosts=["x.com"]), "daytona"
+        )
+        is True
+    )
+
+
+def test_blockall_enforcement_violation():
+    from benchflow.sandbox.network_policy import blockall_enforcement_violation
+
+    # a block-all policy is VIOLATED when the sandbox can still reach the canary
+    assert blockall_enforcement_violation(block_all=True, canary_reachable=True)
+    # block-all and correctly unreachable → no violation
+    assert not blockall_enforcement_violation(block_all=True, canary_reachable=False)
+    # not block-all → never a violation
+    assert not blockall_enforcement_violation(block_all=False, canary_reachable=True)
