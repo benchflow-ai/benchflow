@@ -1,10 +1,14 @@
-"""Shared hosted-environment read commands (PrimeIntellect "Environments").
+"""Shared hosted-environment read commands.
 
 Canonically reached via ``bench hub env list|show|inspect`` (external
-environment-hub browsing); the deprecated ``bench environment list --provider``
-/ ``environment show`` / ``environment inspect`` aliases delegate here so there
-is exactly one copy of the logic. The actual API helpers live in
-``benchflow.hosted_env`` and are untouched.
+environment-hub browsing). ``list`` browses multiple hubs — PrimeIntellect
+hosted "Environments" and the Harbor benchmark registry — dispatched on
+``--provider``. ``show``/``inspect`` currently target the PrimeIntellect CLI.
+
+The deprecated ``bench environment list --provider`` / ``environment show`` /
+``environment inspect`` aliases delegate here so there is exactly one copy of
+the logic. The actual API/registry helpers live in ``benchflow.hosted_env`` and
+``benchflow.hub.harbor_registry`` and are untouched.
 """
 
 from __future__ import annotations
@@ -17,7 +21,8 @@ from rich.table import Table
 
 from benchflow.cli._shared import console, print_error
 
-_SUPPORTED_PROVIDER = "primeintellect"
+#: Hubs that ``bench hub env list`` can browse.
+LIST_PROVIDERS = ("primeintellect", "harbor")
 
 
 def hosted_env_list(
@@ -28,12 +33,26 @@ def hosted_env_list(
     limit: int | None,
     output_json: bool,
 ) -> None:
-    """List a hosted provider's environments (table, or raw JSON to stdout)."""
-    if provider != _SUPPORTED_PROVIDER:
+    """List a hub's environments (table, or raw JSON to stdout)."""
+    if provider == "primeintellect":
+        _list_primeintellect(
+            owner=owner, search=search, limit=limit, output_json=output_json
+        )
+    elif provider == "harbor":
+        if owner:
+            print_error("--owner is not supported for the harbor hub")
+            raise typer.Exit(1)
+        _list_harbor(search=search, limit=limit, output_json=output_json)
+    else:
         print_error(
-            f"Only --provider {_SUPPORTED_PROVIDER} is supported today (got {provider!r})"
+            f"Unknown --provider {provider!r}; supported: {', '.join(LIST_PROVIDERS)}"
         )
         raise typer.Exit(1)
+
+
+def _list_primeintellect(
+    *, owner: str | None, search: str | None, limit: int | None, output_json: bool
+) -> None:
     from benchflow.hosted_env import HostedEnvError, prime_env_list
 
     try:
@@ -44,9 +63,8 @@ def hosted_env_list(
     if output_json:
         # typer.echo, NOT console.print: Rich's console soft-wraps long lines to
         # the terminal width and injects a literal newline mid-string, which
-        # turns the upstream's valid JSON into unparseable output (raw control
-        # char inside a string). Write the payload verbatim so `--json | jq`
-        # works at any width.
+        # turns the upstream's valid JSON into unparseable output. Write the
+        # payload verbatim so `--json | jq` works at any width.
         typer.echo(raw)
         return
     data = json.loads(raw)
@@ -85,6 +103,61 @@ def hosted_env_list(
     console.print(
         f"[dim]Showing {len(rows)}{suffix} environment(s). Refine with "
         "--search/--owner, raise --limit, or use --json for the full payload.[/dim]"
+    )
+
+
+def _list_harbor(*, search: str | None, limit: int | None, output_json: bool) -> None:
+    from benchflow.hub.harbor_registry import (
+        DEFAULT_HARBOR_REGISTRY_URL,
+        load_harbor_registry,
+    )
+
+    try:
+        datasets = load_harbor_registry(DEFAULT_HARBOR_REGISTRY_URL)
+    except (OSError, ValueError) as e:
+        # A network/file failure or malformed registry must not dump a traceback.
+        print_error(f"could not load the Harbor registry: {e}")
+        raise typer.Exit(1) from None
+
+    rows = datasets
+    if search:
+        q = search.lower()
+        rows = [
+            d
+            for d in rows
+            if q in str(d.get("name", "")).lower()
+            or q in str(d.get("description", "")).lower()
+        ]
+    matched = len(rows)
+    if limit:
+        rows = rows[:limit]
+
+    if output_json:
+        typer.echo(json.dumps(rows))
+        return
+
+    table = Table(title="Harbor Environments")
+    table.add_column("Environment", style="cyan")
+    table.add_column("Version", style="green")
+    table.add_column("Tasks", justify="right")
+    table.add_column("Description", style="dim")
+    for d in rows:
+        tasks = d.get("tasks") or []
+        n_tasks = str(len(tasks)) if isinstance(tasks, list) else "0"
+        desc = str(d.get("description", "") or "")
+        if len(desc) > 80:
+            desc = desc[:79] + "…"
+        table.add_row(
+            escape(str(d.get("name", ""))),
+            escape(str(d.get("version", "") or "")),
+            n_tasks,
+            escape(desc),
+        )
+    console.print(table)
+    suffix = f" of {matched}" if matched > len(rows) else ""
+    console.print(
+        f"[dim]Showing {len(rows)}{suffix} Harbor environment(s). Refine with "
+        "--search, raise --limit, or use --json for the full registry.[/dim]"
     )
 
 

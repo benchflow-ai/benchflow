@@ -116,7 +116,7 @@ def _register_hub_env(hub_app: typer.Typer) -> None:
     used to be ``bench environment list --provider`` / ``show`` / ``inspect``;
     the run path stays on ``bench eval create --source-env``."""
     env_app = typer.Typer(
-        help="Browse hosted environments from an external provider (e.g. primeintellect)."
+        help="Browse environments from an external hub (primeintellect or harbor)."
     )
     hub_app.add_typer(env_app, name="env")
 
@@ -124,10 +124,15 @@ def _register_hub_env(hub_app: typer.Typer) -> None:
     def hub_env_list(
         provider: Annotated[
             str,
-            typer.Option("--provider", help="Hosted environment provider"),
+            typer.Option(
+                "--provider",
+                help="Hub to browse: 'primeintellect' (hosted envs) or "
+                "'harbor' (benchmark registry)",
+            ),
         ] = "primeintellect",
         owner: Annotated[
-            str | None, typer.Option("--owner", help="Owner/namespace filter")
+            str | None,
+            typer.Option("--owner", help="Owner/namespace filter (primeintellect)"),
         ] = None,
         search: Annotated[
             str | None, typer.Option("--search", help="Search query")
@@ -139,7 +144,7 @@ def _register_hub_env(hub_app: typer.Typer) -> None:
             bool, typer.Option("--json", help="Emit raw JSON")
         ] = False,
     ) -> None:
-        """List a hosted provider's environments."""
+        """List a hub's environments (primeintellect or harbor)."""
         hosted_env_list(
             provider=provider,
             owner=owner,
