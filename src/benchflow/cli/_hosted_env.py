@@ -1,6 +1,6 @@
 """Shared hosted-environment read commands.
 
-Canonically reached via ``bench hub env list|show|inspect`` (external
+Canonically reached via ``bench hub list|show|inspect`` (external
 environment-hub browsing). ``list`` browses multiple hubs — PrimeIntellect
 hosted "Environments" and the Harbor benchmark registry — dispatched on
 ``--provider``. ``show``/``inspect`` currently target the PrimeIntellect CLI.
@@ -21,7 +21,7 @@ from rich.table import Table
 
 from benchflow.cli._shared import console, print_error
 
-#: Hubs that ``bench hub env list`` can browse.
+#: Hubs that ``bench hub list`` can browse.
 LIST_PROVIDERS = ("primeintellect", "harbor")
 
 

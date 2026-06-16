@@ -495,25 +495,30 @@ to disable that automatic pass and rely on the manual command above.
 
 `bench environment` is a hidden **deprecated alias group**, removed in 0.7. The
 local lifecycle moved to [`bench sandbox`](#bench-sandbox) (`create`/`list`/`cleanup`)
-and hosted-provider browsing to [`bench hub env`](#bench-hub-env). The old
+and hosted-provider browsing to [`bench hub list`](#bench-hub). The old
 `bench environment create|list|cleanup` and `show|inspect` (plus `list
 --provider`/`--hub`) still work, each printing a one-line stderr notice.
 
 ## bench hub
 
-External environment hubs: compatibility checks (`check`) and browsing a hosted
-provider's environments (`env`).
+External environment hubs: browse a hub's environments (`list`/`show`/`inspect`)
+and check Harbor registry compatibility (`check`).
 
-### bench hub env
+### bench hub list / show / inspect
 
-Read-only browsing of a hosted provider's environments (PrimeIntellect
-"Environments"). To *run* one, use [`bench eval create --source-env`](#bench-eval-create).
+Read-only browsing of a hub's environments. `list` covers two hubs via
+`--provider`: `primeintellect` (hosted "Environments") and `harbor` (the
+benchmark registry). To *run* a hosted environment, use
+[`bench eval create --source-env`](#bench-eval-create).
 
 ```bash
-bench hub env list --provider primeintellect --owner primeintellect --search general-agent --limit 5
-bench hub env show primeintellect/general-agent --version 0.1.1
-bench hub env inspect primeintellect/general-agent --version 0.1.1 --path README.md
+bench hub list --provider primeintellect --owner primeintellect --search general-agent --limit 5
+bench hub list --provider harbor --search coding
+bench hub show primeintellect/general-agent --version 0.1.1
+bench hub inspect primeintellect/general-agent --version 0.1.1 --path README.md
 ```
+
+`bench hub env list|show|inspect` still resolves as a hidden back-compat alias.
 
 ### bench hub check
 

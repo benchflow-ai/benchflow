@@ -1,7 +1,10 @@
-"""``bench hub`` — compatibility checks for external environment hubs.
+"""``bench hub`` — browse external environment hubs + check compatibility.
 
-Registered onto the top-level app by :func:`register_hub`; ``cli/main.py``
-only wires the call.
+Registered onto the top-level app by :func:`register_hub`; ``cli/main.py`` only
+wires the call. The browsing verbs (``list``/``show``/``inspect``) live directly
+under ``hub`` — the old ``hub env`` nesting was redundant (the whole group is
+about environment hubs), so ``hub env *`` is kept only as a hidden back-compat
+alias.
 """
 
 from __future__ import annotations
@@ -26,12 +29,23 @@ def register_hub(app: typer.Typer) -> None:
     """Attach the ``hub`` command group to the top-level benchflow app."""
     hub_app = typer.Typer(
         help=(
-            "External environment hubs: compatibility checks (check) and browsing "
-            "hosted provider environments (env)."
+            "External environment hubs: browse a hub's environments "
+            "(list/show/inspect) and check Harbor compatibility (check)."
         )
     )
     app.add_typer(hub_app, name="hub", rich_help_panel="Environments")
-    _register_hub_env(hub_app)
+
+    # Canonical browsing verbs live directly under `hub` (the `env` level was
+    # redundant — `hub` already means environment hubs).
+    _register_env_verbs(hub_app)
+
+    # Back-compat: `bench hub env list|show|inspect` still resolves, as a hidden
+    # alias of the flattened commands.
+    env_alias = typer.Typer(
+        help="Alias of `bench hub` — use `bench hub list/show/inspect`."
+    )
+    hub_app.add_typer(env_alias, name="env", hidden=True)
+    _register_env_verbs(env_alias)
 
     @hub_app.command("check")
     def hub_check(
@@ -110,18 +124,15 @@ def register_hub(app: typer.Typer) -> None:
             console.print(f"[green]Wrote JSONL report:[/green] {escape(str(out))}")
 
 
-def _register_hub_env(hub_app: typer.Typer) -> None:
-    """Attach ``bench hub env`` — read-only browsing of a hosted provider's
-    environments (PrimeIntellect "Environments"). The canonical home for what
-    used to be ``bench environment list --provider`` / ``show`` / ``inspect``;
-    the run path stays on ``bench eval create --source-env``."""
-    env_app = typer.Typer(
-        help="Browse environments from an external hub (primeintellect or harbor)."
-    )
-    hub_app.add_typer(env_app, name="env")
+def _register_env_verbs(target: typer.Typer) -> None:
+    """Register the hub-environment browsing verbs (list/show/inspect) on ``target``.
 
-    @env_app.command("list")
-    def hub_env_list(
+    Called once for the canonical ``bench hub`` group and once for the hidden
+    ``bench hub env`` back-compat alias, so both expose identical commands.
+    """
+
+    @target.command("list")
+    def hub_list(
         provider: Annotated[
             str,
             typer.Option(
@@ -153,8 +164,8 @@ def _register_hub_env(hub_app: typer.Typer) -> None:
             output_json=output_json,
         )
 
-    @env_app.command("show")
-    def hub_env_show(
+    @target.command("show")
+    def hub_show(
         source_env: Annotated[
             str,
             typer.Argument(
@@ -165,11 +176,11 @@ def _register_hub_env(hub_app: typer.Typer) -> None:
             str | None, typer.Option("--version", help="Hosted environment version")
         ] = None,
     ) -> None:
-        """Show hosted environment metadata."""
+        """Show a hub environment's metadata."""
         hosted_env_show(source_env=source_env, version=version)
 
-    @env_app.command("inspect")
-    def hub_env_inspect(
+    @target.command("inspect")
+    def hub_inspect(
         source_env: Annotated[
             str,
             typer.Argument(
@@ -184,5 +195,5 @@ def _register_hub_env(hub_app: typer.Typer) -> None:
             typer.Option("--path", help="File inside the hosted environment package"),
         ] = "README.md",
     ) -> None:
-        """Inspect a file from a hosted environment package."""
+        """Inspect a file from a hub environment package."""
         hosted_env_inspect(source_env=source_env, version=version, path=path)

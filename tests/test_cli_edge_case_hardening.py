@@ -326,7 +326,7 @@ def test_hub_env_list_json_is_valid_json_even_when_narrow(monkeypatch):
     payload = json.dumps({"environments": [{"name": "a/b", "description": long_desc}]})
     monkeypatch.setattr(hosted, "prime_env_list", lambda **kw: payload)
     monkeypatch.setenv("COLUMNS", "40")
-    res = runner.invoke(app, ["hub", "env", "list", "--json"])
+    res = runner.invoke(app, ["hub", "list", "--json"])
     assert res.exit_code == 0
     assert json.loads(res.stdout) == json.loads(payload)  # round-trips cleanly
 
