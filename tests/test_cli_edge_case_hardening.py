@@ -356,12 +356,16 @@ def test_skills_list_markup_in_metadata_does_not_crash(tmp_path):
     assert "Traceback (most recent call last)" not in res.output
 
 
-def test_environment_alias_emits_exactly_one_deprecation_line():
+def test_environment_alias_emits_exactly_one_deprecation_line(monkeypatch):
     import benchflow.cli._shared as shared
+    import benchflow.hosted_env as hosted
 
+    # In 0.7 `bench environment` is the env-plane surface; only the hosted
+    # browsing path is a deprecated alias of `bench hub env list`. That path must
+    # emit exactly one project notice — NOT also Typer's generic per-call line.
+    monkeypatch.setattr(hosted, "prime_env_list", lambda **kw: '{"environments": []}')
     shared._DEPRECATION_WARNED.clear()
-    res = runner.invoke(app, ["environment", "list"])
-    # Exactly one project notice; NOT also Typer's generic per-call line.
+    res = runner.invoke(app, ["environment", "list", "--provider", "primeintellect"])
     assert res.stderr.count("deprecation:") == 1
     assert "DeprecationWarning: The command" not in res.stderr
 

@@ -232,6 +232,7 @@ bench eval create -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lit
 | `--worker-start-stagger-sec` | `1.0` | Seconds to stagger worker starts to avoid Daytona connection storms |
 | `--agent-idle-timeout` | (built-in default) | Abort ACP prompts after this many idle seconds; `0` disables idle detection |
 | `--jobs-dir` | `jobs` | Output directory |
+| `--json` | `false` | Emit a machine-readable eval run report (a single JSON object to stdout) instead of human-readable console output |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
 | `--skills-dir` | — | Advanced custom skills directory; valid only with `--skill-mode with-skill`. Omit it to use each task's `environment/skills`. |

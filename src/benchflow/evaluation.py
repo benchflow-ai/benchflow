@@ -999,14 +999,19 @@ class Evaluation:
         for d in sorted(self._tasks_dir.iterdir()):
             if not d.is_dir():
                 continue
-            if d.name in self._config.exclude_tasks:
-                continue
-            if self._config.include_tasks and d.name not in self._config.include_tasks:
-                continue
             if _is_task_dir(d):
+                # Filter on the source dir name OR the adapted (native) task id,
+                # so a foreign-adapter collection can be selected by either —
+                # the source name alone would miss tasks whose adapted id differs.
                 target = self._native_task_target(d)
                 if self._task_matches_filters(target.source_path, target.path):
                     selected.append(target.path)
+                continue
+            # Non-task dir: the source-name filter gates the malformed-task
+            # warning so excluded dirs are never warned about.
+            if d.name in self._config.exclude_tasks:
+                continue
+            if self._config.include_tasks and d.name not in self._config.include_tasks:
                 continue
             task_md = d / "task.md"
             if task_md.is_file():
