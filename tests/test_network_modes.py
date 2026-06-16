@@ -98,21 +98,22 @@ def test_resolve_sets_model_lane_for_restrictive():
     )  # public
 
 
-def test_lift_agent_network_skips_docker():
-    # Docker preserves the restrictive policy (the model lane handles model access).
+def test_lift_agent_network_skips_docker_and_daytona():
+    # Docker (model lane) and daytona (fail-closed, no lane) preserve the policy.
     from benchflow.sandbox.setup import _lift_agent_network_to_public
 
     cfg = SandboxConfig(network_mode="no-network")
-    out = _lift_agent_network_to_public(cfg, "docker")
-    assert out is cfg  # untouched, not copied
-    assert out.network_mode == "no-network"
+    for sb in ("docker", "daytona", "daytona-dind"):
+        out = _lift_agent_network_to_public(cfg, sb)
+        assert out is cfg  # untouched, not copied
+        assert out.network_mode == "no-network"
 
 
-def test_lift_agent_network_public_for_non_docker():
+def test_lift_agent_network_public_for_modal():
     from benchflow.sandbox.setup import _lift_agent_network_to_public
 
     cfg = SandboxConfig(network_mode="no-network")
-    out = _lift_agent_network_to_public(cfg, "daytona")
+    out = _lift_agent_network_to_public(cfg, "modal")
     assert out is not cfg  # copied, original never mutated
     assert out.network_mode == "public"
     assert cfg.network_mode == "no-network"

@@ -621,6 +621,9 @@ def _patch_docker_dind() -> None:
     _DIND_PATCH_APPLIED = True
 
 
+_NO_LIFT_SANDBOXES = frozenset({"docker", "daytona", "daytona-dind"})
+
+
 def _lift_agent_network_to_public(env_config: Any, sandbox_type: str) -> Any:
     """Lift a restrictive network policy to public for in-sandbox LLM agents.
 
@@ -635,7 +638,9 @@ def _lift_agent_network_to_public(env_config: Any, sandbox_type: str) -> Any:
     the public internet. Returns a possibly-copied ``env_config`` (the original
     is never mutated).
     """
-    if sandbox_type == "docker" or not _network_policy_is_restrictive(env_config):
+    if sandbox_type in _NO_LIFT_SANDBOXES or not _network_policy_is_restrictive(
+        env_config
+    ):
         return env_config
     from benchflow.task.config import NetworkMode
 

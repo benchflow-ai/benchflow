@@ -104,7 +104,7 @@ __all__ = ["DaytonaSandbox", "SandboxStartupError"]
 #: Raw-TCP egress canary (no DNS) used to verify a block-all policy is actually
 #: enforced on daytona; reachable under block-all => the platform leaked.
 _EGRESS_CANARY_HOST = "1.1.1.1"
-_EGRESS_CANARY_PORT = 53
+_EGRESS_CANARY_PORT = 443
 
 
 def _ensure_daytona_anyio_compat() -> None:
@@ -789,6 +789,9 @@ class DaytonaSandbox(BaseSandbox):
         ``no-network`` task would silently run with full internet and produce a
         falsely-rewarded result. Probe a raw-TCP canary and abort if reachable.
         """
+        self.logger.info(
+            "verify_network_enforcement: block_all=%s", self._network_block_all
+        )
         if not self._network_block_all:
             return
         if blockall_enforcement_violation(
@@ -802,21 +805,28 @@ class DaytonaSandbox(BaseSandbox):
             )
 
     async def _egress_reachable(self) -> bool:
+        py = (
+            "import socket;socket.setdefaulttimeout(6);"
+            f"socket.create_connection(({_EGRESS_CANARY_HOST!r},{_EGRESS_CANARY_PORT}))"
+            ".close();print('REACH')"
+        )
         probe = (
-            "python3 - <<'PYEOF' 2>/dev/null || true\n"
-            "import socket\n"
-            "s = socket.socket(); s.settimeout(6)\n"
-            "try:\n"
-            f"    s.connect(({_EGRESS_CANARY_HOST!r}, {_EGRESS_CANARY_PORT})); print('REACH')\n"
-            "except Exception:\n"
-            "    pass\n"
-            "PYEOF"
+            f"(python3 -c {shlex.quote(py)} || python -c {shlex.quote(py)}) "
+            "2>/dev/null || true"
         )
         try:
             res = await self.exec(probe, timeout_sec=20, user="root")
         except Exception:
+            self.logger.warning("egress canary probe failed to run", exc_info=True)
             return False
-        return "REACH" in (res.stdout or "")
+        reachable = "REACH" in (res.stdout or "")
+        self.logger.info(
+            "egress canary %s:%s reachable=%s",
+            _EGRESS_CANARY_HOST,
+            _EGRESS_CANARY_PORT,
+            reachable,
+        )
+        return reachable
 
     async def stop(self, delete: bool) -> None:
         return await self._strategy.stop(delete)
