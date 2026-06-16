@@ -418,6 +418,88 @@ def test_mle_bench_converter_accepts_sanitized_task_ids(tmp_path: Path):
     assert [path.name for path in generated] == ["fake-kaggle"]
 
 
+def _point_sample_submission(source: Path, data: Path, rel: str) -> None:
+    """Repoint Fake-Kaggle's sample_submission at ``rel`` (relative to data dir)."""
+    comp_id = "Fake-Kaggle"
+    (source / "mlebench" / "competitions" / comp_id / "config.yaml").write_text(
+        f"""
+id: Fake-Kaggle
+name: Fake Kaggle
+competition_type: simple
+description: mlebench/competitions/Fake-Kaggle/description.md
+dataset:
+  answers: Fake-Kaggle/prepared/private/test.csv
+  sample_submission: {rel}
+grader:
+  name: accuracy
+  grade_fn: mlebench.competitions.Fake-Kaggle.grade:grade
+preparer: mlebench.competitions.Fake-Kaggle.prepare:prepare
+""".lstrip()
+    )
+
+
+def test_mle_bench_converter_never_exposes_private_sample_submission(tmp_path: Path):
+    """A sample_submission declared under prepared/private/ must not reach the agent.
+
+    Five real upstream competitions (e.g. statoil-iceberg-classifier-challenge)
+    declare their sample under prepared/private/; exposing it would leak
+    verifier-side data into the agent-visible environment.
+    """
+    converter = _load_converter()
+    source, data = _write_fake_source(tmp_path)
+    comp_id = "Fake-Kaggle"
+    _point_sample_submission(
+        source, data, f"{comp_id}/prepared/private/secretSample.csv"
+    )
+    # The only sample now lives in private with a secret marker; no public sample.
+    (data / comp_id / "prepared" / "public" / "sampleSubmission.csv").unlink()
+    (data / comp_id / "prepared" / "private" / "secretSample.csv").write_text(
+        "id,label\n2,SECRET_PRIVATE_LABEL\n"
+    )
+
+    task_dir = converter.convert_all(
+        source, tmp_path / "out", data_dir=data, split="split75", overwrite=True
+    )[0]
+
+    env_data = task_dir / "environment" / "data"
+    assert not (env_data / "secretSample.csv").exists()
+    assert not (env_data / "sample_submission.csv").exists()
+    for path in env_data.rglob("*"):
+        if path.is_file():
+            assert "SECRET_PRIVATE_LABEL" not in path.read_text(errors="ignore")
+
+
+def test_mle_bench_converter_rejects_answers_path_traversal(tmp_path: Path):
+    """A dataset.answers path that escapes the data dir must be rejected."""
+    converter = _load_converter()
+    source, data = _write_fake_source(tmp_path)
+    comp_id = "Fake-Kaggle"
+    (source / "mlebench" / "competitions" / comp_id / "config.yaml").write_text(
+        """
+id: Fake-Kaggle
+name: Fake Kaggle
+competition_type: simple
+description: mlebench/competitions/Fake-Kaggle/description.md
+dataset:
+  answers: ../../escape/test.csv
+  sample_submission: Fake-Kaggle/prepared/public/sampleSubmission.csv
+grader:
+  name: accuracy
+  grade_fn: mlebench.competitions.Fake-Kaggle.grade:grade
+preparer: mlebench.competitions.Fake-Kaggle.prepare:prepare
+""".lstrip()
+    )
+
+    try:
+        converter.convert_all(
+            source, tmp_path / "out", data_dir=data, split="split75", overwrite=True
+        )
+    except ValueError as exc:
+        assert "must be a relative subpath" in str(exc)
+    else:
+        raise AssertionError("answers path traversal should be rejected")
+
+
 def test_mle_bench_parity_checks_generated_subset(tmp_path: Path):
     converter = _load_converter()
     parity = _load_parity()

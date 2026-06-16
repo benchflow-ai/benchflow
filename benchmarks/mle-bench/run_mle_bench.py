@@ -25,6 +25,20 @@ def _load_converter():
     return module
 
 
+def _normalize_task_ids(raw: list[str] | None) -> list[str] | None:
+    """Accept both space-separated and comma-separated ``--task-ids`` values.
+
+    The converter CLI and the README document the comma-separated form
+    (``--task-ids a,b``); splitting here keeps that idiom working when the
+    runner collects values via ``nargs="*"`` instead of silently treating
+    ``"a,b"`` as one unmatched id.
+    """
+    if not raw:
+        return None
+    ids = [tid.strip() for token in raw for tid in token.split(",") if tid.strip()]
+    return ids or None
+
+
 def ensure_converted_tasks(args: argparse.Namespace) -> Path:
     """Convert the source benchmark into BenchFlow tasks under ``tasks/``."""
     converter = _load_converter()
@@ -34,7 +48,7 @@ def ensure_converted_tasks(args: argparse.Namespace) -> Path:
         output_dir,
         overwrite=args.overwrite,
         limit=args.limit,
-        task_ids=args.task_ids,
+        task_ids=_normalize_task_ids(args.task_ids),
         data_dir=args.data_dir,
         split=args.split,
         include_data=not args.metadata_only,

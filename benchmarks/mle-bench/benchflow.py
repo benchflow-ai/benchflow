@@ -261,17 +261,19 @@ def _private_dir(data_dir: Path, competition: MLEBenchCompetition) -> Path:
     return data_dir / competition.competition_id / "prepared" / "private"
 
 
-def _answers_path(data_dir: Path, competition: MLEBenchCompetition) -> Path:
-    return data_dir / competition.dataset["answers"]
+def _safe_dataset_relpath(value: str, *, label: str) -> Path:
+    """Validate an upstream dataset path stays a contained relative subpath.
 
-
-def _sample_submission_path(
-    data_dir: Path, competition: MLEBenchCompetition
-) -> Path | None:
-    sample = competition.dataset.get("sample_submission")
-    if not sample:
-        return None
-    return data_dir / sample
+    These strings come from upstream ``config.yaml``. Rejecting absolute paths
+    and ``..`` keeps every copy inside the task's data/answer roots instead of
+    letting a malformed config escape them.
+    """
+    rel = Path(value)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise ValueError(
+            f"MLE-bench {label} path must be a relative subpath, got {value!r}"
+        )
+    return rel
 
 
 def _copy_prepared_data(
@@ -291,9 +293,10 @@ def _copy_prepared_data(
         )
         return
 
+    answers_rel = _safe_dataset_relpath(competition.dataset["answers"], label="answers")
     public_src = _public_dir(data_dir, competition)
     private_src = _private_dir(data_dir, competition)
-    answers_src = _answers_path(data_dir, competition)
+    answers_src = data_dir / answers_rel
 
     if not public_src.is_dir():
         raise FileNotFoundError(
@@ -315,16 +318,21 @@ def _copy_prepared_data(
         (public_dst / "description.md").write_text(
             competition.description, encoding="utf-8"
         )
-    sample_src = _sample_submission_path(data_dir, competition)
-    if sample_src is not None and sample_src.is_file():
+    # Expose a canonical sample_submission.csv to the agent only when the
+    # upstream sample lives in the public tree (already copied above). Some
+    # competitions declare the sample under prepared/private/; those must never
+    # reach the agent-visible environment, so we source strictly from public.
+    sample = competition.dataset.get("sample_submission")
+    if sample:
+        public_sample = public_dst / Path(sample).name
         canonical_sample = public_dst / "sample_submission.csv"
-        if sample_src.name != canonical_sample.name:
-            shutil.copy2(sample_src, canonical_sample)
+        if public_sample.is_file() and public_sample != canonical_sample:
+            shutil.copy2(public_sample, canonical_sample)
 
     private_dst = private_root / competition.competition_id / "prepared" / "private"
     _copytree(private_src, private_dst)
 
-    answers_dst = private_root / competition.dataset["answers"]
+    answers_dst = private_root / answers_rel
     answers_dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(answers_src, answers_dst)
 
