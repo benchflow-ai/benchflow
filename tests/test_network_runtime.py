@@ -91,6 +91,7 @@ def test_lockdown_complete_docker_relock():
 
 # ---- Fix #1c: plain-HTTP origin-form rewrite (greptile P2 #1; lane blocker) ---
 
+
 def test_to_origin_form_rewrites_absolute_uri():
     from benchflow.sandbox._egress_proxy import _to_origin_form
 
@@ -109,7 +110,9 @@ def test_to_origin_form_query_and_root_default():
         _to_origin_form(b"GET http://h:80/p?a=1&b=2 HTTP/1.1\r\n\r\n")
         == b"GET /p?a=1&b=2 HTTP/1.1\r\n\r\n"
     )
-    assert _to_origin_form(b"GET http://h HTTP/1.1\r\n\r\n") == b"GET / HTTP/1.1\r\n\r\n"
+    assert (
+        _to_origin_form(b"GET http://h HTTP/1.1\r\n\r\n") == b"GET / HTTP/1.1\r\n\r\n"
+    )
 
 
 def test_to_origin_form_passthrough_already_origin():
