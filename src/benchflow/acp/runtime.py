@@ -156,6 +156,14 @@ def _format_acp_model(model: str, agent: str) -> str:
     bare = strip_provider_prefix(model)
     agent_cfg = AGENTS.get(agent)
     if agent_cfg and agent_cfg.acp_model_format == "registered-provider/model":
+        # Proxy mode: BenchFlow's LiteLLM proxy serves the model under the alias
+        # "benchflow-…", which the pi-acp launcher registers under the "litellm"
+        # provider (BENCHFLOW_PROVIDER_NAME) in models.json. The alias carries no
+        # provider prefix, so sending it bare leaves Pi unable to resolve it — the
+        # model calls then bypass the proxy and no llm_trajectory.jsonl is written.
+        # Send the registered-provider-qualified id so Pi hits the gateway route.
+        if model.startswith("benchflow-"):
+            return f"litellm/{model}"
         return model if find_provider(model) else bare
     if not agent_cfg or agent_cfg.acp_model_format != "provider/model":
         return bare
