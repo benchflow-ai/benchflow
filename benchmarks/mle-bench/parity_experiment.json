@@ -1,0 +1,392 @@
+{
+  "benchmark": "mle-bench",
+  "conversion_parity": {
+    "description": "Direct upstream grade_csv vs converted BenchFlow verifier on identical CSV submissions.",
+    "tasks": [
+      {
+        "criteria_results": [
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "submission_exists",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "valid_submission",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "any_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "gold_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "silver_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "bronze_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "above_median",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "0.5",
+            "agreement": true,
+            "criterion_id": "score",
+            "original_verdict": "0.5"
+          }
+        ],
+        "n_criteria": 8,
+        "submission": "/tmp/mle-bench-real-tasks/aerial-cactus-identification/environment/data/sample_submission.csv",
+        "task_id": "aerial-cactus-identification"
+      },
+      {
+        "criteria_results": [
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "submission_exists",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "valid_submission",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "any_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "gold_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "silver_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "bronze_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "above_median",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "0.28616",
+            "agreement": true,
+            "criterion_id": "score",
+            "original_verdict": "0.28616"
+          }
+        ],
+        "n_criteria": 8,
+        "submission": "/tmp/mle-bench-real-tasks/denoising-dirty-documents/environment/data/sampleSubmission.csv",
+        "task_id": "denoising-dirty-documents"
+      },
+      {
+        "criteria_results": [
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "submission_exists",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "valid_submission",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "any_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "gold_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "silver_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "bronze_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "above_median",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "0.21174",
+            "agreement": true,
+            "criterion_id": "score",
+            "original_verdict": "0.21174"
+          }
+        ],
+        "n_criteria": 8,
+        "submission": "/tmp/mle-bench-real-tasks/nomad2018-predict-transparent-conductors/environment/data/sample_submission.csv",
+        "task_id": "nomad2018-predict-transparent-conductors"
+      },
+      {
+        "criteria_results": [
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "submission_exists",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "valid_submission",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "any_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "gold_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "silver_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "bronze_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "above_median",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "0.5",
+            "agreement": true,
+            "criterion_id": "score",
+            "original_verdict": "0.5"
+          }
+        ],
+        "n_criteria": 8,
+        "submission": "/tmp/mle-bench-real-tasks/random-acts-of-pizza/environment/data/sampleSubmission.csv",
+        "task_id": "random-acts-of-pizza"
+      },
+      {
+        "criteria_results": [
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "submission_exists",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "valid_submission",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "any_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "gold_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "silver_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "bronze_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "above_median",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "0.50345",
+            "agreement": true,
+            "criterion_id": "score",
+            "original_verdict": "0.50345"
+          }
+        ],
+        "n_criteria": 8,
+        "submission": "/tmp/mle-bench-real-tasks/spaceship-titanic/environment/data/sample_submission.csv",
+        "task_id": "spaceship-titanic"
+      },
+      {
+        "criteria_results": [
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "submission_exists",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "True",
+            "agreement": true,
+            "criterion_id": "valid_submission",
+            "original_verdict": "True"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "any_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "gold_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "silver_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "bronze_medal",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "False",
+            "agreement": true,
+            "criterion_id": "above_median",
+            "original_verdict": "False"
+          },
+          {
+            "adapted_verdict": "1.08468",
+            "agreement": true,
+            "criterion_id": "score",
+            "original_verdict": "1.08468"
+          }
+        ],
+        "n_criteria": 8,
+        "submission": "/tmp/mle-bench-real-tasks/spooky-author-identification/environment/data/sample_submission.csv",
+        "task_id": "spooky-author-identification"
+      }
+    ]
+  },
+  "eval_parity": {
+    "failed": 0,
+    "issues": [],
+    "passed": 6,
+    "tasks_tested": 6
+  },
+  "reward_distribution_parity": {
+    "description": "Reward is 1.0 for any_medal and 0.0 otherwise.",
+    "samples": [
+      {
+        "converted_reward": 0.0,
+        "legacy_reward": 0.0,
+        "reward_delta": 0.0,
+        "task_id": "aerial-cactus-identification"
+      },
+      {
+        "converted_reward": 0.0,
+        "legacy_reward": 0.0,
+        "reward_delta": 0.0,
+        "task_id": "denoising-dirty-documents"
+      },
+      {
+        "converted_reward": 0.0,
+        "legacy_reward": 0.0,
+        "reward_delta": 0.0,
+        "task_id": "nomad2018-predict-transparent-conductors"
+      },
+      {
+        "converted_reward": 0.0,
+        "legacy_reward": 0.0,
+        "reward_delta": 0.0,
+        "task_id": "random-acts-of-pizza"
+      },
+      {
+        "converted_reward": 0.0,
+        "legacy_reward": 0.0,
+        "reward_delta": 0.0,
+        "task_id": "spaceship-titanic"
+      },
+      {
+        "converted_reward": 0.0,
+        "legacy_reward": 0.0,
+        "reward_delta": 0.0,
+        "task_id": "spooky-author-identification"
+      }
+    ]
+  },
+  "side_by_side_status": "recorded",
+  "structural_parity": {
+    "failed": 0,
+    "issues": [],
+    "passed": 6,
+    "tasks_tested": 6
+  }
+}
