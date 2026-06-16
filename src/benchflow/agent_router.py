@@ -468,7 +468,9 @@ def load_parity_experiment(benchmarks_root: Path, name: str) -> Any:
             f"`bench eval adopt {name} --scaffold-only` first"
         )
     parity_file = benchmark_dir / "parity_experiment.json"
-    if not parity_file.exists():
+    if not parity_file.is_file():
+        # is_file (not exists): a directory named parity_experiment.json otherwise
+        # passes, then read_text() raises a raw IsADirectoryError.
         raise ParityExperimentMissing(
             f"no parity_experiment.json in {benchmark_dir} — run parity_test.py first"
         )
@@ -638,6 +640,15 @@ def run_scaffold_action(
     except (InvalidBenchmarkName, BenchmarkExistsError) as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
+    except OSError as exc:
+        # A bad --benchmarks-dir (e.g. a regular file, or an unwritable path)
+        # makes create_benchmark's mkdir raise NotADirectoryError/OSError.
+        # Surface it as a clean one-liner, not a raw traceback.
+        console.print(
+            f"[red]could not scaffold benchmark under {escape(str(root))}: "
+            f"{escape(str(exc))}[/red]"
+        )
+        raise typer.Exit(1) from exc
     console.print(f"[green]Scaffolded[/green] {target}")
     for rel in written:
         console.print(f"  {rel}")
@@ -756,7 +767,9 @@ def run_verify_action(
             raise typer.Exit(1)
         try:
             status, reasons = roundtrip_conformance_status(roundtrip_task)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
+            # ValueError covers tomllib.TOMLDecodeError from a malformed task.toml;
+            # OSError covers unreadable/missing files. Both → clean one-liner.
             console.print(
                 f"[red]  round-trip: error: could not check "
                 f"{roundtrip_task}: {exc}[/red]"
@@ -775,7 +788,17 @@ def run_verify_action(
         raise typer.Exit(1)
     issue = render_divergence_issue(report)
     if issue_out is not None:
-        Path(issue_out).write_text(issue)
+        # A missing parent dir (or unwritable path) for --issue-out must
+        # fail-fast with a clean message, matching the round-trip OSError guard
+        # above — not dump a FileNotFoundError traceback.
+        try:
+            Path(issue_out).write_text(issue)
+        except OSError as exc:
+            console.print(
+                f"[red]cannot write issue draft to {escape(str(issue_out))}: "
+                f"{escape(str(exc))}[/red]"
+            )
+            raise typer.Exit(1) from exc
         console.print(f"[dim]Issue draft written to {escape(str(issue_out))}[/dim]")
     else:
         console.print(issue)
