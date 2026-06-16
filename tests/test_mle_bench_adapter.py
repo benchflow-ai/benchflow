@@ -249,7 +249,9 @@ def grade_csv(path_to_submission, competition):
     (source / "mlebench" / "competitions" / "__init__.py").write_text("")
     (source / "mlebench" / "competitions" / "utils.py").write_text("")
     (comp_dir / "description.md").write_text("Predict the fake label.\n")
-    (comp_dir / "grade.py").write_text("def grade(submission, answers):\n    return 1.0\n")
+    (comp_dir / "grade.py").write_text(
+        "def grade(submission, answers):\n    return 1.0\n"
+    )
     (comp_dir / "leaderboard.csv").write_text("team,score\nwinner,1.0\n")
     (comp_dir / "config.yaml").write_text(
         """
@@ -306,7 +308,13 @@ def test_mle_bench_converter_keeps_private_data_out_of_environment(tmp_path: Pat
     assert (task_dir / "environment" / "data" / "sampleSubmission.csv").is_file()
     assert not (task_dir / "environment" / "private-data").exists()
     assert (
-        task_dir / "tests" / "private-data" / "Fake-Kaggle" / "prepared" / "private" / "test.csv"
+        task_dir
+        / "tests"
+        / "private-data"
+        / "Fake-Kaggle"
+        / "prepared"
+        / "private"
+        / "test.csv"
     ).is_file()
 
     metadata = json.loads((task_dir / "tests" / "mlebench_task.json").read_text())
