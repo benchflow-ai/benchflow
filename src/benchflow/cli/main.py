@@ -71,6 +71,7 @@ __all__ = [
     "app",
     "eval_app",
     "eval_run",
+    "eval_create",  # deprecated import alias of eval_run
 ]
 
 # Show progress messages (logger.info) from benchflow internals by default.
@@ -869,6 +870,11 @@ def _run_source_env_eval(
 # (e.g. benchflow-ai/skillsbench) keep working; Click prints a deprecation
 # notice when the alias is invoked.
 eval_app.command("create", deprecated=True)(eval_run)
+
+# Back-compat for the Python symbol: `eval_create` was part of this module's
+# public surface (``__all__``). Keep it as an import alias of ``eval_run`` so any
+# `from benchflow.cli.main import eval_create` keeps resolving.
+eval_create = eval_run
 
 
 @eval_app.command("list")

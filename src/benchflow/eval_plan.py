@@ -72,7 +72,7 @@ class EvalPlanError(ValueError):
 class EvalCreateRequest:
     """Raw ``bench eval run`` flags relevant to planning.
 
-    Mirrors the subset of ``eval_create`` parameters consumed by
+    Mirrors the subset of ``eval_run`` parameters consumed by
     :func:`build_eval_plan`. Execution-only flags (the ``source_env_*`` hosted-run
     knobs, ``source_path``/``source_ref``, and the worker run details) are passed
     straight through by the CLI and are not modeled here.
