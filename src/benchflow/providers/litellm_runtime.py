@@ -1025,6 +1025,17 @@ async def ensure_litellm_runtime(
         and network_is_restrictive(sandbox.task_env_config, environment)
     )
 
+    if network_restrictive and environment == "docker":
+        # The host litellm proxy is plain-HTTP and reached via the egress
+        # proxy; that forwarding path is fragile. Under a restrictive docker
+        # policy the agent instead reaches the provider directly over HTTPS
+        # (its host is egress-allowlisted); usage is captured by native-ACP.
+        return await _skip_litellm_runtime(
+            agent_env,
+            runtime,
+            reason="restrictive docker policy: direct-provider over HTTPS (egress-allowlisted)",
+        )
+
     if environment in _SANDBOX_LOCAL_ENVIRONMENTS and sandbox is None:
         raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
 

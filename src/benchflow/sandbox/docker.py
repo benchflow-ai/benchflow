@@ -206,6 +206,9 @@ class DockerSandbox(BaseSandbox):
         # Install-before-lockdown: the restrictive network policy is applied by
         # relock_network() AFTER the agent installs, not at sandbox start.
         self._network_locked = False
+        #: Extra hosts unioned into the egress allowlist at relock (the model
+        #: provider host, so the agent reaches it directly over HTTPS).
+        self._extra_allowed_hosts: tuple[str, ...] = ()
         if task_env_config.env and self._uses_compose:
             self._compose_task_env = resolve_env_vars(task_env_config.env)
 
@@ -295,9 +298,12 @@ class DockerSandbox(BaseSandbox):
             decision.policy is EffectivePolicy.ALLOWLIST or lane
         ):
             hosts = (
-                decision.allowed_hosts
-                if decision.policy is EffectivePolicy.ALLOWLIST
-                else ()
+                tuple(
+                    decision.allowed_hosts
+                    if decision.policy is EffectivePolicy.ALLOWLIST
+                    else ()
+                )
+                + self._extra_allowed_hosts
             )
             override = build_egress_override(
                 hosts,
@@ -308,7 +314,9 @@ class DockerSandbox(BaseSandbox):
         # BLOCK_ALL with no lane, or nowhere to stage the proxy → fail closed.
         return [self._DOCKER_COMPOSE_NO_NETWORK_PATH]
 
-    async def relock_network(self) -> dict[str, str]:
+    async def relock_network(
+        self, extra_allowed_hosts: tuple[str, ...] = ()
+    ) -> dict[str, str]:
         """Apply the task's restrictive network policy to the running container.
 
         The container came up open so the agent could install (install-before-
@@ -334,6 +342,7 @@ class DockerSandbox(BaseSandbox):
 
         # Gate _network_policy_compose_paths to emit the real override now.
         self._network_locked = True
+        self._extra_allowed_hosts = tuple(extra_allowed_hosts)
         cid = await self._main_container_id()
         if not cid:
             self.logger.warning("relock_network: no 'main' container; skipping")
@@ -373,7 +382,9 @@ class DockerSandbox(BaseSandbox):
             ],
             check=False,
         )
-        attached = set(inspect_res.stdout.split())
+        # stdout is str|None (check=False); None -> empty set -> lockdown_complete
+        # fails closed below (treated as not-detached), which is the safe default.
+        attached: set[str] = set((inspect_res.stdout or "").split())
         internal_net = f"{project}_{_EGRESS_INTERNAL_NET}" if use_sidecar else None
         if not lockdown_complete(attached, f"{project}_default", internal_net):
             raise SandboxStartupError(

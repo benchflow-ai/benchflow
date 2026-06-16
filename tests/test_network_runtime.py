@@ -120,3 +120,21 @@ def test_to_origin_form_passthrough_already_origin():
 
     h = b"GET /already HTTP/1.1\r\nHost: h\r\n\r\n"
     assert _to_origin_form(h) == h
+
+
+# ---- Fix #3 pivot: resolve provider host to allowlist under restrictive policy ---
+
+def test_provider_host_for_model():
+    from benchflow.agents.providers import provider_host_for_model
+
+    assert (
+        provider_host_for_model(
+            "deepseek/deepseek-v4-flash", {"DEEPSEEK_BASE_URL": "https://api.deepseek.com"}
+        )
+        == "api.deepseek.com"
+    )
+    assert provider_host_for_model("openai/gpt-4o", {}) == "api.openai.com"
+    # no provider prefix -> unknown -> None (caller leaves allowlist unchanged)
+    assert provider_host_for_model("deepseek-v4-flash", {}) is None
+    # provider prefix but its base_url env is missing -> None (don't guess)
+    assert provider_host_for_model("deepseek/x", {}) is None
