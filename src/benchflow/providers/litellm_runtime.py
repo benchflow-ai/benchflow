@@ -287,6 +287,34 @@ def _find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _harden_litellm_proxy_env(env: dict[str, str]) -> dict[str, str]:
+    """Stop inherited FastAPI app-config env vars from crashing the proxy at boot.
+
+    The LiteLLM proxy reads ``DOCS_URL``/``REDOC_URL``/``OPENAPI_URL``/
+    ``SERVER_ROOT_PATH`` from its *process* environment at import time and feeds
+    them straight into ``FastAPI(docs_url=..., redoc_url=..., root_path=...)``.
+    Our proxy inherits the agent/sandbox environment, and a sandbox base image
+    may export these for its own services (e.g. ``env0-base`` sets ``DOCS_URL``
+    for its mock APIs). If the inherited value lacks a leading ``/``,
+    ``FastAPI.setup()`` -> ``add_route`` raises ``AssertionError: Routed paths
+    must start with '/'`` and the proxy never boots — silently degrading every
+    rollout to ``usage_source='unavailable'`` (token/cost telemetry lost).
+
+    The usage proxy is internal, ephemeral, and serves no docs UI, so force the
+    docs endpoints off and pin the root path to "" (the value BenchFlow's
+    ``http://127.0.0.1:<port>/v1`` client URLs assume — an inherited prefix
+    would also 404 every request). ``_get_docs_url`` honors ``DOCS_URL`` *before*
+    ``NO_DOCS``, so the URL vars must be shadowed with an empty string (falsy),
+    not merely have the ``NO_*`` flags set; the empty value also overrides the
+    image's once the sandbox launcher merges this dict over its own ``os.environ``.
+    """
+    for key in ("DOCS_URL", "REDOC_URL", "OPENAPI_URL", "SERVER_ROOT_PATH"):
+        env[key] = ""
+    for key in ("NO_DOCS", "NO_REDOC", "NO_OPENAPI"):
+        env[key] = "true"
+    return env
+
+
 async def _await_log_stable(
     get_size: Callable[[], int | Awaitable[int]],
     *,
@@ -457,6 +485,7 @@ async def _start_host_litellm(
             "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
         }
     )
+    _harden_litellm_proxy_env(env)
     litellm_executable = _host_litellm_executable()
     stdout = stdout_path.open("ab")
     stderr = stderr_path.open("ab")
@@ -753,6 +782,7 @@ async def _start_sandbox_litellm(
             "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
         }
     )
+    _harden_litellm_proxy_env(env)
     launch_config = {
         "python": python,
         "litellm": f"{paths['venv']}/bin/litellm",

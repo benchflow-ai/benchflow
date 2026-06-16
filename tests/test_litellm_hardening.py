@@ -418,6 +418,70 @@ async def test_sandbox_litellm_startup_failure_tears_down():
 
 
 # #
+# Proxy env hardening: inherited FastAPI docs env vars must not crash boot      #
+# #
+
+
+def test_harden_litellm_proxy_env_neutralizes_inherited_docs_url():
+    """A sandbox image (e.g. env0-base) that exports a slash-less DOCS_URL for
+    its own services must not leak into the proxy's FastAPI(docs_url=...) and
+    crash boot with 'Routed paths must start with /'. The URL vars are shadowed
+    (empty, falsy) and the docs endpoints forced off; creds/unrelated vars stay."""
+    env = {
+        "DEEPSEEK_API_KEY": "sk-keep",
+        "SOME_TASK_VAR": "keep-me",
+        "DOCS_URL": "docs",  # no leading slash -> would crash FastAPI.setup()
+        "REDOC_URL": "redoc",
+        "OPENAPI_URL": "openapi.json",
+        "SERVER_ROOT_PATH": "litellm",
+    }
+    runtime_mod._harden_litellm_proxy_env(env)
+
+    # _get_docs_url honors DOCS_URL before NO_DOCS, so it must be falsy.
+    for key in ("DOCS_URL", "REDOC_URL", "OPENAPI_URL", "SERVER_ROOT_PATH"):
+        assert env[key] == ""
+    for key in ("NO_DOCS", "NO_REDOC", "NO_OPENAPI"):
+        assert env[key] == "true"
+    # Provider creds and unrelated task vars are untouched.
+    assert env["DEEPSEEK_API_KEY"] == "sk-keep"
+    assert env["SOME_TASK_VAR"] == "keep-me"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_litellm_launch_env_hardens_inherited_docs_url():
+    """The sandbox launcher merges launch_config["env"] over the image's
+    os.environ, so a leaked DOCS_URL must be shadowed in the uploaded launch
+    config — otherwise the in-sandbox proxy crashes at boot and every rollout
+    silently reports usage_source='unavailable'."""
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    sandbox = _FakeSandbox()
+
+    await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env={
+            "MINIMAX_API_KEY": "k",
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+            "DOCS_URL": "docs",  # inherited from the sandbox base image
+        },
+        session_id="s",
+        agent_name="openhands",
+    )
+
+    launch_files = [k for k in sandbox.uploaded if k.endswith("launch_config.json")]
+    assert launch_files, "launch_config.json should be uploaded"
+    proxy_env = json.loads(sandbox.uploaded[launch_files[0]])["env"]
+    assert proxy_env["DOCS_URL"] == ""
+    assert proxy_env["NO_DOCS"] == "true"
+    # The provider base url (a legit agent var) survives the hardening.
+    assert proxy_env["MINIMAX_BASE_URL"] == "https://api.minimax.io/v1"
+
+
+# #
 # Bedrock adaptive-thinking patch actually applies (no silent no-op)           #
 # #
 
