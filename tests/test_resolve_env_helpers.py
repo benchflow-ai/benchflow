@@ -617,7 +617,7 @@ class TestResolveAgentEnvOracle:
     Regression for the PR #173 follow-up: commit 360c460 removed the
     `agent != "oracle"` guard from resolve_agent_env, betting that CLI callers
     would pass model=None for oracle. But cli/main.py:eval_create (the live
-    `bench eval create`) still passes `model or DEFAULT_MODEL`, so oracle
+    `bench eval run`) still passes `model or DEFAULT_MODEL`, so oracle
     reaches the chokepoint with a real model and triggers ANTHROPIC_API_KEY
     validation — breaking offline oracle runs that have no API key set.
     """

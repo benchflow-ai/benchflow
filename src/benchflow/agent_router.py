@@ -5,7 +5,7 @@ that adopts an upstream benchmark into a BenchFlow benchmark (canonically
 ``bench eval adopt``; the legacy ``bench agent create|run|verify`` and the
 intermediate ``bench adopt init|convert|verify`` remain as hidden deprecated
 aliases). It sits downstream of every environment framework: a benchmark is
-*routed* into the repo here, while ``bench eval create`` *runs* the tasks.
+*routed* into the repo here, while ``bench eval run`` *runs* the tasks.
 
 Three cohesive action bodies — module-level functions so the canonical command
 and the deprecated alias closures share one implementation:

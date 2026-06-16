@@ -489,7 +489,7 @@ class EvaluationConfig:
     self_gen_no_internet: bool = False
     job_mode: str = DEFAULT_JOB_MODE
     source_provenance: dict[str, Any] | None = None
-    # Registry dataset identity (`bench eval create -d name@version`). When
+    # Registry dataset identity (`bench eval run -d name@version`). When
     # set, every result.json/config.json is stamped with dataset_name,
     # dataset_version, and the task's registry content digest — see
     # docs/dataset-versioning.md in benchflow-ai/skillsbench.

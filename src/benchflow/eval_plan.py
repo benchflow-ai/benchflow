@@ -1,6 +1,6 @@
-"""Planning logic for ``bench eval create`` — the pure core of the CLI command.
+"""Planning logic for ``bench eval run`` — the pure core of the CLI command.
 
-``bench eval create`` (defined in :mod:`benchflow.cli.main`, pinned there by the
+``bench eval run`` (defined in :mod:`benchflow.cli.main`, pinned there by the
 oracle-chokepoint tests) is a thin parse → request → plan → run → report shell.
 This module owns the **plan** step: it takes an :class:`EvalCreateRequest` of raw
 CLI flags and turns them into an :class:`EvalPlan` — the disambiguated source,
@@ -60,7 +60,7 @@ __all__ = [
 
 
 class EvalPlanError(ValueError):
-    """A ``bench eval create`` validation failure.
+    """A ``bench eval run`` validation failure.
 
     Carries the operator-facing ``message`` exactly as the CLI used to print it
     (without Rich markup). The CLI shell renders it ``[red]...[/red]`` and exits
@@ -70,7 +70,7 @@ class EvalPlanError(ValueError):
 
 @dataclass
 class EvalCreateRequest:
-    """Raw ``bench eval create`` flags relevant to planning.
+    """Raw ``bench eval run`` flags relevant to planning.
 
     Mirrors the subset of ``eval_create`` parameters consumed by
     :func:`build_eval_plan`. Execution-only flags (the ``source_env_*`` hosted-run
@@ -113,7 +113,7 @@ class EvalCreateRequest:
 
 @dataclass
 class EvalPlan:
-    """Normalized, validated inputs for the ``bench eval create`` run step.
+    """Normalized, validated inputs for the ``bench eval run`` run step.
 
     Holds every value the CLI shell needs after planning: the normalized
     agent/timeout/effort, the resolved manifest, the parsed include/exclude sets,
@@ -207,7 +207,7 @@ def _normalize_eval_agent(agent_spec: str) -> str:
 
 
 def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
-    """Validate and normalize ``bench eval create`` flags into an :class:`EvalPlan`.
+    """Validate and normalize ``bench eval run`` flags into an :class:`EvalPlan`.
 
     Raises :class:`EvalPlanError` for any validation failure, carrying the exact
     operator-facing message (no Rich markup). Performs no console or process-exit

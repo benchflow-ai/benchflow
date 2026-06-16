@@ -165,7 +165,7 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
 
     if not turn_files:
         # The given dir has no trajectory of its own. If it's a job directory
-        # (the natural value from `eval create`'s "Artifacts:" line), point at its
+        # (the natural value from `eval run`'s "Artifacts:" line), point at its
         # rollout subdirectories instead of showing a blank page.
         try:
             rollouts = sorted(

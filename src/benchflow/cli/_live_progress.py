@@ -1,4 +1,4 @@
-"""Live terminal dashboard for ``bench eval create`` runs.
+"""Live terminal dashboard for ``bench eval run`` runs.
 
 Renders a single Rich :class:`~rich.live.Live` panel — a progress bar with ETA,
 queued/running/passed/failed/errored counts, a "running now" table, and running

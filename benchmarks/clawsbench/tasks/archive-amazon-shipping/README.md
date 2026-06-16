@@ -25,7 +25,7 @@ build-time message id is baked in.
 ## Run it
 
 ```bash
-bench eval create --tasks-dir benchmarks/clawsbench/tasks/archive-amazon-shipping \
+bench eval run --tasks-dir benchmarks/clawsbench/tasks/archive-amazon-shipping \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent gemini --model gemini-3.1-flash-lite-preview \
   --sandbox daytona
@@ -34,6 +34,6 @@ bench eval create --tasks-dir benchmarks/clawsbench/tasks/archive-amazon-shippin
 Confirm the task is solvable with the oracle:
 
 ```bash
-bench eval create --tasks-dir benchmarks/clawsbench/tasks/archive-amazon-shipping \
+bench eval run --tasks-dir benchmarks/clawsbench/tasks/archive-amazon-shipping \
   --agent oracle --sandbox docker
 ```

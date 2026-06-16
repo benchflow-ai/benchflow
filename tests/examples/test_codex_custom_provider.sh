@@ -92,7 +92,7 @@ echo ""
 set +e
 env -u CODEX_ACCESS_TOKEN -u CODEX_API_KEY -u OPENAI_BASE_URL -u OPENAI_API_KEY \
   OPENAI_API_KEY="dummy-local-key" \
-  uv run bench eval create \
+  uv run bench eval run \
     --tasks-dir "$TASK" \
     --agent codex-acp \
     --model vllm/gpt-5.4 \

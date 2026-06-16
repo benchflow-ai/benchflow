@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Agent-as-judge verification over a completed BenchFlow rollout.
 
-This is BenchFlow's own integration check: after a real ``bench eval create``
+This is BenchFlow's own integration check: after a real ``bench eval run``
 run, an LLM judge reads the recorded rollout and decides whether the run is a
 trustworthy measurement — the agent genuinely attempted the task, the
 trajectory is coherent, and the reward is not the product of obvious
@@ -572,7 +572,7 @@ def _find_rollout_dir(root: Path) -> Path:
     """Resolve a rollout directory from a path that may be a jobs root.
 
     Accepts either a rollout dir (contains ``result.json``) directly, or a
-    parent tree from one ``bench eval create`` run, in which case the most
+    parent tree from one ``bench eval run`` run, in which case the most
     recently modified rollout is judged.
     """
     if (root / "result.json").is_file():

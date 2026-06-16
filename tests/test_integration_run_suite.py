@@ -235,7 +235,7 @@ def test_security_dind_lane_has_concrete_task_but_remains_blocked() -> None:
     assert lane["status"] == "backlog"
     assert lane["release_blocker"] is False
     assert "Firecracker/K8s" in lane["backlog_reason"]
-    assert "bench eval create --sandbox firecracker" in lane["activation_criteria"][0]
+    assert "bench eval run --sandbox firecracker" in lane["activation_criteria"][0]
     task_set = expanded["matrix"]["task_sets"][0]
     assert task_set["source"]["env_uid"] == (
         "harbor:termigen-environments/docker_escape_privileged_container_medium@"
@@ -310,7 +310,7 @@ def test_backlog_profile_tracks_security_dind_blocker(
         "harbor:termigen-environments/docker_escape_privileged_container_medium@"
         in captured.out
     )
-    assert "bench eval create --sandbox firecracker" in captured.out
+    assert "bench eval run --sandbox firecracker" in captured.out
     assert "unresolved TODOs or blocked lanes in selected lane(s):" in captured.err
     assert "security-dind-smoke (blocked: 2)" in captured.err
 

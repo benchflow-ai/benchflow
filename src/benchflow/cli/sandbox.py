@@ -54,7 +54,7 @@ def sandbox_create(task_dir: Path, sandbox: str) -> None:
     console.print(f"  Task:    {env.task_path}")
     console.print(f"  Sandbox: {env.sandbox}")
     console.print(
-        "  Use [cyan]bench eval create[/cyan] for CLI runs, or pass to [cyan]bf.run()[/cyan]"
+        "  Use [cyan]bench eval run[/cyan] for CLI runs, or pass to [cyan]bf.run()[/cyan]"
     )
 
 
