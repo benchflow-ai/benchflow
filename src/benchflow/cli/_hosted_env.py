@@ -129,7 +129,7 @@ def _list_harbor(*, search: str | None, limit: int | None, output_json: bool) ->
             or q in str(d.get("description", "")).lower()
         ]
     matched = len(rows)
-    if limit:
+    if limit is not None:
         rows = rows[:limit]
 
     if output_json:
