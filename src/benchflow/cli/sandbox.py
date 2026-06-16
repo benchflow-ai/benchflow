@@ -4,7 +4,7 @@ This is the local execution side of the framework: provision a task as a
 runnable environment on a docker/daytona/modal **sandbox** backend, list active
 sandboxes, and reap stale ones. It was previously ``bench environment``; that
 name now reads as a misnomer (hosted-environment browsing moved to
-``bench hub env``), so the group is renamed to ``sandbox`` — ``bench
+``bench hub``), so the group is renamed to ``sandbox`` — ``bench
 environment`` stays as a hidden deprecated alias group through 0.6.
 
 The command bodies live here as plain functions so the deprecated

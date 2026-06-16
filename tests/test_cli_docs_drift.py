@@ -186,6 +186,10 @@ def test_documented_subcommands_exist() -> None:
         ["environment", "inspect"],
         ["environment", "cleanup"],
         ["hub", "check"],
+        ["hub", "list"],
+        ["hub", "show"],
+        ["hub", "inspect"],
+        # `hub env *` is a hidden back-compat alias of the flattened verbs.
         ["hub", "env", "list"],
         ["hub", "env", "show"],
         ["hub", "env", "inspect"],
