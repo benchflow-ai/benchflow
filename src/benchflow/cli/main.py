@@ -684,6 +684,8 @@ def run_batch_eval(
 
 def _run_config_file_eval(plan: "EvalPlan") -> None:
     """Apply CLI overrides onto a YAML-loaded Evaluation, then run and report it."""
+    import subprocess
+
     import yaml
 
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
@@ -737,6 +739,15 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # the config file.
         if plan.eval_env_manifest is not None:
             j._config.environment_manifest = plan.eval_env_manifest
+    except subprocess.CalledProcessError as e:
+        # A source.repo clone/fetch failure (git exits non-zero) otherwise escapes
+        # as a raw traceback — it is not a config-parse error, so give it its own
+        # clean message. Mirrors the --source-repo guard's CalledProcessError catch.
+        console.print(
+            f"[red]Failed to fetch source repo for {escape(str(config_file))}:[/red] "
+            f"{escape(str(e))}"
+        )
+        raise typer.Exit(1) from None
     except (yaml.YAMLError, ValueError, TypeError, LookupError, OSError) as e:
         # LookupError covers missing source.repo (KeyError) and empty legacy
         # agents:/datasets: lists (IndexError). Type-mismatch cases (e.g. a
@@ -855,14 +866,24 @@ def _run_source_env_eval(
 @eval_app.command("list")
 def eval_list(
     jobs_dir: Annotated[
-        Path,
-        typer.Argument(help="Jobs directory to list"),
-    ] = Path("jobs"),
+        Path | None,
+        typer.Argument(help="Jobs directory to list (default: ./jobs)"),
+    ] = None,
 ) -> None:
     """List completed evaluations."""
+    # None means the argument was omitted: the default ./jobs simply not existing
+    # yet is a benign first-run state (exit 0). An *explicit* path that doesn't
+    # exist is a typo and should fail like `eval metrics` does, so scripts don't
+    # read it as success. (A literal `eval list jobs` is then treated as explicit,
+    # which is correct — the user named a path.)
+    explicit = jobs_dir is not None
+    jobs_dir = jobs_dir or Path("jobs")
     if not jobs_dir.exists():
-        console.print(f"[yellow]No jobs directory: {escape(str(jobs_dir))}[/yellow]")
-        return
+        if not explicit:
+            console.print("[yellow]No jobs yet.[/yellow]")
+            return
+        print_error(f"No such jobs directory: {jobs_dir}")
+        raise typer.Exit(1)
     if not jobs_dir.is_dir():
         # exists() is True for a file; iterdir() below would NotADirectoryError.
         console.print(f"[red]Not a directory: {escape(str(jobs_dir))}[/red]")

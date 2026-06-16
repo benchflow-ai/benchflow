@@ -134,6 +134,11 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
     return "\n".join(blocks)
 
 
+# Sentinel HTML returned by render_rollout when a directory holds no trajectory
+# files. serve() keys off it to fail fast instead of writing/serving a blank page.
+_NO_TRAJECTORIES_HTML = "<p>No trajectory files found</p>"
+
+
 def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     """Render a full trial (multiple turns) as HTML.
 
@@ -182,7 +187,7 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
                 f"View one with <code>bench eval view {html.escape(rollout_dir.name)}/"
                 f"&lt;rollout&gt;</code>:</p><ul>{items}</ul>"
             )
-        return "<p>No trajectory files found</p>"
+        return _NO_TRAJECTORIES_HTML
 
     # Default prompts
     if prompts is None:
@@ -403,6 +408,11 @@ def serve(
         sys.exit(1)
 
     html_content = render_rollout(path, prompts)
+    if html_content == _NO_TRAJECTORIES_HTML:
+        # Don't write a blank trajectory.html into an unrelated directory or
+        # start a server for nothing — fail fast like the not-a-directory path.
+        print(f"No trajectories found in {path}")
+        sys.exit(1)
     (path / "trajectory.html").write_text(html_content)
 
     print(f"Trajectory viewer: http://localhost:{port}")
