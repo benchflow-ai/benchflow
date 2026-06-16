@@ -236,6 +236,10 @@ def test_agent_registry_has_supported_hard_web_disable_snippets():
     opencode_cmd = AGENTS["opencode"].disallow_web_tools_setup_cmd
     assert "webfetch" in opencode_cmd
 
+    mimo_cmd = AGENTS["mimo"].disallow_web_tools_setup_cmd
+    assert "webfetch" in mimo_cmd
+    assert "mimocode" in mimo_cmd
+
 
 @pytest.mark.asyncio
 async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
@@ -344,6 +348,16 @@ def test_opencode_setup_cmd_disables_web_tools(tmp_path):
     _run_setup_cmd("opencode", tmp_path)
     settings = json.loads(
         (tmp_path / ".config" / "opencode" / "opencode.json").read_text()
+    )
+
+    assert settings["tools"]["webfetch"] is False
+
+
+def test_mimo_setup_cmd_disables_web_tools(tmp_path):
+    """MiMo Code setup_cmd should write mimocode.json with webfetch=False."""
+    _run_setup_cmd("mimo", tmp_path)
+    settings = json.loads(
+        (tmp_path / ".config" / "mimocode" / "mimocode.json").read_text()
     )
 
     assert settings["tools"]["webfetch"] is False

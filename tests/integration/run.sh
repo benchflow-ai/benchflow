@@ -42,6 +42,7 @@ model_for_agent() {
   case "$1" in
     claude-agent-acp) echo "claude-haiku-4-5-20251001" ;;
     codex-acp)        echo "gpt-5.4-nano" ;;
+    mimo)             echo "xiaomi/mimo-v2.5" ;;
     *)                echo "$DEFAULT_MODEL" ;;
   esac
 }
@@ -55,6 +56,7 @@ ALL_AGENTS=(
   opencode
   harvey-lab-harness
   openhands
+  mimo
 )
 
 # Parse args
@@ -87,7 +89,9 @@ fi
 LOG_DIR="$JOBS_ROOT/.logs"
 CHECK_AGENTS=("${AGENTS[@]}")
 
-# Credential checks
+# ── Credential checks ──────────────────────────────────────────────
+# mimo additionally needs XIAOMI_API_KEY + XIAOMI_BASE_URL (registered
+# `xiaomi` provider — resolve_agent_env fails closed without both).
 has_gemini_key() {
   [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GOOGLE_API_KEY:-}" ]
 }
@@ -101,6 +105,10 @@ has_creds_for() {
       ;;
     codex-acp)
       [ -n "${OPENAI_API_KEY:-}" ]
+      ;;
+    mimo)
+      # Xiaomi MiMo platform (registered `xiaomi` provider) — both required.
+      [ -n "${XIAOMI_API_KEY:-}" ] && [ -n "${XIAOMI_BASE_URL:-}" ]
       ;;
     *)
       has_gemini_key

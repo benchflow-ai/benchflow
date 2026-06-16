@@ -15,7 +15,7 @@ from benchflow.task.runtime_capabilities import (
 )
 from benchflow.task.runtime_view import TaskRuntimeView
 
-CompatibilityTarget = Literal["harbor", "pier"]
+CompatibilityTarget = Literal["harbor"]
 
 
 @dataclass(frozen=True)

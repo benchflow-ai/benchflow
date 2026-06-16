@@ -693,7 +693,7 @@ class TaskConfig(TaskConfigModel):
                 raise ValueError(
                     "Task config cannot contain both 'oracle' and legacy "
                     "'solution'; use 'oracle' for native tasks or 'solution' "
-                    "only when importing legacy Harbor/Pier tasks."
+                    "only when importing legacy Harbor tasks."
                 )
             if "version" in data:
                 data.setdefault("schema_version", data.pop("version"))
