@@ -39,8 +39,10 @@ class Task:
             self.config = self.document.config
             self.scenes = self.document.scenes
         else:
-            if not self.paths.instruction_path.exists():
-                # Neither task.md (native) nor a legacy instruction.md is present.
+            if not self.paths.instruction_path.is_file():
+                # Neither task.md (native) nor a legacy instruction.md is present
+                # (is_file, not exists: a directory named instruction.md would
+                # otherwise pass and make read_text() raise IsADirectoryError).
                 # Name the formats the author can actually create rather than
                 # leaking the internal fallback filename, which otherwise
                 # misdirects users toward the deprecated split format.

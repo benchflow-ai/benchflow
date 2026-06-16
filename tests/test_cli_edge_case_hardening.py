@@ -8,6 +8,7 @@ by the command surface they protect.
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -518,7 +519,12 @@ def test_viewer_job_dir_indexes_rollout_subdirs(tmp_path):
 # ── round-3 sweep: error-handling defects found by the CLI audit workflow ─────
 
 
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="chmod 000 does not restrict root, so the unreadable-dir probe is moot",
+)
 def test_tasks_digest_skips_unreadable_subdir_without_traceback(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P0: the directory scan stat'd task.toml inside an unreadable subdir and
     # dumped a raw PermissionError traceback. It must skip what it cannot stat.
     locked = tmp_path / "locked"
@@ -535,6 +541,7 @@ def test_tasks_digest_skips_unreadable_subdir_without_traceback(tmp_path):
 
 
 def test_tasks_generate_from_file_directory_is_clean_error(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P0: a directory passed exists() then raised IsADirectoryError in the format
     # sniff's path.open(). It must be rejected with a clean message.
     res = runner.invoke(
@@ -546,19 +553,29 @@ def test_tasks_generate_from_file_directory_is_clean_error(tmp_path):
 
 
 def test_tasks_generate_rejects_invalid_outcome(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P3: a bogus --outcome silently matched nothing and exited 0; it must be
     # rejected against the advertised choice set.
     trace = tmp_path / "t.jsonl"
     trace.write_text('{"foo":"bar"}\n')
     res = runner.invoke(
         app,
-        ["tasks", "generate", "--from-file", str(trace), "--outcome", "zzz", "--dry-run"],
+        [
+            "tasks",
+            "generate",
+            "--from-file",
+            str(trace),
+            "--outcome",
+            "zzz",
+            "--dry-run",
+        ],
     )
     assert res.exit_code == 1
     assert "Invalid --outcome" in res.output
 
 
 def test_continue_batch_rejects_nonexistent_root(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P1: a typo'd ROOT exited 0 "No timeout run folders found." (silent success).
     res = runner.invoke(app, ["continue-batch", str(tmp_path / "nope-12345")])
     assert res.exit_code == 1
@@ -566,6 +583,7 @@ def test_continue_batch_rejects_nonexistent_root(tmp_path):
 
 
 def test_continue_batch_rejects_file_root(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P1: a regular-file ROOT also exited 0; it must fail like `bench continue`.
     f = tmp_path / "a-file.txt"
     f.write_text("x")
@@ -575,6 +593,7 @@ def test_continue_batch_rejects_file_root(tmp_path):
 
 
 def test_environment_create_empty_dir_names_task_md(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P2: the error named the legacy instruction.md; it must name the formats the
     # author can actually create (task.md / task.toml).
     empty = tmp_path / "empty"
@@ -587,6 +606,7 @@ def test_environment_create_empty_dir_names_task_md(tmp_path):
 
 
 def test_eval_view_empty_dir_fails_fast_without_writing(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P3: `eval view` wrote a blank trajectory.html into an unrelated dir and
     # started a server; an empty dir must fail fast and write nothing.
     res = runner.invoke(app, ["eval", "view", str(tmp_path), "--port", "0"])
@@ -596,6 +616,7 @@ def test_eval_view_empty_dir_fails_fast_without_writing(tmp_path):
 
 
 def test_print_error_echoes_colon_tokens_verbatim_no_emoji(monkeypatch):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P3: print_error rendered user input through Rich with emoji=True, so a
     # hosted-env ref like primeintellect:a:b had :a: swapped for an emoji. The
     # echoed value must be literal.
@@ -620,10 +641,14 @@ _MIN_TRACE = (
 
 
 def test_tasks_normalize_output_is_dir_clean_error(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P0: --output an existing directory raised a raw IsADirectoryError.
-    assert runner.invoke(
-        app, ["tasks", "init", "demotask", "--dir", str(tmp_path)]
-    ).exit_code == 0
+    assert (
+        runner.invoke(
+            app, ["tasks", "init", "demotask", "--dir", str(tmp_path)]
+        ).exit_code
+        == 0
+    )
     outdir = tmp_path / "outdir"
     outdir.mkdir()
     res = runner.invoke(
@@ -635,6 +660,7 @@ def test_tasks_normalize_output_is_dir_clean_error(tmp_path):
 
 
 def test_skills_eval_evals_json_as_dir_clean_error(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P0: evals/evals.json being a directory raised a raw IsADirectoryError.
     (tmp_path / "evals" / "evals.json").mkdir(parents=True)
     res = runner.invoke(app, ["skills", "eval", str(tmp_path)])
@@ -644,15 +670,19 @@ def test_skills_eval_evals_json_as_dir_clean_error(tmp_path):
 
 
 def test_sandbox_create_task_file_as_dir_clean_error(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P0: task.md itself being a directory raised a raw IsADirectoryError.
     (tmp_path / "task.md").mkdir()
-    res = runner.invoke(app, ["sandbox", "create", str(tmp_path), "--sandbox", "docker"])
+    res = runner.invoke(
+        app, ["sandbox", "create", str(tmp_path), "--sandbox", "docker"]
+    )
     assert res.exit_code == 1
     assert not isinstance(res.exception, OSError), res.exception
     assert "Not a valid task directory" in res.output
 
 
 def test_tasks_generate_output_is_file_clean_error(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P0: --output an existing file raised a raw NotADirectoryError.
     trace = tmp_path / "t.jsonl"
     trace.write_text(_MIN_TRACE)
@@ -667,20 +697,30 @@ def test_tasks_generate_output_is_file_clean_error(tmp_path):
 
 
 def test_tasks_generate_zero_results_exits_nonzero(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P2: generating 0 tasks (everything filtered) used to print a green
     # "Generated 0 tasks" and exit 0 — a silent no-op success.
     trace = tmp_path / "t.jsonl"
     trace.write_text(_MIN_TRACE)
     res = runner.invoke(
         app,
-        ["tasks", "generate", "--from-file", str(trace), "--min-steps", "999",
-         "--output", str(tmp_path / "out")],
+        [
+            "tasks",
+            "generate",
+            "--from-file",
+            str(trace),
+            "--min-steps",
+            "999",
+            "--output",
+            str(tmp_path / "out"),
+        ],
     )
     assert res.exit_code == 1
     assert "No tasks generated" in res.output
 
 
 def test_eval_list_explicit_nonexistent_dir_exits_nonzero(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
     # P3: a typo'd explicit jobs-dir exited 0 (silent) while `eval metrics` exits 1.
     res = runner.invoke(app, ["eval", "list", str(tmp_path / "nope-xyz")])
     assert res.exit_code == 1

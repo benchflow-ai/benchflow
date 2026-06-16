@@ -316,6 +316,7 @@ def test_run_prime_disables_version_check(monkeypatch):
     capture_output pipes), so it leaks onto the user's screen on every hub
     command and could corrupt `--json`. We opt out via PRIME_DISABLE_VERSION_CHECK
     in the subprocess env; this guards that the env var is set.
+    Guards PR #789 (CLI error-handling hardening).
     """
     captured: dict = {}
 

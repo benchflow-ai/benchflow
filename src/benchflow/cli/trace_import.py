@@ -208,12 +208,13 @@ def register_tasks_generate(tasks_app: typer.Typer) -> None:
         )
 
         if not results:
-            # Every trace was filtered out (e.g. by --min-steps/--outcome). Don't
-            # report a green "Generated 0 tasks" success — signal it as a failure
-            # so a scripted caller notices nothing was produced.
+            # No tasks produced — either the source had no matching traces or
+            # every trace was filtered by --min-steps/--outcome. Either way, don't
+            # report a green "Generated 0 tasks" success; signal it so a scripted
+            # caller notices nothing was produced.
             console.print(
-                "[yellow]No tasks generated — every trace was filtered out by "
-                "--min-steps/--outcome.[/yellow]"
+                "[yellow]No tasks generated — no matching traces "
+                "(check --min-steps/--outcome).[/yellow]"
             )
             raise typer.Exit(1)
 

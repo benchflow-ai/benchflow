@@ -65,8 +65,16 @@ def _daytona_sdk_available() -> bool:
     injects a fake ``daytona`` module into ``sys.modules`` that has no
     ``__spec__``, which makes ``find_spec`` raise/return None. An import sees the
     fake (and a real install) alike.
+
+    The anyio compat shim is applied first — the Daytona sync client imports
+    ``anyio.AsyncContextManagerMixin`` at import time, which the pinned anyio may
+    not expose. Without it a *real* install would look absent here (and so would
+    ``build_sync_client`` further down). Mirrors that bootstrap.
     """
     try:
+        from benchflow.sandbox.daytona import _ensure_daytona_anyio_compat
+
+        _ensure_daytona_anyio_compat()
         import daytona  # noqa: F401
 
         return True

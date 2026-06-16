@@ -559,6 +559,7 @@ class TestResumeLoopMismatchWarning:
         assert not [r for r in caplog.records if "loop_strategy" in r.message]
 
     def test_agent_mismatch_refuses_instead_of_blending_scores(self, tmp_path):
+        """Guards PR #789 (CLI error-handling hardening)."""
         # The reported bug: resuming a jobs_dir with a different agent silently
         # folded the prior agent's cached rollouts into the new run's summary,
         # publishing a blended Score: X/N. An agent mismatch must refuse (a

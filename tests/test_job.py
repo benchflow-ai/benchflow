@@ -403,6 +403,7 @@ class TestJobResumeScoped:
         job dir and refuses, rather than blending a different agent's scores.
 
         Guards ENG-160: config check scoped to job dir, not jobs_dir root.
+        Guards PR #789 (CLI error-handling hardening).
         """
         jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path, "my-job")
         result_file = self._write_result(job_dir, "task-a", rewards={"reward": 1.0})

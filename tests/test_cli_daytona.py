@@ -121,6 +121,7 @@ def test_sandbox_list_degrades_cleanly_when_daytona_sdk_absent(monkeypatch):
     """`bench sandbox list` is a read command: a missing optional Daytona SDK is
     an empty result (exit 0), not a hard failure (exit 1) telling the user to
     install a dependency they may not want. Docker sandboxes are ephemeral and
+    Guards PR #789 (CLI error-handling hardening).
     not listable, so there is genuinely nothing else to show."""
     # A None entry in sys.modules makes `import daytona` raise ImportError,
     # simulating the SDK being absent regardless of the host's install state.
@@ -135,6 +136,7 @@ def test_sandbox_list_degrades_cleanly_when_daytona_sdk_absent(monkeypatch):
 
 def test_sandbox_cleanup_degrades_cleanly_when_daytona_sdk_absent(monkeypatch):
     """`bench sandbox cleanup` mirrors `list`: no Daytona SDK means nothing to
+    Guards PR #789 (CLI error-handling hardening).
     reap, reported as a clean no-op rather than an install-nag exit 1."""
     monkeypatch.setitem(sys.modules, "daytona", None)
 

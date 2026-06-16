@@ -377,6 +377,7 @@ def test_cli_create_bad_benchmarks_dir_emits_clean_error_not_traceback(
     """A --benchmarks-dir that is a regular file makes create_benchmark's mkdir
     raise NotADirectoryError; the handler must surface a one-line message and
     exit 1, not let the OSError escape into a Rich traceback (shared by the
+    Guards PR #789 (CLI error-handling hardening).
     `agent create` / `adopt init` / `eval adopt init` aliases)."""
     runner = CliRunner()
     not_a_dir = tmp_path / "regular_file"
@@ -397,6 +398,7 @@ def test_cli_verify_unwritable_issue_out_emits_clean_error_not_traceback(
 ) -> None:
     """A --issue-out whose parent directory does not exist must fail-fast with a
     clean message after the divergence verdict, not dump a FileNotFoundError
+    Guards PR #789 (CLI error-handling hardening).
     traceback from the unguarded write_text."""
     runner = CliRunner()
     create = _run(

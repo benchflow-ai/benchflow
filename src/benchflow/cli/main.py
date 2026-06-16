@@ -866,16 +866,20 @@ def _run_source_env_eval(
 @eval_app.command("list")
 def eval_list(
     jobs_dir: Annotated[
-        Path,
-        typer.Argument(help="Jobs directory to list"),
-    ] = Path("jobs"),
+        Path | None,
+        typer.Argument(help="Jobs directory to list (default: ./jobs)"),
+    ] = None,
 ) -> None:
     """List completed evaluations."""
+    # None means the argument was omitted: the default ./jobs simply not existing
+    # yet is a benign first-run state (exit 0). An *explicit* path that doesn't
+    # exist is a typo and should fail like `eval metrics` does, so scripts don't
+    # read it as success. (A literal `eval list jobs` is then treated as explicit,
+    # which is correct — the user named a path.)
+    explicit = jobs_dir is not None
+    jobs_dir = jobs_dir or Path("jobs")
     if not jobs_dir.exists():
-        # The default "jobs" dir simply not existing yet is a benign first-run
-        # state (exit 0). But an *explicit* path that doesn't exist is a typo —
-        # fail like `eval metrics` does, so scripts don't read it as success.
-        if jobs_dir == Path("jobs"):
+        if not explicit:
             console.print("[yellow]No jobs yet.[/yellow]")
             return
         print_error(f"No such jobs directory: {jobs_dir}")
