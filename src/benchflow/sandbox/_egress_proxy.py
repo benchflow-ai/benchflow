@@ -135,7 +135,7 @@ def _handle(client: socket.socket) -> None:
         except OSError:
             client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
             return
-        upstream.sendall(header)
+        upstream.sendall(_to_origin_form(header))
         _pipe(client, upstream)
         upstream.close()
     except Exception:
@@ -143,6 +143,25 @@ def _handle(client: socket.socket) -> None:
     finally:
         with contextlib.suppress(OSError):
             client.close()
+
+
+def _to_origin_form(header: bytes) -> bytes:
+    """Rewrite a proxy-style absolute-URI request line to origin-form.
+
+    ``POST http://host:port/path?q HTTP/1.1`` -> ``POST /path?q HTTP/1.1`` so the
+    upstream (e.g. a FastAPI/uvicorn server such as the host litellm proxy on the
+    model lane) routes it instead of returning 404/400 for the absolute form.
+    Already-origin-form request lines are returned unchanged.
+    """
+    line, sep, rest = header.partition(b"\r\n")
+    parts = line.split(b" ")
+    if len(parts) != 3 or b"://" not in parts[1]:
+        return header
+    method, target, version = parts
+    after = target.split(b"://", 1)[1]
+    slash = after.find(b"/")
+    path = after[slash:] if slash != -1 else b"/"
+    return method + b" " + path + b" " + version + sep + rest
 
 
 def main() -> None:
