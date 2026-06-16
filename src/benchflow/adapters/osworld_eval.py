@@ -21,7 +21,13 @@ import shlex
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from benchflow.adapters.osworld_metrics import resolve_metric
+try:
+    # In-repo (tested) import path.
+    from benchflow.adapters.osworld_metrics import resolve_metric
+except ImportError:  # pragma: no cover - standalone in a sandbox verifier
+    # When carried into a task sandbox as a sibling file (benchflow not installed),
+    # osworld_metrics.py sits next to this module.
+    from osworld_metrics import resolve_metric  # type: ignore[no-redef]
 
 # Runs a command in the desktop sandbox and returns its stdout (the benchflow
 # analogue of OSWorld's POST to the desktop server's /execute endpoint).
