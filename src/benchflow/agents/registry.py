@@ -220,6 +220,51 @@ def _json_settings_merge(path: str, mutator: str) -> str:
     return f"python3 -c {shlex.quote(py)}"
 
 
+# OpenCode-family proxy fix: OpenCode and its MiMo fork validate provider/model
+# ids against the models.dev catalog and reject the synthetic
+# ``openai/benchflow-<alias>`` that BenchFlow's LiteLLM proxy serves the model
+# under (ProviderModelNotFoundError -> zero requests -> no
+# ``trajectory/llm_trajectory.jsonl``, which ``benchflow-experiment-review``
+# requires). Registering the alias under ``provider.openai.models`` (with the
+# gateway baseURL) bypasses that catalog check so the agent accepts the id and
+# routes through the proxy.
+def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str:
+    """Install ``/opt/benchflow/bin/<binary>-proxy``: a thin wrapper that, in
+    proxy mode, registers the LiteLLM gateway alias under the OpenCode-family
+    agent's ``openai`` provider, then execs the isolated agent binary. Idempotent
+    (preserves existing config); no-op outside proxy mode.
+    """
+    real = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
+    target = f"{_BENCHFLOW_BIN_PREFIX}/{binary}-proxy"
+    register_py = "\n".join(
+        [
+            "import json, os, pathlib",
+            'alias = os.environ.get("BENCHFLOW_LITELLM_MODEL_ALIAS", "").strip()',
+            "if alias:",
+            f"    p = pathlib.Path(os.path.expanduser({config_path!r}))",
+            "    p.parent.mkdir(parents=True, exist_ok=True)",
+            "    d = json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {}",
+            '    prov = d.setdefault("provider", {}).setdefault("openai", {})',
+            '    base = os.environ.get("OPENAI_BASE_URL", "").strip()',
+            "    if base:",
+            '        prov.setdefault("options", {})["baseURL"] = base',
+            '    prov.setdefault("models", {}).setdefault(alias, {"name": alias})',
+            '    p.write_text(json.dumps(d, indent=2) + "\\n")',
+        ]
+    )
+    wrapper = (
+        "#!/bin/sh\n"
+        'if [ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ]; then\n'
+        "python3 - <<'PYEOF' || true\n"
+        f"{register_py}\n"
+        "PYEOF\n"
+        "fi\n"
+        f'exec {real} "$@"\n'
+    )
+    b64 = base64.b64encode(wrapper.encode()).decode()
+    return f"printf '%s' '{b64}' | base64 -d > {target} && chmod +x {target}"
+
+
 @dataclass
 class CredentialFile:
     """A file to write inside the container before agent launch."""
@@ -501,8 +546,14 @@ AGENTS: dict[str, AgentConfig] = {
         description="OpenCode via ACP — open-source coding agent (TypeScript)",
         skill_paths=["$HOME/.opencode/skills"],
         home_dirs=[".opencode"],
-        install_cmd=_js_agent_install("opencode", "opencode-ai"),
-        launch_cmd=_js_agent_launch("opencode", "acp"),
+        install_cmd=(
+            _js_agent_install("opencode", "opencode-ai")
+            + " && "
+            + _opencode_family_proxy_wrapper_install(
+                "opencode", "~/.config/opencode/opencode.json"
+            )
+        ),
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/opencode-proxy acp",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         acp_model_format="provider/model",
@@ -523,8 +574,14 @@ AGENTS: dict[str, AgentConfig] = {
         description="MiMo Code via ACP — Xiaomi's OpenCode fork (TypeScript)",
         skill_paths=["$HOME/.mimocode/skills"],
         home_dirs=[".mimocode", ".config/mimocode"],
-        install_cmd=_js_agent_install("mimo", "@mimo-ai/cli@0.1.0"),
-        launch_cmd=_js_agent_launch("mimo", "acp"),
+        install_cmd=(
+            _js_agent_install("mimo", "@mimo-ai/cli@0.1.0")
+            + " && "
+            + _opencode_family_proxy_wrapper_install(
+                "mimo", "~/.config/mimocode/mimocode.json"
+            )
+        ),
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/mimo-proxy acp",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         # MiMo Code ships a fixed endpoint for its native models.dev "xiaomi"
