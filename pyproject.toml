@@ -97,6 +97,10 @@ build-backend = "hatchling.build"
 only-include = [
     "src",
     "tests",
+    # `tests/test_dep_cooldown.py` does `from tools.lock import ...`, so the
+    # sdist must ship `tools` too or the test suite fails to import from a
+    # source distribution.
+    "tools",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
@@ -176,6 +180,10 @@ exclude = [
 ]
 
 [tool.uv]
+# The per-package cooldown override (`exclude-newer-package` below) is only
+# honored by uv >= 0.8.4. Pin a floor so an older uv can't silently ignore the
+# override table and resolve a different (vulnerable / un-vetted) lock.
+required-version = ">=0.8.4"
 # Dependency cooldown (hard rule): never resolve to a release younger than ~7
 # days. `exclude-newer` caps every `uv lock` at this timestamp. Don't hand-edit
 # it — run `python tools/lock.py` to set it to `now - 7d` and re-lock in one
