@@ -203,6 +203,9 @@ class DockerSandbox(BaseSandbox):
         self._use_prebuilt = False
 
         self._compose_task_env: dict[str, str] = {}
+        # Install-before-lockdown: the restrictive network policy is applied by
+        # relock_network() AFTER the agent installs, not at sandbox start.
+        self._network_locked = False
         if task_env_config.env and self._uses_compose:
             self._compose_task_env = resolve_env_vars(task_env_config.env)
 
@@ -273,6 +276,10 @@ class DockerSandbox(BaseSandbox):
             resolve_network_decision,
         )
 
+        if not self._network_locked:
+            # Stay open during the install phase; relock_network() applies the
+            # restrictive policy once the agent has been installed.
+            return []
         decision = resolve_network_decision(self.task_env_config, "docker")
         if decision.policy is EffectivePolicy.OPEN:
             return []
@@ -300,6 +307,70 @@ class DockerSandbox(BaseSandbox):
             return [override]
         # BLOCK_ALL with no lane, or nowhere to stage the proxy → fail closed.
         return [self._DOCKER_COMPOSE_NO_NETWORK_PATH]
+
+    async def relock_network(self) -> dict[str, str]:
+        """Apply the task's restrictive network policy to the running container.
+
+        The container came up open so the agent could install (install-before-
+        lockdown); now drop it off the public bridge. For allowlist / model-lane
+        runs, start the egress sidecar and move the container onto the internal-
+        only network, returning the HTTP(S)_PROXY env the agent must use. ``public``
+        is a no-op. The ``main`` container is never recreated, so the install
+        survives. Returns the proxy env to merge into the agent launch env.
+        """
+        from benchflow.sandbox._egress import (
+            _EGRESS_INTERNAL_NET,
+            _EGRESS_PORT,
+            _EGRESS_SERVICE,
+        )
+        from benchflow.sandbox.network_policy import (
+            EffectivePolicy,
+            resolve_network_decision,
+        )
+
+        decision = resolve_network_decision(self.task_env_config, "docker")
+        if decision.policy is EffectivePolicy.OPEN:
+            return {}
+
+        # Gate _network_policy_compose_paths to emit the real override now.
+        self._network_locked = True
+        cid = await self._main_container_id()
+        if not cid:
+            self.logger.warning("relock_network: no 'main' container; skipping")
+            return {}
+
+        project = _sanitize_docker_compose_project_name(self.session_id)
+        paths = self._network_policy_compose_paths()
+        use_sidecar = bool(paths and paths[0] != self._DOCKER_COMPOSE_NO_NETWORK_PATH)
+
+        if use_sidecar:
+            # Bring up ONLY the egress sidecar (creates the bf_egress_* networks);
+            # --no-deps leaves the already-running 'main' container in place.
+            await self._run_docker_compose_command(
+                ["up", "--detach", "--no-deps", _EGRESS_SERVICE]
+            )
+            await self._docker_cli(
+                ["network", "connect", f"{project}_{_EGRESS_INTERNAL_NET}", cid],
+                check=False,
+            )
+        # Lockdown: detach the container from the public bridge.
+        await self._docker_cli(
+            ["network", "disconnect", f"{project}_default", cid], check=False
+        )
+        self.logger.info(
+            "relock_network: %s applied (sidecar=%s)", decision.policy.name, use_sidecar
+        )
+        if use_sidecar:
+            proxy = f"http://{_EGRESS_SERVICE}:{_EGRESS_PORT}"
+            return {
+                "HTTP_PROXY": proxy,
+                "HTTPS_PROXY": proxy,
+                "http_proxy": proxy,
+                "https_proxy": proxy,
+                "NO_PROXY": "localhost,127.0.0.1",
+                "no_proxy": "localhost,127.0.0.1",
+            }
+        return {}
 
     def _write_mounts_compose_file(self) -> Path:
         compose = {"services": {"main": {"volumes": self._mounts_json}}}

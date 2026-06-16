@@ -684,6 +684,7 @@ class Rollout:
                     self._env, cfg.generated_skills_root, cfg.sandbox_user
                 )
             await self._planes.lockdown_paths(self._env, self._effective_locked)
+            await self._lock_down_network()
             self._phase = "installed"
             return
 
@@ -744,7 +745,21 @@ class Rollout:
             )
         await self._planes.lockdown_paths(self._env, self._effective_locked)
 
+        await self._lock_down_network()
         self._phase = "installed"
+
+    async def _lock_down_network(self) -> None:
+        """Apply the task's restrictive network policy after agent install
+        (install-before-lockdown). Docker swaps the container onto an internal
+        network + egress sidecar and returns the proxy env the agent must use;
+        other sandboxes no-op. Merges the returned proxy env into the agent env.
+        """
+        relock = getattr(self._env, "relock_network", None)
+        if relock is None:
+            return
+        proxy_env = await relock()
+        if proxy_env:
+            self._agent_env = {**self._agent_env, **proxy_env}
 
     # Phase 3b: CONNECT (ACP session — re-entrant)
 
