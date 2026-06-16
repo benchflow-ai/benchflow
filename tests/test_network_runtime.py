@@ -7,7 +7,6 @@ Tests exercise pure decision functions through public interfaces.
 
 from benchflow.task.config import SandboxConfig
 
-
 # ---- Fix #2: daytona fail-closed enforcement -------------------------------
 
 def test_network_blocks_all_for_daytona():
