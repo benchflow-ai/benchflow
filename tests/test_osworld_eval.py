@@ -142,3 +142,37 @@ def test_unsupported_getter_raises() -> None:
     }
     with pytest.raises(UnsupportedGetterError):
         evaluate({"evaluator": evaluator}, lambda c, s: "")
+
+
+def test_template_vars_substituted_in_commands() -> None:
+    seen: list = []
+
+    def run_command(command, shell):
+        seen.append(command)
+        return "ok\n"
+
+    evaluator = {
+        "postconfig": [
+            {
+                "type": "execute",
+                "parameters": {
+                    "command": "echo {CLIENT_PASSWORD} | sudo -S true",
+                    "shell": True,
+                },
+            }
+        ],
+        "func": "check_include_exclude",
+        "result": {
+            "type": "vm_command_line",
+            "command": ["python", "-c", "print({SCREEN_WIDTH_HALF}, {SCREEN_HEIGHT_HALF})"],
+            "shell": False,
+        },
+        "expected": {"type": "rule", "rules": {"include": ["ok"]}},
+    }
+    evaluate({"evaluator": evaluator}, run_command, password="s3cret", screen=(1920, 1080))
+    # postconfig command had {CLIENT_PASSWORD} substituted; result list parts too.
+    assert "echo s3cret | sudo -S true" in seen
+    assert ["python", "-c", "print(960, 540)"] in seen
+    # the raw tokens are gone
+    assert not any("{CLIENT_PASSWORD}" in str(c) for c in seen)
+    assert not any("{SCREEN_WIDTH_HALF}" in str(c) for c in seen)

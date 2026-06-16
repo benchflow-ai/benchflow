@@ -27,6 +27,36 @@ from benchflow.adapters.osworld_metrics import resolve_metric
 # analogue of OSWorld's POST to the desktop server's /execute endpoint).
 RunCommand = Callable[[Any, bool], str]
 
+# OSWorld defaults: desktop resolution 1920x1080 and the public-evaluation VM
+# password (desktop_env/controllers/setup.py + desktop_env.py screen_size).
+_DEFAULT_PASSWORD = "password"
+_DEFAULT_SCREEN = (1920, 1080)
+
+
+def substitute(value: Any, *, password: str, width: int, height: int) -> Any:
+    """Substitute OSWorld command template variables, faithful to OSWorld
+    ``controllers/setup.py``: ``{CLIENT_PASSWORD}``, ``{SCREEN_WIDTH[_HALF]}``,
+    ``{SCREEN_HEIGHT[_HALF]}``. Applies to a string command or a list of parts.
+    """
+    repls = {
+        "{CLIENT_PASSWORD}": password,
+        "{SCREEN_WIDTH_HALF}": str(width // 2),
+        "{SCREEN_HEIGHT_HALF}": str(height // 2),
+        "{SCREEN_WIDTH}": str(width),
+        "{SCREEN_HEIGHT}": str(height),
+    }
+
+    def _one(text: str) -> str:
+        for token, repl in repls.items():
+            text = text.replace(token, repl)
+        return text
+
+    if isinstance(value, str):
+        return _one(value)
+    if isinstance(value, list):
+        return [_one(part) if isinstance(part, str) else part for part in value]
+    return value
+
 
 class UnsupportedGetterError(NotImplementedError):
     """An OSWorld getter ``type`` that has not been ported yet."""
@@ -36,7 +66,11 @@ def _as_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else [value]
 
 
-def _run_postconfig(steps: Sequence[Mapping[str, Any]], run_command: RunCommand) -> None:
+def _run_postconfig(
+    steps: Sequence[Mapping[str, Any]],
+    run_command: RunCommand,
+    subst: Callable[[Any], Any],
+) -> None:
     """Run evaluator ``postconfig`` setup in the desktop before scoring.
 
     Mirrors the OSWorld config vocabulary used by evaluator setup: ``execute`` /
@@ -50,7 +84,7 @@ def _run_postconfig(steps: Sequence[Mapping[str, Any]], run_command: RunCommand)
         stype = step.get("type")
         params = step.get("parameters") or {}
         if stype in {"execute", "command"}:
-            run_command(params.get("command"), bool(params.get("shell", False)))
+            run_command(subst(params.get("command")), bool(params.get("shell", False)))
         elif stype == "download":
             for entry in params.get("files") or []:
                 url = entry.get("url")
@@ -65,13 +99,17 @@ def _run_postconfig(steps: Sequence[Mapping[str, Any]], run_command: RunCommand)
             )
 
 
-def _get_result(config: Mapping[str, Any] | None, run_command: RunCommand) -> Any:
+def _get_result(
+    config: Mapping[str, Any] | None,
+    run_command: RunCommand,
+    subst: Callable[[Any], Any],
+) -> Any:
     """Resolve a ``result`` getter to its value (port of OSWorld getters)."""
     if not config:
         return None
     gtype = config.get("type")
     if gtype == "vm_command_line":
-        return run_command(config.get("command"), bool(config.get("shell", False)))
+        return run_command(subst(config.get("command")), bool(config.get("shell", False)))
     raise UnsupportedGetterError(f"OSWorld result getter {gtype!r} is not ported yet")
 
 
@@ -85,17 +123,29 @@ def _get_expected(config: Mapping[str, Any] | None) -> Any:
     raise UnsupportedGetterError(f"OSWorld expected getter {gtype!r} is not ported yet")
 
 
-def evaluate(osworld_task: Mapping[str, Any], run_command: RunCommand) -> float:
+def evaluate(
+    osworld_task: Mapping[str, Any],
+    run_command: RunCommand,
+    *,
+    password: str = _DEFAULT_PASSWORD,
+    screen: tuple[int, int] = _DEFAULT_SCREEN,
+) -> float:
     """Score a real OSWorld task: postconfig → result getter → metric vs expected.
 
     ``run_command(command, shell)`` runs a command in the desktop and returns stdout.
-    Returns the OSWorld reward (1.0 / 0.0), combining multiple metrics via ``conj``.
+    ``password``/``screen`` resolve the template variables in commands. Returns the
+    OSWorld reward (1.0 / 0.0), combining multiple metrics via ``conj``.
     """
     evaluator = osworld_task.get("evaluator") or {}
     if not isinstance(evaluator, dict):
         raise ValueError("OSWorld task 'evaluator' must be an object")
 
-    _run_postconfig(evaluator.get("postconfig") or [], run_command)
+    width, height = screen
+
+    def subst(value: Any) -> Any:
+        return substitute(value, password=password, width=width, height=height)
+
+    _run_postconfig(evaluator.get("postconfig") or [], run_command, subst)
 
     funcs = _as_list(evaluator["func"])
     results = _as_list(evaluator.get("result"))
@@ -109,7 +159,7 @@ def evaluate(osworld_task: Mapping[str, Any], run_command: RunCommand) -> float:
 
     scores: list[float] = []
     for func, result_cfg, expected_cfg in zip(funcs, results, expecteds, strict=False):
-        result = _get_result(result_cfg, run_command)
+        result = _get_result(result_cfg, run_command, subst)
         expected = _get_expected(expected_cfg)
         scores.append(float(resolve_metric(func)(result, expected)))
 
