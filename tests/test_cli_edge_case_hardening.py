@@ -552,7 +552,15 @@ def test_tasks_generate_rejects_invalid_outcome(tmp_path):
     trace.write_text('{"foo":"bar"}\n')
     res = runner.invoke(
         app,
-        ["tasks", "generate", "--from-file", str(trace), "--outcome", "zzz", "--dry-run"],
+        [
+            "tasks",
+            "generate",
+            "--from-file",
+            str(trace),
+            "--outcome",
+            "zzz",
+            "--dry-run",
+        ],
     )
     assert res.exit_code == 1
     assert "Invalid --outcome" in res.output
@@ -621,9 +629,12 @@ _MIN_TRACE = (
 
 def test_tasks_normalize_output_is_dir_clean_error(tmp_path):
     # P0: --output an existing directory raised a raw IsADirectoryError.
-    assert runner.invoke(
-        app, ["tasks", "init", "demotask", "--dir", str(tmp_path)]
-    ).exit_code == 0
+    assert (
+        runner.invoke(
+            app, ["tasks", "init", "demotask", "--dir", str(tmp_path)]
+        ).exit_code
+        == 0
+    )
     outdir = tmp_path / "outdir"
     outdir.mkdir()
     res = runner.invoke(
@@ -646,7 +657,9 @@ def test_skills_eval_evals_json_as_dir_clean_error(tmp_path):
 def test_sandbox_create_task_file_as_dir_clean_error(tmp_path):
     # P0: task.md itself being a directory raised a raw IsADirectoryError.
     (tmp_path / "task.md").mkdir()
-    res = runner.invoke(app, ["sandbox", "create", str(tmp_path), "--sandbox", "docker"])
+    res = runner.invoke(
+        app, ["sandbox", "create", str(tmp_path), "--sandbox", "docker"]
+    )
     assert res.exit_code == 1
     assert not isinstance(res.exception, OSError), res.exception
     assert "Not a valid task directory" in res.output
@@ -673,8 +686,16 @@ def test_tasks_generate_zero_results_exits_nonzero(tmp_path):
     trace.write_text(_MIN_TRACE)
     res = runner.invoke(
         app,
-        ["tasks", "generate", "--from-file", str(trace), "--min-steps", "999",
-         "--output", str(tmp_path / "out")],
+        [
+            "tasks",
+            "generate",
+            "--from-file",
+            str(trace),
+            "--min-steps",
+            "999",
+            "--output",
+            str(tmp_path / "out"),
+        ],
     )
     assert res.exit_code == 1
     assert "No tasks generated" in res.output
