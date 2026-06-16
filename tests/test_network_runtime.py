@@ -9,10 +9,13 @@ from benchflow.task.config import SandboxConfig
 
 # ---- Fix #2: daytona fail-closed enforcement -------------------------------
 
+
 def test_network_blocks_all_for_daytona():
     from benchflow.sandbox.network_policy import network_blocks_all
 
-    assert network_blocks_all(SandboxConfig(network_mode="no-network"), "daytona") is True
+    assert (
+        network_blocks_all(SandboxConfig(network_mode="no-network"), "daytona") is True
+    )
     assert network_blocks_all(SandboxConfig(), "daytona") is False  # public default
     # allowlist is unenforceable on daytona → resolve fails closed to block-all
     assert (
@@ -36,10 +39,14 @@ def test_blockall_enforcement_violation():
 
 # ---- Fix #3: force host-side usage proxy under a restrictive policy ----------
 
+
 def test_network_is_restrictive():
     from benchflow.sandbox.network_policy import network_is_restrictive
 
-    assert network_is_restrictive(SandboxConfig(network_mode="no-network"), "docker") is True
+    assert (
+        network_is_restrictive(SandboxConfig(network_mode="no-network"), "docker")
+        is True
+    )
     assert (
         network_is_restrictive(
             SandboxConfig(network_mode="allowlist", allowed_hosts=["x.com"]), "docker"
