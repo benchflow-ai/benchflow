@@ -128,6 +128,7 @@ def _config_payload(
         "environment_manifest_path": (
             str(environment_manifest_path) if environment_manifest_path else None
         ),
+        "config_override": config.config_override,
     }
     payload.update(config.usage_tracking.to_mapping())
     return payload

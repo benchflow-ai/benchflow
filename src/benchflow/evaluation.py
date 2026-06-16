@@ -407,6 +407,8 @@ class EvaluationConfig:
     # readiness gating, teardown) is exercised — closing the gap between
     # single-rollout SDK.run() and the batch Evaluation/Job API (#398).
     environment_manifest: EnvironmentManifest | None = None
+    # C-axis overlay (parsed dict) deep-merged into each task's resolved config.
+    config_override: dict | None = None
 
     def __post_init__(self):
         from benchflow._utils.config import (
@@ -715,6 +717,7 @@ class Evaluation:
             source_provenance=source_provenance,
             usage_tracking=UsageTrackingConfig.from_mapping(raw),
             environment_manifest=env_manifest,
+            config_override=raw.get("config_override"),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
 
@@ -997,6 +1000,7 @@ class Evaluation:
             concurrency=cfg.concurrency,
             environment=cfg.environment,
             environment_manifest=environment_manifest,
+            config_override=cfg.config_override,
             skills_dir=skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,

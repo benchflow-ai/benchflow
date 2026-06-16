@@ -74,6 +74,7 @@ class EvalCreateRequest:
     environment: str | None = None
     usage_tracking: str | None = None
     environment_manifest: Path | None = None
+    config_override: str | None = None
     prompt: list[str] | None = None
     concurrency: int | None = None
     build_concurrency: int | None = None
@@ -120,6 +121,7 @@ class EvalPlan:
     sandbox_user: str | None
     output_jobs_dir: str
     eval_env_manifest: EnvironmentManifest | None
+    eval_config_override: dict | None
     parsed_env: dict[str, str]
     include_tasks: set[str]
     exclude_tasks: set[str]
@@ -172,6 +174,7 @@ class EvalPlan:
             exclude_tasks=self.exclude_tasks,
             usage_tracking=self.eval_usage_tracking,
             environment_manifest=self.eval_env_manifest,
+            config_override=self.eval_config_override,
         )
 
 
@@ -322,6 +325,22 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
                 f"Could not load --environment-manifest {request.environment_manifest}: {exc}"
             ) from None
 
+    # Parse + allowlist-validate the C-axis config overlay once (fail fast),
+    # mirroring the manifest resolution above. Threaded as typed data from here.
+    eval_config_override = None
+    if request.config_override is not None:
+        from benchflow._utils.config_override import (
+            load_config_override,
+            validate_overlay,
+        )
+
+        try:
+            eval_config_override = load_config_override(request.config_override)
+            if eval_config_override:
+                validate_overlay(eval_config_override)
+        except (OSError, ValueError) as exc:
+            raise EvalPlanError(f"Invalid --config-override: {exc}") from None
+
     return EvalPlan(
         request=request,
         eval_agent=eval_agent,
@@ -335,6 +354,7 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         sandbox_user=sandbox_user,
         output_jobs_dir=output_jobs_dir,
         eval_env_manifest=eval_env_manifest,
+        eval_config_override=eval_config_override,
         parsed_env=parsed_env,
         include_tasks=include_tasks,
         exclude_tasks=exclude_tasks,

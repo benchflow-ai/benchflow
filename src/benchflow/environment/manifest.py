@@ -174,9 +174,34 @@ class EnvironmentManifest(BaseModel):
 
 
 def load_manifest(path: str | Path) -> EnvironmentManifest:
-    """Load and validate an environment manifest from a TOML file."""
-    text = Path(path).read_text()
-    return EnvironmentManifest.model_validate_toml(text)
+    """Load and validate an environment manifest.
+
+    ``path`` is either a TOML file path (the historical behavior) or a registry
+    spec ``name@version`` resolved via ``$BENCHFLOW_ENV_REGISTRY``. The spec form
+    lets a run bind its environment (the ``S`` axis) by name at the command line —
+    decoupled from the task and swappable per run, like ``--agent`` / ``--model``
+    / ``--sandbox``. Resolution is content-addressed so the bound world is
+    recorded for replay.
+    """
+    p = Path(path)
+    if not p.is_file():
+        from benchflow._utils.env_registry import (
+            looks_like_env_spec,
+            resolve_environment,
+        )
+
+        if looks_like_env_spec(str(path)):
+            resolved = resolve_environment(str(path))
+            logger.info(
+                "environment %s resolved -> %s (%s)",
+                resolved.spec,
+                resolved.manifest_path,
+                resolved.env_hash,
+            )
+            return EnvironmentManifest.model_validate_toml(
+                resolved.manifest_path.read_text()
+            )
+    return EnvironmentManifest.model_validate_toml(p.read_text())
 
 
 def resolve_manifest_runtime_env(
