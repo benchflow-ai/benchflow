@@ -19,6 +19,7 @@ is unchanged.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 from abc import abstractmethod
 from pathlib import Path
@@ -53,6 +54,19 @@ _SandboxParams = Any
 # by exact tracked name (so a caller-supplied name without the prefix is still
 # reclaimed on stop()). Kept in sync with the Docker provider's ``bf-snap-*``.
 _SNAPSHOT_NAME_PREFIX = "bf-snap-"
+
+
+def _unique_sandbox_name(env: Any) -> str:
+    """A unique, Daytona-valid sandbox name for a create.
+
+    Daytona dedups creates on ``name``; leaving it unset sends ``undefined`` and
+    concurrent creates collide ("Sandbox with name undefined already exists"),
+    which broke larger concurrent samples. A per-create unique name (sanitized
+    environment name + a random suffix) lets a batch run at concurrency.
+    """
+    base = re.sub(r"[^a-z0-9-]+", "-", (env.environment_name or "env").lower())
+    base = base.strip("-") or "env"
+    return f"bf-{base[:40]}-{uuid4().hex[:8]}"
 
 
 class _DaytonaStrategy:
@@ -174,6 +188,7 @@ class _DaytonaDirect(_DaytonaStrategy):
         if snapshot_exists and snapshot_name:
             env.logger.debug(f"Using snapshot: {snapshot_name}")
             params = _sdk.CreateSandboxFromSnapshotParams(
+                name=_unique_sandbox_name(env),
                 auto_delete_interval=env._auto_delete_interval,
                 auto_stop_interval=env._auto_stop_interval,
                 snapshot=snapshot_name,
@@ -194,6 +209,7 @@ class _DaytonaDirect(_DaytonaStrategy):
                 )
                 image = _sdk.Image.base(env.task_env_config.docker_image)
             params = _sdk.CreateSandboxFromImageParams(
+                name=_unique_sandbox_name(env),
                 image=image,
                 auto_delete_interval=env._auto_delete_interval,
                 auto_stop_interval=env._auto_stop_interval,
@@ -412,6 +428,7 @@ class _DaytonaDirect(_DaytonaStrategy):
             env._sandbox = None
 
         params = _sdk.CreateSandboxFromSnapshotParams(
+            name=_unique_sandbox_name(env),
             auto_delete_interval=env._auto_delete_interval,
             auto_stop_interval=env._auto_stop_interval,
             snapshot=image.ref,
