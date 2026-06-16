@@ -437,10 +437,15 @@ allow_internet = true
                     }
                 ],
                 "evaluator": {
-                    "func": "exact_match",
+                    "func": "check_include_exclude",
                     "result": {
                         "type": "vm_command_line",
                         "command": "cat /tmp/runner-osworld-setup-ok",
+                        "shell": True,
+                    },
+                    "expected": {
+                        "type": "rule",
+                        "rules": {"include": ["setup-ok"], "exclude": []},
                     },
                 },
             },
@@ -1460,27 +1465,36 @@ class TestUseComputerCookbookAdapter:
         assert result.compatibility.config_extra["task_id"] == ("smoke__ubuntu-osworld")
         assert result.compatibility.config_extra_paths == ("tests/osworld_task.json",)
 
-    def test_instruction_gets_exact_final_answer_contract(self, tmp_path: Path) -> None:
+    def test_osworld_instruction_is_not_a_magic_string_contract(
+        self, tmp_path: Path
+    ) -> None:
+        # Real OSWorld tasks are scored by the evaluator running the task's check
+        # command against system state, NOT by the agent printing a magic string,
+        # so the instruction must stay the raw task — no "final answer" graft.
         task_dir = _write_use_computer_cookbook_osworld_task(tmp_path)
         result = UseComputerCookbookAdapter.from_task_dir(task_dir)
 
         assert result.instruction.startswith("Observe the desktop once")
-        assert result.instruction.endswith("Final answer must be exactly: setup-ok\n")
+        assert "Final answer must be exactly:" not in result.instruction
 
-    def test_generates_native_runtime_files(self, tmp_path: Path) -> None:
+    def test_generates_real_osworld_verifier_files(self, tmp_path: Path) -> None:
         task_dir = _write_use_computer_cookbook_osworld_task(tmp_path)
         result = UseComputerCookbookAdapter.from_task_dir(task_dir)
 
-        assert "environment/Dockerfile" in result.generated_files
-        assert "tests/setup/pre_command.sh" in result.generated_files
-        assert "tests/test.sh" in result.generated_files
-        assert "solution/solve.sh" in result.generated_files
-        assert "runner-osworld-setup-ok" in str(
-            result.generated_files["tests/setup/pre_command.sh"]
-        )
-        assert "computer-use-smoke-trace.json" in str(
-            result.generated_files["tests/test.sh"]
-        )
+        generated = result.generated_files
+        assert "environment/Dockerfile" in generated
+        assert "tests/setup/pre_command.sh" in generated
+        assert "tests/test.sh" in generated
+        assert "solution/solve.sh" in generated
+        assert "runner-osworld-setup-ok" in str(generated["tests/setup/pre_command.sh"])
+        # The real verifier carries the evaluator modules + a runner + the task's
+        # own evaluator, and the test.sh runs the runner (NOT a magic-string match).
+        assert "tests/osworld_eval.py" in generated
+        assert "tests/osworld_metrics.py" in generated
+        assert "tests/osworld_task.json" in generated
+        assert "check_include_exclude" in str(generated["tests/osworld_task.json"])
+        assert "run_osworld_verifier.py" in str(generated["tests/test.sh"])
+        assert "computer-use-smoke-trace.json" not in str(generated["tests/test.sh"])
 
     def test_cuagym_infra_smoke_is_supported(self, tmp_path: Path) -> None:
         task_dir = _write_use_computer_cookbook_cuagym_smoke_task(tmp_path)

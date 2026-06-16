@@ -209,6 +209,7 @@ class UseComputerCookbookAdapter:
         instruction = _instruction(
             instruction_path.read_text(),
             expected_result=expected_result,
+            append_expected=osworld_task is None,
         )
         config = _config_with_metadata(
             imported.config,
@@ -698,9 +699,12 @@ def _expected_result(
     return "observed"
 
 
-def _instruction(raw: str, *, expected_result: str) -> str:
+def _instruction(raw: str, *, expected_result: str, append_expected: bool = True) -> str:
     text = raw.strip()
-    if "Final answer must be exactly:" not in text:
+    # OSWorld tasks are scored by the real evaluator running the task's check
+    # command against system state — NOT by the agent printing a magic string, so
+    # we must not graft a "final answer must be exactly ..." onto their instruction.
+    if append_expected and "Final answer must be exactly:" not in text:
         text += f"\n\nFinal answer must be exactly: {expected_result}"
     return text + "\n"
 
@@ -767,12 +771,18 @@ def _generated_files(
             "tests/test.sh": _cuagym_reward_verifier_script(task_id),
         }
 
+    if osworld_task is not None:
+        # Real OSWorld eval: the verifier runs the task's actual evaluator
+        # (postconfig + result check command + metric) in the sandbox, NOT a
+        # "did the agent print 'observed'" string match.
+        return _osworld_verifier_files(osworld_task)
+
     marker_path = (
         str(cuagym_smoke.get("setup_marker", "/tmp/runner-cuagym-setup-ok"))
         if cuagym_smoke is not None
         else "/tmp/runner-osworld-setup-ok"
     )
-    generated: dict[str, str | bytes] = {
+    return {
         "environment/Dockerfile": _default_dockerfile(),
         "solution/solve.sh": _oracle_script(expected_result),
         "tests/test.sh": _verifier_script(
@@ -780,9 +790,112 @@ def _generated_files(
             setup_marker_path=marker_path,
         ),
     }
-    if osworld_task is not None:
-        generated["tests/setup/pre_command.sh"] = _osworld_setup_script(osworld_task)
-    return generated
+
+
+def _osworld_verifier_files(osworld_task: dict[str, Any]) -> dict[str, str | bytes]:
+    """Generate a REAL OSWorld verifier package.
+
+    Carries the (import-resilient) osworld_eval + osworld_metrics modules into the
+    verifier dir alongside a runner that reads the task's own evaluator from
+    ``osworld_task.json``, runs ``evaluate(task, run_command=<in-sandbox subprocess>)``,
+    and writes the OSWorld reward to ``/logs/verifier/reward.{txt,json}`` — the
+    benchflow verifier reward contract.
+    """
+    here = Path(__file__).parent
+    return {
+        "environment/Dockerfile": _osworld_dockerfile(),
+        "solution/solve.sh": _osworld_oracle_placeholder(),
+        "tests/setup/pre_command.sh": _osworld_setup_script(osworld_task),
+        "tests/osworld_task.json": json.dumps(osworld_task, indent=2) + "\n",
+        "tests/osworld_metrics.py": (here / "osworld_metrics.py").read_text(),
+        "tests/osworld_eval.py": (here / "osworld_eval.py").read_text(),
+        "tests/run_osworld_verifier.py": _OSWORLD_RUNNER,
+        "tests/test.sh": _OSWORLD_TEST_SH,
+    }
+
+
+def _osworld_dockerfile() -> str:
+    return (
+        "FROM ubuntu:24.04\n\n"
+        "WORKDIR /app\n\n"
+        "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
+        "        python3 ca-certificates curl \\\n"
+        "    && rm -rf /var/lib/apt/lists/*\n"
+        "RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts /app /tmp /home/user\n"
+    )
+
+
+def _osworld_oracle_placeholder() -> str:
+    # OSWorld ships no committable oracle trajectory; the agent eval does not run
+    # the oracle. Keep a no-op so the task package is structurally complete.
+    return (
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "# No oracle solution for real OSWorld tasks (scored by the real evaluator).\n"
+    )
+
+
+_OSWORLD_TEST_SH = (
+    "#!/bin/bash\n"
+    "set -euo pipefail\n\n"
+    "mkdir -p /logs/verifier /logs/artifacts\n"
+    'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+    'python3 "$HERE/run_osworld_verifier.py"\n'
+)
+
+_OSWORLD_RUNNER = '''\
+#!/usr/bin/env python3
+"""In-sandbox OSWorld verifier: run the task's real evaluator -> benchflow reward."""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import osworld_eval  # noqa: E402  (sibling module carried into the verifier dir)
+
+
+def run_command(command, shell):
+    env = os.environ.copy()
+    env.setdefault("DISPLAY", ":1")
+    env.setdefault("HOME", "/home/user")
+    if isinstance(command, list):
+        proc = subprocess.run(command, capture_output=True, text=True, env=env)
+    else:
+        proc = subprocess.run(
+            command,
+            shell=bool(shell),
+            capture_output=True,
+            text=True,
+            env=env,
+            executable="/bin/bash" if shell else None,
+        )
+    return proc.stdout
+
+
+def main() -> None:
+    task = json.loads((HERE / "osworld_task.json").read_text())
+    password = os.environ.get("CLIENT_PASSWORD", "password")
+    try:
+        reward = float(osworld_eval.evaluate(task, run_command, password=password))
+    except Exception as exc:  # never crash the verifier; score 0 and log
+        sys.stderr.write(f"osworld verifier error: {exc}\\n")
+        reward = 0.0
+    verdir = pathlib.Path("/logs/verifier")
+    verdir.mkdir(parents=True, exist_ok=True)
+    (verdir / "reward.txt").write_text(f"{reward}\\n")
+    (verdir / "reward.json").write_text(json.dumps({"reward": reward}) + "\\n")
+    print(f"osworld reward: {reward}")
+
+
+if __name__ == "__main__":
+    main()
+'''
 
 
 def _default_dockerfile() -> str:
