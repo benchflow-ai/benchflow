@@ -600,15 +600,17 @@ scenes:
 
 ---
 
-## bench continue
+## bench eval continue
 
 Resume a previous, unfinished (timed-out) `openhands` run to completion via
 record-replay. Standalone — it does not touch the normal run path. See
 [Continuing timed-out runs](../continue-runs.md) for the full guide.
 
 ```bash
-bench continue path/to/original/run-folder --tasks-dir path/to/tasks
+bench eval continue path/to/original/run-folder --tasks-dir path/to/tasks
 ```
+
+The original top-level `bench continue` still works as a hidden, deprecated alias.
 
 Key options: `--model` (override the live-continuation model; defaults to the
 original run's model), `--timeout`, `--output`, `--require-timeout`,
@@ -617,7 +619,7 @@ cut-point — no live model or API key needed), and `--proxy-mode` (replay
 proxy placement: `auto`, `host`, or `sandbox`; default `auto` uses
 sandbox-local replay for Daytona/Modal and host replay for Docker).
 
-### bench continue-batch
+### bench eval continue-batch
 
 Continue all timed-out OpenHands runs found under a directory tree. Discovers
 run folders (`config.json` + `trajectory/llm_trajectory.jsonl`) recursively,
@@ -625,7 +627,7 @@ continues each, and prints a JSON batch summary (exits 1 if any continuation
 failed).
 
 ```bash
-bench continue-batch path/to/jobs-root --tasks-dir path/to/tasks
+bench eval continue-batch path/to/jobs-root --tasks-dir path/to/tasks
 ```
 
 | Flag | Default | Description |
