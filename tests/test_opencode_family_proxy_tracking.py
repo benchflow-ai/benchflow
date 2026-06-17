@@ -91,6 +91,28 @@ def test_proxy_wrapper_pins_small_model_to_gateway_alias(agent, wrapper_bin, cfg
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
+def test_proxy_wrapper_fails_loud_on_registration_error(agent, wrapper_bin, cfg):
+    """In proxy mode a registration failure must abort the launch (exit 1), not
+    be swallowed by ``|| true`` — otherwise the agent launches with the alias
+    missing from its config and hits ProviderModelNotFoundError silently."""
+    w = _wrapper_script(agent, wrapper_bin)
+    assert "|| true" not in w
+    assert "exit 1" in w
+    assert "if ! python3" in w
+
+
+@pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
+def test_proxy_wrapper_resolves_config_under_agent_home(agent, wrapper_bin, cfg):
+    """The config file is resolved against ``$BENCHFLOW_AGENT_HOME`` (the same
+    home ``disallow_web_tools_setup_cmd``/``credential_files`` use) so all
+    writers target one file even when the sandbox home differs from ``$HOME``."""
+    w = _wrapper_script(agent, wrapper_bin)
+    assert "BENCHFLOW_AGENT_HOME" in w
+    # relative config path joined onto the resolved home, not a baked ~ expansion
+    assert cfg in w
+
+
+@pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
 def test_proxy_wrapper_is_conditional_and_execs_isolated_binary(
     agent, wrapper_bin, cfg
 ):

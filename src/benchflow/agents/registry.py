@@ -260,12 +260,18 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
     target = f"{_BENCHFLOW_BIN_PREFIX}/{binary}-proxy"
     provider_id = OPENCODE_PROXY_PROVIDER_ID
+    # ``config_relpath`` is resolved against ``$BENCHFLOW_AGENT_HOME`` at launch
+    # time — the same home the agent's ``disallow_web_tools_setup_cmd`` and
+    # ``credential_files`` write to — so all writers target one config file even
+    # when the sandbox home differs from ``$HOME``. Falls back to ``~``.
+    config_relpath = config_path.lstrip("/")
     register_py = "\n".join(
         [
             "import json, os, pathlib",
             'alias = os.environ.get("BENCHFLOW_LITELLM_MODEL_ALIAS", "").strip()',
             "if alias:",
-            f"    p = pathlib.Path(os.path.expanduser({config_path!r}))",
+            '    home = os.environ.get("BENCHFLOW_AGENT_HOME", "").strip() or os.path.expanduser("~")',
+            f"    p = pathlib.Path(home) / {config_relpath!r}",
             "    p.parent.mkdir(parents=True, exist_ok=True)",
             "    d = json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {}",
             # Dedicated provider id (see docstring) → chat completions, not the
@@ -287,10 +293,20 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
     )
     wrapper = (
         "#!/bin/sh\n"
+        # Proxy mode only. Fail LOUD: if registration errors (malformed existing
+        # config, unwritable path), do NOT launch — the agent would otherwise get
+        # set_model "<provider>/<alias>" for a model now missing from its config
+        # and hit ProviderModelNotFoundError with nothing explaining why. A hard
+        # exit surfaces the cause instead of a silent broken proxy path.
         'if [ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ]; then\n'
-        "python3 - <<'PYEOF' || true\n"
+        "  if ! python3 - <<'PYEOF'\n"
         f"{register_py}\n"
         "PYEOF\n"
+        "  then\n"
+        f'    echo "benchflow {binary}-proxy: gateway alias registration failed; '
+        'refusing to launch in proxy mode" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
         "fi\n"
         # Exec the agent. A node-shim bin (shebang) goes through the isolated node
         # launcher; a native binary (e.g. opencode-ai 1.17.x ships its bin as a
@@ -591,7 +607,7 @@ AGENTS: dict[str, AgentConfig] = {
             _js_agent_install("opencode", "opencode-ai")
             + " && "
             + _opencode_family_proxy_wrapper_install(
-                "opencode", "~/.config/opencode/opencode.json"
+                "opencode", ".config/opencode/opencode.json"
             )
         ),
         launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/opencode-proxy acp",
@@ -619,7 +635,7 @@ AGENTS: dict[str, AgentConfig] = {
             _js_agent_install("mimo", "@mimo-ai/cli@0.1.0")
             + " && "
             + _opencode_family_proxy_wrapper_install(
-                "mimo", "~/.config/mimocode/mimocode.json"
+                "mimo", ".config/mimocode/mimocode.json"
             )
         ),
         launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/mimo-proxy acp",
@@ -644,9 +660,12 @@ AGENTS: dict[str, AgentConfig] = {
         acp_model_format="provider/model",
         # MiMo Code is an OpenCode fork: `mimo acp` reports agentInfo.name="OpenCode"
         # and uses models.dev "provider/model" ids, so set_model must send e.g.
-        # "openai/benchflow-<alias>" in proxy mode, or "xiaomi/mimo-v2.5" in
-        # non-proxy mode via the registered xiaomi provider (the ("mimo","xiaomi")
-        # models.dev heuristic in acp/runtime.py keeps that prefix intact).
+        # "benchflow/benchflow-<alias>" in proxy mode (the dedicated
+        # OPENCODE_PROXY_PROVIDER_ID chat-completions provider the -proxy wrapper
+        # registers — NOT the built-in "openai" id, whose Responses-API hard-coding
+        # the gateway cannot serve), or "xiaomi/mimo-v2.5" in non-proxy mode via the
+        # registered xiaomi provider (the ("mimo","xiaomi") models.dev heuristic in
+        # acp/runtime.py keeps that prefix intact).
         env_mapping={
             # Map BOTH base_url and api_key (codex-acp precedent) so the non-proxy
             # path wires the key without an `if agent == "mimo"` core edit.
