@@ -105,11 +105,13 @@ only-include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not live and not integration'"
+addopts = "-m 'not live and not integration and not lane'"
 testpaths = ["tests"]
 markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
     "integration: full integration tests — requires GEMINI_API_KEY + DAYTONA_API_KEY (run with -m integration)",
+    "lane: an integration-suite release lane (run via run_suite --run-lane <id>)",
+    "lane_network_mode_enforcement: network_mode egress-conformance release lane (ENG-265)",
 ]
 
 [tool.ruff]

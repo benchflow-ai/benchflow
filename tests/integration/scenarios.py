@@ -32,6 +32,7 @@ deterministically over synthetic rollout fixtures and need no credentials.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -328,6 +329,106 @@ def secret_leak_issues(root: Path) -> list[str]:
                 rel = path.relative_to(root)
                 issues.append(f"{rel}: matches {pattern.pattern}")
                 break
+    return issues
+
+
+# ------------------------------------------------------------------
+# network_mode egress conformance (docker, model-free)
+# ------------------------------------------------------------------
+
+
+def egress_conformance_issues(
+    allowed_hosts: Sequence[str],
+    *,
+    blocked_hosts: Sequence[str],
+    docker: str | None = None,
+    timeout: float = 180.0,
+) -> list[str]:
+    """Assert the real egress sidecar permits only *allowed_hosts* (deny-by-default).
+
+    Stands up benchflow's own ``build_egress_override`` allowlist sidecar (the
+    ``internal: true`` network + CONNECT proxy that enforces ``network_mode:
+    allowlist`` on docker) with a minimal ``main`` container, then from inside
+    that container probes each host through the proxy: every ``allowed_hosts``
+    entry must be reachable (any HTTP status) and every ``blocked_hosts`` entry
+    must be denied/route-less. Empty list == conformant. Model-free and
+    credential-free, so it runs as a per-PR gate.
+
+    The docker CLI prefix is ``$BENCHFLOW_IT_DOCKER`` (default ``docker``; set to
+    ``sudo docker`` where the runner user is not in the docker group).
+    """
+    import shlex
+    import tempfile
+    import time
+
+    from benchflow.sandbox._egress import build_egress_override
+
+    dc = (docker or os.environ.get("BENCHFLOW_IT_DOCKER") or "docker").split()
+    issues: list[str] = []
+    work = Path(tempfile.mkdtemp(prefix="bf-egress-conf-"))
+    project = f"bfconf{os.getpid()}"
+    build_egress_override(list(allowed_hosts), out_dir=work)
+    base_compose = {
+        "services": {
+            "main": {
+                "image": "python:3.12-slim",
+                "command": ["sleep", "600"],
+                "labels": {"benchflow.owned": "true"},
+            }
+        }
+    }
+    (work / "base.json").write_text(json.dumps(base_compose))
+    compose = [
+        *dc,
+        "compose",
+        "-p",
+        project,
+        "-f",
+        str(work / "base.json"),
+        "-f",
+        str(work / "docker-compose-egress.json"),
+    ]
+
+    def _run(args, t=60.0):
+        return subprocess.run(list(args), capture_output=True, text=True, timeout=t)
+
+    def _exec_main(py):
+        probe = f"python3 -c {shlex.quote(py)}"
+        res = _run([*compose, "exec", "-T", "main", "bash", "-lc", probe], t=40.0)
+        return (res.stdout + res.stderr).strip()
+
+    try:
+        up = _run([*compose, "up", "-d"], t=timeout)
+        if up.returncode != 0:
+            return [f"compose up failed: {(up.stdout + up.stderr)[-300:]}"]
+        time.sleep(5)
+        for host in allowed_hosts:
+            if host.startswith("*."):
+                continue  # wildcard apex not probeable here; covered by unit tests
+            out = _exec_main(
+                "import urllib.request as u,urllib.error as e\n"
+                "try:\n"
+                f" print('STATUS', u.urlopen('https://{host}/', timeout=20).status)\n"
+                "except e.HTTPError as x: print('STATUS', x.code)\n"
+                "except Exception as x: print('ERR', type(x).__name__)"
+            )
+            if "STATUS" not in out:
+                issues.append(f"allowed host {host} not reachable through proxy: {out}")
+        for host in blocked_hosts:
+            out = _exec_main(
+                "import urllib.request as u\n"
+                "try:\n"
+                f" u.urlopen('https://{host}/', timeout=15); print('LEAK')\n"
+                "except Exception as x: print('BLOCKED', type(x).__name__)"
+            )
+            if "BLOCKED" not in out:
+                issues.append(f"blocked host {host} was reachable (egress leak): {out}")
+    finally:
+        _run([*compose, "down", "-v"], t=60.0)
+        with contextlib.suppress(OSError):
+            for p in sorted(work.rglob("*"), reverse=True):
+                p.unlink() if p.is_file() else p.rmdir()
+            work.rmdir()
     return issues
 
 
