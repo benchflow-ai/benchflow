@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
 
 # (agent name, proxy wrapper binary, agent config filename)
 CASES = [
@@ -35,14 +35,17 @@ def _wrapper_script(agent: str, wrapper_bin: str) -> str:
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
-def test_proxy_wrapper_registers_gateway_alias_under_openai_provider(
+def test_proxy_wrapper_registers_gateway_alias_under_dedicated_provider(
     agent, wrapper_bin, cfg
 ):
     w = _wrapper_script(agent, wrapper_bin)
     assert "BENCHFLOW_LITELLM_MODEL_ALIAS" in w  # gated on proxy mode
     assert cfg in w  # writes the agent's config
-    for token in ("provider", "openai", "models"):
+    for token in ("provider", OPENCODE_PROXY_PROVIDER_ID, "models"):
         assert token in w, f"{agent} wrapper missing {token!r}"
+    # Must NOT touch the built-in ``openai`` provider id — OpenCode hard-codes
+    # the Responses API there, which the gateway cannot serve.
+    assert '"openai"' not in w and "'openai'" not in w
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
@@ -50,6 +53,41 @@ def test_proxy_wrapper_wires_gateway_base_url(agent, wrapper_bin, cfg):
     w = _wrapper_script(agent, wrapper_bin)
     assert "OPENAI_BASE_URL" in w
     assert "baseURL" in w
+
+
+@pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
+def test_proxy_wrapper_forces_chat_completions_sdk(agent, wrapper_bin, cfg):
+    """The dedicated provider must use ``@ai-sdk/openai-compatible`` (chat
+    completions) so OpenCode does not call ``provider.responses()`` (which the
+    gateway/DeepSeek do not serve), and forward the gateway master key as
+    ``apiKey``."""
+    w = _wrapper_script(agent, wrapper_bin)
+    assert "@ai-sdk/openai-compatible" in w  # chat completions, not Responses API
+    assert '"npm"' in w
+    assert "OPENAI_API_KEY" in w and "apiKey" in w
+
+
+def test_format_acp_model_routes_proxy_alias_to_dedicated_provider():
+    """In proxy mode the gateway alias (``benchflow-…``) must be sent to
+    set_model as ``<OPENCODE_PROXY_PROVIDER_ID>/<alias>`` for provider/model
+    agents — NOT ``openai/<alias>`` (which crashes OpenCode's Responses path)."""
+    from benchflow.acp.runtime import _format_acp_model
+
+    alias = "benchflow-deepseek-deepseek-v4-flash"
+    for agent in ("opencode", "mimo"):
+        assert (
+            _format_acp_model(alias, agent)
+            == f"{OPENCODE_PROXY_PROVIDER_ID}/{alias}"
+        )
+        assert _format_acp_model(alias, agent).split("/")[0] != "openai"
+
+
+@pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
+def test_proxy_wrapper_pins_small_model_to_gateway_alias(agent, wrapper_bin, cfg):
+    """The title/summary helper must not fall back to the hard-coded
+    ``gpt-5-nano`` (unservable by the gateway) — it is pinned to the alias."""
+    w = _wrapper_script(agent, wrapper_bin)
+    assert "small_model" in w
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)

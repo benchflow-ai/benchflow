@@ -109,6 +109,14 @@ def _apt_install(*packages: str) -> str:
 _BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
 _BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
 _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
+
+# OpenCode-family proxy provider id. OpenCode hard-codes the OpenAI *Responses*
+# API for the built-in ``openai`` provider id (its ``getModel`` calls
+# ``provider.responses(id)``), which the LiteLLM gateway/DeepSeek cannot serve —
+# so the gateway alias must be registered under a *separate* provider id that
+# OpenCode routes through the chat-completions path. Shared with
+# ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
+OPENCODE_PROXY_PROVIDER_ID = "benchflow"
 _OPENHANDS_CLI_GIT_REV = "3ca17446c5d9c1e35e054803478a3501ec251ecf"
 _OPENHANDS_SDK_VERSION = "1.22.1"
 _OPENHANDS_TOOLS_VERSION = "1.22.1"
@@ -230,13 +238,28 @@ def _json_settings_merge(path: str, mutator: str) -> str:
 # routes through the proxy.
 def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str:
     """Install ``/opt/benchflow/bin/<binary>-proxy``: a thin wrapper that, in
-    proxy mode, registers the LiteLLM gateway alias under the OpenCode-family
-    agent's ``openai`` provider, then execs the isolated agent binary. Idempotent
+    proxy mode, registers the LiteLLM gateway alias under a dedicated
+    OpenCode provider, then execs the isolated agent binary. Idempotent
     (preserves existing config); no-op outside proxy mode.
+
+    The gateway alias is registered under the ``{OPENCODE_PROXY_PROVIDER_ID}``
+    provider using ``@ai-sdk/openai-compatible`` — NOT the built-in ``openai``
+    provider. OpenCode-family agents hard-code the OpenAI **Responses API** for
+    the ``openai`` provider id (``getModel`` calls ``provider.responses(id)``);
+    BenchFlow's LiteLLM gateway — and the OpenAI-completions upstreams it fronts
+    (e.g. DeepSeek) — only serve **chat completions**, so a Responses-API call
+    404s/500s and the agent idles with zero tool calls. Overriding the ``openai``
+    provider's ``npm`` does not help: OpenCode still calls ``.responses()`` and
+    crashes with ``provider.responses is not a function``. A *separate* provider
+    id routes through the chat-completions path, which is what the gateway
+    expects. ``small_model`` is pinned to the same alias so OpenCode's
+    title/summary helper stops falling back to its hard-coded ``gpt-5-nano``
+    (which the gateway cannot serve either).
     """
     real = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
     target = f"{_BENCHFLOW_BIN_PREFIX}/{binary}-proxy"
+    provider_id = OPENCODE_PROXY_PROVIDER_ID
     register_py = "\n".join(
         [
             "import json, os, pathlib",
@@ -245,11 +268,20 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
             f"    p = pathlib.Path(os.path.expanduser({config_path!r}))",
             "    p.parent.mkdir(parents=True, exist_ok=True)",
             "    d = json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {}",
-            '    prov = d.setdefault("provider", {}).setdefault("openai", {})',
+            # Dedicated provider id (see docstring) → chat completions, not the
+            # Responses API the built-in ``openai`` id is hard-coded to.
+            f'    prov = d.setdefault("provider", {{}}).setdefault({provider_id!r}, {{}})',
+            '    prov["npm"] = "@ai-sdk/openai-compatible"',
+            f'    prov.setdefault("name", "BenchFlow Gateway")',
+            '    opts = prov.setdefault("options", {})',
             '    base = os.environ.get("OPENAI_BASE_URL", "").strip()',
             "    if base:",
-            '        prov.setdefault("options", {})["baseURL"] = base',
+            '        opts["baseURL"] = base',
+            '    key = os.environ.get("OPENAI_API_KEY", "").strip()',
+            "    if key:",
+            '        opts["apiKey"] = key',
             '    prov.setdefault("models", {}).setdefault(alias, {"name": alias})',
+            f'    d["small_model"] = "{provider_id}/" + alias',
             '    p.write_text(json.dumps(d, indent=2) + "\\n")',
         ]
     )

@@ -36,8 +36,9 @@ def test_pi_acp_non_proxy_keeps_registered_provider_behavior():
 
 
 def test_provider_model_agents_unaffected_by_pi_acp_fix():
-    # opencode (provider/model) still routes via openai/<alias>, not litellm/.
-    assert (
-        _final_id("opencode", "deepseek/deepseek-v4-flash", _PROXY)
-        == "openai/benchflow-deepseek-deepseek-v4-flash"
-    )
+    # opencode (provider/model) routes via the dedicated OpenCode gateway
+    # provider id, NOT litellm/ (pi-acp) and NOT openai/ (Responses-API crash).
+    out = _final_id("opencode", "deepseek/deepseek-v4-flash", _PROXY)
+    assert out == "benchflow/benchflow-deepseek-deepseek-v4-flash"
+    assert not out.startswith("litellm/")
+    assert not out.startswith("openai/")

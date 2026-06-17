@@ -32,7 +32,7 @@ from benchflow.agents.providers import (
     find_provider_for_bare_model,
     strip_provider_prefix,
 )
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
@@ -170,12 +170,14 @@ def _format_acp_model(model: str, agent: str) -> str:
     # Already has a slash — assume it's provider/model already
     if "/" in bare:
         return bare
-    # BenchFlow's LiteLLM proxy registers every model under "openai/<alias>"
-    # (aliases are always "benchflow-…"). Send that so provider/model agents
-    # (e.g. opencode) hit a registered route instead of a guessed provider that
-    # the proxy never serves (the heuristic would default to anthropic/).
+    # BenchFlow's ``<binary>-proxy`` wrapper registers the gateway alias under a
+    # dedicated provider id (OPENCODE_PROXY_PROVIDER_ID) that OpenCode routes
+    # through the chat-completions path. It must NOT be the built-in ``openai``
+    # id: OpenCode hard-codes the Responses API there (``provider.responses(id)``)
+    # which the gateway/DeepSeek cannot serve (the model call then crashes or
+    # 404s with zero tool calls). Aliases are always "benchflow-…".
     if bare.startswith("benchflow-"):
-        return f"openai/{bare}"
+        return f"{OPENCODE_PROXY_PROVIDER_ID}/{bare}"
     # Provider ownership lives in the registry: if a ProviderConfig claims this
     # bare model family via its declared model_prefixes, route through it
     # (e.g. mimo-v2.5 -> xiaomi, deepseek-v4-flash -> deepseek). This keeps
