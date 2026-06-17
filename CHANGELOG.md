@@ -2,13 +2,24 @@
 
 ## [Unreleased]
 
+## 0.6.4 — 2026-06-17
+
+### Added
+- **Environment and config as run-time axes on `bench eval run`.** `--state`
+  binds the environment (S-axis) per run — inline JSON, a registry
+  `name@version` resolved through the environment registry, or a manifest path
+  (takes precedence over `--environment-manifest`). `--config-override` overlays
+  the task config (C-axis) — inline JSON/YAML/TOML or `@file`, deep-merged into
+  each task's resolved config. `--config` also gains a `--run-config` alias.
+  (#790)
+
 ### Changed
 - **`bench continue` is now `bench eval continue`.** The command (and its
   `continue-batch` companion) moved under the `eval` group, where it is now
   discoverable in `bench eval --help` alongside `run`/`adopt`. The original
   top-level `bench continue` / `bench continue-batch` remain as hidden,
   deprecated aliases (they print a deprecation notice) so existing scripts keep
-  working.
+  working. (#800)
 
 ## 0.6.3 — 2026-06-16
 
