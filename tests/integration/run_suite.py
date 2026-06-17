@@ -12,6 +12,7 @@ inventory evidence.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -632,6 +633,35 @@ def run_skillsbench_harbor_parity(
     return _run_skillsbench_harbor_parity_checker(checker_args)
 
 
+def lane_marker(lane_id: str) -> str:
+    """pytest marker for a lane id (ADR 0001): ``net-x`` -> ``lane_net_x``."""
+    return "lane_" + lane_id.replace("-", "_")
+
+
+def run_lane_via_pytest(suite: Mapping[str, Any], lane_id: str) -> int:
+    """Resolve a lane to its pytest marker and run it; return the exit code.
+
+    Keeps run_suite a planner (ADR 0001): assertions live in
+    tests/integration/test_integration_suite.py under ``lane_<id>`` markers.
+    """
+    known = {lane["id"] for lane in suite["lanes"]}
+    if lane_id not in known:
+        raise SuiteError(f"unknown lane id: {lane_id}")
+    marker = lane_marker(lane_id)
+    cmd = [
+        "uv", "run", "pytest",
+        "tests/integration/test_integration_suite.py",
+        "-m", marker, "-p", "no:cacheprovider",
+    ]
+    proc = subprocess.run(cmd, cwd=Path(__file__).resolve().parents[2])
+    if proc.returncode == 5:  # pytest: no tests collected for this marker
+        raise SuiteError(
+            f"lane {lane_id!r} has no test marked {marker!r} in "
+            "tests/integration/test_integration_suite.py"
+        )
+    return proc.returncode
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Plan BenchFlow integration suite lanes from a manifest."
@@ -674,6 +704,11 @@ def build_parser() -> argparse.ArgumentParser:
             "With --dry-run, exit non-zero when selected lanes contain unresolved "
             "TODOs or explicit blocked_by entries."
         ),
+    )
+    parser.add_argument(
+        "--run-lane",
+        metavar="LANE_ID",
+        help="Run a single lane's pytest marker (lane_<id>) and return its exit code.",
     )
     parser.add_argument(
         "--execute-adapter-evidence",
@@ -843,6 +878,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.profile and args.lanes:
             parser.error("use either --profile or --lane, not both")
         execution_modes = [
+            args.run_lane,
             args.execute_adapter_evidence,
             args.execute_trace_evidence,
             args.execute_hosted_env_evidence,
@@ -874,6 +910,9 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     return 1
             return 0
+
+        if args.run_lane:
+            return run_lane_via_pytest(suite, args.run_lane)
 
         if args.execute_adapter_evidence:
             return run_adapter_evidence(lanes, args)

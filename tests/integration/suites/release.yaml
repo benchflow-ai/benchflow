@@ -52,6 +52,7 @@ execution_profiles:
       - docker
       - daytona
     lanes:
+      - network-mode-enforcement
       - shared-sandbox-smoke
       - skillsbench-agent-matrix
       - adapter-release-set
@@ -64,6 +65,7 @@ execution_profiles:
     purpose: Validate every current release blocker before a trial-ready release cut.
     tracker: Linear
     lanes:
+      - network-mode-enforcement
       - shared-sandbox-smoke
       - skillsbench-agent-matrix
       - skillsbench-harbor-parity
@@ -116,6 +118,15 @@ axes:
     dind_required:
       - firecracker
       - k8s
+  network_modes:
+    # docker-enforced egress postures (ENG-265); daytona enforcement is IPv4-CIDR
+    # + fail-closed (ENG-264) and validated in the nightly tier.
+    docker_enforced:
+      - isolated
+      - allowlist
+      - wildcard
+    open:
+      - public
   task_sets:
     skillsbench_release_subset:
       source:
@@ -341,6 +352,23 @@ lanes:
     acceptance:
       - bench eval run succeeds on Docker and Daytona without special user intervention beyond each backend's documented auth.
       - result.json, trajectory output, and summary schema are valid.
+
+  - id: network-mode-enforcement
+    release_blocker: true
+    purpose: Prove docker network_mode egress enforcement is real (deny-by-default).
+    pytest_marker: lane_network_mode_enforcement
+    runs_per_pr: true
+    matrix:
+      sandboxes:
+        - docker
+      network_modes: docker_enforced
+    acceptance:
+      enforced:
+        - allowlist permits only listed hosts; a non-allowlisted host is denied by the egress sidecar.
+        - isolated/no-network blocks all egress.
+        - model-free and credential-free, so it hard-fails on every PR (never skipped).
+      aspirational:
+        - docker<->daytona network_mode parity (nightly tier, once Daytona creds are reliably present).
 
   - id: security-dind-smoke
     release_blocker: false
