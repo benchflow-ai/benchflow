@@ -191,7 +191,7 @@ def test_placeholder():
         sol_dir.mkdir()
         (sol_dir / "solve.sh").write_text(f"""#!/bin/bash
 # Oracle solution - demonstrates the task is solvable.
-# Used by: bench eval create --agent oracle --tasks-dir tasks/{name}
+# Used by: bench eval run --agent oracle --tasks-dir tasks/{name}
 
 # [REPLACE: implement the oracle solution. It must satisfy the verifier in
 # {verifier_dirname}/test.sh so that running solve.sh -> test.sh produces reward 1.0.]

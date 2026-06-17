@@ -539,21 +539,38 @@ class TestResumeLoopMismatchWarning:
     def test_pre_feature_config_without_loop_key_warns(self, tmp_path, caplog):
         """config.json written before loop strategies existed has no "loop"
         key — it ran single-shot, so resuming with a strategy must warn."""
-        from benchflow.evaluation import EvaluationConfig, _warn_on_resume_mismatch
+        from benchflow.evaluation import EvaluationConfig, _check_resume_mismatch
 
         job_dir = self._job_dir(tmp_path, {"agent": "claude-agent-acp"})
         config = EvaluationConfig(loop_strategy="verify-retry:k=2")
         with caplog.at_level("WARNING"):
-            _warn_on_resume_mismatch(job_dir, config)
+            _check_resume_mismatch(job_dir, config)
         assert any(
             "loop_strategy" in r.message and "single-shot" in r.message
             for r in caplog.records
         )
 
     def test_matching_single_shot_does_not_warn(self, tmp_path, caplog):
-        from benchflow.evaluation import EvaluationConfig, _warn_on_resume_mismatch
+        from benchflow.evaluation import EvaluationConfig, _check_resume_mismatch
 
         job_dir = self._job_dir(tmp_path, {"agent": "claude-agent-acp"})
         with caplog.at_level("WARNING"):
-            _warn_on_resume_mismatch(job_dir, EvaluationConfig())
+            _check_resume_mismatch(job_dir, EvaluationConfig())
         assert not [r for r in caplog.records if "loop_strategy" in r.message]
+
+    def test_agent_mismatch_refuses_instead_of_blending_scores(self, tmp_path):
+        """Guards PR #789 (CLI error-handling hardening)."""
+        # The reported bug: resuming a jobs_dir with a different agent silently
+        # folded the prior agent's cached rollouts into the new run's summary,
+        # publishing a blended Score: X/N. An agent mismatch must refuse (a
+        # loop-only mismatch still just warns), preserving the prior results.
+        from benchflow.evaluation import (
+            EvaluationConfig,
+            ResumeMismatchError,
+            _check_resume_mismatch,
+        )
+
+        job_dir = self._job_dir(tmp_path, {"agent": "oracle"})
+        config = EvaluationConfig(agent="codex-acp")
+        with pytest.raises(ResumeMismatchError, match="codex-acp"):
+            _check_resume_mismatch(job_dir, config)

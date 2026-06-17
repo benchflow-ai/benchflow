@@ -226,7 +226,7 @@ legacy alias; `oracle/` wins when both exist). Native oracles are uploaded to
 of an agent with `--agent oracle`:
 
 ```bash
-bench eval create --tasks-dir tasks/my-task --agent oracle --sandbox docker
+bench eval run --tasks-dir tasks/my-task --agent oracle --sandbox docker
 ```
 
 A correct task scores `1.0` on its oracle run before any model sees it.
@@ -331,7 +331,7 @@ migrating, validate the result:
 
 ```bash
 bench tasks check tasks/my-task
-bench eval create --tasks-dir tasks/my-task --agent oracle --sandbox docker
+bench eval run --tasks-dir tasks/my-task --agent oracle --sandbox docker
 ```
 
 ## Compatibility Export

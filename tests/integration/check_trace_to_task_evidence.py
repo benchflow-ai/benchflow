@@ -138,11 +138,11 @@ def _run_oracle_eval(task_dir: Path, jobs_dir: Path, sandbox: str) -> dict[str, 
         "status": "fail",
     }
     if completed.returncode != 0:
-        record["message"] = "bench eval create returned non-zero"
+        record["message"] = "bench eval run returned non-zero"
         _attach_failure_logs(record, completed)
         return record
     if result_path is None:
-        record["message"] = "bench eval create did not produce a fresh result.json"
+        record["message"] = "bench eval run did not produce a fresh result.json"
         _attach_failure_logs(record, completed)
         return record
 

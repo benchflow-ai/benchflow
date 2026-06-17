@@ -1,7 +1,7 @@
 """Review integration test results.
 
 Reads jobs/<agent>/*/result.json and summary.json files produced by
-``bench eval create`` and validates:
+``bench eval run`` and validates:
 
 1. Every expected agent produced a jobs directory
 2. Each trial has a valid result.json (schema check)
@@ -978,7 +978,7 @@ def check_agent(agent_dir: Path) -> dict:
             f"{', '.join(verifier_timeout_tasks)}"
         )
 
-    # Summary.json — bench eval create writes it at the agent_dir root
+    # Summary.json — bench eval run writes it at the agent_dir root
     if summary_error is None:
         assert summary is not None
         worker_sharded_summary = _is_worker_sharded_summary(summary)

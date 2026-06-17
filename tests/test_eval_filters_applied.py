@@ -1,4 +1,4 @@
-"""Single-task `bench eval create` must honor --include / --exclude (#401).
+"""Single-task `bench eval run` must honor --include / --exclude (#401).
 
 Before the fix the single-task branch called ``SDK().run`` directly and
 ignored the include/exclude sets that the batch path applied.

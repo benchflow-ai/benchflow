@@ -37,7 +37,7 @@ framework's readiness gate probes the same `:8023/health` endpoint.
 ## Run it
 
 ```bash
-bench eval create --tasks-dir benchmarks/chi-bench/tasks/<task> \
+bench eval run --tasks-dir benchmarks/chi-bench/tasks/<task> \
   --environment-manifest benchmarks/chi-bench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 ```

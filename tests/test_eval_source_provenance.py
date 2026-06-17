@@ -288,7 +288,7 @@ def test_eval_create_single_task_applies_concurrency_override(monkeypatch, tmp_p
 
 
 def test_eval_create_single_task_passes_cli_prompts(monkeypatch, tmp_path):
-    """Guards PR #608 so eval create keeps custom CLI prompts."""
+    """Guards PR #608 so eval run keeps custom CLI prompts."""
     task_dir = tmp_path / "task-a"
     task_dir.mkdir()
     (task_dir / "task.toml").write_text("[task]\n")
@@ -388,7 +388,7 @@ def test_eval_create_config_allows_literal_jobs_dir_override(monkeypatch, tmp_pa
 
 
 def test_eval_create_config_prompt_overrides_yaml(monkeypatch, tmp_path):
-    """Guards PR #608 so bench eval create --prompt overrides YAML prompts."""
+    """Guards PR #608 so bench eval run --prompt overrides YAML prompts."""
     tasks_root = tmp_path / "tasks"
     tasks_root.mkdir()
     config = tmp_path / "eval.yaml"
