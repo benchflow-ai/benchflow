@@ -12,6 +12,12 @@
   the task config (C-axis) — inline JSON/YAML/TOML or `@file`, deep-merged into
   each task's resolved config. `--config` also gains a `--run-config` alias.
   (#790)
+- **Content-addressed environment binding.** Registry environment resolution is
+  content-addressed — `env_hash = sha256(manifest)` — so a `name@version`
+  resolves to an exact, pinned environment that is recorded for replay; the
+  C-axis `--config-override` is likewise persisted with its content hash and the
+  applied patch. Every rollout is attributable to the precise world and config
+  it ran against. (#790)
 
 ### Changed
 - **`bench continue` is now `bench eval continue`.** The command (and its
