@@ -199,7 +199,11 @@ register_eval_adopt(eval_app)
 def eval_run(
     config_file: Annotated[
         Path | None,
-        typer.Option("--run-config", help="YAML run-config file (the whole run spec)"),
+        typer.Option(
+            "--config",
+            "--run-config",
+            help="YAML run-config file (the whole run spec)",
+        ),
     ] = None,
     tasks_dir: Annotated[
         Path | None,
@@ -319,14 +323,13 @@ def eval_run(
     config_override: Annotated[
         str | None,
         typer.Option(
-            "--config",
             "--config-override",
             help=(
                 "C-axis overlay: deep-merge a config patch into each task's "
                 "resolved config for this run. Inline JSON/YAML/TOML or an @file "
-                'ref, e.g. --config \'{"agent":{"timeout_sec":120}}\'. Varies one '
+                'ref, e.g. --config-override \'{"agent":{"timeout_sec":120}}\'. Varies one '
                 "knob (budget/skills/stopping rules) while T/A/M/S/R stay fixed; "
-                "recorded by content hash for replay. (--config-override is an alias.)"
+                "recorded by content hash for replay."
             ),
         ),
     ] = None,
