@@ -89,6 +89,7 @@ def _deny(client: socket.socket, host: str) -> None:
 
 
 def _handle(client: socket.socket) -> None:
+    upstream: socket.socket | None = None
     try:
         client.settimeout(30)
         header = _recv_headers(client)
@@ -113,7 +114,6 @@ def _handle(client: socket.socket) -> None:
                 return
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             _pipe(client, upstream)
-            upstream.close()
             return
 
         # Plain HTTP: target is an absolute URI (http://host/path) in proxy form.
@@ -137,10 +137,14 @@ def _handle(client: socket.socket) -> None:
             return
         upstream.sendall(_to_origin_form(header))
         _pipe(client, upstream)
-        upstream.close()
     except Exception:
         pass
     finally:
+        # Always release the upstream socket — a raise in sendall/_pipe would
+        # otherwise skip its close() and leak the fd on non-refcounted runtimes.
+        if upstream is not None:
+            with contextlib.suppress(OSError):
+                upstream.close()
         with contextlib.suppress(OSError):
             client.close()
 
