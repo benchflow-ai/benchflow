@@ -788,6 +788,67 @@ class DaytonaSandbox(BaseSandbox):
         await self._strategy.start(force_build)
         await self._verify_network_enforcement()
 
+    async def relock_network(
+        self, extra_allowed_hosts: tuple[str, ...] = ()
+    ) -> dict[str, str]:
+        """Apply the task's allowlist as a daytona IPv4 CIDR list, post-install.
+
+        Mirrors docker install-before-lockdown: the sandbox came up open so the
+        agent could install; now resolve the hostname allowlist (+ the model
+        host) to /32 CIDRs and push them via ``update_network_settings``. Fails
+        closed if the policy can't be faithfully expressed as <=10 IPv4 CIDRs
+        (wildcards, unresolvable, or too many IPs) or if a non-allowlisted
+        canary is still reachable after applying it. ``block-all``/``open`` are
+        handled at creation, so this is a no-op for them. Returns ``{}`` — the
+        daytona allowlist is enforced at the network layer, so (unlike docker)
+        the agent needs no HTTP(S)_PROXY env.
+        """
+        from benchflow.sandbox.network_policy import (
+            EffectivePolicy,
+            plan_daytona_allowlist,
+            resolve_network_decision,
+        )
+
+        decision = resolve_network_decision(self.task_env_config, "daytona")
+        if decision.policy is not EffectivePolicy.ALLOWLIST:
+            return {}
+        model_host = extra_allowed_hosts[0] if extra_allowed_hosts else None
+        plan = plan_daytona_allowlist(decision.allowed_hosts, model_host=model_host)
+        if not plan.enforceable:
+            raise SandboxStartupError(
+                f"daytona cannot enforce network_mode='allowlist': {plan.reject_reason}"
+            )
+        # Pin allowlisted hosts in /etc/hosts so the agent resolves them WITHOUT
+        # DNS egress (the sandbox resolvers are not in the allow list) and without
+        # IP-rotation drift — it connects to exactly the IP we allowlisted. TLS
+        # SNI/cert still use the hostname, so HTTPS stays valid.
+        if plan.host_ips:
+            lines = "".join(f"{ip}\t{host}\n" for host, ip in plan.host_ips)
+            await self.exec(
+                f"printf %s {shlex.quote(lines)} >> /etc/hosts",
+                user="root",
+                timeout_sec=20,
+            )
+        sandbox = self._require_sandbox()
+        await sandbox.update_network_settings(network_allow_list=",".join(plan.cidrs))
+        # Fail closed: a non-allowlisted canary must now be UNREACHABLE. If it
+        # still resolves, the platform didn't apply the allow list — refuse to
+        # run an unenforced policy (same posture as the block-all canary).
+        if blockall_enforcement_violation(
+            block_all=True, canary_reachable=await self._egress_reachable()
+        ):
+            raise SandboxStartupError(
+                f"daytona applied a {len(plan.cidrs)}-CIDR allow list but the "
+                f"sandbox still reached {_EGRESS_CANARY_HOST}:{_EGRESS_CANARY_PORT} "
+                "(a non-allowlisted host) — the platform did not enforce the "
+                "allow list; failing closed"
+            )
+        self.logger.info(
+            "relock_network: ALLOWLIST applied (daytona, %d cidrs)",
+            len(plan.cidrs),
+        )
+        return {}
+
     async def _verify_network_enforcement(self) -> None:
         """Fail closed if a block-all policy resolves but egress still works.
 

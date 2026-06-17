@@ -150,13 +150,31 @@ def test_validator_reports_allowlist_as_runtime_gap() -> None:
         if "network_mode" in i.path
     ]
     assert docker_net == []
-    # sandboxes without per-host egress control reject allowlist at preflight
+    # daytona enforces exact-host allowlists via its native IPv4-CIDR list ->
+    # no gap for these hosts.
     daytona_net = [
         i.path
         for i in validate_task_runtime_support(config, sandbox="daytona")
         if "network_mode" in i.path
     ]
-    assert daytona_net == ["agent.network_mode", "environment.network_mode"]
+    assert daytona_net == []
+    # but daytona CANNOT express wildcards -> those still reject at preflight.
+    wild = TaskConfig.model_validate(
+        {"agent": {"network_mode": "allowlist", "allowed_hosts": ["*.example.com"]}}
+    )
+    daytona_wild = [
+        i.path
+        for i in validate_task_runtime_support(wild, sandbox="daytona")
+        if "network_mode" in i.path
+    ]
+    assert daytona_wild == ["agent.network_mode"]
+    # modal has no per-host control -> rejects exact-host allowlist too.
+    modal_net = [
+        i.path
+        for i in validate_task_runtime_support(config, sandbox="modal")
+        if "network_mode" in i.path
+    ]
+    assert modal_net == ["agent.network_mode", "environment.network_mode"]
 
 
 def test_validator_reports_unknown_sandbox_backend() -> None:

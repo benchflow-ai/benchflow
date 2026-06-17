@@ -55,10 +55,14 @@ class TestResolveDecision:
 
     def test_non_docker_allowlist_fails_closed(self):
         c = _cfg(network_mode="allowlist", allowed_hosts=["a.com"])
-        for sb in ("daytona", "modal"):
-            d = resolve_network_decision(c, sb)
-            assert d.policy is EffectivePolicy.BLOCK_ALL
-            assert d.downgraded_from is NetworkMode.ALLOWLIST  # never silently open
+        # modal has no per-host egress control -> still fails closed to block-all
+        d = resolve_network_decision(c, "modal")
+        assert d.policy is EffectivePolicy.BLOCK_ALL
+        assert d.downgraded_from is NetworkMode.ALLOWLIST  # never silently open
+        # daytona enforces via its native IPv4-CIDR allow list -> ALLOWLIST
+        d_day = resolve_network_decision(c, "daytona")
+        assert d_day.policy is EffectivePolicy.ALLOWLIST
+        assert d_day.allowed_hosts == ("a.com",)
 
     def test_no_network(self):
         assert (
@@ -71,7 +75,7 @@ class TestResolveDecision:
 
     def test_capability_predicate(self):
         assert sandbox_supports_allowlist("docker")
-        assert not sandbox_supports_allowlist("daytona")
+        assert sandbox_supports_allowlist("daytona")  # native IPv4-CIDR allow list
         assert not sandbox_supports_allowlist("modal")
         assert not sandbox_supports_allowlist(None)
 
@@ -130,5 +134,11 @@ class TestCapabilityGate:
             for i in validate_task_runtime_support(cfg, sandbox="daytona")
             if "network_mode" in i.path
         ]
-        assert docker_issues == []  # enforced on docker
-        assert daytona_issues  # rejected at preflight elsewhere
+        modal_issues = [
+            i
+            for i in validate_task_runtime_support(cfg, sandbox="modal")
+            if "network_mode" in i.path
+        ]
+        assert docker_issues == []  # enforced on docker (hostname proxy)
+        assert daytona_issues == []  # enforced on daytona (IPv4-CIDR allow list)
+        assert modal_issues  # no per-host egress control -> rejected at preflight

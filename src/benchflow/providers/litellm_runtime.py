@@ -1025,15 +1025,21 @@ async def ensure_litellm_runtime(
         and network_is_restrictive(sandbox.task_env_config, environment)
     )
 
-    if network_restrictive and environment == "docker":
-        # The host litellm proxy is plain-HTTP and reached via the egress
-        # proxy; that forwarding path is fragile. Under a restrictive docker
-        # policy the agent instead reaches the provider directly over HTTPS
-        # (its host is egress-allowlisted); usage is captured by native-ACP.
+    if network_restrictive and environment in ("docker", "daytona"):
+        # The benchflow LiteLLM usage proxy is fragile under a restrictive
+        # policy: on docker it is reached over the plain-HTTP egress-proxy
+        # forwarding path; on daytona it must pip-install in-sandbox AFTER the
+        # allowlist is applied (pypi is not allowlisted -> install fails). In
+        # both cases the agent instead reaches the provider DIRECTLY over
+        # HTTPS — the provider host is allowlisted (docker egress proxy /
+        # daytona IPv4 CIDR) — and usage is captured by native-ACP telemetry.
         return await _skip_litellm_runtime(
             agent_env,
             runtime,
-            reason="restrictive docker policy: direct-provider over HTTPS (egress-allowlisted)",
+            reason=(
+                f"restrictive {environment} policy: direct-provider over HTTPS "
+                "(provider host allowlisted)"
+            ),
         )
 
     if environment in _SANDBOX_LOCAL_ENVIRONMENTS and sandbox is None:

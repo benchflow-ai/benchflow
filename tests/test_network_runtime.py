@@ -17,12 +17,14 @@ def test_network_blocks_all_for_daytona():
         network_blocks_all(SandboxConfig(network_mode="no-network"), "daytona") is True
     )
     assert network_blocks_all(SandboxConfig(), "daytona") is False  # public default
-    # allowlist is unenforceable on daytona → resolve fails closed to block-all
+    # allowlist is now ENFORCEABLE on daytona (native IPv4-CIDR allow list), so it
+    # resolves to ALLOWLIST — NOT block-all. Faithfulness (wildcards / >10 IPs)
+    # is decided by plan_daytona_allowlist at lockdown, not here.
     assert (
         network_blocks_all(
             SandboxConfig(network_mode="allowlist", allowed_hosts=["x.com"]), "daytona"
         )
-        is True
+        is False
     )
 
 
@@ -124,12 +126,14 @@ def test_to_origin_form_passthrough_already_origin():
 
 # ---- Fix #3 pivot: resolve provider host to allowlist under restrictive policy ---
 
+
 def test_provider_host_for_model():
     from benchflow.agents.providers import provider_host_for_model
 
     assert (
         provider_host_for_model(
-            "deepseek/deepseek-v4-flash", {"DEEPSEEK_BASE_URL": "https://api.deepseek.com"}
+            "deepseek/deepseek-v4-flash",
+            {"DEEPSEEK_BASE_URL": "https://api.deepseek.com"},
         )
         == "api.deepseek.com"
     )
@@ -138,3 +142,270 @@ def test_provider_host_for_model():
     assert provider_host_for_model("deepseek-v4-flash", {}) is None
     # provider prefix but its base_url env is missing -> None (don't guess)
     assert provider_host_for_model("deepseek/x", {}) is None
+
+
+# ---- Daytona allowlist parity: enforce-when-faithful plan (ENG-219 follow-up) ----
+
+
+def _fake_resolver(table):
+    def resolve(host):
+        return tuple(table.get(host, ()))
+
+    return resolve
+
+
+def test_daytona_plan_resolves_hosts_and_model_to_cidrs():
+    from benchflow.sandbox.network_policy import plan_daytona_allowlist
+
+    plan = plan_daytona_allowlist(
+        ("api.crossref.org", "doi.org"),
+        model_host="api.deepseek.com",
+        resolve=_fake_resolver(
+            {
+                "api.crossref.org": ("1.1.1.1",),
+                "doi.org": ("2.2.2.2",),
+                "api.deepseek.com": ("3.3.3.3",),
+            }
+        ),
+    )
+    assert plan.enforceable
+    assert plan.reject_reason is None
+    assert plan.cidrs == ("1.1.1.1/32", "2.2.2.2/32", "3.3.3.3/32")
+
+
+def test_daytona_plan_dedups_shared_ips():
+    from benchflow.sandbox.network_policy import plan_daytona_allowlist
+
+    plan = plan_daytona_allowlist(
+        ("a.example.com", "b.example.com"),
+        model_host=None,
+        resolve=_fake_resolver(
+            {"a.example.com": ("9.9.9.9", "8.8.8.8"), "b.example.com": ("9.9.9.9",)}
+        ),
+    )
+    assert plan.enforceable
+    assert plan.cidrs == ("9.9.9.9/32", "8.8.8.8/32")
+
+
+def test_daytona_plan_rejects_wildcard():
+    from benchflow.sandbox.network_policy import plan_daytona_allowlist
+
+    plan = plan_daytona_allowlist(
+        ("*.crossref.org", "doi.org"),
+        model_host="api.deepseek.com",
+        resolve=_fake_resolver(
+            {"doi.org": ("2.2.2.2",), "api.deepseek.com": ("3.3.3.3",)}
+        ),
+    )
+    assert not plan.enforceable
+    assert plan.cidrs == ()
+    assert "wildcard" in plan.reject_reason.lower()
+    assert "*.crossref.org" in plan.reject_reason
+
+
+def test_daytona_plan_rejects_unresolvable_host():
+    from benchflow.sandbox.network_policy import plan_daytona_allowlist
+
+    plan = plan_daytona_allowlist(
+        ("api.crossref.org", "nope.invalid"),
+        model_host=None,
+        resolve=_fake_resolver({"api.crossref.org": ("1.1.1.1",)}),
+    )
+    assert not plan.enforceable
+    assert "nope.invalid" in plan.reject_reason
+    assert "resolve" in plan.reject_reason.lower()
+
+
+def test_daytona_plan_rejects_over_ten_ips():
+    from benchflow.sandbox.network_policy import plan_daytona_allowlist
+
+    table = {f"h{i}.example.com": (f"10.0.0.{i}",) for i in range(11)}
+    plan = plan_daytona_allowlist(
+        tuple(table), model_host=None, resolve=_fake_resolver(table)
+    )
+    assert not plan.enforceable
+    assert "10" in plan.reject_reason
+
+
+def test_daytona_plan_rejects_empty_resolution():
+    from benchflow.sandbox.network_policy import plan_daytona_allowlist
+
+    plan = plan_daytona_allowlist((), model_host=None, resolve=_fake_resolver({}))
+    assert not plan.enforceable
+
+
+# ---- Daytona relock_network: enforce-or-fail-closed orchestration ----
+
+import logging  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def _make_daytona_stub(task_env_config):
+    from benchflow.sandbox.daytona import DaytonaSandbox
+
+    sb = DaytonaSandbox.__new__(DaytonaSandbox)
+    sb.task_env_config = task_env_config
+    sb.logger = logging.getLogger("test-daytona")
+    applied = {}
+
+    class _Inner:
+        async def update_network_settings(
+            self, *, network_allow_list=None, network_block_all=None
+        ):
+            applied["allow_list"] = network_allow_list
+
+    sb._sandbox = _Inner()
+    return sb, applied
+
+
+@pytest.mark.asyncio
+async def test_daytona_relock_applies_faithful_allowlist(monkeypatch):
+    from benchflow.sandbox import network_policy
+    from benchflow.task.config import SandboxConfig
+
+    sb, applied = _make_daytona_stub(
+        SandboxConfig(network_mode="allowlist", allowed_hosts=["a.com"])
+    )
+    monkeypatch.setattr(
+        network_policy,
+        "plan_daytona_allowlist",
+        lambda hosts, *, model_host, resolve=None: network_policy.DaytonaAllowlistPlan(
+            cidrs=("9.9.9.9/32", "3.3.3.3/32")
+        ),
+    )
+
+    async def _unreachable():
+        return False  # non-allowlisted canary correctly blocked
+
+    sb._egress_reachable = _unreachable
+    out = await sb.relock_network(extra_allowed_hosts=("api.model.test",))
+    assert out == {}
+    assert applied["allow_list"] == "9.9.9.9/32,3.3.3.3/32"
+
+
+@pytest.mark.asyncio
+async def test_daytona_relock_fails_closed_on_unfaithful_plan(monkeypatch):
+    from benchflow.sandbox import network_policy
+    from benchflow.sandbox.protocol import SandboxStartupError
+    from benchflow.task.config import SandboxConfig
+
+    sb, _ = _make_daytona_stub(
+        SandboxConfig(network_mode="allowlist", allowed_hosts=["a.com"])
+    )
+    monkeypatch.setattr(
+        network_policy,
+        "plan_daytona_allowlist",
+        lambda hosts, *, model_host, resolve=None: network_policy.DaytonaAllowlistPlan(
+            reject_reason="resolves to 13 IPv4 addresses, exceeding daytona's 10-CIDR limit"
+        ),
+    )
+    with pytest.raises(SandboxStartupError, match="cannot enforce"):
+        await sb.relock_network(extra_allowed_hosts=())
+
+
+@pytest.mark.asyncio
+async def test_daytona_relock_fails_closed_if_canary_still_reachable(monkeypatch):
+    from benchflow.sandbox import network_policy
+    from benchflow.sandbox.protocol import SandboxStartupError
+    from benchflow.task.config import SandboxConfig
+
+    sb, _ = _make_daytona_stub(
+        SandboxConfig(network_mode="allowlist", allowed_hosts=["a.com"])
+    )
+    monkeypatch.setattr(
+        network_policy,
+        "plan_daytona_allowlist",
+        lambda hosts, *, model_host, resolve=None: network_policy.DaytonaAllowlistPlan(
+            cidrs=("9.9.9.9/32",)
+        ),
+    )
+
+    async def _reachable():
+        return True  # platform did NOT enforce -> leaked egress
+
+    sb._egress_reachable = _reachable
+    with pytest.raises(SandboxStartupError, match="did not enforce"):
+        await sb.relock_network(extra_allowed_hosts=())
+
+
+@pytest.mark.asyncio
+async def test_daytona_relock_noop_for_non_allowlist():
+    from benchflow.task.config import SandboxConfig
+
+    sb, applied = _make_daytona_stub(SandboxConfig(network_mode="no-network"))
+    out = await sb.relock_network()
+    assert out == {}
+    assert applied == {}  # update_network_settings never called
+
+
+@pytest.mark.asyncio
+async def test_ensure_litellm_skips_under_restrictive_daytona():
+    """Under a restrictive daytona policy the in-sandbox usage proxy can't be
+    installed (pypi blocked post-lockdown), so ensure_litellm_runtime skips it and
+    lets the agent reach the (allowlisted) provider directly — same as docker."""
+    from benchflow.providers import litellm_runtime
+    from benchflow.task.config import SandboxConfig
+
+    class _FakeSandbox:
+        task_env_config = SandboxConfig(
+            network_mode="allowlist", allowed_hosts=["a.com"]
+        )
+
+    agent_env = {
+        "LLM_BASE_URL": "https://api.deepseek.com",
+        "LLM_MODEL": "openai/deepseek-v4-flash",
+        "DEEPSEEK_API_KEY": "sk-test",
+    }
+    out_env, runtime = await litellm_runtime.ensure_litellm_runtime(
+        agent="openhands",
+        agent_env=agent_env,
+        model="deepseek/deepseek-v4-flash",
+        runtime=None,
+        environment="daytona",
+        usage_tracking="auto",
+        sandbox=_FakeSandbox(),
+    )
+    assert runtime is None
+    assert out_env is agent_env  # skipped: env returned unchanged
+
+
+@pytest.mark.asyncio
+async def test_daytona_relock_pins_etc_hosts(monkeypatch):
+    from benchflow.sandbox import network_policy
+    from benchflow.task.config import SandboxConfig
+
+    sb, applied = _make_daytona_stub(
+        SandboxConfig(network_mode="allowlist", allowed_hosts=["a.com"])
+    )
+    execs = []
+
+    async def _fake_exec(cmd, *a, **k):
+        execs.append(cmd)
+
+        class _R:
+            stdout = ""
+            result = ""
+
+        return _R()
+
+    sb.exec = _fake_exec
+    monkeypatch.setattr(
+        network_policy,
+        "plan_daytona_allowlist",
+        lambda hosts, *, model_host, resolve=None: network_policy.DaytonaAllowlistPlan(
+            cidrs=("9.9.9.9/32", "3.3.3.3/32"),
+            host_ips=(("a.com", "9.9.9.9"), ("api.model.test", "3.3.3.3")),
+        ),
+    )
+
+    async def _unreachable():
+        return False
+
+    sb._egress_reachable = _unreachable
+    await sb.relock_network(extra_allowed_hosts=("api.model.test",))
+    # /etc/hosts pinned for both hosts before the allow list was applied
+    hosts_writes = [c for c in execs if "/etc/hosts" in c]
+    assert hosts_writes, "expected an /etc/hosts pin write"
+    assert "9.9.9.9" in hosts_writes[0] and "a.com" in hosts_writes[0]
+    assert applied["allow_list"] == "9.9.9.9/32,3.3.3.3/32"
