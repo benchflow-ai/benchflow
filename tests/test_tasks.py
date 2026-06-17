@@ -248,7 +248,7 @@ class TestScaffoldTaskReportedFiles:
 class TestLegacyScaffoldCompatibility:
     """init_task(..., task_format="legacy") — compatibility scaffold coverage.
 
-    The CLI no longer creates new split-layout tasks in v0.6.2, but migration,
+    The CLI no longer creates new split-layout tasks, but migration,
     export, and adapter tests still depend on the compatibility scaffolder.
     Keep these fail-closed defaults covered while the lower-level API remains.
     """

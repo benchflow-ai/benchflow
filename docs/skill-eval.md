@@ -4,7 +4,7 @@ Test whether your agent skill actually helps agents perform better.
 ## Install
 
 ```bash
-uv tool install benchflow
+uv tool install --upgrade benchflow
 ```
 
 ## Overview
@@ -395,7 +395,7 @@ BenchFlow generates everything ephemeral — only results persist.
 **CI integration:**
 ```bash
 # In your skill's CI pipeline
-uv tool install benchflow
+uv tool install --upgrade benchflow
 bench skills eval . --agent claude-agent-acp --no-baseline
 ```
 

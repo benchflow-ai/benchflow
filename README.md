@@ -26,8 +26,8 @@ BenchFlow is a universal environment framework: it runs AI agents against task e
 ## Quickstart
 
 ```bash
-# Install the latest stable BenchFlow CLI (0.6.2)
-uv tool install benchflow
+# Install or upgrade to the latest stable BenchFlow CLI
+uv tool install --upgrade benchflow
 
 # Run a benchmark: any task source, any ACP agent, any sandbox
 export GEMINI_API_KEY=...            # or claude login / codex --login for subscription auth
@@ -41,20 +41,19 @@ Each run writes a per-task `result.json` (rewards + trajectory + token usage) an
 
 ## Install
 
-`0.6.2` is the latest stable release on PyPI. Install (or upgrade) with uv or pip:
+Install or upgrade to the latest stable release from PyPI with `uv`:
 
 ```bash
-uv tool install benchflow                  # add --upgrade to refresh an existing install
-pip install --upgrade benchflow            # pip equivalent
+uv tool install --upgrade benchflow
 ```
 
-- Confirm with `bench --version`; the stable line should report `0.6.2`.
-- If you see `Executables already exist: bench, benchflow`, re-run with `--force` to replace stale entrypoints from an older install.
-- For Daytona or Modal extras, install the relevant optional package, for example `uv tool install 'benchflow[sandbox-daytona]'`.
+- Confirm with `bench --version`.
+- If you see `Executables already exist: bench, benchflow`, re-run with `uv tool install --upgrade --force benchflow` to replace stale entrypoints from an older install.
+- For Daytona or Modal extras, install the relevant optional package, for example `uv tool install --upgrade 'benchflow[sandbox-daytona]'`.
 
 Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --prerelease allow --upgrade benchflow`).
 
-**Requirements & auth.** Python 3.12+ and [uv](https://docs.astral.sh/uv/). Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal; export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use subscription auth (`claude login` / `codex --login`). Provider-prefixed models may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` + `AZURE_API_ENDPOINT`.
+**Requirements & auth.** Install [uv](https://docs.astral.sh/uv/); it provisions a compatible Python for the tool install. Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal; export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use subscription auth (`claude login` / `codex --login`). Provider-prefixed models may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` + `AZURE_API_ENDPOINT`.
 
 ## Documentation
 
@@ -84,7 +83,7 @@ Notebooks and runnable example scripts live under [`docs/examples/`](./docs/exam
 > Gemini CLI). Onboarding a third-party benchmark into `benchmarks/<name>/` is a
 > separate workflow — `bench eval adopt <source>` scaffolds and drives the
 > conversion, and `bench eval adopt <name> --verify` parity-gates it. (The legacy
-> `bench agent create|run|verify` still work as deprecated aliases through 0.6.)
+> `bench agent create|run|verify` commands still work as deprecated aliases.)
 > See the [CLI reference](./docs/reference/cli.md#bench-eval-adopt) for details.
 
 ## Benchmark task sources
@@ -116,16 +115,11 @@ bench eval run \
 Repos are cloned and cached locally under `.cache/datasets/` on first use.
 
 Hosted environments are another source type. Instead of a repo, pass
-`--source-env` to run an external PrimeIntellect / Verifiers environment on its
-own native harness — BenchFlow preserves the hosted identity (`env_uid`,
-`hub_url`) and still writes the shared rollout output contract:
-
-```bash
-bench eval run \
-    --source-env primeintellect/general-agent \
-    --source-env-version 0.1.1 \
-    --model google/gemini-2.5-flash-lite
-```
+`--source-env` with the environment's pinned source version to run an external
+PrimeIntellect / Verifiers environment on its own native harness — BenchFlow
+preserves the hosted identity (`env_uid`, `hub_url`) and still writes the shared
+rollout output contract. See the [CLI reference](./docs/reference/cli.md) for
+the full hosted-environment command shape.
 
 Downstream projects should depend on the public PyPI release by default. For
 internal validation before the next public release, install or lock the internal
@@ -164,7 +158,7 @@ PRs welcome. Open against `main`. CI runs ruff + tests on every PR; please run `
 
 Release channels are documented in [Release channels](./docs/release.md). In
 short: merges to `main` publish an internal preview after CI passes, while a
-matching `v<version>` tag publishes the public release.
+matching release tag publishes the public release.
 
 ## License
 
