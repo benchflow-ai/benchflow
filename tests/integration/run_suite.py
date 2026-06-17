@@ -650,7 +650,7 @@ def run_lane_via_pytest(suite: Mapping[str, Any], lane_id: str) -> int:
     marker = lane_marker(lane_id)
     cmd = [
         "uv", "run", "pytest",
-        "tests/integration/test_integration_suite.py",
+        "tests/test_integration_suite.py",
         "-m", marker, "-p", "no:cacheprovider",
     ]
     proc = subprocess.run(cmd, cwd=Path(__file__).resolve().parents[2])
