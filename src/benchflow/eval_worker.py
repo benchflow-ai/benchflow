@@ -1,6 +1,6 @@
 """Subprocess worker for sharded evaluation runs.
 
-The public ``bench eval create`` command uses this module when the operator asks
+The public ``bench eval run`` command uses this module when the operator asks
 for worker-level isolation. A worker runs one normal :class:`Evaluation` over a
 small include set and exits zero when BenchFlow completed the shard, even if the
 benchmark tasks themselves failed. Non-zero exits are reserved for control-plane

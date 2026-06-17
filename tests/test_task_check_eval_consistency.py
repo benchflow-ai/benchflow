@@ -1,8 +1,8 @@
-"""Regression tests for #379 — `bench tasks check` and `bench eval create`
+"""Regression tests for #379 — `bench tasks check` and `bench eval run`
 must agree on the structural contract for task packages.
 
 The original bug: a task.toml without an [agent] section was rejected by
-`bench tasks check` but happily executed by `bench eval create`, producing
+`bench tasks check` but happily executed by `bench eval run`, producing
 recorded evidence for a "malformed" task. The fix aligns the structural
 checker with the runtime contract (AgentConfig.timeout_sec defaults to
 None) so both commands return the same verdict.
@@ -96,7 +96,7 @@ def test_check_task_accepts_missing_agent(tmp_path):
 
     Runtime AgentConfig.timeout_sec defaults to None (rollout treats this
     as "no wall-clock cap"). Rejecting it here would diverge from what
-    `bench eval create` actually executes.
+    `bench eval run` actually executes.
     """
     task = _make_task_missing_agent(tmp_path)
     issues = check_task(task)
@@ -117,7 +117,7 @@ def test_tasks_check_cli_accepts_missing_agent(tmp_path):
 
 
 def test_eval_create_enumerates_task_missing_agent(tmp_path):
-    """`bench eval create --tasks-dir <dir>` must enumerate the same
+    """`bench eval run --tasks-dir <dir>` must enumerate the same
     task that `bench tasks check` accepted — no structural filtering on
     missing [agent].
     """
@@ -129,7 +129,7 @@ def test_eval_create_enumerates_task_missing_agent(tmp_path):
     )
     task_dirs = ev._get_task_dirs()
     assert task_dirs == [task], (
-        f"`eval create` dropped a task that `tasks check` accepts: {task_dirs}"
+        f"`eval run` dropped a task that `tasks check` accepts: {task_dirs}"
     )
 
 

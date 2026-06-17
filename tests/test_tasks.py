@@ -98,7 +98,7 @@ class TestCheckTask:
     def test_task_toml_missing_agent_section_is_allowed(self, tmp_path):
         """[agent] is optional — runtime AgentConfig defaults to no timeout.
 
-        Guards #379: bench tasks check and bench eval create must agree on
+        Guards #379: bench tasks check and bench eval run must agree on
         the missing-[agent] contract. The runtime accepts it, so check_task
         does too.
         """
@@ -421,7 +421,7 @@ class TestTaskMdScaffoldAgentNeutral:
     """The default task.md scaffold must not pin an agent (#dogfood-1).
 
     A scenes block with a role-pinned agent silently overrides --agent on
-    `bench eval create`, so the scaffold's own documented oracle smoke test
+    `bench eval run`, so the scaffold's own documented oracle smoke test
     (`--agent oracle`) ran claude-agent-acp instead and died on ACP auth.
     The scaffold stays bare prose; roles/scenes are opt-in via the authoring
     guide.

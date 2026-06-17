@@ -4,16 +4,16 @@ Pins the fix from this branch (post-PR #173 follow-up):
 
   Layer 1 — restore `agent != "oracle"` guard in resolve_agent_env so the
             chokepoint defends against any caller that forwards a model.
-  Layer 2 — keep `bench eval create` routed through the live CLI entry point.
+  Layer 2 — keep `bench eval run` routed through the live CLI entry point.
   Layer 3 — funnel all CLI/YAML-loader sites through effective_model() so
             oracle gets honest model=None end-to-end.
 
 The classes below pin each layer at the right altitude:
-- TestEvalCreateRouting   — proves `bench eval create` dispatches to
+- TestEvalCreateRouting   — proves `bench eval run` dispatches to
                             cli/main.py.
 - TestEffectiveModel      — unit tests for the helper.
 - TestOracleYamlLoaders   — Evaluation.from_yaml(oracle config) → model is None.
-- TestEvalCreateOracleCLI — end-to-end: invoke `bench eval create --agent oracle`
+- TestEvalCreateOracleCLI — end-to-end: invoke `bench eval run --agent oracle`
                             and assert no API-key validation error.
 """
 
@@ -35,7 +35,7 @@ def _plain_cli_output(output: str) -> str:
 
 
 class TestEvalCreateRouting:
-    """`bench eval create` must dispatch to cli/main.py:eval_create.
+    """`bench eval run` must dispatch to cli/main.py:eval_run.
 
     The pyproject.toml `bench`/`benchflow` scripts both resolve to
     `benchflow.cli.main:app`; these tests pin the live command callback.
@@ -54,7 +54,7 @@ class TestEvalCreateRouting:
         assert create_cmds[0].callback.__module__ == "benchflow.cli.main"
 
     def test_bench_eval_create_help_resolves(self):
-        """Smoke test: `bench eval create --help` reaches a real callback."""
+        """Smoke test: `bench eval run --help` reaches a real callback."""
         from benchflow.cli.main import app
 
         result = CliRunner().invoke(app, ["eval", "create", "--help"])
@@ -189,10 +189,10 @@ class TestEvalCreateRouting:
         assert not (task_dir / "task.md").exists()
 
     def test_eval_create_normalizes_agent_alias(self, tmp_path: Path):
-        """Guards ENG-86: eval create normalizes aliases before launch."""
+        """Guards ENG-86: eval run normalizes aliases before launch."""
         from types import SimpleNamespace
 
-        from benchflow.cli.main import eval_create
+        from benchflow.cli.main import eval_run
         from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
@@ -208,7 +208,7 @@ class TestEvalCreateRouting:
             )
 
         with patch.object(Evaluation, "run", new=fake_run):
-            eval_create(
+            eval_run(
                 config_file=None,
                 tasks_dir=task,
                 source_repo=None,
@@ -234,7 +234,7 @@ class TestEvalCreateRouting:
         """Guards ENG-91 P0 dogfood sandbox-user CLI regression."""
         from types import SimpleNamespace
 
-        from benchflow.cli.main import eval_create
+        from benchflow.cli.main import eval_run
         from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
@@ -250,7 +250,7 @@ class TestEvalCreateRouting:
             )
 
         with patch.object(Evaluation, "run", new=fake_run):
-            eval_create(
+            eval_run(
                 config_file=None,
                 tasks_dir=task,
                 source_repo=None,
@@ -294,7 +294,7 @@ class TestEvalCreateRouting:
         """Guards the ENG-86 fix from commit b69bdf4 for config-file agents."""
         from types import SimpleNamespace
 
-        from benchflow.cli.main import eval_create
+        from benchflow.cli.main import eval_run
         from benchflow.evaluation import Evaluation
 
         tasks = tmp_path / "tasks"
@@ -309,7 +309,7 @@ class TestEvalCreateRouting:
             return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
 
         with patch.object(Evaluation, "run", new=fake_run):
-            eval_create(config_file=config)
+            eval_run(config_file=config)
 
         assert captured == {"agent": "oracle", "model": None}
 
@@ -319,7 +319,7 @@ class TestEvalCreateRouting:
         """Guards ENG-78: CLI runs inherit provider keys without --agent-env."""
         from types import SimpleNamespace
 
-        from benchflow.cli.main import eval_create
+        from benchflow.cli.main import eval_run
         from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
@@ -343,7 +343,7 @@ class TestEvalCreateRouting:
             )
 
         with patch.object(Evaluation, "run", new=fake_run):
-            eval_create(
+            eval_run(
                 config_file=None,
                 tasks_dir=task,
                 source_repo=None,
@@ -374,7 +374,7 @@ class TestEvalCreateRouting:
         import os
         from types import SimpleNamespace
 
-        from benchflow.cli.main import eval_create
+        from benchflow.cli.main import eval_run
         from benchflow.evaluation import Evaluation
 
         task = tmp_path / "task"
@@ -402,7 +402,7 @@ class TestEvalCreateRouting:
             )
 
         with patch.object(Evaluation, "run", new=fake_run):
-            eval_create(
+            eval_run(
                 config_file=None,
                 tasks_dir=task,
                 source_repo=None,
@@ -583,7 +583,7 @@ class TestEvalCreateIncludeExclude:
         """Guards ENG-159: --include reaches EvaluationConfig for --tasks-dir batch runs."""
         from types import SimpleNamespace
 
-        from benchflow.cli.main import eval_create
+        from benchflow.cli.main import eval_run
         from benchflow.evaluation import Evaluation
 
         tasks = tmp_path / "tasks"
@@ -600,7 +600,7 @@ class TestEvalCreateIncludeExclude:
             return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
 
         with patch.object(Evaluation, "run", new=fake_run):
-            eval_create(
+            eval_run(
                 config_file=None,
                 tasks_dir=tasks,
                 source_repo=None,
@@ -629,7 +629,7 @@ class TestEvalCreateIncludeExclude:
         """Guards ENG-159: CLI --include overrides YAML include list."""
         from types import SimpleNamespace
 
-        from benchflow.cli.main import eval_create
+        from benchflow.cli.main import eval_run
         from benchflow.evaluation import Evaluation
 
         tasks = tmp_path / "tasks"
@@ -645,7 +645,7 @@ class TestEvalCreateIncludeExclude:
             return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
 
         with patch.object(Evaluation, "run", new=fake_run):
-            eval_create(config_file=config, include=["cli-task"])
+            eval_run(config_file=config, include=["cli-task"])
 
         assert captured["include"] == {"cli-task"}
 
@@ -653,7 +653,7 @@ class TestEvalCreateIncludeExclude:
         """Guards ENG-159: without CLI --include, YAML include list is preserved."""
         from types import SimpleNamespace
 
-        from benchflow.cli.main import eval_create
+        from benchflow.cli.main import eval_run
         from benchflow.evaluation import Evaluation
 
         tasks = tmp_path / "tasks"
@@ -669,7 +669,7 @@ class TestEvalCreateIncludeExclude:
             return SimpleNamespace(passed=0, total=0, score=0.0, errored=0)
 
         with patch.object(Evaluation, "run", new=fake_run):
-            eval_create(config_file=config)
+            eval_run(config_file=config)
 
         assert captured["include"] == {"yaml-task"}
 
@@ -971,10 +971,10 @@ class TestOracleYamlLoaders:
 
 
 class TestEvalCreateOracleCLI:
-    """End-to-end: `bench eval create --agent oracle` must not trip API key validation.
+    """End-to-end: `bench eval run --agent oracle` must not trip API key validation.
 
     This is the user-visible bug the chokepoint test guards against at the
-    unit level. Here we call the live handler (cli/main.py:eval_create)
+    unit level. Here we call the live handler (cli/main.py:eval_run)
     directly rather than through Typer's CliRunner; the handler still runs
     asyncio.run() internally, exercising the full
     CLI → effective_model → RolloutConfig → resolve_agent_env path the bug
@@ -1004,7 +1004,7 @@ class TestEvalCreateOracleCLI:
         """The bug: oracle + missing API key → ANTHROPIC_API_KEY ValueError."""
         from types import SimpleNamespace
 
-        from benchflow.cli.main import eval_create
+        from benchflow.cli.main import eval_run
         from benchflow.models import RunResult
 
         self._strip_api_keys(monkeypatch)
@@ -1033,7 +1033,7 @@ class TestEvalCreateOracleCLI:
             return trial
 
         with patch("benchflow.rollout.Rollout.create", new=fake_create):
-            eval_create(
+            eval_run(
                 config_file=None,
                 tasks_dir=task,
                 agent="oracle",

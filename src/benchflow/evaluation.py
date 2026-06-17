@@ -149,6 +149,18 @@ class EmptyTaskSelectionError(ValueError):
     """
 
 
+class ResumeMismatchError(ValueError):
+    """Raised when resuming a jobs_dir whose completed tasks ran a different agent.
+
+    A jobs_dir holds one (agent, model) run. Folding a *different* agent's cached
+    rollouts into this run would publish a blended ``Score: X/N`` that belongs to
+    neither agent (the symptom: scores appear for tasks this agent never ran).
+    Refuse rather than warn-and-proceed — and rather than re-run over the prior
+    rows, which would destroy the earlier agent's results. The fix is a fresh
+    --jobs-dir, which also preserves the existing data.
+    """
+
+
 class MalformedTaskError(ValueError):
     """A single-task input whose ``task.md`` exists but fails to parse (#3).
 
@@ -348,14 +360,18 @@ JOB_MODES = ("parallel-independent", "sequential-shared")
 DEFAULT_JOB_MODE = "parallel-independent"
 
 
-def _warn_on_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
-    """Warn when resuming a jobs_dir whose completed tasks ran differently.
+def _check_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
+    """Guard against resuming a jobs_dir whose completed tasks ran differently.
 
     Reads one completed rollout's config.json (written by SDK.run) and
     compares its agent and ``loop`` block against the resuming config.
     Pre-loop-strategy config.json files have no ``loop`` key — they ran
     single-shot, so they default to ``loop_block(None)`` and still warn
     when the resume requests a strategy.
+
+    An *agent* mismatch raises :class:`ResumeMismatchError` (a blended score is
+    meaningless and silently mixing one in is the bug this guards). A
+    *loop_strategy* mismatch — same agent, different tuning — only warns.
     """
     sample_dir = (
         next((d for d in job_dir.iterdir() if d.is_dir()), None)
@@ -374,10 +390,11 @@ def _warn_on_resume_mismatch(job_dir: Path, config: EvaluationConfig) -> None:
             except (json.JSONDecodeError, OSError):
                 logger.debug("Could not read %s", cfg_file)
     if prev_agent and prev_agent != config.agent:
-        logger.warning(
-            f"Resuming with agent={config.agent!r} but "
-            f"completed tasks used agent={prev_agent!r}. "
-            f"Use a different jobs_dir to avoid mixing results."
+        raise ResumeMismatchError(
+            f"refusing to resume: this jobs_dir's completed tasks ran "
+            f"agent={prev_agent!r}, but this run uses agent={config.agent!r}. "
+            f"Mixing them would publish a blended score that belongs to neither. "
+            f"Use a fresh --jobs-dir (the existing results are preserved)."
         )
     current_loop = loop_block(config.loop_strategy)
     if prev_loop is not None and prev_loop != current_loop:
@@ -472,7 +489,7 @@ class EvaluationConfig:
     self_gen_no_internet: bool = False
     job_mode: str = DEFAULT_JOB_MODE
     source_provenance: dict[str, Any] | None = None
-    # Registry dataset identity (`bench eval create -d name@version`). When
+    # Registry dataset identity (`bench eval run -d name@version`). When
     # set, every result.json/config.json is stamped with dataset_name,
     # dataset_version, and the task's registry content digest — see
     # docs/dataset-versioning.md in benchflow-ai/skillsbench.
@@ -1642,7 +1659,7 @@ class Evaluation:
 
         # Warn if resuming with different config than completed tasks
         if completed:
-            _warn_on_resume_mismatch(self._jobs_dir / self._job_name, self._config)
+            _check_resume_mismatch(self._jobs_dir / self._job_name, self._config)
 
         self._jobs_dir.mkdir(parents=True, exist_ok=True)
         self._prune_docker()
@@ -1654,8 +1671,16 @@ class Evaluation:
 
             DockerSandbox.set_build_concurrency(cfg.build_concurrency)
 
+        # The denominator is the number of tasks that will appear in the summary:
+        # the resumed-complete set plus the to-run set (disjoint by construction).
+        # This equals len(task_dirs) for a clean run, but a resume whose jobs_dir
+        # holds results from a *wider* prior selection has more completed rows than
+        # the current selection — keying off len(task_dirs) there rendered nonsense
+        # like "11/1 · 1100%" and a denominator that disagreed with the final
+        # "Score: 8/11". completed-plus-remaining is exactly what gets scored.
+        planned_total = len(completed) + len(remaining)
         logger.info(
-            f"Job: {len(task_dirs)} tasks, {len(completed)} done, "
+            f"Job: {planned_total} tasks, {len(completed)} done, "
             f"{len(remaining)} to run (concurrency={cfg.concurrency})"
         )
         # Hand the live dashboard an honest denominator: total / already-done /
@@ -1665,7 +1690,7 @@ class Evaluation:
         # counts + pass-rate cover the whole job, not just this process's tasks.
         self._fire_progress(
             self._on_plan,
-            len(task_dirs),
+            planned_total,
             len(completed),
             len(remaining),
             _classify_completed_outcomes(completed),

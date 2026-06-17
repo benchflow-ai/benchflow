@@ -146,17 +146,20 @@ bench eval adopt my-bench --verify --rerun   # re-run parity_test.py, score fres
 
 ## bench eval
 
-### bench eval create
+### bench eval run
 
-Create and run an evaluation. Use it for YAML configs and batch runs; it also
-accepts a single task directory.
+Run an evaluation — single task or batch. Use it for YAML configs and batch
+runs; it also accepts a single task directory.
+
+> **Renamed from `bench eval create`.** The old name still works as a deprecated
+> alias and prints a deprecation notice; switch to `bench eval run`.
 
 ```bash
 # From YAML config
-bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
 # From remote repo (fast Daytona batch; token usage may be unavailable)
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
   --agent gemini \
@@ -166,7 +169,7 @@ bench eval create \
   --sandbox-setup-timeout 300
 
 # From remote repo with required token usage telemetry
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
   --agent gemini \
@@ -177,10 +180,10 @@ bench eval create \
   --sandbox-setup-timeout 300
 
 # From local directory
-bench eval create --tasks-dir ./tasks --agent gemini --model gemini-3.1-flash-lite-preview
+bench eval run --tasks-dir ./tasks --agent gemini --model gemini-3.1-flash-lite-preview
 
 # From a hosted PrimeIntellect / Verifiers environment
-bench eval create \
+bench eval run \
   --source-env primeintellect/general-agent \
   --source-env-version 0.1.1 \
   --source-env-arg task=calendar_scheduling_t0 \
@@ -188,7 +191,7 @@ bench eval create \
   --model google/gemini-2.5-flash-lite
 
 # Single task with mounted skills and the recommended skill nudge
-bench eval create \
+bench eval run \
   --tasks-dir tasks/pdf-fix \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
@@ -198,7 +201,7 @@ bench eval create \
 
 # Pinned registry dataset: resolves skillsbench@1.1, verifies task digests,
 # and stamps dataset identity into every result.json/config.json
-bench eval create -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-preview
+bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-preview
 ```
 
 | Flag | Default | Description |
@@ -403,7 +406,7 @@ Arguments: `TASK_DIR` (task directory to export) and optional `OUTPUT_DIR`
 ### bench tasks digest
 
 Compute the content digest that pins a task's files, independent of git — the
-sha256 the dataset registry keys on (matches the digests `bench eval create -d`
+sha256 the dataset registry keys on (matches the digests `bench eval run -d`
 verifies and the `task_digest` stamped into every `result.json`). Recognizes
 both legacy `task.toml` tasks and native `task.md` tasks. Given a single task
 directory it prints the digest; given a directory of tasks it prints one
@@ -495,25 +498,30 @@ to disable that automatic pass and rely on the manual command above.
 
 `bench environment` is a hidden **deprecated alias group**, removed in 0.7. The
 local lifecycle moved to [`bench sandbox`](#bench-sandbox) (`create`/`list`/`cleanup`)
-and hosted-provider browsing to [`bench hub env`](#bench-hub-env). The old
+and hosted-provider browsing to [`bench hub list`](#bench-hub). The old
 `bench environment create|list|cleanup` and `show|inspect` (plus `list
 --provider`/`--hub`) still work, each printing a one-line stderr notice.
 
 ## bench hub
 
-External environment hubs: compatibility checks (`check`) and browsing a hosted
-provider's environments (`env`).
+External environment hubs: browse a hub's environments (`list`/`show`/`inspect`)
+and check Harbor registry compatibility (`check`).
 
-### bench hub env
+### bench hub list / show / inspect
 
-Read-only browsing of a hosted provider's environments (PrimeIntellect
-"Environments"). To *run* one, use [`bench eval create --source-env`](#bench-eval-create).
+Read-only browsing of a hub's environments. `list` covers two hubs via
+`--provider`: `primeintellect` (hosted "Environments") and `harbor` (the
+benchmark registry). To *run* a hosted environment, use
+[`bench eval run --source-env`](#bench-eval-run).
 
 ```bash
-bench hub env list --provider primeintellect --owner primeintellect --search general-agent --limit 5
-bench hub env show primeintellect/general-agent --version 0.1.1
-bench hub env inspect primeintellect/general-agent --version 0.1.1 --path README.md
+bench hub list --provider primeintellect --owner primeintellect --search general-agent --limit 5
+bench hub list --provider harbor --search coding
+bench hub show primeintellect/general-agent --version 0.1.1
+bench hub inspect primeintellect/general-agent --version 0.1.1 --path README.md
 ```
+
+`bench hub env list|show|inspect` still resolves as a hidden back-compat alias.
 
 ### bench hub check
 
@@ -559,7 +567,7 @@ max_retries: 2
 
 ### Multi-scene (BYOS skill generation)
 
-Use the Python API for multi-scene experiments. `bench eval create --config` is for
+Use the Python API for multi-scene experiments. `bench eval run --config` is for
 batch job configs; scene configs are loaded with `benchflow._utils.yaml_loader` or built
 directly in Python.
 

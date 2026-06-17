@@ -1,9 +1,10 @@
 """benchflow CLI — agent benchmarking framework.
 
 This module owns the top-level Typer ``app``, the global callback/version flag,
-and the ``eval`` command group (``eval create`` / ``eval list``). ``eval create``
+and the ``eval`` command group (``eval run`` / ``eval list``). ``eval run``
 is defined here on purpose: tests pin its callback ``__module__`` to
 ``benchflow.cli.main`` and import it (plus the Daytona helpers) from here.
+(``eval create`` remains as a deprecated alias of ``eval run``.)
 
 Every other command group lives in a sibling ``cli/<group>.py`` module and is
 attached through a ``register_<group>(app)`` call below, mirroring the
@@ -69,7 +70,8 @@ __all__ = [
     "_daytona_client_or_exit",
     "app",
     "eval_app",
-    "eval_create",
+    "eval_run",
+    "eval_create",  # deprecated import alias of eval_run
 ]
 
 # Show progress messages (logger.info) from benchflow internals by default.
@@ -193,8 +195,8 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 register_eval_adopt(eval_app)
 
 
-@eval_app.command("create")
-def eval_create(
+@eval_app.command("run")
+def eval_run(
     config_file: Annotated[
         Path | None,
         typer.Option("--config", help="YAML config file"),
@@ -618,7 +620,7 @@ def run_batch_eval(
 ):
     """Run the source-repo / tasks-dir batch path and report its result.
 
-    Promoted from the ``eval_create`` ``_run_batch_eval`` closure: the worker /
+    Promoted from the ``eval_run`` ``_run_batch_eval`` closure: the worker /
     jobs-dir / manifest knobs it used to capture now ride in on ``plan``.
     """
     from benchflow.eval_sharding import ShardWorkerError
@@ -684,6 +686,8 @@ def run_batch_eval(
 
 def _run_config_file_eval(plan: "EvalPlan") -> None:
     """Apply CLI overrides onto a YAML-loaded Evaluation, then run and report it."""
+    import subprocess
+
     import yaml
 
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
@@ -737,6 +741,15 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # the config file.
         if plan.eval_env_manifest is not None:
             j._config.environment_manifest = plan.eval_env_manifest
+    except subprocess.CalledProcessError as e:
+        # A source.repo clone/fetch failure (git exits non-zero) otherwise escapes
+        # as a raw traceback — it is not a config-parse error, so give it its own
+        # clean message. Mirrors the --source-repo guard's CalledProcessError catch.
+        console.print(
+            f"[red]Failed to fetch source repo for {escape(str(config_file))}:[/red] "
+            f"{escape(str(e))}"
+        )
+        raise typer.Exit(1) from None
     except (yaml.YAMLError, ValueError, TypeError, LookupError, OSError) as e:
         # LookupError covers missing source.repo (KeyError) and empty legacy
         # agents:/datasets: lists (IndexError). Type-mismatch cases (e.g. a
@@ -852,17 +865,39 @@ def _run_source_env_eval(
         raise typer.Exit(1)
 
 
+# `bench eval create` was renamed to `bench eval run`. Keep the old name as a
+# visible, deprecated alias so existing scripts, configs, and downstream repos
+# (e.g. benchflow-ai/skillsbench) keep working; Click prints a deprecation
+# notice when the alias is invoked.
+eval_app.command("create", deprecated=True)(eval_run)
+
+# Back-compat for the Python symbol: `eval_create` was part of this module's
+# public surface (``__all__``). Keep it as an import alias of ``eval_run`` so any
+# `from benchflow.cli.main import eval_create` keeps resolving.
+eval_create = eval_run
+
+
 @eval_app.command("list")
 def eval_list(
     jobs_dir: Annotated[
-        Path,
-        typer.Argument(help="Jobs directory to list"),
-    ] = Path("jobs"),
+        Path | None,
+        typer.Argument(help="Jobs directory to list (default: ./jobs)"),
+    ] = None,
 ) -> None:
     """List completed evaluations."""
+    # None means the argument was omitted: the default ./jobs simply not existing
+    # yet is a benign first-run state (exit 0). An *explicit* path that doesn't
+    # exist is a typo and should fail like `eval metrics` does, so scripts don't
+    # read it as success. (A literal `eval list jobs` is then treated as explicit,
+    # which is correct — the user named a path.)
+    explicit = jobs_dir is not None
+    jobs_dir = jobs_dir or Path("jobs")
     if not jobs_dir.exists():
-        console.print(f"[yellow]No jobs directory: {escape(str(jobs_dir))}[/yellow]")
-        return
+        if not explicit:
+            console.print("[yellow]No jobs yet.[/yellow]")
+            return
+        print_error(f"No such jobs directory: {jobs_dir}")
+        raise typer.Exit(1)
     if not jobs_dir.is_dir():
         # exists() is True for a file; iterdir() below would NotADirectoryError.
         console.print(f"[red]Not a directory: {escape(str(jobs_dir))}[/red]")

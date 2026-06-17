@@ -1,6 +1,6 @@
 # BenchFlow integration eval: one real rollout, gated by BenchFlow's own
 # agent-as-judge check. This workflow runs a single small task end to end
-# through `bench eval create` on Docker, then has BenchFlow's agent judge
+# through `bench eval run` on Docker, then has BenchFlow's agent judge
 # (tests/integration/agent_judge.py) grade the resulting rollout. The job
 # fails if the run is not REAL (no tool calls / no tokens / null reward) or
 # if the judge fails the trajectory. It is kept to one task so the check
@@ -102,7 +102,7 @@ jobs:
 
       - name: Run one real rollout on Docker
         run: |
-          uv run bench eval create \
+          uv run bench eval run \
             --source-repo benchflow-ai/skillsbench \
             --source-path tasks \
             --source-ref main \
