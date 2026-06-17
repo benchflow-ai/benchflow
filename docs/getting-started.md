@@ -3,30 +3,28 @@ A 5-minute path from install to first eval.
 
 ## Prerequisites
 
-- Python 3.12+
-- [`uv`](https://docs.astral.sh/uv/)
+- [`uv`](https://docs.astral.sh/uv/) for the CLI install; it provisions a compatible Python automatically
 - Docker for local sandboxes; install `benchflow[sandbox-daytona]` + set `DAYTONA_API_KEY` for Daytona cloud runs, or install `benchflow[sandbox-modal]` for Modal-backed runs
 - An API key or subscription/OAuth auth for at least one agent (see below)
 
 ## Install
 
-`0.6.2` is the latest stable release on PyPI. Install (or upgrade) with uv or pip:
+Install or upgrade to the latest stable release from PyPI with `uv`:
 
 ```bash
-uv tool install benchflow                  # add --upgrade to refresh
-pip install --upgrade benchflow            # pip equivalent
+uv tool install --upgrade benchflow
 ```
 
 If `uv` reports `Executables already exist: bench, benchflow`, rerun with
-`--force` to replace older non-`uv` entrypoints. Confirm with `bench --version`;
-the stable line should report `0.6.2`. See [Release channels](./release.md) for
-the full command matrix.
+`uv tool install --upgrade --force benchflow` to replace older non-`uv`
+entrypoints. Confirm with `bench --version`.
+See [Release channels](./release.md) for the full command matrix.
 
 For optional sandbox integrations, include the extra in the tool install:
 
 ```bash
-uv tool install 'benchflow[sandbox-daytona]'
-uv tool install 'benchflow[sandbox-modal]'
+uv tool install --upgrade 'benchflow[sandbox-daytona]'
+uv tool install --upgrade 'benchflow[sandbox-modal]'
 ```
 
 This gives you the `benchflow` (alias `bench`) CLI plus the Python SDK. To install for editable development:

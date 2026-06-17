@@ -332,7 +332,7 @@ bench tasks init my-new-task --dir tasks/
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format` | `task-md` | Task format. New tasks use `task-md`; the legacy scaffold path is retired in v0.6.2. |
+| `--format` | `task-md` | Task format. New tasks use `task-md`; the legacy scaffold path is retired. |
 
 ### bench tasks check
 

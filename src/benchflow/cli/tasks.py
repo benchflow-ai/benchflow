@@ -49,8 +49,7 @@ def register_tasks(app: typer.Typer) -> None:
             typer.Option(
                 "--format",
                 help=(
-                    "Task format. New tasks use task-md; legacy scaffolding is "
-                    "retired in v0.6.2."
+                    "Task format. New tasks use task-md; legacy scaffolding is retired."
                 ),
             ),
         ] = "task-md",
