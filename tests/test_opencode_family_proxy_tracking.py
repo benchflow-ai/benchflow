@@ -1,13 +1,14 @@
 """Regression: OpenCode-family agents (opencode + its MiMo fork) support
 LLM-proxy trajectory tracking.
 
-These agents use acp_model_format="provider/model" and validate model ids
-against the models.dev catalog, so they reject BenchFlow's synthetic gateway
-model ``openai/benchflow-<alias>`` (ProviderModelNotFoundError) and never route
-through the LiteLLM usage proxy — producing no ``trajectory/llm_trajectory.jsonl``
-(which ``benchflow-experiment-review`` requires). The fix installs a ``-proxy``
-wrapper under ``/opt/benchflow/bin`` that, in proxy mode, registers the gateway
-alias under the agent's ``openai`` provider before exec'ing the isolated binary.
+These agents use acp_model_format="provider/model" and hard-code the OpenAI
+Responses API for the built-in ``openai`` provider id, which the LiteLLM gateway
+(chat-completions only) cannot serve — so the gateway alias never routes through
+the usage proxy and no ``trajectory/llm_trajectory.jsonl`` is written (which
+``benchflow-experiment-review`` requires). The fix installs a ``-proxy`` wrapper
+under ``/opt/benchflow/bin`` that, in proxy mode, registers the gateway alias
+under a dedicated ``@ai-sdk/openai-compatible`` provider id
+(``OPENCODE_PROXY_PROVIDER_ID``) before exec'ing the isolated binary.
 """
 
 import base64
@@ -76,8 +77,7 @@ def test_format_acp_model_routes_proxy_alias_to_dedicated_provider():
     alias = "benchflow-deepseek-deepseek-v4-flash"
     for agent in ("opencode", "mimo"):
         assert (
-            _format_acp_model(alias, agent)
-            == f"{OPENCODE_PROXY_PROVIDER_ID}/{alias}"
+            _format_acp_model(alias, agent) == f"{OPENCODE_PROXY_PROVIDER_ID}/{alias}"
         )
         assert _format_acp_model(alias, agent).split("/")[0] != "openai"
 
@@ -91,7 +91,9 @@ def test_proxy_wrapper_pins_small_model_to_gateway_alias(agent, wrapper_bin, cfg
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
-def test_proxy_wrapper_is_conditional_and_execs_isolated_binary(agent, wrapper_bin, cfg):
+def test_proxy_wrapper_is_conditional_and_execs_isolated_binary(
+    agent, wrapper_bin, cfg
+):
     w = _wrapper_script(agent, wrapper_bin)
     assert '[ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ]' in w  # no-op without alias
     base = wrapper_bin[: -len("-proxy")]

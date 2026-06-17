@@ -19,7 +19,9 @@ _PROXY = {
 
 
 def _final_id(agent, model, env):
-    return _select_acp_model_id(_resolve_acp_model_input(agent, model, env), agent, None)
+    return _select_acp_model_id(
+        _resolve_acp_model_input(agent, model, env), agent, None
+    )
 
 
 def test_pi_acp_proxy_alias_is_litellm_provider_qualified():

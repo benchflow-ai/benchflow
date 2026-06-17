@@ -272,7 +272,7 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
             # Responses API the built-in ``openai`` id is hard-coded to.
             f'    prov = d.setdefault("provider", {{}}).setdefault({provider_id!r}, {{}})',
             '    prov["npm"] = "@ai-sdk/openai-compatible"',
-            f'    prov.setdefault("name", "BenchFlow Gateway")',
+            '    prov.setdefault("name", "BenchFlow Gateway")',
             '    opts = prov.setdefault("options", {})',
             '    base = os.environ.get("OPENAI_BASE_URL", "").strip()',
             "    if base:",
