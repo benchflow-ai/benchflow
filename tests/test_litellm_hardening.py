@@ -61,13 +61,16 @@ def test_needs_litellm_runtime_excludes_native_protocol_agents(agent, model, exp
     assert runtime_mod.needs_litellm_runtime(agent, model) is expected
 
 
-def test_opencode_litellm_alias_formats_to_registered_openai_route():
+def test_opencode_litellm_alias_formats_to_dedicated_provider_route():
     from benchflow.acp.runtime import _format_acp_model
+    from benchflow.agents.registry import OPENCODE_PROXY_PROVIDER_ID
 
-    # The proxy registers only "<alias>" and "openai/<alias>"; provider/model
-    # agents must send the openai/ form, not a guessed anthropic/ provider.
+    # The <binary>-proxy wrapper registers the gateway alias under a dedicated
+    # provider id (NOT the built-in "openai" id, whose Responses-API hard-coding
+    # the gateway cannot serve). provider/model agents must send that id.
     out = _format_acp_model("benchflow-minimax-MiniMax-M3", "opencode")
-    assert out == "openai/benchflow-minimax-MiniMax-M3"
+    assert out == f"{OPENCODE_PROXY_PROVIDER_ID}/benchflow-minimax-MiniMax-M3"
+    assert not out.startswith("openai/")
 
 
 def test_format_acp_model_passes_through_existing_provider_prefix():
@@ -105,15 +108,15 @@ def test_format_acp_model_routes_via_provider_registry_not_runtime_branches():
     assert "xiaomi" not in {provider for _, provider in _MODELSDEV_PROVIDER_HEURISTICS}
 
 
-def test_mimo_litellm_alias_formats_to_registered_openai_route():
+def test_mimo_litellm_alias_formats_to_dedicated_provider_route():
     from benchflow.acp.runtime import _format_acp_model
+    from benchflow.agents.registry import OPENCODE_PROXY_PROVIDER_ID
 
-    # Proxy mode is untouched by the heuristic: aliases still route to the
-    # proxy-registered "openai/<alias>" form.
-    assert (
-        _format_acp_model("benchflow-deepseek-deepseek-v4-flash", "mimo")
-        == "openai/benchflow-deepseek-deepseek-v4-flash"
-    )
+    # Proxy-mode aliases route to the dedicated chat-completions provider id,
+    # not the built-in "openai" id (Responses-API crash) nor a guessed provider.
+    out = _format_acp_model("benchflow-deepseek-deepseek-v4-flash", "mimo")
+    assert out == f"{OPENCODE_PROXY_PROVIDER_ID}/benchflow-deepseek-deepseek-v4-flash"
+    assert not out.startswith("openai/")
 
 
 def test_vllm_route_honors_runtime_supplied_base_url():
