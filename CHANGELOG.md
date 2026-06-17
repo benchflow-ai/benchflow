@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+- **`bench continue` is now `bench eval continue`.** The command (and its
+  `continue-batch` companion) moved under the `eval` group, where it is now
+  discoverable in `bench eval --help` alongside `run`/`adopt`. The original
+  top-level `bench continue` / `bench continue-batch` remain as hidden,
+  deprecated aliases (they print a deprecation notice) so existing scripts keep
+  working.
+
 ## 0.6.3 — 2026-06-16
 
 ### Changed

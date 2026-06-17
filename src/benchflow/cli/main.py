@@ -1040,7 +1040,7 @@ def eval_view(
 # ``cli/<group>.py`` module, mirroring the existing ``register_continue`` /
 # ``register_tasks_generate`` / ``register_agent_router`` precedent. Order does
 # not affect behavior; it follows the historical top-level help ordering.
-register_continue(app)
+register_continue(eval_app, alias_app=app)
 register_skills(app)
 register_tasks(app)
 register_hub(app)

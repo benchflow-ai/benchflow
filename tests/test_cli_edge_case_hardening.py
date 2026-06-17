@@ -70,6 +70,22 @@ def test_continue_batch_rejects_zero_concurrency(tmp_path):
     assert not isinstance(res.exception, ValueError)  # typer rejects it, not a crash
 
 
+def test_continue_is_canonical_under_eval_group(tmp_path):
+    # `continue` is canonical under the `eval` group (`bench eval continue`);
+    # the original top-level `bench continue` stays as a hidden, deprecated
+    # alias so existing scripts keep working.
+    eval_help = runner.invoke(app, ["eval", "--help"])
+    assert eval_help.exit_code == 0
+    assert "continue" in eval_help.output  # visible under the eval group
+
+    # Both spellings resolve to the same command and fail the same way on an
+    # empty (config-less) run folder.
+    canonical = runner.invoke(app, ["eval", "continue", str(tmp_path)])
+    alias = runner.invoke(app, ["continue", str(tmp_path)])
+    assert canonical.exit_code == 1
+    assert alias.exit_code == 1
+
+
 # ── agent run: missing codex binary (H3) ─────────────────────────────────────
 
 
