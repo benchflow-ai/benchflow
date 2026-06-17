@@ -96,9 +96,11 @@ verified against these sources; see the caveats inline.
   shared-by-default vs. separate verifier environment. BenchFlow's `allowlist`
   taxonomy and wildcard semantics follow Harbor's.
   <https://github.com/harbor-framework/harbor> · docs <https://www.harborframework.com/docs/tasks>.
-  (Harbor PR [#1854](https://github.com/harbor-framework/harbor/pull/1854)
-  *clarifies* that wildcards match multi-level subdomains — it documents the
-  depth rule rather than introducing the feature.)
+  Introduced in [#1455](https://github.com/harbor-framework/harbor/pull/1455)
+  (network mode + optional allowlist) and
+  [#1840](https://github.com/harbor-framework/harbor/pull/1840) (wildcard host
+  support); [#1854](https://github.com/harbor-framework/harbor/pull/1854) later
+  *clarifies* that wildcards match multi-level subdomains.
 - **Modal** — Sandbox outbound controls: `block_network`,
   `outbound_cidr_allowlist` (CIDR ranges), and `outbound_domain_allowlist`
   (domains). Source of the port-scoping pattern BenchFlow does not yet implement;
@@ -110,8 +112,10 @@ verified against these sources; see the caveats inline.
   `update_network_settings`. BenchFlow uses these directly to enforce
   `allowlist` / `no-network` on the `daytona` sandbox — resolving the hostname
   allowlist to `/32`s and pinning `/etc/hosts`, since the IPv4 list cannot carry
-  hostnames (verified against SDK `daytona==0.184.0`).
-  <https://github.com/daytonaio/daytona/blob/main/apps/docs/src/content/docs/en/network-limits.mdx>.
+  hostnames (verified against SDK `daytona==0.184.0`). Allow/block-list format +
+  validation: [#4124](https://github.com/daytonaio/daytona/pull/4124); runtime
+  `update_network_settings`: [#4604](https://github.com/daytonaio/daytona/pull/4604).
+  Docs: <https://github.com/daytonaio/daytona/blob/main/apps/docs/src/content/docs/en/network-limits.mdx>.
 - **UK AISI Inspect** (k8s sandbox) — hostname allowlisting via `allowDomains`
   (FQDN list) enforced by a per-Pod CoreDNS sidecar, plus `allowCIDR`.
   <https://github.com/UKGovernmentBEIS/inspect_k8s_sandbox> · docs
@@ -145,7 +149,8 @@ verified against these sources; see the caveats inline.
   <https://arxiv.org/abs/2406.12045>.
 - **browser-use** — browser-automation SDK whose `BrowserProfile.allowed_domains`
   scopes which domains the browser may visit (supports `*.example.com` patterns).
-  BenchFlow's CUA browser-app egress scope reuses this.
+  BenchFlow's CUA browser-app egress scope reuses this. Introduced in
+  [#364](https://github.com/browser-use/browser-use/pull/364).
   <https://github.com/browser-use/browser-use>.
 
 > **Scope note.** Per-tool network scoping and a 3-way
