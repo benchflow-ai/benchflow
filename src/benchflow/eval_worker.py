@@ -66,6 +66,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         source_provenance=raw.get("source_provenance"),
         usage_tracking=UsageTrackingConfig.from_mapping(raw),
         environment_manifest=_environment_manifest(raw),
+        config_override=raw.get("config_override"),
         loop_strategy=(
             LoopStrategySpec.from_mapping(raw["loop_strategy"])
             if raw.get("loop_strategy")

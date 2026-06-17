@@ -503,6 +503,8 @@ class EvaluationConfig:
     # readiness gating, teardown) is exercised — closing the gap between
     # single-rollout SDK.run() and the batch Evaluation/Job API (#398).
     environment_manifest: EnvironmentManifest | None = None
+    # C-axis overlay (parsed dict) deep-merged into each task's resolved config.
+    config_override: dict | None = None
     # Harness loop strategy applied to every rollout (e.g.
     # "verify-retry:k=3,feedback=names"). Threaded to RolloutConfig.from_legacy
     # and stamped in summary.json; None = single-shot. A dict (the to_mapping()
@@ -868,6 +870,7 @@ class Evaluation:
             source_provenance=source_provenance,
             usage_tracking=UsageTrackingConfig.from_mapping(raw),
             environment_manifest=env_manifest,
+            config_override=raw.get("config_override"),
             loop_strategy=raw.get("loop_strategy"),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
@@ -1199,6 +1202,7 @@ class Evaluation:
             concurrency=cfg.concurrency,
             environment=cfg.environment,
             environment_manifest=environment_manifest,
+            config_override=cfg.config_override,
             skills_dir=skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,

@@ -1,0 +1,61 @@
+# env0@prod — pinned, content-addressed Environment-plane manifest for env-0.
+#
+# This is a committed registry entry so PR #790's env-axis pin is reproducible
+# from the repo (not a /tmp dir). Resolve it with:
+#
+#   export BENCHFLOW_ENV_REGISTRY=benchmarks/_environments
+#   bench eval create --tasks-dir <env0 tasks> --environment-manifest env0@prod ...
+#
+# Mirrors smolclaws tasks/_manifests/env0.toml. env-0's per-task images build
+# FROM the shared base and bake seed data; benchflow's ManifestEnvironment
+# probes each service's CLI and starts only the ones installed in the per-task
+# image, gating the agent on each service's /health.
+#
+# NOTE: xdotli/env0-base:latest is amd64-only — run env0 on Daytona (x86_64).
+
+[environment]
+name           = "env-0"
+base_image     = "xdotli/env0-base:latest"
+owns_lifecycle = false
+isolation      = "per_task"
+
+[environment.task_selection]
+mechanism = "image"
+
+[environment.readiness]
+timeout_sec = 60
+
+[[environment.services]]
+name    = "auth"
+command = "auth --db /data/auth.db serve --host 0.0.0.0 --port 9000 --no-mcp"
+port    = 9000
+
+[[environment.services]]
+name    = "gmail"
+command = "gmail --db /data/gmail.db serve --host 0.0.0.0 --port 9001 --no-mcp"
+port    = 9001
+
+[[environment.services]]
+name    = "slack"
+command = "slack --db /data/slack.db serve --host 0.0.0.0 --port 9002 --no-mcp"
+port    = 9002
+
+[[environment.services]]
+name    = "gcal"
+command = "gcal --db /data/gcal.db serve --host 0.0.0.0 --port 9003 --no-mcp"
+port    = 9003
+
+[[environment.services]]
+name    = "gdoc"
+command = "gdoc --db /data/gdoc.db serve --host 0.0.0.0 --port 9004 --no-mcp"
+port    = 9004
+
+[[environment.services]]
+name    = "gdrive"
+command = "gdrive --db /data/gdrive.db serve --host 0.0.0.0 --port 9005 --no-mcp"
+port    = 9005
+
+[[environment.services]]
+name    = "stripe"
+command = "stripe --db /data/stripe.db serve --host 0.0.0.0 --port 9007 --no-mcp"
+port    = 9007

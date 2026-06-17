@@ -475,6 +475,17 @@ class Rollout:
             self._rollout_name,
         ) = _init_rollout(cfg.task_path, cfg.job_name, cfg.rollout_name, cfg.jobs_dir)
 
+        # C-axis overlay: deep-merge cfg.config_override into the task's resolved
+        # config here at the rollout layer (not in the Task constructor), so only
+        # this run's tasks are patched and every downstream read sees it. No-op
+        # when None.
+        if cfg.config_override:
+            from benchflow._utils.config_override import apply_config_override
+
+            self._task.config = apply_config_override(
+                self._task.config, cfg.config_override
+            )
+
         self._disallow_web_tools = (
             _task_disallows_internet(self._task) or cfg.self_gen_no_internet
         ) and cfg.primary_agent != "oracle"
@@ -589,6 +600,7 @@ class Rollout:
             source_provenance=cfg.source_provenance,
             dataset=cfg.dataset,
             task_digest=cfg.task_digest,
+            config_override=cfg.config_override,
             loop_strategy=cfg.loop_strategy_spec,
         )
 

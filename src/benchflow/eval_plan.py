@@ -88,6 +88,8 @@ class EvalCreateRequest:
     environment: str | None = None
     usage_tracking: str | None = None
     environment_manifest: Path | None = None
+    state: str | None = None
+    config_override: str | None = None
     prompt: list[str] | None = None
     concurrency: int | None = None
     build_concurrency: int | None = None
@@ -135,6 +137,7 @@ class EvalPlan:
     sandbox_user: str | None
     output_jobs_dir: str
     eval_env_manifest: EnvironmentManifest | None
+    eval_config_override: dict | None
     eval_loop_strategy: LoopStrategySpec | None
     parsed_env: dict[str, str]
     include_tasks: set[str]
@@ -188,6 +191,7 @@ class EvalPlan:
             exclude_tasks=self.exclude_tasks,
             usage_tracking=self.eval_usage_tracking,
             environment_manifest=self.eval_env_manifest,
+            config_override=self.eval_config_override,
             loop_strategy=self.eval_loop_strategy,
         )
 
@@ -376,7 +380,14 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     # Resolve the optional Environment-plane manifest once and reuse across
     # every source branch (config / source_repo / tasks_dir / source_env).
     eval_env_manifest = None
-    if request.environment_manifest is not None:
+    if request.state is not None:
+        from benchflow._utils.env_registry import resolve_state
+
+        try:
+            eval_env_manifest = resolve_state(request.state)
+        except (OSError, ValueError) as exc:
+            raise EvalPlanError(f"Invalid --state: {exc}") from None
+    elif request.environment_manifest is not None:
         from benchflow.environment.manifest import load_manifest
 
         try:
@@ -385,6 +396,22 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
             raise EvalPlanError(
                 f"Could not load --environment-manifest {request.environment_manifest}: {exc}"
             ) from None
+
+    # Parse + allowlist-validate the C-axis config overlay once (fail fast),
+    # mirroring the manifest resolution above. Threaded as typed data from here.
+    eval_config_override = None
+    if request.config_override is not None:
+        from benchflow._utils.config_override import (
+            load_config_override,
+            validate_overlay,
+        )
+
+        try:
+            eval_config_override = load_config_override(request.config_override)
+            if eval_config_override:
+                validate_overlay(eval_config_override)
+        except (OSError, ValueError) as exc:
+            raise EvalPlanError(f"Invalid --config-override: {exc}") from None
 
     return EvalPlan(
         request=request,
@@ -399,6 +426,7 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         sandbox_user=sandbox_user,
         output_jobs_dir=output_jobs_dir,
         eval_env_manifest=eval_env_manifest,
+        eval_config_override=eval_config_override,
         eval_loop_strategy=eval_loop_strategy,
         parsed_env=parsed_env,
         include_tasks=include_tasks,

@@ -140,6 +140,7 @@ def _config_payload(
         "environment_manifest_path": (
             str(environment_manifest_path) if environment_manifest_path else None
         ),
+        "config_override": config.config_override,
         "loop_strategy": (
             config.loop_strategy.to_mapping() if config.loop_strategy else None
         ),

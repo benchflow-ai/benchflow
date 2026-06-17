@@ -199,7 +199,11 @@ register_eval_adopt(eval_app)
 def eval_run(
     config_file: Annotated[
         Path | None,
-        typer.Option("--config", help="YAML config file"),
+        typer.Option(
+            "--config",
+            "--run-config",
+            help="YAML run-config file (the whole run spec)",
+        ),
     ] = None,
     tasks_dir: Annotated[
         Path | None,
@@ -292,16 +296,42 @@ def eval_run(
         typer.Option(
             "--environment-manifest",
             help=(
-                "Path to an Environment-plane manifest (environment.toml). "
-                "Applied to every rollout in the batch so the manifest-declared "
+                "Environment-plane manifest applied to every rollout: a path to "
+                "an environment.toml, OR a 'name@version' registry spec resolved "
+                "via $BENCHFLOW_ENV_REGISTRY (the S axis). The manifest-declared "
                 "stateful environment is provisioned, gated on readiness, and "
                 "torn down."
+            ),
+        ),
+    ] = None,
+    state: Annotated[
+        str | None,
+        typer.Option(
+            "--state",
+            help=(
+                "S-axis environment binding, decoupled from the task. Inline JSON "
+                'with an optional tool subset (e.g. {"name": "env0", "tools": '
+                '["gmail", "gcal"]}), OR a name@version spec, OR a manifest path. '
+                "Takes precedence over --environment-manifest."
             ),
         ),
     ] = None,
     prompt: Annotated[
         list[str] | None,
         typer.Option("--prompt", help="Prompt(s) to send (default: instruction.md)"),
+    ] = None,
+    config_override: Annotated[
+        str | None,
+        typer.Option(
+            "--config-override",
+            help=(
+                "C-axis overlay: deep-merge a config patch into each task's "
+                "resolved config for this run. Inline JSON/YAML/TOML or an @file "
+                'ref, e.g. --config-override \'{"agent":{"timeout_sec":120}}\'. Varies one '
+                "knob (budget/skills/stopping rules) while T/A/M/S/R stay fixed; "
+                "recorded by content hash for replay."
+            ),
+        ),
     ] = None,
     concurrency: Annotated[
         int | None,
@@ -463,6 +493,8 @@ def eval_run(
         environment=environment,
         usage_tracking=usage_tracking,
         environment_manifest=environment_manifest,
+        state=state,
+        config_override=config_override,
         prompt=prompt,
         concurrency=concurrency,
         build_concurrency=build_concurrency,
