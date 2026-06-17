@@ -1031,8 +1031,20 @@ async def ensure_litellm_runtime(
         # forwarding path; on daytona it must pip-install in-sandbox AFTER the
         # allowlist is applied (pypi is not allowlisted -> install fails). In
         # both cases the agent instead reaches the provider DIRECTLY over
-        # HTTPS — the provider host is allowlisted (docker egress proxy /
-        # daytona IPv4 CIDR) — and usage is captured by native-ACP telemetry.
+        # HTTPS — but only if the provider host was actually allowlisted. The
+        # lockdown allowlists exactly provider_host_for_model(model); if that is
+        # None the host can't have been allowlisted, so skipping here would
+        # launch an agent whose model CONNECT the egress proxy then denies
+        # (ACP -32603). Fail closed with an actionable message instead.
+        from benchflow.agents.providers import provider_host_for_model
+
+        if provider_host_for_model(model, agent_env) is None:
+            raise RuntimeError(
+                f"Restrictive network_mode on {environment!r}: cannot resolve a "
+                f"provider host for model {model!r} to allowlist it, so the agent "
+                "could not reach the model directly. Use a registered provider "
+                "prefix (e.g. 'deepseek/<model>') or relax the network policy."
+            )
         return await _skip_litellm_runtime(
             agent_env,
             runtime,

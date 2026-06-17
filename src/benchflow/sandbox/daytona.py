@@ -104,7 +104,19 @@ __all__ = ["DaytonaSandbox", "SandboxStartupError"]
 #: Raw-TCP egress canary (no DNS) used to verify a block-all policy is actually
 #: enforced on daytona; reachable under block-all => the platform leaked.
 _EGRESS_CANARY_HOST = "1.1.1.1"
+#: Public IPs used as the 'should-be-blocked' enforcement canary. Reachable on
+#: an open network; pick one that is NOT in the task's allow list (a host can
+#: resolve to 1.1.1.1, which would otherwise be allowlisted and falsely abort).
+_CANARY_CANDIDATES = ("1.1.1.1", "8.8.8.8", "9.9.9.9")
 _EGRESS_CANARY_PORT = 443
+
+
+def _pick_canary(cidrs: tuple[str, ...]) -> str:
+    """First canary IP whose /32 is NOT already in the allow list."""
+    for host in _CANARY_CANDIDATES:
+        if f"{host}/32" not in cidrs:
+            return host
+    return _CANARY_CANDIDATES[0]
 
 
 def _ensure_daytona_anyio_compat() -> None:
@@ -812,6 +824,15 @@ class DaytonaSandbox(BaseSandbox):
         decision = resolve_network_decision(self.task_env_config, "daytona")
         if decision.policy is not EffectivePolicy.ALLOWLIST:
             return {}
+        if self._compose_mode:
+            # DinD: update_network_settings governs the OUTER sandbox, but the
+            # agent runs in inner containers whose egress is ungoverned — the
+            # canary would pass while the agent has open egress. Fail closed.
+            raise SandboxStartupError(
+                "daytona compose/DinD does not support network_mode='allowlist' "
+                "enforcement (settings apply to the outer sandbox only); use the "
+                "'docker' sandbox or 'no-network'"
+            )
         model_host = extra_allowed_hosts[0] if extra_allowed_hosts else None
         plan = plan_daytona_allowlist(decision.allowed_hosts, model_host=model_host)
         if not plan.enforceable:
@@ -834,14 +855,15 @@ class DaytonaSandbox(BaseSandbox):
         # Fail closed: a non-allowlisted canary must now be UNREACHABLE. If it
         # still resolves, the platform didn't apply the allow list — refuse to
         # run an unenforced policy (same posture as the block-all canary).
+        canary = _pick_canary(plan.cidrs)
         if blockall_enforcement_violation(
-            block_all=True, canary_reachable=await self._egress_reachable()
+            block_all=True, canary_reachable=await self._egress_reachable(canary)
         ):
             raise SandboxStartupError(
                 f"daytona applied a {len(plan.cidrs)}-CIDR allow list but the "
-                f"sandbox still reached {_EGRESS_CANARY_HOST}:{_EGRESS_CANARY_PORT} "
-                "(a non-allowlisted host) — the platform did not enforce the "
-                "allow list; failing closed"
+                f"sandbox could not confirm {canary}:{_EGRESS_CANARY_PORT} is "
+                "blocked (a non-allowlisted host) — the platform did not enforce "
+                "the allow list, or the probe could not run; failing closed"
             )
         self.logger.info(
             "relock_network: ALLOWLIST applied (daytona, %d cidrs)",
@@ -872,29 +894,41 @@ class DaytonaSandbox(BaseSandbox):
                 "of running with leaked network"
             )
 
-    async def _egress_reachable(self) -> bool:
+    async def _egress_reachable(
+        self, canary_host: str = _EGRESS_CANARY_HOST
+    ) -> bool | None:
+        """Tri-state egress probe: True=reachable, False=blocked, None=unknown.
+
+        Emits an explicit NOREACH sentinel on a blocked connection so a probe
+        that could not run (python missing, timeout) is distinguishable from a
+        confirmed-blocked host and does NOT read as 'enforced' (fail-open).
+        """
         py = (
-            "import socket;socket.setdefaulttimeout(6);"
-            f"socket.create_connection(({_EGRESS_CANARY_HOST!r},{_EGRESS_CANARY_PORT}))"
-            ".close();print('REACH')"
+            "import socket\n"
+            "try:\n"
+            " socket.setdefaulttimeout(6)\n"
+            f" socket.create_connection(({canary_host!r}, {_EGRESS_CANARY_PORT})).close()\n"
+            " print('REACH')\n"
+            "except Exception:\n"
+            " print('NOREACH')"
         )
         probe = (
-            f"(python3 -c {shlex.quote(py)} || python -c {shlex.quote(py)}) "
-            "2>/dev/null || true"
+            f"python3 -c {shlex.quote(py)} 2>/dev/null || "
+            f"python -c {shlex.quote(py)} 2>/dev/null || true"
         )
         try:
             res = await self.exec(probe, timeout_sec=20, user="root")
         except Exception:
             self.logger.warning("egress canary probe failed to run", exc_info=True)
-            return False
-        reachable = "REACH" in (res.stdout or "")
-        self.logger.info(
-            "egress canary %s:%s reachable=%s",
-            _EGRESS_CANARY_HOST,
-            _EGRESS_CANARY_PORT,
-            reachable,
+            return None
+        out = res.stdout or ""
+        result: bool | None = (
+            False if "NOREACH" in out else (True if "REACH" in out else None)
         )
-        return reachable
+        self.logger.info(
+            "egress canary %s:%s -> %s", canary_host, _EGRESS_CANARY_PORT, result
+        )
+        return result
 
     async def stop(self, delete: bool) -> None:
         return await self._strategy.stop(delete)

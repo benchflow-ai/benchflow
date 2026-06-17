@@ -476,7 +476,12 @@ def provider_host_for_model(model: str, env: dict[str, str]) -> str | None:
     """
     from urllib.parse import urlparse
 
-    found = find_provider(model)
+    # A bare id (prefix already stripped, e.g. 'deepseek-v4-flash') no longer
+    # matches find_provider; consult the bare-model registry so the host still
+    # resolves and gets allowlisted (otherwise a restrictive run can't reach it).
+    found = find_provider(model) or find_provider_for_bare_model(
+        strip_provider_prefix(model)
+    )
     if found is None:
         return None
     _, cfg = found

@@ -247,6 +247,7 @@ def _make_daytona_stub(task_env_config):
     sb = DaytonaSandbox.__new__(DaytonaSandbox)
     sb.task_env_config = task_env_config
     sb.logger = logging.getLogger("test-daytona")
+    sb._compose_mode = False
     applied = {}
 
     class _Inner:
@@ -275,7 +276,7 @@ async def test_daytona_relock_applies_faithful_allowlist(monkeypatch):
         ),
     )
 
-    async def _unreachable():
+    async def _unreachable(canary=None):
         return False  # non-allowlisted canary correctly blocked
 
     sb._egress_reachable = _unreachable
@@ -321,7 +322,7 @@ async def test_daytona_relock_fails_closed_if_canary_still_reachable(monkeypatch
         ),
     )
 
-    async def _reachable():
+    async def _reachable(canary=None):
         return True  # platform did NOT enforce -> leaked egress
 
     sb._egress_reachable = _reachable
@@ -356,6 +357,7 @@ async def test_ensure_litellm_skips_under_restrictive_daytona():
         "LLM_BASE_URL": "https://api.deepseek.com",
         "LLM_MODEL": "openai/deepseek-v4-flash",
         "DEEPSEEK_API_KEY": "sk-test",
+        "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
     }
     out_env, runtime = await litellm_runtime.ensure_litellm_runtime(
         agent="openhands",
@@ -399,7 +401,7 @@ async def test_daytona_relock_pins_etc_hosts(monkeypatch):
         ),
     )
 
-    async def _unreachable():
+    async def _unreachable(canary=None):
         return False
 
     sb._egress_reachable = _unreachable
@@ -409,3 +411,242 @@ async def test_daytona_relock_pins_etc_hosts(monkeypatch):
     assert hosts_writes, "expected an /etc/hosts pin write"
     assert "9.9.9.9" in hosts_writes[0] and "a.com" in hosts_writes[0]
     assert applied["allow_list"] == "9.9.9.9/32,3.3.3.3/32"
+
+
+# ---- origin-form rewrite: query handling + scheme-prefix detection (audit P1) ----
+
+
+def test_to_origin_form_preserves_query():
+    from benchflow.sandbox._egress_proxy import _to_origin_form
+
+    assert (
+        _to_origin_form(b"GET http://h?x=1 HTTP/1.1\r\n\r\n")
+        == b"GET /?x=1 HTTP/1.1\r\n\r\n"
+    )
+    # a '/' inside the query value must not be taken as the path boundary
+    assert (
+        _to_origin_form(b"GET http://h?a=b/c HTTP/1.1\r\n\r\n")
+        == b"GET /?a=b/c HTTP/1.1\r\n\r\n"
+    )
+    # authority with a port, query-only
+    assert (
+        _to_origin_form(b"GET http://h:80?a=1 HTTP/1.1\r\n\r\n")
+        == b"GET /?a=1 HTTP/1.1\r\n\r\n"
+    )
+    # normal path+query is unchanged in shape
+    assert (
+        _to_origin_form(b"GET http://h/p?q=1 HTTP/1.1\r\n\r\n")
+        == b"GET /p?q=1 HTTP/1.1\r\n\r\n"
+    )
+
+
+def test_to_origin_form_leaves_origin_form_with_url_query_untouched():
+    from benchflow.sandbox._egress_proxy import _to_origin_form
+
+    # already origin-form, but the query contains '://' — must be returned verbatim
+    h = b"GET /cb?u=http://e.com HTTP/1.1\r\nHost: api.example.com\r\n\r\n"
+    assert _to_origin_form(h) == h
+
+
+def test_absolute_uri_host_ignores_scheme_in_query():
+    from benchflow.sandbox._egress_proxy import _absolute_uri_host
+
+    # absolute-form: authority is the real host, stopping at '/', '?' or '#'
+    assert _absolute_uri_host("http://api.example.com/p?x=1") == "api.example.com"
+    assert (
+        _absolute_uri_host("https://api.example.com?u=http://e.com")
+        == "api.example.com"
+    )
+    assert _absolute_uri_host("http://h:8080") == "h:8080"
+    # origin-form with '://' in the query is NOT absolute -> None (use Host header)
+    assert _absolute_uri_host("/cb?u=http://evil.com") is None
+    assert _absolute_uri_host("/plain") is None
+
+
+# ---- bare model-id provider host resolution (audit P1: -32603 for bare ids) ----
+
+
+def test_provider_host_for_model_resolves_bare_id():
+    from benchflow.agents.providers import provider_host_for_model
+
+    # the documented dev model in BARE form (prefix already stripped) must still
+    # resolve its host so a restrictive run allowlists it
+    assert (
+        provider_host_for_model(
+            "deepseek-v4-flash", {"DEEPSEEK_BASE_URL": "https://api.deepseek.com"}
+        )
+        == "api.deepseek.com"
+    )
+    # prefixed form keeps working
+    assert (
+        provider_host_for_model(
+            "deepseek/deepseek-v4-flash",
+            {"DEEPSEEK_BASE_URL": "https://api.deepseek.com"},
+        )
+        == "api.deepseek.com"
+    )
+    # genuinely unknown model -> None (caller fails closed)
+    assert provider_host_for_model("totally-unknown-model-xyz", {}) is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_litellm_fails_closed_when_provider_host_unresolvable():
+    """Under a restrictive policy, if the provider host can't be resolved (so it
+    was never allowlisted), skipping the proxy would launch an agent that 403s on
+    its model CONNECT. ensure_litellm_runtime must fail closed instead."""
+    import pytest as _pytest
+
+    from benchflow.providers import litellm_runtime
+    from benchflow.task.config import SandboxConfig
+
+    class _FakeSandbox:
+        task_env_config = SandboxConfig(
+            network_mode="allowlist", allowed_hosts=["a.com"]
+        )
+
+    with _pytest.raises(RuntimeError, match="cannot resolve a provider host"):
+        await litellm_runtime.ensure_litellm_runtime(
+            agent="openhands",
+            agent_env={"LLM_BASE_URL": "https://x"},
+            model="totally-unknown-model-xyz",
+            runtime=None,
+            environment="docker",
+            usage_tracking="auto",
+            sandbox=_FakeSandbox(),
+        )
+
+
+# ---- docker relock fail-closed gate: deny extras + inspect-rc (audit P1/P2) ----
+
+
+def test_lockdown_complete_denies_extra_network():
+    from benchflow.sandbox.network_policy import lockdown_complete
+
+    internal = "proj_bf_egress_internal"
+    default = "proj_default"
+    assert lockdown_complete({internal}, default, internal) is True
+    # a stray non-internal net survives the swap -> NOT complete (bypass risk)
+    assert lockdown_complete({internal, "proj_mynet"}, default, internal) is False
+    assert lockdown_complete(set(), default, None) is True
+    assert lockdown_complete({"proj_mynet"}, default, None) is False
+    assert lockdown_complete({internal, default}, default, internal) is False
+    # explicitly-permitted benign net is allowed
+    assert (
+        lockdown_complete(
+            {internal, "proj_ok"}, default, internal, frozenset({"proj_ok"})
+        )
+        is True
+    )
+
+
+def _relock_project():
+    from benchflow.sandbox.docker import _sanitize_docker_compose_project_name
+
+    return _sanitize_docker_compose_project_name("relocktest")
+
+
+def _make_docker_relock_stub(inspect_stdout, inspect_rc):
+    import logging
+
+    from benchflow.sandbox._base import ExecResult
+    from benchflow.sandbox.docker import DockerSandbox
+    from benchflow.task.config import SandboxConfig
+
+    sb = DockerSandbox.__new__(DockerSandbox)
+    sb.task_env_config = SandboxConfig(
+        network_mode="allowlist", allowed_hosts=["a.com"]
+    )
+    sb.session_id = "relocktest"
+    sb._network_locked = False
+    sb._extra_allowed_hosts = ()
+    sb.logger = logging.getLogger("relock-test")
+
+    async def _cid():
+        return "cid123"
+
+    sb._main_container_id = _cid
+    sb._network_policy_compose_paths = lambda: ["/x/egress.json"]
+
+    async def _compose(_args):
+        return None
+
+    sb._run_docker_compose_command = _compose
+
+    async def _cli(args, check=True):
+        if "inspect" in args:
+            return ExecResult(stdout=inspect_stdout, stderr="", return_code=inspect_rc)
+        return ExecResult(stdout="", stderr="", return_code=0)
+
+    sb._docker_cli = _cli
+    return sb
+
+
+@pytest.mark.asyncio
+async def test_docker_relock_raises_on_stray_network():
+    from benchflow.sandbox.protocol import SandboxStartupError
+
+    proj = _relock_project()
+    sb = _make_docker_relock_stub(f"{proj}_bf_egress_internal {proj}_mynet", 0)
+    with pytest.raises(SandboxStartupError, match="did not take effect"):
+        await sb.relock_network()
+
+
+@pytest.mark.asyncio
+async def test_docker_relock_raises_on_inspect_error():
+    from benchflow.sandbox.protocol import SandboxStartupError
+
+    sb = _make_docker_relock_stub("", 1)
+    with pytest.raises(SandboxStartupError, match="could not inspect"):
+        await sb.relock_network()
+
+
+@pytest.mark.asyncio
+async def test_docker_relock_happy_sidecar_returns_proxy_env():
+    proj = _relock_project()
+    sb = _make_docker_relock_stub(f"{proj}_bf_egress_internal", 0)
+    out = await sb.relock_network()
+    assert out.get("HTTPS_PROXY", "").startswith("http://bf-egress:")
+
+
+# ---- daytona allowlist hardening (audit P2: canary / compose / probe) ----
+
+
+def test_blockall_violation_treats_unverifiable_probe_as_violation():
+    from benchflow.sandbox.network_policy import blockall_enforcement_violation
+
+    assert blockall_enforcement_violation(block_all=True, canary_reachable=True) is True
+    assert (
+        blockall_enforcement_violation(block_all=True, canary_reachable=False) is False
+    )
+    # probe could not run -> cannot confirm blocked -> fail closed
+    assert blockall_enforcement_violation(block_all=True, canary_reachable=None) is True
+    assert (
+        blockall_enforcement_violation(block_all=False, canary_reachable=None) is False
+    )
+
+
+def test_pick_canary_avoids_allowlisted_ip():
+    from benchflow.sandbox.daytona import _pick_canary
+
+    assert _pick_canary(()) == "1.1.1.1"
+    # a host resolved to 1.1.1.1 is allowlisted -> canary must move off it
+    assert _pick_canary(("1.1.1.1/32",)) == "8.8.8.8"
+    assert _pick_canary(("1.1.1.1/32", "8.8.8.8/32")) == "9.9.9.9"
+
+
+@pytest.mark.asyncio
+async def test_daytona_relock_fails_closed_for_compose_mode():
+    import logging
+
+    from benchflow.sandbox.daytona import DaytonaSandbox
+    from benchflow.sandbox.protocol import SandboxStartupError
+    from benchflow.task.config import SandboxConfig
+
+    sb = DaytonaSandbox.__new__(DaytonaSandbox)
+    sb.task_env_config = SandboxConfig(
+        network_mode="allowlist", allowed_hosts=["a.com"]
+    )
+    sb._compose_mode = True
+    sb.logger = logging.getLogger("daytona-compose-test")
+    with pytest.raises(SandboxStartupError, match="compose/DinD"):
+        await sb.relock_network(extra_allowed_hosts=())

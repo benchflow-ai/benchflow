@@ -382,8 +382,15 @@ class DockerSandbox(BaseSandbox):
             ],
             check=False,
         )
-        # stdout is str|None (check=False); None -> empty set -> lockdown_complete
-        # fails closed below (treated as not-detached), which is the safe default.
+        # Fail closed on an unrunnable inspect: an empty network set would
+        # otherwise read as 'correctly on no networks' on the hermetic path
+        # (internal_net is None), masking a swallowed inspect error.
+        if inspect_res.return_code != 0:
+            raise SandboxStartupError(
+                "relock_network: could not inspect container networks "
+                f"(docker inspect rc={inspect_res.return_code}); failing closed "
+                "rather than running with an unverified network policy"
+            )
         attached: set[str] = set((inspect_res.stdout or "").split())
         internal_net = f"{project}_{_EGRESS_INTERNAL_NET}" if use_sidecar else None
         if not lockdown_complete(attached, f"{project}_default", internal_net):

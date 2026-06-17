@@ -116,10 +116,10 @@ def _handle(client: socket.socket) -> None:
             _pipe(client, upstream)
             return
 
-        # Plain HTTP: target is an absolute URI (http://host/path) in proxy form.
-        host = ""
-        if "://" in target:
-            host = target.split("://", 1)[1].split("/", 1)[0]
+        # Plain HTTP: an absolute-URI proxy target (http://host/path). Only treat
+        # it as absolute when it actually starts with a scheme — a '://' inside a
+        # query value of an origin-form target must NOT be read as the authority.
+        host = _absolute_uri_host(target) or ""
         if not host:
             for hl in header.split(b"\r\n"):
                 if hl.lower().startswith(b"host:"):
@@ -159,13 +159,38 @@ def _to_origin_form(header: bytes) -> bytes:
     """
     line, sep, rest = header.partition(b"\r\n")
     parts = line.split(b" ")
-    if len(parts) != 3 or b"://" not in parts[1]:
+    if len(parts) != 3 or not parts[1].lower().startswith((b"http://", b"https://")):
         return header
     method, target, version = parts
     after = target.split(b"://", 1)[1]
-    slash = after.find(b"/")
-    path = after[slash:] if slash != -1 else b"/"
+    # The authority ends at the first of '/', '?' or '#'; everything from there
+    # is the origin-form path. A query/fragment with no path is prefixed with
+    # '/' so the query survives (http://h?x=1 -> /?x=1, not / ).
+    cuts = [
+        i for i in (after.find(b"/"), after.find(b"?"), after.find(b"#")) if i != -1
+    ]
+    if not cuts:
+        path = b"/"
+    else:
+        path = after[min(cuts) :]
+        if not path.startswith(b"/"):
+            path = b"/" + path
     return method + b" " + path + b" " + version + sep + rest
+
+
+def _absolute_uri_host(target: str) -> str | None:
+    """Authority of an absolute-form proxy target, or None for origin-form.
+
+    Only an actual ``http://`` / ``https://`` prefix counts as absolute-form;
+    a ``://`` appearing inside the query of an origin-form target (e.g.
+    ``/cb?u=http://evil``) must not be mistaken for the authority. The
+    authority ends at the first of ``/``, ``?`` or ``#``.
+    """
+    if not target.lower().startswith(("http://", "https://")):
+        return None
+    after = target.split("://", 1)[1]
+    cuts = [i for i in (after.find("/"), after.find("?"), after.find("#")) if i != -1]
+    return after[: min(cuts)] if cuts else after
 
 
 def main() -> None:

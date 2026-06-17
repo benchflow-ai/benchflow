@@ -118,15 +118,19 @@ def network_blocks_all(env_config: SandboxConfig, sandbox: str) -> bool:
     )
 
 
-def blockall_enforcement_violation(*, block_all: bool, canary_reachable: bool) -> bool:
-    """Fail-closed check for a block-all policy.
+def blockall_enforcement_violation(
+    *, block_all: bool, canary_reachable: bool | None
+) -> bool:
+    """Fail-closed check for a restrictive policy (block-all or allowlist canary).
 
-    A sandbox that resolves to ``BLOCK_ALL`` must have no off-box route. If an
-    external canary is still reachable from inside, the platform did not honor the
-    block (e.g. daytona's ``network_block_all`` flag was ignored) — the run should
-    abort rather than produce a falsely-rewarded "offline" result.
+    A restrictive policy must have no off-box route to a non-allowlisted host.
+    ``canary_reachable`` is tri-state: ``True`` = the canary was reachable (the
+    platform did not enforce), ``False`` = confirmed unreachable (enforced), and
+    ``None`` = the probe could not run (python missing, timeout, exec error). An
+    unverifiable probe must NOT be read as 'enforced' — only an explicit ``False``
+    clears the policy, so ``True`` and ``None`` both count as a violation.
     """
-    return block_all and canary_reachable
+    return block_all and canary_reachable is not False
 
 
 def network_is_restrictive(env_config: SandboxConfig, sandbox: str) -> bool:
@@ -149,22 +153,31 @@ def proxy_unavailable_is_fatal(*, usage_mode: str, network_restrictive: bool) ->
 
 
 def lockdown_complete(
-    attached_networks: set[str], default_net: str, internal_net: str | None
+    attached_networks: set[str],
+    default_net: str,
+    internal_net: str | None,
+    extra_permitted: frozenset[str] = frozenset(),
 ) -> bool:
-    """True iff a docker relock actually took effect.
+    """True iff a docker relock actually took effect (deny-by-default).
 
-    After install-before-lockdown swaps the container's networks, it must be
-    detached from the public bridge (*default_net*) and, when an egress sidecar
-    is in use, attached to *internal_net*. If a ``network connect``/``disconnect``
-    silently failed the container could sit on BOTH nets (egress proxy bypassed)
-    or on NONE (stranded) — callers fail closed when this returns ``False``
-    rather than running with an unenforced policy.
+    After install-before-lockdown swaps the container's networks, the container
+    must be attached to EXACTLY the permitted set: *internal_net* when an egress
+    sidecar is in use, otherwise nothing (plus any explicitly *extra_permitted*
+    benchflow-owned nets). It must NOT be on the public bridge (*default_net*)
+    and must NOT retain any other network. A silently failed
+    ``connect``/``disconnect`` could leave it on BOTH nets (proxy bypassed), on
+    NONE (stranded), or still on a task-author custom net that routes off-box
+    around the proxy — all return ``False`` so callers fail closed.
     """
     on_public_bridge = default_net in attached_networks
     missing_internal = (
         internal_net is not None and internal_net not in attached_networks
     )
-    return not (on_public_bridge or missing_internal)
+    permitted = set(extra_permitted)
+    if internal_net is not None:
+        permitted.add(internal_net)
+    has_extra_net = not set(attached_networks).issubset(permitted)
+    return not (on_public_bridge or missing_internal or has_extra_net)
 
 
 # --- Daytona allowlist parity (enforce-when-faithful) -----------------------
