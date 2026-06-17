@@ -133,7 +133,9 @@ def register_continue(
                 )
             )
         except RunFolderError as exc:
-            typer.secho(f"bench eval continue: {exc}", fg=typer.colors.RED, err=True)
+            # Command-agnostic prefix: the same callback backs both the canonical
+            # `bench eval continue` and the deprecated top-level `bench continue`.
+            typer.secho(f"benchflow: {exc}", fg=typer.colors.RED, err=True)
             raise typer.Exit(1) from exc
 
         typer.secho(
@@ -228,14 +230,14 @@ def register_continue(
         # which exits 1 on a non-directory folder.
         if not root.exists():
             typer.secho(
-                f"bench eval continue-batch: path does not exist: {root}",
+                f"benchflow: path does not exist: {root}",
                 fg=typer.colors.RED,
                 err=True,
             )
             raise typer.Exit(1)
         if not root.is_dir():
             typer.secho(
-                f"bench eval continue-batch: not a directory: {root}",
+                f"benchflow: not a directory: {root}",
                 fg=typer.colors.RED,
                 err=True,
             )
