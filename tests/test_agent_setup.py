@@ -753,17 +753,23 @@ _PY_SERVICE_ARGV = (
         # direct wrapper binaries (pi, claude, gemini-with-args)
         ("/opt/benchflow/bin/pi-acp-launcher", "/opt/benchflow/bin/pi-acp-launcher"),
         ("/opt/benchflow/bin/claude-agent-acp", "/opt/benchflow/bin/claude-agent-acp"),
-        ("/opt/benchflow/bin/gemini --acp --yolo", "/opt/benchflow/bin/gemini --acp --yolo"),
+        (
+            "/opt/benchflow/bin/gemini --acp --yolo",
+            "/opt/benchflow/bin/gemini --acp --yolo",
+        ),
         # compound `setup && … && <agent>` launch: key on the final command,
         # not the leading `export` builtin (openhands).
         (
-            "export PATH=\"$HOME/.local/bin:$PATH\" && mkdir -p ~/.openhands && "
+            'export PATH="$HOME/.local/bin:$PATH" && mkdir -p ~/.openhands && '
             "{ printf '{}' > ~/.openhands/agent_settings.json; } && "
             "openhands acp --always-approve --override-with-envs",
             "/usr/bin/openhands acp --always-approve --override-with-envs",
         ),
         # package-runner subcommand: skip `uv` and `run`, key on the agent.
-        ("uv run my-agent-acp --serve", "/path/.venv/bin/python /path/my-agent-acp --serve"),
+        (
+            "uv run my-agent-acp --serve",
+            "/path/.venv/bin/python /path/my-agent-acp --serve",
+        ),
     ],
 )
 def test_agent_kill_pattern_targets_agent_not_python_services(launch, agent_argv):
