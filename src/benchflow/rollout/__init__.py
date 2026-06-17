@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import shlex
 import shutil
@@ -326,6 +327,12 @@ class Rollout:
         self._ask_user_handler_set: bool = False
         self._agent_name: str = ""
         self._active_role: Role | None = None
+        #: Egress proxy env (HTTP(S)_PROXY -> bf-egress sidecar) produced by
+        #: the network lockdown. Empty unless a restrictive docker policy is
+        #: active. The scene/role path (connect_as) rebuilds agent_env from
+        #: config, so it must re-merge this or the agent can't reach the
+        #: allowlisted provider (the internal-only net has no direct route).
+        self._lockdown_proxy_env: dict[str, str] = {}
         # Cursors into the live ACP session's cumulative trajectory and
         # tool-call totals so execute() and the partial-capture path extend
         # only the delta since the last read. Reset per session in
@@ -684,6 +691,7 @@ class Rollout:
                     self._env, cfg.generated_skills_root, cfg.sandbox_user
                 )
             await self._planes.lockdown_paths(self._env, self._effective_locked)
+            await self._lock_down_network()
             self._phase = "installed"
             return
 
@@ -744,7 +752,33 @@ class Rollout:
             )
         await self._planes.lockdown_paths(self._env, self._effective_locked)
 
+        await self._lock_down_network()
         self._phase = "installed"
+
+    async def _lock_down_network(self) -> None:
+        """Apply the task's restrictive network policy after agent install
+        (install-before-lockdown). Docker swaps the container onto an internal
+        network + egress sidecar and returns the proxy env the agent must use;
+        other sandboxes no-op. Merges the returned proxy env into the agent env.
+        """
+        relock = getattr(self._env, "relock_network", None)
+        if relock is None:
+            return
+        # Allowlist the model provider host so the agent can reach it directly
+        # over HTTPS under a restrictive policy (the host-proxy path is skipped).
+        from benchflow.agents.providers import provider_host_for_model
+
+        host = provider_host_for_model(
+            self._config.primary_model or "", self._agent_env
+        )
+        extra = (host,) if host else ()
+        proxy_env = relock(extra_allowed_hosts=extra)
+        if inspect.isawaitable(proxy_env):
+            proxy_env = await proxy_env
+        # Tolerate mock sandboxes in tests: only merge a real dict result.
+        if isinstance(proxy_env, dict) and proxy_env:
+            self._lockdown_proxy_env = dict(proxy_env)
+            self._agent_env = {**self._agent_env, **proxy_env}
 
     # Phase 3b: CONNECT (ACP session — re-entrant)
 
@@ -1636,6 +1670,14 @@ class Rollout:
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
         )
+        # The network lockdown (install-before-lockdown) put the container on
+        # an internal-only net reachable off-box only through the bf-egress
+        # proxy. resolve_agent_env above rebuilt agent_env from config and
+        # dropped that proxy env, so re-merge it here or the agent's LLM
+        # client hits a connection error reaching the allowlisted provider.
+        lockdown_proxy_env = getattr(self, "_lockdown_proxy_env", None)
+        if lockdown_proxy_env:
+            agent_env = {**agent_env, **lockdown_proxy_env}
 
         role_agent_differs = role.agent != cfg.primary_agent
         needs_role_credentials = (

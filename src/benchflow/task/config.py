@@ -79,6 +79,11 @@ def _validate_allowed_hosts(hosts: list[str] | None) -> list[str] | None:
         host = raw_host.strip().lower().rstrip(".")
         if not host:
             raise ValueError("allowed_hosts entries must be non-empty hostnames")
+        wildcard = ""
+        if host.startswith("*."):
+            # Leading-label wildcard (Harbor #1854 / nginx semantics): matches
+            # subdomains at any depth; the remainder is validated as a hostname.
+            wildcard, host = "*.", host[2:]
         if "://" in host or "/" in host or ":" in host:
             raise ValueError(
                 "allowed_hosts entries must be hostnames, not URLs, ports, or paths"
@@ -89,7 +94,7 @@ def _validate_allowed_hosts(hosts: list[str] | None) -> list[str] | None:
                 "allowed_hosts entries must be valid hostnames containing only "
                 "letters, digits, hyphens, and dots"
             )
-        normalized.append(host)
+        normalized.append(wildcard + host)
     return normalized
 
 
@@ -487,6 +492,14 @@ class SandboxConfig(TaskConfigModel):
     allow_internet: bool = Field(
         default=True,
         description="Deprecated compatibility field; use network_mode instead.",
+    )
+    allow_model_endpoint: bool = Field(
+        default=True,
+        description=(
+            "Keep a dedicated lane to the benchflow model proxy open even under "
+            "a restrictive network_mode (model-only egress), so the agent can "
+            "reach its model. Set false for a fully-hermetic, no-model run."
+        ),
     )
     memory: str | None = Field(
         default=None,

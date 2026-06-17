@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Added
+- **`network_mode: allowlist` is now enforced on the `docker` sandbox.** A task
+  that sets `environment.network_mode: allowlist` + `allowed_hosts` runs behind
+  an internal network and an egress-proxy sidecar that forwards only to those
+  hosts; every other destination (other hosts, raw-IP connections, tools that
+  ignore the proxy) has no route off-box. `network_mode` is now the
+  authoritative network field across the launch path and `allow_internet` is a
+  derived back-compat shim. On sandboxes without per-host egress control
+  (`modal`) an `allowlist` task fails closed at preflight with a
+  clear message instead of running unrestricted (previously `allowlist` was
+  validated but unenforceable everywhere). (ENG-219)
+- **Wildcard `allowed_hosts`.** An `allowed_hosts` entry may use a single leading
+  `*.` label (e.g. `*.example.com`) to match subdomains at any depth (Harbor /
+  nginx semantics); the bare apex (`example.com`) is **not** matched by the
+  wildcard. Mid- or trailing-wildcard entries (`a.*.com`, `*example.com`,
+  `ex*mple.com`) are rejected at config parse time. (ENG-219)
+- **Dedicated model lane under a restrictive `network_mode` on `docker`.** A
+  restrictive task (`no-network` or `allowlist`) now keeps a single always-allow
+  lane open to the host-side benchflow model proxy, so an agent run reaches the
+  model without opening the sandbox to the public internet (a `no-network` run
+  becomes model-only egress). This replaces the previous blanket lift-to-`public`
+  for web-disabled `docker` runs; the other sandboxes keep the lift. Set
+  `environment.allow_model_endpoint: false` to close the lane for a fully
+  hermetic, no-model run. (ENG-219)
+- **`network_mode: allowlist` now also enforced on the `daytona` sandbox
+  (enforce-when-faithful).** Daytona enforces the allowlist via its native
+  IPv4 allow list when the hosts resolve to a small enough IP set; allowlisted
+  hosts are pinned in the sandbox `/etc/hosts` so they resolve without DNS
+  egress and without IP-rotation drift. A wildcard allowlist (which an IPv4
+  list cannot express) is rejected at preflight, and an allowlist that
+  resolves to more than daytona's 10-CIDR cap fails closed with a message
+  pointing to `docker`. `public` and `no-network` stay identical across
+  `docker`/`daytona`. (ENG-264)
+
 ## 0.6.3 — 2026-06-16
 
 ### Changed

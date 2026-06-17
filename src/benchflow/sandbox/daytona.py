@@ -77,6 +77,10 @@ from benchflow.sandbox.daytona_reaper import (
 )
 from benchflow.sandbox.daytona_strategies import _DaytonaDirect, _DaytonaStrategy
 from benchflow.sandbox.metadata import persist_sandbox_info
+from benchflow.sandbox.network_policy import (
+    blockall_enforcement_violation,
+    network_blocks_all,
+)
 from benchflow.sandbox.protocol import (
     SandboxImage,
     SandboxStartupError,
@@ -96,6 +100,23 @@ from benchflow.task.paths import RolloutPaths
 # modules; they are re-exported above so every name previously importable from
 # ``benchflow.sandbox.daytona`` keeps resolving from this path unchanged.
 __all__ = ["DaytonaSandbox", "SandboxStartupError"]
+
+#: Raw-TCP egress canary (no DNS) used to verify a block-all policy is actually
+#: enforced on daytona; reachable under block-all => the platform leaked.
+_EGRESS_CANARY_HOST = "1.1.1.1"
+#: Public IPs used as the 'should-be-blocked' enforcement canary. Reachable on
+#: an open network; pick one that is NOT in the task's allow list (a host can
+#: resolve to 1.1.1.1, which would otherwise be allowlisted and falsely abort).
+_CANARY_CANDIDATES = ("1.1.1.1", "8.8.8.8", "9.9.9.9")
+_EGRESS_CANARY_PORT = 443
+
+
+def _pick_canary(cidrs: tuple[str, ...]) -> str:
+    """First canary IP whose /32 is NOT already in the allow list."""
+    for host in _CANARY_CANDIDATES:
+        if f"{host}/32" not in cidrs:
+            return host
+    return _CANARY_CANDIDATES[0]
 
 
 def _ensure_daytona_anyio_compat() -> None:
@@ -354,14 +375,14 @@ class DaytonaSandbox(BaseSandbox):
         self._snapshot_template_name = snapshot_template_name
         if network_block_all is not None:
             self._network_block_all = network_block_all
-            expected = not task_env_config.allow_internet
+            expected = network_blocks_all(task_env_config, "daytona")
             if network_block_all != expected:
                 self.logger.warning(
                     f"network_block_all={network_block_all} overrides task config "
                     f"allow_internet={task_env_config.allow_internet}"
                 )
         else:
-            self._network_block_all = not task_env_config.allow_internet
+            self._network_block_all = network_blocks_all(task_env_config, "daytona")
 
         self._sandbox: AsyncSandbox | None = None  # pyright: ignore[reportInvalidTypeForm]
         self._client_manager: DaytonaClientManager | None = None
@@ -776,7 +797,138 @@ class DaytonaSandbox(BaseSandbox):
     # Public interface — delegates to strategy
 
     async def start(self, force_build: bool) -> None:
-        return await self._strategy.start(force_build)
+        await self._strategy.start(force_build)
+        await self._verify_network_enforcement()
+
+    async def relock_network(
+        self, extra_allowed_hosts: tuple[str, ...] = ()
+    ) -> dict[str, str]:
+        """Apply the task's allowlist as a daytona IPv4 CIDR list, post-install.
+
+        Mirrors docker install-before-lockdown: the sandbox came up open so the
+        agent could install; now resolve the hostname allowlist (+ the model
+        host) to /32 CIDRs and push them via ``update_network_settings``. Fails
+        closed if the policy can't be faithfully expressed as <=10 IPv4 CIDRs
+        (wildcards, unresolvable, or too many IPs) or if a non-allowlisted
+        canary is still reachable after applying it. ``block-all``/``open`` are
+        handled at creation, so this is a no-op for them. Returns ``{}`` — the
+        daytona allowlist is enforced at the network layer, so (unlike docker)
+        the agent needs no HTTP(S)_PROXY env.
+        """
+        from benchflow.sandbox.network_policy import (
+            EffectivePolicy,
+            plan_daytona_allowlist,
+            resolve_network_decision,
+        )
+
+        decision = resolve_network_decision(self.task_env_config, "daytona")
+        if decision.policy is not EffectivePolicy.ALLOWLIST:
+            return {}
+        if self._compose_mode:
+            # DinD: update_network_settings governs the OUTER sandbox, but the
+            # agent runs in inner containers whose egress is ungoverned — the
+            # canary would pass while the agent has open egress. Fail closed.
+            raise SandboxStartupError(
+                "daytona compose/DinD does not support network_mode='allowlist' "
+                "enforcement (settings apply to the outer sandbox only); use the "
+                "'docker' sandbox or 'no-network'"
+            )
+        model_host = extra_allowed_hosts[0] if extra_allowed_hosts else None
+        plan = plan_daytona_allowlist(decision.allowed_hosts, model_host=model_host)
+        if not plan.enforceable:
+            raise SandboxStartupError(
+                f"daytona cannot enforce network_mode='allowlist': {plan.reject_reason}"
+            )
+        # Pin allowlisted hosts in /etc/hosts so the agent resolves them WITHOUT
+        # DNS egress (the sandbox resolvers are not in the allow list) and without
+        # IP-rotation drift — it connects to exactly the IP we allowlisted. TLS
+        # SNI/cert still use the hostname, so HTTPS stays valid.
+        if plan.host_ips:
+            lines = "".join(f"{ip}\t{host}\n" for host, ip in plan.host_ips)
+            await self.exec(
+                f"printf %s {shlex.quote(lines)} >> /etc/hosts",
+                user="root",
+                timeout_sec=20,
+            )
+        sandbox = self._require_sandbox()
+        await sandbox.update_network_settings(network_allow_list=",".join(plan.cidrs))
+        # Fail closed: a non-allowlisted canary must now be UNREACHABLE. If it
+        # still resolves, the platform didn't apply the allow list — refuse to
+        # run an unenforced policy (same posture as the block-all canary).
+        canary = _pick_canary(plan.cidrs)
+        if blockall_enforcement_violation(
+            block_all=True, canary_reachable=await self._egress_reachable(canary)
+        ):
+            raise SandboxStartupError(
+                f"daytona applied a {len(plan.cidrs)}-CIDR allow list but the "
+                f"sandbox could not confirm {canary}:{_EGRESS_CANARY_PORT} is "
+                "blocked (a non-allowlisted host) — the platform did not enforce "
+                "the allow list, or the probe could not run; failing closed"
+            )
+        self.logger.info(
+            "relock_network: ALLOWLIST applied (daytona, %d cidrs)",
+            len(plan.cidrs),
+        )
+        return {}
+
+    async def _verify_network_enforcement(self) -> None:
+        """Fail closed if a block-all policy resolves but egress still works.
+
+        Daytona delegates the block to a platform ``network_block_all`` flag with
+        no in-guest fallback or verification; if the platform ignores it, a
+        ``no-network`` task would silently run with full internet and produce a
+        falsely-rewarded result. Probe a raw-TCP canary and abort if reachable.
+        """
+        self.logger.info(
+            "verify_network_enforcement: block_all=%s", self._network_block_all
+        )
+        if not self._network_block_all:
+            return
+        if blockall_enforcement_violation(
+            block_all=True, canary_reachable=await self._egress_reachable()
+        ):
+            raise SandboxStartupError(
+                "network resolves to block-all but the sandbox reached "
+                f"{_EGRESS_CANARY_HOST}:{_EGRESS_CANARY_PORT} — the daytona "
+                "platform did not enforce the egress block; failing closed instead "
+                "of running with leaked network"
+            )
+
+    async def _egress_reachable(
+        self, canary_host: str = _EGRESS_CANARY_HOST
+    ) -> bool | None:
+        """Tri-state egress probe: True=reachable, False=blocked, None=unknown.
+
+        Emits an explicit NOREACH sentinel on a blocked connection so a probe
+        that could not run (python missing, timeout) is distinguishable from a
+        confirmed-blocked host and does NOT read as 'enforced' (fail-open).
+        """
+        py = (
+            "import socket\n"
+            "try:\n"
+            " socket.setdefaulttimeout(6)\n"
+            f" socket.create_connection(({canary_host!r}, {_EGRESS_CANARY_PORT})).close()\n"
+            " print('REACH')\n"
+            "except Exception:\n"
+            " print('NOREACH')"
+        )
+        probe = (
+            f"python3 -c {shlex.quote(py)} 2>/dev/null || "
+            f"python -c {shlex.quote(py)} 2>/dev/null || true"
+        )
+        try:
+            res = await self.exec(probe, timeout_sec=20, user="root")
+        except Exception:
+            self.logger.warning("egress canary probe failed to run", exc_info=True)
+            return None
+        out = res.stdout or ""
+        result: bool | None = (
+            False if "NOREACH" in out else (True if "REACH" in out else None)
+        )
+        self.logger.info(
+            "egress canary %s:%s -> %s", canary_host, _EGRESS_CANARY_PORT, result
+        )
+        return result
 
     async def stop(self, delete: bool) -> None:
         return await self._strategy.stop(delete)

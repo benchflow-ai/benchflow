@@ -203,6 +203,12 @@ class DockerSandbox(BaseSandbox):
         self._use_prebuilt = False
 
         self._compose_task_env: dict[str, str] = {}
+        # Install-before-lockdown: the restrictive network policy is applied by
+        # relock_network() AFTER the agent installs, not at sandbox start.
+        self._network_locked = False
+        #: Extra hosts unioned into the egress allowlist at relock (the model
+        #: provider host, so the agent reaches it directly over HTTPS).
+        self._extra_allowed_hosts: tuple[str, ...] = ()
         if task_env_config.env and self._uses_compose:
             self._compose_task_env = resolve_env_vars(task_env_config.env)
 
@@ -256,10 +262,157 @@ class DockerSandbox(BaseSandbox):
         if self._mounts_compose_path:
             paths.append(self._mounts_compose_path)
 
-        if not self.task_env_config.allow_internet:
-            paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
-
+        paths.extend(self._network_policy_compose_paths())
         return paths
+
+    def _network_policy_compose_paths(self) -> list[Path]:
+        """Compose overrides enforcing the task's resolved network policy.
+
+        ``no-network`` detaches the container network; ``allowlist`` confines
+        egress to ``allowed_hosts`` via an internal network + proxy sidecar
+        (see ``_egress.build_egress_override``); ``public`` adds nothing. An
+        allowlist with no writable rollout dir fails closed to no-network.
+        """
+        from benchflow.sandbox._egress import build_egress_override
+        from benchflow.sandbox.network_policy import (
+            EffectivePolicy,
+            resolve_network_decision,
+        )
+
+        if not self._network_locked:
+            # Stay open during the install phase; relock_network() applies the
+            # restrictive policy once the agent has been installed.
+            return []
+        decision = resolve_network_decision(self.task_env_config, "docker")
+        if decision.policy is EffectivePolicy.OPEN:
+            return []
+        lane = None
+        if decision.model_lane:
+            from benchflow.providers.litellm_runtime import _docker_host_address
+
+            lane = _docker_host_address()
+        # An allowlist, or a no-network run that keeps only the model lane open, is
+        # enforced by the egress sidecar; both need a writable rollout dir to stage
+        # the proxy compose override.
+        if self.rollout_paths and (
+            decision.policy is EffectivePolicy.ALLOWLIST or lane
+        ):
+            hosts = (
+                tuple(
+                    decision.allowed_hosts
+                    if decision.policy is EffectivePolicy.ALLOWLIST
+                    else ()
+                )
+                + self._extra_allowed_hosts
+            )
+            override = build_egress_override(
+                hosts,
+                out_dir=self.rollout_paths.rollout_dir,
+                model_lane=lane,
+            )
+            return [override]
+        # BLOCK_ALL with no lane, or nowhere to stage the proxy → fail closed.
+        return [self._DOCKER_COMPOSE_NO_NETWORK_PATH]
+
+    async def relock_network(
+        self, extra_allowed_hosts: tuple[str, ...] = ()
+    ) -> dict[str, str]:
+        """Apply the task's restrictive network policy to the running container.
+
+        The container came up open so the agent could install (install-before-
+        lockdown); now drop it off the public bridge. For allowlist / model-lane
+        runs, start the egress sidecar and move the container onto the internal-
+        only network, returning the HTTP(S)_PROXY env the agent must use. ``public``
+        is a no-op. The ``main`` container is never recreated, so the install
+        survives. Returns the proxy env to merge into the agent launch env.
+        """
+        from benchflow.sandbox._egress import (
+            _EGRESS_INTERNAL_NET,
+            _EGRESS_PORT,
+            _EGRESS_SERVICE,
+        )
+        from benchflow.sandbox.network_policy import (
+            EffectivePolicy,
+            resolve_network_decision,
+        )
+
+        decision = resolve_network_decision(self.task_env_config, "docker")
+        if decision.policy is EffectivePolicy.OPEN:
+            return {}
+
+        # Gate _network_policy_compose_paths to emit the real override now.
+        self._network_locked = True
+        self._extra_allowed_hosts = tuple(extra_allowed_hosts)
+        cid = await self._main_container_id()
+        if not cid:
+            self.logger.warning("relock_network: no 'main' container; skipping")
+            return {}
+
+        project = _sanitize_docker_compose_project_name(self.session_id)
+        paths = self._network_policy_compose_paths()
+        use_sidecar = bool(paths and paths[0] != self._DOCKER_COMPOSE_NO_NETWORK_PATH)
+
+        if use_sidecar:
+            # Bring up ONLY the egress sidecar (creates the bf_egress_* networks);
+            # --no-deps leaves the already-running 'main' container in place.
+            await self._run_docker_compose_command(
+                ["up", "--detach", "--no-deps", _EGRESS_SERVICE]
+            )
+            await self._docker_cli(
+                ["network", "connect", f"{project}_{_EGRESS_INTERNAL_NET}", cid],
+                check=False,
+            )
+        # Lockdown: detach the container from the public bridge.
+        await self._docker_cli(
+            ["network", "disconnect", f"{project}_default", cid], check=False
+        )
+        # Fail closed: confirm the swap actually took effect. A silently-failed
+        # connect/disconnect could leave the container bypassing the proxy (still
+        # on the public bridge) or stranded (on no network); inspect the real
+        # attachments and refuse to run an unenforced policy.
+        from benchflow.sandbox.network_policy import lockdown_complete
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        inspect_res = await self._docker_cli(
+            [
+                "inspect",
+                cid,
+                "--format",
+                "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
+            ],
+            check=False,
+        )
+        # Fail closed on an unrunnable inspect: an empty network set would
+        # otherwise read as 'correctly on no networks' on the hermetic path
+        # (internal_net is None), masking a swallowed inspect error.
+        if inspect_res.return_code != 0:
+            raise SandboxStartupError(
+                "relock_network: could not inspect container networks "
+                f"(docker inspect rc={inspect_res.return_code}); failing closed "
+                "rather than running with an unverified network policy"
+            )
+        attached: set[str] = set((inspect_res.stdout or "").split())
+        internal_net = f"{project}_{_EGRESS_INTERNAL_NET}" if use_sidecar else None
+        if not lockdown_complete(attached, f"{project}_default", internal_net):
+            raise SandboxStartupError(
+                f"relock_network: {decision.policy.name} lockdown did not take "
+                f"effect (container networks={sorted(attached)}); refusing to run "
+                "with an unenforced network policy"
+            )
+        self.logger.info(
+            "relock_network: %s applied (sidecar=%s)", decision.policy.name, use_sidecar
+        )
+        if use_sidecar:
+            proxy = f"http://{_EGRESS_SERVICE}:{_EGRESS_PORT}"
+            return {
+                "HTTP_PROXY": proxy,
+                "HTTPS_PROXY": proxy,
+                "http_proxy": proxy,
+                "https_proxy": proxy,
+                "NO_PROXY": "localhost,127.0.0.1",
+                "no_proxy": "localhost,127.0.0.1",
+            }
+        return {}
 
     def _write_mounts_compose_file(self) -> Path:
         compose = {"services": {"main": {"volumes": self._mounts_json}}}

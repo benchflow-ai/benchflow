@@ -162,18 +162,21 @@ def _append_config_issues(
         unsupported,
         path="agent.network_mode",
         mode=config.agent.network_mode,
+        allowed_hosts=tuple(getattr(config.agent, "allowed_hosts", None) or ()),
         sandbox=sandbox,
     )
     _append_network_issue(
         unsupported,
         path="environment.network_mode",
         mode=config.environment.network_mode,
+        allowed_hosts=tuple(getattr(config.environment, "allowed_hosts", None) or ()),
         sandbox=sandbox,
     )
     _append_network_issue(
         unsupported,
         path="verifier.network_mode",
         mode=config.verifier.network_mode,
+        allowed_hosts=tuple(getattr(config.verifier, "allowed_hosts", None) or ()),
         sandbox=sandbox,
     )
 
@@ -267,14 +270,44 @@ def _append_network_issue(
     path: str,
     mode: NetworkMode | None,
     sandbox: str,
+    allowed_hosts: tuple[str, ...] = (),
 ) -> None:
     if mode == NetworkMode.ALLOWLIST:
-        _issue(
-            unsupported,
-            path=path,
-            reason="network allowlists are parsed but not enforced per sandbox",
-            sandbox=sandbox,
+        from benchflow.sandbox.network_policy import (
+            allowlist_is_ip_based,
+            sandbox_supports_allowlist,
         )
+
+        if not sandbox_supports_allowlist(sandbox):
+            _issue(
+                unsupported,
+                path=path,
+                reason=(
+                    "network_mode='allowlist' is enforced only on the 'docker' "
+                    "sandbox (egress proxy); not available on this sandbox — use "
+                    "'docker', 'no-network', or 'public' (ENG-219)"
+                ),
+                sandbox=sandbox,
+            )
+            return
+        # IP-CIDR allowlist sandboxes (daytona) can't express wildcards. This
+        # is the only model-independent reject we can make at preflight; the
+        # >10-IP / unresolvable checks need DNS + the model host and fail
+        # closed at lockdown (relock_network).
+        if allowlist_is_ip_based(sandbox):
+            wild = sorted(h for h in allowed_hosts if h.startswith("*."))
+            if wild:
+                _issue(
+                    unsupported,
+                    path=path,
+                    reason=(
+                        f"network_mode='allowlist' on the '{sandbox}' sandbox uses "
+                        f"an IPv4 allow list and cannot express wildcard host(s) "
+                        f"{wild}; use the 'docker' sandbox for wildcard allowlists "
+                        "or list exact hostnames"
+                    ),
+                    sandbox=sandbox,
+                )
 
 
 def _append_document_issues(

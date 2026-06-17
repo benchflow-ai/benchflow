@@ -113,6 +113,54 @@ a minimal authored file and its canonical form never drift apart.
 
 ---
 
+## Network policy
+
+`network_mode` (on `[environment]`, and optionally per-`agent`/`verifier`)
+controls outbound network access. It is the authoritative field; the legacy
+`allow_internet` boolean is deprecated and derived from it.
+
+| `network_mode` | Behavior | `allowed_hosts` |
+|---|---|---|
+| `public` *(default)* | Unrestricted egress | must be omitted |
+| `no-network` | Container fully detached from the network | must be omitted |
+| `allowlist` | Egress confined to `allowed_hosts` | required, non-empty |
+
+```yaml
+environment:
+  network_mode: allowlist
+  allowed_hosts: [pypi.org, files.pythonhosted.org]
+```
+
+**Enforcement**
+
+- `no-network` and `public` are enforced on every sandbox.
+- `allowlist` is enforced on the **`docker`** sandbox: the container joins an
+  internal (no-egress) network and its HTTP(S) traffic is routed through a proxy
+  sidecar that forwards only to `allowed_hosts`. Any other host, a raw-IP
+  connection, or a tool that ignores the proxy has no route off-box (default
+  deny). On sandboxes without per-host egress control (`daytona`, `modal`) an
+  `allowlist` task is **rejected at preflight** rather than run unrestricted —
+  use `docker`, `no-network`, or `public` there. Wider per-sandbox allowlist
+  support is tracked in ENG-219.
+- **Model access under a restrictive policy.** An agent run still needs the
+  model API. On **`docker`**, a restrictive `network_mode` (`no-network` or
+  `allowlist`) is kept intact and a single always-allow lane to the host-side
+  model proxy is added, so the agent reaches the model without opening the
+  sandbox to the public internet (a `no-network` run becomes model-only egress).
+  Set `allow_model_endpoint: false` on `[environment]` (default `true`) to close
+  that lane for a fully hermetic, no-model run. On the other sandboxes the
+  restrictive policy is instead lifted to `public` for web-disabled agent runs,
+  with the no-web policy enforced at the agent layer.
+
+`allowed_hosts` entries are hostnames only (no scheme, port, or path) and match
+the host exactly or as a parent domain (`example.com` matches `api.example.com`).
+A single leading `*.` label is also allowed: `*.example.com` matches subdomains
+at any depth (`api.example.com`, `a.b.example.com`) but **not** the bare apex
+`example.com`. The wildcard must be the leading label only — `a.*.com`,
+`*example.com`, and `ex*mple.com` are rejected at parse time.
+
+For the full mode/mechanism taxonomy and credits to the platforms this design draws on, see [Network access: design and prior art](./network-mode-prior-art.md).
+
 ## Prompt body and prompts/ sidecars
 
 The body below the frontmatter is the base prompt — free-form markdown, no
