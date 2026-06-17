@@ -1,4 +1,4 @@
-"""Single-task `bench eval create` must publish a summary.json (#400).
+"""Single-task `bench eval run` must publish a summary.json (#400).
 
 Single-task and batch must share the same orchestration path so that
 ``bench eval list`` can find a real score for both.  Before the fix the
@@ -61,7 +61,7 @@ async def test_evaluation_run_writes_summary_for_single_task(tmp_path):
 
 
 def test_cli_single_task_publishes_summary_for_eval_list(tmp_path, monkeypatch):
-    """CLI: `bench eval create --tasks-dir <task>` writes summary.json (#400).
+    """CLI: `bench eval run --tasks-dir <task>` writes summary.json (#400).
 
     With the unified path the single-task CLI invocation produces the same
     summary.json layout that `bench eval list` reads — fixing the

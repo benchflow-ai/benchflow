@@ -425,7 +425,13 @@ def _parse_key_value_entries(
 def _run_prime(cmd: list[str]) -> str:
     if not shutil.which("prime"):
         raise HostedEnvError("prime CLI is not installed")
-    proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    # Suppress prime's "a new version is available" notice. prime writes it
+    # straight to the controlling tty, so capture_output never sees it and it
+    # leaks onto the user's screen on every `bench hub env` command; worse, if a
+    # future prime routes it to stdout it would corrupt `bench hub env list
+    # --json`. The banner documents this exact opt-out.
+    env = {**os.environ, "PRIME_DISABLE_VERSION_CHECK": "1"}
+    proc = subprocess.run(cmd, text=True, capture_output=True, check=False, env=env)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
         raise HostedEnvError(detail or f"prime command failed: {' '.join(cmd)}")

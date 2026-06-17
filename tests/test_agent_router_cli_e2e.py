@@ -366,3 +366,60 @@ def test_cli_run_live_path_fails_closed_without_credentials(
     assert "codex needs credentials to launch" in out
     assert "OPENAI_API_KEY" in out
     assert "CODEX_API_KEY" in out
+
+
+# ── error handling: bad user paths fail-fast cleanly, never a traceback ──
+
+
+def test_cli_create_bad_benchmarks_dir_emits_clean_error_not_traceback(
+    tmp_path: Path,
+) -> None:
+    """A --benchmarks-dir that is a regular file makes create_benchmark's mkdir
+    raise NotADirectoryError; the handler must surface a one-line message and
+    exit 1, not let the OSError escape into a Rich traceback (shared by the
+    Guards PR #789 (CLI error-handling hardening).
+    `agent create` / `adopt init` / `eval adopt init` aliases)."""
+    runner = CliRunner()
+    not_a_dir = tmp_path / "regular_file"
+    not_a_dir.write_text("x")
+
+    result = _run(
+        runner, "agent", "create", "okbench", "--benchmarks-dir", str(not_a_dir)
+    )
+
+    assert result.exit_code == 1
+    # The OSError must be caught, not propagated as the result exception.
+    assert not isinstance(result.exception, OSError), result.exception
+    assert "could not scaffold benchmark" in click.unstyle(result.output)
+
+
+def test_cli_verify_unwritable_issue_out_emits_clean_error_not_traceback(
+    tmp_path: Path,
+) -> None:
+    """A --issue-out whose parent directory does not exist must fail-fast with a
+    clean message after the divergence verdict, not dump a FileNotFoundError
+    Guards PR #789 (CLI error-handling hardening).
+    traceback from the unguarded write_text."""
+    runner = CliRunner()
+    create = _run(
+        runner, "agent", "create", "my-bench", "--benchmarks-dir", str(tmp_path)
+    )
+    assert create.exit_code == 0, create.output
+    parity_file = tmp_path / "my-bench" / "parity_experiment.json"
+    parity_file.write_text(json.dumps(_divergent_parity_record(), indent=2))
+
+    missing_parent = tmp_path / "no_such_dir" / "issue.md"
+    verify = _run(
+        runner,
+        "agent",
+        "verify",
+        "my-bench",
+        "--benchmarks-dir",
+        str(tmp_path),
+        "--issue-out",
+        str(missing_parent),
+    )
+
+    assert verify.exit_code == 1
+    assert not isinstance(verify.exception, OSError), verify.exception
+    assert "cannot write issue draft" in click.unstyle(verify.output)

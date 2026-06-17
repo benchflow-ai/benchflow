@@ -138,7 +138,7 @@ def register_continue(app: typer.Typer) -> None:
             typer.secho(f"  agent error: {result.error}", fg=typer.colors.YELLOW)
             # A failed continuation must report failure to $? — matches
             # `continue-batch` (exits 1 if any continuation failed) and the
-            # `eval create` run-error contract. Without this a scripted caller
+            # `eval run` run-error contract. Without this a scripted caller
             # reads the green ✓ + exit 0 as success.
             raise typer.Exit(1)
 
@@ -212,6 +212,24 @@ def register_continue(app: typer.Typer) -> None:
         )
 
         _load_env_defaults()
+        # Fail fast on a bad ROOT instead of treating a typo'd/nonexistent path as
+        # an empty-but-valid tree — otherwise scripted callers read the exit-0
+        # "No timeout run folders found." as success. Matches `bench continue`,
+        # which exits 1 on a non-directory folder.
+        if not root.exists():
+            typer.secho(
+                f"benchflow continue-batch: path does not exist: {root}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(1)
+        if not root.is_dir():
+            typer.secho(
+                f"benchflow continue-batch: not a directory: {root}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(1)
         folders = discover_timeout_run_folders(root, limit=limit)
         if not folders:
             typer.secho("No timeout run folders found.", fg=typer.colors.YELLOW)

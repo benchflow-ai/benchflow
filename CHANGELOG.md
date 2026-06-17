@@ -10,7 +10,7 @@
   ignore the proxy) has no route off-box. `network_mode` is now the
   authoritative network field across the launch path and `allow_internet` is a
   derived back-compat shim. On sandboxes without per-host egress control
-  (`daytona`, `modal`) an `allowlist` task fails closed at preflight with a
+  (`modal`) an `allowlist` task fails closed at preflight with a
   clear message instead of running unrestricted (previously `allowlist` was
   validated but unenforceable everywhere). (ENG-219)
 - **Wildcard `allowed_hosts`.** An `allowed_hosts` entry may use a single leading
@@ -26,9 +26,24 @@
   for web-disabled `docker` runs; the other sandboxes keep the lift. Set
   `environment.allow_model_endpoint: false` to close the lane for a fully
   hermetic, no-model run. (ENG-219)
+- **`network_mode: allowlist` now also enforced on the `daytona` sandbox
+  (enforce-when-faithful).** Daytona enforces the allowlist via its native
+  IPv4 allow list when the hosts resolve to a small enough IP set; allowlisted
+  hosts are pinned in the sandbox `/etc/hosts` so they resolve without DNS
+  egress and without IP-rotation drift. A wildcard allowlist (which an IPv4
+  list cannot express) is rejected at preflight, and an allowlist that
+  resolves to more than daytona's 10-CIDR cap fails closed with a message
+  pointing to `docker`. `public` and `no-network` stay identical across
+  `docker`/`daytona`. (ENG-264)
 
+## 0.6.3 — 2026-06-16
 
 ### Changed
+- **`bench eval create` renamed to `bench eval run`.** The verb now matches what
+  the command does (it runs an evaluation, single task or batch). `bench eval
+  create` stays as a deprecated alias that prints a deprecation notice on use, so
+  existing scripts, YAML configs, and downstream repos (e.g.
+  `benchflow-ai/skillsbench`) keep working unchanged. Switch to `bench eval run`.
 - **`task.md` is now the sole task authoring format.** `bench tasks init`
   scaffolds a native `task.md` package (`task.md` + `environment/` + `oracle/` +
   `verifier/`). `bench tasks init --format legacy` is retired and now exits with
@@ -40,13 +55,13 @@
 
 ### Fixed
 - `bench skills eval` now exits non-zero when any eval case errors (e.g. missing
-  credentials), matching `bench eval create`. A 100%-error run printed `0/1`
+  credentials), matching `bench eval run`. A 100%-error run printed `0/1`
   but exited `0`, so CI/scripts read a total failure as success.
 - The "task.md already exists" migrate error now names both surfaces
   (`--overwrite` for the CLI, `overwrite=True` for the Python API) instead of
   only the API kwarg.
 - `bench eval view <job-dir>` no longer shows a blank "No trajectory files
-  found" when given a job directory (the natural value from `eval create`'s
+  found" when given a job directory (the natural value from `eval run`'s
   "Artifacts:" line) — it now indexes the rollout subdirectories to drill into.
 - `bench hub env list` prints a footer (`Showing N…`) with how to refine
   (`--search`/`--owner`/`--limit`/`--json`), so a small page of a large catalog

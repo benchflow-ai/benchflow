@@ -112,7 +112,7 @@ and never reaches the `bench` process. The portable pattern for a `.env` file:
 
 ```bash
 set -a; source .env; set +a
-bench eval create ...
+bench eval run ...
 ```
 
 (benchflow also picks up well-known credential keys from a `.env` file in the
@@ -131,14 +131,14 @@ option, unset the higher one in your shell before running.
 
 ```bash
 # Single task from a local directory
-GEMINI_API_KEY=... bench eval create \
+GEMINI_API_KEY=... bench eval run \
   --tasks-dir tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --sandbox docker
 
 # Single task with mounted skills
-GEMINI_API_KEY=... bench eval create \
+GEMINI_API_KEY=... bench eval run \
   --tasks-dir tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
@@ -148,10 +148,10 @@ GEMINI_API_KEY=... bench eval create \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch from YAML config
-bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
 # Batch over a local tasks directory with concurrency
-GEMINI_API_KEY=... bench eval create \
+GEMINI_API_KEY=... bench eval run \
     --tasks-dir tasks \
     --agent gemini --model gemini-3.1-pro-preview --sandbox daytona --concurrency 32
 
@@ -159,7 +159,7 @@ GEMINI_API_KEY=... bench eval create \
 bench agent list
 ```
 
-`bench eval create` is the primary command for running evaluations — it works for
+`bench eval run` is the primary command for running evaluations — it works for
 single tasks, batch runs, and remote repos. Use `--tasks-dir <dir>` for a local
 directory or `--config <config.yaml>` for a YAML config.
 
@@ -173,7 +173,7 @@ use a sparse checkout and point `--tasks-dir` at it:
 ```bash
 git clone --depth 1 --filter=blob:none --sparse https://github.com/benchflow-ai/skillsbench
 cd skillsbench && git sparse-checkout set tasks/edit-pdf
-bench eval create --tasks-dir tasks/edit-pdf --agent gemini --model gemini-3.1-pro-preview
+bench eval run --tasks-dir tasks/edit-pdf --agent gemini --model gemini-3.1-pro-preview
 ```
 
 When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
@@ -220,7 +220,7 @@ errors. CLI usage errors (bad flags) exit 2.
 
 The Docker sandbox needs the Docker daemon running. There is no up-front
 check — if the daemon is down the run fails partway through rather than at
-startup, so start Docker before `bench eval create --sandbox docker`.
+startup, so start Docker before `bench eval run --sandbox docker`.
 
 ## Run from Python
 
