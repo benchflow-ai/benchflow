@@ -11,22 +11,34 @@ enforcement internals see [Sandbox hardening](./sandbox-hardening.md).
 The enforcing substrate is the owned egress proxy from
 PR [#785](https://github.com/benchflow-ai/benchflow/pull/785)
 (`feat/network-mode-enforcement`, ENG-219): an `internal: true` Docker network
-plus a stdlib CONNECT/forward proxy sidecar. Everything below distinguishes
-**what BenchFlow owns** from **patterns credited to other platforms**.
+plus a stdlib CONNECT/forward proxy sidecar. On the `daytona` sandbox the same
+policy is enforced through the platform's native IPv4 `network_allow_list`
+(ENG-264). Everything below distinguishes **what BenchFlow owns** from
+**patterns credited to other platforms**.
 
 ## What BenchFlow enforces today
 
 - **`no-network` / `public`** — every sandbox.
-- **`allowlist`** — the `docker` sandbox only. The container joins an
-  `internal: true` (no-egress) network and all HTTP(S) traffic is forced through
-  the proxy sidecar, which forwards only to `allowed_hosts`. A host matches
-  **exactly or as a parent domain** (`example.com` matches `api.example.com`). A
-  single **leading-label wildcard** `*.example.com` matches subdomains at any
-  depth but **not** the bare apex (Harbor / nginx semantics); mid- or
-  trailing-wildcards are rejected at parse time. Non-allowlisted hosts, raw-IP
-  connections, and proxy-ignoring tools have no route off-box (default deny). On
-  sandboxes without per-host egress control (`daytona`, `modal`) an `allowlist`
-  task is **rejected at preflight** rather than run unrestricted.
+- **`allowlist`** — enforced on the `docker` and `daytona` sandboxes. On
+  `docker`, the container joins an `internal: true` (no-egress) network and all
+  HTTP(S) traffic is forced through the proxy sidecar, which forwards only to
+  `allowed_hosts`. A host matches **exactly or as a parent domain** (`example.com`
+  matches `api.example.com`). A single **leading-label wildcard** `*.example.com`
+  matches subdomains at any depth but **not** the bare apex (Harbor / nginx
+  semantics); mid- or trailing-wildcards are rejected at parse time.
+  Non-allowlisted hosts, raw-IP connections, and proxy-ignoring tools have no
+  route off-box (default deny). On `daytona` the same intent is enforced through
+  the platform's native IPv4 allow list (`network_allow_list`): the hostname
+  allowlist is resolved to `/32` CIDRs at lockdown and each host is pinned in the
+  sandbox `/etc/hosts` (so it resolves without DNS egress — the resolvers are not
+  allowlisted — and without IP-rotation drift). Daytona enforces **when the
+  policy is faithfully expressible** as IPv4 (exact hosts resolving to ≤10 IPs)
+  and otherwise **fails closed with a precise reason**: wildcard allowlists are
+  rejected at preflight (an IPv4 list can't express `*.x`) and over-cap
+  allowlists (>10 IPs, e.g. CDN-fronted hosts) fail closed at lockdown pointing
+  to `docker`. On sandboxes with no per-host egress control (`modal`) an
+  `allowlist` task is **rejected at preflight** rather than run unrestricted.
+  (ENG-264)
 - **Model lane** — under a restrictive policy on `docker`, a single always-allow
   lane to the host-side model proxy stays open, so an agent run reaches the model
   without opening the sandbox to the public internet (a `no-network` run becomes
@@ -43,9 +55,9 @@ design/mechanism; "credit" = pattern adopted from the named platform.
 |---|---|---|---|
 | **no-network** | Docker `network_mode: none` compose overlay | have | own (universal pattern) |
 | **public** (default) | No restriction | have | own (field default everywhere) |
-| **hostname allowlist** (exact / subdomain) | Internal net + CONNECT egress-proxy sidecar, host-matched | have (#785, docker) | own proxy; taxonomy ≡ Harbor, AISI Inspect |
+| **hostname allowlist** (exact / subdomain) | docker: internal net + CONNECT egress-proxy sidecar; daytona: resolve to IPv4 `/32`s + `/etc/hosts` pin | have (#785, docker + daytona) | own proxy; taxonomy ≡ Harbor, AISI Inspect |
 | **wildcard host** (`*.example.com`, multi-level) | Glob match in proxy + validator accepts leading `*.` | have (#785) | credit: Harbor, Modal |
-| **CIDR allowlist** | IP-prefix egress rule (needs IP-routing, not pure CONNECT) | gap | credit: Modal |
+| **CIDR allowlist** | Daytona native `network_allow_list` (IPv4 `/32`s resolved from the host allowlist) | have (#785, daytona, ENG-264) | own resolver; mechanism credit: Modal, Daytona |
 | **port-scoped egress** (`host:port`) | Rule type carries port; proxy already tunnels any CONNECT port | mechanism ok, rule type missing | credit: Modal |
 | **offline mirror** (pkg / content) | Pre-baked layered images / pinned mirror | gap | credit: SWE-bench |
 | **temporal package pin** | pip-index proxy filtering by release date | gap | credit: SWE-bench-Live |
@@ -62,7 +74,7 @@ design/mechanism; "credit" = pattern adopted from the named platform.
 |---|---|---|---|
 | Docker `network_mode: none` / internal network | no-network; default-deny base for allowlist | everyone (AISI, SWE-bench, …) | have |
 | **Owned forward/CONNECT egress proxy sidecar** | hostname allowlist, vendor-neutral | **benchflow #785** | have / own |
-| Cloud-platform egress allowlist (domain + CIDR) | hostname & CIDR allowlist | Modal, Daytona, Harbor backends | credit |
+| Cloud-platform egress allowlist (domain + CIDR) | hostname & CIDR allowlist | Modal, Daytona, Harbor backends | have (daytona, ENG-264) |
 | CoreDNS `allowDomains` (k8s) | hostname allowlist via DNS | UK AISI Inspect (k8s sandbox) | credit |
 | MITM proxy + CA injection | record/replay, fault injection, body inspection | WAREX | credit (deliberately not done) |
 | Pre-baked layered images / offline mirror | hermetic — no runtime egress needed | SWE-bench, DeepSWE | credit |
@@ -89,8 +101,17 @@ verified against these sources; see the caveats inline.
   depth rule rather than introducing the feature.)
 - **Modal** — Sandbox outbound controls: `block_network`,
   `outbound_cidr_allowlist` (CIDR ranges), and `outbound_domain_allowlist`
-  (domains). Source of the CIDR-allowlist and port-scoping patterns BenchFlow
-  does not yet implement. <https://modal.com/docs/guide/sandbox-networking>.
+  (domains). Source of the port-scoping pattern BenchFlow does not yet implement;
+  the CIDR-allowlist pattern is now enforced on the `daytona` sandbox via its
+  native `network_allow_list` (see Daytona below, ENG-264).
+  <https://modal.com/docs/guide/sandbox-networking>.
+- **Daytona** — Sandbox `network_block_all` and `network_allow_list`
+  (comma-separated IPv4 CIDRs, max 10) at creation, plus a runtime
+  `update_network_settings`. BenchFlow uses these directly to enforce
+  `allowlist` / `no-network` on the `daytona` sandbox — resolving the hostname
+  allowlist to `/32`s and pinning `/etc/hosts`, since the IPv4 list cannot carry
+  hostnames (verified against SDK `daytona==0.184.0`).
+  <https://github.com/daytonaio/daytona/blob/main/apps/docs/src/content/docs/en/network-limits.mdx>.
 - **UK AISI Inspect** (k8s sandbox) — hostname allowlisting via `allowDomains`
   (FQDN list) enforced by a per-Pod CoreDNS sidecar, plus `allowCIDR`.
   <https://github.com/UKGovernmentBEIS/inspect_k8s_sandbox> · docs
