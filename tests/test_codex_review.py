@@ -144,6 +144,19 @@ def test_write_codex_auth_from_secret(tmp_path: Path):
     assert cr.has_codex_auth(env, path) is True
 
 
+def test_write_codex_auth_from_openai_api_key(tmp_path: Path):
+    # The durable CI path: OPENAI_API_KEY (no CODEX_AUTH_JSON blob) is written as
+    # an apikey auth.json so `codex exec` authenticates with a stable, revocable
+    # key instead of a rotating personal-OAuth blob.
+    env = {"CODEX_HOME": str(tmp_path / ".codex"), "OPENAI_API_KEY": "sk-test-123"}
+    path = cr.write_codex_auth(env)
+    assert path is not None and path.exists()
+    data = json.loads(path.read_text())
+    assert data["OPENAI_API_KEY"] == "sk-test-123"
+    assert data["auth_mode"] == "apikey"
+    assert cr.has_codex_auth(env, path) is True
+
+
 def test_write_codex_auth_no_secret_no_key(tmp_path: Path):
     env = {"CODEX_HOME": str(tmp_path / ".codex")}
     path = cr.write_codex_auth(env)

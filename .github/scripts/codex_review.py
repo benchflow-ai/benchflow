@@ -15,15 +15,17 @@ Pipeline (two passes):
      so hostile trajectories cannot break the prompt fence) and emits one
      per-rollout finding JSON. High-volume, so it uses the cheap model.
 
-  2. FINAL equivalence verdict — the host ``codex exec`` CLI (authed via an
-     ``auth.json`` written from the ``$CODEX_AUTH_JSON`` secret to the codex
-     config path) self-orchestrates its own subagents over {per-rollout deepseek
-     findings + the deterministic review-pack/}. The argv mirrors
-     ``benchflow.agent_router.build_codex_launch_command``.
+  2. FINAL equivalence verdict — the host ``codex exec`` CLI self-orchestrates
+     its own subagents over {per-rollout deepseek findings + the deterministic
+     review-pack/}. The argv mirrors
+     ``benchflow.agent_router.build_codex_launch_command``. Auth precedence:
+     ``$OPENAI_API_KEY`` / ``$CODEX_API_KEY`` (written as an apikey ``auth.json``
+     — the durable, revocable CI path), else a full ``$CODEX_AUTH_JSON`` blob,
+     else a pre-existing on-host ``auth.json``.
 
-FAIL-CLOSED contract: if the codex binary or auth.json is missing, or the codex
-output cannot be parsed into a verdict, this emits ``not mergeable (codex
-unavailable)`` and exits non-zero. It NEVER silently passes.
+FAIL-CLOSED contract: if the codex binary or codex auth (API key / auth.json) is
+missing, or the codex output cannot be parsed into a verdict, this emits ``not
+mergeable (codex unavailable)`` and exits non-zero. It NEVER silently passes.
 
 TRUST: every trajectory / tool-output / per-rollout finding is treated as
 UNTRUSTED DATA. The reviewer reads the benchflow-experiment-review SKILL.md
@@ -233,12 +235,22 @@ def write_codex_auth(env: Mapping[str, str]) -> Path | None:
         with contextlib.suppress(OSError):
             auth_path.chmod(0o600)
         return auth_path
-    # No secret: codex may still authenticate from an existing auth.json or an
-    # OPENAI/CODEX API key on the host.
+    # No full-blob secret: prefer a stable API key (OPENAI_API_KEY / CODEX_API_KEY)
+    # by writing an apikey-mode auth.json so `codex exec` authenticates the same
+    # way `codex login --api-key` would — durable and revocable, unlike a personal
+    # ChatGPT OAuth blob. An existing on-host auth.json is honored as a fallback.
+    api_key = env.get("OPENAI_API_KEY") or env.get("CODEX_API_KEY")
+    if api_key:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        auth_path.write_text(
+            json.dumps({"OPENAI_API_KEY": api_key, "auth_mode": "apikey"}),
+            encoding="utf-8",
+        )
+        with contextlib.suppress(OSError):
+            auth_path.chmod(0o600)
+        return auth_path
     if auth_path.exists():
         return auth_path
-    if env.get("OPENAI_API_KEY") or env.get("CODEX_API_KEY"):
-        return None  # API-key auth, no file written, but creds present
     return None
 
 

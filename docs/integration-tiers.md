@@ -193,8 +193,8 @@ the verdict **STRICTER**, **never upgrade** a deterministic `not mergeable`.
   (`BENCHFLOW_JUDGE_MODEL` / deepseek) over each rollout → per-rollout finding
   JSON (high-volume trajectory reads).
 - **Final equivalence verdict** is composed by the host **`codex` CLI** via
-  `codex exec` (authed with an `auth.json` written from the `CODEX_AUTH_JSON` CI
-  secret to the codex config path), **self-orchestrating its own subagents** (the
+  `codex exec` (authed via the existing repo `OPENAI_API_KEY`, written as an
+  apikey `auth.json` at the codex config path), **self-orchestrating its own subagents** (the
   "raw workflow"), over `{per-rollout deepseek findings + the deterministic
   review-pack/}`. The argv mirrors `build_codex_launch_command` in
   `src/benchflow/agent_router.py`.
@@ -281,8 +281,8 @@ PR-head `bench` necessarily runs on the host (it is the orchestrator), but the
   protected env is created**, and the review job runs the **trusted-main grader**
   over the artifacts. The L3 golden truth is the HuggingFace leaderboard `main`
   deepseek-v4-flash baseline vs the PR vs the latest benchflow main.
-- **Codex auth** is written from the `CODEX_AUTH_JSON` secret to the codex config
-  path (`auth.json`) and invoked via `codex exec`, mirroring
+- **Codex auth** uses the existing repo `OPENAI_API_KEY` (written as an apikey
+  `auth.json` at the codex config path) and invoked via `codex exec`, mirroring
   `build_codex_launch_command` — **fail-closed** if the binary / auth is absent.
 - **`issue_comment` bodies** (if any path uses them) are read **via env only**,
   never inlined into `run:`.
@@ -300,8 +300,9 @@ One-time setup before the heavy lanes are live:
 
 1. **Secrets** live in the existing `pypi-internal-preview` environment
    (`DAYTONA_API_KEY`, `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL`, provider keys —
-   already present). Add `CODEX_AUTH_JSON` there for the L3 Codex reviewer
-   (written to `auth.json` at runtime). **No protected environment is created** —
+   already present). The L3 Codex reviewer uses the existing repo `OPENAI_API_KEY`
+   (written to an apikey `auth.json` at runtime) — no extra secret to add.
+   **No protected environment is created** —
    L3 is a manual `workflow_dispatch` whose golden truth is the HuggingFace
    leaderboard `main` runs plus the latest benchflow main.
 2. **Branch protection:** make **L0, L1, L2 required** status checks. L3 is run

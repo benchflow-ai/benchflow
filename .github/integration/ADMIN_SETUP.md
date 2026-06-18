@@ -46,8 +46,9 @@ main, not a human approval gate).
 - No required reviewers — L1/L2 run automatically on internal PRs; L3 is a manual
   `workflow_dispatch`.
 - L1 attaches **only low-value** provider keys (DEEPSEEK / GEMINI /
-  GITHUB_MODELS). L2/L3 attach **all** keys per the agreed Q6 residual, **plus**
-  `CODEX_AUTH_JSON` (the codex reviewer is REQUIRED and fail-closed at L3).
+  GITHUB_MODELS). L2/L3 attach **all** keys per the agreed Q6 residual. The L3
+  codex reviewer authenticates with the **existing repo `OPENAI_API_KEY`** — no
+  separate secret to create.
 - *Optional, later:* to add a hard human gate, create a protected environment
   with required reviewers and point the L3 `run-matrix` / `review-pack` jobs at it.
 
@@ -63,11 +64,13 @@ Provider (rollout + judge):
 
 Sandbox: `DAYTONA_API_KEY` (L2/L3 only; L1 is docker-only).
 
-Codex reviewer (L3, required): `CODEX_AUTH_JSON` — the contents of a working
-`~/.codex/auth.json`. `codex_review.py` writes it to the codex config path
-(`$CODEX_HOME/auth.json`, default `~/.codex/auth.json`) before invoking
-`codex exec`. If absent (and no `OPENAI_API_KEY`/`CODEX_API_KEY` fallback), L3
-fails closed to **`not mergeable (codex unavailable)`**.
+Codex reviewer (L3, required): the **existing repo `OPENAI_API_KEY`** — durable
+and revocable, unlike a personal ChatGPT OAuth blob. `codex_review.py` writes it
+as an apikey `auth.json` at the codex config path (`$CODEX_HOME/auth.json`,
+default `~/.codex/auth.json`) before invoking `codex exec`. Auth precedence:
+`OPENAI_API_KEY` / `CODEX_API_KEY`, then an optional `CODEX_AUTH_JSON` blob, then
+a pre-existing on-host `auth.json`. If none resolve, L3 fails closed to
+**`not mergeable (codex unavailable)`**.
 
 ## 4. Labels
 

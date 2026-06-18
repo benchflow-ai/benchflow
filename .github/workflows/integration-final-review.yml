@@ -12,7 +12,7 @@
 #     v4-flash baseline) compared against the PR vs the latest benchflow main.
 #     (To add a human-approval gate later, point these jobs at a protected env.)
 #   * FAIL-CLOSED CODEX: at L3 codex_review.py is REQUIRED. A missing codex
-#     binary / auth.json, or unparseable codex output, yields
+#     binary / codex auth (the repo OPENAI_API_KEY), or unparseable codex output, yields
 #     'not mergeable (codex unavailable)' and a red check. The published
 #     'integration-final-review' check-run conclusion = worst(deterministic,
 #     codex): codex can only make the verdict STRICTER, never upgrade a
@@ -312,6 +312,10 @@ jobs:
       GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN || github.token }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+      # L3 Codex reviewer auth: the existing repo-level OPENAI_API_KEY (durable,
+      # revocable) — codex_review.py writes it as an apikey auth.json. No
+      # personal-OAuth CODEX_AUTH_JSON blob is needed.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -401,11 +405,10 @@ jobs:
         id: codex
         if: ${{ github.event.inputs.codex_review != 'false' }}
         env:
-          # BENCHFLOW_JUDGE_MODEL is already in the job env (provider-select
-          # wrote it to $GITHUB_ENV); codex_review.py reads it from os.environ
-          # for the cheap deepseek per-rollout pass.
-          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Codex auth = OPENAI_API_KEY from the job env (codex_review.py writes
+          # it as an apikey auth.json). BENCHFLOW_JUDGE_MODEL is already in the
+          # job env (provider-select wrote it to $GITHUB_ENV) for the cheap
+          # deepseek per-rollout pass.
           DETERMINISTIC_VERDICT: ${{ steps.pack.outputs.deterministic_verdict }}
         run: |
           set +e

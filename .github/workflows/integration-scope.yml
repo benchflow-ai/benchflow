@@ -418,9 +418,8 @@ jobs:
         id: codex
         continue-on-error: true
         env:
-          # BENCHFLOW_JUDGE_MODEL is already in the job env (provider-select
-          # wrote it to $GITHUB_ENV); codex_review.py reads it from os.environ.
-          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          # Codex auth = OPENAI_API_KEY (apikey auth.json). BENCHFLOW_JUDGE_MODEL
+          # is already in the job env (provider-select wrote it to $GITHUB_ENV).
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set +e
