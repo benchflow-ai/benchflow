@@ -79,11 +79,12 @@ derives the affected agent from a changed `src/benchflow/agents/<name>` path.
 | docs-only non-runtime | L0 only, **no rollout** | — | L0 |
 | citation / evidence / schema docs | `citation` | Docker, no-skill, usage=required | L1 |
 | `src/benchflow/eval*`, rollout lifecycle, artifact schema | `nine` | Docker, no-skill, usage=required, judge | L2 |
-| `src/benchflow/agents`, ACP adapters, codex/openhands/pi/gemini | `low-3` + one high (`weighted-gdp-calc`) | affected agent + baseline agent (`openhands`+`deepseek`); no-skill AND with-skill when relevant | L2 |
+| a **specific** agent file (`agents/<name>*.py`, ACP shim) | `low-3` + one high (`weighted-gdp-calc`) | **affected agent** + baseline agent (`openhands`+`deepseek`); no-skill AND with-skill when relevant | L2 |
+| **agent runtime infra** affecting *every* agent (`agents/registry.py`, `protocol.py`, `install.py`, `credentials.py`, `env.py`, shared `acp/**`) | `low-3` | **full agent roster** (all 9), no-skill — a registry/ACP change is tested across every agent, not just the baseline | L2 |
 | skill loading, `.agents/skills`, skill injection | `low-3` + `medium-3` | no-skill AND with-skill; run skill-catalog extraction | L2 |
 | Docker / Daytona / sandbox / root / path | `low-3` + `medium-3` | Docker + Daytona parity; reaper dry-run | L2 |
 | verifier, rewards, judge, anti-hack hardening | `citation` + `weighted-gdp-calc` + `shock-analysis-supply` | judge fail-closed, reward-hacking scan, verifier isolation | L3 |
-| network / package install (Q3 triggers) | `jax-computing-basics` + `data-to-d3` + one high | default network-off + the `citation-check` allowlist variant | L2 |
+| network / package install / **LLM-proxy routing** (Q3 triggers) | `jax-computing-basics` + `data-to-d3` + one high | **full agent roster** (a proxy/routing change affects every agent's model calls) + default network-off + the `citation-check` allowlist variant | L2 |
 | release-critical refactor | `expanded` | all affected axes, concurrency reduced | L3 |
 
 ### 3.1 The Q3 network lane (scope-gated)

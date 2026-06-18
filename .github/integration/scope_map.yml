@@ -212,6 +212,34 @@ rules:
     cheat_on_trust: false
     network_lane: false
 
+  # Agent RUNTIME INFRA that affects EVERY agent (the registry, the shared
+  # ACP/protocol/install/credential/env plumbing) -> fan the FULL agent roster
+  # on a small task set, so a change here is tested across all agents rather
+  # than only the baseline. A change to a SPECIFIC agent file still maps to that
+  # agent via affected_agent_map (the agents-adapters rule below).
+  - id: agent-runtime-infra
+    globs:
+      - "src/benchflow/agents/registry.py"
+      - "src/benchflow/agents/protocol.py"
+      - "src/benchflow/agents/install.py"
+      - "src/benchflow/agents/providers.py"
+      - "src/benchflow/agents/credentials.py"
+      - "src/benchflow/agents/env.py"
+      - "src/benchflow/agents/errors.py"
+      - "src/benchflow/acp/**"
+    required_set: low-3
+    required_axes:
+      sandboxes:
+        - daytona
+      skill_modes:
+        - no-skill
+      extra:
+        - all-agents
+    level: L2
+    trust_boundary: false
+    cheat_on_trust: false
+    network_lane: false
+
   # src/benchflow/agents, ACP adapters, codex/openhands/pi/gemini ->
   # low-3 + one high(weighted-gdp-calc) ; affected agent + baseline agent
   # (openhands + deepseek), no-skill AND with-skill when relevant.
@@ -338,6 +366,9 @@ rules:
       extra:
         - network-off
         - allowlist-variant
+        # A provider / LLM-proxy / routing change affects EVERY agent's model
+        # calls, so fan the agent roster (not just the baseline openhands).
+        - all-agents
     level: L2
     trust_boundary: false
     cheat_on_trust: false

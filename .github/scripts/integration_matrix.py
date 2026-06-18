@@ -758,10 +758,15 @@ def _matrix_agents(res: Resolution, maps: Maps) -> list[str]:
     """The agents that drive the matrix for this resolution.
 
     The agents/ rule (affected-agent) runs ONLY the affected agents plus the
-    baseline agent. ``nine`` / ``expanded`` fan the full 9-agent roster (the
-    agent IS the varying axis). Every other lane (citation/low/medium/high/
-    custom) varies a non-agent axis and runs the single baseline agent.
+    baseline agent. ``all-agents`` fans the FULL roster for changes that affect
+    EVERY agent (the agent registry, shared ACP infra, provider/model routing) —
+    a single-baseline run there would miss per-agent breakage. ``nine`` /
+    ``expanded`` also fan the full roster (the agent IS the varying axis). Every
+    other lane (citation/low/medium/high/custom) varies a non-agent axis and runs
+    the single baseline agent.
     """
+    if "all-agents" in res.extra:
+        return list(maps.agents)
     if "affected-agent" in res.extra and res.affected_agents:
         agents: list[str] = []
         for agent in (*res.affected_agents, maps.baseline_agent):

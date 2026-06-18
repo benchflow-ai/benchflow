@@ -218,6 +218,38 @@ def test_agents_rule_acp_shim_path_map():
     assert maps.baseline_agent in _agents(plan)
 
 
+def test_agent_runtime_infra_fans_full_roster():
+    # Changes to the registry / shared ACP infra affect EVERY agent, so the
+    # planner must fan the FULL roster — not the baseline only (the gap this
+    # fixes: registry.py used to run openhands alone).
+    maps = _maps()
+    for f in (
+        "src/benchflow/agents/registry.py",
+        "src/benchflow/agents/protocol.py",
+        "src/benchflow/acp/session.py",
+    ):
+        plan = _plan([f])
+        assert _agents(plan) == set(maps.agents), f
+
+
+def test_provider_change_fans_full_roster():
+    # A provider / LLM-proxy / routing change affects every agent's model calls,
+    # so it runs across the whole roster, not just the baseline.
+    maps = _maps()
+    plan = _plan(["src/benchflow/providers/litellm_runtime.py"])
+    assert _agents(plan) == set(maps.agents)
+    assert plan.network_lane is True
+
+
+def test_specific_agent_change_does_not_fan_full_roster():
+    # Regression: a SPECIFIC agent file stays affected-agent + baseline (NOT the
+    # whole roster), so per-agent PRs remain cheap and targeted.
+    maps = _maps()
+    plan = _plan(["src/benchflow/agents/codex_config.py"])
+    assert _agents(plan) == {"codex-acp", maps.baseline_agent}
+    assert _agents(plan) != set(maps.agents)
+
+
 def test_skill_loading_rule_low3_medium3_both_skill_modes_audit():
     maps = _maps()
     plan = _plan([".agents/skills/some-skill/SKILL.md"])
