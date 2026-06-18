@@ -5,12 +5,15 @@
 #     (build_integration_review_pack.py), the harness (scenarios), and the codex
 #     reviewer (codex_review.py) ALWAYS load from origin/main via sparse checkout.
 #     Only src/benchflow (the code-under-test) is overlaid from the PR head SHA.
-#   * NEVER on push / pull_request: this workflow is workflow_dispatch ONLY. The
-#     jobs run under the existing 'pypi-internal-preview' environment (which holds
-#     the provider + DAYTONA secrets). No separate protected env is created — the
-#     L3 golden truth is the HuggingFace leaderboard `main` runs (the deepseek-
-#     v4-flash baseline) compared against the PR vs the latest benchflow main.
-#     (To add a human-approval gate later, point these jobs at a protected env.)
+#   * TRIGGERS: workflow_dispatch (manual, any PR) OR a `pull_request` `labeled`
+#     event when the `ready-to-merge` label is added — the auto path: marking a PR
+#     ready to merge runs the FULL final review, codex included. NEVER on push and
+#     NEVER pull_request_target, so fork PRs receive no secrets; the plan job's
+#     resolve step additionally refuses any non-internal head repo, and only
+#     write-access users can apply labels. The jobs run under the existing
+#     'pypi-internal-preview' environment (provider + DAYTONA secrets). No separate
+#     protected env — the L3 golden truth is the HuggingFace leaderboard `main`
+#     runs (deepseek-v4-flash baseline) vs the PR and the latest benchflow main.
 #   * FAIL-CLOSED CODEX: at L3 codex_review.py is REQUIRED. A missing codex
 #     binary / codex auth (the repo OPENAI_API_KEY), or unparseable codex output, yields
 #     'not mergeable (codex unavailable)' and a red check. The published
@@ -54,9 +57,16 @@ on:
         type: boolean
         default: true
 
+  # Auto path: adding the `ready-to-merge` label to an INTERNAL PR runs the full
+  # final review (codex included). Plain pull_request (NEVER pull_request_target),
+  # so fork PRs receive no secrets; the plan job's resolve step additionally
+  # refuses any non-internal head repo, and only write-access users can label.
+  pull_request:
+    types: [labeled]
+
 # One final review per PR at a time; do NOT cancel an in-flight rollout.
 concurrency:
-  group: integration-final-review-${{ github.event.inputs.pr_number }}
+  group: integration-final-review-${{ github.event.inputs.pr_number || github.event.pull_request.number }}
   cancel-in-progress: false
 
 permissions:
@@ -73,6 +83,13 @@ jobs:
   # ----------------------------------------------------------------------------
   plan:
     runs-on: ubuntu-latest
+    # Manual dispatch (any PR) OR the `ready-to-merge` auto-label trigger. Any
+    # OTHER label added to a PR is a no-op: this job — and the run-matrix /
+    # review-pack jobs that depend on its outputs — are skipped, so an unrelated
+    # label never spins up a rollout and the workflow stays green.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'ready-to-merge')
     # Run under the same env that run-matrix uses so the credential filter
     # below can see the real provider secrets (DEEPSEEK/GEMINI/OPENAI/Bedrock).
     environment: pypi-internal-preview
@@ -90,7 +107,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
         run: |
           set -euo pipefail
           json=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")
@@ -109,9 +126,15 @@ jobs:
         with:
           ref: ${{ steps.resolve.outputs.base_ref }}
           fetch-depth: 0
+          # pyproject.toml + README.md + src so `uv pip install .` below can build
+          # benchflow (hatchling) for the credential filter — the planner itself
+          # is pure stdlib and needs only .github.
           sparse-checkout: |
             .github
             tests/integration
+            pyproject.toml
+            README.md
+            src
           sparse-checkout-cone-mode: false
 
       - name: Fetch PR head SHA for the diff
@@ -125,10 +148,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        with:
+          enable-cache: true
+
       - name: Plan final-review scope (trusted)
         id: plan
         env:
-          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
           BASE_REF: ${{ steps.resolve.outputs.base_ref }}
           HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
           SCOPE_INPUT: ${{ github.event.inputs.scope || 'auto' }}
@@ -161,7 +189,10 @@ jobs:
       # benchflow.agents.env. The planner above is pure (MiniYaml-safe) and
       # needs nothing; only this env-aware step needs the package.
       - name: Install benchflow (for the credential filter)
-        run: pip install --quiet .
+        # uv pip install into the setup-python interpreter (--system). The filter
+        # is fail-open by design, so a failed install must NOT block the plan —
+        # warn and let the filter pass the matrix through unfiltered.
+        run: uv pip install --system --quiet . || echo "::warning::benchflow install failed; credential filter will fail-open (matrix unfiltered)"
 
       # Drop any planned cell whose agent+model credential is absent from this
       # environment BEFORE run-matrix consumes the matrix, so un-keyed agents
@@ -514,7 +545,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
           FINAL_VERDICT: ${{ steps.final.outputs.final_verdict }}
           MARKER: "<!-- integration-final-review -->"
         run: |
