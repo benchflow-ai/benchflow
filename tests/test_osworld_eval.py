@@ -134,13 +134,27 @@ def test_multi_metric_or_conj_needs_one() -> None:
     assert evaluate({"evaluator": evaluator}, run_command) == 1.0
 
 
-def test_unsupported_getter_raises() -> None:
+def test_unknown_getter_type_raises() -> None:
+    # A getter type that is neither native nor a vendored OSWorld getter.
     evaluator = {
         "func": "exact_match",
-        "result": {"type": "accessibility_tree", "command": "x"},
+        "result": {"type": "totally_made_up_getter", "command": "x"},
         "expected": {"type": "rule", "rules": {"expected": "x"}},
     }
     with pytest.raises(UnsupportedGetterError):
+        evaluate({"evaluator": evaluator}, lambda c, s: "")
+
+
+def test_live_state_getter_routes_to_vendored_and_needs_controller() -> None:
+    # accessibility_tree is a real OSWorld getter, but it needs live controller
+    # state the in-guest shim cannot synthesise — so it raises NotImplementedError
+    # (routed to OSWorld's own getter, which calls controller.get_accessibility_tree).
+    evaluator = {
+        "func": "exact_match",
+        "result": {"type": "accessibility_tree"},
+        "expected": {"type": "rule", "rules": {"expected": "x"}},
+    }
+    with pytest.raises(NotImplementedError):
         evaluate({"evaluator": evaluator}, lambda c, s: "")
 
 

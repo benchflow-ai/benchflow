@@ -30,6 +30,21 @@ except ImportError:  # pragma: no cover - standalone in a sandbox verifier
     # osworld_metrics.py sits next to this module.
     from osworld_metrics import resolve_metric  # type: ignore[no-redef]
 
+# Vendored OSWorld getters (chrome/vlc/gimp/accessibility/…) for getter types the
+# native handling below does not cover — run via an in-guest controller shim so the
+# scoring uses OSWorld's own getter code. Resilient import; None if absent.
+try:
+    from benchflow.adapters.osworld_getters import ShimEnv, resolve_vendored_getter
+except ImportError:  # pragma: no cover - standalone in a sandbox verifier
+    try:
+        from osworld_getters import (  # type: ignore[no-redef]
+            ShimEnv,
+            resolve_vendored_getter,
+        )
+    except ImportError:  # pragma: no cover - vendor tree not carried
+        ShimEnv = None  # type: ignore[assignment,misc]
+        resolve_vendored_getter = None  # type: ignore[assignment]
+
 # Runs a command in the desktop sandbox and returns its stdout (the benchflow
 # analogue of OSWorld's POST to the desktop server's /execute endpoint).
 RunCommand = Callable[[Any, bool], str]
@@ -157,6 +172,11 @@ def _get_state(
         return os.path.join(cache_dir, str(config.get("path")))
     if gtype == "content_from_vm_file":
         return _content_from_vm_file(subst(config.get("path")), config)
+    # Anything else: run OSWorld's own getter via the in-guest controller shim.
+    if resolve_vendored_getter is not None and ShimEnv is not None:
+        getter = resolve_vendored_getter(str(gtype))  # raises if deps missing
+        if getter is not None:
+            return getter(ShimEnv(run_command, cache_dir), dict(config))
     raise UnsupportedGetterError(f"OSWorld getter {gtype!r} is not ported yet")
 
 
