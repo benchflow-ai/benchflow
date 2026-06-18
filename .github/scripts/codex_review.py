@@ -262,6 +262,25 @@ def has_codex_auth(env: Mapping[str, str], auth_path: Path | None) -> bool:
     return (_codex_config_dir(env) / "auth.json").exists()
 
 
+def _codex_env(env: Mapping[str, str]) -> dict[str, str]:
+    """Env for the host ``codex exec`` CLI (Pass 2), isolated from the judge.
+
+    The review-pack job points OPENAI_API_KEY / OPENAI_BASE_URL at the DeepSeek
+    endpoint so the cheap per-rollout judge (Pass 1) runs on deepseek-v4-flash.
+    The codex CLI needs the REAL OpenAI credential instead. When ``CODEX_API_KEY``
+    is set it becomes the codex ``OPENAI_API_KEY`` and the DeepSeek ``OPENAI_BASE_URL``
+    is dropped so codex falls back to the default OpenAI endpoint. With
+    ``CODEX_API_KEY`` unset the env is unchanged (a host where ``OPENAI_API_KEY``
+    is already the real key). Pass 1 keeps using the original ``env``.
+    """
+    out = dict(env)
+    codex_key = env.get("CODEX_API_KEY")
+    if codex_key:
+        out["OPENAI_API_KEY"] = codex_key
+        out.pop("OPENAI_BASE_URL", None)
+    return out
+
+
 def build_codex_command(
     prompt: str,
     *,
@@ -514,9 +533,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.findings_out:
         args.findings_out.write_text(json.dumps(findings, indent=2), encoding="utf-8")
 
-    # Pass 2: host codex exec. Fail closed if codex cannot authenticate.
-    auth_path = write_codex_auth(env)
-    if not has_codex_auth(env, auth_path):
+    # Pass 2: host codex exec. Fail closed if codex cannot authenticate. The
+    # codex CLI runs under an isolated env (real OpenAI key via CODEX_API_KEY,
+    # default OpenAI endpoint) so the DeepSeek judge clobber does not leak in.
+    codex_env = _codex_env(env)
+    auth_path = write_codex_auth(codex_env)
+    if not has_codex_auth(codex_env, auth_path):
         print("::error::codex auth.json / API key missing — failing closed")
         final = worst(deterministic, VERDICT_CODEX_UNAVAILABLE)
         print(f"codex_verdict={VERDICT_CODEX_UNAVAILABLE}")
@@ -537,7 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         codex_bin=args.codex_bin,
         model=args.codex_model,
         config_overrides=args.config_overrides,
-        env=env,
+        env=codex_env,
     )
     if args.codex_out:
         args.codex_out.write_text(raw, encoding="utf-8")

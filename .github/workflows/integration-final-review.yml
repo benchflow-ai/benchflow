@@ -494,15 +494,26 @@ jobs:
           echo "deterministic_verdict=$DET" >> "$GITHUB_OUTPUT"
           echo "deterministic verdict: $DET (pack exit $rc)"
 
+      # The host codex CLI (`codex exec`) the equivalence reviewer drives.
+      # continue-on-error so a failed install reaches the codex step, which then
+      # fail-closes to 'not mergeable (codex unavailable)' with a verdict, rather
+      # than dying as a raw step error.
+      - name: Install codex CLI
+        if: ${{ github.event.inputs.codex_review != 'false' }}
+        continue-on-error: true
+        run: npm install -g @openai/codex@0.141.0
+
       # REQUIRED at L3 (fail-closed). A dead/absent codex key => not mergeable.
       - name: Codex equivalence review (REQUIRED, fail-closed)
         id: codex
         if: ${{ github.event.inputs.codex_review != 'false' }}
         env:
-          # Codex auth = OPENAI_API_KEY from the job env (codex_review.py writes
-          # it as an apikey auth.json). BENCHFLOW_JUDGE_MODEL is already in the
-          # job env (provider-select wrote it to $GITHUB_ENV) for the cheap
-          # deepseek per-rollout pass.
+          # The per-rollout judge (Pass 1) uses the DeepSeek OPENAI_* that
+          # provider-select wrote to $GITHUB_ENV. The host `codex exec` (Pass 2)
+          # needs the REAL OpenAI key — passed via CODEX_API_KEY, which
+          # codex_review.py uses for the CLI (dropping the DeepSeek base URL) so
+          # the judge clobber never leaks into codex auth.
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DETERMINISTIC_VERDICT: ${{ steps.pack.outputs.deterministic_verdict }}
         run: |
           set +e

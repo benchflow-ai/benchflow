@@ -488,13 +488,20 @@ jobs:
       # ADVISORY-ONLY at L2: codex can make the verdict stricter but is NOT
       # required (no fail-closed). A missing reviewer key just yields no codex
       # signal here.
+      # The host codex CLI (`codex exec`) the advisory reviewer drives.
+      - name: Install codex CLI
+        continue-on-error: true
+        run: npm install -g @openai/codex@0.141.0
+
       - name: Codex equivalence review (advisory)
         id: codex
         continue-on-error: true
         env:
-          # Codex auth = OPENAI_API_KEY (apikey auth.json). BENCHFLOW_JUDGE_MODEL
-          # is already in the job env (provider-select wrote it to $GITHUB_ENV).
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Pass 1 judge uses the DeepSeek OPENAI_* (provider-select wrote it to
+          # $GITHUB_ENV). The host `codex exec` (Pass 2) gets the REAL OpenAI key
+          # via CODEX_API_KEY — codex_review.py isolates the CLI env (real key +
+          # default OpenAI base) so the judge clobber never leaks into codex auth.
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set +e
           uv run python .github/scripts/codex_review.py \
