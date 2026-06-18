@@ -1,0 +1,369 @@
+# Scope map — Default-config-rules table -> required task-set + required axes.
+#
+# Pure data consumed by .github/scripts/integration_matrix.py. No secrets, no
+# benchflow import (runs under bare python3, optional pyyaml). This file is the
+# AUTHORITATIVE encoding of the Default-config-rules table: each changed path
+# globs into one or more rules; each rule names a required task-set, the axes it
+# must exercise (sandboxes, skill_modes, extras), its enforcement level
+# (L1|L2|L3), and the trust/cheat/network flags.
+#
+# The planner takes the UNION of matched rules: it resolves the strongest
+# required task-set, unions the required axes, ORs the trust_boundary /
+# cheat_on_trust / network_lane flags, and takes the maximum level. The 7-set
+# task taxonomy below is the single textual source for which tasks a set runs.
+
+schema_version: "1"
+
+# ------------------------------------------------------------------
+# Task-set taxonomy (authoritative). Each named set expands to an ordered task
+# list. `nine` = low-3 + medium-3 + high-3. `expanded` is nine + citation +
+# affected/parity cases (the planner appends affected tasks at expansion time).
+# ------------------------------------------------------------------
+task_sets:
+  citation:
+    - citation-check
+  low-smoke:
+    - jax-computing-basics
+  low-3:
+    - jax-computing-basics
+    - python-scala-translation
+    - jpg-ocr-stat
+  medium-3:
+    - grid-dispatch-operator
+    - threejs-to-obj
+    - data-to-d3
+  high-3:
+    - lake-warming-attribution
+    - weighted-gdp-calc
+    - shock-analysis-supply
+  nine:
+    - jax-computing-basics
+    - python-scala-translation
+    - jpg-ocr-stat
+    - grid-dispatch-operator
+    - threejs-to-obj
+    - data-to-d3
+    - lake-warming-attribution
+    - weighted-gdp-calc
+    - shock-analysis-supply
+  expanded:
+    - jax-computing-basics
+    - python-scala-translation
+    - jpg-ocr-stat
+    - grid-dispatch-operator
+    - threejs-to-obj
+    - data-to-d3
+    - lake-warming-attribution
+    - weighted-gdp-calc
+    - shock-analysis-supply
+    - citation-check
+
+# Strength ordering for "take the strongest required set" across matched rules.
+# Higher rank wins; ties resolve by first listed. `custom` is operator-only.
+set_rank:
+  - low-smoke
+  - citation
+  - low-3
+  - medium-3
+  - high-3
+  - nine
+  - expanded
+
+# ------------------------------------------------------------------
+# Agent roster — the canonical 9 integration agents.
+# ------------------------------------------------------------------
+agents_9: &agents_9
+  - claude-agent-acp
+  - pi-acp
+  - openclaw
+  - codex-acp
+  - gemini
+  - opencode
+  - harvey-lab-harness
+  - openhands
+  - mimo
+
+# ------------------------------------------------------------------
+# Affected-agent path map. A changed file under src/benchflow/agents/<name>*.py
+# (or a known ACP shim/launcher/config) resolves to the agent it configures.
+# The planner derives affected_agents from the diff and pairs each with the
+# baseline agent (openhands + deepseek) for the agents/ rule.
+#
+# Each entry: a glob (fnmatch over POSIX-relative changed paths) -> agent name.
+# Order matters only for readability; the planner collects ALL matches.
+# ------------------------------------------------------------------
+affected_agent_map:
+  - glob: "src/benchflow/agents/codex_config.py"
+    agent: codex-acp
+  - glob: "src/benchflow/agents/openclaw_acp_shim.py"
+    agent: openclaw
+  - glob: "src/benchflow/agents/harvey_lab_acp_shim.py"
+    agent: harvey-lab-harness
+  - glob: "src/benchflow/agents/pi_acp_launcher.py"
+    agent: pi-acp
+  # Generic per-agent source files: src/benchflow/agents/<name>*.py where <name>
+  # is a roster agent id (underscored). These are explicit so the planner never
+  # has to guess from a free-form filename.
+  - glob: "src/benchflow/agents/gemini*.py"
+    agent: gemini
+  - glob: "src/benchflow/agents/opencode*.py"
+    agent: opencode
+  - glob: "src/benchflow/agents/openhands*.py"
+    agent: openhands
+  - glob: "src/benchflow/agents/mimo*.py"
+    agent: mimo
+  - glob: "src/benchflow/agents/claude*.py"
+    agent: claude-agent-acp
+
+# ------------------------------------------------------------------
+# Q3 network trigger globs. A diff touching any of these puts the PR on the
+# network SCOPE-GATED lane (network_lane=true): the default no-network vehicle
+# PLUS a minimal allowlist VARIANT. network_mode is NOT passed to bench; it is
+# a per-task config field, so the cell only carries it as the EXPECTED value.
+# ------------------------------------------------------------------
+network_trigger_globs:
+  - "src/benchflow/providers/**"
+  - "src/benchflow/usage_tracking.py"
+  - "src/benchflow/sandbox/lockdown.py"
+  - "src/benchflow/task/runtime_capabilities.py"
+  - "compose*.y*ml"
+  - "**/compose*.y*ml"
+  - "**/docker-compose*.y*ml"
+
+# ------------------------------------------------------------------
+# Default-config-rules table (authoritative). PR scope -> required set ->
+# required axes. Each rule:
+#   id              stable rule id (used in plan.buckets)
+#   globs           fnmatch globs over POSIX-relative changed paths
+#   required_set    one of the 7 task-sets (or low-smoke for docs-runtime)
+#   required_axes:
+#     sandboxes     docker | daytona (which sandboxes the set must cover)
+#     skill_modes   no-skill | with-skill | self-gen
+#     extra         free-form axis tags consumed by the planner/grader
+#                   (e.g. judge, affected-agent, baseline-agent, audit-skills,
+#                   parity, cheat, allowlist-variant, reaper-dry-run, usage)
+#   level           L1 | L2 | L3 enforcement tier
+#   trust_boundary  the rule crosses a trust boundary
+#   cheat_on_trust  add the cheat/null-patch anti-hack lane
+#   network_lane    add the allowlist network variant
+# ------------------------------------------------------------------
+rules:
+  # docs-only non-runtime -> L0 only, NO rollout.
+  - id: docs-nonruntime
+    globs:
+      - "docs/**"
+      - "**/*.md"
+      - "README*"
+      - "CHANGELOG*"
+      - "mkdocs.y*ml"
+    required_set: none
+    required_axes:
+      sandboxes: []
+      skill_modes: []
+      extra: []
+    level: L0
+    trust_boundary: false
+    cheat_on_trust: false
+    network_lane: false
+
+  # citation / evidence / schema docs -> citation ; Docker, no-skill, usage=required.
+  - id: citation-evidence
+    globs:
+      - "docs/examples/task-md/real-skillsbench/citation-check/**"
+      - "**/citation-management/**"
+      - ".agents/skills/citation-management/**"
+      - "**/citation*/evidence/**"
+      - "**/*citation*schema*"
+    required_set: citation
+    required_axes:
+      sandboxes:
+        - docker
+      skill_modes:
+        - no-skill
+      extra:
+        - usage
+    level: L1
+    trust_boundary: false
+    cheat_on_trust: false
+    network_lane: false
+
+  # src/benchflow/eval*, rollout lifecycle, artifact schema -> nine ;
+  # Docker, no-skill, usage=required, judge.
+  - id: eval-rollout-schema
+    globs:
+      - "src/benchflow/eval*.py"
+      - "src/benchflow/eval/**"
+      - "src/benchflow/rollout/**"
+      - "src/benchflow/rollouts/**"
+      - "src/benchflow/runtime.py"
+      - "src/benchflow/trajectories/**"
+      - "src/benchflow/trajectory/**"
+    required_set: nine
+    required_axes:
+      sandboxes:
+        - docker
+      skill_modes:
+        - no-skill
+      extra:
+        - usage
+        - judge
+    level: L2
+    trust_boundary: true
+    cheat_on_trust: false
+    network_lane: false
+
+  # src/benchflow/agents, ACP adapters, codex/openhands/pi/gemini ->
+  # low-3 + one high(weighted-gdp-calc) ; affected agent + baseline agent
+  # (openhands + deepseek), no-skill AND with-skill when relevant.
+  - id: agents-adapters
+    globs:
+      - "src/benchflow/agents/**"
+      - "src/benchflow/adapters/**"
+      - "tests/integration/configs/**"
+    required_set: low-3
+    required_axes:
+      sandboxes:
+        - daytona
+      skill_modes:
+        - no-skill
+        - with-skill
+      extra:
+        - one-high
+        - affected-agent
+        - baseline-agent
+    level: L2
+    trust_boundary: false
+    cheat_on_trust: false
+    network_lane: false
+
+  # skill loading, .agents/skills, skill injection -> low-3 + medium-3 ;
+  # no-skill AND with-skill ; run skill-catalog extraction.
+  - id: skill-loading
+    globs:
+      - ".agents/skills/**"
+      - "src/benchflow/skill_policy.py"
+      - "src/benchflow/skills/**"
+      - "**/skill_injection*.py"
+    required_set: medium-3
+    required_axes:
+      sandboxes:
+        - daytona
+      skill_modes:
+        - no-skill
+        - with-skill
+      extra:
+        - low-3-plus
+        - audit-skills
+    level: L2
+    trust_boundary: false
+    cheat_on_trust: false
+    network_lane: false
+
+  # Docker/Daytona/sandbox/root/path -> low-3 + medium-3 ;
+  # Docker + Daytona parity ; reaper dry-run.
+  - id: sandbox-root-path
+    globs:
+      - "src/benchflow/sandbox/**"
+      - "src/benchflow/root.py"
+      - "src/benchflow/paths.py"
+      - "**/daytona*.py"
+      - "**/reaper*.py"
+    required_set: medium-3
+    required_axes:
+      sandboxes:
+        - docker
+        - daytona
+      skill_modes:
+        - no-skill
+      extra:
+        - low-3-plus
+        - parity
+        - reaper-dry-run
+    level: L2
+    trust_boundary: true
+    cheat_on_trust: false
+    network_lane: false
+
+  # verifier, rewards, judge, anti-hack hardening ->
+  # citation + weighted-gdp-calc + shock-analysis-supply ;
+  # judge fail-closed, reward-hacking scan, verifier isolation.
+  - id: verifier-rewards-judge
+    globs:
+      - "src/benchflow/verifier/**"
+      - "src/benchflow/rewards/**"
+      - "src/benchflow/judge/**"
+      - "**/anti_hack*.py"
+      - "**/antihack*.py"
+    required_set: custom
+    custom_tasks:
+      - citation-check
+      - weighted-gdp-calc
+      - shock-analysis-supply
+    required_axes:
+      sandboxes:
+        - docker
+      skill_modes:
+        - no-skill
+      extra:
+        - judge-fail-closed
+        - reward-hacking-scan
+        - verifier-isolation
+    level: L3
+    trust_boundary: true
+    cheat_on_trust: true
+    network_lane: false
+
+  # network / package install (Q3 triggers) ->
+  # jax-computing-basics + data-to-d3 + one high ;
+  # default network-off + the citation-check allowlist variant.
+  - id: network-package
+    globs:
+      - "src/benchflow/providers/**"
+      - "src/benchflow/usage_tracking.py"
+      - "src/benchflow/sandbox/lockdown.py"
+      - "src/benchflow/task/runtime_capabilities.py"
+      - "compose*.y*ml"
+      - "**/compose*.y*ml"
+      - "**/docker-compose*.y*ml"
+    required_set: custom
+    custom_tasks:
+      - jax-computing-basics
+      - data-to-d3
+      - weighted-gdp-calc
+    required_axes:
+      sandboxes:
+        - docker
+      skill_modes:
+        - no-skill
+      extra:
+        - network-off
+        - allowlist-variant
+    level: L2
+    trust_boundary: false
+    cheat_on_trust: false
+    network_lane: true
+
+  # release-critical refactor -> expanded ; all affected axes, concurrency reduced.
+  - id: release-critical
+    globs:
+      - "src/benchflow/__init__.py"
+      - "src/benchflow/version.py"
+      - "pyproject.toml"
+      - "src/benchflow/cli/**"
+    required_set: expanded
+    required_axes:
+      sandboxes:
+        - docker
+        - daytona
+      skill_modes:
+        - no-skill
+        - with-skill
+      extra:
+        - all-axes
+        - reduced-concurrency
+        - judge
+        - affected-agent
+    level: L3
+    trust_boundary: true
+    cheat_on_trust: true
+    network_lane: false

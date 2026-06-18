@@ -1,0 +1,92 @@
+# Integration CI — admin setup (protected env, branch protection, secrets)
+
+One-time GitHub configuration the L0–L3 integration workflows depend on. None of
+this is enforceable from a workflow file; a repo admin must set it in the GitHub
+UI / API. Workflows:
+
+| Level | File | Trigger | Required? |
+|------|------|---------|-----------|
+| L0 | `.github/workflows/test.yml` | push / PR / merge_group | yes (every PR) |
+| L1 | `.github/workflows/integration-light.yml` | PR (opened/sync/reopen/ready) + dispatch | yes (every PR) |
+| L2 | `.github/workflows/integration-scope.yml` | PR (labeled `integration:medium`, …) + dispatch | yes (real work only on label) |
+| L3 | `.github/workflows/integration-final-review.yml` | `workflow_dispatch` only | gated by protected env approval |
+
+## 1. Branch protection (required status checks)
+
+On the protected `main` branch, mark these checks **required**:
+
+- `test` (L0 unit/lint/type lane)
+- L1 job check from `integration-light` — the `detect-scope` + `rollout-smoke`
+  jobs. Because `detect-scope` reports a **green no-op** (`should_run=false`)
+  when a diff needs no rollout, this check can be required **unconditionally**
+  without blocking docs-only PRs.
+- L2 job check from `integration-scope` — likewise its `detect-scope` is a cheap
+  green no-op when the `integration:medium` label is absent, so it is safe to
+  require unconditionally.
+
+> Required checks must **always run** (no `on: paths` filter) or a PR that
+> doesn't touch the filtered paths would wait forever on a check that never
+> starts. That is why every level's first job is the secret-free `detect-scope`
+> no-op rather than a path filter.
+
+L3 is **not** a required status check. It is enforced by the protected
+environment approval below, plus the `integration-final-review` check-run that
+the L3 review job publishes on the PR head SHA.
+
+## 2. Protected environments
+
+Use the existing **`pypi-internal-preview`** environment for L1/L2/L3 — **no
+separate protected environment is created** (per the agreed simplification, L3's
+golden truth is the HuggingFace leaderboard `main` runs vs the latest benchflow
+main, not a human approval gate).
+
+### `pypi-internal-preview` (L1 + L2 + L3)
+
+- Holds the provider/Daytona/reviewer secrets (see §3).
+- No required reviewers — L1/L2 run automatically on internal PRs; L3 is a manual
+  `workflow_dispatch`.
+- L1 attaches **only low-value** provider keys (DEEPSEEK / GEMINI /
+  GITHUB_MODELS). L2/L3 attach **all** keys per the agreed Q6 residual, **plus**
+  `CODEX_AUTH_JSON` (the codex reviewer is REQUIRED and fail-closed at L3).
+- *Optional, later:* to add a hard human gate, create a protected environment
+  with required reviewers and point the L3 `run-matrix` / `review-pack` jobs at it.
+
+## 3. Secrets
+
+Set on each environment (not as bare repo secrets) so they rotate without
+repo-admin Actions access. `*_BASE_URL` are optional overrides.
+
+Provider (rollout + judge):
+`DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `GLM_API_KEY`, `GLM_BASE_URL`,
+`QWEN_API_KEY`, `QWEN_BASE_URL`, `GEMINI_API_KEY`, `OPENAI_API_KEY`,
+`LITELLM_API_KEY` (or `BF_TOKEN`), `LITELLM_BASE_URL`, `GITHUB_MODELS_TOKEN`.
+
+Sandbox: `DAYTONA_API_KEY` (L2/L3 only; L1 is docker-only).
+
+Codex reviewer (L3, required): `CODEX_AUTH_JSON` — the contents of a working
+`~/.codex/auth.json`. `codex_review.py` writes it to the codex config path
+(`$CODEX_HOME/auth.json`, default `~/.codex/auth.json`) before invoking
+`codex exec`. If absent (and no `OPENAI_API_KEY`/`CODEX_API_KEY` fallback), L3
+fails closed to **`not mergeable (codex unavailable)`**.
+
+## 4. Labels
+
+- `integration:medium` — opens the L2 lane on a PR (its `detect-scope` only does
+  real work when this label is present).
+- `integration:deep` — signals an L2/L3-class change; L1's `rollout-smoke` steps
+  aside when present so the lanes don't double-spend provider credits.
+
+## 5. Security invariants (do not weaken)
+
+- All workflows are plain `pull_request` / `workflow_dispatch`, never
+  `pull_request_target`. Fork PRs receive no secrets.
+- `detect-scope`, `plan`, and `review-pack` check out the planner / grader /
+  harness / review skill from **trusted `origin/main`** (sparse), never the PR
+  head. Only `src/benchflow` (the orchestrator code-under-test) is overlaid from
+  the PR head SHA.
+- The L3 final verdict is `worst(deterministic, codex)`: codex can only make the
+  verdict stricter, never upgrade a deterministic `not mergeable`.
+- Actions are SHA-pinned. `actions/download-artifact`
+  (`d3f86a106a0bac45b974a628896c90dbdf5c8093`, v4.3.0) and
+  `actions/github-script` (`60a0d83039c74a4aee543508d2ffcb1c3799cdea`, v7.0.1)
+  are new surface relative to L0/L1's existing pins — re-verify on bump.
