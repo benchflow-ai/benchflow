@@ -833,7 +833,7 @@ def _osworld_dockerfile() -> str:
     osworld_deps = (
         "pandas openpyxl python-docx python-pptx pdfplumber PyPDF2 pymupdf "
         "rapidfuzz formulas lxml cssselect xmltodict tldextract Pillow numpy "
-        "odfpy mutagen pyyaml"
+        "odfpy mutagen pyyaml beautifulsoup4 borb imagehash"
     )
     return (
         "FROM ubuntu:24.04\n\n"

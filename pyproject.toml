@@ -113,6 +113,9 @@ osworld = [
     "odfpy>=1.4",
     "mutagen>=1.47",
     "pyyaml>=6.0",
+    "beautifulsoup4>=4.12",
+    "borb>=2.1",
+    "imagehash>=4.3",
 ]
 osworld-cv = [
     "easyocr>=1.7",
