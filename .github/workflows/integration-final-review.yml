@@ -127,12 +127,14 @@ jobs:
           ref: ${{ steps.resolve.outputs.base_ref }}
           fetch-depth: 0
           # pyproject.toml + README.md + src so `uv pip install .` below can build
-          # benchflow (hatchling) for the credential filter — the planner itself
-          # is pure stdlib and needs only .github.
+          # benchflow (hatchling) for the credential filter; uv.lock so the
+          # setup-uv cache key resolves. The planner itself is pure stdlib and
+          # needs only .github.
           sparse-checkout: |
             .github
             tests/integration
             pyproject.toml
+            uv.lock
             README.md
             src
           sparse-checkout-cone-mode: false
