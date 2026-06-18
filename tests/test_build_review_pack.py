@@ -119,6 +119,7 @@ def _plan(head_sha: str, matrix: list[dict], **kw) -> dict:
         "trust_boundary": kw.get("trust_boundary", False),
         "network_lane": kw.get("network_lane", False),
         "baseline": "pinned",
+        "source_sha": kw.get("source_sha"),
         "matrix": matrix,
         "residual_risk": kw.get("residual_risk", []),
         "rejected_overflow": None,
@@ -210,8 +211,10 @@ def test_review_pack_full_coverage_is_mergeable() -> None:
 
 
 def test_review_pack_stale_sha_is_flagged_not_mergeable() -> None:
+    # Stale = the rollout's TASK-SOURCE sha differs from the plan's pinned
+    # task-source sha (NOT the benchflow head_sha).
     matrix = [_cell("weighted-gdp-calc", "openhands")]
-    plan = _plan("NEWSHA0000000", matrix)
+    plan = _plan("NEWSHA0000000", matrix, source_sha="PINNEDSOURCE0000")
     with tempfile.TemporaryDirectory() as tmp:
         arts = Path(tmp)
         _write_flat_rollout(
@@ -220,12 +223,34 @@ def test_review_pack_stale_sha_is_flagged_not_mergeable() -> None:
             agent="openhands",
             sandbox="daytona",
             skill_mode="no-skill",
-            head_sha="OLDSHA1111111",  # different from plan head
+            head_sha="OLDSOURCE1111111",  # rollout task-source sha != pinned
         )
         review = pack_mod.build_review(plan, arts, None)
         assert review["slots"][0].status == "stale"
         assert review["verdict"].verdict == pack_mod.VERDICT_NOT_MERGEABLE
         assert any("stale slot" in b for b in review["verdict"].blockers)
+
+
+def test_review_pack_task_source_sha_not_compared_to_benchflow_head() -> None:
+    # Regression (e2e bug): a healthy rollout whose recorded task-source sha
+    # differs from the benchflow head_sha must NOT be marked stale when no
+    # task-source pin is given. head_sha is the benchflow commit, unrelated to
+    # the skillsbench task-source sha; comparing them flagged every real rollout.
+    matrix = [_cell("weighted-gdp-calc", "openhands")]
+    plan = _plan("BENCHFLOWHEAD999", matrix)  # no source_sha pinned
+    with tempfile.TemporaryDirectory() as tmp:
+        arts = Path(tmp)
+        _write_flat_rollout(
+            arts / "openhands",
+            task="weighted-gdp-calc",
+            agent="openhands",
+            sandbox="daytona",
+            skill_mode="no-skill",
+            head_sha="SKILLSBENCHSRC123",  # task-source sha != benchflow head
+        )
+        review = pack_mod.build_review(plan, arts, None)
+        assert review["slots"][0].status != "stale"
+        assert not any("stale" in b for b in review["verdict"].blockers)
 
 
 def test_review_pack_infra_timeout_is_capability_attributed_quarantine() -> None:

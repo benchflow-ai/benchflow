@@ -234,12 +234,14 @@ class Slot:
 
 
 def classify_slots(
-    cells: list[Cell], artifacts: Path, head_sha: str
+    cells: list[Cell], artifacts: Path, expected_source_sha: str | None = None
 ) -> tuple[list[Slot], list[Path]]:
     """Group produced rollouts into planned slots and classify each.
 
-    Returns ``(slots, unattributed)`` where ``unattributed`` are produced
-    rollouts that matched no planned cell.
+    ``expected_source_sha`` is the TASK-SOURCE sha the plan pinned (e.g. the
+    skillsbench commit), used only for the optional stale check; when ``None``
+    no slot is marked stale. Returns ``(slots, unattributed)`` where
+    ``unattributed`` are produced rollouts that matched no planned cell.
     """
     slots = [Slot(cell=cell) for cell in cells]
     rollouts = sorted({p.parent for p in artifacts.rglob("result.json")})
@@ -252,11 +254,11 @@ def classify_slots(
             continue
         matched.rollouts.append(rollout)
     for slot in slots:
-        _classify_one(slot, head_sha)
+        _classify_one(slot, expected_source_sha)
     return slots, unattributed
 
 
-def _classify_one(slot: Slot, head_sha: str) -> None:
+def _classify_one(slot: Slot, expected_source_sha: str | None) -> None:
     if not slot.rollouts:
         slot.status = "missing"
         slot.detail = "planned cell produced no rollout"
@@ -268,9 +270,13 @@ def _classify_one(slot: Slot, head_sha: str) -> None:
 
     rollout = slot.rollouts[0]
     resolved = _resolved_source_sha(rollout)
-    if head_sha and resolved and not _sha_matches(resolved, head_sha):
+    if (
+        expected_source_sha
+        and resolved
+        and not _sha_matches(resolved, expected_source_sha)
+    ):
         slot.status = "stale"
-        slot.detail = f"source sha {resolved!r} != head_sha {head_sha!r}"
+        slot.detail = f"task-source sha {resolved!r} != pinned {expected_source_sha!r}"
         return
 
     try:
@@ -793,8 +799,15 @@ def build_review(
 ) -> dict[str, Any]:
     """Classify, grade, parity, and compute the verdict for one artifacts root."""
     cells = _matrix_cells(plan)
-    head_sha = str(plan.get("head_sha") or "")
-    slots, unattributed = classify_slots(cells, artifacts, head_sha)
+    # Staleness is about the TASK SOURCE the rollout ran against, NOT the
+    # benchflow PR head. A rollout's recorded source sha is the skillsbench
+    # task-repo sha, which is unrelated to plan.head_sha (the benchflow commit) —
+    # comparing them marked every healthy rollout "stale". Compare only against
+    # an explicit task-source pin if the plan carries one; otherwise do not
+    # fabricate staleness (the workflow guarantees freshness by running the
+    # rollout at the PR head).
+    expected_source_sha = plan.get("source_sha")
+    slots, unattributed = classify_slots(cells, artifacts, expected_source_sha)
     parity = within_pr_parity(slots)
     if baseline_root is not None:
         base_parity = baseline_parity(artifacts, baseline_root, cells)

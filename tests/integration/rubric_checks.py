@@ -304,6 +304,14 @@ def _coerce_float(value: Any) -> float | None:
     return None
 
 
+def _first_str(*values: Any) -> str | None:
+    """First non-empty string among ``values``, else None."""
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _load_flat_evidence(rollout_dir: Path, result: dict[str, Any]) -> Evidence:
     """Adapt a flat skill-eval fixture (+ sibling run_config.json)."""
     run_config = _read_json(rollout_dir / "run_config.json") or {}
@@ -408,6 +416,21 @@ def _load_production_evidence(
         [str(s) for s in required_env_raw] if isinstance(required_env_raw, list) else []
     )
 
+    # Production timing lives TOP-LEVEL in result.json (`started_at` /
+    # `finished_at`) with per-phase seconds under `timing` (`total`); run_config
+    # is only a fallback. Reading `timing.started_at` (the flat-fixture shape)
+    # would leave timing empty and false-fail R-TELEMETRY on a real rollout.
+    timing = result.get("timing") if isinstance(result.get("timing"), dict) else {}
+    started_at = _first_str(result.get("started_at"), cfg.get("started_at"))
+    ended_at = _first_str(
+        result.get("finished_at"), result.get("ended_at"), cfg.get("ended_at")
+    )
+    duration_seconds = _coerce_float(
+        timing.get("total")
+        if timing.get("total") is not None
+        else timing.get("duration_seconds")
+    )
+
     return Evidence(
         rollout_dir=rollout_dir,
         schema="production",
@@ -415,10 +438,9 @@ def _load_production_evidence(
         status=status,
         n_tool_calls=prod.n_tool_calls,
         total_tokens=prod.total_tokens,
-        started_at=cfg.get("started_at")
-        if isinstance(cfg.get("started_at"), str)
-        else None,
-        ended_at=cfg.get("ended_at") if isinstance(cfg.get("ended_at"), str) else None,
+        started_at=started_at,
+        ended_at=ended_at,
+        duration_seconds=duration_seconds,
         skill_mode=str(skill_mode) if skill_mode is not None else None,
         task_skills=task_skills,
         sandbox=str(cfg.get("sandbox")) if cfg.get("sandbox") is not None else None,

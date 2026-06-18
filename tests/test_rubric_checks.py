@@ -314,6 +314,50 @@ def test_adapter_maps_production_synth_rollout() -> None:
         assert _gate(report, "V-TAMPER")["status"] == "pass"
 
 
+def test_production_timing_read_from_toplevel_started_finished() -> None:
+    # Regression (e2e bug): a real production result.json records timing at the
+    # TOP LEVEL (started_at / finished_at) plus per-phase seconds under `timing`
+    # (total), NOT under timing.{started_at,ended_at} (the flat-fixture shape).
+    # Reading the flat shape left timing empty and false-failed R-TELEMETRY on a
+    # reward-1.0, 7-minute real rollout.
+    if not _HAVE_BENCHFLOW:
+        raise SkipTest("benchflow not installed; production path skipped")
+    import json as _json
+
+    import scenarios
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "rollout"
+        scenarios.synth_rollout(
+            dest,
+            task_name="weighted-gdp-calc",
+            reward=1.0,
+            n_tool_calls=8,
+            total_tokens=120_000,
+            trajectory=[
+                {
+                    "phase": "agent",
+                    "type": "tool_call",
+                    "tool_calls": [
+                        {"name": "bash", "arguments": {"command": "python solve.py"}}
+                    ],
+                }
+            ],
+        )
+        # Stamp the production timing shape onto result.json (synth omits it).
+        rj = dest / "result.json"
+        result = _json.loads(rj.read_text())
+        result["started_at"] = "2026-06-18 04:37:45.327504"
+        result["finished_at"] = "2026-06-18 04:44:47.885050"
+        result["timing"] = {"agent_execution": 150.1, "verifier": 15.9, "total": 422.6}
+        rj.write_text(_json.dumps(result))
+
+        ev = rubric_checks.load_evidence(dest)
+        assert ev.started_at and (ev.ended_at or ev.duration_seconds)
+        report = rubric_checks.grade_rollout(dest)
+        assert _gate(report, "R-TELEMETRY")["status"] == "pass"
+
+
 def test_adapter_flat_and_production_agree_on_realness() -> None:
     # The flat clean-pass fixture and an equivalent production synth rollout both
     # normalize to a REAL measurement (same R-REAL verdict from one adapter).
