@@ -23,6 +23,7 @@ from benchflow.task import (
 REAL_SKILLSBENCH_TASK_MD_EXAMPLES = (
     "3d-scan-calc",
     "citation-check",
+    "citation-check-network",
     "weighted-gdp-calc",
 )
 USER_RUNTIME_TASK_MD_EXAMPLE = Path(

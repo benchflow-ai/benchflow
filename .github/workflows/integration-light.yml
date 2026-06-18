@@ -1,0 +1,255 @@
+# integration-light — L1: the cheap, ALWAYS-required integration gate.
+#
+# SECURITY MODEL (read before editing):
+#   * plain pull_request, NOT pull_request_target. On pull_request, GitHub gives
+#     FORK PRs no secrets, so untrusted fork code can never reach a provider key.
+#     Internal PRs (head.repo == benchflow-ai/benchflow) run the real rollout.
+#   * The PLANNER (integration_matrix.py), the AGENT JUDGE (agent_judge.py), and
+#     the live scenarios ALWAYS load from TRUSTED ORIGIN/MAIN via a sparse
+#     checkout — never from the PR head. Only src/benchflow (the code-under-test)
+#     comes from the PR head; it is the orchestrator that runs `bench`, but the
+#     verdict logic is trusted-main code.
+#   * detect-scope holds NO secrets (contents: read only) and runs in seconds so
+#     this whole workflow can be UNCONDITIONALLY REQUIRED in branch protection:
+#     when the diff needs no rollout it reports a green no-op (should_run=false).
+#
+# This workflow REPLACES the role of the old integration-eval.yml (L1).
+name: integration-light
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      task:
+        description: SkillsBench task to force-run on the smoke lane.
+        type: string
+        default: jax-computing-basics
+
+# Cancel superseded L1 runs on the same PR branch — this is the fast-feedback
+# lane, so a newer push supersedes the older run.
+concurrency:
+  group: integration-light-${{ github.event.pull_request.head.sha || github.ref }}
+  cancel-in-progress: true
+
+# Workflow-level least privilege; jobs elevate only what they need.
+permissions:
+  contents: read
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # detect-scope — NO secrets, contents: read. Trusted-main sparse checkout of
+  # .github/. Runs the planner over the BASE...HEAD diff. If the diff needs no
+  # rollout (scope=none / empty matrix / L0) it reports should_run=false so the
+  # required check passes as a cheap green no-op.
+  # ----------------------------------------------------------------------------
+  detect-scope:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      should_run: ${{ steps.scope.outputs.should_run }}
+      base_ref: ${{ steps.refs.outputs.base_ref }}
+      head_sha: ${{ steps.refs.outputs.head_sha }}
+    steps:
+      - name: Resolve refs
+        id: refs
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          echo "base_ref=$BASE_REF" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      # Trusted-main sparse checkout of the planner only (NOT the PR head).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ steps.refs.outputs.base_ref }}
+          fetch-depth: 0
+          sparse-checkout: |
+            .github
+            tests/integration
+          sparse-checkout-cone-mode: false
+
+      - name: Fetch PR head SHA for the diff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          # Need the head object present locally for `git diff BASE...HEAD`; do
+          # NOT check it out — the working tree stays on trusted base.
+          git fetch --no-tags origin "$HEAD_SHA" || true
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Plan scope (trusted)
+        id: scope
+        env:
+          BASE_REF: ${{ steps.refs.outputs.base_ref }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ ! -f .github/scripts/integration_matrix.py ]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::trusted base does not contain integration_matrix.py yet; bootstrap PR passes L1 as a green no-op"
+            exit 0
+          fi
+          set +e
+          python .github/scripts/integration_matrix.py \
+            --base-ref "$BASE_REF" \
+            --head-sha "$HEAD_SHA" \
+            --diff-from-git \
+            --scope auto \
+            --out matrix.json
+          rc=$?
+          set -e
+          # exit 2 == hard-ceiling overflow on the planner: surface and fail.
+          if [ "$rc" -eq 2 ]; then
+            REASON=$(jq -r '.rejected_overflow // "scope exceeded the hard cell ceiling"' matrix.json 2>/dev/null || echo "scope overflow")
+            echo "::error::integration scope overflow: $REASON"
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::scope planner failed (exit $rc)"
+            exit "$rc"
+          fi
+
+          SCOPE=$(jq -r '.scope // "none"' matrix.json)
+          NCELLS=$(jq '.matrix | length' matrix.json)
+          echo "Planned scope=$SCOPE cells=$NCELLS"
+          # No rollout needed (docs-only non-runtime / empty matrix) => green no-op.
+          if [ "$SCOPE" = "none" ] || [ "$NCELLS" -eq 0 ]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no rollout needed for this diff (scope=$SCOPE) — L1 passes as a green no-op"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload matrix plan
+        if: steps.scope.outputs.should_run == 'true'
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: integration-light-matrix
+          path: matrix.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ----------------------------------------------------------------------------
+  # rollout-smoke — ONE real rollout (low-smoke jax-computing-basics, docker,
+  # no-skill, --usage-tracking required) + the agent_judge gate + the live
+  # oracle/parity scenarios (NOT the agent_rollout one). Internal PRs only.
+  # Low-value provider keys only (DEEPSEEK / GEMINI / GITHUB_MODELS); NO Daytona,
+  # NO reviewer key. Steps aside when the 'integration:deep' (L2/L3) label is on
+  # the PR so the lanes don't double-spend credits.
+  # ----------------------------------------------------------------------------
+  rollout-smoke:
+    needs: detect-scope
+    if: >-
+      ${{
+        needs.detect-scope.outputs.should_run == 'true' &&
+        github.repository == 'benchflow-ai/benchflow' &&
+        !contains(github.event.pull_request.labels.*.name, 'integration:deep') &&
+        (
+          github.event_name == 'workflow_dispatch' ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == 'benchflow-ai/benchflow'
+          )
+        )
+      }}
+    runs-on: ubuntu-latest
+    # Provider credentials live in this environment so they rotate without
+    # repo-admin access to Actions secrets.
+    environment: pypi-internal-preview
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      # Low-value provider candidates only. The selector probes these in order.
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN || github.token }}
+      # The L1 smoke task. workflow_dispatch can override it.
+      SMOKE_TASK: ${{ github.event.inputs.task || 'jax-computing-basics' }}
+      BASE_REF: ${{ needs.detect-scope.outputs.base_ref }}
+      HEAD_SHA: ${{ needs.detect-scope.outputs.head_sha }}
+    steps:
+      # Trusted-base checkout: the planner, agent_judge, and live scenarios MUST
+      # come from base. The PR-head src/benchflow is overlaid below as the
+      # code-under-test (the orchestrator that runs `bench`).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ needs.detect-scope.outputs.base_ref }}
+          fetch-depth: 0
+
+      - name: Overlay PR-head src/benchflow (code-under-test)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ needs.detect-scope.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          # Fetch the PR head and overlay ONLY src/benchflow onto the trusted
+          # base tree. Infra (.github, tests/integration) stays trusted-main; the
+          # orchestrator code-under-test comes from the PR head.
+          git fetch --no-tags origin "$HEAD_SHA"
+          git checkout "$HEAD_SHA" -- src/benchflow
+
+      - name: Select integration provider
+        run: python .github/scripts/select_integration_provider.py
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra judge --extra sandbox-daytona --locked
+
+      - name: Run one real smoke rollout on Docker
+        run: |
+          uv run bench eval run \
+            --source-repo benchflow-ai/skillsbench \
+            --source-path tasks \
+            --source-ref main \
+            --include "$SMOKE_TASK" \
+            --agent "$BENCHFLOW_INTEGRATION_AGENT" \
+            --model "$BENCHFLOW_INTEGRATION_MODEL" \
+            --sandbox docker \
+            --skill-mode no-skill \
+            --usage-tracking required \
+            --concurrency 1 \
+            --agent-idle-timeout 240 \
+            --jobs-dir jobs/integration-light
+
+      - name: Agent-judge the rollout and enforce the gate
+        run: |
+          uv run python tests/integration/agent_judge.py \
+            jobs/integration-light \
+            --model "$BENCHFLOW_JUDGE_MODEL" \
+            --json
+
+      - name: Run the live oracle/parity scenarios
+        # Oracle determinism + docker<->daytona parity + reaper safety. The
+        # agent-rollout scenario is skipped here because the step above already
+        # ran a real agent + judge.
+        run: |
+          uv run pytest tests/test_integration_suite.py \
+            -m integration -k "not agent_rollout" \
+            -p no:cacheprovider -v
+
+      - name: Upload smoke rollout artifacts
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: integration-light-jobs
+          path: jobs/integration-light
+          if-no-files-found: ignore
+          retention-days: 14
