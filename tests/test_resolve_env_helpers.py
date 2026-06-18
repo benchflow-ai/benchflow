@@ -390,6 +390,52 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_MODEL"] == "claude-sonnet-4-6"
         assert env["ANTHROPIC_MODEL"] == "claude-sonnet-4-6"
 
+    def test_bare_deepseek_resolves_provider_for_openhands(self):
+        """Guards the harness-provider-resolution fix: a BARE deepseek id must
+        resolve the deepseek provider (NAME/BASE_URL/key) and litellm-qualify the
+        model, else OpenHands' litellm sees no provider ('LLM Provider NOT
+        provided … model=deepseek-v4-pro').
+
+        Before the fix, resolve_provider_env only matched an explicit 'deepseek/'
+        prefix via find_provider(), so 'deepseek-v4-pro' fell through to the
+        else branch and OpenHands got LLM_MODEL='deepseek-v4-pro' with no
+        base_url/key. The provider now also resolves bare family ids, and the
+        deepseek provider carries a default base_url so DEEPSEEK_BASE_URL is
+        optional (matching the shim default).
+        """
+        env = {"DEEPSEEK_API_KEY": "dk-test"}
+        resolve_provider_env(env, "deepseek-v4-pro", "openhands")
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "deepseek"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.deepseek.com/v1"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "dk-test"
+        assert env["LLM_BASE_URL"] == "https://api.deepseek.com/v1"
+        assert env["LLM_API_KEY"] == "dk-test"
+        assert env["LLM_MODEL"] == "openai/deepseek-v4-pro"
+
+    def test_bare_deepseek_sets_provider_name_for_openclaw(self):
+        """Guards the harness-provider-resolution fix: openclaw must see
+        BENCHFLOW_PROVIDER_NAME=deepseek for a bare id, else its shim defaults the
+        provider to anthropic ('FailoverError: Unknown model:
+        anthropic/deepseek-v4-pro').
+        """
+        env = {"DEEPSEEK_API_KEY": "dk-test"}
+        resolve_provider_env(env, "deepseek-v4-pro", "openclaw")
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "deepseek"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.deepseek.com/v1"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "dk-test"
+
+    def test_bare_deepseek_base_url_override_wins(self):
+        """An explicit DEEPSEEK_BASE_URL still overrides the provider default."""
+        env = {
+            "DEEPSEEK_API_KEY": "dk-test",
+            "DEEPSEEK_BASE_URL": "https://custom.deepseek.example/v1",
+        }
+        resolve_provider_env(env, "deepseek-v4-pro", "openhands")
+        assert (
+            env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://custom.deepseek.example/v1"
+        )
+        assert env["LLM_BASE_URL"] == "https://custom.deepseek.example/v1"
+
 
 # check_subscription_auth
 
