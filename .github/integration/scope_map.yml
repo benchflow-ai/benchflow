@@ -213,10 +213,12 @@ rules:
     network_lane: false
 
   # Agent RUNTIME INFRA that affects EVERY agent (the registry, the shared
-  # ACP/protocol/install/credential/env plumbing) -> fan the FULL agent roster
-  # on a small task set, so a change here is tested across all agents rather
-  # than only the baseline. A change to a SPECIFIC agent file still maps to that
-  # agent via affected_agent_map (the agents-adapters rule below).
+  # ACP/protocol/install/credential/env plumbing) -> fan a representative
+  # roster SUBSET on a small task set at L2 (auto-on-push), so a change here is
+  # probed across credential/launcher families rather than only the baseline.
+  # The FULL roster runs at L3/expanded (scope=nine/expanded). A change to a
+  # SPECIFIC agent file still maps to that agent via affected_agent_map (the
+  # agents-adapters rule below).
   - id: agent-runtime-infra
     globs:
       - "src/benchflow/agents/registry.py"
@@ -234,7 +236,7 @@ rules:
       skill_modes:
         - no-skill
       extra:
-        - all-agents
+        - all-agents-subset
     level: L2
     trust_boundary: false
     cheat_on_trust: false
@@ -367,8 +369,9 @@ rules:
         - network-off
         - allowlist-variant
         # A provider / LLM-proxy / routing change affects EVERY agent's model
-        # calls, so fan the agent roster (not just the baseline openhands).
-        - all-agents
+        # calls, so fan the representative roster SUBSET at L2 (not just the
+        # baseline openhands). The FULL roster runs at L3/expanded.
+        - all-agents-subset
     level: L2
     trust_boundary: false
     cheat_on_trust: false

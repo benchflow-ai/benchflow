@@ -119,6 +119,9 @@ class Maps:
     judge_model: str
     default_model: str
     agent_models: dict[str, str]
+    # Breadth-tiered roster SUBSET emitted at L2 (all-agents-subset). Defaults to
+    # [baseline_agent] when absent. The FULL roster runs at L3/expanded.
+    roster_subset: list[str]
     timeout_minutes: dict[str, int]
     # DeepSeek task-difficulty tiering: high-difficulty tasks on the flash lane
     # are promoted to the pro model. Empty pro_model disables tiering.
@@ -465,6 +468,9 @@ def load_maps(
     agent_models: dict[str, str] = {
         str(k): str(v) for k, v in (raw_defaults.get("agent_models") or {}).items()
     }
+    baseline_agent = str(raw_defaults["baseline_agent"])
+    # Breadth-tiered L2 subset; default to the baseline agent alone when absent.
+    roster_subset = _as_list(raw_defaults.get("roster_subset")) or [baseline_agent]
     timeout_minutes: dict[str, int] = {
         str(k): int(v) for k, v in (raw_defaults.get("timeout_minutes") or {}).items()
     }
@@ -485,13 +491,14 @@ def load_maps(
         affected_agent_map=affected_agent_map,
         network_trigger_globs=_as_list(raw_map.get("network_trigger_globs")),
         caps=caps,
-        baseline_agent=str(raw_defaults["baseline_agent"]),
+        baseline_agent=baseline_agent,
         baseline_model=str(raw_defaults["baseline_model"]),
         canonical_high_task=str(raw_defaults["canonical_high_task"]),
         citation_vehicle=str(raw_defaults["citation_vehicle"]),
         judge_model=str(raw_defaults["judge_model"]),
         default_model=str(raw_defaults.get("default_model", "")),
         agent_models=agent_models,
+        roster_subset=roster_subset,
         timeout_minutes=timeout_minutes,
         pro_model=pro_model,
         pro_tasks=pro_tasks,
@@ -758,17 +765,25 @@ def _matrix_agents(res: Resolution, maps: Maps) -> list[str]:
     """The agents that drive the matrix for this resolution.
 
     The agents/ rule (affected-agent) runs ONLY the affected agents plus the
-    baseline agent. ``all-agents`` fans the FULL roster for changes that affect
-    EVERY agent (the agent registry, shared ACP infra, provider/model routing) —
-    a single-baseline run there would miss per-agent breakage. ``nine`` /
-    ``expanded`` also fan the full roster (the agent IS the varying axis). Every
-    other lane (citation/low/medium/high/custom) varies a non-agent axis and runs
-    the single baseline agent.
+    baseline agent. ``all-agents`` fans the FULL roster (manual / expanded use)
+    for changes that affect EVERY agent. ``all-agents-subset`` is the
+    breadth-tiered L2 (auto-on-push) variant: a representative SUBSET — one agent
+    per credential/launcher family plus the baseline — so a registry / provider
+    change is probed across families without spinning up the full 40-cell roster.
+    ``nine`` / ``expanded`` fan the full roster (the agent IS the varying axis).
+    Every other lane (citation/low/medium/high/custom) varies a non-agent axis
+    and runs the single baseline agent.
     """
     if "all-agents" in res.extra:
         return list(maps.agents)
-    if "affected-agent" in res.extra and res.affected_agents:
+    if "all-agents-subset" in res.extra:
         agents: list[str] = []
+        for agent in (*maps.roster_subset, maps.baseline_agent):
+            if agent not in agents:
+                agents.append(agent)
+        return agents
+    if "affected-agent" in res.extra and res.affected_agents:
+        agents = []
         for agent in (*res.affected_agents, maps.baseline_agent):
             if agent not in agents:
                 agents.append(agent)

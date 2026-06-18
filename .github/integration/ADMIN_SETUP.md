@@ -55,12 +55,41 @@ main, not a human approval gate).
 ## 3. Secrets
 
 Set on each environment (not as bare repo secrets) so they rotate without
-repo-admin Actions access. `*_BASE_URL` are optional overrides.
+repo-admin Actions access. Most `*_BASE_URL` are optional overrides — but
+`DEEPSEEK_BASE_URL` is **required** (see below).
 
 Provider (rollout + judge):
 `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `GLM_API_KEY`, `GLM_BASE_URL`,
 `QWEN_API_KEY`, `QWEN_BASE_URL`, `GEMINI_API_KEY`, `OPENAI_API_KEY`,
 `LITELLM_API_KEY` (or `BF_TOKEN`), `LITELLM_BASE_URL`, `GITHUB_MODELS_TOKEN`.
+
+Per the agent model policy (see
+[`../../docs/integration-tiers.md`](../../docs/integration-tiers.md) §3.3), these
+specific keys are load-bearing:
+
+- **`DEEPSEEK_API_KEY` + `DEEPSEEK_BASE_URL` — both required.** The 5 open agents
+  (`openhands`, `openclaw`, `opencode`, `pi-acp`, `mimo`) run on
+  `deepseek/deepseek-v4-flash` through the LiteLLM usage proxy; the `deepseek`
+  provider declares `url_params={"base_url": "DEEPSEEK_BASE_URL"}`
+  (`src/benchflow/agents/providers.py`), so `DEEPSEEK_BASE_URL` is **not** an
+  optional override — without it the deepseek cells cannot resolve.
+- **`GEMINI_API_KEY` — required regardless of which agents run.** It powers both
+  the `gemini` / `harvey-lab-harness` rollout agents **and the judge**
+  (`gemini-3.1-flash-lite` is the default `judge_model`), so it is needed on any
+  lane that judges.
+- **`OPENAI_API_KEY`** — `codex-acp` rollout model (`gpt-5.4-nano`) **and** the L3
+  Codex equivalence reviewer.
+- **`AWS_BEARER_TOKEN_BEDROCK` (+ `AWS_REGION`) — L3 `claude-agent-acp`
+  credential, TO BE UPLOADED.** `claude-agent-acp` routes through Bedrock's
+  `anthropic-messages` surface
+  (`aws-bedrock/us.anthropic.claude-haiku-4-5-20251001`), which requires
+  `AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION`
+  (`src/benchflow/providers/litellm_config.py`). **These are not in CI yet.**
+  Until they are provisioned, credential-aware emission
+  ([`../scripts/filter_credentialed_cells.py`](../scripts/filter_credentialed_cells.py))
+  **drops** the `claude` cells as a documented skip (not a red slot), so no
+  Daytona sandbox is burned. Upload both to the `pypi-internal-preview`
+  environment to enable the full L3 claude lane.
 
 Sandbox: `DAYTONA_API_KEY` (L2/L3 only; L1 is docker-only).
 

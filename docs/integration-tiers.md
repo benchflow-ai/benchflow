@@ -17,8 +17,12 @@ The locked architectural decisions behind this system live in
 fail-closed `V-TAMPER` now, producer-side hash deferred; **ADR-0003**
 ([network_mode conformance](./adr/0003-network-mode-conformance-lane.md)) —
 static `V-NETWORK` now, runtime egress conformance lane deferred (blocked on
-`benchflow.sandbox._egress`). Vocabulary shared across the docs and the
-`benchflow-experiment-review` skill is in the [Glossary](#glossary) (§12).
+`benchflow.sandbox._egress`); **ADR-0004**
+([breadth-tiered agent roster](./adr/0004-breadth-tiered-agent-roster.md)) —
+representative agent SUBSET at L2, full 9-agent roster at L3 via `expanded`, plus
+the per-agent model policy and credential-aware emission. Vocabulary shared across
+the docs and the `benchflow-experiment-review` skill is in the
+[Glossary](#glossary) (§12).
 
 > **Terminology rename.** The deterministic verdict is user-facing as
 > **`mergeable`** / **`mergeable with quarantines`** / **`not mergeable`**. These
@@ -80,11 +84,11 @@ derives the affected agent from a changed `src/benchflow/agents/<name>` path.
 | citation / evidence / schema docs | `citation` | Docker, no-skill, usage=required | L1 |
 | `src/benchflow/eval*`, rollout lifecycle, artifact schema | `nine` | Docker, no-skill, usage=required, judge | L2 |
 | a **specific** agent file (`agents/<name>*.py`, ACP shim) | `low-3` + one high (`weighted-gdp-calc`) | **affected agent** + baseline agent (`openhands`+`deepseek`); no-skill AND with-skill when relevant | L2 |
-| **agent runtime infra** affecting *every* agent (`agents/registry.py`, `protocol.py`, `install.py`, `credentials.py`, `env.py`, shared `acp/**`) | `low-3` | **full agent roster** (all 9), no-skill — a registry/ACP change is tested across every agent, not just the baseline | L2 |
+| **agent runtime infra** affecting *every* agent (`agents/registry.py`, `protocol.py`, `install.py`, `credentials.py`, `env.py`, shared `acp/**`) | `low-3` | representative agent **SUBSET** (`openhands`+`codex-acp`+`gemini`+`pi-acp`) at L2; **FULL 9-agent roster at L3 via `expanded`** — a registry/ACP change is breadth-probed across credential/launcher families auto-on-push, then fanned across all 9 only at the heavy L3 lane | L2 |
 | skill loading, `.agents/skills`, skill injection | `low-3` + `medium-3` | no-skill AND with-skill; run skill-catalog extraction | L2 |
 | Docker / Daytona / sandbox / root / path | `low-3` + `medium-3` | Docker + Daytona parity; reaper dry-run | L2 |
 | verifier, rewards, judge, anti-hack hardening | `citation` + `weighted-gdp-calc` + `shock-analysis-supply` | judge fail-closed, reward-hacking scan, verifier isolation | L3 |
-| network / package install / **LLM-proxy routing** (Q3 triggers) | `jax-computing-basics` + `data-to-d3` + one high | **full agent roster** (a proxy/routing change affects every agent's model calls) + default network-off + the `citation-check` allowlist variant | L2 |
+| network / package install / **LLM-proxy routing** (Q3 triggers) | `jax-computing-basics` + `data-to-d3` + one high | representative agent **SUBSET** (`openhands`+`codex-acp`+`gemini`+`pi-acp`) at L2; **FULL 9-agent roster at L3 via `expanded`** (a proxy/routing change affects every agent's model calls, so it is breadth-probed across families auto-on-push then fanned across all 9 at L3) + default network-off + the `citation-check` allowlist variant | L2 |
 | release-critical refactor | `expanded` | all affected axes, concurrency reduced | L3 |
 
 ### 3.1 The Q3 network lane (scope-gated)
@@ -111,6 +115,77 @@ serialized into artifacts** — it is a per-task config field only. So network i
 - Validity is enforced by `_validate_network_policy_fields`
   (`src/benchflow/task/config.py`): `allowlist` requires a non-empty
   `allowed_hosts`.
+
+### 3.2 Breadth-tiered roster (SUBSET at L2, FULL at L3)
+
+The two "affects every agent" rules — **agent runtime infra** (`agent-runtime-infra`)
+and **network / LLM-proxy routing** (`network-package`) in
+[`scope_map.yml`](../.github/integration/scope_map.yml) — do **not** fan the full
+9-agent roster on the auto-on-push L2 lane. They emit a **representative SUBSET**
+(`all-agents-subset` axis tag), and the FULL roster runs only at L3 via the
+`expanded` scope (`_FULL_ROSTER_SCOPES` in
+[`integration_matrix.py`](../.github/scripts/integration_matrix.py)). This is a
+breadth-tiered *variant*, not a new level.
+
+- **L2 subset (4 agents):** `openhands` + `codex-acp` + `gemini` + `pi-acp` —
+  defined as `roster_subset` in
+  [`scope_defaults.yml`](../.github/integration/scope_defaults.yml). One
+  representative per agent family: `openhands` (deepseek-proxy lane / baseline),
+  `codex-acp` (openai-native), `gemini` (gemini-native), `pi-acp` (acp launcher).
+  This probes every credential / launcher family auto-on-push without spending the
+  full 9×N fan-out on each push.
+- **L3 full roster (9 agents):** `nine` / `expanded` already fan the full roster
+  via `_FULL_ROSTER_SCOPES`, so no separate rule is needed — the heavy L3 lane is
+  where all 9 run.
+
+### 3.3 Agent model policy
+
+Per-agent models are pinned in `agent_models` in
+[`scope_defaults.yml`](../.github/integration/scope_defaults.yml). The policy is
+empirically grounded in what each branded CLI's adapter can actually talk to —
+branded agents are **protocol-locked**, so the model is chosen per family, not
+uniformly:
+
+| Agent(s) | Model | Surface / credential | Why |
+|---|---|---|---|
+| `openhands`, `openclaw`, `opencode`, `pi-acp`, `mimo` | `deepseek/deepseek-v4-flash` | LiteLLM usage proxy; needs `DEEPSEEK_API_KEY` **+** `DEEPSEEK_BASE_URL` | These 5 are the openai-completions-family agents that proxy cleanly. `mimo`-on-deepseek **replaces** the old `xiaomi`/`mimo` id, closing the **XIAOMI gap**. |
+| `gemini` | `gemini-3.1-flash-lite-preview` | native (`GEMINI_API_KEY`) | Gemini CLI is gemini-native; the key is also needed by the judge. |
+| `codex-acp` | `gpt-5.4-nano` | native (`OPENAI_API_KEY`) | Codex CLI is openai-native. |
+| `harvey-lab-harness` | `gemini-3.1-flash-lite-preview` | native (`GEMINI_API_KEY`) | Its `_create_adapter` (`src/benchflow/agents/harvey_lab_acp_shim.py`) dispatches on the model-name prefix (`claude`/`gpt`/`gemini`) and **raises `ValueError`** for anything else — it **cannot** use `deepseek`, so it stays native. |
+| `claude-agent-acp` | `aws-bedrock/us.anthropic.claude-haiku-4-5-20251001` | Bedrock anthropic-messages surface; needs `AWS_BEARER_TOKEN_BEDROCK` (**+** `AWS_REGION`) | Bedrock serves Claude over the `anthropic-messages` protocol (`providers.py` `aws-bedrock` config). The bare `claude-haiku` native id is **not** used. `AWS_BEARER_TOKEN_BEDROCK` is **not in CI yet** — credential-aware emission (§3.4) **skips** `claude` until it is uploaded. |
+
+**Why protocol-lock matters:** the `deepseek` provider serves **only**
+`openai-completions` (`api_protocol="openai-completions"`,
+`src/benchflow/agents/providers.py`). So `claude` / `codex` / `gemini` / `harvey`
+**cannot** ride the deepseek proxy — empirically, `harvey`'s adapter `raise`s the
+protocol guard, and `codex`/`gemini`/`claude` are wired to their native
+provider surfaces. `aws-bedrock` is the surface that serves Claude (over
+`anthropic-messages`), which is why `claude-agent-acp` is the one agent on Bedrock.
+
+### 3.4 Credential-aware emission
+
+The planner (`integration_matrix.py`) is **PURE / deterministic** — it emits the
+configured roster for a scope **without consulting the live environment**. A
+separate env-aware step,
+[`.github/scripts/filter_credentialed_cells.py`](../.github/scripts/filter_credentialed_cells.py),
+runs **between plan and run-matrix** and drops any planned cell whose agent+model
+required credential is absent, recording it under `skipped_uncredentialed` as a
+**documented SKIP — not a red slot**.
+
+This fixes a real bug: before the filter, an un-keyed agent would spin up a
+Daytona sandbox, run to the first LLM call, fail there, burn the sandbox, and
+leave the grader logging a **false-red** slot that looks like a regression.
+
+Mechanism: for each cell the filter calls
+`benchflow.agents.env.resolve_agent_env(agent, model, {})`. When a required key is
+missing it raises `ValueError` shaped `"<KEY> required ... but not set"` (and the
+Bedrock variant `"AWS_BEARER_TOKEN_BEDROCK required for Bedrock model ... but not
+set"`); the filter catches *that specific shape* (markers `required` + `not set`),
+extracts the missing key, and drops the cell. Any other error keeps the cell
+(never drop on an ambiguous failure); a benchflow import failure passes the matrix
+through unchanged (**fail-open**). Concretely: **`claude-agent-acp` is skipped on
+every lane until `AWS_BEARER_TOKEN_BEDROCK` is provisioned** — without burning a
+sandbox or logging a false red.
 
 ## 4. Matrix Cell Schema
 

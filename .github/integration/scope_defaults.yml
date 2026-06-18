@@ -56,16 +56,38 @@ judge_model: gemini-3.1-flash-lite
 default_model: gemini-3.1-flash-lite-preview
 
 # Per-agent default models (mirror release axes + run.sh model_for_agent).
+#
+# Empirically-grounded model policy:
+#  - The openai-completions-family agents that proxy cleanly through the LiteLLM
+#    usage proxy run on deepseek/deepseek-v4-flash (needs DEEPSEEK_API_KEY +
+#    DEEPSEEK_BASE_URL, both in CI): openhands, openclaw, opencode, pi-acp, mimo.
+#    mimo-on-deepseek REPLACES the old xiaomi/mimo id (closes the XIAOMI gap).
+#  - gemini / codex-acp keep their native corresponding model (GEMINI / OPENAI).
+#  - harvey-lab-harness stays native gemini: its _create_adapter dispatches on
+#    the model-name prefix and RAISES for deepseek, so it CANNOT use deepseek.
+#  - claude-agent-acp routes through Bedrock's anthropic-messages surface
+#    (needs AWS_BEARER_TOKEN_BEDROCK, not yet in CI — cred-aware emission skips
+#    it until the key is uploaded), NOT the bare claude-haiku native id.
 agent_models:
-  claude-agent-acp: claude-haiku-4-5-20251001
-  pi-acp: gemini-3.1-flash-lite-preview
-  openclaw: gemini-3.1-flash-lite-preview
+  claude-agent-acp: aws-bedrock/us.anthropic.claude-haiku-4-5-20251001
+  pi-acp: deepseek/deepseek-v4-flash
+  openclaw: deepseek/deepseek-v4-flash
   codex-acp: gpt-5.4-nano
   gemini: gemini-3.1-flash-lite-preview
-  opencode: gemini-3.1-flash-lite-preview
+  opencode: deepseek/deepseek-v4-flash
   harvey-lab-harness: gemini-3.1-flash-lite-preview
   openhands: deepseek/deepseek-v4-flash
-  mimo: xiaomi/mimo-v2.5
+  mimo: deepseek/deepseek-v4-flash
+
+# Breadth-tiered roster SUBSET emitted at L2 (auto-on-push) for changes that
+# affect EVERY agent. One representative agent per family: openhands (deepseek
+# proxy lane / baseline), codex-acp (openai-native), gemini (gemini-native),
+# pi-acp (acp launcher). The FULL 9-agent roster runs only at L3/expanded.
+roster_subset:
+  - openhands
+  - codex-acp
+  - gemini
+  - pi-acp
 
 # ------------------------------------------------------------------
 # DeepSeek model tiering by task difficulty.

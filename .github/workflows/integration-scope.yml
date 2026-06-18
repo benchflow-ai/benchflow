@@ -149,10 +149,13 @@ jobs:
     needs: detect-scope
     if: needs.detect-scope.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    # Run under the same env that run-matrix uses so the credential filter
+    # below can see the real provider secrets (DEEPSEEK/GEMINI/OPENAI/Bedrock).
+    environment: pypi-internal-preview
     permissions:
       contents: read
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
+      matrix: ${{ steps.emit.outputs.matrix }}
       head_sha: ${{ steps.plan.outputs.head_sha }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -201,12 +204,44 @@ jobs:
             echo "::error::scope planner failed (exit $rc)"
             exit "$rc"
           fi
-          # Compact matrix + head_sha as step outputs for the fromJson matrix.
-          {
-            echo "matrix=$(jq -c '.matrix' matrix.json)"
-            echo "head_sha=$(jq -r '.head_sha' matrix.json)"
-          } >> "$GITHUB_OUTPUT"
+          # head_sha output now (matrix is emitted AFTER the credential filter).
+          echo "head_sha=$(jq -r '.head_sha' matrix.json)" >> "$GITHUB_OUTPUT"
           echo "Planned scope=$(jq -r '.scope' matrix.json) cells=$(jq '.matrix | length' matrix.json)"
+
+      # Install benchflow so the credential filter can import
+      # benchflow.agents.env. The planner above is pure (MiniYaml-safe) and
+      # needs nothing; only this env-aware step needs the package.
+      - name: Install benchflow (for the credential filter)
+        run: pip install --quiet .
+
+      # Drop any planned cell whose agent+model credential is absent from this
+      # environment BEFORE run-matrix consumes the matrix, so un-keyed agents
+      # never spin up a (doomed, sandbox-burning) cell that would log as a
+      # false-red slot. Fails OPEN: if benchflow import fails the matrix passes
+      # through unchanged. Credentials come from the pypi-internal-preview env.
+      - name: Filter uncredentialed cells (env-aware)
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          set -euo pipefail
+          python .github/scripts/filter_credentialed_cells.py \
+            --matrix matrix.json --out matrix.json
+          SKIPPED=$(jq -c '.skipped_uncredentialed // []' matrix.json)
+          if [ "$SKIPPED" != "[]" ]; then
+            echo "::notice::credential filter skipped uncredentialed cells: $SKIPPED"
+          fi
+
+      - name: Emit filtered matrix output
+        id: emit
+        run: |
+          set -euo pipefail
+          echo "matrix=$(jq -c '.matrix' matrix.json)" >> "$GITHUB_OUTPUT"
+          echo "Run matrix cells=$(jq '.matrix | length' matrix.json) (after credential filter)"
 
       - name: Upload matrix plan
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0

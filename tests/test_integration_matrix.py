@@ -218,27 +218,68 @@ def test_agents_rule_acp_shim_path_map():
     assert maps.baseline_agent in _agents(plan)
 
 
-def test_agent_runtime_infra_fans_full_roster():
-    # Changes to the registry / shared ACP infra affect EVERY agent, so the
-    # planner must fan the FULL roster — not the baseline only (the gap this
-    # fixes: registry.py used to run openhands alone).
+def test_agent_runtime_infra_fans_roster_subset():
+    # Changes to the registry / shared ACP infra affect EVERY agent, but at L2
+    # (auto-on-push) we fan only the representative SUBSET — one agent per
+    # credential/launcher family — not the full 9-agent roster. The FULL roster
+    # is reachable at L3/expanded (scope=nine/expanded).
     maps = _maps()
+    expected = set(maps.roster_subset) | {maps.baseline_agent}
     for f in (
         "src/benchflow/agents/registry.py",
         "src/benchflow/agents/protocol.py",
         "src/benchflow/acp/session.py",
     ):
         plan = _plan([f])
-        assert _agents(plan) == set(maps.agents), f
+        assert _agents(plan) == expected, f
+        # The L2 subset is strictly smaller than the full roster.
+        assert _agents(plan) != set(maps.agents), f
 
 
-def test_provider_change_fans_full_roster():
+def test_provider_change_fans_roster_subset():
     # A provider / LLM-proxy / routing change affects every agent's model calls,
-    # so it runs across the whole roster, not just the baseline.
+    # but at L2 it runs the representative SUBSET, not the whole roster.
     maps = _maps()
     plan = _plan(["src/benchflow/providers/litellm_runtime.py"])
-    assert _agents(plan) == set(maps.agents)
+    assert _agents(plan) == set(maps.roster_subset) | {maps.baseline_agent}
+    assert _agents(plan) != set(maps.agents)
     assert plan.network_lane is True
+
+
+def test_expanded_still_fans_full_roster():
+    # The FULL 9-agent roster runs at L3/expanded: scope=expanded fans every
+    # agent (the agent IS the varying axis via _FULL_ROSTER_SCOPES).
+    maps = _maps()
+    plan = _plan([], override="expanded")
+    assert _agents(plan) == set(maps.agents)
+
+
+def test_model_policy_open_agents_on_deepseek():
+    # The openai-completions-family agents that proxy cleanly through the
+    # LiteLLM usage proxy run on deepseek/deepseek-v4-flash: openclaw, opencode,
+    # pi-acp, mimo (mimo on deepseek REPLACES xiaomi). openhands keeps its
+    # baseline deepseek model too.
+    maps = _maps()
+    for agent in ("openclaw", "opencode", "pi-acp", "mimo"):
+        assert maps.model_for(agent) == "deepseek/deepseek-v4-flash", agent
+    # mimo is no longer on xiaomi.
+    assert "xiaomi" not in maps.model_for("mimo")
+    # The native-model agents keep their corresponding native model.
+    assert maps.model_for("gemini") == "gemini-3.1-flash-lite-preview"
+    assert maps.model_for("codex-acp") == "gpt-5.4-nano"
+    # harvey stays native (its adapter dispatch raises for deepseek).
+    assert maps.model_for("harvey-lab-harness") == "gemini-3.1-flash-lite-preview"
+
+
+def test_claude_on_bedrock():
+    # claude-agent-acp routes through Bedrock's anthropic-messages surface, not
+    # the bare claude-haiku native id.
+    maps = _maps()
+    assert maps.model_for("claude-agent-acp").startswith("aws-bedrock/")
+    assert (
+        maps.model_for("claude-agent-acp")
+        == "aws-bedrock/us.anthropic.claude-haiku-4-5-20251001"
+    )
 
 
 def test_specific_agent_change_does_not_fan_full_roster():
