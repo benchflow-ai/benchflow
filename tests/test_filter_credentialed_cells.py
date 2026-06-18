@@ -133,18 +133,35 @@ def test_keeps_all_when_every_credential_present(monkeypatch, isolate_dotenv):
 
 
 def test_drops_deepseek_when_base_url_missing(monkeypatch, isolate_dotenv):
-    """DeepSeek API key set but DEEPSEEK_BASE_URL absent -> cell DROPPED.
+    """filter_matrix DROPS a cell when resolve_agent_env raises the base-URL
+    builder message ("... requires DEEPSEEK_BASE_URL to build the provider base
+    URL") — the shape it raises when DEEPSEEK_BASE_URL is absent, BEFORE the
+    api-key "not set" check. Since openhands (deepseek) is the baseline agent,
+    missing this would false-red almost every run instead of logging a skip.
 
-    Regression: resolve_agent_env raises the base-URL builder message ("...
-    requires DEEPSEEK_BASE_URL to build the provider base URL") BEFORE the
-    api-key "not set" check, so the filter must recognize that shape too. Since
-    openhands (deepseek) is the baseline agent, missing this would false-red
-    almost every run instead of logging a documented skip.
+    resolve_agent_env is patched so the missing-base-URL condition is exercised
+    DETERMINISTICALLY: whether a bare DEEPSEEK_BASE_URL is truly absent depends on
+    the ambient env (a populated CI job can supply a fallback base), which is
+    benchflow's concern, not the filter's. This pins the filter's own routing of
+    that ValueError shape to a documented drop + correct missing_key.
     """
     pytest.importorskip("benchflow.agents.env")
+    import benchflow.agents.env as bfenv
 
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
-    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    real = bfenv.resolve_agent_env
+
+    def fake_resolve(agent, model, agent_env):
+        if model == DEEPSEEK_MODEL:
+            raise ValueError(
+                f"Provider 'deepseek' for model {model!r} requires "
+                "DEEPSEEK_BASE_URL to build the provider base URL."
+            )
+        return real(agent, model, agent_env)
+
+    # filter_matrix re-imports the name from the module on each call, so patching
+    # the module attribute is picked up.
+    monkeypatch.setattr(bfenv, "resolve_agent_env", fake_resolve)
+    # Keep the non-deepseek (bedrock) cell credentialed so it survives.
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token-test")
 
@@ -156,7 +173,7 @@ def test_drops_deepseek_when_base_url_missing(monkeypatch, isolate_dotenv):
     )
     dropped = {s["agent"]: s["missing_key"] for s in filtered["skipped_uncredentialed"]}
     assert dropped.get("openhands") == "DEEPSEEK_BASE_URL"
-    # Bedrock is fully keyed here, so claude survives.
+    # Bedrock cell resolves cleanly, so claude survives.
     assert "claude-agent-acp" in kept_agents
 
 
