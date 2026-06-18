@@ -109,6 +109,11 @@ jobs:
             echo "::notice::integration:medium label absent — L2 passes as a green no-op"
             exit 0
           fi
+          if [ ! -f .github/scripts/integration_matrix.py ]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::trusted base does not contain integration_matrix.py yet; bootstrap PR passes L2 as a green no-op"
+            exit 0
+          fi
           ARGS=( --base-ref "$BASE_REF" --head-sha "$HEAD_SHA" --diff-from-git
                  --scope "$SCOPE_INPUT" --out matrix.json )
           if [ -n "$CUSTOM_TASKS" ]; then

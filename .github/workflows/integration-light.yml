@@ -94,6 +94,11 @@ jobs:
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
         run: |
           set -euo pipefail
+          if [ ! -f .github/scripts/integration_matrix.py ]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::trusted base does not contain integration_matrix.py yet; bootstrap PR passes L1 as a green no-op"
+            exit 0
+          fi
           set +e
           python .github/scripts/integration_matrix.py \
             --base-ref "$BASE_REF" \
