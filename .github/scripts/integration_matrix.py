@@ -787,28 +787,37 @@ def _matrix_agents(res: Resolution, maps: Maps) -> list[str]:
     - every other lane (citation/low/medium/high/custom) varies a non-agent axis
       and runs the single baseline agent.
     """
-    if "all-agents" in res.extra:
-        return list(maps.deepseek_roster)
-    # nine / expanded (the heavy, manually-dispatched L3 lane) fan the full
-    # DeepSeek roster and OVERRIDE the L2 breadth-tiered subset — so `expanded`
-    # on an agent-infra / provider change gives every DeepSeek agent, not just
-    # the subset. This MUST be checked before all-agents-subset/affected-agent,
-    # since those rules also match the change and would otherwise win at L3.
-    if res.scope in _FULL_ROSTER_SCOPES:
-        return list(maps.deepseek_roster)
-    if "all-agents-subset" in res.extra:
-        agents: list[str] = []
-        for agent in (*maps.roster_subset, maps.baseline_agent):
-            if agent not in agents:
-                agents.append(agent)
-        return agents
-    if "affected-agent" in res.extra and res.affected_agents:
-        agents = []
-        for agent in (*res.affected_agents, maps.baseline_agent):
-            if agent not in agents:
-                agents.append(agent)
-        return agents
-    return [maps.baseline_agent]
+    # A gated native (claude-agent-acp / codex-acp) reaches the matrix ONLY via
+    # affected-agent — its own adapter changed. That coverage MUST survive even
+    # when a broad-fan lane is ALSO triggered by a co-changed infra / provider /
+    # release file in the same PR, so the affected agents are always UNIONED onto
+    # whatever base roster the lane selects (rather than a broad branch winning
+    # first and silently dropping the changed native).
+    affected = (
+        list(res.affected_agents)
+        if "affected-agent" in res.extra and res.affected_agents
+        else []
+    )
+    # nine / expanded (the heavy L3 lane) and all-agents fan the full DeepSeek
+    # roster; the all-agents-subset breadth tier fans the representative subset;
+    # an affected-only change fans just the affected agents. The full-roster /
+    # subset lanes are checked before affected-only so a promoted infra change
+    # gives the broad fan, not a lone agent.
+    if "all-agents" in res.extra or res.scope in _FULL_ROSTER_SCOPES:
+        base = list(maps.deepseek_roster)
+    elif "all-agents-subset" in res.extra:
+        base = [*maps.roster_subset, maps.baseline_agent]
+    elif affected:
+        base = [*affected, maps.baseline_agent]
+        affected = []  # already covered by base
+    else:
+        base = [maps.baseline_agent]
+
+    agents: list[str] = []
+    for agent in (*base, *affected):
+        if agent not in agents:
+            agents.append(agent)
+    return agents
 
 
 def _clamp_per_agent_concurrency(caps: Caps, n_daytona_agents: int) -> int:

@@ -331,6 +331,29 @@ def test_gated_native_runs_only_via_affected_agent():
     assert set(maps.deepseek_roster) <= set(maps.agents)
 
 
+def test_co_changed_gated_native_survives_broad_fan():
+    # Regression: a gated native reaches the matrix ONLY via affected-agent, so a
+    # PR that co-changes its adapter AND a broad-fan trigger must STILL run it —
+    # the broad branch must not win first and silently drop the changed native.
+    maps = _maps()
+    # registry.py (agent-runtime-infra -> all-agents-subset) + codex_config.py
+    # (agents-adapters -> affected-agent=codex-acp): subset + baseline + codex.
+    sub = _plan(
+        [
+            "src/benchflow/agents/registry.py",
+            "src/benchflow/agents/codex_config.py",
+        ]
+    )
+    assert "codex-acp" in _agents(sub), "co-changed native dropped from subset lane"
+    assert set(maps.roster_subset) | {maps.baseline_agent} <= _agents(sub)
+    # pyproject.toml (release-critical -> expanded) + claude*.py (affected-agent):
+    # full DeepSeek roster + the changed native, even at expanded scope.
+    exp = _plan(["pyproject.toml", "src/benchflow/agents/claude_agent_acp.py"])
+    assert exp.scope == "expanded"
+    assert "claude-agent-acp" in _agents(exp), "co-changed native dropped at expanded"
+    assert set(maps.deepseek_roster) <= _agents(exp)
+
+
 def test_all_agents_extra_fans_deepseek_roster_only():
     # The manual/heavy ``all-agents`` fan is DeepSeek-only: the gated natives
     # are excluded by policy (blocked in the real workflow currently).
