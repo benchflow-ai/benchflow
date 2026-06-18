@@ -81,7 +81,7 @@ def test_realness_gate(tmp_path: Path, overrides: dict, expect_flagged: bool):
 
 
 def test_realness_gate_fails_closed_on_verifier_tamper(tmp_path: Path):
-    """ADR-0002 fail-closed: a mechanically-detected verifier tamper must hard-fail
+    """Fail-closed: a mechanically-detected verifier tamper must hard-fail
     the realness gate on its own, so the gate holds even when the LLM judge is
     absent or lenient. The rollout is otherwise REAL (tool calls, tokens, reward
     1.0) — only the score-defining file mutation makes it untrustworthy."""

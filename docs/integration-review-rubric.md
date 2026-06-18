@@ -114,7 +114,7 @@ surface that the review pack, the docs, and the codex agent all key on.
 | `P-PATHS` | config root / sandbox cwd / trajectory paths / result paths agree | deterministic-where-fields-exist else residual | `check_results` path-truth checks where fields exist, else residual |
 | `X-SLOTS` | every planned cell present, unique, fresh (head sha) | deterministic | `build_integration_review_pack` slot classification: missing/duplicate/stale/healthy/unhealthy |
 | `V-NETWORK` | default no-network; allowlist needs non-empty `allowed_hosts`; `public` flagged (fail on verifier/sandbox PR) | deterministic | `rubric_checks.network_hardening` (STATIC per-task config, Q3) |
-| `V-NETWORK-CONFORM` *(deferred)* | run *observed* the enforced egress: allowlisted host reachable, non-allowlisted host **blocked** | residual *(not yet mechanical)* | egress-sidecar conformance lane — **deferred, blocked** on `benchflow.sandbox._egress` (ADR-0003) |
+| `V-NETWORK-CONFORM` *(deferred)* | run *observed* the enforced egress: allowlisted host reachable, non-allowlisted host **blocked** | residual *(not yet mechanical)* | egress-sidecar conformance lane — **deferred, blocked** on `benchflow.sandbox._egress` |
 
 ### 3.1 Per-gate detail (what it checks, what it reads, honest enforcement)
 
@@ -363,9 +363,7 @@ the IDENTITY/declaration half).**
   egress sidecar the lane would assert against is unavailable; #799's runnable
   prober (`net/live_lane_test.py`) is **deliberately not ported**. It also depends
   on the deferred `network_mode` result.json serialization so the observed posture
-  can be reconciled. See ADR-0003
-  ([`adr/0003-network-mode-conformance-lane.md`](./adr/0003-network-mode-conformance-lane.md))
-  and `integration-tiers.md` §11.
+  can be reconciled. See `integration-tiers.md` §11.
 - Recommended trigger (when unblocked): attach to the **existing
   verifier-rewards-judge scope rule**, NOT always-on; docker↔daytona parity stays
   nightly-only.

@@ -372,8 +372,8 @@ def realness_issues(evidence: RolloutEvidence) -> list[str]:
 
     A mechanically-detected verifier tamper (a write/delete/chmod of a
     score-defining file in ``evidence.flagged_actions``) is fail-closed here
-    too (ADR-0002): the gate must hard-fail on it without depending on the
-    judge, so a tamper is rejected even when the judge is absent or lenient.
+    too: the gate must hard-fail on it without depending on the judge, so a
+    tamper is rejected even when the judge is absent or lenient.
     """
     issues: list[str] = []
     if evidence.n_tool_calls <= 0:
