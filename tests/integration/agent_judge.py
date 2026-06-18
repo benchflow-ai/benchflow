@@ -365,6 +365,11 @@ def realness_issues(evidence: RolloutEvidence) -> list[str]:
     These are mechanical, judge-independent invariants — a run that fails any
     of them cannot be salvaged by an LLM verdict, so the gate must hold even
     when the judge passes.
+
+    A mechanically-detected verifier tamper (a write/delete/chmod of a
+    score-defining file in ``evidence.flagged_actions``) is fail-closed here
+    too (ADR-0002): the gate must hard-fail on it without depending on the
+    judge, so a tamper is rejected even when the judge is absent or lenient.
     """
     issues: list[str] = []
     if evidence.n_tool_calls <= 0:
@@ -377,6 +382,8 @@ def realness_issues(evidence: RolloutEvidence) -> list[str]:
         issues.append(f"rollout recorded an error: {evidence.error}")
     if evidence.verifier_error:
         issues.append(f"verifier error: {evidence.verifier_error}")
+    for action in evidence.flagged_actions:
+        issues.append(f"verifier tamper: {action}")
     return issues
 
 

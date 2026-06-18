@@ -10,6 +10,16 @@ This is the operational companion to the success rubric in
 what each gate (`RUBRIC_GATES`) means, the per-slot / skill-loading /
 reward-hacking checklists, the success-rubric table, and what a verdict means.
 
+The locked architectural decisions behind this system live in
+[`adr/`](./adr/): **ADR-0001** ([lane execution home](./adr/0001-integration-lane-execution-home.md))
+— lanes execute as matrix cells, not pytest markers; **ADR-0002**
+([verifier-tamper](./adr/0002-verifier-tamper-producer-side-hash.md)) — cheap
+fail-closed `V-TAMPER` now, producer-side hash deferred; **ADR-0003**
+([network_mode conformance](./adr/0003-network-mode-conformance-lane.md)) —
+static `V-NETWORK` now, runtime egress conformance lane deferred (blocked on
+`benchflow.sandbox._egress`). Vocabulary shared across the docs and the
+`benchflow-experiment-review` skill is in the [Glossary](#glossary) (§12).
+
 > **Terminology rename.** The deterministic verdict is user-facing as
 > **`mergeable`** / **`mergeable with quarantines`** / **`not mergeable`**. These
 > are renames of the internal grader labels `publishable` /
@@ -300,13 +310,112 @@ One-time setup before the heavy lanes are live:
 
 ## 11. Deferred Follow-Ups
 
-Documented, **NOT built**:
+Documented, **NOT built** (see the ADRs in [`adr/`](./adr/) for the locked
+decisions):
 
 - **`--network-mode` CLI passthrough** on `bench eval run`. Today network is a
-  per-task config field with no flag; the lane is a STATIC declaration check.
-- **`persist_sandbox_info` network serialization** — serialize `network_mode`
-  into the rollout artifact so the network lane can move from a STATIC config
-  assertion to an **observed** egress-policy check.
+  per-task config field with no flag; the lane is a STATIC declaration check
+  (ADR-0003).
+- **`network_mode` result.json serialization** — serialize the requested
+  `network_mode` (+ `allowed_hosts`) into the rollout artifact so the network
+  lane can move from a STATIC config assertion to an **observed** egress-policy
+  check, and so `check_results` can reconcile recorded vs requested posture
+  (mirroring `agent_idle_timeout`). **Coordinate this as ONE rollout-contract
+  schema bump with the deferred `verifier_files_mutated` field below** — both are
+  additive defaulting fields on `result.json` + `GateResult` (ADR-0002, ADR-0003).
+- **Runtime egress CONFORMANCE prober** — the lane that *observes* live egress via
+  the egress sidecar (`no-network` blocks all egress; `allowlist` permits only the
+  listed hosts plus the resolved model-provider host; a disallowed host is denied).
+  **BLOCKED on `benchflow.sandbox._egress.build_egress_override` not existing in
+  main**; #799's runnable prober (`net/live_lane_test.py`) is **deliberately not
+  ported**. Recommended trigger: attach to the **existing verifier-rewards-judge
+  scope rule** (§3), NOT always-on; docker↔daytona parity stays nightly-only
+  (ADR-0003).
+- **Producer-side verifier-tamper hash + `verifier_files_mutated` field** — the
+  producer (sandbox/verifier) records a before/after hash of the score-defining
+  file set and writes a definitive `verifier_files_mutated: bool` into the rollout
+  contract, demoting the trajectory regex to advisory. #802 already ships the
+  *cheap* fail-closed half (the regex signal feeds `realness_issues`, Task A1);
+  this is the deferred producer-side authority (ADR-0002). Bundle its contract
+  field with the `network_mode` serialization above as one schema bump.
+- **Unbuilt REFINEMENT-PLAN slices (ported as backlog from #799):**
+  - **Power-aware parity** — replace the fixed reward-band delta in
+    `tests/integration/check_skillsbench_harbor_parity.py` with a
+    sample-size-aware verdict: require a `min_trials` floor and compare outcome
+    rate via **Wilson confidence-interval overlap** (too-few-trials →
+    *inconclusive*, not PASS) plus a documented per-task delta band. Feeds
+    `P-REWARD` / `P-SCHEMA`.
+  - **Fixture-factory harness CLI + network-leak fixture** — add a thin argparse
+    CLI to `tests/integration/deepagents_harness.py`
+    (`--instruction --verify-cmd --extra-system --rollout-dir`) so judge-hardening
+    rounds are reproducible, plus a **network-leak fixture** (run config declares
+    `allowlist`/`no-network` but the trajectory shows egress to a non-allowlisted
+    host) wired into the experiment-review skill's evals so a `network_mode`
+    regression is caught by the SOP's own evals.
+
+## 12. Glossary
+
+Durable shared vocabulary for the integration system — used by these docs,
+`tests/integration/`, the L0–L3 workflows, and the `benchflow-experiment-review`
+skill. Network-posture terms use the **authoritative** `NetworkMode` enum from
+`src/benchflow/task/config.py`: **`no-network` / `allowlist` / `public`**.
+
+- **Integration test** — an end-to-end run that exercises the *real* eval path
+  (adapters, sandboxes, agents, verifiers) via `bench eval run`
+  (`scenarios.run_eval`), asserting the produced artifacts are trustworthy. NOT a
+  unit test; NOT the agent's own task pass/fail.
+
+- **Rollout contract** — the artifact set every producer emits and every checker
+  consumes: `result.json` + the run config + the trajectory (ATIF/ADP). The
+  shared interface that keeps producers, checkers, and the judge decoupled.
+
+- **Producer** — something that emits the rollout contract. In #802 the matrix
+  cell driven through `scenarios.run_eval` (real agents on real tasks) is the
+  primary producer; `tests/integration/deepagents_harness.py` is a *fixture
+  factory* — a steerable agent that manufactures genuine and reward-hacking
+  rollouts to harden the judge.
+
+- **Cell** — one unit of the planner's matrix (`integration_matrix.py`): a
+  `task × agent × model × sandbox × skill_mode × network_mode` slot (schema in
+  §4), run via `scenarios.run_eval` and graded by `rubric_checks.py`. The #802
+  execution home for a lane (ADR-0001).
+
+- **Task-set** — one of the seven named sets (§2) the planner selects from the
+  diff; the #802 analogue of a #799 "lane axis value".
+
+- **Realness gate** — the mechanical, judge-independent check that a rollout is a
+  genuine measurement (`n_tool_calls > 0`, tokens `> 0`, non-null reward, no
+  infra/verifier error, **and** no mechanically-flagged verifier tamper). It must
+  hold even when the LLM judge passes. Implemented by
+  `agent_judge.realness_issues`; surfaced as `R-REAL`.
+
+- **Verifier tamper** — an agent mutating the score-defining (verifier) files to
+  fake a reward. Detected today by the trajectory regex
+  (`agent_judge._scan_verifier_tamper`), whose output (`flagged_actions`) is
+  **fail-closed** into the realness gate (Task A1). The deferred producer-side
+  before/after **hash** (`verifier_files_mutated`) is the future authoritative
+  signal (ADR-0002). Surfaced as `V-TAMPER`.
+
+- **network_mode — identity vs conformance** (two distinct guarantees over the
+  `no-network` / `allowlist` / `public` posture):
+  - **Identity / declaration check** — the *declared* (and, when serialized, the
+    *recorded*) posture is hardened and matches what was requested (cheap; catches
+    "wrong posture declared/requested"). #802 ships the **static** declaration
+    half today via `V-NETWORK` (`rubric_checks.network_hardening`); the recorded
+    reconciliation is deferred until `network_mode` is serialized.
+  - **Conformance check** — the run *actually* observed the right egress: an
+    allowlisted host is reachable AND a non-allowlisted host is **blocked** under
+    the enforced mode (the real security guarantee). **Deferred** in #802 as
+    `V-NETWORK-CONFORM`, blocked on `benchflow.sandbox._egress` (ADR-0003).
+
+- **Evidence check** — a standalone checker that turns rollout artifacts into a
+  release gate (`check_results`, `check_adapter_evidence`,
+  `check_hosted_env_evidence`, `check_trace_to_task_evidence`,
+  `check_skillsbench_harbor_parity`).
+
+- **CI tiering** — the L0–L3 ladder (§1): the per-PR gate is cheap, docker-only,
+  hard-fail; nightly/manual runs the full agent×task×sandbox matrix (advisory,
+  promotable to release-blocker on tags).
 
 ---
 

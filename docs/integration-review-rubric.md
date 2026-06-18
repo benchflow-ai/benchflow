@@ -114,6 +114,7 @@ surface that the review pack, the docs, and the codex agent all key on.
 | `P-PATHS` | config root / sandbox cwd / trajectory paths / result paths agree | deterministic-where-fields-exist else residual | `check_results` path-truth checks where fields exist, else residual |
 | `X-SLOTS` | every planned cell present, unique, fresh (head sha) | deterministic | `build_integration_review_pack` slot classification: missing/duplicate/stale/healthy/unhealthy |
 | `V-NETWORK` | default no-network; allowlist needs non-empty `allowed_hosts`; `public` flagged (fail on verifier/sandbox PR) | deterministic | `rubric_checks.network_hardening` (STATIC per-task config, Q3) |
+| `V-NETWORK-CONFORM` *(deferred)* | run *observed* the enforced egress: allowlisted host reachable, non-allowlisted host **blocked** | residual *(not yet mechanical)* | egress-sidecar conformance lane — **deferred, blocked** on `benchflow.sandbox._egress` (ADR-0003) |
 
 ### 3.1 Per-gate detail (what it checks, what it reads, honest enforcement)
 
@@ -310,7 +311,20 @@ over a flat fixture.
 - Honesty: **deterministic.** A missing required slot or a stale (wrong-SHA) slot
   is a blocker.
 
-**`V-NETWORK` — network policy hardened (deterministic, STATIC per-task config).**
+**Identity vs conformance** (two distinct network-posture guarantees; both named
+in the `no-network` / `allowlist` / `public` vocabulary of the authoritative
+`NetworkMode` enum in `src/benchflow/task/config.py`):
+- **Identity / declaration check** — the *declared* (and, once serialized, the
+  *recorded*) posture is hardened and matches what was requested. Cheap; catches
+  "wrong posture declared/requested". This is what `V-NETWORK` enforces today,
+  statically over the task config.
+- **Conformance check** — the run *actually* observed the right egress: an
+  allowlisted host is reachable AND a non-allowlisted host is **blocked** under
+  the enforced mode (the real security guarantee). This is `V-NETWORK-CONFORM`,
+  **deferred** (below).
+
+**`V-NETWORK` — network policy hardened (deterministic, STATIC per-task config —
+the IDENTITY/declaration half).**
 - Checks: the task's declared network policy is hardened. The safe default is
   `no-network`. Network access is acceptable **only** as `allowlist` with a
   **non-empty** `allowed_hosts`. A bare `public` mode is always flagged; on a PR
@@ -335,8 +349,28 @@ over a flat fixture.
   scholar.google.com, doi.org, api.crossref.org]`). Validity is enforced upstream
   by `_validate_network_policy_fields` (`src/benchflow/task/config.py`).
 - Honesty: **deterministic on the declared policy.** It proves the *declaration*
-  is hardened; it does **not** observe live egress (that needs the deferred
-  `persist_sandbox_info` network serialization, see `integration-tiers.md` §11).
+  is hardened; it does **not** observe live egress (that is the deferred
+  conformance half, `V-NETWORK-CONFORM`, below; see `integration-tiers.md` §11).
+
+**`V-NETWORK-CONFORM` — egress conformance observed (DEFERRED, blocked).**
+- Checks (when built): the run *actually* observed the enforced egress via the
+  egress sidecar — `no-network` blocks all egress; `allowlist` permits only the
+  listed hosts **plus** the resolved model-provider host; a disallowed host is
+  **denied** with a clear signal. This is the real security guarantee that
+  `V-NETWORK`'s static declaration check cannot provide.
+- Status: **deferred and blocked.** It is blocked on
+  `benchflow.sandbox._egress.build_egress_override` not existing in main, so the
+  egress sidecar the lane would assert against is unavailable; #799's runnable
+  prober (`net/live_lane_test.py`) is **deliberately not ported**. It also depends
+  on the deferred `network_mode` result.json serialization so the observed posture
+  can be reconciled. See ADR-0003
+  ([`adr/0003-network-mode-conformance-lane.md`](./adr/0003-network-mode-conformance-lane.md))
+  and `integration-tiers.md` §11.
+- Recommended trigger (when unblocked): attach to the **existing
+  verifier-rewards-judge scope rule**, NOT always-on; docker↔daytona parity stays
+  nightly-only.
+- Honesty: **not mechanically observable today** — recorded as a **residual** until
+  the `_egress` surface lands.
 
 ### 3.2 Schema adapter (why both fixture shapes grade identically)
 
