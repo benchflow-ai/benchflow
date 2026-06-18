@@ -418,18 +418,14 @@ PR-head `bench` necessarily runs on the host (it is the orchestrator), but the
 
 ## 10. Admin Setup
 
-One-time setup before the heavy lanes are live:
-
-1. **Secrets** live in the existing `pypi-internal-preview` environment
-   (`DAYTONA_API_KEY`, `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL`, provider keys —
-   already present). The L3 Codex reviewer uses the existing repo `OPENAI_API_KEY`
-   (written to an apikey `auth.json` at runtime) — no extra secret to add.
-   **No protected environment is created** —
-   L3 is a manual `workflow_dispatch` whose golden truth is the HuggingFace
-   leaderboard `main` runs plus the latest benchflow main.
-2. **Branch protection:** make **L0, L1, L2 required** status checks. L3 is run
-   on demand before merge (manual dispatch); promote it to a protected env with
-   required reviewers later if you want a hard human gate.
+The one-time GitHub configuration (secrets on `pypi-internal-preview`, branch
+protection, labels) is documented in full — and kept current — in the canonical
+[`.github/integration/ADMIN_SETUP.md`](../.github/integration/ADMIN_SETUP.md).
+In short: the load-bearing secrets already live in the `pypi-internal-preview`
+environment (DeepSeek powers both rollout and judge; the L3 Codex reviewer reuses
+the repo `OPENAI_API_KEY`), **no protected environment is created**, and a repo
+admin marks **L0 / L1 / L2** as required status checks (L3 stays a manual
+`workflow_dispatch`).
 
 ## 11. Deferred Follow-Ups
 
