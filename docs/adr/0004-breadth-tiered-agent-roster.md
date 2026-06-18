@@ -84,3 +84,49 @@ Two companion decisions ride with this:
 - **Filter un-keyed agents inside the planner**: would make the planner
   environment-dependent and non-deterministic, breaking its MiniYaml-safe,
   pure-data contract. Rejected in favor of a separate env-aware filter step.
+
+## Update (2026-06-18): DeepSeek-only broad fan; natives gated; gemini/harvey dropped
+
+This update **supersedes** the roster-size and subset parts of the Decision above
+(the original record is retained as history). The breadth-tiered shape (variant of
+the existing rules, not a new level) is unchanged; what changed is *which* agents the
+broad lanes fan.
+
+- **Roster is now 7 agents (was 9).** Dropped `gemini` and `harvey-lab-harness` —
+  neither can run on DeepSeek. The Gemini CLI speaks Google's native GenerateContent
+  protocol (it is in `_NATIVE_PROTOCOL_AGENTS`, bypassing the LiteLLM proxy) and no
+  benchflow provider exposes a Gemini-compatible endpoint; `harvey-lab-harness`'s
+  `_create_adapter` OpenAI path uses the OpenAI **Responses API**
+  (`client.responses.create`), which DeepSeek's chat-completions-only endpoint does
+  not serve (the same wall that blocks `codex-acp`), and its anthropic adapter uses
+  plain `anthropic.Anthropic()` (needs `ANTHROPIC_API_KEY`, not the Bedrock bearer we
+  have). `caps.max_agents` is now 7.
+- **The 7 = 5 DeepSeek agents + 2 gated natives.** DeepSeek lane (5): `openhands`,
+  `pi-acp`, `openclaw`, `opencode`, `mimo` on `deepseek/deepseek-v4-flash`, promoted
+  to `deepseek/deepseek-v4-pro` on hard tasks via `deepseek_tiering` (`pro_tasks` =
+  `lake-warming-attribution`, `weighted-gdp-calc`, `shock-analysis-supply`). Gated
+  natives (2): `codex-acp` (`gpt-5.4-nano`, OpenAI) and `claude-agent-acp`
+  (`aws-bedrock/us.anthropic.claude-haiku-4-5-20251001`, Bedrock anthropic-messages).
+- **The broad fan is DeepSeek-only.** The `all-agents` fan at L3 (`expanded` /
+  `nine`) **and** the `all-agents-subset` breadth tier at L2 now fan the **DeepSeek
+  roster only** — new config key `deepseek_roster` in `scope_defaults.yml` = the 5
+  DeepSeek agents. The 2 gated natives are blocked from the default / broad fan
+  "currently" and run **only via affected-agent** (a PR touching their own adapter:
+  `codex_config.py` → `codex-acp`; `claude*.py` → `claude-agent-acp`), paired with the
+  DeepSeek baseline `openhands` for before/after comparison — i.e. use other
+  (non-DeepSeek) models only as needed to test that specific agent.
+- **L2 subset is now 3 DeepSeek reps:** `roster_subset` = `openhands` (baseline /
+  OpenHands) + `pi-acp` (ACP launcher) + `opencode` (opencode proxy family). It was
+  previously 4 and included `codex-acp` + `gemini` — both removed.
+- **L3 full roster is now the 5 DeepSeek agents.** `nine` / `expanded` fan the full
+  DeepSeek roster via `_FULL_ROSTER_SCOPES`. There is no 9-agent fan anymore.
+
+Rationale: the broad "affects every agent" lanes exist to breadth-probe the shared
+DeepSeek proxy path, and only the 5 DeepSeek agents actually ride that path — fanning
+the protocol-locked natives across the broad lanes both wasted cells and (for
+`claude-agent-acp`) risked false-red slots. Gating the natives to affected-agent
+keeps their coverage where it matters (a change to their own adapter) while the broad
+fan stays cheap and homogeneous. Note `AWS_BEARER_TOKEN_BEDROCK` (+ `AWS_REGION`) is
+now present in the `pypi-internal-preview` CI environment, so `claude-agent-acp` runs
+via affected-agent today; the credential-aware filter is a safety net rather than the
+current state.

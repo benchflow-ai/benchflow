@@ -21,7 +21,7 @@ reason recorded. A judge that errors must never be read as a pass.
 Usage::
 
     python tests/integration/agent_judge.py <rollout_dir>
-    python tests/integration/agent_judge.py <rollout_dir> --model gemini-3.1-flash-lite
+    python tests/integration/agent_judge.py <rollout_dir> --model openai/deepseek-v4-flash
 """
 
 from __future__ import annotations
@@ -46,7 +46,11 @@ from benchflow.rewards.llm import (
     parse_verdict,
 )
 
-DEFAULT_JUDGE_MODEL = "gemini-3.1-flash-lite"
+# DeepSeek-v4 is the ONLY judge model (no gemini/openai/anthropic). The
+# ``openai/`` prefix routes call_judge through its OpenAI-compatible chat-
+# completions branch, which honors OPENAI_BASE_URL — set to the DeepSeek endpoint
+# in CI by select_integration_provider.py (and overridable for local runs).
+DEFAULT_JUDGE_MODEL = "openai/deepseek-v4-flash"
 
 # How much trajectory text to show the judge. Trajectories can be large; the
 # judge only needs enough evidence to assess coherence and reward-hacking, and

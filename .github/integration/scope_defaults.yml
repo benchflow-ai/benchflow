@@ -18,12 +18,12 @@ schema_version: "1"
 # ------------------------------------------------------------------
 caps:
   # Sized to hold the largest legitimate lane: the `expanded` release-critical
-  # matrix = 10 tasks * 9 agents (primary fan) + per-task baseline axis-coverage
-  # cells across the extra (sandbox, skill_mode) combos + cheat ~= 121, with
-  # headroom. The `nine` floor (max_agents * max_tasks = 81) is comfortably held.
+  # matrix = 10 tasks * 5 DeepSeek agents (broad fan) + per-task baseline
+  # axis-coverage cells across the extra (sandbox, skill_mode) combos + cheat,
+  # with headroom. The floor (max_agents * max_tasks = 63) is comfortably held.
   # The ceiling still fail-closes a runaway custom override (rejected_overflow).
   max_cells: 140
-  max_agents: 9
+  max_agents: 7
   max_tasks: 9
   # Per-agent rollout concurrency. Lowered automatically by the planner as the
   # distinct daytona-agent count rises so aggregate stays under the ceiling.
@@ -48,46 +48,63 @@ canonical_high_task: weighted-gdp-calc
 # The citation vehicle task (citation lane + network allowlist variant).
 citation_vehicle: citation-check
 
-# Default judge model (BENCHFLOW_JUDGE_MODEL / gemini-3.1-flash-lite). Used for
-# the judge axis and as the cheap per-rollout reader in the review pack.
-judge_model: gemini-3.1-flash-lite
+# Default judge model. The agent-judge and the review-pack per-rollout reader run
+# on DeepSeek-v4 ONLY — no other models. At runtime select_integration_provider.py
+# exports BENCHFLOW_JUDGE_MODEL=openai/deepseek-v4-flash (routed via the OpenAI-
+# compatible chat-completions surface with the DeepSeek key + base_url); this
+# value is the recorded per-cell metadata and the local-run default. The judge is
+# NOT a matrix cell, so the credential filter does not gate it — DEEPSEEK_API_KEY
+# + DEEPSEEK_BASE_URL must be present (they are, as required CI secrets).
+judge_model: deepseek-v4-flash
 
-# Default agent model when a cell's agent has no explicit per-agent model.
-default_model: gemini-3.1-flash-lite-preview
+# Default agent model when a cell's agent has no explicit per-agent model. Every
+# roster agent has an explicit entry below, so this is only a safety net; it
+# points at the cheap DeepSeek flash lane.
+default_model: deepseek/deepseek-v4-flash
 
 # Per-agent default models (mirror release axes + run.sh model_for_agent).
 #
-# Empirically-grounded model policy:
-#  - The openai-completions-family agents that proxy cleanly through the LiteLLM
-#    usage proxy run on deepseek/deepseek-v4-flash (needs DEEPSEEK_API_KEY +
-#    DEEPSEEK_BASE_URL, both in CI): openhands, openclaw, opencode, pi-acp, mimo.
+# Empirically-grounded model policy — DeepSeek-first, native only when forced:
+#  - DeepSeek lane (openhands, openclaw, opencode, pi-acp, mimo) runs on
+#    deepseek/deepseek-v4-flash (needs DEEPSEEK_API_KEY + DEEPSEEK_BASE_URL, both
+#    in CI), promoted to deepseek-v4-pro on hard tasks via deepseek_tiering.
 #    mimo-on-deepseek REPLACES the old xiaomi/mimo id (closes the XIAOMI gap).
-#  - gemini / codex-acp keep their native corresponding model (GEMINI / OPENAI).
-#  - harvey-lab-harness stays native gemini: its _create_adapter dispatches on
-#    the model-name prefix and RAISES for deepseek, so it CANNOT use deepseek.
-#  - claude-agent-acp routes through Bedrock's anthropic-messages surface
-#    (needs AWS_BEARER_TOKEN_BEDROCK, not yet in CI — cred-aware emission skips
-#    it until the key is uploaded), NOT the bare claude-haiku native id.
+#  - codex-acp keeps native gpt (OpenAI Responses) and claude-agent-acp routes
+#    through Bedrock's anthropic-messages surface. Both CANNOT use DeepSeek
+#    (openai-responses / anthropic-messages protocol guards), so they are GATED:
+#    fanned ONLY via affected-agent (their own adapter changed), never in the
+#    broad DeepSeek lanes. See deepseek_roster below.
+#  - gemini (native Google GenerateContent) and harvey-lab-harness (OpenAI
+#    Responses API) are DROPPED from the roster: neither can run on DeepSeek.
 agent_models:
   claude-agent-acp: aws-bedrock/us.anthropic.claude-haiku-4-5-20251001
   pi-acp: deepseek/deepseek-v4-flash
   openclaw: deepseek/deepseek-v4-flash
   codex-acp: gpt-5.4-nano
-  gemini: gemini-3.1-flash-lite-preview
   opencode: deepseek/deepseek-v4-flash
-  harvey-lab-harness: gemini-3.1-flash-lite-preview
   openhands: deepseek/deepseek-v4-flash
   mimo: deepseek/deepseek-v4-flash
 
+# DeepSeek roster — the agents fanned in the BROAD lanes (all-agents at
+# L3/expanded, and the all-agents-subset breadth tier at L2). The gated native
+# agents (claude-agent-acp, codex-acp) are deliberately ABSENT here: they run
+# only via affected-agent, "blocking" non-DeepSeek agents from the default
+# real-workflow fan. To un-gate one later, add it back to this list.
+deepseek_roster:
+  - openhands
+  - pi-acp
+  - openclaw
+  - opencode
+  - mimo
+
 # Breadth-tiered roster SUBSET emitted at L2 (auto-on-push) for changes that
-# affect EVERY agent. One representative agent per family: openhands (deepseek
-# proxy lane / baseline), codex-acp (openai-native), gemini (gemini-native),
-# pi-acp (acp launcher). The FULL 9-agent roster runs only at L3/expanded.
+# affect EVERY agent. A representative DeepSeek subset (one per launcher family:
+# openhands = baseline/OpenHands, pi-acp = ACP launcher, opencode = opencode
+# proxy family). The FULL DeepSeek roster runs at L3/expanded.
 roster_subset:
   - openhands
-  - codex-acp
-  - gemini
   - pi-acp
+  - opencode
 
 # ------------------------------------------------------------------
 # DeepSeek model tiering by task difficulty.

@@ -85,7 +85,11 @@ def test_maps_load_and_caps_self_consistent():
     assert maps.caps.max_cells >= maps.caps.max_agents * maps.caps.max_tasks
     assert maps.caps.aggregate_concurrency <= 24
     assert maps.caps.agent_idle_timeout == 240
-    assert len(maps.agents) == 9
+    # Roster = 5 DeepSeek agents + 2 gated natives (claude-agent-acp, codex-acp).
+    # gemini and harvey-lab-harness were dropped (cannot run on DeepSeek).
+    assert len(maps.agents) == 7
+    assert "gemini" not in maps.agents
+    assert "harvey-lab-harness" not in maps.agents
     assert maps.baseline_agent == "openhands"
     assert maps.baseline_model == "deepseek/deepseek-v4-flash"
     assert maps.canonical_high_task == "weighted-gdp-calc"
@@ -246,12 +250,33 @@ def test_provider_change_fans_roster_subset():
     assert plan.network_lane is True
 
 
-def test_expanded_still_fans_full_roster():
-    # The FULL 9-agent roster runs at L3/expanded: scope=expanded fans every
-    # agent (the agent IS the varying axis via _FULL_ROSTER_SCOPES).
+def test_expanded_fans_deepseek_roster_only():
+    # At L3/expanded the broad fan is the DeepSeek roster ONLY (the agent IS the
+    # varying axis via _FULL_ROSTER_SCOPES). The gated native agents
+    # (claude-agent-acp, codex-acp) are "blocked" from the default fan and never
+    # appear here — they run only via affected-agent.
     maps = _maps()
     plan = _plan([], override="expanded")
-    assert _agents(plan) == set(maps.agents)
+    assert _agents(plan) == set(maps.deepseek_roster)
+    assert "claude-agent-acp" not in _agents(plan)
+    assert "codex-acp" not in _agents(plan)
+
+
+def test_expanded_override_beats_roster_subset_extra():
+    # Regression (_matrix_agents ordering): an agent-runtime-infra file like
+    # registry.py carries ``extra: all-agents-subset`` (the L2 breadth tier), but
+    # when promoted to L3/expanded the FULL-roster scope MUST win and fan the
+    # whole DeepSeek roster -- not the smaller L2 subset. Before the ordering fix
+    # the all-agents-subset branch was evaluated first and silently capped
+    # expanded back to the breadth subset.
+    maps = _maps()
+    plan = _plan(["src/benchflow/agents/registry.py"], override="expanded")
+    assert plan.scope == "expanded"
+    assert _agents(plan) == set(maps.deepseek_roster)
+    # ... strictly larger than the L2 breadth subset it would get on auto-push.
+    assert _agents(plan) != set(maps.roster_subset) | {maps.baseline_agent}
+    # The gating still holds: the heavy lane does not pull in the natives.
+    assert "claude-agent-acp" not in _agents(plan)
 
 
 def test_model_policy_open_agents_on_deepseek():
@@ -264,11 +289,11 @@ def test_model_policy_open_agents_on_deepseek():
         assert maps.model_for(agent) == "deepseek/deepseek-v4-flash", agent
     # mimo is no longer on xiaomi.
     assert "xiaomi" not in maps.model_for("mimo")
-    # The native-model agents keep their corresponding native model.
-    assert maps.model_for("gemini") == "gemini-3.1-flash-lite-preview"
+    # The gated native agent keeps its native model (OpenAI Responses).
     assert maps.model_for("codex-acp") == "gpt-5.4-nano"
-    # harvey stays native (its adapter dispatch raises for deepseek).
-    assert maps.model_for("harvey-lab-harness") == "gemini-3.1-flash-lite-preview"
+    # gemini & harvey are dropped from the roster entirely (cannot use DeepSeek).
+    assert "gemini" not in maps.agents
+    assert "harvey-lab-harness" not in maps.agents
 
 
 def test_claude_on_bedrock():
@@ -289,6 +314,34 @@ def test_specific_agent_change_does_not_fan_full_roster():
     plan = _plan(["src/benchflow/agents/codex_config.py"])
     assert _agents(plan) == {"codex-acp", maps.baseline_agent}
     assert _agents(plan) != set(maps.agents)
+
+
+def test_gated_native_runs_only_via_affected_agent():
+    # The gated natives (claude-agent-acp, codex-acp) cannot use DeepSeek, so
+    # they are blocked from the broad fan and run ONLY when their own adapter
+    # changes. This is the one path "using other models as needed to test that
+    # agent": a claude*.py change DOES run claude-agent-acp (on its Bedrock
+    # model) + the DeepSeek baseline for before/after comparison...
+    maps = _maps()
+    plan = _plan(["src/benchflow/agents/claude_agent_acp.py"])
+    assert _agents(plan) == {"claude-agent-acp", maps.baseline_agent}
+    # ...while the broad DeepSeek lanes never pull the natives in.
+    assert "claude-agent-acp" not in maps.deepseek_roster
+    assert "codex-acp" not in maps.deepseek_roster
+    assert set(maps.deepseek_roster) <= set(maps.agents)
+
+
+def test_all_agents_extra_fans_deepseek_roster_only():
+    # The manual/heavy ``all-agents`` fan is DeepSeek-only: the gated natives
+    # are excluded by policy (blocked in the real workflow currently).
+    maps = _maps()
+    plan = _plan([], override="expanded")
+    # expanded carries the broad fan; confirm it equals the DeepSeek roster.
+    assert _agents(plan) == set(maps.deepseek_roster)
+    assert all(
+        maps.model_for(a).startswith("deepseek/") or a == maps.baseline_agent
+        for a in _agents(plan)
+    )
 
 
 def test_skill_loading_rule_low3_medium3_both_skill_modes_audit():
@@ -498,7 +551,7 @@ def test_per_agent_concurrency_clamped_for_full_daytona_roster():
     [
         ("src/benchflow/agents/codex_config.py", "codex-acp"),
         ("src/benchflow/agents/openclaw_acp_shim.py", "openclaw"),
-        ("src/benchflow/agents/harvey_lab_acp_shim.py", "harvey-lab-harness"),
+        ("src/benchflow/agents/claude_agent_acp.py", "claude-agent-acp"),
         ("src/benchflow/agents/pi_acp_launcher.py", "pi-acp"),
     ],
 )

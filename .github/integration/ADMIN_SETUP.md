@@ -67,29 +67,42 @@ Per the agent model policy (see
 [`../../docs/integration-tiers.md`](../../docs/integration-tiers.md) §3.3), these
 specific keys are load-bearing:
 
-- **`DEEPSEEK_API_KEY` + `DEEPSEEK_BASE_URL` — both required.** The 5 open agents
-  (`openhands`, `openclaw`, `opencode`, `pi-acp`, `mimo`) run on
-  `deepseek/deepseek-v4-flash` through the LiteLLM usage proxy; the `deepseek`
-  provider declares `url_params={"base_url": "DEEPSEEK_BASE_URL"}`
+- **`DEEPSEEK_API_KEY` + `DEEPSEEK_BASE_URL` — both required; gate rollout AND
+  grading.** The 5 open agents (`openhands`, `openclaw`, `opencode`, `pi-acp`,
+  `mimo`) run on `deepseek/deepseek-v4-flash` through the LiteLLM usage proxy; the
+  `deepseek` provider declares `url_params={"base_url": "DEEPSEEK_BASE_URL"}`
   (`src/benchflow/agents/providers.py`), so `DEEPSEEK_BASE_URL` is **not** an
-  optional override — without it the deepseek cells cannot resolve.
-- **`GEMINI_API_KEY` — required regardless of which agents run.** It powers both
-  the `gemini` / `harvey-lab-harness` rollout agents **and the judge**
-  (`gemini-3.1-flash-lite` is the default `judge_model`), so it is needed on any
-  lane that judges.
+  optional override. The **agent-judge also runs on DeepSeek-v4 only**
+  (`select_integration_provider.py` exports
+  `BENCHFLOW_JUDGE_MODEL=openai/deepseek-v4-flash`, routed via the OpenAI-
+  compatible surface with the DeepSeek key/base_url). The judge is NOT a matrix
+  cell, so the credential filter does **not** protect it — a missing
+  `DEEPSEEK_*` fails grading on **every** cell.
+- **`GEMINI_API_KEY` — set but NOT load-bearing.** Nothing on the default path
+  consumes it: the judge runs on DeepSeek-v4 and the `gemini` /
+  `harvey-lab-harness` rollout agents were dropped from the roster. It is
+  provisioned on the environment as an available fallback only (the judge's
+  failover order in `select_integration_provider.py` is DeepSeek → GLM → Qwen →
+  LiteLLM → OpenAI → GitHub Models; gemini is not a judge candidate).
 - **`OPENAI_API_KEY`** — `codex-acp` rollout model (`gpt-5.4-nano`) **and** the L3
-  Codex equivalence reviewer.
-- **`AWS_BEARER_TOKEN_BEDROCK` (+ `AWS_REGION`) — L3 `claude-agent-acp`
-  credential, TO BE UPLOADED.** `claude-agent-acp` routes through Bedrock's
-  `anthropic-messages` surface
+  Codex equivalence reviewer. `codex-acp` is a GATED native (see below).
+- **`AWS_BEARER_TOKEN_BEDROCK` (+ `AWS_REGION`) — `claude-agent-acp` credential,
+  present in `pypi-internal-preview`.** `claude-agent-acp` routes through
+  Bedrock's `anthropic-messages` surface
   (`aws-bedrock/us.anthropic.claude-haiku-4-5-20251001`), which requires
   `AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION`
-  (`src/benchflow/providers/litellm_config.py`). **These are not in CI yet.**
-  Until they are provisioned, credential-aware emission
+  (`src/benchflow/providers/litellm_config.py`). Both keys are set on the
+  environment. If they are ever absent, credential-aware emission
   ([`../scripts/filter_credentialed_cells.py`](../scripts/filter_credentialed_cells.py))
-  **drops** the `claude` cells as a documented skip (not a red slot), so no
-  Daytona sandbox is burned. Upload both to the `pypi-internal-preview`
-  environment to enable the full L3 claude lane.
+  **drops** the `claude` cells as a documented skip (not a red slot).
+
+> **Roster & gating (current policy).** The broad fan is **DeepSeek-only**: the 5
+> DeepSeek agents (`openhands`, `pi-acp`, `openclaw`, `opencode`, `mimo`) run in
+> every roster lane. The 2 **gated natives** — `claude-agent-acp` (Bedrock) and
+> `codex-acp` (OpenAI) — cannot use DeepSeek and are blocked from the default
+> fan; they run **only via affected-agent** (a PR touching their own adapter), so
+> a default run needs only `DEEPSEEK_*` (rollout **and** judge) + `DAYTONA_API_KEY`.
+> `gemini` and `harvey-lab-harness` were removed from the roster.
 
 Sandbox: `DAYTONA_API_KEY` (L2/L3 only; L1 is docker-only).
 

@@ -70,16 +70,27 @@ set_rank:
   - expanded
 
 # ------------------------------------------------------------------
-# Agent roster — the canonical 9 integration agents.
+# Agent roster — the testable integration agents.
+#
+# Two tiers (see scope_defaults.yml deepseek_roster):
+#  - DeepSeek lane (openhands, pi-acp, openclaw, opencode, mimo): proxy cleanly
+#    through the LiteLLM usage proxy on deepseek-v4-flash/pro. These are the
+#    agents fanned in the BROAD roster lanes (subset @ L2, full @ L3/expanded).
+#  - Gated native (claude-agent-acp via Bedrock, codex-acp via OpenAI): CANNOT
+#    use DeepSeek (anthropic-messages / openai-responses protocol guards). They
+#    are BLOCKED from the broad fan "currently" and run ONLY via affected-agent
+#    (a PR that touches their own adapter) — i.e. used as needed to test that
+#    specific agent.
+# gemini (native Google GenerateContent) and harvey-lab-harness (OpenAI
+# Responses API) were dropped: neither can run on DeepSeek and both are out of
+# the CI roster.
 # ------------------------------------------------------------------
-agents_9: &agents_9
+roster:
   - claude-agent-acp
   - pi-acp
   - openclaw
   - codex-acp
-  - gemini
   - opencode
-  - harvey-lab-harness
   - openhands
   - mimo
 
@@ -97,15 +108,11 @@ affected_agent_map:
     agent: codex-acp
   - glob: "src/benchflow/agents/openclaw_acp_shim.py"
     agent: openclaw
-  - glob: "src/benchflow/agents/harvey_lab_acp_shim.py"
-    agent: harvey-lab-harness
   - glob: "src/benchflow/agents/pi_acp_launcher.py"
     agent: pi-acp
   # Generic per-agent source files: src/benchflow/agents/<name>*.py where <name>
   # is a roster agent id (underscored). These are explicit so the planner never
   # has to guess from a free-form filename.
-  - glob: "src/benchflow/agents/gemini*.py"
-    agent: gemini
   - glob: "src/benchflow/agents/opencode*.py"
     agent: opencode
   - glob: "src/benchflow/agents/openhands*.py"
@@ -242,9 +249,11 @@ rules:
     cheat_on_trust: false
     network_lane: false
 
-  # src/benchflow/agents, ACP adapters, codex/openhands/pi/gemini ->
+  # src/benchflow/agents, ACP adapters, codex/openhands/pi/claude ->
   # low-3 + one high(weighted-gdp-calc) ; affected agent + baseline agent
-  # (openhands + deepseek), no-skill AND with-skill when relevant.
+  # (openhands + deepseek), no-skill AND with-skill when relevant. A change to a
+  # gated native agent (codex_config.py, claude*.py) surfaces THAT agent via
+  # affected-agent — the one path on which a non-DeepSeek agent runs.
   - id: agents-adapters
     globs:
       - "src/benchflow/agents/**"

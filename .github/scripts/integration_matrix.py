@@ -120,8 +120,13 @@ class Maps:
     default_model: str
     agent_models: dict[str, str]
     # Breadth-tiered roster SUBSET emitted at L2 (all-agents-subset). Defaults to
-    # [baseline_agent] when absent. The FULL roster runs at L3/expanded.
+    # [baseline_agent] when absent. The FULL DeepSeek roster runs at L3/expanded.
     roster_subset: list[str]
+    # The DeepSeek-only roster fanned in the BROAD lanes (all-agents at
+    # L3/expanded). Gated native agents (claude-agent-acp, codex-acp) are NOT in
+    # this list — they reach the matrix only via affected-agent. Defaults to
+    # [baseline_agent] when absent.
+    deepseek_roster: list[str]
     timeout_minutes: dict[str, int]
     # DeepSeek task-difficulty tiering: high-difficulty tasks on the flash lane
     # are promoted to the pro model. Empty pro_model disables tiering.
@@ -471,6 +476,8 @@ def load_maps(
     baseline_agent = str(raw_defaults["baseline_agent"])
     # Breadth-tiered L2 subset; default to the baseline agent alone when absent.
     roster_subset = _as_list(raw_defaults.get("roster_subset")) or [baseline_agent]
+    # DeepSeek-only broad-lane roster; default to the baseline agent alone.
+    deepseek_roster = _as_list(raw_defaults.get("deepseek_roster")) or [baseline_agent]
     timeout_minutes: dict[str, int] = {
         str(k): int(v) for k, v in (raw_defaults.get("timeout_minutes") or {}).items()
     }
@@ -487,7 +494,7 @@ def load_maps(
         rules=rules,
         task_sets=task_sets,
         set_rank=_as_list(raw_map.get("set_rank")),
-        agents=_as_list(raw_map.get("agents_9")),
+        agents=_as_list(raw_map.get("roster")),
         affected_agent_map=affected_agent_map,
         network_trigger_globs=_as_list(raw_map.get("network_trigger_globs")),
         caps=caps,
@@ -499,6 +506,7 @@ def load_maps(
         default_model=str(raw_defaults.get("default_model", "")),
         agent_models=agent_models,
         roster_subset=roster_subset,
+        deepseek_roster=deepseek_roster,
         timeout_minutes=timeout_minutes,
         pro_model=pro_model,
         pro_tasks=pro_tasks,
@@ -764,18 +772,30 @@ _FULL_ROSTER_SCOPES = frozenset({"nine", "expanded"})
 def _matrix_agents(res: Resolution, maps: Maps) -> list[str]:
     """The agents that drive the matrix for this resolution.
 
-    The agents/ rule (affected-agent) runs ONLY the affected agents plus the
-    baseline agent. ``all-agents`` fans the FULL roster (manual / expanded use)
-    for changes that affect EVERY agent. ``all-agents-subset`` is the
-    breadth-tiered L2 (auto-on-push) variant: a representative SUBSET — one agent
-    per credential/launcher family plus the baseline — so a registry / provider
-    change is probed across families without spinning up the full 40-cell roster.
-    ``nine`` / ``expanded`` fan the full roster (the agent IS the varying axis).
-    Every other lane (citation/low/medium/high/custom) varies a non-agent axis
-    and runs the single baseline agent.
+    The BROAD lanes fan the DeepSeek roster ONLY. The gated native agents
+    (claude-agent-acp via Bedrock, codex-acp via OpenAI) cannot use DeepSeek and
+    are "currently blocked" from the default fan — they reach the matrix solely
+    via affected-agent (a PR touching their own adapter). Concretely:
+
+    - ``all-agents`` and ``nine`` / ``expanded`` fan ``deepseek_roster`` (the
+      agent IS the varying axis, but only over the DeepSeek lane).
+    - ``all-agents-subset`` is the breadth-tiered L2 (auto-on-push) variant: a
+      representative DeepSeek SUBSET plus the baseline, so a registry / provider
+      change is probed across launcher families without the full roster.
+    - the agents/ rule (affected-agent) runs the affected agents — which MAY be
+      a gated native (codex/claude) when its source changed — plus the baseline.
+    - every other lane (citation/low/medium/high/custom) varies a non-agent axis
+      and runs the single baseline agent.
     """
     if "all-agents" in res.extra:
-        return list(maps.agents)
+        return list(maps.deepseek_roster)
+    # nine / expanded (the heavy, manually-dispatched L3 lane) fan the full
+    # DeepSeek roster and OVERRIDE the L2 breadth-tiered subset — so `expanded`
+    # on an agent-infra / provider change gives every DeepSeek agent, not just
+    # the subset. This MUST be checked before all-agents-subset/affected-agent,
+    # since those rules also match the change and would otherwise win at L3.
+    if res.scope in _FULL_ROSTER_SCOPES:
+        return list(maps.deepseek_roster)
     if "all-agents-subset" in res.extra:
         agents: list[str] = []
         for agent in (*maps.roster_subset, maps.baseline_agent):
@@ -788,8 +808,6 @@ def _matrix_agents(res: Resolution, maps: Maps) -> list[str]:
             if agent not in agents:
                 agents.append(agent)
         return agents
-    if res.scope in _FULL_ROSTER_SCOPES:
-        return list(maps.agents)
     return [maps.baseline_agent]
 
 

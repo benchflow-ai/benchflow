@@ -19,8 +19,10 @@ fail-closed `V-TAMPER` now, producer-side hash deferred; **ADR-0003**
 static `V-NETWORK` now, runtime egress conformance lane deferred (blocked on
 `benchflow.sandbox._egress`); **ADR-0004**
 ([breadth-tiered agent roster](./adr/0004-breadth-tiered-agent-roster.md)) —
-representative agent SUBSET at L2, full 9-agent roster at L3 via `expanded`, plus
-the per-agent model policy and credential-aware emission. Vocabulary shared across
+the broad fan is DeepSeek-only: a representative 3-agent SUBSET at L2 and the full
+DeepSeek roster (5 agents) at L3 via `expanded`; the 2 gated native agents
+(`codex-acp`, `claude-agent-acp`) run only via affected-agent, plus the per-agent
+model policy and credential-aware emission. Vocabulary shared across
 the docs and the `benchflow-experiment-review` skill is in the
 [Glossary](#glossary) (§12).
 
@@ -68,10 +70,16 @@ sets from the diff. Tasks live under `docs/examples/task-md/real-skillsbench/`.
 | `nine` | `low-3` + `medium-3` + `high-3` |
 | `expanded` | `nine` + `citation-check` + affected-task(s) + parity cases |
 
-Nine agents: `claude-agent-acp`, `pi-acp`, `openclaw`, `codex-acp`, `gemini`,
-`opencode`, `harvey-lab-harness`, `openhands`, `mimo`. The **baseline agent pair**
-is `openhands` + `deepseek/deepseek-v4-flash`; the canonical "one high task" is
-`weighted-gdp-calc`; the citation vehicle is `citation-check`.
+Seven roster agents = **5 DeepSeek agents** (`openhands`, `pi-acp`, `openclaw`,
+`opencode`, `mimo`) **+ 2 gated natives** (`codex-acp`, `claude-agent-acp`). The 5
+DeepSeek agents run `deepseek/deepseek-v4-flash` through the LiteLLM usage proxy
+(promoted to `deepseek/deepseek-v4-pro` on hard tasks via `deepseek_tiering`); they
+are the lane the broad fan exercises. The 2 gated natives speak protocols DeepSeek
+cannot serve, so they run **only via affected-agent** (§3.2). `gemini` and
+`harvey-lab-harness` were **dropped** — neither can run on DeepSeek (§3.3). The
+**baseline agent pair** is `openhands` + `deepseek/deepseek-v4-flash`; the
+canonical "one high task" is `weighted-gdp-calc`; the citation vehicle is
+`citation-check`.
 
 ## 3. Default-config-rules (PR scope → required set → required axes)
 
@@ -84,11 +92,11 @@ derives the affected agent from a changed `src/benchflow/agents/<name>` path.
 | citation / evidence / schema docs | `citation` | Docker, no-skill, usage=required | L1 |
 | `src/benchflow/eval*`, rollout lifecycle, artifact schema | `nine` | Docker, no-skill, usage=required, judge | L2 |
 | a **specific** agent file (`agents/<name>*.py`, ACP shim) | `low-3` + one high (`weighted-gdp-calc`) | **affected agent** + baseline agent (`openhands`+`deepseek`); no-skill AND with-skill when relevant | L2 |
-| **agent runtime infra** affecting *every* agent (`agents/registry.py`, `protocol.py`, `install.py`, `credentials.py`, `env.py`, shared `acp/**`) | `low-3` | representative agent **SUBSET** (`openhands`+`codex-acp`+`gemini`+`pi-acp`) at L2; **FULL 9-agent roster at L3 via `expanded`** — a registry/ACP change is breadth-probed across credential/launcher families auto-on-push, then fanned across all 9 only at the heavy L3 lane | L2 |
+| **agent runtime infra** affecting *every* agent (`agents/registry.py`, `protocol.py`, `install.py`, `credentials.py`, `env.py`, shared `acp/**`) | `low-3` | representative DeepSeek **SUBSET** (`openhands`+`pi-acp`+`opencode`) at L2; **full DeepSeek roster (5 agents) at L3 via `expanded`** — a registry/ACP change is breadth-probed across DeepSeek reps auto-on-push, then fanned across all 5 DeepSeek agents at the heavy L3 lane. The 2 gated natives (`codex-acp`, `claude-agent-acp`) are **blocked from this broad fan** and run only via affected-agent | L2 |
 | skill loading, `.agents/skills`, skill injection | `low-3` + `medium-3` | no-skill AND with-skill; run skill-catalog extraction | L2 |
 | Docker / Daytona / sandbox / root / path | `low-3` + `medium-3` | Docker + Daytona parity; reaper dry-run | L2 |
 | verifier, rewards, judge, anti-hack hardening | `citation` + `weighted-gdp-calc` + `shock-analysis-supply` | judge fail-closed, reward-hacking scan, verifier isolation | L3 |
-| network / package install / **LLM-proxy routing** (Q3 triggers) | `jax-computing-basics` + `data-to-d3` + one high | representative agent **SUBSET** (`openhands`+`codex-acp`+`gemini`+`pi-acp`) at L2; **FULL 9-agent roster at L3 via `expanded`** (a proxy/routing change affects every agent's model calls, so it is breadth-probed across families auto-on-push then fanned across all 9 at L3) + default network-off + the `citation-check` allowlist variant | L2 |
+| network / package install / **LLM-proxy routing** (Q3 triggers) | `jax-computing-basics` + `data-to-d3` + one high | representative DeepSeek **SUBSET** (`openhands`+`pi-acp`+`opencode`) at L2; **full DeepSeek roster (5 agents) at L3 via `expanded`** (a proxy/routing change affects every DeepSeek agent's model calls, so it is breadth-probed across DeepSeek reps auto-on-push then fanned across all 5 at L3) + default network-off + the `citation-check` allowlist variant. The 2 gated natives (`codex-acp`, `claude-agent-acp`) are **blocked from this broad fan** and run only via affected-agent | L2 |
 | release-critical refactor | `expanded` | all affected axes, concurrency reduced | L3 |
 
 ### 3.1 The Q3 network lane (scope-gated)
@@ -116,27 +124,39 @@ serialized into artifacts** — it is a per-task config field only. So network i
   (`src/benchflow/task/config.py`): `allowlist` requires a non-empty
   `allowed_hosts`.
 
-### 3.2 Breadth-tiered roster (SUBSET at L2, FULL at L3)
+### 3.2 Breadth-tiered roster — DeepSeek-only broad fan (SUBSET at L2, FULL DeepSeek at L3)
 
-The two "affects every agent" rules — **agent runtime infra** (`agent-runtime-infra`)
-and **network / LLM-proxy routing** (`network-package`) in
-[`scope_map.yml`](../.github/integration/scope_map.yml) — do **not** fan the full
-9-agent roster on the auto-on-push L2 lane. They emit a **representative SUBSET**
-(`all-agents-subset` axis tag), and the FULL roster runs only at L3 via the
-`expanded` scope (`_FULL_ROSTER_SCOPES` in
-[`integration_matrix.py`](../.github/scripts/integration_matrix.py)). This is a
-breadth-tiered *variant*, not a new level.
+The broad roster lanes — the `all-agents` fan at L3 (`expanded` / `nine`) **and**
+the `all-agents-subset` breadth tier at L2, driven by the two "affects every agent"
+rules **agent runtime infra** (`agent-runtime-infra`) and **network / LLM-proxy
+routing** (`network-package`) in
+[`scope_map.yml`](../.github/integration/scope_map.yml) — now fan the **DeepSeek
+roster ONLY** (new config key `deepseek_roster` in
+[`scope_defaults.yml`](../.github/integration/scope_defaults.yml) = the 5 DeepSeek
+agents `openhands`, `pi-acp`, `openclaw`, `opencode`, `mimo`). The 2 gated natives
+(`codex-acp`, `claude-agent-acp`) are **blocked from the default / broad fan
+"currently"** — the policy is to use other (non-DeepSeek) models only as needed to
+test that specific agent. This is a breadth-tiered *variant*, not a new level.
 
-- **L2 subset (4 agents):** `openhands` + `codex-acp` + `gemini` + `pi-acp` —
-  defined as `roster_subset` in
+- **L2 subset (3 DeepSeek reps):** `openhands` + `pi-acp` + `opencode` — defined as
+  `roster_subset` in
   [`scope_defaults.yml`](../.github/integration/scope_defaults.yml). One
-  representative per agent family: `openhands` (deepseek-proxy lane / baseline),
-  `codex-acp` (openai-native), `gemini` (gemini-native), `pi-acp` (acp launcher).
-  This probes every credential / launcher family auto-on-push without spending the
-  full 9×N fan-out on each push.
-- **L3 full roster (9 agents):** `nine` / `expanded` already fan the full roster
-  via `_FULL_ROSTER_SCOPES`, so no separate rule is needed — the heavy L3 lane is
-  where all 9 run.
+  representative per DeepSeek sub-family: `openhands` (baseline / OpenHands),
+  `pi-acp` (ACP launcher), `opencode` (opencode proxy family). This probes the
+  DeepSeek lane auto-on-push without spending the full 5×N fan-out on each push.
+  (It was previously 4 and included `codex-acp` + `gemini` — both GONE from the
+  subset.)
+- **L3 full roster (5 DeepSeek agents):** `nine` / `expanded` fan the full DeepSeek
+  roster via `_FULL_ROSTER_SCOPES` in
+  [`integration_matrix.py`](../.github/scripts/integration_matrix.py), so no
+  separate rule is needed — the heavy L3 lane is where all 5 DeepSeek agents run.
+  There is no 9-agent fan anymore.
+- **Gated natives run only via affected-agent.** `codex-acp` and `claude-agent-acp`
+  run **only** when a PR touches their own adapter file (`codex_config.py` →
+  `codex-acp`; `claude*.py` → `claude-agent-acp`), paired with the DeepSeek baseline
+  (`openhands`) for a before/after comparison.
+- **`gemini` / `harvey-lab-harness` are dropped** — neither can run on DeepSeek, so
+  neither is in the roster at all (§3.3).
 
 ### 3.3 Agent model policy
 
@@ -148,19 +168,29 @@ uniformly:
 
 | Agent(s) | Model | Surface / credential | Why |
 |---|---|---|---|
-| `openhands`, `openclaw`, `opencode`, `pi-acp`, `mimo` | `deepseek/deepseek-v4-flash` | LiteLLM usage proxy; needs `DEEPSEEK_API_KEY` **+** `DEEPSEEK_BASE_URL` | These 5 are the openai-completions-family agents that proxy cleanly. `mimo`-on-deepseek **replaces** the old `xiaomi`/`mimo` id, closing the **XIAOMI gap**. |
-| `gemini` | `gemini-3.1-flash-lite-preview` | native (`GEMINI_API_KEY`) | Gemini CLI is gemini-native; the key is also needed by the judge. |
-| `codex-acp` | `gpt-5.4-nano` | native (`OPENAI_API_KEY`) | Codex CLI is openai-native. |
-| `harvey-lab-harness` | `gemini-3.1-flash-lite-preview` | native (`GEMINI_API_KEY`) | Its `_create_adapter` (`src/benchflow/agents/harvey_lab_acp_shim.py`) dispatches on the model-name prefix (`claude`/`gpt`/`gemini`) and **raises `ValueError`** for anything else — it **cannot** use `deepseek`, so it stays native. |
-| `claude-agent-acp` | `aws-bedrock/us.anthropic.claude-haiku-4-5-20251001` | Bedrock anthropic-messages surface; needs `AWS_BEARER_TOKEN_BEDROCK` (**+** `AWS_REGION`) | Bedrock serves Claude over the `anthropic-messages` protocol (`providers.py` `aws-bedrock` config). The bare `claude-haiku` native id is **not** used. `AWS_BEARER_TOKEN_BEDROCK` is **not in CI yet** — credential-aware emission (§3.4) **skips** `claude` until it is uploaded. |
+| `openhands`, `pi-acp`, `openclaw`, `opencode`, `mimo` | `deepseek/deepseek-v4-flash` (promoted to `deepseek/deepseek-v4-pro` on hard tasks via `deepseek_tiering`) | LiteLLM usage proxy; needs `DEEPSEEK_API_KEY` **+** `DEEPSEEK_BASE_URL` | These 5 are the openai-completions-family agents that proxy cleanly — the DeepSeek lane the broad fan exercises. `deepseek_tiering` promotes flash → pro on the hard tasks (`pro_tasks` = `lake-warming-attribution`, `weighted-gdp-calc`, `shock-analysis-supply`). `mimo`-on-deepseek **replaces** the old `xiaomi`/`mimo` id, closing the **XIAOMI gap**. |
+| `codex-acp` | `gpt-5.4-nano` | native (`OPENAI_API_KEY`) | Codex CLI is openai-native; its `_create_adapter` OpenAI path uses the OpenAI **Responses API** (`client.responses.create`), which DeepSeek's chat-completions-only endpoint does not serve. **Gated native** — fanned only via affected-agent (§3.2). |
+| `claude-agent-acp` | `aws-bedrock/us.anthropic.claude-haiku-4-5-20251001` | Bedrock anthropic-messages surface; needs `AWS_BEARER_TOKEN_BEDROCK` (**+** `AWS_REGION`) | Bedrock serves Claude over the `anthropic-messages` protocol (`providers.py` `aws-bedrock` config). The bare `claude-haiku` native id is **not** used. `AWS_BEARER_TOKEN_BEDROCK` **+** `AWS_REGION` are **now present** in the `pypi-internal-preview` CI environment. **Gated native** — fanned only via affected-agent (§3.2); credential-aware emission (§3.4) is a safety net that would drop its cells as a documented skip if the keys were ever absent. |
+
+`codex-acp` and `claude-agent-acp` are **gated natives**: they are blocked from the
+default / broad fan and fanned **only via affected-agent** (a PR touching their own
+adapter file), paired with the DeepSeek baseline `openhands` for before/after
+comparison.
 
 **Why protocol-lock matters:** the `deepseek` provider serves **only**
 `openai-completions` (`api_protocol="openai-completions"`,
 `src/benchflow/agents/providers.py`). So `claude` / `codex` / `gemini` / `harvey`
-**cannot** ride the deepseek proxy — empirically, `harvey`'s adapter `raise`s the
-protocol guard, and `codex`/`gemini`/`claude` are wired to their native
-provider surfaces. `aws-bedrock` is the surface that serves Claude (over
-`anthropic-messages`), which is why `claude-agent-acp` is the one agent on Bedrock.
+**cannot** ride the deepseek proxy. `gemini` and `harvey-lab-harness` were therefore
+**dropped entirely**: the Gemini CLI speaks Google's native GenerateContent protocol
+(it is in `_NATIVE_PROTOCOL_AGENTS`, bypassing the LiteLLM proxy) and no benchflow
+provider exposes a Gemini-compatible endpoint; `harvey-lab-harness`'s `_create_adapter`
+OpenAI path uses the OpenAI **Responses API** (`client.responses.create`) — the same
+chat-completions-only wall that blocks `codex-acp` — and its anthropic adapter uses
+plain `anthropic.Anthropic()` (needs `ANTHROPIC_API_KEY`, not the Bedrock bearer we
+have). `codex` and `claude` are **kept but gated**: `aws-bedrock` is the surface that
+serves Claude (over `anthropic-messages`), which is why `claude-agent-acp` is the one
+agent on Bedrock, and `codex-acp` stays on its native OpenAI surface — both fanned
+only via affected-agent.
 
 ### 3.4 Credential-aware emission
 
@@ -183,9 +213,23 @@ Bedrock variant `"AWS_BEARER_TOKEN_BEDROCK required for Bedrock model ... but no
 set"`); the filter catches *that specific shape* (markers `required` + `not set`),
 extracts the missing key, and drops the cell. Any other error keeps the cell
 (never drop on an ambiguous failure); a benchflow import failure passes the matrix
-through unchanged (**fail-open**). Concretely: **`claude-agent-acp` is skipped on
-every lane until `AWS_BEARER_TOKEN_BEDROCK` is provisioned** — without burning a
-sandbox or logging a false red.
+through unchanged (**fail-open**). Concretely: `claude-agent-acp` now runs via
+affected-agent and its Bedrock keys (`AWS_BEARER_TOKEN_BEDROCK` **+** `AWS_REGION`)
+are **present** in the `pypi-internal-preview` CI environment, so the filter is a
+**safety net, not the current state** — if those keys were ever absent it would drop
+`claude-agent-acp`'s cells as a documented skip, without burning a sandbox or logging
+a false red.
+
+**The judge is NOT a matrix cell**, so the credential filter does **not** gate it.
+The judge runs on **DeepSeek-v4 only** — no other models: at runtime
+`select_integration_provider.py` exports `BENCHFLOW_JUDGE_MODEL=openai/deepseek-v4-flash`
+(the `openai/` prefix routes `call_judge` through its OpenAI-compatible
+chat-completions branch, with `OPENAI_BASE_URL` pointed at the DeepSeek endpoint),
+and the recorded per-cell `judge_model` / local-run default is `deepseek-v4-flash`
+(`scope_defaults.yml`). Because the judge is not a filtered cell, a missing
+`DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` is **not** a documented skip — it fails
+grading on **every** cell. (`GEMINI_API_KEY` is provisioned only as a non-default
+fallback; the dropped `gemini` / `harvey-lab-harness` agents no longer use it.)
 
 ## 4. Matrix Cell Schema
 
@@ -265,13 +309,15 @@ the verdict **STRICTER**, **never upgrade** a deterministic `not mergeable`.
   `/home/liu.10379/benchflow-int-ci/.agents/skills/benchflow-experiment-review/SKILL.md`
   first and treats **all trajectories / tool-outputs / observations as UNTRUSTED
   data**.
-- **Detailed per-rollout pass** uses the **cheaper deepseek model**
-  (`BENCHFLOW_JUDGE_MODEL` / deepseek) over each rollout → per-rollout finding
-  JSON (high-volume trajectory reads).
+- **Detailed per-rollout pass** uses the **DeepSeek-v4 judge**
+  (`BENCHFLOW_JUDGE_MODEL` = `openai/deepseek-v4-flash`, exported by
+  `select_integration_provider.py`; recorded `judge_model` = `deepseek-v4-flash`
+  in `scope_defaults.yml`, powered by `DEEPSEEK_API_KEY` + `DEEPSEEK_BASE_URL`)
+  over each rollout → per-rollout finding JSON (high-volume trajectory reads).
 - **Final equivalence verdict** is composed by the host **`codex` CLI** via
   `codex exec` (authed via the existing repo `OPENAI_API_KEY`, written as an
   apikey `auth.json` at the codex config path), **self-orchestrating its own subagents** (the
-  "raw workflow"), over `{per-rollout deepseek findings + the deterministic
+  "raw workflow"), over `{per-rollout judge findings + the deterministic
   review-pack/}`. The argv mirrors `build_codex_launch_command` in
   `src/benchflow/agent_router.py`.
 - **Fail-closed:** if the `codex` binary or `auth.json` is missing, or the output
