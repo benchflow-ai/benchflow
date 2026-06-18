@@ -333,6 +333,16 @@ jobs:
         run: uv sync --extra dev --extra judge --extra sandbox-daytona --locked
 
       - name: Run the cell (trusted-main scenarios.run_eval)
+        env:
+          # The provider-select step wrote OPENAI_*=DeepSeek into the job env for
+          # the DeepSeek agent-judge. The gated-native codex-acp rollout (gpt,
+          # OpenAI Responses) KEEPS ambient OPENAI_* (it does not recompute them
+          # in resolve_agent_env), so it would otherwise auth its rollout against
+          # DeepSeek and fail. Restore the REAL OpenAI creds for codex-acp cells
+          # ONLY — every DeepSeek cell keeps the job env unchanged (no-op), and the
+          # later agent-judge step keeps the DeepSeek OPENAI_* from $GITHUB_ENV.
+          OPENAI_API_KEY: ${{ matrix.cell.agent == 'codex-acp' && secrets.OPENAI_API_KEY || env.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ matrix.cell.agent == 'codex-acp' && 'https://api.openai.com/v1' || env.OPENAI_BASE_URL }}
         run: |
           uv run python - <<'PY'
           import json
