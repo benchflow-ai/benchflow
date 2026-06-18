@@ -699,7 +699,6 @@ def run_batch_eval(
                     worker_concurrency=plan.request.worker_concurrency,
                     worker_retries=plan.request.worker_retries,
                     worker_start_stagger_sec=plan.request.worker_start_stagger_sec,
-                    environment_manifest_path=plan.request.environment_manifest,
                 )
             )
     except EmptyTaskSelectionError as e:
@@ -773,6 +772,14 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # the config file.
         if plan.eval_env_manifest is not None:
             j._config.environment_manifest = plan.eval_env_manifest
+        # CLI --config / --config-override (the C axis) likewise wins over the
+        # YAML's own config_override. Parsed + allowlist-validated at plan time
+        # and applied per task at the rollout layer. Without this the
+        # file-config path silently dropped the overlay (it threaded every
+        # other override but never this one), so a --config-override on a
+        # run-config file was a no-op.
+        if plan.eval_config_override is not None:
+            j._config.config_override = plan.eval_config_override
     except subprocess.CalledProcessError as e:
         # A source.repo clone/fetch failure (git exits non-zero) otherwise escapes
         # as a raw traceback — it is not a config-parse error, so give it its own

@@ -136,3 +136,57 @@ def test_apply_enforces_allowlist():
 def test_apply_revalidates_and_rejects_bad_value():
     with pytest.raises(ValidationError):
         apply_config_override(_cfg(), {"agent": {"timeout_sec": "nope"}})
+
+
+# ---- CLI threading: --config-override on the run-config-file path ----------
+
+
+def test_cli_config_override_applies_on_run_config_file_path(tmp_path):
+    """Guards against the PR #790 regression where the run-config-file path
+    silently dropped --config-override.
+
+    ``_run_config_file_eval`` threaded every other CLI override onto the
+    YAML-loaded Evaluation but never the C-axis overlay, so
+    ``bench eval create --config run.yaml --config-override '{...}'`` parsed and
+    validated the overlay (no error) and then ran every task with its original
+    config. The ``--tasks-dir`` path applied it correctly, which masked the gap.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from typer.testing import CliRunner
+
+    from benchflow.cli.main import app
+    from benchflow.evaluation import Evaluation
+
+    tasks = tmp_path / "tasks" / "task-a"
+    tasks.mkdir(parents=True)
+    (tasks / "task.toml").write_text('version = "1.0"\n')
+    (tasks / "instruction.md").write_text("Do something")
+
+    run_config = tmp_path / "run.yaml"
+    run_config.write_text("tasks_dir: tasks\njobs_dir: output\nagent: oracle\n")
+
+    captured: dict = {}
+
+    async def fake_run(self: Evaluation):
+        captured["config_override"] = self._config.config_override
+        return SimpleNamespace(
+            passed=1, total=1, score=1.0, errored=0, verifier_errored=0
+        )
+
+    with patch.object(Evaluation, "run", new=fake_run):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "create",
+                "--config",
+                str(run_config),
+                "--config-override",
+                '{"agent":{"timeout_sec":30}}',
+            ],
+        )
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["config_override"] == {"agent": {"timeout_sec": 30}}
