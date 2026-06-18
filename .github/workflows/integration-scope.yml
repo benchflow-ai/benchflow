@@ -157,6 +157,7 @@ jobs:
     outputs:
       matrix: ${{ steps.emit.outputs.matrix }}
       head_sha: ${{ steps.plan.outputs.head_sha }}
+      has_cells: ${{ steps.emit.outputs.has_cells }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -240,8 +241,19 @@ jobs:
         id: emit
         run: |
           set -euo pipefail
+          N=$(jq '.matrix | length' matrix.json)
           echo "matrix=$(jq -c '.matrix' matrix.json)" >> "$GITHUB_OUTPUT"
-          echo "Run matrix cells=$(jq '.matrix | length' matrix.json) (after credential filter)"
+          echo "Run matrix cells=$N (after credential filter)"
+          # Empty matrix after credential filtering (NO provider key for ANY
+          # planned cell) must SKIP run-matrix/review-pack as a green no-op — NOT
+          # hard-fail fromJson([]) ("matrix must define at least one combination")
+          # into a false 'not mergeable' verdict on a PR with no real regression.
+          if [ "$N" -eq 0 ]; then
+            echo "has_cells=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::all planned cells filtered out (no provider credentials available) — passing as a green no-op; nothing ran"
+          else
+            echo "has_cells=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload matrix plan
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
@@ -262,6 +274,7 @@ jobs:
     needs: [detect-scope, plan]
     if: >-
       needs.detect-scope.outputs.should_run == 'true' &&
+      needs.plan.outputs.has_cells == 'true' &&
       github.repository == 'benchflow-ai/benchflow' &&
       (github.event_name == 'workflow_dispatch' ||
        github.event.pull_request.head.repo.full_name == 'benchflow-ai/benchflow')
@@ -375,7 +388,7 @@ jobs:
   # ----------------------------------------------------------------------------
   review-pack:
     needs: [detect-scope, plan, run-matrix]
-    if: always() && needs.detect-scope.outputs.should_run == 'true'
+    if: always() && needs.detect-scope.outputs.should_run == 'true' && needs.plan.outputs.has_cells == 'true'
     runs-on: ubuntu-latest
     environment: pypi-internal-preview
     permissions:

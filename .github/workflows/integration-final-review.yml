@@ -82,6 +82,7 @@ jobs:
     outputs:
       matrix: ${{ steps.emit.outputs.matrix }}
       head_sha: ${{ steps.resolve.outputs.head_sha }}
+      has_cells: ${{ steps.emit.outputs.has_cells }}
       base_ref: ${{ steps.resolve.outputs.base_ref }}
     steps:
       - name: Resolve + authorize PR
@@ -188,8 +189,19 @@ jobs:
         id: emit
         run: |
           set -euo pipefail
+          N=$(jq '.matrix | length' matrix.json)
           echo "matrix=$(jq -c '.matrix' matrix.json)" >> "$GITHUB_OUTPUT"
-          echo "Run matrix cells=$(jq '.matrix | length' matrix.json) (after credential filter)"
+          echo "Run matrix cells=$N (after credential filter)"
+          # Empty matrix after credential filtering (NO provider key for ANY
+          # planned cell) must SKIP run-matrix/review-pack as a green no-op — NOT
+          # hard-fail fromJson([]) ("matrix must define at least one combination")
+          # into a false 'not mergeable' verdict on a manual final-review dispatch.
+          if [ "$N" -eq 0 ]; then
+            echo "has_cells=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::all planned cells filtered out (no provider credentials available) — passing as a green no-op; nothing ran"
+          else
+            echo "has_cells=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload matrix plan
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
@@ -207,6 +219,7 @@ jobs:
   # ----------------------------------------------------------------------------
   run-matrix:
     needs: plan
+    if: needs.plan.outputs.has_cells == 'true'
     runs-on: ubuntu-latest
     environment: pypi-internal-preview
     permissions:
@@ -336,7 +349,7 @@ jobs:
   # ----------------------------------------------------------------------------
   review-pack:
     needs: [plan, run-matrix]
-    if: always()
+    if: always() && needs.plan.outputs.has_cells == 'true'
     runs-on: ubuntu-latest
     environment: pypi-internal-preview
     permissions:

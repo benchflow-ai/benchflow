@@ -50,33 +50,65 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# A ValueError raised by resolve_agent_env counts as a missing-credential drop
-# only when its message contains BOTH of these markers. resolve_agent_env emits
-# "<KEY> required for model '<m>' but not set. ..." (and the Bedrock variant
-# "<KEY> required for Bedrock model '<m>' but not set. ...") — both start with
-# the missing key as the first whitespace-delimited token.
-_MISSING_CRED_MARKERS = ("required", "not set")
+# resolve_agent_env signals a missing credential with two distinct message
+# shapes, and BOTH must be recognized as a documented "skip, not red":
+#
+#   1. Missing API key —  "<KEY> required for model '<m>' but not set. ..."
+#      (and the Bedrock variant "<KEY> required for Bedrock model '<m>' but not
+#      set. ..."). The missing key is the first whitespace-delimited token.
+#   2. Missing base-URL env — "Provider '<p>' for model '<m>' requires <KEY[ or
+#      KEY2]> to build the provider base URL." (and the Azure variant). This is
+#      what fires for a deepseek cell when DEEPSEEK_BASE_URL is absent, and since
+#      openhands (deepseek) is the BASELINE agent, missing it would false-red
+#      almost every run. The missing key sits between "requires" and "to build".
+#
+# Shape 1 ("not set") deliberately does NOT match shape 2's "requires" — note
+# "requires" does not contain the substring "required" — so the two are matched
+# by separate markers rather than a single pair.
+_MISSING_KEY_MARKERS = ("required", "not set")
+_MISSING_BASE_URL_MARKER = "to build the provider base url"
 
 
 def _extract_missing_key(message: str) -> str:
     """Pull the missing env-var name out of a resolve_agent_env ValueError.
 
-    The credential messages are shaped "<KEY> required ... but not set." so the
-    missing key is the first whitespace-delimited token. Fall back to the whole
-    (stripped) message if the shape is unexpected, so the record is never empty.
+    Handles both credential message shapes (see ``_MISSING_KEY_MARKERS`` above):
+    the missing-API-key shape names the key as the first token, while the
+    missing-base-URL shape names it between "requires" and "to build". Falls back
+    to the first token if the shape is unexpected, so the record is never empty.
     """
     stripped = message.strip()
     if not stripped:
         return ""
+    lowered = stripped.lower()
+    if _MISSING_BASE_URL_MARKER in lowered:
+        # "... requires <KEY[ or KEY2]> to build the provider base URL."
+        after = stripped[lowered.index("requires") + len("requires") :]
+        cut = after.lower().find("to build")
+        if cut != -1:
+            after = after[:cut]
+        after = after.strip()
+        if after:
+            # First of one-or-more listed envs (e.g. "X or Y" -> "X").
+            return after.split(None, 1)[0].strip("'\"`:,.")
+    # Default (missing-API-key) shape: the key is the first token.
     first = stripped.split(None, 1)[0]
     # Defensive: strip stray surrounding punctuation/quotes from the token.
     return first.strip("'\"`:,.")
 
 
 def _is_missing_credential(message: str) -> bool:
-    """True when a ValueError message denotes a missing-credential condition."""
+    """True when a ValueError message denotes a missing-credential condition.
+
+    Recognizes BOTH the missing-API-key shape (``required`` + ``not set``) and
+    the missing-base-URL shape (``requires`` + ``to build the provider base
+    URL``). Any other ValueError is left for run-matrix to surface as a real
+    error — we only ever drop on a documented missing-credential signal.
+    """
     lowered = message.lower()
-    return all(marker in lowered for marker in _MISSING_CRED_MARKERS)
+    if all(marker in lowered for marker in _MISSING_KEY_MARKERS):
+        return True
+    return "requires" in lowered and _MISSING_BASE_URL_MARKER in lowered
 
 
 def filter_matrix(plan: dict[str, Any]) -> dict[str, Any]:

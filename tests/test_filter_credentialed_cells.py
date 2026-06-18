@@ -132,6 +132,34 @@ def test_keeps_all_when_every_credential_present(monkeypatch, isolate_dotenv):
     }
 
 
+def test_drops_deepseek_when_base_url_missing(monkeypatch, isolate_dotenv):
+    """DeepSeek API key set but DEEPSEEK_BASE_URL absent -> cell DROPPED.
+
+    Regression: resolve_agent_env raises the base-URL builder message ("...
+    requires DEEPSEEK_BASE_URL to build the provider base URL") BEFORE the
+    api-key "not set" check, so the filter must recognize that shape too. Since
+    openhands (deepseek) is the baseline agent, missing this would false-red
+    almost every run instead of logging a documented skip.
+    """
+    pytest.importorskip("benchflow.agents.env")
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token-test")
+
+    filtered = fc.filter_matrix(_sample_plan())
+
+    kept_agents = {c["agent"] for c in filtered["matrix"]}
+    assert "openhands" not in kept_agents, (
+        "deepseek cell with no DEEPSEEK_BASE_URL must be a documented skip, not red"
+    )
+    dropped = {s["agent"]: s["missing_key"] for s in filtered["skipped_uncredentialed"]}
+    assert dropped.get("openhands") == "DEEPSEEK_BASE_URL"
+    # Bedrock is fully keyed here, so claude survives.
+    assert "claude-agent-acp" in kept_agents
+
+
 def test_cli_writes_filtered_matrix(monkeypatch, isolate_dotenv, tmp_path):
     """End-to-end CLI: reads matrix.json, writes the filtered plan back."""
     pytest.importorskip("benchflow.agents.env")
@@ -186,7 +214,7 @@ def test_pass_through_when_benchflow_absent(monkeypatch):
 
 
 def test_extract_missing_key_shapes():
-    """The missing-key extractor handles both real message shapes."""
+    """The missing-key extractor handles every real message shape."""
     bedrock_msg = (
         "AWS_BEARER_TOKEN_BEDROCK required for Bedrock model 'x' but not set. "
         "Export it or pass via agent_env."
@@ -194,10 +222,24 @@ def test_extract_missing_key_shapes():
     generic_msg = (
         "GEMINI_API_KEY required for model 'y' but not set. Pass it explicitly."
     )
+    # Missing base-URL env: "requires" (not "required") + "to build ... base URL".
+    base_url_msg = (
+        "Provider 'deepseek' for model 'deepseek/deepseek-v4-flash' requires "
+        "DEEPSEEK_BASE_URL to build the provider base URL."
+    )
+    azure_msg = (
+        "Azure AI Foundry model 'z' requires AZURE_OPENAI_RESOURCE or "
+        "AZURE_OPENAI_ENDPOINT to build the provider base URL. Export ..."
+    )
     assert fc._is_missing_credential(bedrock_msg)
     assert fc._is_missing_credential(generic_msg)
+    assert fc._is_missing_credential(base_url_msg)
+    assert fc._is_missing_credential(azure_msg)
     assert fc._extract_missing_key(bedrock_msg) == "AWS_BEARER_TOKEN_BEDROCK"
     assert fc._extract_missing_key(generic_msg) == "GEMINI_API_KEY"
+    assert fc._extract_missing_key(base_url_msg) == "DEEPSEEK_BASE_URL"
+    # The first listed env stands in for the "X or Y" alternatives.
+    assert fc._extract_missing_key(azure_msg) == "AZURE_OPENAI_RESOURCE"
 
     # An unrelated ValueError is NOT a missing-credential signal.
     assert not fc._is_missing_credential("provider 'vllm' base url is malformed")
