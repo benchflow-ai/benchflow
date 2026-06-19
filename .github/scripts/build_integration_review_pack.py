@@ -409,7 +409,18 @@ def compute_verdict(slots: list[Slot], parity: list[ParityResult]) -> Verdict:
             )
 
     for pr in parity:
-        if pr.status == "fail":
+        if pr.status == "fail" and pr.kind == "pinned-baseline":
+            # The pinned-baseline reward-band gate currently feeds a NATIVE HF
+            # leaderboard baseline to the Harbor-schema + git-pinned checker, which
+            # structurally false-fails (missing Harbor fields / pin mismatch) — NOT
+            # a real reward regression. Quarantine it (visible, non-blocking) until
+            # check_skillsbench_harbor_parity gains a native-vs-native baseline mode
+            # (tracked follow-up). Within-PR docker/daytona parity still hard-blocks.
+            quarantines.append(
+                f"parity {pr.kind} (advisory — gate needs native-baseline mode): "
+                f"{pr.pair_id} — {pr.detail}"
+            )
+        elif pr.status == "fail":
             blockers.append(f"parity {pr.kind} fail: {pr.pair_id} — {pr.detail}")
         elif pr.status == "quarantine":
             quarantines.append(f"parity {pr.kind}: {pr.pair_id} — {pr.detail}")

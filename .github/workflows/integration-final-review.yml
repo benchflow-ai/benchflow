@@ -514,6 +514,11 @@ jobs:
           # codex_review.py uses for the CLI (dropping the DeepSeek base URL) so
           # the judge clobber never leaks into codex auth.
           CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Pin the codex composer to a model the OPENAI_API_KEY is PROVEN to serve
+          # (the codex-acp matrix cells use gpt-5.4-nano). Otherwise `codex exec`
+          # falls back to its built-in default (gpt-5.x-codex), which the key may
+          # not be entitled to -> model_not_found -> 'codex unavailable'.
+          CODEX_MODEL: gpt-5.4-nano
           DETERMINISTIC_VERDICT: ${{ steps.pack.outputs.deterministic_verdict }}
         run: |
           set +e
