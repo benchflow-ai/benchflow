@@ -1,6 +1,6 @@
 """Subprocess worker for sharded evaluation runs.
 
-The public ``bench eval create`` command uses this module when the operator asks
+The public ``bench eval run`` command uses this module when the operator asks
 for worker-level isolation. A worker runs one normal :class:`Evaluation` over a
 small include set and exits zero when BenchFlow completed the shard, even if the
 benchmark tasks themselves failed. Non-zero exits are reserved for control-plane
@@ -66,6 +66,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         source_provenance=raw.get("source_provenance"),
         usage_tracking=UsageTrackingConfig.from_mapping(raw),
         environment_manifest=_environment_manifest(raw),
+        config_override=raw.get("config_override"),
         loop_strategy=(
             LoopStrategySpec.from_mapping(raw["loop_strategy"])
             if raw.get("loop_strategy")

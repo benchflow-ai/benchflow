@@ -158,6 +158,7 @@ def _write_config(
     dataset: dict[str, Any] | None = None,
     task_digest: str | None = None,
     environment_manifest: EnvironmentManifest | None = None,
+    config_override: dict | None = None,
     loop_strategy: LoopStrategySpec | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
@@ -205,6 +206,17 @@ def _write_config(
         config_data["dataset_version"] = dataset.get("version")
     if task_digest is not None:
         config_data["task_digest"] = task_digest
+    # C-axis provenance: persist the bound config overlay + its content hash so
+    # the run records exactly which configuration it ran with (symmetric to
+    # environment_manifest above).
+    if config_override:
+        from benchflow._utils.config_override import overlay_hash
+
+        config_data["config_override"] = {
+            "keys": sorted(config_override),
+            "sha256": overlay_hash(config_override),
+            "patch": config_override,
+        }
     (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
 

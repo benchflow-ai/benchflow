@@ -1,5 +1,6 @@
 """Tests for agent install and skill deployment setup helpers."""
 
+import re
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import pytest
 from benchflow.agents.install import apply_web_tool_policy, deploy_skills, install_agent
 from benchflow.agents.registry import AGENTS, AgentConfig
 from benchflow.models import AgentInstallError
+from benchflow.rollout._setup import _agent_process_kill_pattern
 
 
 @pytest.mark.asyncio
@@ -716,3 +718,71 @@ async def test_apply_web_tool_policy_is_gated_off_when_allowed():
     )
 
     env.exec.assert_not_called()
+
+
+# --- agent-process kill pattern (BF-10) -------------------------------------
+#
+# disconnect() runs `pkill -f <pattern>` to terminate the agent between scenes
+# while keeping the Environment alive. The pattern MUST identify the agent, not
+# the interpreter it runs under: an Environment-plane mock service is a console
+# script whose argv is `/usr/bin/python /usr/local/bin/<svc> …`, so a `python`
+# pattern would SIGTERM it too and the verifier would then find it dead.
+
+# A Python-based Environment-plane service (console script via its shebang),
+# exactly the argv shape the kill pattern must NOT match.
+_PY_SERVICE_ARGV = (
+    "/usr/local/bin/python /usr/local/bin/claw-gmail "
+    "--db /data/gmail.db serve --host 0.0.0.0 --port 9001 --no-mcp"
+)
+
+
+@pytest.mark.parametrize(
+    ("launch", "agent_argv"),
+    [
+        # python-launched shims: the regression — must key on the shim, not python
+        (
+            "/opt/benchflow/deepagents-venv/bin/python /opt/benchflow/bin/deepagents-acp-shim",
+            "/opt/benchflow/deepagents-venv/bin/python /opt/benchflow/bin/deepagents-acp-shim",
+        ),
+        # env-assignment prefix + python launcher (harvey-lab)
+        (
+            "HARVEY_LABS_ROOT=/opt/harvey-labs /opt/benchflow/harvey-lab-venv/bin/python "
+            "/opt/benchflow/bin/harvey-lab-acp-shim",
+            "/opt/benchflow/harvey-lab-venv/bin/python /opt/benchflow/bin/harvey-lab-acp-shim",
+        ),
+        # direct wrapper binaries (pi, claude, gemini-with-args)
+        ("/opt/benchflow/bin/pi-acp-launcher", "/opt/benchflow/bin/pi-acp-launcher"),
+        ("/opt/benchflow/bin/claude-agent-acp", "/opt/benchflow/bin/claude-agent-acp"),
+        (
+            "/opt/benchflow/bin/gemini --acp --yolo",
+            "/opt/benchflow/bin/gemini --acp --yolo",
+        ),
+        # compound `setup && … && <agent>` launch: key on the final command,
+        # not the leading `export` builtin (openhands).
+        (
+            'export PATH="$HOME/.local/bin:$PATH" && mkdir -p ~/.openhands && '
+            "{ printf '{}' > ~/.openhands/agent_settings.json; } && "
+            "openhands acp --always-approve --override-with-envs",
+            "/usr/bin/openhands acp --always-approve --override-with-envs",
+        ),
+        # package-runner subcommand: skip `uv` and `run`, key on the agent.
+        (
+            "uv run my-agent-acp --serve",
+            "/path/.venv/bin/python /path/my-agent-acp --serve",
+        ),
+    ],
+)
+def test_agent_kill_pattern_targets_agent_not_python_services(launch, agent_argv):
+    pattern = _agent_process_kill_pattern(launch)
+    assert pattern is not None
+    # never key on a bare interpreter — that is the BF-10 bug
+    assert pattern != r"(^|[ /])python( |$)"
+    # still kills the agent it was derived from
+    assert re.search(pattern, agent_argv), (pattern, agent_argv)
+    # but never reaps a co-resident Python Environment-plane service
+    assert not re.search(pattern, _PY_SERVICE_ARGV), (pattern, _PY_SERVICE_ARGV)
+
+
+def test_agent_kill_pattern_empty_launch_is_none():
+    assert _agent_process_kill_pattern("") is None
+    assert _agent_process_kill_pattern("   ") is None

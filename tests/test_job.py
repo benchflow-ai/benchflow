@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
+from benchflow.evaluation import (
+    Evaluation,
+    EvaluationConfig,
+    ResumeMismatchError,
+    RetryConfig,
+)
 from benchflow.models import RunResult
 
 
@@ -393,10 +398,12 @@ class TestJobResumeScoped:
         assert len(completed) == 0
 
     @pytest.mark.asyncio
-    async def test_config_mismatch_warning_scoped(self, tmp_path, caplog):
-        """Resume detects agent mismatch from config.json inside current job dir.
+    async def test_config_mismatch_refuses_scoped(self, tmp_path):
+        """Resume detects an agent mismatch from config.json inside the current
+        job dir and refuses, rather than blending a different agent's scores.
 
         Guards ENG-160: config check scoped to job dir, not jobs_dir root.
+        Guards PR #789 (CLI error-handling hardening).
         """
         jobs_dir, job_dir, tasks_dir = self._setup_job(tmp_path, "my-job")
         result_file = self._write_result(job_dir, "task-a", rewards={"reward": 1.0})
@@ -417,9 +424,10 @@ class TestJobResumeScoped:
         job._sdk.run = AsyncMock(
             return_value=RunResult(task_name="task-b", rewards={"reward": 1.0})
         )
-        with caplog.at_level(logging.WARNING):
+        # The recorded agent ("old-agent") is named, proving detection is scoped
+        # to this job dir, and the run refuses instead of mixing results.
+        with pytest.raises(ResumeMismatchError, match="old-agent"):
             await job.run()
-        assert any("old-agent" in msg for msg in caplog.messages)
 
     def test_empty_job_dir_returns_empty(self, tmp_path):
         """Non-existent job directory returns empty completed dict."""

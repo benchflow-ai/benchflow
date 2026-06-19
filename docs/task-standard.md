@@ -1,6 +1,6 @@
 # BenchFlow Task Package Standard
 
-Status: v0.6.2 — current stable task package standard (2026-06-14)
+Status: current task package standard (2026-06-14)
 
 This document defines the direction for BenchFlow-native task packages. The
 short version: `task.md` is the native authoring entrypoint; `oracle/` and
@@ -86,9 +86,9 @@ Within a BenchFlow-native package, selection is fail-closed:
 - duplicate alias trees must be byte-identical after normalized traversal or
   validation should report a collision
 
-As of v0.6.2, split layouts are compatibility inputs and export artifacts, not
-the native authoring surface. New BenchFlow tasks should publish `task.md` as
-the only authoritative entrypoint.
+Split layouts are compatibility inputs and export artifacts, not the native
+authoring surface. New BenchFlow tasks should publish `task.md` as the only
+authoritative entrypoint.
 
 ## Versioning
 

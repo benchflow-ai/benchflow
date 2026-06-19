@@ -109,6 +109,14 @@ def _apt_install(*packages: str) -> str:
 _BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
 _BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
 _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
+
+# OpenCode-family proxy provider id. OpenCode hard-codes the OpenAI *Responses*
+# API for the built-in ``openai`` provider id (its ``getModel`` calls
+# ``provider.responses(id)``), which the LiteLLM gateway/DeepSeek cannot serve —
+# so the gateway alias must be registered under a *separate* provider id that
+# OpenCode routes through the chat-completions path. Shared with
+# ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
+OPENCODE_PROXY_PROVIDER_ID = "benchflow"
 _OPENHANDS_CLI_GIT_REV = "3ca17446c5d9c1e35e054803478a3501ec251ecf"
 _OPENHANDS_SDK_VERSION = "1.22.1"
 _OPENHANDS_TOOLS_VERSION = "1.22.1"
@@ -218,6 +226,100 @@ def _json_settings_merge(path: str, mutator: str) -> str:
         "p.write_text(json.dumps(d, indent=2) + '\\n')"
     )
     return f"python3 -c {shlex.quote(py)}"
+
+
+# OpenCode-family proxy fix: OpenCode and its MiMo fork validate provider/model
+# ids against the models.dev catalog and reject the synthetic
+# ``openai/benchflow-<alias>`` that BenchFlow's LiteLLM proxy serves the model
+# under (ProviderModelNotFoundError -> zero requests -> no
+# ``trajectory/llm_trajectory.jsonl``, which ``benchflow-experiment-review``
+# requires). Registering the alias under ``provider.openai.models`` (with the
+# gateway baseURL) bypasses that catalog check so the agent accepts the id and
+# routes through the proxy.
+def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str:
+    """Install ``/opt/benchflow/bin/<binary>-proxy``: a thin wrapper that, in
+    proxy mode, registers the LiteLLM gateway alias under a dedicated
+    OpenCode provider, then execs the isolated agent binary. Idempotent
+    (preserves existing config); no-op outside proxy mode.
+
+    The gateway alias is registered under the ``{OPENCODE_PROXY_PROVIDER_ID}``
+    provider using ``@ai-sdk/openai-compatible`` — NOT the built-in ``openai``
+    provider. OpenCode-family agents hard-code the OpenAI **Responses API** for
+    the ``openai`` provider id (``getModel`` calls ``provider.responses(id)``);
+    BenchFlow's LiteLLM gateway — and the OpenAI-completions upstreams it fronts
+    (e.g. DeepSeek) — only serve **chat completions**, so a Responses-API call
+    404s/500s and the agent idles with zero tool calls. Overriding the ``openai``
+    provider's ``npm`` does not help: OpenCode still calls ``.responses()`` and
+    crashes with ``provider.responses is not a function``. A *separate* provider
+    id routes through the chat-completions path, which is what the gateway
+    expects. ``small_model`` is pinned to the same alias so OpenCode's
+    title/summary helper stops falling back to its hard-coded ``gpt-5-nano``
+    (which the gateway cannot serve either).
+    """
+    real = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
+    agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
+    target = f"{_BENCHFLOW_BIN_PREFIX}/{binary}-proxy"
+    provider_id = OPENCODE_PROXY_PROVIDER_ID
+    # ``config_relpath`` is resolved against ``$BENCHFLOW_AGENT_HOME`` at launch
+    # time — the same home the agent's ``disallow_web_tools_setup_cmd`` and
+    # ``credential_files`` write to — so all writers target one config file even
+    # when the sandbox home differs from ``$HOME``. Falls back to ``~``.
+    config_relpath = config_path.lstrip("/")
+    register_py = "\n".join(
+        [
+            "import json, os, pathlib",
+            'alias = os.environ.get("BENCHFLOW_LITELLM_MODEL_ALIAS", "").strip()',
+            "if alias:",
+            '    home = os.environ.get("BENCHFLOW_AGENT_HOME", "").strip() or os.path.expanduser("~")',
+            f"    p = pathlib.Path(home) / {config_relpath!r}",
+            "    p.parent.mkdir(parents=True, exist_ok=True)",
+            "    d = json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {}",
+            # Dedicated provider id (see docstring) → chat completions, not the
+            # Responses API the built-in ``openai`` id is hard-coded to.
+            f'    prov = d.setdefault("provider", {{}}).setdefault({provider_id!r}, {{}})',
+            '    prov["npm"] = "@ai-sdk/openai-compatible"',
+            '    prov.setdefault("name", "BenchFlow Gateway")',
+            '    opts = prov.setdefault("options", {})',
+            '    base = os.environ.get("OPENAI_BASE_URL", "").strip()',
+            "    if base:",
+            '        opts["baseURL"] = base',
+            '    key = os.environ.get("OPENAI_API_KEY", "").strip()',
+            "    if key:",
+            '        opts["apiKey"] = key',
+            '    prov.setdefault("models", {}).setdefault(alias, {"name": alias})',
+            f'    d["small_model"] = "{provider_id}/" + alias',
+            '    p.write_text(json.dumps(d, indent=2) + "\\n")',
+        ]
+    )
+    wrapper = (
+        "#!/bin/sh\n"
+        # Proxy mode only. Fail LOUD: if registration errors (malformed existing
+        # config, unwritable path), do NOT launch — the agent would otherwise get
+        # set_model "<provider>/<alias>" for a model now missing from its config
+        # and hit ProviderModelNotFoundError with nothing explaining why. A hard
+        # exit surfaces the cause instead of a silent broken proxy path.
+        'if [ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ]; then\n'
+        "  if ! python3 - <<'PYEOF'\n"
+        f"{register_py}\n"
+        "PYEOF\n"
+        "  then\n"
+        f'    echo "benchflow {binary}-proxy: gateway alias registration failed; '
+        'refusing to launch in proxy mode" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "fi\n"
+        # Exec the agent. A node-shim bin (shebang) goes through the isolated node
+        # launcher; a native binary (e.g. opencode-ai 1.17.x ships its bin as a
+        # native ELF, bin/opencode.exe) must run DIRECTLY — running it via `node`
+        # parses the ELF as JS and crashes at startup with a SyntaxError.
+        f'if [ "$(head -c2 {agent_bin} 2>/dev/null)" = "#!" ]; then\n'
+        f'  exec {real} "$@"\n'
+        "else\n"
+        f'  PATH="{_BENCHFLOW_NODE_PREFIX}/bin:$PATH" exec {agent_bin} "$@"\n'
+        "fi\n"
+    )
+    b64 = base64.b64encode(wrapper.encode()).decode()
+    return f"printf '%s' '{b64}' | base64 -d > {target} && chmod +x {target}"
 
 
 @dataclass
@@ -501,8 +603,14 @@ AGENTS: dict[str, AgentConfig] = {
         description="OpenCode via ACP — open-source coding agent (TypeScript)",
         skill_paths=["$HOME/.opencode/skills"],
         home_dirs=[".opencode"],
-        install_cmd=_js_agent_install("opencode", "opencode-ai"),
-        launch_cmd=_js_agent_launch("opencode", "acp"),
+        install_cmd=(
+            _js_agent_install("opencode", "opencode-ai")
+            + " && "
+            + _opencode_family_proxy_wrapper_install(
+                "opencode", ".config/opencode/opencode.json"
+            )
+        ),
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/opencode-proxy acp",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         acp_model_format="provider/model",
@@ -523,8 +631,14 @@ AGENTS: dict[str, AgentConfig] = {
         description="MiMo Code via ACP — Xiaomi's OpenCode fork (TypeScript)",
         skill_paths=["$HOME/.mimocode/skills"],
         home_dirs=[".mimocode", ".config/mimocode"],
-        install_cmd=_js_agent_install("mimo", "@mimo-ai/cli@0.1.0"),
-        launch_cmd=_js_agent_launch("mimo", "acp"),
+        install_cmd=(
+            _js_agent_install("mimo", "@mimo-ai/cli@0.1.0")
+            + " && "
+            + _opencode_family_proxy_wrapper_install(
+                "mimo", ".config/mimocode/mimocode.json"
+            )
+        ),
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/mimo-proxy acp",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         # MiMo Code ships a fixed endpoint for its native models.dev "xiaomi"
@@ -546,9 +660,12 @@ AGENTS: dict[str, AgentConfig] = {
         acp_model_format="provider/model",
         # MiMo Code is an OpenCode fork: `mimo acp` reports agentInfo.name="OpenCode"
         # and uses models.dev "provider/model" ids, so set_model must send e.g.
-        # "openai/benchflow-<alias>" in proxy mode, or "xiaomi/mimo-v2.5" in
-        # non-proxy mode via the registered xiaomi provider (the ("mimo","xiaomi")
-        # models.dev heuristic in acp/runtime.py keeps that prefix intact).
+        # "benchflow/benchflow-<alias>" in proxy mode (the dedicated
+        # OPENCODE_PROXY_PROVIDER_ID chat-completions provider the -proxy wrapper
+        # registers — NOT the built-in "openai" id, whose Responses-API hard-coding
+        # the gateway cannot serve), or "xiaomi/mimo-v2.5" in non-proxy mode via the
+        # registered xiaomi provider (the ("mimo","xiaomi") models.dev heuristic in
+        # acp/runtime.py keeps that prefix intact).
         env_mapping={
             # Map BOTH base_url and api_key (codex-acp precedent) so the non-proxy
             # path wires the key without an `if agent == "mimo"` core edit.

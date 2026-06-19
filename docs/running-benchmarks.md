@@ -46,15 +46,15 @@ See [Running a benchmark with an Environment manifest](#running-a-benchmark-with
 
 ## Quick start
 
-### Option 1: YAML config (`bench eval create --config`)
+### Option 1: YAML config (`bench eval run --config`)
 
 The simplest path. Point at a YAML config that specifies the benchmark source,
 agent, and model:
 
 ```bash
-GEMINI_API_KEY=... bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
-GEMINI_API_KEY=... bench eval create --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
-bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+GEMINI_API_KEY=... bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+GEMINI_API_KEY=... bench eval run --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
+bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 ```
 
 The config handles everything — downloads/generates tasks, resolves the task path,
@@ -66,14 +66,14 @@ Use CLI flags for ad-hoc runs without a config file:
 
 ```bash
 # Harvey LAB — single pre-converted task
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 
 # Harvey LAB harness adapter smoke test.
 # Requires GEMINI_API_KEY for the agent and ANTHROPIC_API_KEY for the verifier.
-uv run bench eval create \
+uv run bench eval run \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
   --agent harvey-lab-harness \
@@ -83,25 +83,25 @@ uv run bench eval create \
   --jobs-dir jobs/smoke-test/harvey-harness
 
 # Harvey LAB — all pre-converted tasks
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker --concurrency 4
 
 # SkillsBench
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
   --agent gemini --model gemini-3.1-flash-lite-preview
 
 # ProgramBench — single task (tasks are generated at runtime by the converter;
 # see "Running ProgramBench" below for the generation step)
-bench eval create \
+bench eval run \
   --tasks-dir benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 
 # Claude Code on Daytona
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
   --agent claude-agent-acp --model anthropic/claude-sonnet-4-6 --sandbox daytona --concurrency 32
@@ -156,12 +156,12 @@ set from a dataset registry instead of pointing at a directory or branch:
 ```bash
 # Resolve skillsbench@1.1 from the registry, verify every task's content
 # digest against the pinned snapshot, then run.
-bench eval create -d skillsbench@1.1 \
+bench eval run -d skillsbench@1.1 \
   --agent claude-agent-acp --model claude-haiku-4-5-20251001
 
 # Versions are immutable, so the version is always explicit — there is no
 # floating "latest". --include/--exclude filter the registry roster.
-bench eval create -d skillsbench@1.1 --include xlsx-recover-data ...
+bench eval run -d skillsbench@1.1 --include xlsx-recover-data ...
 ```
 
 A registry (`registry.json` at a dataset repo's root — see skillsbench's
@@ -197,26 +197,26 @@ digest for any task directory.
 ### Single task
 
 ```bash
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
   --agent gemini --model gemini-3.1-flash-lite-preview
 
-bench eval create \
+bench eval run \
   --tasks-dir benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 
-bench eval create \
+bench eval run \
   --tasks-dir .cache/harvey-lab-tasks/corporate-ma-review-data-room-red-flag-review \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 ```
 
 ### Batch with a tasks directory
 
-Point `bench eval create --tasks-dir` at a directory containing only the tasks you want:
+Point `bench eval run --tasks-dir` at a directory containing only the tasks you want:
 
 ```bash
-bench eval create --tasks-dir benchmarks/programbench/tasks \
+bench eval run --tasks-dir benchmarks/programbench/tasks \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker --concurrency 4
 ```
 
@@ -224,13 +224,13 @@ bench eval create --tasks-dir benchmarks/programbench/tasks \
 
 ```bash
 # SkillsBench single task
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks/edit-pdf \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 
 # Harvey LAB single task (pre-converted)
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
@@ -271,13 +271,13 @@ python -m benchmarks.programbench.main \
 ### Run all tasks
 
 ```bash
-bench eval create --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
+bench eval run --config benchmarks/programbench/programbench-gemini-flash-lite.yaml
 ```
 
 ### Run a single task (after generation)
 
 ```bash
-bench eval create \
+bench eval run \
   --tasks-dir benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox docker
 ```
@@ -287,7 +287,7 @@ bench eval create \
 Verify a task is solvable using the gold solution (original source at commit):
 
 ```bash
-bench eval create \
+bench eval run \
   --tasks-dir benchmarks/programbench/tasks/abishekvashok__cmatrix.5c082c6 \
   --agent oracle --sandbox docker
 ```
@@ -327,7 +327,7 @@ as `azure-foundry-openai/gpt-5.5` or
 Any agent can also be run via [ACPX](https://acpx.sh/) by prefixing with `acpx/`:
 
 ```bash
-bench eval create --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1-flash-lite-preview --sandbox daytona
+bench eval run --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1-flash-lite-preview --sandbox daytona
 ```
 
 ACPX is a headless ACP client that adds persistent sessions and crash recovery.
@@ -350,7 +350,7 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 
 ```bash
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
   --agent gemini --model gemini-3.1-flash-lite-preview --sandbox daytona --concurrency 64
@@ -415,19 +415,19 @@ COMMON="--tasks-dir $SKILLSBENCH/tasks --include $TASK --agent openhands \
   --sandbox daytona --concurrency 1 --usage-tracking required --agent-idle-timeout none"
 
 # (1) Opus-4.8 (MAX) — with skills
-bench eval create $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
+bench eval run $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
   --skill-mode with-skill --jobs-dir jobs/opus-skill
 
 # (2) Opus-4.8 (MAX) — without skills
-bench eval create $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
+bench eval run $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
   --skill-mode no-skill --jobs-dir jobs/opus-noskill
 
 # (3) Gemini-3.5-flash — with skills
-bench eval create $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
+bench eval run $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
   --skill-mode with-skill --jobs-dir jobs/gemini-skill
 
 # (4) Gemini-3.5-flash — without skills
-bench eval create $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
+bench eval run $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=false \
   --skill-mode no-skill --jobs-dir jobs/gemini-noskill
 ```
 
@@ -481,22 +481,22 @@ Notes:
 A **stateful** benchmark — one with mock services, databases, or accounts the
 agent acts on — declares its world in an `environment.toml` manifest and runs
 on the [Environment plane](./environment-plane.md). Use
-`bench eval create --tasks-dir ...` for both single-task and batch
+`bench eval run --tasks-dir ...` for both single-task and batch
 manifest-backed evaluations; `--environment-manifest` applies the manifest to
 every rollout in the Job pipeline.
 
 ```bash
 # single task
-bench eval create --tasks-dir benchmarks/clawsbench/tasks/<task> \
+bench eval run --tasks-dir benchmarks/clawsbench/tasks/<task> \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 
-bench eval create --tasks-dir benchmarks/chi-bench/tasks/<task> \
+bench eval run --tasks-dir benchmarks/chi-bench/tasks/<task> \
   --environment-manifest benchmarks/chi-bench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 
 # batch via the Job API
-bench eval create --tasks-dir benchmarks/clawsbench/tasks \
+bench eval run --tasks-dir benchmarks/clawsbench/tasks \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 ```

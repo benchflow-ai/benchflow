@@ -8,7 +8,7 @@
 * ``bench eval adopt <name> --verify`` — run the parity gate for the benchmark.
 
 It lives under ``eval`` because ``eval`` is the universal benchmark entry point
-(``eval create`` runs a benchmark; ``eval adopt`` is the manual path to make a
+(``eval run`` runs a benchmark; ``eval adopt`` is the manual path to make a
 foreign benchmark runnable). It previously was a subgroup with ``init`` /
 ``convert`` / ``verify`` subcommands, and before that ``bench agent
 create|run|verify`` (#735); both ``bench adopt init|convert|verify`` and ``bench

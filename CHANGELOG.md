@@ -3,6 +3,21 @@
 ## [Unreleased]
 
 ### Changed
+- **`bench continue` is now `bench eval continue`.** The command (and its
+  `continue-batch` companion) moved under the `eval` group, where it is now
+  discoverable in `bench eval --help` alongside `run`/`adopt`. The original
+  top-level `bench continue` / `bench continue-batch` remain as hidden,
+  deprecated aliases (they print a deprecation notice) so existing scripts keep
+  working.
+
+## 0.6.3 — 2026-06-16
+
+### Changed
+- **`bench eval create` renamed to `bench eval run`.** The verb now matches what
+  the command does (it runs an evaluation, single task or batch). `bench eval
+  create` stays as a deprecated alias that prints a deprecation notice on use, so
+  existing scripts, YAML configs, and downstream repos (e.g.
+  `benchflow-ai/skillsbench`) keep working unchanged. Switch to `bench eval run`.
 - **`task.md` is now the sole task authoring format.** `bench tasks init`
   scaffolds a native `task.md` package (`task.md` + `environment/` + `oracle/` +
   `verifier/`). `bench tasks init --format legacy` is retired and now exits with
@@ -14,13 +29,13 @@
 
 ### Fixed
 - `bench skills eval` now exits non-zero when any eval case errors (e.g. missing
-  credentials), matching `bench eval create`. A 100%-error run printed `0/1`
+  credentials), matching `bench eval run`. A 100%-error run printed `0/1`
   but exited `0`, so CI/scripts read a total failure as success.
 - The "task.md already exists" migrate error now names both surfaces
   (`--overwrite` for the CLI, `overwrite=True` for the Python API) instead of
   only the API kwarg.
 - `bench eval view <job-dir>` no longer shows a blank "No trajectory files
-  found" when given a job directory (the natural value from `eval create`'s
+  found" when given a job directory (the natural value from `eval run`'s
   "Artifacts:" line) — it now indexes the rollout subdirectories to drill into.
 - `bench hub env list` prints a footer (`Showing N…`) with how to refine
   (`--search`/`--owner`/`--limit`/`--json`), so a small page of a large catalog
