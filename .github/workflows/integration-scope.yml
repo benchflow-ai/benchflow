@@ -514,13 +514,20 @@ jobs:
           CODEX_REASONING_EFFORT: xhigh
         run: |
           set +e
-          uv run python .github/scripts/codex_review.py \
-            --review-pack review-pack \
-            --artifacts jobs/integration-scope \
-            --deterministic-verdict "$(cat review-pack/verdict.md | grep -ioE 'mergeable with quarantines|not mergeable|mergeable' | head -1 || echo '')" \
-            --findings-out review-pack/codex_findings.json \
-            --codex-out review-pack/codex_output.txt
-          echo "codex rc=$?"
+          # If the bridge setup step failed there is no ~/.codex/config.toml; codex
+          # would only log a confusing connection-refused against the dead proxy.
+          # codex is advisory at L2, so just skip it cleanly with a note.
+          if [ ! -f "${CODEX_HOME:-$HOME/.codex}/config.toml" ]; then
+            echo "::warning title=Moon Bridge unavailable::codex DeepSeek bridge setup did not complete (no config.toml); skipping the advisory codex equivalence review."
+          else
+            uv run python .github/scripts/codex_review.py \
+              --review-pack review-pack \
+              --artifacts jobs/integration-scope \
+              --deterministic-verdict "$(cat review-pack/verdict.md | grep -ioE 'mergeable with quarantines|not mergeable|mergeable' | head -1 || echo '')" \
+              --findings-out review-pack/codex_findings.json \
+              --codex-out review-pack/codex_output.txt
+            echo "codex rc=$?"
+          fi
 
       - name: Upsert review-pack PR comment
         if: always() && github.event.pull_request.number != ''

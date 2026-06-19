@@ -530,14 +530,23 @@ jobs:
           DETERMINISTIC_VERDICT: ${{ steps.pack.outputs.deterministic_verdict }}
         run: |
           set +e
-          uv run python .github/scripts/codex_review.py \
-            --review-pack review-pack \
-            --artifacts jobs/integration-final \
-            --deterministic-verdict "$DETERMINISTIC_VERDICT" \
-            --findings-out review-pack/codex_findings.json \
-            --codex-out review-pack/codex_output.txt
-          rc=$?
-          echo "codex_exit=$rc" >> "$GITHUB_OUTPUT"
+          # The bridge setup step is continue-on-error, so if it failed there is no
+          # ~/.codex/config.toml and codex would only emit a confusing
+          # connection-refused against the dead local proxy. Detect that absence up
+          # front and fail-closed with a clear message instead.
+          if [ ! -f "${CODEX_HOME:-$HOME/.codex}/config.toml" ]; then
+            echo "::error title=Moon Bridge unavailable::codex DeepSeek bridge setup did not complete (no config.toml) — codex (required at L3) cannot run; fail-closing to 'not mergeable (codex unavailable)'."
+            echo "codex_exit=1" >> "$GITHUB_OUTPUT"
+          else
+            uv run python .github/scripts/codex_review.py \
+              --review-pack review-pack \
+              --artifacts jobs/integration-final \
+              --deterministic-verdict "$DETERMINISTIC_VERDICT" \
+              --findings-out review-pack/codex_findings.json \
+              --codex-out review-pack/codex_output.txt
+            rc=$?
+            echo "codex_exit=$rc" >> "$GITHUB_OUTPUT"
+          fi
           # The final verdict was written to GITHUB_OUTPUT by codex_review.py
           # (final_verdict / codex_verdict). codex_exit != 0 => fail-closed.
 
