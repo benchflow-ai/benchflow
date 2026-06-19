@@ -261,7 +261,7 @@ Do not claim parity from a JSON file that has no scoreable comparisons. A missin
 After parity is confirmed, run the converted benchmark like a normal BenchFlow benchmark:
 
 ```bash
-bench eval create --config benchmarks/<name>/<name>.yaml
+bench eval run --config benchmarks/<name>/<name>.yaml
 ```
 
 For local debugging, run a small subset first:
@@ -273,12 +273,15 @@ python benchmarks/<name>/main.py \
   --limit 3 \
   --overwrite
 
-bench eval create \
+bench eval run \
   --tasks-dir /tmp/<name>-tasks \
   --agent gemini \
   --model gemini-2.5-flash \
   --sandbox docker
 ```
+
+Use `bench eval run` in adapter docs and examples. `bench eval create` is a
+deprecated alias and should only appear when documenting legacy compatibility.
 
 ### `audit <name|jobs-dir>`
 
