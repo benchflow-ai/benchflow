@@ -233,6 +233,62 @@ class Slot:
         return self.cell.id
 
 
+def _started_at(rollout_dir: Path) -> str:
+    """The rollout's start timestamp as a sortable string ('' when absent).
+
+    Production ``result.json`` carries a top-level ``started_at``; the flat
+    fixtures nest it under ``timing`` — accept either.
+    """
+    data = _read_json(rollout_dir / "result.json") or {}
+    started = data.get("started_at")
+    if not started:
+        timing = data.get("timing")
+        if isinstance(timing, dict):
+            started = timing.get("started_at")
+    return str(started or "")
+
+
+def _attribute_rollout(
+    rollout: Path, by_cell_id: dict[str, Slot], slots: list[Slot]
+) -> Slot | None:
+    """Map one produced rollout to its planned slot.
+
+    Primary: the run-matrix writes each cell's rollouts under a directory named
+    exactly by the cell id (``jobs/integration-final/<cell.id>/<ts>/<task>__<h>``),
+    so attribute by that id. This keeps cells that differ only in an
+    "expected-only" axis the rollout itself does not record — e.g. the
+    ``-allowlist`` network-mode variant of an otherwise-identical cell — from
+    colliding into a single slot (leaving the other slot spuriously "missing").
+
+    Fallback: dims-based matching for legacy/flat rollouts whose path carries no
+    recognizable cell-id directory.
+    """
+    for part in rollout.parts:
+        slot = by_cell_id.get(part)
+        if slot is not None:
+            return slot
+    dims = _rollout_dims(rollout)
+    return next((s for s in slots if _cell_matches(s.cell, dims)), None)
+
+
+def _dedupe_retries(rollouts: list[Path]) -> list[Path]:
+    """Collapse retry attempts of one cell-job into a single rollout.
+
+    A flaky agent makes the cell's ``scenarios.run_eval`` retry in place, leaving
+    several ``<task>__<hash>`` result dirs under the SAME ``<cell-id>/<ts>`` job
+    dir — attempts of one logical rollout, so keep only the latest by
+    ``started_at``. Rollouts under DISTINCT job dirs are preserved, so a
+    genuinely double-scheduled cell still surfaces as a ``duplicate``.
+    """
+    latest: dict[Path, Path] = {}
+    for rollout in rollouts:
+        job = rollout.parent
+        current = latest.get(job)
+        if current is None or _started_at(rollout) >= _started_at(current):
+            latest[job] = rollout
+    return sorted(latest.values())
+
+
 def classify_slots(
     cells: list[Cell], artifacts: Path, expected_source_sha: str | None = None
 ) -> tuple[list[Slot], list[Path]]:
@@ -244,16 +300,19 @@ def classify_slots(
     ``unattributed`` are produced rollouts that matched no planned cell.
     """
     slots = [Slot(cell=cell) for cell in cells]
+    by_cell_id: dict[str, Slot] = {}
+    for slot in slots:
+        by_cell_id.setdefault(slot.cell.id, slot)
     rollouts = sorted({p.parent for p in artifacts.rglob("result.json")})
     unattributed: list[Path] = []
     for rollout in rollouts:
-        dims = _rollout_dims(rollout)
-        matched = next((s for s in slots if _cell_matches(s.cell, dims)), None)
+        matched = _attribute_rollout(rollout, by_cell_id, slots)
         if matched is None:
             unattributed.append(rollout)
             continue
         matched.rollouts.append(rollout)
     for slot in slots:
+        slot.rollouts = _dedupe_retries(slot.rollouts)
         _classify_one(slot, expected_source_sha)
     return slots, unattributed
 

@@ -96,6 +96,25 @@ _SHELL_TOOLS = {"bash", "shell", "run", "execute", "run_command", "sh"}
 _ACP_READONLY_KINDS = {"read", "search", "fetch", "think", "switch_mode"}
 _ACP_WRITE_KINDS = {"edit", "delete", "move", "write", "create"}
 
+# OpenHands records native ACP ``execute`` titles as ``"<human description>: $
+# <command>"``. The prose description routinely says "Verify the output",
+# "Validate …", "Final verification …" — words that collide with the ``verif``
+# token in _VERIFIER_FILE_RE and falsely flag benign cleanup/verification as
+# tampering. Only the command after ``: $ `` is the agent's actual action, so the
+# execute scan must strip the description first.
+_ACP_EXECUTE_PREFIX_RE = re.compile(r".*?: \$ ", re.DOTALL)
+
+
+def _acp_execute_command(title: str) -> str:
+    """Strip OpenHands' ``"<description>: $ "`` prefix, leaving just the command.
+
+    Titles without the ``: $ `` separator (other agents, or a bare command line)
+    are returned unchanged, so this only ever narrows what is scanned — a real
+    tamper command (``echo x > grader.py``, ``rm -rf tests``) still appears
+    verbatim after the separator and is still caught.
+    """
+    return _ACP_EXECUTE_PREFIX_RE.sub("", title, count=1)
+
 
 def _scan_native_tool_call(event: dict[str, Any]) -> list[str]:
     """Scan one native ACP ``type:"tool_call"`` record for verifier tamper.
@@ -116,10 +135,12 @@ def _scan_native_tool_call(event: dict[str, Any]) -> list[str]:
     # by the kind, so no destructive-op token is required in the title).
     if kind in _ACP_WRITE_KINDS and _VERIFIER_FILE_RE.search(title):
         return [f"{kind} -> {title[:160]}"]
-    # execute / other: the title is a shell command — flag only a destructive op
-    # against a score-defining file (running the tests read-only is fine).
-    if _VERIFIER_FILE_RE.search(title) and _TAMPER_OP_RE.search(title):
-        return [f"{kind}: {title[:160]}"]
+    # execute / other: OpenHands writes the title as "<description>: $ <command>".
+    # Scan ONLY the command so prose like "Verify the output" can't collide with
+    # the verifier-file token; a real tamper command still appears after "$ ".
+    command = _acp_execute_command(title)
+    if _VERIFIER_FILE_RE.search(command) and _TAMPER_OP_RE.search(command):
+        return [f"{kind}: {command[:160]}"]
     return []
 
 
