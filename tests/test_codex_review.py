@@ -41,6 +41,35 @@ cr = _load_module()
 
 
 # ------------------------------------------------------------------
+# _codex_env — isolate the codex CLI auth from the DeepSeek judge clobber
+# ------------------------------------------------------------------
+
+
+def test_codex_env_prefers_codex_api_key_and_drops_deepseek_base():
+    # The review-pack job points OPENAI_* at DeepSeek for the Pass-1 judge; the
+    # host codex CLI must instead use the REAL OpenAI key (CODEX_API_KEY) and the
+    # default OpenAI endpoint (DeepSeek base URL dropped). The judge model stays.
+    out = cr._codex_env(
+        {
+            "OPENAI_API_KEY": "ds-key",
+            "OPENAI_BASE_URL": "https://api.deepseek.com",
+            "CODEX_API_KEY": "real-openai-key",
+            "BENCHFLOW_JUDGE_MODEL": "openai/deepseek-v4-flash",
+        }
+    )
+    assert out["OPENAI_API_KEY"] == "real-openai-key"
+    assert "OPENAI_BASE_URL" not in out
+    assert out["BENCHFLOW_JUDGE_MODEL"] == "openai/deepseek-v4-flash"
+
+
+def test_codex_env_unchanged_without_codex_api_key():
+    # Backward compatible: with no CODEX_API_KEY (host where OPENAI_API_KEY is
+    # already the real key), the env is returned untouched.
+    src = {"OPENAI_API_KEY": "x", "OPENAI_BASE_URL": "y"}
+    assert cr._codex_env(src) == src
+
+
+# ------------------------------------------------------------------
 # worst() — advisory-stricter-only composition
 # ------------------------------------------------------------------
 def test_worst_codex_can_downgrade():
