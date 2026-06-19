@@ -78,15 +78,20 @@ L2 adopted: create benchmarks/<name>/ converter + parity gate.
 L3 as-is: wrap/import original harness output, do not translate task logic.
 ```
 
-### `init <name>`
+`bench eval adopt` is a single multi-mode command. The first argument is a
+source in convert mode, and a benchmark slug when `--scaffold-only` or
+`--verify` is set.
 
-Use the canonical adoption command:
+### `scaffold <name>`
+
+Create only the adapter package skeleton:
 
 ```bash
-bench eval adopt init <name>
+bench eval adopt <name> --scaffold-only
 ```
 
-Do not use deprecated `bench agent create|run|verify` unless the installed BenchFlow version only supports the legacy alias.
+Do not use older aliases or retired adopt subcommands in new adapter docs or
+examples.
 
 The scaffold should contain:
 
@@ -109,14 +114,16 @@ Treat `benchflow.py` as the source of truth for conversion.
 Use the router first:
 
 ```bash
-bench eval adopt convert <source> --name <name> --dry-run
+bench eval adopt <source> --name <name> --dry-run
 ```
 
 Review the generated Codex command and prompt. Then run the live conversion only when credentials and workspace state are correct:
 
 ```bash
-bench eval adopt convert <source> --name <name>
+bench eval adopt <source> --name <name>
 ```
+
+Convert mode auto-scaffolds `benchmarks/<name>/` when it is missing.
 
 The conversion must implement:
 
@@ -195,13 +202,13 @@ Implementation rules:
 Run the parity gate:
 
 ```bash
-bench eval adopt verify <name>
+bench eval adopt <name> --verify
 ```
 
 Use rerun mode when available and appropriate:
 
 ```bash
-bench eval adopt verify <name> --rerun
+bench eval adopt <name> --verify --rerun
 ```
 
 The gate has two layers:
@@ -280,8 +287,7 @@ bench eval run \
   --sandbox docker
 ```
 
-Use `bench eval run` in adapter docs and examples. `bench eval create` is a
-deprecated alias and should only appear when documenting legacy compatibility.
+Use `bench eval run` in adapter docs and examples.
 
 ### `audit <name|jobs-dir>`
 
@@ -295,7 +301,7 @@ Check:
 * Oracle solutions pass when available.
 * Empty or trivial submissions fail unless the original benchmark also accepts them.
 * Agent-visible files do not include hidden tests, gold answers, reward files, or judge-only prompts.
-* `parity_experiment.json` is scoreable by `bench eval adopt verify`.
+* `parity_experiment.json` is scoreable by `bench eval adopt <name> --verify`.
 * `benchmark.yaml` accurately describes task count, categories, conversion method, verifier method, reward type, and parity evidence.
 * The job config points to the correct task directory.
 * The final run emits the standard BenchFlow trajectory contract.
@@ -372,7 +378,7 @@ A BenchFlow adapter is done only when all are true:
 [ ] Oracle solutions pass when available.
 [ ] parity_test.py implements structural, eval, and side-by-side checks.
 [ ] parity_experiment.json contains scoreable comparisons.
-[ ] bench eval adopt verify <name> returns parity-confirmed.
+[ ] bench eval adopt <name> --verify returns parity-confirmed.
 [ ] benchmark.yaml and README document the conversion honestly.
 [ ] <name>.yaml can run the converted tasks.
 [ ] Published evidence includes parity results and run trajectories.
