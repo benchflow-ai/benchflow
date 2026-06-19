@@ -245,10 +245,20 @@ def test_network_allowlist_variant_does_not_collide_with_default_cell() -> None:
     plain_id = "citation-check-docker-no-skill-openhands"
     allow_id = "citation-check-docker-no-skill-openhands-allowlist"
     matrix = [
-        _cell("citation-check", "openhands", id=plain_id, sandbox="docker",
-              network_mode="default-off"),
-        _cell("citation-check", "openhands", id=allow_id, sandbox="docker",
-              network_mode="allowlist"),
+        _cell(
+            "citation-check",
+            "openhands",
+            id=plain_id,
+            sandbox="docker",
+            network_mode="default-off",
+        ),
+        _cell(
+            "citation-check",
+            "openhands",
+            id=allow_id,
+            sandbox="docker",
+            network_mode="allowlist",
+        ),
     ]
     plan = _plan(_HEAD, matrix, network_lane=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -257,8 +267,11 @@ def test_network_allowlist_variant_does_not_collide_with_default_cell() -> None:
         for cell_id in (plain_id, allow_id):
             _write_flat_rollout(
                 arts / cell_id / "2026-06-19__00-00-00" / "citation-check__h",
-                task="citation-check", agent="openhands",
-                sandbox="docker", skill_mode="no-skill", head_sha=_HEAD,
+                task="citation-check",
+                agent="openhands",
+                sandbox="docker",
+                skill_mode="no-skill",
+                head_sha=_HEAD,
             )
         review = pack_mod.build_review(plan, arts, None)
         statuses = {s.cell_id: s.status for s in review["slots"]}
@@ -286,8 +299,11 @@ def test_retried_cell_collapses_to_single_rollout() -> None:
         ):
             _write_flat_rollout(
                 job / f"citation-check__{h}",
-                task="citation-check", agent="opencode",
-                sandbox="docker", skill_mode="no-skill", head_sha=_HEAD,
+                task="citation-check",
+                agent="opencode",
+                sandbox="docker",
+                skill_mode="no-skill",
+                head_sha=_HEAD,
                 started_at=started,
             )
         review = pack_mod.build_review(plan, arts, None)
@@ -304,8 +320,11 @@ def test_retried_cell_collapses_to_single_rollout() -> None:
         for ts in ("2026-06-19__04-51-52", "2026-06-19__05-10-00"):
             _write_flat_rollout(
                 arts / cell_id / ts / "citation-check__h",
-                task="citation-check", agent="opencode",
-                sandbox="docker", skill_mode="no-skill", head_sha=_HEAD,
+                task="citation-check",
+                agent="opencode",
+                sandbox="docker",
+                skill_mode="no-skill",
+                head_sha=_HEAD,
                 started_at=ts,
             )
         review = pack_mod.build_review(plan, arts, None)

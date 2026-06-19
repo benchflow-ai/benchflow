@@ -344,7 +344,10 @@ def test_main_retries_transient_codex_then_succeeds(tmp_path, monkeypatch, capsy
     def fake(*a, **k):
         calls.append(1)
         if len(calls) == 1:
-            return (None, "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted")
+            return (
+                None,
+                "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
+            )
         return ("mergeable", '```verdict-json\n{"verdict": "mergeable"}\n```')
 
     monkeypatch.setattr(cr, "run_codex_verdict", fake)
