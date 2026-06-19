@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import json
 import os
 import re
@@ -160,7 +161,9 @@ async def _gather_findings(
     async def one(rollout: Path) -> dict:
         try:
             evidence = agent_judge.load_rollout_evidence(rollout)
-            evidence_json = json.dumps(evidence.to_dict(), indent=2)[:8000]
+            # RolloutEvidence is a frozen dataclass (no .to_dict()); serialize via
+            # dataclasses.asdict. flagged_actions etc. are JSON-able.
+            evidence_json = json.dumps(dataclasses.asdict(evidence), indent=2)[:8000]
         except Exception as exc:  # evidence we cannot load is unhealthy
             return {
                 "rollout": str(rollout),
@@ -279,6 +282,32 @@ def _codex_env(env: Mapping[str, str]) -> dict[str, str]:
         out["OPENAI_API_KEY"] = codex_key
         out.pop("OPENAI_BASE_URL", None)
     return out
+
+
+def _deepseek_codex_config(
+    model: str | None, env: Mapping[str, str]
+) -> list[str]:
+    """Codex `-c` overrides to run the composer on a DeepSeek model.
+
+    A DeepSeek codex model can't use the OpenAI Responses API + its `tool_search`
+    tool (which small/non-OpenAI models reject), so route codex through a custom
+    chat-completions provider pointed at DeepSeek. The composer only reads the
+    review-pack text we hand it (no web tools needed), so the chat wire is enough.
+    Returns [] for a non-DeepSeek model (codex uses its default OpenAI provider).
+    """
+    if not model or "deepseek" not in model.lower():
+        return []
+    base = (env.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/")
+    # DeepSeek's OpenAI-compatible chat endpoint lives under /v1.
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    return [
+        "model_provider=deepseek",
+        "model_providers.deepseek.name=DeepSeek",
+        f"model_providers.deepseek.base_url={base}",
+        "model_providers.deepseek.env_key=DEEPSEEK_API_KEY",
+        "model_providers.deepseek.wire_api=chat",
+    ]
 
 
 def build_codex_command(
@@ -558,7 +587,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         workdir=args.review_pack.resolve().parent,
         codex_bin=args.codex_bin,
         model=args.codex_model,
-        config_overrides=args.config_overrides,
+        config_overrides=[
+            *_deepseek_codex_config(args.codex_model, codex_env),
+            *args.config_overrides,
+        ],
         env=codex_env,
     )
     if args.codex_out:

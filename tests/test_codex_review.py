@@ -69,6 +69,25 @@ def test_codex_env_unchanged_without_codex_api_key():
     assert cr._codex_env(src) == src
 
 
+def test_deepseek_codex_config_routes_via_chat_provider():
+    # A DeepSeek composer model can't use the OpenAI Responses API + tool_search,
+    # so codex is pointed at a custom chat-completions provider on DeepSeek.
+    cfg = cr._deepseek_codex_config(
+        "deepseek-v4-pro", {"DEEPSEEK_BASE_URL": "https://api.deepseek.com"}
+    )
+    assert "model_provider=deepseek" in cfg
+    assert "model_providers.deepseek.wire_api=chat" in cfg
+    assert "model_providers.deepseek.env_key=DEEPSEEK_API_KEY" in cfg
+    # DeepSeek's OpenAI-compatible chat endpoint is under /v1.
+    assert "model_providers.deepseek.base_url=https://api.deepseek.com/v1" in cfg
+
+
+def test_deepseek_codex_config_empty_for_openai_model():
+    # A non-DeepSeek model leaves codex on its default OpenAI provider.
+    assert cr._deepseek_codex_config("gpt-5.4-nano", {}) == []
+    assert cr._deepseek_codex_config(None, {}) == []
+
+
 # ------------------------------------------------------------------
 # worst() — advisory-stricter-only composition
 # ------------------------------------------------------------------
