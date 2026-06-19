@@ -503,23 +503,29 @@ jobs:
         continue-on-error: true
         run: npm install -g @openai/codex@0.141.0
 
+      # Route codex to DeepSeek-v4-pro via Moon Bridge (a local OpenAI-Responses
+      # <-> DeepSeek forwarding proxy) — codex speaks ONLY the Responses API and
+      # the OpenAI account quota is exhausted, so the reviewer runs on DeepSeek.
+      # Starts the bridge in the background + writes codex's config.toml. Method:
+      # github.com/deepseek-ai/awesome-deepseek-agent docs/codex.md.
+      - name: Set up codex DeepSeek bridge (Moon Bridge)
+        if: ${{ github.event.inputs.codex_review != 'false' }}
+        continue-on-error: true
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: bash .github/scripts/setup_codex_deepseek_bridge.sh
+
       # REQUIRED at L3 (fail-closed). A dead/absent codex key => not mergeable.
       - name: Codex equivalence review (REQUIRED, fail-closed)
         id: codex
         if: ${{ github.event.inputs.codex_review != 'false' }}
         env:
-          # The per-rollout judge (Pass 1) uses the DeepSeek OPENAI_* that
-          # provider-select wrote to $GITHUB_ENV. The host `codex exec` (Pass 2)
-          # needs the REAL OpenAI key — passed via CODEX_API_KEY, which
-          # codex_review.py uses for the CLI (dropping the DeepSeek base URL) so
-          # the judge clobber never leaks into codex auth.
+          # codex runs on DeepSeek-v4-pro through Moon Bridge (config.toml written
+          # by the setup step into ~/.codex, model `moonbridge` -> deepseek-v4-pro).
+          # CODEX_API_KEY is still set so has_codex_auth passes; the moonbridge
+          # provider is a local bridge and ignores it.
           CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # codex speaks ONLY the OpenAI Responses API — DeepSeek is impossible
-          # (codex removed chat-wire; DeepSeek doesn't serve Responses). So the
-          # composer runs on an OpenAI model: gpt-5.5 (full model — supports
-          # codex's tools, unlike gpt-5.4-nano which rejected `tool_search`) with
-          # xhigh reasoning effort for a thorough equivalence review.
-          CODEX_MODEL: gpt-5.5
+          CODEX_MODEL: moonbridge
           CODEX_REASONING_EFFORT: xhigh
           DETERMINISTIC_VERDICT: ${{ steps.pack.outputs.deterministic_verdict }}
         run: |
