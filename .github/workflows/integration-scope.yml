@@ -493,18 +493,24 @@ jobs:
         continue-on-error: true
         run: npm install -g @openai/codex@0.141.0
 
+      # Route codex to DeepSeek-v4-pro via Moon Bridge (local Responses<->DeepSeek
+      # proxy) — codex speaks only the Responses API. Background bridge + codex
+      # config.toml. See setup_codex_deepseek_bridge.sh.
+      - name: Set up codex DeepSeek bridge (Moon Bridge)
+        continue-on-error: true
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: bash .github/scripts/setup_codex_deepseek_bridge.sh
+
       - name: Codex equivalence review (advisory)
         id: codex
         continue-on-error: true
         env:
-          # Pass 1 judge uses the DeepSeek OPENAI_* (provider-select wrote it to
-          # $GITHUB_ENV). The host `codex exec` (Pass 2) gets the REAL OpenAI key
-          # via CODEX_API_KEY — codex_review.py isolates the CLI env (real key +
-          # default OpenAI base) so the judge clobber never leaks into codex auth.
+          # codex runs on DeepSeek-v4-pro through Moon Bridge (config.toml in
+          # ~/.codex, model `moonbridge`). CODEX_API_KEY kept so has_codex_auth
+          # passes; the local bridge ignores it.
           CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # codex requires the OpenAI Responses API (DeepSeek impossible): the
-          # composer runs on gpt-5.5 with xhigh reasoning effort.
-          CODEX_MODEL: gpt-5.5
+          CODEX_MODEL: moonbridge
           CODEX_REASONING_EFFORT: xhigh
         run: |
           set +e
