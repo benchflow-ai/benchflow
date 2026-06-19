@@ -19,13 +19,13 @@ Parity evidence required: side-by-side grade_csv vs converted verifier on identi
 
 ## Convert
 
-Prepare MLE-bench data first:
+Prepare MLE-bench data for the default `split75` task set first:
 
 ```bash
 git clone https://github.com/openai/mle-bench.git /path/to/mle-bench
 cd /path/to/mle-bench
 pip install -e .
-mlebench prepare --lite --data-dir /path/to/mle-data
+mlebench prepare --all --data-dir /path/to/mle-data
 ```
 
 Then generate BenchFlow tasks:
@@ -35,13 +35,15 @@ python benchmarks/mle-bench/main.py \
   --source-dir /path/to/mle-bench \
   --data-dir /path/to/mle-data \
   --output-dir benchmarks/mle-bench/tasks \
-  --split low \
+  --split split75 \
   --overwrite
 ```
 
 Useful subsets:
 
 ```bash
+cd /path/to/mle-bench && mlebench prepare --lite --data-dir /path/to/mle-data
+python benchmarks/mle-bench/main.py --source-dir /path/to/mle-bench --data-dir /path/to/mle-data --output-dir /tmp/mle-tasks --split low
 python benchmarks/mle-bench/main.py --source-dir /path/to/mle-bench --data-dir /path/to/mle-data --output-dir /tmp/mle-tasks --limit 3
 python benchmarks/mle-bench/main.py --source-dir /path/to/mle-bench --data-dir /path/to/mle-data --output-dir /tmp/mle-tasks --task-ids spaceship-titanic,AI4Code
 ```
@@ -68,6 +70,11 @@ upstream MLE-bench grader, writes the full report to
 
 - `1.0` if `any_medal` is true
 - `0.0` otherwise
+
+By design, the verifier runs as `root` and executes the vendored upstream
+per-competition `grade.py` only inside the verifier container. Agents can read
+and write only the task environment and final submission path; they do not
+control the verifier package or private grading data.
 
 ## Parity
 
@@ -116,7 +123,7 @@ A converted `spaceship-titanic` task has also been run through BenchFlow's Docke
 sandbox with a temporary oracle fixture:
 
 ```bash
-uv run bench eval create \
+uv run bench eval run \
   --tasks-dir /tmp/mle-bench-benchflow-smoke-task/spaceship-titanic \
   --agent oracle \
   --sandbox docker \
@@ -139,7 +146,7 @@ A converted `spaceship-titanic` task has also been run with a real ACP agent,
 not just the oracle harness:
 
 ```bash
-uv run bench eval create \
+uv run bench eval run \
   --tasks-dir /tmp/mle-bench-agent-smoke-task/spaceship-titanic \
   --agent codex \
   --model openai/gpt-5.4-mini \

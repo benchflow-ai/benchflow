@@ -9,6 +9,7 @@ converted_by: BenchFlow
 
 tasks:
   count: 75
+  count_note: "Upstream split75 universe; parity evidence below covers the six real-data sample tasks listed under parity.side_by_side.evidence_tasks."
   task_unit: Kaggle competition
   splits:
     split75: 75
@@ -45,6 +46,13 @@ verification:
   aggregation: any_medal
   test_source: "openai/mle-bench grade_csv"
   private_data_agent_visible: false
+  verifier_user: root
+  verifier_design_note: >
+    Converted tasks vendor upstream per-competition grade.py under tests/mlebench
+    and execute it only inside the verifier container with private data mounted
+    under tests/private-data. Agents see environment/data and write
+    /home/submission/submission.csv; they do not control verifier code or
+    private grading data.
   benchflow_runtime_smoke:
     task: spaceship-titanic
     sandbox: docker
@@ -55,7 +63,7 @@ verification:
     reward: 0.0
     verifier_errored: 0
     notes: >
-      Recorded with `bench eval create --agent oracle --sandbox docker`.
+      Recorded with `bench eval run --agent oracle --sandbox docker`.
       Reward 0.0 is expected for the sample submission; the runtime evidence is
       that Docker build/start, oracle execution, and verifier grading completed
       without verifier errors.
@@ -73,7 +81,7 @@ verification:
     tool_calls: 3
     jobs_dir: /tmp/mle-bench-agent-smoke-jobs-codex-gpt54/2026-06-16__08-08-30
     notes: >
-      Recorded with `bench eval create --agent codex --model openai/gpt-5.4-mini
+      Recorded with `bench eval run --agent codex --model openai/gpt-5.4-mini
       --sandbox docker --usage-tracking off`. Reward 0.0 is expected for the
       sample submission; the runtime evidence is that a live ACP agent connected,
       executed tools, produced a valid submission, and the verifier completed.
