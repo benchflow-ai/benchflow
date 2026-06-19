@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import json
 import os
 import re
@@ -160,7 +161,9 @@ async def _gather_findings(
     async def one(rollout: Path) -> dict:
         try:
             evidence = agent_judge.load_rollout_evidence(rollout)
-            evidence_json = json.dumps(evidence.to_dict(), indent=2)[:8000]
+            # RolloutEvidence is a frozen dataclass (no .to_dict()); serialize via
+            # dataclasses.asdict. flagged_actions etc. are JSON-able.
+            evidence_json = json.dumps(dataclasses.asdict(evidence), indent=2)[:8000]
         except Exception as exc:  # evidence we cannot load is unhealthy
             return {
                 "rollout": str(rollout),
@@ -279,6 +282,20 @@ def _codex_env(env: Mapping[str, str]) -> dict[str, str]:
         out["OPENAI_API_KEY"] = codex_key
         out.pop("OPENAI_BASE_URL", None)
     return out
+
+
+def _reasoning_config(env: Mapping[str, str]) -> list[str]:
+    """Codex `-c` override for the composer's reasoning effort.
+
+    ``CODEX_REASONING_EFFORT`` (none|minimal|low|medium|high|xhigh) sets how hard
+    the codex composer reasons over the review pack. Empty -> codex default.
+    (codex speaks ONLY the OpenAI Responses API, so the composer must be an
+    OpenAI model — DeepSeek/chat-wire is not supported by codex.)
+    """
+    effort = (env.get("CODEX_REASONING_EFFORT") or "").strip()
+    if not effort:
+        return []
+    return [f'model_reasoning_effort="{effort}"']
 
 
 def build_codex_command(
@@ -558,7 +575,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         workdir=args.review_pack.resolve().parent,
         codex_bin=args.codex_bin,
         model=args.codex_model,
-        config_overrides=args.config_overrides,
+        config_overrides=[
+            *_reasoning_config(codex_env),
+            *args.config_overrides,
+        ],
         env=codex_env,
     )
     if args.codex_out:

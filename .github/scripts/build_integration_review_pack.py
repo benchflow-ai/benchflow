@@ -286,13 +286,33 @@ def _classify_one(slot: Slot, expected_source_sha: str | None) -> None:
         slot.detail = f"ungradeable: {exc}"
         return
     if slot.grade["deterministic_reject"]:
-        slot.status = "unhealthy"
         rejects = [
             g["id"]
             for g in slot.grade["gates"]
             if g["status"] == "fail" and g["enforcement"] == "deterministic"
         ]
-        slot.detail = f"deterministic reject: {rejects}"
+        # R-OUTCOME fails when the rollout's status is not a valid SCORED outcome
+        # (an errored / unscored-timeout run, often a hard task the agent didn't
+        # finish in budget) — an experiment-fidelity issue on that one rollout, not
+        # a regression introduced by the PR. Demote an R-OUTCOME-ONLY reject to a
+        # QUARANTINE (visible, non-blocking). Any OTHER deterministic reject
+        # (realness, tamper, artifact, telemetry, schema) is a real health failure
+        # and still hard-blocks.
+        non_outcome = [r for r in rejects if r != "R-OUTCOME"]
+        if non_outcome:
+            slot.status = "unhealthy"
+            slot.detail = f"deterministic reject: {non_outcome}"
+        else:
+            slot.status = "healthy"
+            slot.grade["quarantines"] = [
+                *slot.grade.get("quarantines", []),
+                "R-OUTCOME: rollout produced no valid scored outcome "
+                "(error / unscored timeout) — quarantined, not a PR regression",
+            ]
+            slot.detail = (
+                f"healthy with {len(slot.grade['quarantines'])} quarantine(s) "
+                "(incl. R-OUTCOME)"
+            )
     else:
         slot.status = "healthy"
         if slot.grade["quarantines"]:

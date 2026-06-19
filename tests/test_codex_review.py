@@ -69,6 +69,19 @@ def test_codex_env_unchanged_without_codex_api_key():
     assert cr._codex_env(src) == src
 
 
+def test_reasoning_config_sets_effort_override():
+    # CODEX_REASONING_EFFORT -> a model_reasoning_effort `-c` override.
+    assert cr._reasoning_config({"CODEX_REASONING_EFFORT": "xhigh"}) == [
+        'model_reasoning_effort="xhigh"'
+    ]
+
+
+def test_reasoning_config_empty_when_unset():
+    # No env -> no override (codex uses its default effort).
+    assert cr._reasoning_config({}) == []
+    assert cr._reasoning_config({"CODEX_REASONING_EFFORT": "  "}) == []
+
+
 # ------------------------------------------------------------------
 # worst() — advisory-stricter-only composition
 # ------------------------------------------------------------------

@@ -502,9 +502,10 @@ jobs:
           # via CODEX_API_KEY — codex_review.py isolates the CLI env (real key +
           # default OpenAI base) so the judge clobber never leaks into codex auth.
           CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # Pin the codex composer to a model the key is proven to serve (else
-          # `codex exec` uses its built-in default, which the key may not serve).
-          CODEX_MODEL: gpt-5.4-nano
+          # codex requires the OpenAI Responses API (DeepSeek impossible): the
+          # composer runs on gpt-5.5 with xhigh reasoning effort.
+          CODEX_MODEL: gpt-5.5
+          CODEX_REASONING_EFFORT: xhigh
         run: |
           set +e
           uv run python .github/scripts/codex_review.py \
