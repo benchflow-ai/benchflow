@@ -49,12 +49,15 @@ DS_TEMPLATE="${CONFIG_TEMPLATE}" DS_OUT=/tmp/mb_config.yml python3 - <<'PY'
 import json, os, pathlib
 tpl = pathlib.Path(os.environ["DS_TEMPLATE"]).read_text()
 key = os.environ["DEEPSEEK_API_KEY"]
-# Replace the QUOTED placeholder token with a JSON-encoded (YAML-safe) string.
+# Match the QUOTED placeholder (the api_key value slot) and replace it with the
+# JSON-encoded (YAML-safe) key. We match the quoted form, not the bare word,
+# because the word also appears in a YAML comment in the template — matching the
+# quoted form leaves that comment untouched.
 token = '"DEEPSEEK_API_KEY_PLACEHOLDER"'
 if token not in tpl:
     raise SystemExit("api_key placeholder token not found in template")
 out = tpl.replace(token, json.dumps(key))
-if token in out:  # the quoted secret slot must be gone (a bare mention in a comment is fine)
+if token in out:  # the quoted secret slot must be gone after substitution
     raise SystemExit("placeholder substitution failed")
 pathlib.Path(os.environ["DS_OUT"]).write_text(out)
 PY

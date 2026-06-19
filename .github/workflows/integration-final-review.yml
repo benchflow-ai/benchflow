@@ -556,8 +556,11 @@ jobs:
         env:
           CODEX_REQUIRED: ${{ github.event.inputs.codex_review != 'false' }}
           DET: ${{ steps.pack.outputs.deterministic_verdict }}
+          # The fail-closed trigger is an empty CODEX_FINAL (codex produced no
+          # verdict). codex_exit is intentionally not consulted: codex_review.py
+          # returns non-zero for a legitimately-computed "not mergeable" too, so
+          # gating on it would mislabel a real verdict as "codex unavailable".
           CODEX_FINAL: ${{ steps.codex.outputs.final_verdict }}
-          CODEX_EXIT: ${{ steps.codex.outputs.codex_exit }}
         run: |
           set -euo pipefail
           if [ "$CODEX_REQUIRED" = "false" ]; then
