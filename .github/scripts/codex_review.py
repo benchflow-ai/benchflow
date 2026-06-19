@@ -474,7 +474,8 @@ _TRANSIENT_CODEX_MARKERS = (
     "connection refused",
     "connection reset",
     "rate limit",
-    "429",
+    "too many requests",  # the HTTP 429 reason phrase (avoids matching "line 429")
+    "http 429",
     "502 bad gateway",
     "503 service",
     "temporarily unavailable",

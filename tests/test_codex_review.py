@@ -311,6 +311,10 @@ def test_looks_transient_classification():
     # A real verdict or plain prose is NOT transient.
     assert not cr._looks_transient("Verdict: not mergeable")
     assert not cr._looks_transient("the rollout looks fine, no issues")
+    # "429" as an incidental substring (line/attempt numbers) is NOT a transient
+    # rate-limit signal — the marker is bounded, not a bare "429".
+    assert not cr._looks_transient("AssertionError at line 429 in module")
+    assert not cr._looks_transient("attempt 4290 of the loop")
 
 
 def test_assemble_prompt_inlines_review_pack(tmp_path: Path):

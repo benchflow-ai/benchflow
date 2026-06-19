@@ -234,22 +234,26 @@ class Slot:
 
 
 def _started_at(rollout_dir: Path) -> str:
-    """The rollout's start timestamp as a sortable string ('' when absent).
+    """The rollout's start time as a sortable string ('' when absent).
 
     Production ``result.json`` carries a top-level ``started_at``; the flat
-    fixtures nest it under ``timing`` — accept either.
+    fixtures nest it under ``timing``. Falls back to the finish time so
+    retry-collapse still prefers the temporally-last attempt when ``started_at``
+    is missing (rather than an arbitrary path/hash order).
     """
     data = _read_json(rollout_dir / "result.json") or {}
-    started = data.get("started_at")
-    if not started:
-        timing = data.get("timing")
-        if isinstance(timing, dict):
-            started = timing.get("started_at")
-    return str(started or "")
+    for key in ("started_at", "finished_at"):
+        value = data.get(key)
+        if value:
+            return str(value)
+    timing = data.get("timing")
+    if isinstance(timing, dict):
+        return str(timing.get("started_at") or timing.get("ended_at") or "")
+    return ""
 
 
 def _attribute_rollout(
-    rollout: Path, by_cell_id: dict[str, Slot], slots: list[Slot]
+    rollout: Path, artifacts: Path, by_cell_id: dict[str, Slot], slots: list[Slot]
 ) -> Slot | None:
     """Map one produced rollout to its planned slot.
 
@@ -259,11 +263,17 @@ def _attribute_rollout(
     "expected-only" axis the rollout itself does not record — e.g. the
     ``-allowlist`` network-mode variant of an otherwise-identical cell — from
     colliding into a single slot (leaving the other slot spuriously "missing").
+    Only path components BELOW ``artifacts`` are considered, so OS-level segments
+    (``home``, ``runner``, ``work`` …) can never coincidentally match a cell id.
 
     Fallback: dims-based matching for legacy/flat rollouts whose path carries no
     recognizable cell-id directory.
     """
-    for part in rollout.parts:
+    try:
+        parts = rollout.relative_to(artifacts).parts
+    except ValueError:  # rollout not under artifacts (defensive)
+        parts = rollout.parts
+    for part in parts:
         slot = by_cell_id.get(part)
         if slot is not None:
             return slot
@@ -306,7 +316,7 @@ def classify_slots(
     rollouts = sorted({p.parent for p in artifacts.rglob("result.json")})
     unattributed: list[Path] = []
     for rollout in rollouts:
-        matched = _attribute_rollout(rollout, by_cell_id, slots)
+        matched = _attribute_rollout(rollout, artifacts, by_cell_id, slots)
         if matched is None:
             unattributed.append(rollout)
             continue
