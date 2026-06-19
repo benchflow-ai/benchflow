@@ -514,12 +514,13 @@ jobs:
           # codex_review.py uses for the CLI (dropping the DeepSeek base URL) so
           # the judge clobber never leaks into codex auth.
           CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # Run the codex composer on DeepSeek-v4-pro. codex_review.py routes a
-          # deepseek model through a custom chat-completions provider (DeepSeek
-          # serves chat, not the OpenAI Responses API + `tool_search` tool that
-          # gpt-5.4-nano rejected). Reads DEEPSEEK_API_KEY + DEEPSEEK_BASE_URL from
-          # the job env (both present).
-          CODEX_MODEL: deepseek-v4-pro
+          # codex speaks ONLY the OpenAI Responses API — DeepSeek is impossible
+          # (codex removed chat-wire; DeepSeek doesn't serve Responses). So the
+          # composer runs on an OpenAI model: gpt-5.5 (full model — supports
+          # codex's tools, unlike gpt-5.4-nano which rejected `tool_search`) with
+          # xhigh reasoning effort for a thorough equivalence review.
+          CODEX_MODEL: gpt-5.5
+          CODEX_REASONING_EFFORT: xhigh
           DETERMINISTIC_VERDICT: ${{ steps.pack.outputs.deterministic_verdict }}
         run: |
           set +e

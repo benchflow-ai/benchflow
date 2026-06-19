@@ -284,30 +284,18 @@ def _codex_env(env: Mapping[str, str]) -> dict[str, str]:
     return out
 
 
-def _deepseek_codex_config(
-    model: str | None, env: Mapping[str, str]
-) -> list[str]:
-    """Codex `-c` overrides to run the composer on a DeepSeek model.
+def _reasoning_config(env: Mapping[str, str]) -> list[str]:
+    """Codex `-c` override for the composer's reasoning effort.
 
-    A DeepSeek codex model can't use the OpenAI Responses API + its `tool_search`
-    tool (which small/non-OpenAI models reject), so route codex through a custom
-    chat-completions provider pointed at DeepSeek. The composer only reads the
-    review-pack text we hand it (no web tools needed), so the chat wire is enough.
-    Returns [] for a non-DeepSeek model (codex uses its default OpenAI provider).
+    ``CODEX_REASONING_EFFORT`` (none|minimal|low|medium|high|xhigh) sets how hard
+    the codex composer reasons over the review pack. Empty -> codex default.
+    (codex speaks ONLY the OpenAI Responses API, so the composer must be an
+    OpenAI model — DeepSeek/chat-wire is not supported by codex.)
     """
-    if not model or "deepseek" not in model.lower():
+    effort = (env.get("CODEX_REASONING_EFFORT") or "").strip()
+    if not effort:
         return []
-    base = (env.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/")
-    # DeepSeek's OpenAI-compatible chat endpoint lives under /v1.
-    if not base.endswith("/v1"):
-        base = f"{base}/v1"
-    return [
-        "model_provider=deepseek",
-        "model_providers.deepseek.name=DeepSeek",
-        f"model_providers.deepseek.base_url={base}",
-        "model_providers.deepseek.env_key=DEEPSEEK_API_KEY",
-        "model_providers.deepseek.wire_api=chat",
-    ]
+    return [f'model_reasoning_effort="{effort}"']
 
 
 def build_codex_command(
@@ -588,7 +576,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         codex_bin=args.codex_bin,
         model=args.codex_model,
         config_overrides=[
-            *_deepseek_codex_config(args.codex_model, codex_env),
+            *_reasoning_config(codex_env),
             *args.config_overrides,
         ],
         env=codex_env,
