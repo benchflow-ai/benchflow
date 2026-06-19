@@ -39,6 +39,28 @@ class SkipTest(Exception):
     """Raised to skip a test under the stdlib runner / signal pytest.skip."""
 
 
+def test_pinned_baseline_parity_fail_demotes_to_quarantine() -> None:
+    # Regression: the pinned-baseline reward-band gate currently false-fails
+    # (a native HF leaderboard baseline run through the Harbor-schema + git-pinned
+    # checker), so a pinned-baseline FAIL must DEMOTE to a quarantine — visible but
+    # non-blocking — not a hard 'not mergeable'.
+    pinned_fail = pack_mod.ParityResult(
+        "pinned-baseline", "pinned-baseline", "fail", "missing Harbor field(s)"
+    )
+    v = pack_mod.compute_verdict([], [pinned_fail])
+    assert v.verdict == pack_mod.VERDICT_QUARANTINES
+    assert not v.blockers
+    assert v.quarantines
+
+    # ...but a REAL within-PR docker/daytona parity FAIL still hard-blocks.
+    within_fail = pack_mod.ParityResult(
+        "sandbox-parity(x)", "within-pr", "fail", "incomplete parity pair"
+    )
+    v2 = pack_mod.compute_verdict([], [within_fail])
+    assert v2.verdict == pack_mod.VERDICT_NOT_MERGEABLE
+    assert v2.blockers
+
+
 # ------------------------------------------------------------------
 # Fixtures: hand-built flat rollouts + a matrix plan.
 # ------------------------------------------------------------------
