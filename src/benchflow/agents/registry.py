@@ -1196,3 +1196,18 @@ def register_agent(
     AGENT_INSTALLERS[name] = install_cmd
     AGENT_LAUNCH[name] = launch_cmd
     return config
+
+
+# --- Opt-in dual-source registry (agent-decoupling decision #7) ---------------
+# Merge agents declared as <dir>/manifest.toml files under $BENCHFLOW_AGENTS_DIR
+# into the registry. A NO-OP when the env var is unset, so a default import of
+# core is byte-for-byte unchanged; the manifest path only activates on explicit
+# opt-in. The import is deferred to here (end of module) on purpose: manifest.py
+# imports AgentConfig from this module, so a top-level import would be circular,
+# and the merge must run after AGENTS / AGENT_ALIASES / AGENT_INSTALLERS /
+# AGENT_LAUNCH are fully built above.
+from benchflow.agents.manifest import (  # noqa: E402
+    register_env_manifest_agents as _register_env_manifest_agents,
+)
+
+_register_env_manifest_agents()
