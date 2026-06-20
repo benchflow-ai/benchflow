@@ -373,6 +373,11 @@ def _classify_one(slot: Slot, expected_source_sha: str | None) -> None:
             slot.detail = f"deterministic reject: {non_outcome}"
         else:
             slot.status = "healthy"
+            # Demoted to healthy: clear the reject flag too, so the serialized
+            # agent_judge_summary does not tell codex this healthy slot still has a
+            # deterministic reject — a contradiction that can spuriously push the
+            # codex reviewer to downgrade the verdict.
+            slot.grade["deterministic_reject"] = False
             slot.grade["quarantines"] = [
                 *slot.grade.get("quarantines", []),
                 "R-OUTCOME: rollout produced no valid scored outcome "

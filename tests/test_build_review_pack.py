@@ -407,6 +407,41 @@ def test_review_pack_infra_timeout_is_capability_attributed_quarantine() -> None
         assert attribution["label"] == "experiment-fidelity"
 
 
+def test_r_outcome_only_demotion_clears_deterministic_reject() -> None:
+    # Regression (#810 greptile P1): an R-OUTCOME-ONLY reject is demoted to a
+    # healthy + quarantine slot, but the serialized grade must NOT keep
+    # deterministic_reject=True. agent_judge_summary serializes that field and
+    # codex reads it; a "healthy slot that still has a deterministic reject" is a
+    # contradiction that can spuriously push the codex reviewer to downgrade.
+    import rubric_checks as rc
+
+    original = rc.grade_rollout
+    rc.grade_rollout = lambda rollout: {  # type: ignore[assignment]
+        "deterministic_reject": True,
+        "gates": [
+            {"id": "R-OUTCOME", "status": "fail", "enforcement": "deterministic"},
+            {"id": "R-REAL", "status": "pass", "enforcement": "deterministic"},
+        ],
+        "quarantines": [],
+    }
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout = Path(tmp) / "r"
+            rollout.mkdir()
+            (rollout / "result.json").write_text("{}")
+            slot = pack_mod.Slot(
+                cell=pack_mod.normalize_cell(_cell("weighted-gdp-calc", "openhands"))
+            )
+            slot.rollouts = [rollout]
+            pack_mod._classify_one(slot, None)
+    finally:
+        rc.grade_rollout = original
+
+    assert slot.status == "healthy"
+    assert slot.grade["deterministic_reject"] is False  # the bug: was left True
+    assert any("R-OUTCOME" in q for q in slot.grade["quarantines"])
+
+
 # ------------------------------------------------------------------
 # Full review-pack/ layout on disk + the CLI verdict contract.
 # ------------------------------------------------------------------
