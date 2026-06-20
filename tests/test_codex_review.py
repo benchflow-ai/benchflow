@@ -300,6 +300,109 @@ def test_main_unparseable_codex_fails_closed(tmp_path: Path, monkeypatch, capsys
     assert "not mergeable (codex unavailable)" in capsys.readouterr().out
 
 
+def test_looks_transient_classification():
+    # Regression (#794): a transient bwrap sandbox failure must be recognized so
+    # codex is retried rather than falsely fail-closed.
+    assert cr._looks_transient(
+        "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
+    )
+    assert cr._looks_transient("stream error: connection refused")
+    assert cr._looks_transient("HTTP 429 rate limit exceeded")
+    # A real verdict or plain prose is NOT transient.
+    assert not cr._looks_transient("Verdict: not mergeable")
+    assert not cr._looks_transient("the rollout looks fine, no issues")
+    # "429" as an incidental substring (line/attempt numbers) is NOT a transient
+    # rate-limit signal — the marker is bounded, not a bare "429".
+    assert not cr._looks_transient("AssertionError at line 429 in module")
+    assert not cr._looks_transient("attempt 4290 of the loop")
+
+
+def test_assemble_prompt_inlines_review_pack(tmp_path: Path):
+    # Regression (#794): the review-pack file CONTENTS are inlined into the prompt
+    # so codex never needs a sandboxed shell to read them from disk.
+    pack = tmp_path / "review-pack"
+    pack.mkdir()
+    (pack / "verdict.md").write_text("## Verdict\n\nnot mergeable\n")
+    (pack / "manifest.json").write_text('{"marker": "MANIFEST_MARKER_XYZ"}')
+    prompt = cr._assemble_codex_prompt("SKILL", "TEMPLATE", [{"f": 1}], pack)
+    assert "MANIFEST_MARKER_XYZ" in prompt  # manifest.json inlined verbatim
+    assert "not mergeable" in prompt  # verdict.md inlined
+    assert "----- verdict.md -----" in prompt
+    assert "do NOT need to run any shell command" in prompt
+
+
+def _codex_args(pack: Path, jobs: Path, skill: Path) -> list[str]:
+    return ["--review-pack", str(pack), "--artifacts", str(jobs), "--skill", str(skill)]
+
+
+def test_main_retries_transient_codex_then_succeeds(tmp_path, monkeypatch, capsys):
+    # Regression (#794): a transient sandbox failure on the first codex attempt is
+    # retried; the recovered verdict is honored instead of "codex unavailable".
+    pack = _make_pack(tmp_path, "mergeable")
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("# rubric\n")
+    monkeypatch.setattr(cr, "run_deepseek_findings", lambda *a, **k: [])
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    calls: list[int] = []
+
+    def fake(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            return (
+                None,
+                "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
+            )
+        return ("mergeable", '```verdict-json\n{"verdict": "mergeable"}\n```')
+
+    monkeypatch.setattr(cr, "run_codex_verdict", fake)
+    rc = cr.main(_codex_args(pack, tmp_path / "jobs", skill))
+    assert len(calls) == 2  # retried once, then succeeded
+    assert "codex_verdict=mergeable" in capsys.readouterr().out
+    assert rc == 0
+
+
+def test_main_persistent_transient_codex_fails_closed(tmp_path, monkeypatch, capsys):
+    # If the transient never clears, exhaust the retries and STILL fail closed.
+    pack = _make_pack(tmp_path, "mergeable")
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("# rubric\n")
+    monkeypatch.setattr(cr, "run_deepseek_findings", lambda *a, **k: [])
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("CODEX_MAX_ATTEMPTS", "3")
+    calls: list[int] = []
+
+    def fake(*a, **k):
+        calls.append(1)
+        return (None, "bwrap: Operation not permitted")
+
+    monkeypatch.setattr(cr, "run_codex_verdict", fake)
+    rc = cr.main(_codex_args(pack, tmp_path / "jobs", skill))
+    assert len(calls) == 3  # exhausted the cap
+    assert rc == 1
+    assert "not mergeable (codex unavailable)" in capsys.readouterr().out
+
+
+def test_main_nontransient_unparseable_not_retried(tmp_path, monkeypatch, capsys):
+    # A non-transient unparseable output is NOT retried — fail closed immediately.
+    pack = _make_pack(tmp_path, "mergeable")
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("# rubric\n")
+    monkeypatch.setattr(cr, "run_deepseek_findings", lambda *a, **k: [])
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("CODEX_MAX_ATTEMPTS", "3")
+    calls: list[int] = []
+
+    def fake(*a, **k):
+        calls.append(1)
+        return (None, "plain prose, no verdict and no transient marker")
+
+    monkeypatch.setattr(cr, "run_codex_verdict", fake)
+    rc = cr.main(_codex_args(pack, tmp_path / "jobs", skill))
+    assert len(calls) == 1  # not retried
+    assert rc == 1
+    assert "not mergeable (codex unavailable)" in capsys.readouterr().out
+
+
 def test_main_codex_downgrade_is_honored(tmp_path: Path, monkeypatch, capsys):
     # Deterministic mergeable + codex 'not mergeable' => final not mergeable, rc 1.
     pack = _make_pack(tmp_path, "mergeable")

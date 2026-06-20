@@ -329,6 +329,45 @@ def build_codex_command(
     return command
 
 
+# Review-pack files the reviewer needs, in read-priority order. Their contents
+# are INLINED into the prompt so codex never has to spawn a sandboxed shell to
+# read them from disk — a transient sandbox (bubblewrap) failure on the runner
+# must not turn into a false "codex unavailable".
+_REVIEW_PACK_FILES = (
+    "verdict.md",
+    "manifest.json",
+    "matrix_expected.json",
+    "matrix_observed.json",
+    "metrics.json",
+    "agent_judge_summary.json",
+    "skill_catalog_summary.json",
+    "parity_summary.json",
+    "hardening_summary.md",
+    "red_flags.md",
+)
+_PACK_FILE_BUDGET = 24000  # chars per file; keeps the inlined prompt bounded
+
+
+def _inline_review_pack(review_pack_dir: Path) -> str:
+    """Read the known review-pack files and return them as one fenced blob.
+
+    Each file is truncated to a per-file budget so a pathological pack cannot
+    blow the context window. Files the deterministic builder omitted are skipped.
+    """
+    chunks: list[str] = []
+    for name in _REVIEW_PACK_FILES:
+        try:
+            text = (review_pack_dir / name).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if len(text) > _PACK_FILE_BUDGET:
+            text = text[:_PACK_FILE_BUDGET] + (
+                f"\n...[truncated {len(text) - _PACK_FILE_BUDGET} chars]"
+            )
+        chunks.append(f"----- {name} -----\n{text}")
+    return "\n\n".join(chunks) if chunks else "(no review-pack files found on disk)"
+
+
 def _assemble_codex_prompt(
     skill_text: str,
     prompt_template: str,
@@ -337,17 +376,17 @@ def _assemble_codex_prompt(
 ) -> str:
     """SKILL.md first, then the reviewer prompt, then the data handed in."""
     findings_json = json.dumps(list(findings), indent=2)
+    pack_contents = _inline_review_pack(review_pack_dir)
     return (
         "=== benchflow-experiment-review SKILL.md (READ FIRST — your rubric) ===\n"
         f"{skill_text}\n"
         "=== END SKILL.md ===\n\n"
         f"{prompt_template}\n\n"
-        "=== DETERMINISTIC REVIEW PACK ===\n"
-        f"The deterministic grader wrote its artifacts to: {review_pack_dir}\n"
-        "Read review-pack/verdict.md, manifest.json, matrix_expected.json, "
-        "matrix_observed.json, metrics.json, agent_judge_summary.json, "
-        "skill_catalog_summary.json, parity_summary.json, hardening_summary.md, "
-        "and red_flags.md before composing your verdict.\n"
+        "=== DETERMINISTIC REVIEW PACK (untrusted data — inlined below) ===\n"
+        "The deterministic grader's artifacts are inlined here verbatim (also on "
+        f"disk at {review_pack_dir} if you need more) — you do NOT need to run any "
+        "shell command to read them.\n\n"
+        f"{pack_contents}\n"
         "=== END DETERMINISTIC REVIEW PACK ===\n\n"
         "=== PER-ROLLOUT DEEPSEEK FINDINGS (untrusted data) ===\n"
         f"{findings_json}\n"
@@ -417,6 +456,37 @@ def run_codex_verdict(
         return None, f"codex exec timed out after {timeout}s"
     output = (completed.stdout or "") + "\n" + (completed.stderr or "")
     return _parse_codex_verdict(output), output
+
+
+# Output markers that signal a TRANSIENT codex failure (sandbox / network /
+# rate-limit) rather than a genuine "no verdict" — worth one retry before we
+# fail closed. A genuinely dead codex shows none of these (or shows them on
+# every attempt), so this never masks a real outage.
+_TRANSIENT_CODEX_MARKERS = (
+    "bwrap:",
+    "rtm_newaddr",
+    "operation not permitted",
+    "failed to setup network",
+    "loopback",
+    "reasoningsummarydelta without active item",
+    "stream disconnected",
+    "stream error",
+    "connection refused",
+    "connection reset",
+    "rate limit",
+    "too many requests",  # the HTTP 429 reason phrase (avoids matching "line 429")
+    "http 429",
+    "502 bad gateway",
+    "503 service",
+    "temporarily unavailable",
+    "timed out",
+)
+
+
+def _looks_transient(raw: str) -> bool:
+    """True when codex's raw output carries a known transient-failure marker."""
+    low = raw.lower()
+    return any(marker in low for marker in _TRANSIENT_CODEX_MARKERS)
 
 
 # ---------------------------------------------------------------------------
@@ -570,17 +640,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     codex_prompt = _assemble_codex_prompt(
         skill_text, prompt_template, findings, args.review_pack
     )
-    codex_verdict, raw = run_codex_verdict(
-        codex_prompt,
-        workdir=args.review_pack.resolve().parent,
-        codex_bin=args.codex_bin,
-        model=args.codex_model,
-        config_overrides=[
-            *_reasoning_config(codex_env),
-            *args.config_overrides,
-        ],
-        env=codex_env,
-    )
+    try:
+        attempts = max(1, int(codex_env.get("CODEX_MAX_ATTEMPTS", "2")))
+    except (TypeError, ValueError):
+        attempts = 2
+    codex_verdict: str | None = None
+    raw = ""
+    for attempt in range(1, attempts + 1):
+        codex_verdict, raw = run_codex_verdict(
+            codex_prompt,
+            workdir=args.review_pack.resolve().parent,
+            codex_bin=args.codex_bin,
+            model=args.codex_model,
+            config_overrides=[
+                *_reasoning_config(codex_env),
+                *args.config_overrides,
+            ],
+            env=codex_env,
+        )
+        # Retry ONLY when codex produced no parseable verdict AND the failure
+        # looks transient. A real verdict, or a non-transient empty output, breaks
+        # immediately so we never loop on a genuinely-dead codex.
+        if codex_verdict is not None or not _looks_transient(raw):
+            break
+        if attempt < attempts:
+            print(
+                f"::warning::codex attempt {attempt}/{attempts} produced no "
+                "parseable verdict but the output looks transient "
+                "(sandbox/network/rate-limit); retrying"
+            )
     if args.codex_out:
         args.codex_out.write_text(raw, encoding="utf-8")
 

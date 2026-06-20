@@ -79,6 +79,7 @@ def _write_flat_rollout(
     with_usage: bool = True,
     error: str | None = None,
     required_env: list[str] | None = None,
+    started_at: str | None = None,
 ) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     result: dict = {
@@ -92,6 +93,8 @@ def _write_flat_rollout(
         },
         "tool_usage": {"bash": 2},
     }
+    if started_at is not None:  # production carries a top-level started_at
+        result["started_at"] = started_at
     if with_usage:
         result["token_usage"] = {"input_tokens": 1000, "output_tokens": 200}
     if error is not None:
@@ -230,6 +233,103 @@ def test_review_pack_full_coverage_is_mergeable() -> None:
         verdict = review["verdict"]
         assert verdict.verdict in pack_mod._OK_VERDICTS
         assert verdict.blockers == []
+
+
+def test_network_allowlist_variant_does_not_collide_with_default_cell() -> None:
+    # Regression (run 27806142039 / PR #794): two cells identical in every dim the
+    # matcher compares EXCEPT network_mode (the plain cell + its -allowlist
+    # variant) collided into one slot — the allowlist rollout matched the plain
+    # cell by dims, leaving the plain slot "duplicate" and the allowlist slot
+    # "missing" → spurious 'not mergeable'. Rollouts are now attributed by their
+    # cell-id directory, so each planned cell maps 1:1 to its own rollout.
+    plain_id = "citation-check-docker-no-skill-openhands"
+    allow_id = "citation-check-docker-no-skill-openhands-allowlist"
+    matrix = [
+        _cell(
+            "citation-check",
+            "openhands",
+            id=plain_id,
+            sandbox="docker",
+            network_mode="default-off",
+        ),
+        _cell(
+            "citation-check",
+            "openhands",
+            id=allow_id,
+            sandbox="docker",
+            network_mode="allowlist",
+        ),
+    ]
+    plan = _plan(_HEAD, matrix, network_lane=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        arts = Path(tmp)
+        # Production layout: <cell-id>/<timestamp>/<task>__<hash>/result.json.
+        for cell_id in (plain_id, allow_id):
+            _write_flat_rollout(
+                arts / cell_id / "2026-06-19__00-00-00" / "citation-check__h",
+                task="citation-check",
+                agent="openhands",
+                sandbox="docker",
+                skill_mode="no-skill",
+                head_sha=_HEAD,
+            )
+        review = pack_mod.build_review(plan, arts, None)
+        statuses = {s.cell_id: s.status for s in review["slots"]}
+        assert statuses[plain_id] == "healthy"
+        assert statuses[allow_id] == "healthy"
+        assert review["verdict"].blockers == []
+        assert review["verdict"].verdict in pack_mod._OK_VERDICTS
+
+
+def test_retried_cell_collapses_to_single_rollout() -> None:
+    # Regression (run 27806142039 / PR #794): a flaky agent retried in place,
+    # leaving 3 result.json under ONE cell-job dir; each was counted as a separate
+    # rollout → spurious "duplicate" blocker. They are attempts of one logical
+    # rollout — keep the latest by started_at.
+    cell_id = "citation-check-docker-no-skill-opencode"
+    matrix = [_cell("citation-check", "opencode", id=cell_id, sandbox="docker")]
+    plan = _plan(_HEAD, matrix)
+    with tempfile.TemporaryDirectory() as tmp:
+        arts = Path(tmp)
+        job = arts / cell_id / "2026-06-19__04-51-52"
+        for h, started in (
+            ("c1416d05", "2026-06-19 04:51:52.000000"),
+            ("f1db2663", "2026-06-19 04:53:32.000000"),
+            ("dea4babd", "2026-06-19 04:54:36.000000"),  # latest attempt
+        ):
+            _write_flat_rollout(
+                job / f"citation-check__{h}",
+                task="citation-check",
+                agent="opencode",
+                sandbox="docker",
+                skill_mode="no-skill",
+                head_sha=_HEAD,
+                started_at=started,
+            )
+        review = pack_mod.build_review(plan, arts, None)
+        slot = review["slots"][0]
+        assert slot.status == "healthy", slot.detail
+        assert len(slot.rollouts) == 1
+        assert slot.rollouts[0].name == "citation-check__dea4babd"
+        assert review["verdict"].blockers == []
+
+    # ...but TWO distinct cell-job dirs (a genuinely double-scheduled cell) still
+    # surface as a duplicate — the collapse only folds in-place retries.
+    with tempfile.TemporaryDirectory() as tmp:
+        arts = Path(tmp)
+        for ts in ("2026-06-19__04-51-52", "2026-06-19__05-10-00"):
+            _write_flat_rollout(
+                arts / cell_id / ts / "citation-check__h",
+                task="citation-check",
+                agent="opencode",
+                sandbox="docker",
+                skill_mode="no-skill",
+                head_sha=_HEAD,
+                started_at=ts,
+            )
+        review = pack_mod.build_review(plan, arts, None)
+        assert review["slots"][0].status == "duplicate"
+        assert any("duplicate slot" in b for b in review["verdict"].blockers)
 
 
 def test_review_pack_stale_sha_is_flagged_not_mergeable() -> None:
