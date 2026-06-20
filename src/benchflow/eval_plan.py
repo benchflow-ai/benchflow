@@ -100,6 +100,7 @@ class EvalCreateRequest:
     jobs_dir: str | None = None
     sandbox_user: str | None = "agent"
     sandbox_setup_timeout: int = 120
+    context_root: Path | None = None
     skills_dir: Path | None = None
     skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: Path | None = None
@@ -175,6 +176,7 @@ class EvalPlan:
             agent_env=self.parsed_env,
             sandbox_user=self.sandbox_user,
             sandbox_setup_timeout=req.sandbox_setup_timeout,
+            context_root=str(req.context_root) if req.context_root else None,
             skills_dir=str(req.skills_dir) if req.skills_dir else None,
             skill_mode=req.skill_mode,
             skill_creator_dir=(
