@@ -1111,13 +1111,21 @@ def build_plan(
 
 
 def _changed_files_from_git(base_ref: str, head_sha: str) -> list[str]:
-    out = subprocess.run(
-        ["git", "diff", "--name-only", f"{base_ref}...{head_sha}"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        out = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_ref}...{head_sha}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        # git diff fails when e.g. head_sha was never fetched (the workflow
+        # silences the fetch with `|| true`). Surface it through the ScopeError
+        # fail-closed handler in main() rather than as an uncaught traceback.
+        raise ScopeError(
+            f"git diff {base_ref}...{head_sha} failed: {exc.stderr.strip() or exc}"
+        ) from exc
     return [line.strip() for line in out.stdout.splitlines() if line.strip()]
 
 

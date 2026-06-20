@@ -184,14 +184,17 @@ async def _gather_findings(
                     "error": f"deepseek pass failed: {type(exc).__name__}: {exc}",
                 }
         finding: dict = {"rollout": str(rollout), "raw": raw[:4000]}
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
+        start = raw.find("{")
+        if start == -1:
+            finding["parse_error"] = "no JSON object in deepseek finding"
+        else:
             try:
-                finding["parsed"] = json.loads(match.group(0))
+                # raw_decode parses the FIRST complete JSON object and ignores any
+                # trailing prose the model appends. A greedy `{.*}` span would
+                # instead merge multiple objects into one invalid blob.
+                finding["parsed"], _ = json.JSONDecoder().raw_decode(raw[start:])
             except json.JSONDecodeError:
                 finding["parse_error"] = "deepseek finding JSON was unparseable"
-        else:
-            finding["parse_error"] = "no JSON object in deepseek finding"
         return finding
 
     return await asyncio.gather(*(one(r) for r in rollout_dirs))
