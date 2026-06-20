@@ -1,0 +1,127 @@
+# benchmark.yaml — standard benchmark descriptor for BenchFlow.
+name: mle-bench
+description: "OpenAI MLE-bench — Kaggle-style machine-learning engineering competitions converted one competition per BenchFlow task"
+url: https://github.com/openai/mle-bench
+paper: https://arxiv.org/abs/2410.07095
+repo: https://github.com/openai/mle-bench
+author: OpenAI
+converted_by: BenchFlow
+
+tasks:
+  count: 75
+  count_note: "Upstream split75 universe; parity evidence below covers the six real-data sample tasks listed under parity.side_by_side.evidence_tasks."
+  task_unit: Kaggle competition
+  splits:
+    split75: 75
+    low: 22
+    medium: 38
+    high: 15
+    dev: 7
+  categories:
+    - audio-classification
+    - image-classification
+    - image-regression
+    - image-segmentation
+    - image-to-image
+    - image-to-text
+    - tabular
+    - text-classification
+    - training-llms
+  tags: [mle-bench, kaggle, machine-learning, data-science]
+
+conversion:
+  script: benchflow.py
+  generator: main.py
+  source_format: "MLE-bench repo: mlebench/competitions/*/config.yaml + prepared data"
+  default_split: split75
+  has_oracle_solutions: false
+  data_requirement: >
+    Requires a local openai/mle-bench checkout and prepared data from
+    `mlebench prepare`. The converter copies prepared public data into
+    environment/data and private grading data into tests/private-data.
+
+verification:
+  method: deterministic_upstream_grader
+  reward: binary_any_medal
+  aggregation: any_medal
+  test_source: "openai/mle-bench grade_csv"
+  private_data_agent_visible: false
+  verifier_user: root
+  verifier_design_note: >
+    Converted tasks vendor upstream per-competition grade.py under tests/mlebench
+    and execute it only inside the verifier container with private data mounted
+    under tests/private-data. Agents see environment/data and write
+    /home/submission/submission.csv; they do not control verifier code or
+    private grading data.
+  benchflow_runtime_smoke:
+    task: spaceship-titanic
+    sandbox: docker
+    agent: oracle
+    fixture: "temporary solution/solve.sh copied /home/data/sample_submission.csv to /home/submission/submission.csv"
+    result: verifier-completed
+    valid_submission: 1.0
+    reward: 0.0
+    verifier_errored: 0
+    notes: >
+      Recorded with `bench eval run --agent oracle --sandbox docker`.
+      Reward 0.0 is expected for the sample submission; the runtime evidence is
+      that Docker build/start, oracle execution, and verifier grading completed
+      without verifier errors.
+  live_agent_smoke:
+    task: spaceship-titanic
+    sandbox: docker
+    agent: codex-acp
+    model: openai/gpt-5.4-mini
+    prompt: "copy /home/data/sample_submission.csv to /home/submission/submission.csv"
+    result: verifier-completed
+    valid_submission: 1.0
+    reward: 0.0
+    verifier_errored: 0
+    idle_timeout: 0
+    tool_calls: 3
+    jobs_dir: /tmp/mle-bench-agent-smoke-jobs-codex-gpt54/2026-06-16__08-08-30
+    notes: >
+      Recorded with `bench eval run --agent codex --model openai/gpt-5.4-mini
+      --sandbox docker --usage-tracking off`. Reward 0.0 is expected for the
+      sample submission; the runtime evidence is that a live ACP agent connected,
+      executed tools, produced a valid submission, and the verifier completed.
+
+environment:
+  workdir: /home
+  output_file: /home/submission/submission.csv
+  public_data: /home/data
+  verifier_private_data: /tests/private-data
+  upstream_recommended_runtime_hours: 24
+  upstream_recommended_compute: "36 vCPUs, 440GB RAM, one 24GB A10 GPU"
+  benchflow_default_runtime:
+    cpus: 4
+    memory_mb: 16384
+    storage_mb: 10240
+    allow_internet: false
+
+parity:
+  routing_layer: L2
+  status: parity-confirmed-real-data-sample-6-tasks
+  structural:
+    description: "Generated task package contract, public/private data boundary, and verifier package checks."
+    tasks_tested: 6
+    passed: 6
+  eval_pipeline:
+    description: "Verifier imports upstream grade_csv and maps any_medal to reward.txt."
+    tasks_tested: 6
+    passed: 6
+  side_by_side:
+    harness: "parity_test.py --mode side-by-side"
+    compared_paths: "direct mlebench.grade.grade_csv vs tests/verify.py wrapper"
+    criteria_compared: 48
+    agreed: 48
+    agreement_rate: 1.0
+    reward_max_abs_delta: 0.0
+    evidence_tasks:
+      - aerial-cactus-identification
+      - denoising-dirty-documents
+      - nomad2018-predict-transparent-conductors
+      - random-acts-of-pizza
+      - spaceship-titanic
+      - spooky-author-identification
+    notes: "Recorded on real Kaggle-prepared MLE-bench data using upstream sample submissions."
