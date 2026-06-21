@@ -866,7 +866,73 @@ def _provider_secret_env_names() -> set[str]:
     return names
 
 
+# Caller-supplied provider endpoints. If any of these survive in the agent env,
+# the agent could reach a provider directly and bypass the proxy (the exact way
+# an Azure ``LLM_BASE_URL`` leaked past the gateway before this hardening). They
+# are stripped before the proxy endpoint is wired in; the proxy process keeps
+# whatever upstream base_url it needs in its own env / baked config.
+_PROVIDER_ENDPOINT_ENV_NAMES = frozenset(
+    {
+        "LLM_BASE_URL",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "AZURE_API_ENDPOINT",
+        "AZURE_API_BASE",
+        "AZURE_OPENAI_ENDPOINT",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+        "GEMINI_BASE_URL",
+        "GOOGLE_GEMINI_BASE_URL",
+    }
+)
+
+
+def _assert_proxy_isolated(agent: str, env: dict[str, str], *, master_key: str) -> None:
+    """Fail closed if a *raw* provider secret would still reach the agent.
+
+    Invariant after wiring: a routable agent sees only the proxy endpoint and
+    the proxy master key — never an upstream provider credential. Some agents
+    legitimately carry the master key in a provider-named slot (codex/opencode
+    put it in ``OPENAI_API_KEY``, claude in ``ANTHROPIC_AUTH_TOKEN``), so a
+    provider-named var holding exactly ``master_key`` is the proxy credential and
+    is allowed; anything else in those slots is a raw upstream key. If one
+    survives (e.g. an agent registry ``env_mapping`` re-exposed it), refuse to
+    run so the agent cannot authenticate directly against a provider.
+    """
+    leaked = sorted(
+        name
+        for name in _provider_secret_env_names()
+        if env.get(name) and env.get(name) != master_key
+    )
+    if leaked:
+        raise RuntimeError(
+            f"LiteLLM proxy isolation breached for agent {agent!r}: raw provider "
+            f"secrets would reach the agent ({', '.join(leaked)}). Refusing to run "
+            "to prevent direct-to-provider traffic."
+        )
+
+
 def _apply_litellm_agent_env(
+    *,
+    agent: str,
+    agent_env: dict[str, str],
+    route: LiteLLMRoute,
+    base_url: str,
+    master_key: str,
+) -> dict[str, str]:
+    """Rewrite the agent env to talk only to the proxy, then verify isolation."""
+    updated = _wire_litellm_agent_env(
+        agent=agent,
+        agent_env=agent_env,
+        route=route,
+        base_url=base_url,
+        master_key=master_key,
+    )
+    _assert_proxy_isolated(agent, updated, master_key=master_key)
+    return updated
+
+
+def _wire_litellm_agent_env(
     *,
     agent: str,
     agent_env: dict[str, str],
@@ -876,12 +942,15 @@ def _apply_litellm_agent_env(
 ) -> dict[str, str]:
     updated = dict(agent_env)
     # Isolation: the agent must reach providers only through the proxy. Drop raw
-    # upstream provider secrets so a compromised or curious agent cannot bypass
-    # the gateway (and its usage metering) or read live keys. The proxy process
-    # holds them via its own env. (In sandbox-local mode the proxy shares the
-    # agent's sandbox, so this reduces — but cannot fully remove — key visibility.)
+    # upstream provider secrets AND endpoints so a compromised or curious agent
+    # cannot bypass the gateway (and its usage metering) or read live keys. The
+    # proxy process holds them via its own env. (In sandbox-local mode the proxy
+    # shares the agent's sandbox, so this reduces — but cannot fully remove — key
+    # visibility.)
     for secret_key in _provider_secret_env_names():
         updated.pop(secret_key, None)
+    for endpoint_key in _PROVIDER_ENDPOINT_ENV_NAMES:
+        updated.pop(endpoint_key, None)
     openai_base_url = f"{base_url.rstrip('/')}/v1"
     updated.update(
         {
@@ -957,21 +1026,22 @@ async def _skip_litellm_runtime(
     return agent_env, None
 
 
-async def _fallback_or_raise_for_unavailable_litellm(
+async def _raise_litellm_unavailable(
     *,
-    usage_cfg: UsageTrackingConfig,
-    agent_env: dict[str, str],
     runtime: Any | None,
-    required_error: str,
-    fallback_reason: str,
-) -> tuple[dict[str, str], Any | None]:
-    if usage_cfg.mode == "required":
-        raise RuntimeError(required_error)
-    return await _skip_litellm_runtime(
-        agent_env,
-        runtime,
-        reason=fallback_reason,
-    )
+    error: str,
+) -> None:
+    """Fail closed when a routable agent cannot be put behind the proxy.
+
+    BenchFlow always routes routable agents through the LiteLLM proxy so
+    provider traffic is metered and captured (``llm_trajectory.jsonl``).
+    Silently falling back to direct provider access would leak the raw key,
+    bypass usage/cost tracking, and lose the trainable trajectory — so any
+    proxy unavailability is fatal, independent of ``usage_tracking`` mode.
+    """
+    if runtime is not None:
+        await stop_litellm_runtime(runtime)
+    raise RuntimeError(error)
 
 
 async def ensure_litellm_runtime(
@@ -985,14 +1055,18 @@ async def ensure_litellm_runtime(
     usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
     sandbox: Any | None = None,
 ) -> tuple[dict[str, str], Any | None]:
-    """Start/reuse LiteLLM and rewrite the agent env to talk to it."""
+    """Start/reuse LiteLLM and rewrite the agent env to talk to it.
+
+    Every LiteLLM-routable agent is *always* routed through the proxy so
+    provider traffic is metered and captured (``llm_trajectory.jsonl``) and the
+    raw provider key never reaches the agent. ``usage_tracking`` no longer gates
+    whether the proxy runs — it only governs whether trusted telemetry is
+    *required* (``required`` fails closed when usage cannot be captured at all).
+    The only agents that skip the proxy are those that physically cannot be
+    routed through it: ``oracle`` (no model), native-protocol agents (e.g.
+    ``gemini``), and native-subscription auth (no API key to proxy).
+    """
     usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
-    if usage_cfg.mode == "off":
-        return await _skip_litellm_runtime(
-            agent_env,
-            runtime,
-            reason="usage_tracking=off leaves provider traffic untouched",
-        )
 
     if uses_native_subscription_auth(agent, model, agent_env):
         return await _skip_litellm_runtime(
@@ -1016,33 +1090,24 @@ async def ensure_litellm_runtime(
     try:
         route = resolve_litellm_route(model, agent_env)
     except ValueError as exc:
-        return await _fallback_or_raise_for_unavailable_litellm(
-            usage_cfg=usage_cfg,
-            agent_env=agent_env,
+        await _raise_litellm_unavailable(
             runtime=runtime,
-            required_error=(
-                "Token usage tracking is required, but LiteLLM cannot resolve "
-                f"model {model!r}: {exc}"
-            ),
-            fallback_reason=(
-                f"usage_tracking=auto could not resolve model {model!r}: {exc}"
+            error=(
+                "LiteLLM proxy is mandatory but cannot resolve "
+                f"model {model!r}: {exc}. BenchFlow never sends provider traffic "
+                "directly — register the provider/model or fix the route."
             ),
         )
     missing = _missing_required_env(route, agent_env)
     if missing:
         missing_text = ", ".join(missing)
-        required_error = (
-            f"LiteLLM route for model {model!r} requires {missing_text}. "
-            "Pass provider credentials via --agent-env/agent_env or define them in .env."
-        )
-        return await _fallback_or_raise_for_unavailable_litellm(
-            usage_cfg=usage_cfg,
-            agent_env=agent_env,
+        await _raise_litellm_unavailable(
             runtime=runtime,
-            required_error=required_error,
-            fallback_reason=(
-                f"usage_tracking=auto could not start LiteLLM for model {model!r}; "
-                f"missing provider credentials: {missing_text}"
+            error=(
+                f"LiteLLM route for model {model!r} requires {missing_text}. "
+                "Pass provider credentials via --agent-env/agent_env or define "
+                "them in .env (the proxy is mandatory; traffic is never sent "
+                "directly to the provider)."
             ),
         )
 
@@ -1090,16 +1155,11 @@ async def ensure_litellm_runtime(
     except BedrockPatchPreflightError:
         raise
     except Exception as exc:
-        return await _fallback_or_raise_for_unavailable_litellm(
-            usage_cfg=usage_cfg,
-            agent_env=agent_env,
+        await _raise_litellm_unavailable(
             runtime=None,
-            required_error=(
-                "Token usage tracking is required, but LiteLLM failed to start "
-                f"for model {model!r}: {exc}"
-            ),
-            fallback_reason=(
-                f"usage_tracking=auto could not start LiteLLM for model {model!r}: {exc}"
+            error=(
+                f"LiteLLM proxy failed to start for model {model!r}: {exc}. "
+                "BenchFlow never sends provider traffic directly, so this is fatal."
             ),
         )
 
