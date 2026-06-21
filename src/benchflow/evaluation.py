@@ -1060,7 +1060,7 @@ class Evaluation:
         for task, (_mt, r) in best.items():
             if r.get("verifier_error"):
                 logger.info(
-                    f"Skipping verifier-errored task on resume: {task} "
+                    f"Reusing completed verifier-errored task on resume: {task} "
                     f"({truncate_end(r['verifier_error'], 80)})"
                 )
             completed[task] = r
