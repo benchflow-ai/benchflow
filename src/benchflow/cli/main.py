@@ -288,7 +288,12 @@ def eval_run(
         str | None,
         typer.Option(
             "--usage-tracking",
-            help="Token usage tracking policy: auto, required, or off",
+            help=(
+                "Telemetry-enforcement policy: auto, required, or off. The "
+                "LiteLLM proxy is always used for routable agents (usage, cost, "
+                "and llm_trajectory.jsonl are always captured); this flag only "
+                "controls whether trusted telemetry is required."
+            ),
         ),
     ] = None,
     environment_manifest: Annotated[
