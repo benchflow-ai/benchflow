@@ -377,6 +377,22 @@ def test_proxy_isolation_guard_blocks_leaked_secret():
     )
 
 
+def test_proxy_docs_disable_env_neutralizes_stray_docs_url(monkeypatch):
+    """A stray DOCS_URL (e.g. baked into a sandbox base image) used to crash the
+    proxy at startup ('Routed paths must start with /'). The proxy launch env
+    must disable Swagger docs so litellm registers no docs route."""
+    from litellm.proxy.utils import _get_docs_url
+
+    # Reproduce the crash trigger: an inherited non-"/" DOCS_URL.
+    monkeypatch.setenv("DOCS_URL", "stray-without-leading-slash")
+    assert _get_docs_url() == "stray-without-leading-slash"  # would crash add_route
+
+    # Applying the proxy launch overrides makes litellm skip the docs route.
+    for key, value in runtime_mod._PROXY_DOCS_DISABLE_ENV.items():
+        monkeypatch.setenv(key, value)
+    assert _get_docs_url() is None
+
+
 @pytest.mark.asyncio
 async def test_auto_usage_fails_closed_when_litellm_lacks_provider_key(monkeypatch):
     """The proxy is mandatory: missing credentials are fatal, never a silent

@@ -58,6 +58,15 @@ LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 
+# The proxy is an internal single-route gateway — it must never register the
+# FastAPI Swagger docs route. litellm's `_get_docs_url()` honours an inherited
+# `DOCS_URL` env *before* `NO_DOCS`, so a stray non-"/" `DOCS_URL` baked into a
+# sandbox base image makes litellm call `add_route(DOCS_URL, ...)` and crash with
+# `Routed paths must start with '/'` at startup. Force `DOCS_URL=""` (falsy, so
+# it's ignored) and `NO_DOCS=true` so the docs route is skipped regardless of the
+# inherited environment.
+_PROXY_DOCS_DISABLE_ENV = {"DOCS_URL": "", "NO_DOCS": "true"}
+
 # Agents that speak a provider-native wire protocol the LiteLLM proxy does not
 # expose on its OpenAI/Anthropic surfaces. Routing them through the proxy would
 # silently mis-wire the agent (e.g. the Gemini CLI speaks Google's
@@ -455,6 +464,7 @@ async def _start_host_litellm(
             "PYTHONPATH": f"{runtime_dir}{os.pathsep}{env.get('PYTHONPATH', '')}",
             "LITELLM_MASTER_KEY": master_key,
             "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
+            **_PROXY_DOCS_DISABLE_ENV,
         }
     )
     litellm_executable = _host_litellm_executable()
@@ -751,6 +761,7 @@ async def _start_sandbox_litellm(
             "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",
             "LITELLM_MASTER_KEY": master_key,
             "BENCHFLOW_LITELLM_LOG_PATH": paths["log"],
+            **_PROXY_DOCS_DISABLE_ENV,
         }
     )
     launch_config = {
