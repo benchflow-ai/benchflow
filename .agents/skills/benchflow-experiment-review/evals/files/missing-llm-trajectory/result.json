@@ -1,0 +1,17 @@
+{
+  "status": "pass",
+  "reward": 1.0,
+  "verifier_started_after_agent": true,
+  "timing": {
+    "started_at": "2026-06-01T00:00:00Z",
+    "ended_at": "2026-06-01T00:05:00Z",
+    "duration_seconds": 300
+  },
+  "token_usage": {
+    "input_tokens": 1000,
+    "output_tokens": 200
+  },
+  "tool_usage": {
+    "bash": 1
+  }
+}
