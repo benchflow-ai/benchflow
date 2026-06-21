@@ -18,7 +18,7 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 from uuid import uuid4
 
 import httpx
@@ -1030,7 +1030,7 @@ async def _raise_litellm_unavailable(
     *,
     runtime: Any | None,
     error: str,
-) -> None:
+) -> NoReturn:
     """Fail closed when a routable agent cannot be put behind the proxy.
 
     BenchFlow always routes routable agents through the LiteLLM proxy so
