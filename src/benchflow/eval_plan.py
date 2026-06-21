@@ -241,6 +241,8 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError("--ignore-bench-version requires --dataset")
     if request.tasks_dir and not Path(request.tasks_dir).exists():
         raise EvalPlanError(f"--tasks-dir not found: {request.tasks_dir}")
+    if request.context_root and not Path(request.context_root).is_dir():
+        raise EvalPlanError(f"--context-root not found: {request.context_root}")
     # Validate --config here so a typo'd / missing / non-file path becomes a clean
     # CLI error instead of a raw FileNotFoundError/IsADirectoryError traceback from
     # the bare open() in Evaluation.from_yaml.

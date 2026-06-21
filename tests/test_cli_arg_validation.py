@@ -140,6 +140,28 @@ def test_eval_run_context_root_threads_to_evaluation_config(tmp_path: Path):
     assert captured["context_root"] == str(context_root)
 
 
+def test_eval_run_context_root_missing_clean_error(tmp_path: Path):
+    """Guards PR #816 against typoed --context-root paths failing in rollout."""
+    task = _task_dir(tmp_path)
+    with patch.object(Evaluation, "run", new=_fake_run_pass):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "run",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                "oracle",
+                "--context-root",
+                str(tmp_path / "does-not-exist"),
+            ],
+        )
+    assert result.exit_code == 1
+    assert "--context-root not found" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
+
+
 def test_agent_without_default_model_clean_error(tmp_path: Path):
     # codex has no default model; omitting --model must report cleanly, not crash.
     result = _invoke(tmp_path, "--agent", "codex", "--sandbox", "docker")
