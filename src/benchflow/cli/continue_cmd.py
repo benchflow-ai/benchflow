@@ -1,9 +1,13 @@
-"""``benchflow continue`` — resume a timed-out run to completion.
+"""``bench eval continue`` — resume a timed-out run to completion.
 
 Standalone command (does not touch the normal eval/run path): reconstruct a
 previous unfinished ``openhands`` run's exact env + memory from its recorded
 trajectory via record-replay, continue it live, and write a new HF-compatible
 folder linked to the parent. See :mod:`benchflow.continue_run`.
+
+Canonical home is the ``eval`` group (``bench eval continue``); the original
+top-level ``bench continue`` stays as a hidden, deprecated alias so existing
+scripts keep working.
 """
 
 from __future__ import annotations
@@ -23,10 +27,17 @@ def _load_env_defaults() -> None:
         os.environ.setdefault(key, value)
 
 
-def register_continue(app: typer.Typer) -> None:
-    """Attach the ``continue`` command to the top-level benchflow app."""
+def register_continue(
+    eval_app: typer.Typer, *, alias_app: typer.Typer | None = None
+) -> None:
+    """Attach ``continue`` / ``continue-batch`` to the ``eval`` group.
 
-    @app.command("continue", hidden=True)
+    ``eval_app`` is the canonical home (``bench eval continue``). When
+    ``alias_app`` is given, the same commands are also registered on it as
+    hidden, deprecated top-level aliases (``bench continue``) for backward
+    compatibility.
+    """
+
     def continue_cmd(
         folder: Annotated[
             Path,
@@ -122,7 +133,9 @@ def register_continue(app: typer.Typer) -> None:
                 )
             )
         except RunFolderError as exc:
-            typer.secho(f"benchflow continue: {exc}", fg=typer.colors.RED, err=True)
+            # Command-agnostic prefix: the same callback backs both the canonical
+            # `bench eval continue` and the deprecated top-level `bench continue`.
+            typer.secho(f"benchflow: {exc}", fg=typer.colors.RED, err=True)
             raise typer.Exit(1) from exc
 
         typer.secho(
@@ -137,12 +150,11 @@ def register_continue(app: typer.Typer) -> None:
         if result.error:
             typer.secho(f"  agent error: {result.error}", fg=typer.colors.YELLOW)
             # A failed continuation must report failure to $? — matches
-            # `continue-batch` (exits 1 if any continuation failed) and the
-            # `eval create` run-error contract. Without this a scripted caller
+            # `eval continue-batch` (exits 1 if any continuation failed) and the
+            # `eval run` run-error contract. Without this a scripted caller
             # reads the green ✓ + exit 0 as success.
             raise typer.Exit(1)
 
-    @app.command("continue-batch", hidden=True)
     def continue_batch_cmd(
         root: Annotated[
             Path,
@@ -212,6 +224,24 @@ def register_continue(app: typer.Typer) -> None:
         )
 
         _load_env_defaults()
+        # Fail fast on a bad ROOT instead of treating a typo'd/nonexistent path as
+        # an empty-but-valid tree — otherwise scripted callers read the exit-0
+        # "No timeout run folders found." as success. Matches `bench eval continue`,
+        # which exits 1 on a non-directory folder.
+        if not root.exists():
+            typer.secho(
+                f"benchflow: path does not exist: {root}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(1)
+        if not root.is_dir():
+            typer.secho(
+                f"benchflow: not a directory: {root}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(1)
         folders = discover_timeout_run_folders(root, limit=limit)
         if not folders:
             typer.secho("No timeout run folders found.", fg=typer.colors.YELLOW)
@@ -237,3 +267,15 @@ def register_continue(app: typer.Typer) -> None:
         typer.echo(json.dumps(summary, indent=2))
         if summary["failed"]:
             raise typer.Exit(1)
+
+    # Canonical home: ``bench eval continue`` (visible) and
+    # ``bench eval continue-batch`` (hidden batch utility).
+    eval_app.command("continue")(continue_cmd)
+    eval_app.command("continue-batch", hidden=True)(continue_batch_cmd)
+
+    # Backward-compat: hidden, deprecated top-level ``bench continue`` aliases.
+    if alias_app is not None:
+        alias_app.command("continue", hidden=True, deprecated=True)(continue_cmd)
+        alias_app.command("continue-batch", hidden=True, deprecated=True)(
+            continue_batch_cmd
+        )

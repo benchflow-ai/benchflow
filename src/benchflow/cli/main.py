@@ -1,9 +1,10 @@
 """benchflow CLI — agent benchmarking framework.
 
 This module owns the top-level Typer ``app``, the global callback/version flag,
-and the ``eval`` command group (``eval create`` / ``eval list``). ``eval create``
+and the ``eval`` command group (``eval run`` / ``eval list``). ``eval run``
 is defined here on purpose: tests pin its callback ``__module__`` to
 ``benchflow.cli.main`` and import it (plus the Daytona helpers) from here.
+(``eval create`` remains as a deprecated alias of ``eval run``.)
 
 Every other command group lives in a sibling ``cli/<group>.py`` module and is
 attached through a ``register_<group>(app)`` call below, mirroring the
@@ -69,7 +70,8 @@ __all__ = [
     "_daytona_client_or_exit",
     "app",
     "eval_app",
-    "eval_create",
+    "eval_run",
+    "eval_create",  # deprecated import alias of eval_run
 ]
 
 # Show progress messages (logger.info) from benchflow internals by default.
@@ -193,11 +195,15 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 register_eval_adopt(eval_app)
 
 
-@eval_app.command("create")
-def eval_create(
+@eval_app.command("run")
+def eval_run(
     config_file: Annotated[
         Path | None,
-        typer.Option("--config", help="YAML config file"),
+        typer.Option(
+            "--config",
+            "--run-config",
+            help="YAML run-config file (the whole run spec)",
+        ),
     ] = None,
     tasks_dir: Annotated[
         Path | None,
@@ -290,16 +296,42 @@ def eval_create(
         typer.Option(
             "--environment-manifest",
             help=(
-                "Path to an Environment-plane manifest (environment.toml). "
-                "Applied to every rollout in the batch so the manifest-declared "
+                "Environment-plane manifest applied to every rollout: a path to "
+                "an environment.toml, OR a 'name@version' registry spec resolved "
+                "via $BENCHFLOW_ENV_REGISTRY (the S axis). The manifest-declared "
                 "stateful environment is provisioned, gated on readiness, and "
                 "torn down."
+            ),
+        ),
+    ] = None,
+    state: Annotated[
+        str | None,
+        typer.Option(
+            "--state",
+            help=(
+                "S-axis environment binding, decoupled from the task. Inline JSON "
+                'with an optional tool subset (e.g. {"name": "env0", "tools": '
+                '["gmail", "gcal"]}), OR a name@version spec, OR a manifest path. '
+                "Takes precedence over --environment-manifest."
             ),
         ),
     ] = None,
     prompt: Annotated[
         list[str] | None,
         typer.Option("--prompt", help="Prompt(s) to send (default: instruction.md)"),
+    ] = None,
+    config_override: Annotated[
+        str | None,
+        typer.Option(
+            "--config-override",
+            help=(
+                "C-axis overlay: deep-merge a config patch into each task's "
+                "resolved config for this run. Inline JSON/YAML/TOML or an @file "
+                'ref, e.g. --config-override \'{"agent":{"timeout_sec":120}}\'. Varies one '
+                "knob (budget/skills/stopping rules) while T/A/M/S/R stay fixed; "
+                "recorded by content hash for replay."
+            ),
+        ),
     ] = None,
     concurrency: Annotated[
         int | None,
@@ -461,6 +493,8 @@ def eval_create(
         environment=environment,
         usage_tracking=usage_tracking,
         environment_manifest=environment_manifest,
+        state=state,
+        config_override=config_override,
         prompt=prompt,
         concurrency=concurrency,
         build_concurrency=build_concurrency,
@@ -618,7 +652,7 @@ def run_batch_eval(
 ):
     """Run the source-repo / tasks-dir batch path and report its result.
 
-    Promoted from the ``eval_create`` ``_run_batch_eval`` closure: the worker /
+    Promoted from the ``eval_run`` ``_run_batch_eval`` closure: the worker /
     jobs-dir / manifest knobs it used to capture now ride in on ``plan``.
     """
     from benchflow.eval_sharding import ShardWorkerError
@@ -665,7 +699,6 @@ def run_batch_eval(
                     worker_concurrency=plan.request.worker_concurrency,
                     worker_retries=plan.request.worker_retries,
                     worker_start_stagger_sec=plan.request.worker_start_stagger_sec,
-                    environment_manifest_path=plan.request.environment_manifest,
                 )
             )
     except EmptyTaskSelectionError as e:
@@ -684,6 +717,8 @@ def run_batch_eval(
 
 def _run_config_file_eval(plan: "EvalPlan") -> None:
     """Apply CLI overrides onto a YAML-loaded Evaluation, then run and report it."""
+    import subprocess
+
     import yaml
 
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
@@ -737,6 +772,23 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # the config file.
         if plan.eval_env_manifest is not None:
             j._config.environment_manifest = plan.eval_env_manifest
+        # CLI --config / --config-override (the C axis) likewise wins over the
+        # YAML's own config_override. Parsed + allowlist-validated at plan time
+        # and applied per task at the rollout layer. Without this the
+        # file-config path silently dropped the overlay (it threaded every
+        # other override but never this one), so a --config-override on a
+        # run-config file was a no-op.
+        if plan.eval_config_override is not None:
+            j._config.config_override = plan.eval_config_override
+    except subprocess.CalledProcessError as e:
+        # A source.repo clone/fetch failure (git exits non-zero) otherwise escapes
+        # as a raw traceback — it is not a config-parse error, so give it its own
+        # clean message. Mirrors the --source-repo guard's CalledProcessError catch.
+        console.print(
+            f"[red]Failed to fetch source repo for {escape(str(config_file))}:[/red] "
+            f"{escape(str(e))}"
+        )
+        raise typer.Exit(1) from None
     except (yaml.YAMLError, ValueError, TypeError, LookupError, OSError) as e:
         # LookupError covers missing source.repo (KeyError) and empty legacy
         # agents:/datasets: lists (IndexError). Type-mismatch cases (e.g. a
@@ -852,17 +904,39 @@ def _run_source_env_eval(
         raise typer.Exit(1)
 
 
+# `bench eval create` was renamed to `bench eval run`. Keep the old name as a
+# visible, deprecated alias so existing scripts, configs, and downstream repos
+# (e.g. benchflow-ai/skillsbench) keep working; Click prints a deprecation
+# notice when the alias is invoked.
+eval_app.command("create", deprecated=True)(eval_run)
+
+# Back-compat for the Python symbol: `eval_create` was part of this module's
+# public surface (``__all__``). Keep it as an import alias of ``eval_run`` so any
+# `from benchflow.cli.main import eval_create` keeps resolving.
+eval_create = eval_run
+
+
 @eval_app.command("list")
 def eval_list(
     jobs_dir: Annotated[
-        Path,
-        typer.Argument(help="Jobs directory to list"),
-    ] = Path("jobs"),
+        Path | None,
+        typer.Argument(help="Jobs directory to list (default: ./jobs)"),
+    ] = None,
 ) -> None:
     """List completed evaluations."""
+    # None means the argument was omitted: the default ./jobs simply not existing
+    # yet is a benign first-run state (exit 0). An *explicit* path that doesn't
+    # exist is a typo and should fail like `eval metrics` does, so scripts don't
+    # read it as success. (A literal `eval list jobs` is then treated as explicit,
+    # which is correct — the user named a path.)
+    explicit = jobs_dir is not None
+    jobs_dir = jobs_dir or Path("jobs")
     if not jobs_dir.exists():
-        console.print(f"[yellow]No jobs directory: {escape(str(jobs_dir))}[/yellow]")
-        return
+        if not explicit:
+            console.print("[yellow]No jobs yet.[/yellow]")
+            return
+        print_error(f"No such jobs directory: {jobs_dir}")
+        raise typer.Exit(1)
     if not jobs_dir.is_dir():
         # exists() is True for a file; iterdir() below would NotADirectoryError.
         console.print(f"[red]Not a directory: {escape(str(jobs_dir))}[/red]")
@@ -1005,7 +1079,7 @@ def eval_view(
 # ``cli/<group>.py`` module, mirroring the existing ``register_continue`` /
 # ``register_tasks_generate`` / ``register_agent_router`` precedent. Order does
 # not affect behavior; it follows the historical top-level help ordering.
-register_continue(app)
+register_continue(eval_app, alias_app=app)
 register_skills(app)
 register_tasks(app)
 register_hub(app)

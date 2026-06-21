@@ -16,7 +16,7 @@ import click
 import typer
 from typer.testing import CliRunner
 
-from benchflow.cli.main import app
+from benchflow.cli.main import app, eval_app
 
 runner = CliRunner()
 
@@ -105,8 +105,8 @@ def test_top_level_help_lists_public_groups() -> None:
         )
 
 
-def test_eval_create_flags_match_cli_md_bidirectional() -> None:
-    """`bench eval create`'s flags and its cli.md table must be set-equal.
+def test_eval_run_flags_match_cli_md_bidirectional() -> None:
+    """`bench eval run`'s flags and its cli.md table must be set-equal.
 
     The old guard only checked doc→CLI (a hand-maintained list of documented
     flags must exist in --help). It could not catch the *reverse* — a new CLI
@@ -115,10 +115,10 @@ def test_eval_create_flags_match_cli_md_bidirectional() -> None:
     sides from ground truth (the live parser + the doc table) drops the
     hand-maintained list and closes both directions.
     """
-    cli = _cli_long_flags(["eval", "create"])
-    doc = _doc_flags("### bench eval create")
+    cli = _cli_long_flags(["eval", "run"])
+    doc = _doc_flags("### bench eval run")
     assert cli == doc, (
-        "bench eval create CLI↔cli.md flag drift:\n"
+        "bench eval run CLI↔cli.md flag drift:\n"
         f"  in CLI but UNDOCUMENTED: {sorted(cli - doc)}\n"
         f"  documented but NOT in CLI: {sorted(doc - cli)}"
     )
@@ -148,17 +148,31 @@ def test_documented_defaults_match_cli() -> None:
         )
 
 
-def test_eval_create_accepts_environment_manifest() -> None:
-    """`bench eval create --environment-manifest` is the batch seam for
+def test_eval_run_accepts_environment_manifest() -> None:
+    """`bench eval run --environment-manifest` is the batch seam for
     Environment-plane rollouts (#398). Guard against silent removal so the
     docs and CLI stay in sync."""
-    out = _help(["eval", "create"])
+    out = _help(["eval", "run"])
     assert "--environment-manifest" in out
+
+
+def test_eval_create_is_deprecated_alias_of_run() -> None:
+    """`bench eval create` was renamed to `bench eval run`; the old name stays
+    as a deprecated alias so existing scripts and downstream repos keep working.
+    """
+    by_name = {c.name: c for c in eval_app.registered_commands}
+    assert "run" in by_name, "primary `bench eval run` command missing"
+    assert "create" in by_name, "deprecated `bench eval create` alias missing"
+    assert by_name["create"].deprecated, "`create` must be marked deprecated"
+    assert not by_name["run"].deprecated, "`run` must not be deprecated"
+    # Both names share the same callback so flags/behavior never drift apart.
+    assert by_name["run"].callback is by_name["create"].callback
 
 
 def test_documented_subcommands_exist() -> None:
     """Subcommands referenced in docs/reference/cli.md must resolve."""
     for cmd in (
+        ["eval", "run"],
         ["eval", "create"],
         ["eval", "list"],
         ["eval", "metrics"],
@@ -186,6 +200,10 @@ def test_documented_subcommands_exist() -> None:
         ["environment", "inspect"],
         ["environment", "cleanup"],
         ["hub", "check"],
+        ["hub", "list"],
+        ["hub", "show"],
+        ["hub", "inspect"],
+        # `hub env *` is a hidden back-compat alias of the flattened verbs.
         ["hub", "env", "list"],
         ["hub", "env", "show"],
         ["hub", "env", "inspect"],

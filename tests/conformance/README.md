@@ -14,7 +14,7 @@ split files used by older conformance docs and tests.
 ## Run
 
 ```bash
-bench eval create --tasks-dir tests/conformance/acp_smoke --agent <agent-name> --model claude-haiku-4-5-20251001
+bench eval run --tasks-dir tests/conformance/acp_smoke --agent <agent-name> --model claude-haiku-4-5-20251001
 ```
 
 Every agent in the registry must return `reward=1` on the smoke task against the oracle solution, and must complete cleanly for Haiku 4.5 as the driving model.

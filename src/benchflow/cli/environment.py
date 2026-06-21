@@ -38,7 +38,7 @@ def register_environment(app: typer.Typer) -> None:
     alone matches the ``adopt`` / ``agent`` alias families: exactly one
     once-per-process stderr notice, verbs hidden from help.
     """
-    env_app = typer.Typer(help="Deprecated; use `bench sandbox` / `bench hub env`.")
+    env_app = typer.Typer(help="Deprecated; use `bench sandbox` / `bench hub`.")
     app.add_typer(env_app, name="environment", hidden=True)
 
     @env_app.command("create", hidden=True)
@@ -60,14 +60,12 @@ def register_environment(app: typer.Typer) -> None:
         provider: Annotated[
             str | None,
             typer.Option(
-                "--provider", hidden=True, help="Deprecated; use `bench hub env list`"
+                "--provider", hidden=True, help="Deprecated; use `bench hub list`"
             ),
         ] = None,
         hub: Annotated[
             str | None,
-            typer.Option(
-                "--hub", hidden=True, help="Deprecated; use `bench hub env list`"
-            ),
+            typer.Option("--hub", hidden=True, help="Deprecated; use `bench hub list`"),
         ] = None,
         owner: Annotated[
             str | None,
@@ -88,11 +86,11 @@ def register_environment(app: typer.Typer) -> None:
             ),
         ] = False,
     ) -> None:
-        """Deprecated; use `bench sandbox list` (local) or `bench hub env list` (hosted)."""
+        """Deprecated; use `bench sandbox list` (local) or `bench hub list` (hosted)."""
         provider = provider or hub
         if provider:
             warn_deprecated(
-                "bench environment list --provider", "bench hub env list --provider"
+                "bench environment list --provider", "bench hub list --provider"
             )
             hosted_env_list(
                 provider=provider,
@@ -117,8 +115,8 @@ def register_environment(app: typer.Typer) -> None:
             str | None, typer.Option("--version", help="Hosted environment version")
         ] = None,
     ) -> None:
-        """Deprecated; use `bench hub env show`."""
-        warn_deprecated("bench environment show", "bench hub env show")
+        """Deprecated; use `bench hub show`."""
+        warn_deprecated("bench environment show", "bench hub show")
         hosted_env_show(source_env=source_env, version=version)
 
     @env_app.command("inspect", hidden=True)
@@ -137,8 +135,8 @@ def register_environment(app: typer.Typer) -> None:
             typer.Option("--path", help="File inside the hosted environment package"),
         ] = "README.md",
     ) -> None:
-        """Deprecated; use `bench hub env inspect`."""
-        warn_deprecated("bench environment inspect", "bench hub env inspect")
+        """Deprecated; use `bench hub inspect`."""
+        warn_deprecated("bench environment inspect", "bench hub inspect")
         hosted_env_inspect(source_env=source_env, version=version, path=path)
 
     @env_app.command("cleanup", hidden=True)

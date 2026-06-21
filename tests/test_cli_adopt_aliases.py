@@ -1,7 +1,7 @@
 """Benchmark adoption is canonically the single ``bench eval adopt`` command.
 
 Adoption lives under ``eval`` because ``eval`` is the universal benchmark entry
-point (``eval create`` runs a benchmark; ``eval adopt`` makes a foreign one
+point (``eval run`` runs a benchmark; ``eval adopt`` makes a foreign one
 runnable). ``bench eval adopt`` is one multi-mode command: ``<source>`` to
 scaffold+convert, ``<name> --scaffold-only`` to only scaffold, and
 ``<name> --verify`` to run the parity gate. Two prior spellings stay as hidden
@@ -13,7 +13,7 @@ stderr notice that points at the new canonical shape:
 * the original ``bench agent create|run|verify``.
 
 ``--hub`` likewise remains the deprecated spelling of ``environment list
---provider`` (hosted browsing moved to ``bench hub env list``). These tests pin
+--provider`` (hosted browsing moved to ``bench hub list``). These tests pin
 the canonical surface and every back-compat path so the renames stay additive.
 """
 
@@ -307,7 +307,7 @@ def test_deprecation_fires_once_per_process(tmp_path) -> None:
 
 
 def test_environment_list_hosted_is_deprecated_json_stays_clean(monkeypatch) -> None:
-    # Hosted browsing moved to `bench hub env list`; `environment list
+    # Hosted browsing moved to `bench hub list`; `environment list
     # --provider`/`--hub` now warn (deprecated) but still work, and the warning
     # goes to stderr ONLY so `--json >out` consumers stay clean.
     import benchflow.hosted_env as hosted
@@ -319,6 +319,6 @@ def test_environment_list_hosted_is_deprecated_json_stays_clean(monkeypatch) -> 
             app, ["environment", "list", flag, "primeintellect", "--json"]
         )
         assert res.exit_code == 0
-        assert "deprecation" in res.stderr and "bench hub env list" in res.stderr
+        assert "deprecation" in res.stderr and "bench hub list" in res.stderr
         assert "environments" not in res.stderr  # JSON did not leak to stderr
         assert '{"environments": []}' in res.output  # JSON present on stdout

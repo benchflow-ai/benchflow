@@ -44,7 +44,7 @@ BENCHFLOW_INTEGRATION_CONCURRENCY=100 tests/integration/run.sh gemini
 ## What It Does
 
 1. **Resolves tasks** — downloads the full SkillsBench task set, then creates a symlinked subset of 9 selected tasks.
-2. **Launches agents in parallel** — each agent is started as a background process running `bench eval create` with concurrency=64 by default. Set `BENCHFLOW_INTEGRATION_CONCURRENCY=100` for the large post-migration validation run.
+2. **Launches agents in parallel** — each agent is started as a background process running `bench eval run` with concurrency=64 by default. Set `BENCHFLOW_INTEGRATION_CONCURRENCY=100` for the large post-migration validation run.
 3. **Waits and reports** — as each agent finishes, prints its score line. After all complete, runs `check_results.py` to validate output schema and print the results table.
 
 ## Release Readiness Coverage
@@ -55,11 +55,11 @@ Before cutting a trial-ready release, every current release blocker must pass. I
 |---|---|---|
 | SkillsBench agent matrix | Validates the full agent × task pipeline on Daytona | 9 selected tasks across all credentialed agents produce valid `result.json`, trajectory output, and summary schema |
 | Adapter release set | Validates merged and open benchmark adapters preserve source-suite semantics | Each benchmark listed in [Running Adapted Benchmarks](./running-benchmarks.md#available-benchmarks), plus each open benchmark-adapter PR targeted at the release, has at least one representative smoke or parity run with verifier execution and reward schema validation |
-| Terminal-Bench smoke | Validates Terminal-Bench-style task packaging and shell verifier behavior | At least one representative task runs through `bench eval create`, verifier executes from the task tests, and sandbox hardening does not break normal task execution |
-| Trace-to-task | Validates `bench tasks generate` can turn real traces into runnable benchmark tasks | Generate from at least one local or JSONL trace and one HuggingFace/opentraces source, then run the generated task through `bench eval create` and validate the verifier outcome |
+| Terminal-Bench smoke | Validates Terminal-Bench-style task packaging and shell verifier behavior | At least one representative task runs through `bench eval run`, verifier executes from the task tests, and sandbox hardening does not break normal task execution |
+| Trace-to-task | Validates `bench tasks generate` can turn real traces into runnable benchmark tasks | Generate from at least one local or JSONL trace and one HuggingFace/opentraces source, then run the generated task through `bench eval run` and validate the verifier outcome |
 | Agent decoupling | Validates agents are pluggable runtime targets rather than core-coupled implementations | Core import and task validation work without optional agent packages; at least two non-oracle agents run the same representative task through the same Rollout path |
 | Sandbox decoupling | Validates sandbox backends are pluggable and optional dependencies remain isolated | Core `import benchflow` works without optional sandbox extras; Docker and Daytona smoke runs use the same task contract; missing optional sandbox deps produce clear install guidance |
-| Release-gated sandbox support | Validates the release-quality sandbox backends in the current release gate | Docker and Daytona can run a representative task via `bench eval create --sandbox docker` and `--sandbox daytona` without special user intervention beyond each backend's documented auth; Modal remains optional follow-up evidence, not a release blocker |
+| Release-gated sandbox support | Validates the release-quality sandbox backends in the current release gate | Docker and Daytona can run a representative task via `bench eval run --sandbox docker` and `--sandbox daytona` without special user intervention beyond each backend's documented auth; Modal remains optional follow-up evidence, not a release blocker |
 
 These blockers test benchmark-suite portability, not backward compatibility with old BenchFlow names. Public docs and new configs should use Rollout/Sandbox terminology.
 
@@ -226,7 +226,7 @@ Adapter coverage should stay intentionally small in the near-term profile: one r
 
 | Lane | Axis slice | Promote when |
 |---|---|---|
-| Security DinD smoke | `harbor:termigen-environments/docker_escape_privileged_container_medium@dc329464161db64b0c670f46fa39b62e4719dddd` × Firecracker/K8s | `bench eval create --sandbox firecracker` and `bench eval create --sandbox k8s` run the task without questions, Docker-in-Docker-style service/container operations work inside both sandboxes, and the verifier executes after sandbox hardening |
+| Security DinD smoke | `harbor:termigen-environments/docker_escape_privileged_container_medium@dc329464161db64b0c670f46fa39b62e4719dddd` × Firecracker/K8s | `bench eval run --sandbox firecracker` and `bench eval run --sandbox k8s` run the task without questions, Docker-in-Docker-style service/container operations work inside both sandboxes, and the verifier executes after sandbox hardening |
 
 ### Coverage Policy
 
@@ -306,10 +306,10 @@ models use `AZURE_API_KEY` plus `AZURE_API_ENDPOINT`.
 
 ## Standalone YAML Configs
 
-Each agent has a YAML config in `configs/` with an `include` list restricting to the 9 selected tasks. These can be used directly with `bench eval create --config`:
+Each agent has a YAML config in `configs/` with an `include` list restricting to the 9 selected tasks. These can be used directly with `bench eval run --config`:
 
 ```bash
-uv run bench eval create --config tests/integration/configs/gemini.yaml
+uv run bench eval run --config tests/integration/configs/gemini.yaml
 ```
 
 `run.sh` uses CLI arguments instead of these configs for parallel execution, but both approaches run the same 9 tasks at the active-dev concurrency of 64. The shell runner can be temporarily raised with `BENCHFLOW_INTEGRATION_CONCURRENCY=100` for the larger validation set.
@@ -351,7 +351,7 @@ uv run python tests/integration/agent_judge.py jobs/integration-eval --json
 ```
 
 The lightweight `.github/workflows/integration-eval.yml` workflow runs one
-small task through `bench eval create --agent openhands --model
+small task through `bench eval run --agent openhands --model
 deepseek/deepseek-v4-flash --sandbox docker`, then runs the agent judge over
 the rollout and fails the job if the run is not REAL or the judge fails. It
 triggers on `workflow_dispatch` and nightly, and is capped at one task to keep

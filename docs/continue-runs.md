@@ -1,12 +1,15 @@
-# Continuing timed-out runs (`benchflow continue`)
+# Continuing timed-out runs (`bench eval continue`)
 
-`benchflow continue` resumes a previous, **unfinished** (timed-out) agent run to
+`bench eval continue` resumes a previous, **unfinished** (timed-out) agent run to
 completion. It is a standalone tool — it does **not** modify benchflow's normal
 `eval`/run path — and currently targets the **`openhands`** agent.
 
 The goal is a *transparent* resume: the continued run behaves as if the original
 timeout had simply been larger. The agent keeps its exact context and
 environment and continues its own loop with **no injected prompt**.
+
+> The command lives under the `eval` group (`bench eval continue`). The original
+> top-level `bench continue` still works as a hidden, deprecated alias.
 
 ## The problem it solves
 
@@ -15,12 +18,12 @@ What survives on disk is the run folder: `config.json`, `result.json`,
 `prompts.json`, and `trajectory/llm_trajectory.jsonl`. So a historical timeout
 has only its *trajectory* + the *task*; there is no saved container to restore.
 
-`benchflow continue` reconstructs the missing state from the trajectory.
+`bench eval continue` reconstructs the missing state from the trajectory.
 
 ## How it works — record-replay
 
 The recorded `llm_trajectory.jsonl` is the exact sequence of LLM
-request/response pairs from the original run. `benchflow continue`:
+request/response pairs from the original run. `bench eval continue`:
 
 1. **Loads** the original run folder and the recorded exchanges.
 2. **Boots a fresh, pristine sandbox** from the same base image.
@@ -41,7 +44,7 @@ continuous run rather than a fresh agent on a warm filesystem.
 ## Usage
 
 ```bash
-benchflow continue path/to/original/run-folder \
+bench eval continue path/to/original/run-folder \
   --tasks-dir path/to/tasks          # where the task source (verifier) lives
 ```
 

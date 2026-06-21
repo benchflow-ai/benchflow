@@ -1,6 +1,6 @@
-"""Planning logic for ``bench eval create`` — the pure core of the CLI command.
+"""Planning logic for ``bench eval run`` — the pure core of the CLI command.
 
-``bench eval create`` (defined in :mod:`benchflow.cli.main`, pinned there by the
+``bench eval run`` (defined in :mod:`benchflow.cli.main`, pinned there by the
 oracle-chokepoint tests) is a thin parse → request → plan → run → report shell.
 This module owns the **plan** step: it takes an :class:`EvalCreateRequest` of raw
 CLI flags and turns them into an :class:`EvalPlan` — the disambiguated source,
@@ -60,7 +60,7 @@ __all__ = [
 
 
 class EvalPlanError(ValueError):
-    """A ``bench eval create`` validation failure.
+    """A ``bench eval run`` validation failure.
 
     Carries the operator-facing ``message`` exactly as the CLI used to print it
     (without Rich markup). The CLI shell renders it ``[red]...[/red]`` and exits
@@ -70,9 +70,9 @@ class EvalPlanError(ValueError):
 
 @dataclass
 class EvalCreateRequest:
-    """Raw ``bench eval create`` flags relevant to planning.
+    """Raw ``bench eval run`` flags relevant to planning.
 
-    Mirrors the subset of ``eval_create`` parameters consumed by
+    Mirrors the subset of ``eval_run`` parameters consumed by
     :func:`build_eval_plan`. Execution-only flags (the ``source_env_*`` hosted-run
     knobs, ``source_path``/``source_ref``, and the worker run details) are passed
     straight through by the CLI and are not modeled here.
@@ -88,6 +88,8 @@ class EvalCreateRequest:
     environment: str | None = None
     usage_tracking: str | None = None
     environment_manifest: Path | None = None
+    state: str | None = None
+    config_override: str | None = None
     prompt: list[str] | None = None
     concurrency: int | None = None
     build_concurrency: int | None = None
@@ -113,7 +115,7 @@ class EvalCreateRequest:
 
 @dataclass
 class EvalPlan:
-    """Normalized, validated inputs for the ``bench eval create`` run step.
+    """Normalized, validated inputs for the ``bench eval run`` run step.
 
     Holds every value the CLI shell needs after planning: the normalized
     agent/timeout/effort, the resolved manifest, the parsed include/exclude sets,
@@ -135,6 +137,7 @@ class EvalPlan:
     sandbox_user: str | None
     output_jobs_dir: str
     eval_env_manifest: EnvironmentManifest | None
+    eval_config_override: dict | None
     eval_loop_strategy: LoopStrategySpec | None
     parsed_env: dict[str, str]
     include_tasks: set[str]
@@ -188,6 +191,7 @@ class EvalPlan:
             exclude_tasks=self.exclude_tasks,
             usage_tracking=self.eval_usage_tracking,
             environment_manifest=self.eval_env_manifest,
+            config_override=self.eval_config_override,
             loop_strategy=self.eval_loop_strategy,
         )
 
@@ -207,7 +211,7 @@ def _normalize_eval_agent(agent_spec: str) -> str:
 
 
 def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
-    """Validate and normalize ``bench eval create`` flags into an :class:`EvalPlan`.
+    """Validate and normalize ``bench eval run`` flags into an :class:`EvalPlan`.
 
     Raises :class:`EvalPlanError` for any validation failure, carrying the exact
     operator-facing message (no Rich markup). Performs no console or process-exit
@@ -376,7 +380,14 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     # Resolve the optional Environment-plane manifest once and reuse across
     # every source branch (config / source_repo / tasks_dir / source_env).
     eval_env_manifest = None
-    if request.environment_manifest is not None:
+    if request.state is not None:
+        from benchflow._utils.env_registry import resolve_state
+
+        try:
+            eval_env_manifest = resolve_state(request.state)
+        except (OSError, ValueError) as exc:
+            raise EvalPlanError(f"Invalid --state: {exc}") from None
+    elif request.environment_manifest is not None:
         from benchflow.environment.manifest import load_manifest
 
         try:
@@ -385,6 +396,22 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
             raise EvalPlanError(
                 f"Could not load --environment-manifest {request.environment_manifest}: {exc}"
             ) from None
+
+    # Parse + allowlist-validate the C-axis config overlay once (fail fast),
+    # mirroring the manifest resolution above. Threaded as typed data from here.
+    eval_config_override = None
+    if request.config_override is not None:
+        from benchflow._utils.config_override import (
+            load_config_override,
+            validate_overlay,
+        )
+
+        try:
+            eval_config_override = load_config_override(request.config_override)
+            if eval_config_override:
+                validate_overlay(eval_config_override)
+        except (OSError, ValueError) as exc:
+            raise EvalPlanError(f"Invalid --config-override: {exc}") from None
 
     return EvalPlan(
         request=request,
@@ -399,6 +426,7 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         sandbox_user=sandbox_user,
         output_jobs_dir=output_jobs_dir,
         eval_env_manifest=eval_env_manifest,
+        eval_config_override=eval_config_override,
         eval_loop_strategy=eval_loop_strategy,
         parsed_env=parsed_env,
         include_tasks=include_tasks,

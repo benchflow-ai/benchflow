@@ -307,3 +307,28 @@ def test_eval_create_source_env_routes_to_hosted_runner(tmp_path, monkeypatch):
     assert config.agent == "gemini"
     assert config.model == "gemini-3.1-flash-lite-preview"
     assert "not used by source-env runs" in result.output
+
+
+def test_run_prime_disables_version_check(monkeypatch):
+    """`bench hub env` must suppress prime's "new version available" tty banner.
+
+    prime writes that notice straight to the controlling terminal (bypassing our
+    capture_output pipes), so it leaks onto the user's screen on every hub
+    command and could corrupt `--json`. We opt out via PRIME_DISABLE_VERSION_CHECK
+    in the subprocess env; this guards that the env var is set.
+    Guards PR #789 (CLI error-handling hardening).
+    """
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return SimpleNamespace(returncode=0, stdout='{"environments": []}', stderr="")
+
+    monkeypatch.setattr("benchflow.hosted_env.shutil.which", lambda _n: "/bin/prime")
+    monkeypatch.setattr("benchflow.hosted_env.subprocess.run", fake_run)
+
+    from benchflow.hosted_env import prime_env_list
+
+    out = prime_env_list()
+    assert out == '{"environments": []}'
+    assert captured["env"]["PRIME_DISABLE_VERSION_CHECK"] == "1"

@@ -113,6 +113,9 @@ class RolloutConfig:
     # stateful environment, gates on readiness before the agent runs, and
     # tears it down in cleanup. None => no separate environment plane (default).
     environment_manifest: EnvironmentManifest | None = None
+    # C-axis overlay (parsed dict) deep-merged into the task's resolved config
+    # at rollout setup. None => no overlay (default).
+    config_override: dict | None = None
     # Abort the prompt if no tool call arrives for this many seconds.
     # Catches agents that hung silently while the local process is alive
     # (e.g. gemini-cli not responding). None disables idle detection.

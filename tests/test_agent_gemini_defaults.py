@@ -57,7 +57,7 @@ class TestEffectiveModelHonorsAgentDefault:
 
     def test_default_agent_still_uses_global_default(self):
         """Backwards-compat: the DEFAULT_AGENT still falls back to DEFAULT_MODEL
-        so `benchflow eval create` with no flags keeps working."""
+        so `benchflow eval run` with no flags keeps working."""
         from benchflow.evaluation import DEFAULT_AGENT, DEFAULT_MODEL
 
         assert effective_model(DEFAULT_AGENT, None) == DEFAULT_MODEL

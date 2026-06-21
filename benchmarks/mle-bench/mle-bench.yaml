@@ -1,0 +1,8 @@
+# BenchFlow job config — how to *run* Mle Bench (separate from benchmark.yaml).
+tasks_dir: benchmarks/mle-bench/tasks
+jobs_dir: jobs/mle-bench
+agent: claude-agent-acp
+model: ""
+environment: docker
+concurrency: 4
+max_retries: 1

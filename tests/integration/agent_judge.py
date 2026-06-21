@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Agent-as-judge verification over a completed BenchFlow rollout.
 
-This is BenchFlow's own integration check: after a real ``bench eval create``
+This is BenchFlow's own integration check: after a real ``bench eval run``
 run, an LLM judge reads the recorded rollout and decides whether the run is a
 trustworthy measurement — the agent genuinely attempted the task, the
 trajectory is coherent, and the reward is not the product of obvious
@@ -21,7 +21,7 @@ reason recorded. A judge that errors must never be read as a pass.
 Usage::
 
     python tests/integration/agent_judge.py <rollout_dir>
-    python tests/integration/agent_judge.py <rollout_dir> --model gemini-3.1-flash-lite
+    python tests/integration/agent_judge.py <rollout_dir> --model openai/deepseek-v4-flash
 """
 
 from __future__ import annotations
@@ -46,7 +46,11 @@ from benchflow.rewards.llm import (
     parse_verdict,
 )
 
-DEFAULT_JUDGE_MODEL = "gemini-3.1-flash-lite"
+# DeepSeek-v4 is the ONLY judge model (no gemini/openai/anthropic). The
+# ``openai/`` prefix routes call_judge through its OpenAI-compatible chat-
+# completions branch, which honors OPENAI_BASE_URL — set to the DeepSeek endpoint
+# in CI by select_integration_provider.py (and overridable for local runs).
+DEFAULT_JUDGE_MODEL = "openai/deepseek-v4-flash"
 
 # How much trajectory text to show the judge. Trajectories can be large; the
 # judge only needs enough evidence to assess coherence and reward-hacking, and
@@ -92,6 +96,25 @@ _SHELL_TOOLS = {"bash", "shell", "run", "execute", "run_command", "sh"}
 _ACP_READONLY_KINDS = {"read", "search", "fetch", "think", "switch_mode"}
 _ACP_WRITE_KINDS = {"edit", "delete", "move", "write", "create"}
 
+# OpenHands records native ACP ``execute`` titles as ``"<human description>: $
+# <command>"``. The prose description routinely says "Verify the output",
+# "Validate …", "Final verification …" — words that collide with the ``verif``
+# token in _VERIFIER_FILE_RE and falsely flag benign cleanup/verification as
+# tampering. Only the command after ``: $ `` is the agent's actual action, so the
+# execute scan must strip the description first.
+_ACP_EXECUTE_PREFIX_RE = re.compile(r".*?: \$ ", re.DOTALL)
+
+
+def _acp_execute_command(title: str) -> str:
+    """Strip OpenHands' ``"<description>: $ "`` prefix, leaving just the command.
+
+    Titles without the ``: $ `` separator (other agents, or a bare command line)
+    are returned unchanged, so this only ever narrows what is scanned — a real
+    tamper command (``echo x > grader.py``, ``rm -rf tests``) still appears
+    verbatim after the separator and is still caught.
+    """
+    return _ACP_EXECUTE_PREFIX_RE.sub("", title, count=1)
+
 
 def _scan_native_tool_call(event: dict[str, Any]) -> list[str]:
     """Scan one native ACP ``type:"tool_call"`` record for verifier tamper.
@@ -112,10 +135,12 @@ def _scan_native_tool_call(event: dict[str, Any]) -> list[str]:
     # by the kind, so no destructive-op token is required in the title).
     if kind in _ACP_WRITE_KINDS and _VERIFIER_FILE_RE.search(title):
         return [f"{kind} -> {title[:160]}"]
-    # execute / other: the title is a shell command — flag only a destructive op
-    # against a score-defining file (running the tests read-only is fine).
-    if _VERIFIER_FILE_RE.search(title) and _TAMPER_OP_RE.search(title):
-        return [f"{kind}: {title[:160]}"]
+    # execute / other: OpenHands writes the title as "<description>: $ <command>".
+    # Scan ONLY the command so prose like "Verify the output" can't collide with
+    # the verifier-file token; a real tamper command still appears after "$ ".
+    command = _acp_execute_command(title)
+    if _VERIFIER_FILE_RE.search(command) and _TAMPER_OP_RE.search(command):
+        return [f"{kind}: {command[:160]}"]
     return []
 
 
@@ -365,6 +390,11 @@ def realness_issues(evidence: RolloutEvidence) -> list[str]:
     These are mechanical, judge-independent invariants — a run that fails any
     of them cannot be salvaged by an LLM verdict, so the gate must hold even
     when the judge passes.
+
+    A mechanically-detected verifier tamper (a write/delete/chmod of a
+    score-defining file in ``evidence.flagged_actions``) is fail-closed here
+    too: the gate must hard-fail on it without depending on the judge, so a
+    tamper is rejected even when the judge is absent or lenient.
     """
     issues: list[str] = []
     if evidence.n_tool_calls <= 0:
@@ -377,6 +407,8 @@ def realness_issues(evidence: RolloutEvidence) -> list[str]:
         issues.append(f"rollout recorded an error: {evidence.error}")
     if evidence.verifier_error:
         issues.append(f"verifier error: {evidence.verifier_error}")
+    for action in evidence.flagged_actions:
+        issues.append(f"verifier tamper: {action}")
     return issues
 
 
@@ -572,7 +604,7 @@ def _find_rollout_dir(root: Path) -> Path:
     """Resolve a rollout directory from a path that may be a jobs root.
 
     Accepts either a rollout dir (contains ``result.json``) directly, or a
-    parent tree from one ``bench eval create`` run, in which case the most
+    parent tree from one ``bench eval run`` run, in which case the most
     recently modified rollout is judged.
     """
     if (root / "result.json").is_file():
