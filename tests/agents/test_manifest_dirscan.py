@@ -118,6 +118,34 @@ def test_register_fails_loud_on_alias_collision(tmp_path: Path):
         register_manifest_agents(load_agents_from_dir(tmp_path), **m)
 
 
+def test_register_fails_loud_on_agent_name_existing_alias_collision(tmp_path: Path):
+    _put(tmp_path, "demo", "demo")
+    m = _maps()
+    m["aliases"]["demo"] = "someone-else"
+    with pytest.raises(AgentManifestError, match="existing alias"):
+        register_manifest_agents(load_agents_from_dir(tmp_path), **m)
+    assert m["agents"] == {}
+    assert m["installers"] == {}
+
+
+def test_register_fails_loud_on_same_batch_alias_collision(tmp_path: Path):
+    _put(tmp_path, "one", "one", extra='aliases = ["taken"]\n')
+    _put(tmp_path, "two", "two", extra='aliases = ["taken"]\n')
+    m = _maps()
+    with pytest.raises(AgentManifestError, match="both"):
+        register_manifest_agents(load_agents_from_dir(tmp_path), **m)
+    assert all(d == {} for d in m.values())
+
+
+def test_register_fails_loud_on_same_batch_alias_name_collision(tmp_path: Path):
+    _put(tmp_path, "one", "one", extra='aliases = ["two"]\n')
+    _put(tmp_path, "two", "two")
+    m = _maps()
+    with pytest.raises(AgentManifestError, match="same manifest batch"):
+        register_manifest_agents(load_agents_from_dir(tmp_path), **m)
+    assert all(d == {} for d in m.values())
+
+
 def test_env_entry_is_noop_when_unset(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("BENCHFLOW_AGENTS_DIR", raising=False)
     m = _maps()

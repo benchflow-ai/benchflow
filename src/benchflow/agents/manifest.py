@@ -233,12 +233,33 @@ def register_manifest_agents(
     ambiguous source of truth, not a silent shadow) unless ``override=True``.
     Collisions are checked across the whole batch BEFORE any mutation, so a
     rejected batch leaves every map untouched (all-or-nothing)."""
+    incoming_names = set(loaded)
+    incoming_aliases: dict[str, str] = {}
+    for name, lm in loaded.items():
+        for alias in lm.aliases:
+            if alias in incoming_names:
+                raise AgentManifestError(
+                    f"alias {alias!r} (for {name!r}) collides with an agent name "
+                    "in the same manifest batch"
+                )
+            previous_name = incoming_aliases.get(alias)
+            if previous_name is not None:
+                raise AgentManifestError(
+                    f"alias {alias!r} is declared by both {previous_name!r} and "
+                    f"{name!r}"
+                )
+            incoming_aliases[alias] = name
+
     if not override:
         for name, lm in loaded.items():
             if name in agents:
                 raise AgentManifestError(
                     f"agent {name!r} already in the registry; ship its manifest as "
                     "the sole source or pass override=True"
+                )
+            if name in aliases:
+                raise AgentManifestError(
+                    f"agent {name!r} collides with existing alias for {aliases[name]!r}"
                 )
             for alias in lm.aliases:
                 if alias in aliases:
@@ -277,7 +298,7 @@ def register_env_manifest_agents(
     root = os.environ.get(MANIFEST_DIR_ENV)
     if not root:
         return []
-    if None in (agents, aliases, installers, launch):
+    if agents is None or aliases is None or installers is None or launch is None:
         from benchflow.agents.registry import (
             AGENT_ALIASES,
             AGENT_INSTALLERS,
