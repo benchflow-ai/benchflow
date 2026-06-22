@@ -103,6 +103,10 @@ _ACP_WRITE_KINDS = {"edit", "delete", "move", "write", "create"}
 # tampering. Only the command after ``: $ `` is the agent's actual action, so the
 # execute scan must strip the description first.
 _ACP_EXECUTE_PREFIX_RE = re.compile(r".*?: \$ ", re.DOTALL)
+_FILE_EDITOR_PATH_RE = re.compile(
+    r"^file_editor:\s*\{.*?\"path\"\s*:\s*\"((?:\\.|[^\"])*)\"",
+    re.DOTALL,
+)
 
 
 def _acp_execute_command(title: str) -> str:
@@ -114,6 +118,24 @@ def _acp_execute_command(title: str) -> str:
     verbatim after the separator and is still caught.
     """
     return _ACP_EXECUTE_PREFIX_RE.sub("", title, count=1)
+
+
+def _acp_write_target(title: str) -> str:
+    """Return the file target for ACP write titles when the target is structured.
+
+    OpenHands file-editor calls can record titles like
+    ``file_editor: {"command": "create", "path": "...", "file_text": "..."}``.
+    Only the ``path`` is the mutation target; scanning the entire serialized
+    payload would treat benign solution text containing words like "verify" as
+    a verifier-file mutation.
+    """
+    match = _FILE_EDITOR_PATH_RE.search(title.strip())
+    if not match:
+        return title
+    try:
+        return json.loads(f'"{match.group(1)}"')
+    except json.JSONDecodeError:
+        return match.group(1)
 
 
 def _scan_native_tool_call(event: dict[str, Any]) -> list[str]:
@@ -133,7 +155,8 @@ def _scan_native_tool_call(event: dict[str, Any]) -> list[str]:
         return []
     # A write-like kind mutating a score-defining file (the mutation is implied
     # by the kind, so no destructive-op token is required in the title).
-    if kind in _ACP_WRITE_KINDS and _VERIFIER_FILE_RE.search(title):
+    target = _acp_write_target(title)
+    if kind in _ACP_WRITE_KINDS and _VERIFIER_FILE_RE.search(target):
         return [f"{kind} -> {title[:160]}"]
     # execute / other: OpenHands writes the title as "<description>: $ <command>".
     # Scan ONLY the command so prose like "Verify the output" can't collide with
