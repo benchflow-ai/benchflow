@@ -213,6 +213,12 @@ def _resolve_repo_path(root: Path, path: str, repo_label: str) -> Path:
         raise ValueError(
             f"Source path {path!r} escapes repository root for {repo_label}"
         )
+    git_metadata = root_resolved / ".git"
+    if target_resolved == git_metadata or target_resolved.is_relative_to(git_metadata):
+        raise ValueError(
+            f"Source path {path!r} must resolve to a task directory inside "
+            f"{repo_label}; .git is the clone metadata, not a task source"
+        )
     # A regular file (e.g. ``README.md``) exists and stays within the root, but a
     # task source must be a directory. Reject non-directories with a friendly
     # message rather than letting task resolution fail with zero hashes later.

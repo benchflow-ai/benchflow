@@ -511,15 +511,29 @@ def _clone_with(tmp_path, monkeypatch, *, populate):
 
 
 def test_resolve_source_with_metadata_rejects_git_source_path(tmp_path, monkeypatch):
-    """Guards issue #548: --source-path .git is clone metadata, not a task source."""
+    """Guards PR #822: --source-path .git is clone metadata, not a task source."""
     _clone_with(tmp_path, monkeypatch, populate=lambda d: (d / "task-1").mkdir())
 
     with pytest.raises(ValueError, match=r"\.git is the clone metadata"):
         resolve_source_with_metadata("acme-org/benchmarks", path=".git")
 
 
+def test_resolve_source_with_metadata_rejects_symlink_to_git_path(
+    tmp_path, monkeypatch
+):
+    """Guards PR #822: a symlink into .git must not bypass source validation."""
+
+    def populate(clone_dir: Path) -> None:
+        (clone_dir / "git-link").symlink_to(".git", target_is_directory=True)
+
+    _clone_with(tmp_path, monkeypatch, populate=populate)
+
+    with pytest.raises(ValueError, match=r"\.git is the clone metadata"):
+        resolve_source_with_metadata("acme-org/benchmarks", path="git-link")
+
+
 def test_resolve_source_with_metadata_rejects_file_source_path(tmp_path, monkeypatch):
-    """Guards issue #548: a file --source-path must report a clean validation error."""
+    """Guards PR #822: a file --source-path must report a clean validation error."""
     _clone_with(
         tmp_path,
         monkeypatch,
