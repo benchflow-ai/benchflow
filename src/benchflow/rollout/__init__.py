@@ -1013,7 +1013,10 @@ class Rollout:
         continuation Step lands on the child node itself.
         """
         effective_prompts = prompts or self._resolved_prompts
-        if self._acp_client is None:
+        # Protocol-agnostic "connected?" guard: ACP connect sets _acp_client;
+        # a session-factory connect sets _session (no ACP client). Connected iff
+        # at least one is present; both None means connect() never ran.
+        if self._acp_client is None and self._session is None:
             raise RuntimeError("Rollout.connect() must run before execute()")
         prev_session_tools = self._session_tool_count
         t0 = datetime.now()
