@@ -354,6 +354,7 @@ input_dir = "/app/output"
             )
 
         assert rewards is None
+        assert verifier_error is not None
         assert "verifier crashed" in verifier_error
         assert "llm-judge input" in verifier_error
         assert "/app/output" in verifier_error
@@ -414,6 +415,7 @@ input_dir = "/app/output"
             )
 
         assert rewards is None
+        assert verifier_error is not None
         assert "verifier crashed" in verifier_error
         assert "Judge error on criterion c1" in verifier_error
         assert "provider down" not in verifier_error
@@ -478,6 +480,7 @@ class TestRetry:
 
 class TestResume:
     def test_verifier_errored_is_complete(self, tmp_path, caplog):
+        """Guards the PR #819 fix for issue #542's misleading resume log."""
         task_dir = tmp_path / "task1" / "trial-1"
         task_dir.mkdir(parents=True)
         (task_dir / "result.json").write_text(
@@ -498,7 +501,10 @@ class TestResume:
         with caplog.at_level(logging.INFO):
             completed = job._get_completed_tasks()
         assert "task1" in completed
-        assert any("Skipping verifier-errored task" in m for m in caplog.messages)
+        assert any(
+            "Reusing completed verifier-errored task" in m for m in caplog.messages
+        )
+        assert not any("Skipping verifier-errored task" in m for m in caplog.messages)
 
     def test_agent_errored_not_complete(self, tmp_path):
         task_dir = tmp_path / "task2" / "trial-1"
