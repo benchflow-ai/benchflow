@@ -184,6 +184,22 @@ class DefaultRolloutPlanes:
     async def execute_prompts(self, *args: Any, **kwargs: Any) -> Any:
         return await execute_prompts(*args, **kwargs)
 
+    async def connect_session_factory(self, *args: Any, **kwargs: Any) -> Any:
+        from benchflow.rollout.session_factory_runtime import (
+            connect_session_factory,
+        )
+
+        return await connect_session_factory(*args, **kwargs)
+
+    async def execute_prompts_session_factory(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:
+        from benchflow.rollout.session_factory_runtime import (
+            execute_prompts_session_factory,
+        )
+
+        return await execute_prompts_session_factory(*args, **kwargs)
+
     async def harden_before_verify(self, *args: Any, **kwargs: Any) -> None:
         from benchflow.sandbox.lockdown import harden_before_verify as _harden
 

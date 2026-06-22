@@ -1,0 +1,147 @@
+"""Session-factory connect + drive (the non-ACP kernel path).
+
+Drives the runtime with a FAKE session-factory agent (a module:callable that
+returns a fake Agent → fake Session implementing the Session protocol) so the
+kernel path is exercised without omnigent/sandbox deps.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from benchflow.acp.runtime import AgentPromptTimeoutError
+from benchflow.acp.types import StopReason
+from benchflow.rollout.session_factory_runtime import (
+    _load_session_factory,
+    connect_session_factory,
+    execute_prompts_session_factory,
+)
+
+
+class _FakeSession:
+    def __init__(self) -> None:
+        self.on_change = None
+        self._steps: list[dict] = []
+        self.prompts_seen: list[str] = []
+
+    async def prompt(self, text: str) -> StopReason:
+        self.prompts_seen.append(text)
+        self._steps.append({"type": "user_message", "text": text})
+        self._steps.append({"type": "agent_message", "text": f"did:{text}"})
+        if self.on_change:
+            self.on_change(self)
+        return StopReason.END_TURN
+
+    async def cancel(self) -> None:
+        pass
+
+    @property
+    def steps(self) -> list[dict]:
+        return self._steps
+
+
+class _FakeAgent:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.connected: tuple | None = None
+
+    async def connect(self, sandbox, role, *, agent_env=None):
+        self.connected = (sandbox, role, agent_env)
+        return _FakeSession()
+
+
+_BUILT: dict = {}
+
+
+def build_fake_agent(**kwargs) -> _FakeAgent:
+    agent = _FakeAgent(**kwargs)
+    _BUILT["agent"] = agent
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_connect_builds_agent_and_connects_with_proxy_env():
+    _BUILT.clear()
+    client, session, adapter, name = await connect_session_factory(
+        env="SANDBOX-HANDLE",
+        agent="fake-sf",
+        session_factory=f"{__name__}:build_fake_agent",
+        agent_env={"BENCHFLOW_PROVIDER_MODEL": "deepseek-v4-flash"},
+        sandbox_user="root",
+        model="deepseek-v4-flash",
+        rollout_dir=None,
+    )
+    # shape-compatible with connect_acp: no client/adapter for session-factory
+    assert client is None and adapter is None and name == "fake-sf"
+    assert isinstance(session, _FakeSession)
+    # the agent was connected with the sandbox + the proxy-routing agent_env
+    assert _BUILT["agent"].connected[0] == "SANDBOX-HANDLE"
+    assert _BUILT["agent"].connected[2] == {
+        "BENCHFLOW_PROVIDER_MODEL": "deepseek-v4-flash"
+    }
+    # sandbox_user forwarded as exec_user (credential store + exec stay in lockstep)
+    assert _BUILT["agent"].kwargs == {"exec_user": "root"}
+
+
+@pytest.mark.asyncio
+async def test_drive_runs_each_prompt_and_captures_steps():
+    session = _FakeSession()
+    streamed: list = []
+    session.on_change = lambda s: streamed.append(len(s.steps))
+    trajectory, n_tool_calls = await execute_prompts_session_factory(
+        session, ["hello", "again"], timeout=30
+    )
+    assert n_tool_calls == 0  # no per-tool-call stream for session-factory
+    assert session.prompts_seen == ["hello", "again"]
+    assert {"type": "agent_message", "text": "did:again"} in trajectory
+    assert streamed  # on_change fired (kernel wires the trajectory writer onto it)
+
+
+@pytest.mark.asyncio
+async def test_drive_timeout_raises_with_partial_trajectory():
+    class _HangSession(_FakeSession):
+        async def prompt(self, text: str) -> StopReason:
+            self._steps.append({"type": "user_message", "text": text})
+            import asyncio
+
+            await asyncio.sleep(10)
+            return StopReason.END_TURN
+
+    session = _HangSession()
+    with pytest.raises(AgentPromptTimeoutError) as ei:
+        await execute_prompts_session_factory(session, ["slow"], timeout=1)
+    assert ei.value.n_tool_calls == 0
+    assert ei.value.executed_prompts == ["slow"]
+    assert ei.value.trajectory  # the user_message step captured before timeout
+
+
+def test_load_session_factory_rejects_malformed():
+    with pytest.raises(ValueError):
+        _load_session_factory("no-colon")
+    with pytest.raises(ValueError):
+        _load_session_factory(":missing-module")
+
+
+def test_session_factory_entrypoint_is_the_dispatch_key():
+    """Rollout._session_factory_entrypoint returns the entrypoint for a
+    session-factory agent (→ the non-ACP path) and None for an ACP agent (→ the
+    ACP path). This is the single key the connect + drive dispatch branches on."""
+    from benchflow.agents.registry import AGENTS, register_agent
+    from benchflow.rollout import Rollout
+
+    register_agent(
+        "fake-sf-agent",
+        "echo install",
+        "echo launch",
+        protocol="session-factory",
+        session_factory="mymod:build_agent",
+    )
+    try:
+        r = Rollout.__new__(Rollout)  # bypass __init__ (only the method is exercised)
+        assert r._session_factory_entrypoint("fake-sf-agent") == "mymod:build_agent"
+        # a real ACP agent → None (stays on the ACP path)
+        assert r._session_factory_entrypoint("opencode") is None
+        # unknown agent → None (degrade to ACP rather than raise)
+        assert r._session_factory_entrypoint("no-such-agent-xyz") is None
+    finally:
+        AGENTS.pop("fake-sf-agent", None)
