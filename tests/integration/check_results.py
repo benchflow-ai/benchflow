@@ -1173,9 +1173,19 @@ def check_agent(agent_dir: Path) -> dict:
 
 def _is_rollout_artifact_root(path: Path) -> bool:
     """Return True when *path* is one completed bench eval artifact root."""
-    if not (path / "summary.json").is_file():
+    if (path / "summary.json").is_file():
+        return any(path.rglob("result.json"))
+    # Failed/interrupted runs may have task rollout directories with result.json
+    # diagnostics but no summary.json. Treat that run directory as an artifact
+    # root so the existing result diagnostics are still audited; the missing
+    # summary remains a normal finding.
+    try:
+        return any(
+            child.is_dir() and (child / "result.json").is_file()
+            for child in path.iterdir()
+        )
+    except OSError:
         return False
-    return any(path.rglob("result.json"))
 
 
 def discover_agent_dirs(jobs_root: Path, agents: list[str] | None) -> list[Path]:
