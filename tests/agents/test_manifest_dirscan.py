@@ -138,3 +138,33 @@ def test_env_entry_registers_when_set(tmp_path: Path, monkeypatch):
     assert set(m["installers"]) == {"beta", "demo"}
     assert set(m["launch"]) == {"beta", "demo"}
     assert m["aliases"] == {"demo-code": "demo"}
+
+
+def test_merge_shim_only_keeps_core_shim_fields(tmp_path: Path):
+    # Additive/compatible: a manifest reproducing an existing core agent overrides
+    # it, taking DATA fields from the manifest but the host-side _SHIM_ONLY fields
+    # (which the data-only manifest can't carry) from the existing core entry — so
+    # the merged config equals the original.
+    _put(
+        tmp_path, "demo", "demo"
+    )  # manifest: install_cmd="echo install", shim defaults
+    m = _maps()
+    m["agents"]["demo"] = AgentConfig(
+        name="demo",
+        install_cmd="CORE-INSTALL",
+        launch_cmd="CORE-LAUNCH",
+        acp_model_config_id="model",  # a _SHIM_ONLY field core owns
+    )
+    register_manifest_agents(load_agents_from_dir(tmp_path), **m, merge_shim_only=True)
+    merged = m["agents"]["demo"]
+    assert merged.install_cmd == "echo install"  # DATA field comes from the manifest
+    assert merged.acp_model_config_id == "model"  # _SHIM_ONLY preserved from core
+    assert m["installers"]["demo"] == "echo install"
+
+
+def test_merge_shim_only_adds_new_agent_without_core_entry(tmp_path: Path):
+    # An agent not already in core is just added (nothing to merge).
+    _put(tmp_path, "brand-new", "brand-new")
+    m = _maps()
+    register_manifest_agents(load_agents_from_dir(tmp_path), **m, merge_shim_only=True)
+    assert m["agents"]["brand-new"].install_cmd == "echo install"

@@ -28,7 +28,7 @@ import os
 import re
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from benchflow.agents.registry import AgentConfig
@@ -91,6 +91,19 @@ _SHIM_ONLY = frozenset(
         "disallow_web_tools_launch_suffix",
     }
 )
+
+
+def _merge_core_shim_only(
+    manifest_config: AgentConfig, core_config: AgentConfig
+) -> AgentConfig:
+    """Take the _SHIM_ONLY fields from *core_config*, everything else from
+    *manifest_config*. A data-only manifest cannot carry the shim-only fields
+    (subscription_auth, credential_files, acp_model_config_id, disallow_web_tools_*,
+    ...); when a manifest overrides an EXISTING core agent in additive/compatible
+    mode, those host-side/credential concerns are preserved from the core entry so
+    the merged config equals the original — the agents repo owns the 14 data fields,
+    core retains the un-shimmable host-side bits (e.g. subscription OAuth copy)."""
+    return replace(manifest_config, **{f: getattr(core_config, f) for f in _SHIM_ONLY})
 
 
 class AgentManifestError(ValueError):
@@ -220,6 +233,7 @@ def register_manifest_agents(
     installers: dict[str, str],
     launch: dict[str, str],
     override: bool = False,
+    merge_shim_only: bool = False,
 ) -> None:
     """Merge *loaded* manifests into the registry maps in place.
 
@@ -232,8 +246,14 @@ def register_manifest_agents(
     Fail-loud on collision (an agent name or alias that already exists is an
     ambiguous source of truth, not a silent shadow) unless ``override=True``.
     Collisions are checked across the whole batch BEFORE any mutation, so a
-    rejected batch leaves every map untouched (all-or-nothing)."""
-    if not override:
+    rejected batch leaves every map untouched (all-or-nothing).
+
+    ``merge_shim_only=True`` is the additive/compatible mode (used by the
+    BENCHFLOW_AGENTS_DIR loader): a manifest reproducing an existing core agent
+    intentionally overrides it, but its _SHIM_ONLY fields are taken from the core
+    entry (which the data-only manifest can't carry), so the merged config equals
+    the original. Implies override semantics (no collision raise)."""
+    if not override and not merge_shim_only:
         for name, lm in loaded.items():
             if name in agents:
                 raise AgentManifestError(
@@ -252,9 +272,12 @@ def register_manifest_agents(
                         "agent name"
                     )
     for name, lm in loaded.items():
-        agents[name] = lm.config
-        installers[name] = lm.config.install_cmd
-        launch[name] = lm.config.launch_cmd
+        config = lm.config
+        if merge_shim_only and name in agents:
+            config = _merge_core_shim_only(lm.config, agents[name])
+        agents[name] = config
+        installers[name] = config.install_cmd
+        launch[name] = config.launch_cmd
         for alias in lm.aliases:
             aliases[alias] = name
 
@@ -291,6 +314,13 @@ def register_env_manifest_agents(
         launch = AGENT_LAUNCH if launch is None else launch
     loaded = load_agents_from_dir(root)
     register_manifest_agents(
-        loaded, agents=agents, aliases=aliases, installers=installers, launch=launch
+        loaded,
+        agents=agents,
+        aliases=aliases,
+        installers=installers,
+        launch=launch,
+        # Additive/compatible: a manifest reproducing a core agent overrides it but
+        # keeps the core entry's host-side _SHIM_ONLY fields (subscription_auth, ...).
+        merge_shim_only=True,
     )
     return sorted(loaded)
