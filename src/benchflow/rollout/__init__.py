@@ -813,6 +813,7 @@ class Rollout:
                 sandbox_user=cfg.sandbox_user,
                 model=cfg.primary_model,
                 rollout_dir=rollout_dir,
+                agent_cwd=self._agent_cwd,
             )
         else:
             (
@@ -1754,6 +1755,7 @@ class Rollout:
                 sandbox_user=cfg.sandbox_user,
                 model=role.model,
                 rollout_dir=rollout_dir,
+                agent_cwd=self._agent_cwd,
             )
         else:
             (
