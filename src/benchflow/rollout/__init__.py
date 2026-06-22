@@ -760,6 +760,24 @@ class Rollout:
 
     # Phase 3b: CONNECT (ACP session — re-entrant)
 
+    def _session_factory_entrypoint(self, agent_name: str) -> str | None:
+        """Return the ``session_factory`` "module:callable" if *agent_name* is a
+        non-ACP session-factory agent, else None — the connect/drive dispatch key.
+
+        A session-factory agent declares ``protocol="session-factory"`` + a
+        ``session_factory`` entrypoint (e.g. omnigent's ``omnigent run`` CLI,
+        which has no ACP server); everything else connects over ACP. Resolution
+        failures degrade to ACP (None) rather than raising."""
+        from benchflow.agents.registry import resolve_agent
+
+        try:
+            cfg = resolve_agent(agent_name)
+        except Exception:
+            return None
+        if cfg.protocol == "session-factory" and cfg.session_factory:
+            return cfg.session_factory
+        return None
+
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         cfg = self._config
@@ -779,24 +797,42 @@ class Rollout:
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
         )
-        (
-            self._acp_client,
-            self._session,
-            self._session_adapter,
-            self._agent_name,
-        ) = await self._planes.connect_acp(
-            env=self._env,
-            agent=cfg.primary_agent,
-            agent_launch=self._agent_launch,
-            agent_env=self._agent_env,
-            sandbox_user=cfg.sandbox_user,
-            model=cfg.primary_model,
-            rollout_dir=rollout_dir,
-            environment=cfg.environment,
-            agent_cwd=self._agent_cwd,
-            reasoning_effort=cfg.primary_reasoning_effort,
-            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
-        )
+        sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
+        self._is_session_factory = sf_entrypoint is not None
+        if sf_entrypoint is not None:
+            (
+                self._acp_client,
+                self._session,
+                self._session_adapter,
+                self._agent_name,
+            ) = await self._planes.connect_session_factory(
+                env=self._env,
+                agent=cfg.primary_agent,
+                session_factory=sf_entrypoint,
+                agent_env=self._agent_env,
+                sandbox_user=cfg.sandbox_user,
+                model=cfg.primary_model,
+                rollout_dir=rollout_dir,
+            )
+        else:
+            (
+                self._acp_client,
+                self._session,
+                self._session_adapter,
+                self._agent_name,
+            ) = await self._planes.connect_acp(
+                env=self._env,
+                agent=cfg.primary_agent,
+                agent_launch=self._agent_launch,
+                agent_env=self._agent_env,
+                sandbox_user=cfg.sandbox_user,
+                model=cfg.primary_model,
+                rollout_dir=rollout_dir,
+                environment=cfg.environment,
+                agent_cwd=self._agent_cwd,
+                reasoning_effort=cfg.primary_reasoning_effort,
+                mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
+            )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
@@ -994,13 +1030,23 @@ class Rollout:
         )
 
         try:
-            trajectory, n_tool_calls = await self._planes.execute_prompts(
-                self._acp_client,
-                self._session,
-                effective_prompts,
-                timeout,
-                idle_timeout=idle_timeout,
-            )
+            if getattr(self, "_is_session_factory", False):
+                trajectory, n_tool_calls = (
+                    await self._planes.execute_prompts_session_factory(
+                        self._session,
+                        effective_prompts,
+                        timeout,
+                        idle_timeout=idle_timeout,
+                    )
+                )
+            else:
+                trajectory, n_tool_calls = await self._planes.execute_prompts(
+                    self._acp_client,
+                    self._session,
+                    effective_prompts,
+                    timeout,
+                    idle_timeout=idle_timeout,
+                )
         except AgentPromptTimeoutError as e:
             self._diagnostics.set(e.diagnostic)
             self._commit_acp_execution(
@@ -1689,24 +1735,42 @@ class Rollout:
 
         self._agent_launch = agent_launch
 
-        (
-            self._acp_client,
-            self._session,
-            self._session_adapter,
-            self._agent_name,
-        ) = await self._planes.connect_acp(
-            env=self._env,
-            agent=role.agent,
-            agent_launch=agent_launch,
-            agent_env=agent_env,
-            sandbox_user=cfg.sandbox_user,
-            model=role.model,
-            rollout_dir=rollout_dir,
-            environment=cfg.environment,
-            agent_cwd=self._agent_cwd,
-            reasoning_effort=role.reasoning_effort,
-            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
-        )
+        sf_entrypoint = self._session_factory_entrypoint(role.agent)
+        self._is_session_factory = sf_entrypoint is not None
+        if sf_entrypoint is not None:
+            (
+                self._acp_client,
+                self._session,
+                self._session_adapter,
+                self._agent_name,
+            ) = await self._planes.connect_session_factory(
+                env=self._env,
+                agent=role.agent,
+                session_factory=sf_entrypoint,
+                agent_env=agent_env,
+                sandbox_user=cfg.sandbox_user,
+                model=role.model,
+                rollout_dir=rollout_dir,
+            )
+        else:
+            (
+                self._acp_client,
+                self._session,
+                self._session_adapter,
+                self._agent_name,
+            ) = await self._planes.connect_acp(
+                env=self._env,
+                agent=role.agent,
+                agent_launch=agent_launch,
+                agent_env=agent_env,
+                sandbox_user=cfg.sandbox_user,
+                model=role.model,
+                rollout_dir=rollout_dir,
+                environment=cfg.environment,
+                agent_cwd=self._agent_cwd,
+                reasoning_effort=role.reasoning_effort,
+                mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
+            )
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
         self._active_role = role
