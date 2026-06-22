@@ -15,7 +15,7 @@ import socket
 import subprocess
 import sys
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -41,6 +41,7 @@ from benchflow.providers.litellm_config import (
     LiteLLMRoute,
     litellm_proxy_config,
     resolve_litellm_route,
+    strip_provider_prefix,
 )
 from benchflow.providers.litellm_logging import (
     callback_module_source,
@@ -877,6 +878,53 @@ def _provider_secret_env_names() -> set[str]:
     return names
 
 
+def _provider_model_id(entry: object) -> str | None:
+    if not isinstance(entry, Mapping):
+        return None
+    entry_id = cast("Mapping[str, object]", entry).get("id")
+    return entry_id if isinstance(entry_id, str) else None
+
+
+def _provider_models_for_proxy_alias(
+    *,
+    raw: str | None,
+    route: LiteLLMRoute,
+) -> str | None:
+    """Mirror model metadata onto the LiteLLM alias Pi sees in proxy mode.
+
+    Pi resolves ``maxTokens``/``contextWindow`` by looking up the model it is
+    told to use (the LiteLLM alias) in ``BENCHFLOW_PROVIDER_MODELS``. Without an
+    alias entry that metadata is lost once traffic is routed through the proxy,
+    so clone the source entry under the alias id/name.
+    """
+    if not raw:
+        return None
+    try:
+        entries = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(entries, list):
+        return None
+    wanted = {
+        route.requested_model,
+        strip_provider_prefix(route.requested_model),
+        route.upstream_model,
+        strip_provider_prefix(route.upstream_model),
+    }
+    for entry in entries:
+        entry_id = _provider_model_id(entry)
+        if entry_id not in wanted:
+            continue
+        alias_entry = dict(cast("Mapping[str, Any]", entry))
+        alias_entry["id"] = route.model_alias
+        alias_entry["name"] = route.model_alias
+        merged = list(entries)
+        if not any(_provider_model_id(item) == route.model_alias for item in merged):
+            merged.append(alias_entry)
+        return json.dumps(merged)
+    return None
+
+
 # Caller-supplied provider endpoints. If any of these survive in the agent env,
 # the agent could reach a provider directly and bypass the proxy (the exact way
 # an Azure ``LLM_BASE_URL`` leaked past the gateway before this hardening). They
@@ -1014,6 +1062,12 @@ def _wire_litellm_agent_env(
         updated["BENCHFLOW_PROVIDER_API_KEY"] = master_key
         updated["BENCHFLOW_PROVIDER_MODEL"] = route.model_alias
         updated["BENCHFLOW_PROVIDER_NAME"] = "litellm"
+        alias_models = _provider_models_for_proxy_alias(
+            raw=agent_env.get("BENCHFLOW_PROVIDER_MODELS"),
+            route=route,
+        )
+        if alias_models:
+            updated["BENCHFLOW_PROVIDER_MODELS"] = alias_models
         return updated
 
     agent_cfg = AGENTS.get(agent)

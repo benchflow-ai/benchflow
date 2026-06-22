@@ -171,6 +171,48 @@ async def test_openhands_registered_provider_can_route_via_explicit_proxy(monkey
 
 
 @pytest.mark.asyncio
+async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
+    """Guards PR #803: Pi metadata follows the LiteLLM alias in proxy mode."""
+
+    async def fake_start(**kwargs):
+        return FakeLiteLLMServer("http://172.17.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+    provider_models = [
+        {
+            "id": "Qwen/Qwen3-4B",
+            "name": "Qwen/Qwen3-4B",
+            "reasoning": False,
+            "input": ["text"],
+            "contextWindow": 16384,
+            "maxTokens": 1024,
+        }
+    ]
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="pi-acp",
+        agent_env={
+            "BENCHFLOW_PROVIDER_BASE_URL": "http://172.17.0.1:8000/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "dummy",
+            "BENCHFLOW_PROVIDER_MODELS": json.dumps(provider_models),
+        },
+        model="vllm/Qwen/Qwen3-4B",
+        runtime=None,
+        environment="docker",
+        session_id="run-1",
+        usage_tracking="required",
+    )
+
+    assert provider_runtime is not None
+    assert updated["BENCHFLOW_PROVIDER_MODEL"] == "benchflow-vllm-Qwen-Qwen3-4B"
+    models = json.loads(updated["BENCHFLOW_PROVIDER_MODELS"])
+    alias = next(m for m in models if m["id"] == "benchflow-vllm-Qwen-Qwen3-4B")
+    assert alias["name"] == "benchflow-vllm-Qwen-Qwen3-4B"
+    assert alias["maxTokens"] == 1024
+    assert alias["contextWindow"] == 16384
+
+
+@pytest.mark.asyncio
 async def test_runtime_reuse_and_stop(monkeypatch):
     created = []
 
