@@ -485,6 +485,51 @@ def test_resolve_source_with_metadata_rejects_path_escape(tmp_path, monkeypatch)
         resolve_source_with_metadata("acme-org/benchmarks", path="../outside-task")
 
 
+def _clone_with(tmp_path, monkeypatch, *, populate):
+    """Install a fake ``git`` whose clone is populated by ``populate(clone_dir)``."""
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, check=False, capture_output=False, text=False):
+        del capture_output, text
+        if cmd[:2] == ["git", "clone"]:
+            assert check is True
+            clone_dir = Path(cmd[-1])
+            (clone_dir / ".git").mkdir(parents=True)
+            populate(clone_dir)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd[-2:] == ["rev-parse", "HEAD"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="c65af83ae2c76fda3f1fd4d2fcf56563975e283e\n",
+                stderr="",
+            )
+        if cmd[-2:] == ["status", "--porcelain"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(task_download.subprocess, "run", fake_run)
+
+
+def test_resolve_source_with_metadata_rejects_git_source_path(tmp_path, monkeypatch):
+    """Guards issue #548: --source-path .git is clone metadata, not a task source."""
+    _clone_with(tmp_path, monkeypatch, populate=lambda d: (d / "task-1").mkdir())
+
+    with pytest.raises(ValueError, match=r"\.git is the clone metadata"):
+        resolve_source_with_metadata("acme-org/benchmarks", path=".git")
+
+
+def test_resolve_source_with_metadata_rejects_file_source_path(tmp_path, monkeypatch):
+    """Guards issue #548: a file --source-path must report a clean validation error."""
+    _clone_with(
+        tmp_path,
+        monkeypatch,
+        populate=lambda d: (d / "README.md").write_text("# repo\n"),
+    )
+
+    with pytest.raises(ValueError, match="must resolve to a directory"):
+        resolve_source_with_metadata("acme-org/benchmarks", path="README.md")
+
+
 def test_resolve_source_without_path(tmp_path, monkeypatch):
     """resolve_source without path returns repo root."""
     monkeypatch.chdir(tmp_path)

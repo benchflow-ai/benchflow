@@ -190,6 +190,15 @@ def _resolve_repo_path(root: Path, path: str, repo_label: str) -> Path:
         raise ValueError(
             f"Source path {path!r} must be relative to repository root for {repo_label}"
         )
+    # ``.git`` is the clone's VCS metadata, not a task source. It exists and is a
+    # directory inside the root, so it would otherwise pass the checks below and
+    # then resolve to zero task hashes downstream. Reject it (and anything under
+    # it) at the boundary with a clear message instead.
+    if ".git" in requested.parts:
+        raise ValueError(
+            f"Source path {path!r} must resolve to a task directory inside "
+            f"{repo_label}; .git is the clone metadata, not a task source"
+        )
     target = root / requested
     if not target.exists():
         raise FileNotFoundError(
@@ -203,6 +212,14 @@ def _resolve_repo_path(root: Path, path: str, repo_label: str) -> Path:
     ):
         raise ValueError(
             f"Source path {path!r} escapes repository root for {repo_label}"
+        )
+    # A regular file (e.g. ``README.md``) exists and stays within the root, but a
+    # task source must be a directory. Reject non-directories with a friendly
+    # message rather than letting task resolution fail with zero hashes later.
+    if not target_resolved.is_dir():
+        raise ValueError(
+            f"Source path {path!r} must resolve to a directory inside "
+            f"{repo_label}, not a file"
         )
     return target_resolved
 
