@@ -59,6 +59,7 @@ async def connect_session_factory(
     sandbox_user: str | None,
     model: str | None,
     rollout_dir: Path | None,
+    agent_cwd: str | None = None,
     **_ignored: Any,
 ) -> tuple[None, object, None, str]:
     """Build the session-factory Agent and connect → Session.
@@ -81,7 +82,14 @@ async def connect_session_factory(
     if sandbox_user:
         kwargs["exec_user"] = sandbox_user
     agent_obj = factory(**kwargs)
-    session = await agent_obj.connect(env, "agent", agent_env=agent_env)
+    # Inject the kernel-resolved workspace (the same cwd ACP agents + the verifier
+    # use) under BENCHFLOW_AGENT_CWD so the agent runs where the verifier reads,
+    # rather than a hardcoded path. Carried through agent_env to keep the
+    # Agent.connect(sandbox, role) protocol shape (no extra positional/kw).
+    connect_env = dict(agent_env)
+    if agent_cwd:
+        connect_env["BENCHFLOW_AGENT_CWD"] = agent_cwd
+    session = await agent_obj.connect(env, "agent", agent_env=connect_env)
     logger.info("session-factory agent %r connected via %s", agent, session_factory)
     return None, session, None, agent
 
