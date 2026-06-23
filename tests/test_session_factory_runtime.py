@@ -145,3 +145,31 @@ def test_session_factory_entrypoint_is_the_dispatch_key():
         assert r._session_factory_entrypoint("no-such-agent-xyz") is None
     finally:
         AGENTS.pop("fake-sf-agent", None)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_clears_session_factory_state():
+    """Guards PR #825 against reusing a stale session-factory session after disconnect."""
+    from benchflow.rollout import Rollout
+
+    rollout = Rollout.__new__(Rollout)
+    rollout._acp_client = None
+    rollout._session = _FakeSession()
+    rollout._session_adapter = object()
+    rollout._is_session_factory = True
+    rollout._agent_launch = ""
+    rollout._env = None
+    rollout._active_role = object()
+    rollout._session_tool_count = 7
+    rollout._session_traj_count = 11
+    rollout._phase = "connected"
+
+    await rollout.disconnect()
+
+    assert rollout._session is None
+    assert rollout._session_adapter is None
+    assert rollout._is_session_factory is False
+    assert rollout._active_role is None
+    assert rollout._session_tool_count == 0
+    assert rollout._session_traj_count == 0
+    assert rollout._phase == "installed"

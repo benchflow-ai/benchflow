@@ -308,6 +308,7 @@ class Rollout:
         # Populated by connect()
         self._acp_client: Any = None
         self._session: Any = None
+        self._is_session_factory: bool = False
         # ``_session_adapter`` carries the Agent-plane :class:`Session` contract
         # over the live ACP client (architecture.md, "The four contracts").
         # The kernel registers ``on_ask_user`` handlers through it so the live
@@ -869,8 +870,9 @@ class Rollout:
             except Exception as e:
                 logger.warning(f"ACP client close failed: {e}")
             self._acp_client = None
-            self._session = None
-            self._session_adapter = None
+        self._session = None
+        self._session_adapter = None
+        self._is_session_factory = False
         # Kill any lingering agent processes to prevent context bleed between scenes
         agent_pattern = _agent_process_kill_pattern(self._agent_launch)
         if self._env and agent_pattern:
