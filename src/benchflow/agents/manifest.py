@@ -300,25 +300,27 @@ def register_env_manifest_agents(
     root = os.environ.get(MANIFEST_DIR_ENV)
     if not root:
         return []
-    if None in (agents, aliases, installers, launch):
-        from benchflow.agents.registry import (
-            AGENT_ALIASES,
-            AGENT_INSTALLERS,
-            AGENT_LAUNCH,
-            AGENTS,
-        )
+    # Resolve each map to the live registry globals when not supplied (lazy
+    # import to avoid the registry↔manifest cycle). Per-variable ``is None``
+    # narrowing — not a tuple-membership check — so each is a concrete dict here.
+    from benchflow.agents.registry import (
+        AGENT_ALIASES,
+        AGENT_INSTALLERS,
+        AGENT_LAUNCH,
+        AGENTS,
+    )
 
-        agents = AGENTS if agents is None else agents
-        aliases = AGENT_ALIASES if aliases is None else aliases
-        installers = AGENT_INSTALLERS if installers is None else installers
-        launch = AGENT_LAUNCH if launch is None else launch
+    resolved_agents = AGENTS if agents is None else agents
+    resolved_aliases = AGENT_ALIASES if aliases is None else aliases
+    resolved_installers = AGENT_INSTALLERS if installers is None else installers
+    resolved_launch = AGENT_LAUNCH if launch is None else launch
     loaded = load_agents_from_dir(root)
     register_manifest_agents(
         loaded,
-        agents=agents,
-        aliases=aliases,
-        installers=installers,
-        launch=launch,
+        agents=resolved_agents,
+        aliases=resolved_aliases,
+        installers=resolved_installers,
+        launch=resolved_launch,
         # Additive/compatible: a manifest reproducing a core agent overrides it but
         # keeps the core entry's host-side _SHIM_ONLY fields (subscription_auth, ...).
         merge_shim_only=True,
