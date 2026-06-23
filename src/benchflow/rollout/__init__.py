@@ -1035,13 +1035,14 @@ class Rollout:
 
         try:
             if getattr(self, "_is_session_factory", False):
-                trajectory, n_tool_calls = (
-                    await self._planes.execute_prompts_session_factory(
-                        self._session,
-                        effective_prompts,
-                        timeout,
-                        idle_timeout=idle_timeout,
-                    )
+                (
+                    trajectory,
+                    n_tool_calls,
+                ) = await self._planes.execute_prompts_session_factory(
+                    self._session,
+                    effective_prompts,
+                    timeout,
+                    idle_timeout=idle_timeout,
                 )
             else:
                 trajectory, n_tool_calls = await self._planes.execute_prompts(

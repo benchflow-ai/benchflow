@@ -191,9 +191,7 @@ class DefaultRolloutPlanes:
 
         return await connect_session_factory(*args, **kwargs)
 
-    async def execute_prompts_session_factory(
-        self, *args: Any, **kwargs: Any
-    ) -> Any:
+    async def execute_prompts_session_factory(self, *args: Any, **kwargs: Any) -> Any:
         from benchflow.rollout.session_factory_runtime import (
             execute_prompts_session_factory,
         )
