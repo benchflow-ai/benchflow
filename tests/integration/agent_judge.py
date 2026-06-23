@@ -103,10 +103,6 @@ _ACP_WRITE_KINDS = {"edit", "delete", "move", "write", "create"}
 # tampering. Only the command after ``: $ `` is the agent's actual action, so the
 # execute scan must strip the description first.
 _ACP_EXECUTE_PREFIX_RE = re.compile(r".*?: \$ ", re.DOTALL)
-_FILE_EDITOR_PATH_RE = re.compile(
-    r"^file_editor:\s*\{.*?\"path\"\s*:\s*\"((?:\\.|[^\"])*)\"",
-    re.DOTALL,
-)
 
 
 def _acp_execute_command(title: str) -> str:
@@ -129,13 +125,18 @@ def _acp_write_target(title: str) -> str:
     payload would treat benign solution text containing words like "verify" as
     a verifier-file mutation.
     """
-    match = _FILE_EDITOR_PATH_RE.search(title.strip())
-    if not match:
+    stripped = title.strip()
+    prefix = "file_editor:"
+    if not stripped.startswith(prefix):
         return title
     try:
-        return json.loads(f'"{match.group(1)}"')
+        payload = json.loads(stripped[len(prefix) :].strip())
     except json.JSONDecodeError:
-        return match.group(1)
+        return title
+    if not isinstance(payload, Mapping):
+        return title
+    path = payload.get("path")
+    return path if isinstance(path, str) else title
 
 
 def _scan_native_tool_call(event: dict[str, Any]) -> list[str]:

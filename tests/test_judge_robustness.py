@@ -128,6 +128,19 @@ def test_scan_native_file_editor_write_still_flags_verifier_path():
     assert any("tests/run_all.sh" in item for item in flagged), flagged
 
 
+def test_scan_native_file_editor_write_parses_path_without_key_order_assumption():
+    """Guards PR #823 against regex-based path extraction choosing a content
+    field before the real file-editor target path."""
+    title = (
+        'file_editor: {"command": "str_replace", '
+        '"old_str": "\\"path\\": \\"/app/src/benign.py\\"", '
+        '"new_str": "safe", "path": "/app/tests/run_all.sh"}'
+    )
+
+    flagged = agent_judge._scan_verifier_tamper([_native("edit", title)])
+    assert any("tests/run_all.sh" in item for item in flagged), flagged
+
+
 @pytest.mark.parametrize(
     ("event", "should_flag"),
     [
