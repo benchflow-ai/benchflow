@@ -72,5 +72,14 @@ class TestResolveMetric:
         assert resolve_metric("exact_match") is exact_match
 
     def test_unported_func_raises_actionable_error(self) -> None:
-        with pytest.raises(NotImplementedError, match="not ported yet"):
-            resolve_metric("compare_pptx")
+        # A name that is neither a local hand-port nor a vendored OSWorld metric.
+        with pytest.raises(NotImplementedError, match="not available"):
+            resolve_metric("definitely_not_a_real_metric")
+
+    def test_vendored_metric_name_resolves(self) -> None:
+        # compare_pptx_files / compare_table are not hand-ported, but the vendored
+        # OSWorld suite knows them (resolved lazily when their deps are installed).
+        from benchflow.adapters.osworld_vendor import FUNC_MODULE
+
+        assert "compare_pptx_files" in FUNC_MODULE
+        assert "compare_table" in FUNC_MODULE

@@ -72,10 +72,15 @@ def usage_unavailable() -> dict[str, Any]:
 class UsageTrackingConfig:
     """User-facing token/cost telemetry policy.
 
-    ``mode`` is the operator contract:
+    ``mode`` is the operator *telemetry-enforcement* contract — it no longer
+    decides whether the LiteLLM proxy runs. Every routable agent is always
+    routed through the proxy (so usage, cost, and the raw LLM trajectory are
+    always captured and the provider key never reaches the agent); ``mode`` only
+    governs how hard BenchFlow insists on *trusted* telemetry:
     - ``auto`` records usage when LiteLLM or native ACP telemetry can be used.
     - ``required`` fails when no trusted token telemetry can be captured.
-    - ``off`` leaves provider traffic untouched.
+    - ``off`` still routes/captures, but does not *require* trusted telemetry
+      (it no longer leaves provider traffic untouched).
     """
 
     _mode: UsageTrackingMode | None
@@ -148,11 +153,16 @@ class UsageTrackingConfig:
         status: str,
         usage_source: str,
     ) -> dict[str, Any]:
+        # The proxy now always runs for routable agents, so the endpoint kind
+        # follows where telemetry actually came from rather than the mode: a
+        # live proxy reports host/sandbox, native-subscription agents report
+        # agent_native, and only a genuinely un-routable agent (no telemetry at
+        # all, e.g. a native-protocol agent) reports none.
         endpoint_kind = "sandbox" if environment == "daytona" else "host"
-        if self.mode == "off":
-            endpoint_kind = "none"
-        elif usage_source == USAGE_SOURCE_AGENT_NATIVE_ACP:
+        if usage_source == USAGE_SOURCE_AGENT_NATIVE_ACP:
             endpoint_kind = "agent_native"
+        elif usage_source == USAGE_SOURCE_UNAVAILABLE:
+            endpoint_kind = "none"
         return {
             "requested": self.mode,
             "status": status,

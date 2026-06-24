@@ -802,25 +802,47 @@ def _osworld_verifier_files(osworld_task: dict[str, Any]) -> dict[str, str | byt
     benchflow verifier reward contract.
     """
     here = Path(__file__).parent
-    return {
+    files: dict[str, str | bytes] = {
         "environment/Dockerfile": _osworld_dockerfile(),
         "solution/solve.sh": _osworld_oracle_placeholder(),
         "tests/setup/pre_command.sh": _osworld_setup_script(osworld_task),
         "tests/osworld_task.json": json.dumps(osworld_task, indent=2) + "\n",
         "tests/osworld_metrics.py": (here / "osworld_metrics.py").read_text(),
         "tests/osworld_eval.py": (here / "osworld_eval.py").read_text(),
+        "tests/osworld_vendor.py": (here / "osworld_vendor.py").read_text(),
+        "tests/osworld_getters.py": (here / "osworld_getters.py").read_text(),
         "tests/run_osworld_verifier.py": _OSWORLD_RUNNER,
         "tests/test.sh": _OSWORLD_TEST_SH,
     }
+    # Carry the vendored OSWorld evaluator suite (Apache-2.0) so the in-guest
+    # verifier scores with OSWorld's own metric/getter code (exact parity). It
+    # lands at tests/_osworld_vendor/, which is where osworld_vendor.py resolves
+    # _VENDOR_ROOT relative to itself when carried as a sibling.
+    vendor = here / "_osworld_vendor"
+    for path in sorted(vendor.rglob("*")):
+        if path.is_file() and (path.suffix == ".py" or path.name == "LICENSE"):
+            rel = path.relative_to(here).as_posix()  # _osworld_vendor/...
+            files[f"tests/{rel}"] = path.read_text(errors="replace")
+    return files
 
 
 def _osworld_dockerfile() -> str:
+    # python3 + pip + the vendored OSWorld evaluator-suite deps (spreadsheet/doc/
+    # pdf/json/text metrics). The desktop + OSWorld apps come from the desktop
+    # backend (Daytona computer-use, or the OSWorld VM), not this base image.
+    osworld_deps = (
+        "pandas openpyxl python-docx python-pptx pdfplumber PyPDF2 pymupdf "
+        "rapidfuzz formulas lxml cssselect xmltodict tldextract Pillow numpy "
+        "odfpy mutagen pyyaml beautifulsoup4 borb imagehash"
+    )
     return (
         "FROM ubuntu:24.04\n\n"
         "WORKDIR /app\n\n"
         "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
-        "        python3 ca-certificates curl \\\n"
+        "        python3 python3-pip ca-certificates curl \\\n"
         "    && rm -rf /var/lib/apt/lists/*\n"
+        "RUN python3 -m pip install --no-cache-dir --break-system-packages \\\n"
+        f"        {osworld_deps}\n"
         "RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts /app /tmp /home/user\n"
     )
 

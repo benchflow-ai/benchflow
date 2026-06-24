@@ -160,17 +160,17 @@ reaches them on `localhost`. During a rollout:
 3. `Rollout.cleanup()` tears the environment down.
 
 Run one task or a task directory against an environment manifest with
-`bench eval create --tasks-dir ...`. `--environment-manifest` applies the
+`bench eval run --tasks-dir ...`. `--environment-manifest` applies the
 Environment-plane manifest to every rollout in the Job pipeline.
 
 ```bash
 # one task
-bench eval create --tasks-dir benchmarks/clawsbench/tasks/<task> \
+bench eval run --tasks-dir benchmarks/clawsbench/tasks/<task> \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 
 # task directory
-bench eval create --tasks-dir benchmarks/clawsbench/tasks \
+bench eval run --tasks-dir benchmarks/clawsbench/tasks \
   --environment-manifest benchmarks/clawsbench/environment.toml \
   --agent claude-agent-acp --model claude-haiku-4-5
 ```

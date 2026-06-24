@@ -80,15 +80,24 @@ class Environment:
         )
         rollout_paths.mkdir()
         plane_bundle = planes or default_rollout_planes()
-        inner = plane_bundle.create_environment(
-            sandbox,
-            task=task,
-            task_path=task_path,
-            rollout_name=rollout_name,
-            rollout_paths=rollout_paths,
-            preserve_agent_network=False,
-            environment_manifest=None,
-        )
+        try:
+            inner = plane_bundle.create_environment(
+                sandbox,
+                task=task,
+                task_path=task_path,
+                rollout_name=rollout_name,
+                rollout_paths=rollout_paths,
+                preserve_agent_network=False,
+                environment_manifest=None,
+            )
+        except Exception:
+            # create_environment failed (e.g. a missing optional sandbox SDK) —
+            # don't leave the empty rollout dir we just created littering
+            # jobs/environment/. Best-effort cleanup, then re-raise unchanged.
+            import shutil
+
+            shutil.rmtree(rollout_paths.rollout_dir, ignore_errors=True)
+            raise
         return cls(inner=inner, task_path=task_path, sandbox=sandbox)
 
     @property

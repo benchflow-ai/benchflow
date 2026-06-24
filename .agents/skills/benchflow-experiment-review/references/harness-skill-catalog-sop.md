@@ -1,6 +1,14 @@
 # SOP: recover startup skill catalogs from SkillsBench harness trajectories
 
-The primary source of truth is `trajectory/llm_trajectory.jsonl`; use sibling `trajectory/acp_trajectory.jsonl` as a fallback for the few usage-only LLM logs.
+The primary source of truth for startup skill catalog recovery is
+`trajectory/llm_trajectory.jsonl`; use sibling `trajectory/acp_trajectory.jsonl`
+as a fallback only for the few usage-only LLM logs.
+
+Fallback is not a health waiver. For current BenchFlow model results,
+`trajectory/acp_trajectory.jsonl` and `trajectory/llm_trajectory.jsonl` must both
+exist, be non-empty, parse as JSONL, and contain real evidence. ACP fallback can
+help recover a skill catalog, but it does not make a missing or usage-only
+`llm_trajectory.jsonl` healthy.
 
 The field paths and sample skill counts below are point-in-time observations from the audited dataset. Verify them against the current dataset before treating any count or marker as authoritative.
 
@@ -69,6 +77,14 @@ in nearby metadata such as `run_config.json` / `config.json` keys named
 `task_skills`, `expected_task_skills`, `task_skill_names`, or
 `required_task_skills`; use repeated `--task-skill <name>` or `--task-path
 <task-dir>` when that metadata is unavailable.
+
+Before skill-catalog extraction, run the hard artifact gate:
+
+```bash
+scripts/validate_run_artifacts.py /path/to/rollout-or-jobs-root --json
+```
+
+If it reports unhealthy, do not mark the trial healthy or publishable.
 
 ## General manual procedure
 
@@ -328,19 +344,26 @@ Activation evidence:
 
 PR1/PR2/PR3 v0.1 generally have only `acp_trajectory.jsonl`. For OpenHands, the early ACP `agent_thought` often includes `System Prompt:` and can expose the skill catalog. For Claude Code, Codex, and Gemini CLI v0.1, the startup LLM request is not present, so the full startup system prompt / skill catalog is not reliably recoverable.
 
+Those legacy artifacts can be used as historical aggregate-score references,
+but under the current health contract they are not healthy model trajectories:
+missing `trajectory/llm_trajectory.jsonl` is a hard artifact failure unless the
+row is explicitly scoped as non-model/oracle evidence.
+
 ## Audit checklist
 
 For each trajectory:
 
-1. `llm_trajectory.jsonl` exists and has real request bodies.
-2. Harness detected.
-3. Startup prompt field(s) recorded.
-4. Skill catalog anchor found or explicitly marked absent.
-5. Skill names extracted with count.
-6. `task_skills_loading` checked against run mode: `1` for with-skills, `0`
+1. `acp_trajectory.jsonl` exists, is non-empty, parses, and has agent-side events.
+2. `llm_trajectory.jsonl` exists, is non-empty, parses, has real request bodies,
+   has response bodies, and has provider usage metadata.
+3. Harness detected.
+4. Startup prompt field(s) recorded.
+5. Skill catalog anchor found or explicitly marked absent.
+6. Skill names extracted with count.
+7. `task_skills_loading` checked against run mode: `1` for with-skills, `0`
    for without-skills.
-7. SHA-256 of extracted catalog/startup prompt saved.
-8. For no-skill trials, scan full trajectory for:
+8. SHA-256 of extracted catalog/startup prompt saved.
+9. For no-skill trials, scan full trajectory for:
 
 ```text
 SKILL.md
@@ -352,4 +375,4 @@ activate_skill
 ToolSearch select:
 ```
 
-9. If any of the above appears in a no-skill trajectory, inspect manually before marking healthy.
+10. If any of the above appears in a no-skill trajectory, inspect manually before marking healthy.

@@ -71,7 +71,7 @@ python benchmarks/harvey-lab/run_harvey_lab.py
 
 # Harvey LAB harness smoke test: runs Harvey LAB's own agent loop via ACP.
 # Requires GEMINI_API_KEY for the agent and ANTHROPIC_API_KEY for the verifier.
-uv run bench eval create \
+uv run bench eval run \
   --source-repo benchflow-ai/benchmarks \
   --source-path datasets/harvey-lab/tasks/corporate-ma-analyze-cim-deal-teaser-scenario-01 \
   --agent harvey-lab-harness \

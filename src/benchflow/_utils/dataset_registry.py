@@ -1,4 +1,4 @@
-"""Dataset registry resolution — `bench eval create -d skillsbench@1.1`.
+"""Dataset registry resolution — `bench eval run -d skillsbench@1.1`.
 
 Resolves a published dataset version from the skillsbench registry
 (``registry.json``, see ``docs/dataset-versioning.md`` in

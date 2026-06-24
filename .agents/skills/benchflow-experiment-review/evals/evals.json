@@ -72,6 +72,22 @@
         "Output cites missing token usage metadata.",
         "Output cites a missing required API key, resource, dependency, or compute constraint."
       ]
+    },
+    {
+      "id": 5,
+      "prompt": "Use the benchflow-experiment-review skill to audit evals/files/missing-llm-trajectory as a completed Benchflow trial. Return a concise verdict plus the evidence that makes the trial healthy or unhealthy.",
+      "expected_output": "The review rejects the fixture as unhealthy, even though result.json has reward and token_usage, because trajectory/llm_trajectory.jsonl is missing. It cites the hard trajectory contract requiring both ACP and LLM trajectories.",
+      "files": [
+        "evals/files/missing-llm-trajectory/run_config.json",
+        "evals/files/missing-llm-trajectory/result.json",
+        "evals/files/missing-llm-trajectory/trajectory/acp_trajectory.jsonl"
+      ],
+      "expectations": [
+        "Verdict is not publishable, unhealthy, or quarantined.",
+        "Output says missing trajectory/llm_trajectory.jsonl is a hard blocker.",
+        "Output does not treat ACP trajectory alone as sufficient.",
+        "Output cites the hard requirement for both ACP and LLM trajectories."
+      ]
     }
   ]
 }
