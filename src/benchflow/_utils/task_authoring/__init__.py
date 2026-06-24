@@ -178,7 +178,7 @@ def check_task(
     # Note: [agent] and [agent].timeout_sec are optional at runtime
     # (AgentConfig defaults to timeout_sec=None → no wall-clock cap). We
     # only surface parse errors here so `bench tasks check` and
-    # `bench eval create` agree on what a "valid" task looks like.
+    # `bench eval run` agree on what a "valid" task looks like.
     # See #379.
     toml_path = task_dir / "task.toml"
     if toml_path.exists() and not has_task_md:

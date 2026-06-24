@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration test runner — drives bench eval create per agent.
+# Integration test runner — drives bench eval run per agent.
 #
 # All agents launch in parallel; each agent runs its 9 tasks concurrently
 # via Daytona (concurrency=64 by default). The script waits for every agent to finish,
@@ -164,7 +164,7 @@ if [ "$CHECK_ONLY" = false ]; then
     model="$(model_for_agent "$agent")"
     config_file="tests/integration/configs/$agent.yaml"
     echo "Launching $agent (model=$model, config=$config_file)..."
-    uv run bench eval create \
+    uv run bench eval run \
       --config "$config_file" \
       --jobs-dir "$JOBS_ROOT/$agent" \
       --concurrency "$INTEGRATION_CONCURRENCY" \
@@ -178,7 +178,7 @@ if [ "$CHECK_ONLY" = false ]; then
   echo ""
   CHECK_AGENTS=("${LAUNCHED[@]}")
 
-  # Wait for all and report as each finishes. bench eval create may exit
+  # Wait for all and report as each finishes. bench eval run may exit
   # non-zero when trials fail or verifiers reject agent output; audit anyway.
   EVAL_WARNINGS=0
   for i in "${!PIDS[@]}"; do

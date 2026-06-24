@@ -13,7 +13,7 @@ uv run --extra dev bench tasks check docs/examples/task-md/nudgebench-team --lev
 ```
 
 Those fixtures are not runnable eval tasks. Default structural validation, and
-`bench eval create`, require runtime assets such as `environment/` and
+`bench eval run`, require runtime assets such as `environment/` and
 `verifier/` or legacy `tests/`.
 
 Use default structural validation for runnable examples:

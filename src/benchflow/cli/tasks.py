@@ -50,8 +50,7 @@ def register_tasks(app: typer.Typer) -> None:
             typer.Option(
                 "--format",
                 help=(
-                    "Task format. New tasks use task-md; legacy scaffolding is "
-                    "retired in v0.6.2."
+                    "Task format. New tasks use task-md; legacy scaffolding is retired."
                 ),
             ),
         ] = "task-md",
@@ -262,7 +261,10 @@ def register_tasks(app: typer.Typer) -> None:
 
         try:
             result = normalize_task_md(task_dir, output_path=output, write=write)
-        except (FileNotFoundError, NotADirectoryError, ValueError) as e:
+        except (OSError, ValueError) as e:
+            # OSError (covers IsADirectoryError when --output is an existing dir,
+            # plus FileNotFoundError/NotADirectoryError) → clean error, no
+            # traceback. Mirrors `tasks init`'s (OSError, ValueError) handler.
             print_error(f"{e}")
             raise typer.Exit(1) from None
 
@@ -361,7 +363,14 @@ def register_tasks(app: typer.Typer) -> None:
         # A task directory is either a legacy task.toml task or a native task.md
         # task (the universal-adapter format) — recognize both, not just legacy.
         def _is_task_dir(p: Path) -> bool:
-            return (p / "task.toml").is_file() or (p / "task.md").is_file()
+            # is_file() can raise (e.g. PermissionError) when p is an unreadable
+            # directory — stat'ing p/task.toml needs +x on p. Treat anything we
+            # cannot stat as "not a task dir" so the directory scan below skips it
+            # instead of dumping a raw traceback.
+            try:
+                return (p / "task.toml").is_file() or (p / "task.md").is_file()
+            except OSError:
+                return False
 
         if not path.is_dir():
             print_error(f"Not a directory: {path}")

@@ -1,4 +1,4 @@
-"""Tests for the ``--agent-idle-timeout`` CLI flag on ``bench eval create``.
+"""Tests for the ``--agent-idle-timeout`` CLI flag on ``bench eval run``.
 
 Closes #338: long-running optimization tasks need to extend or disable the
 ACP idle watchdog without patching the installed source.
@@ -12,7 +12,7 @@ from unittest.mock import patch
 import typer
 from typer.testing import CliRunner
 
-from benchflow.cli.main import app, eval_create
+from benchflow.cli.main import app, eval_run
 from benchflow.evaluation import EvaluationResult
 
 
@@ -50,7 +50,7 @@ def test_eval_create_integer_idle_timeout_lands_in_config(tmp_path: Path):
     captured: dict = {}
 
     with _stub_evaluation_run(captured):
-        eval_create(
+        eval_run(
             tasks_dir=tasks,
             agent_idle_timeout="300",
             jobs_dir=str(tmp_path / "jobs"),
@@ -65,7 +65,7 @@ def test_eval_create_reasoning_effort_lands_in_config(tmp_path: Path):
     captured: dict = {}
 
     with _stub_evaluation_run(captured):
-        eval_create(
+        eval_run(
             tasks_dir=tasks,
             reasoning_effort="MAX",
             jobs_dir=str(tmp_path / "jobs"),
@@ -86,7 +86,7 @@ def test_eval_create_reasoning_effort_overrides_yaml_config(tmp_path: Path):
     captured: dict = {}
 
     with _stub_evaluation_run(captured):
-        eval_create(
+        eval_run(
             config_file=yaml_path,
             reasoning_effort="MAX",
             jobs_dir=str(tmp_path / "jobs"),
@@ -101,7 +101,7 @@ def test_eval_create_none_string_disables_idle_watchdog(tmp_path: Path):
     captured: dict = {}
 
     with _stub_evaluation_run(captured):
-        eval_create(
+        eval_run(
             tasks_dir=tasks,
             agent_idle_timeout="none",
             jobs_dir=str(tmp_path / "jobs"),
@@ -116,7 +116,7 @@ def test_eval_create_zero_string_disables_idle_watchdog(tmp_path: Path):
     captured: dict = {}
 
     with _stub_evaluation_run(captured):
-        eval_create(
+        eval_run(
             tasks_dir=tasks,
             agent_idle_timeout="0",
             jobs_dir=str(tmp_path / "jobs"),
@@ -131,7 +131,7 @@ def test_eval_create_default_idle_timeout_is_600(tmp_path: Path):
     captured: dict = {}
 
     with _stub_evaluation_run(captured):
-        eval_create(
+        eval_run(
             tasks_dir=tasks,
             jobs_dir=str(tmp_path / "jobs"),
         )
@@ -144,7 +144,7 @@ def test_eval_create_rejects_invalid_idle_timeout(tmp_path: Path):
     tasks = _make_tasks_dir(tmp_path)
 
     try:
-        eval_create(
+        eval_run(
             tasks_dir=tasks,
             agent_idle_timeout="forever",
             jobs_dir=str(tmp_path / "jobs"),
@@ -167,7 +167,7 @@ def test_eval_create_idle_timeout_overrides_yaml_config(tmp_path: Path):
     captured: dict = {}
 
     with _stub_evaluation_run(captured):
-        eval_create(
+        eval_run(
             config_file=yaml_path,
             agent_idle_timeout="none",
             jobs_dir=str(tmp_path / "jobs"),

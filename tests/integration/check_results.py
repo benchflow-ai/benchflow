@@ -1,7 +1,7 @@
 """Review integration test results.
 
 Reads jobs/<agent>/*/result.json and summary.json files produced by
-``bench eval create`` and validates:
+``bench eval run`` and validates:
 
 1. Every expected agent produced a jobs directory
 2. Each trial has a valid result.json (schema check)
@@ -978,7 +978,7 @@ def check_agent(agent_dir: Path) -> dict:
             f"{', '.join(verifier_timeout_tasks)}"
         )
 
-    # Summary.json — bench eval create writes it at the agent_dir root
+    # Summary.json — bench eval run writes it at the agent_dir root
     if summary_error is None:
         assert summary is not None
         worker_sharded_summary = _is_worker_sharded_summary(summary)
@@ -1173,9 +1173,19 @@ def check_agent(agent_dir: Path) -> dict:
 
 def _is_rollout_artifact_root(path: Path) -> bool:
     """Return True when *path* is one completed bench eval artifact root."""
-    if not (path / "summary.json").is_file():
+    if (path / "summary.json").is_file():
+        return any(path.rglob("result.json"))
+    # Failed/interrupted runs may have task rollout directories with result.json
+    # diagnostics but no summary.json. Treat that run directory as an artifact
+    # root so the existing result diagnostics are still audited; the missing
+    # summary remains a normal finding.
+    try:
+        return any(
+            child.is_dir() and (child / "result.json").is_file()
+            for child in path.iterdir()
+        )
+    except OSError:
         return False
-    return any(path.rglob("result.json"))
 
 
 def discover_agent_dirs(jobs_root: Path, agents: list[str] | None) -> list[Path]:

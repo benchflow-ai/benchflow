@@ -31,7 +31,7 @@ Arguments passed: `$ARGUMENTS`
 ### `run <task-path>` — run a single task
 
 ```bash
-bench eval create \
+bench eval run \
   --tasks-dir <task-path> \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
@@ -65,7 +65,7 @@ API keys are auto-inherited from `os.environ` into the sandbox.
 ### `eval <tasks-dir>` — run a benchmark suite
 
 ```bash
-bench eval create \
+bench eval run \
   --source-repo benchflow-ai/skillsbench \
   --source-path tasks \
   --agent gemini \
@@ -76,7 +76,7 @@ bench eval create \
 
 Or via YAML config:
 ```bash
-bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 ```
 
 YAML format:
@@ -167,7 +167,7 @@ bench agent list
 
 Any agent can be prefixed with `acpx/` to run via ACPX (https://acpx.sh/):
 ```bash
-bench eval create --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1-flash-lite-preview --sandbox daytona
+bench eval run --tasks-dir tasks/edit-pdf --agent acpx/gemini --model gemini-3.1-flash-lite-preview --sandbox daytona
 ```
 
 ACPX is a headless ACP client with persistent sessions and crash recovery.
@@ -225,7 +225,7 @@ COPY skills /root/.claude/skills
 
 ### Runtime deployment via `--skills-dir`
 ```bash
-bench eval create \
+bench eval run \
   --tasks-dir task-dir \
   --agent claude-agent-acp \
   --sandbox daytona \

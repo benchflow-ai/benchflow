@@ -121,7 +121,9 @@ def register_skills(app: typer.Typer) -> None:
                 f"got {len(model)} models for {len(agent)} agents"
             )
             raise typer.Exit(1)
-        if not (skill_dir / "evals" / "evals.json").exists():
+        if not (skill_dir / "evals" / "evals.json").is_file():
+            # is_file (not exists): a directory named evals.json otherwise passes
+            # this guard, then read_text() raises a raw IsADirectoryError.
             print_error(
                 f"No evals/evals.json found in {skill_dir}\n"
                 "Create one with test cases. See: benchflow skills eval --help"
@@ -192,7 +194,7 @@ def register_skills(app: typer.Typer) -> None:
                 f"[green]GEPA traces exported to {escape(str(gepa_dir))}[/green]"
             )
 
-        # Match `eval create`'s _exit_if_evaluation_had_errors: a run with any
+        # Match `eval run`'s _exit_if_evaluation_had_errors: a run with any
         # errored case is a failure for CI/scripting — exit non-zero so a
         # 100%-error run (e.g. missing credentials) is not reported as success.
         errored = sum(1 for c in result.case_results if c.error)

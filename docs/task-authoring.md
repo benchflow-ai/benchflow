@@ -1,6 +1,6 @@
 # Authoring Tasks
 
-BenchFlow v0.6.2 authors tasks in the native `task.md` package format.
+BenchFlow authors tasks in the native `task.md` package format.
 A task is one Markdown document with YAML frontmatter plus sidecar directories
 for the sandbox, verifier, and optional oracle.
 

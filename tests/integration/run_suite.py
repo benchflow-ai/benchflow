@@ -83,7 +83,33 @@ def load_suite(path: Path) -> dict[str, Any]:
                     f"{', '.join(unknown)}"
                 )
 
+    _check_config_consistency(loaded, path)
     return loaded
+
+
+def _check_config_consistency(suite: Mapping[str, Any], suite_path: Path) -> None:
+    """Enforce config<->manifest single source of truth (ENG-265 slice 3).
+
+    The per-agent ``configs/*.yaml`` files must agree with the manifest on agent
+    membership, model pins, and task-set includes (see ``_consistency``). A
+    no-op when the sibling ``configs/`` dir is absent (synthetic test manifests
+    have none), so it only bites the real suite — where any drift fails the load
+    rather than producing a quietly inconsistent plan.
+    """
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from _consistency import config_drifts, load_agent_configs
+
+    configs = load_agent_configs(suite_path.parent.parent / "configs")
+    if not configs:
+        return
+    drifts = config_drifts(suite, configs)
+    if drifts:
+        raise SuiteError(
+            "config<->manifest drift (configs/*.yaml disagree with the suite):\n  - "
+            + "\n  - ".join(drifts)
+        )
 
 
 def _validate_benchmark_axis(benchmarks: Any) -> None:

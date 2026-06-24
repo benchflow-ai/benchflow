@@ -67,7 +67,7 @@ class TestNoCrossProviderFallback:
 
     def test_default_agent_with_no_model_still_works(self):
         """Backwards-compat: the DEFAULT_AGENT keeps falling back to
-        DEFAULT_MODEL so `benchflow eval create` with no flags works."""
+        DEFAULT_MODEL so `benchflow eval run` with no flags works."""
         assert effective_model(DEFAULT_AGENT, None) == DEFAULT_MODEL
 
     def test_oracle_short_circuits_before_default_check(self):

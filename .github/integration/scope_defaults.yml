@@ -1,0 +1,168 @@
+# Scope defaults — caps + baseline anchors for the deterministic matrix planner.
+#
+# Pure data consumed by .github/scripts/integration_matrix.py. No secrets, no
+# benchflow import. Mirrors the SPEC caps block, the AGGREGATE CONCURRENCY rule
+# (per_agent_concurrency * distinct daytona agents <= 24), and the baseline
+# anchors (baseline agent, canonical high task, citation vehicle, judge model).
+
+schema_version: "1"
+
+# ------------------------------------------------------------------
+# Caps. enforce_caps() rejects up front if caps are internally inconsistent,
+# and sets rejected_overflow (exit 2) if the enumerated matrix exceeds
+# max_cells. Self-consistent for `nine`: max_cells >= max_agents * max_tasks is
+# NOT required because a `nine` matrix carries all tasks in one cell's include
+# per agent (one cell per agent). But the SPEC requires the caps hold the
+# largest single-axis enumeration, so max_cells >= max_agents * max_tasks for
+# the worst-case per-(agent,task) expansion the planner may emit.
+# ------------------------------------------------------------------
+caps:
+  # Sized to hold the largest legitimate lane: the `expanded` release-critical
+  # matrix = 10 tasks * 5 DeepSeek agents (broad fan) + per-task baseline
+  # axis-coverage cells across the extra (sandbox, skill_mode) combos + cheat,
+  # with headroom. The floor (max_agents * max_tasks = 63) is comfortably held.
+  # The ceiling still fail-closes a runaway custom override (rejected_overflow).
+  max_cells: 140
+  max_agents: 7
+  max_tasks: 9
+  # Per-agent rollout concurrency. Lowered automatically by the planner as the
+  # distinct daytona-agent count rises so aggregate stays under the ceiling.
+  per_agent_concurrency: 2
+  # Aggregate ceiling: per_agent_concurrency * distinct daytona agents <= 24.
+  aggregate_concurrency: 24
+  agent_idle_timeout: 240
+  # Trials per cell on the heavy (comment-triggered) tier.
+  comment_trials_cap: 3
+
+# ------------------------------------------------------------------
+# Baseline anchors.
+# ------------------------------------------------------------------
+# The agents/ rule pairs each affected agent with this baseline agent + model
+# so before/after comparison always has a stable reference point.
+baseline_agent: openhands
+baseline_model: deepseek/deepseek-v4-flash
+
+# The canonical "one high task" added to the agents/ rule's low-3 set.
+canonical_high_task: weighted-gdp-calc
+
+# The citation vehicle task (citation lane + network allowlist variant).
+citation_vehicle: citation-check
+
+# Default judge model. The agent-judge and the review-pack per-rollout reader run
+# on DeepSeek-v4 ONLY — no other models. At runtime select_integration_provider.py
+# exports BENCHFLOW_JUDGE_MODEL=openai/deepseek-v4-flash (routed via the OpenAI-
+# compatible chat-completions surface with the DeepSeek key + base_url); this
+# value is the recorded per-cell metadata and the local-run default. The judge is
+# NOT a matrix cell, so the credential filter does not gate it — DEEPSEEK_API_KEY
+# + DEEPSEEK_BASE_URL must be present (they are, as required CI secrets).
+judge_model: deepseek-v4-flash
+
+# Default agent model when a cell's agent has no explicit per-agent model. Every
+# roster agent has an explicit entry below, so this is only a safety net; it
+# points at the cheap DeepSeek flash lane.
+default_model: deepseek/deepseek-v4-flash
+
+# Per-agent default models (mirror release axes + run.sh model_for_agent).
+#
+# Empirically-grounded model policy — DeepSeek-first, native only when forced:
+#  - DeepSeek lane (openhands, openclaw, opencode, pi-acp, mimo) runs on
+#    deepseek/deepseek-v4-flash (needs DEEPSEEK_API_KEY + DEEPSEEK_BASE_URL, both
+#    in CI), promoted to deepseek-v4-pro on hard tasks via deepseek_tiering.
+#    mimo-on-deepseek REPLACES the old xiaomi/mimo id (closes the XIAOMI gap).
+#  - codex-acp keeps native gpt (OpenAI Responses) and claude-agent-acp routes
+#    through Bedrock's anthropic-messages surface. Both CANNOT use DeepSeek
+#    (openai-responses / anthropic-messages protocol guards), so they are GATED:
+#    fanned ONLY via affected-agent (their own adapter changed), never in the
+#    broad DeepSeek lanes. See deepseek_roster below.
+#  - gemini (native Google GenerateContent) and harvey-lab-harness (OpenAI
+#    Responses API) are DROPPED from the roster: neither can run on DeepSeek.
+agent_models:
+  claude-agent-acp: aws-bedrock/us.anthropic.claude-haiku-4-5-20251001
+  pi-acp: deepseek/deepseek-v4-flash
+  openclaw: deepseek/deepseek-v4-flash
+  codex-acp: gpt-5.4-nano
+  opencode: deepseek/deepseek-v4-flash
+  openhands: deepseek/deepseek-v4-flash
+  mimo: deepseek/deepseek-v4-flash
+
+# DeepSeek roster — the agents fanned in the BROAD lanes (all-agents at
+# L3/expanded, and the all-agents-subset breadth tier at L2). The gated native
+# agents (claude-agent-acp, codex-acp) are deliberately ABSENT here: they run
+# only via affected-agent, "blocking" non-DeepSeek agents from the default
+# real-workflow fan. To un-gate one later, add it back to this list.
+deepseek_roster:
+  - openhands
+  - pi-acp
+  - openclaw
+  - opencode
+  - mimo
+
+# Breadth-tiered roster SUBSET emitted at L2 (auto-on-push) for changes that
+# affect EVERY agent. A representative DeepSeek subset (one per launcher family:
+# openhands = baseline/OpenHands, pi-acp = ACP launcher, opencode = opencode
+# proxy family). The FULL DeepSeek roster runs at L3/expanded.
+roster_subset:
+  - openhands
+  - pi-acp
+  - opencode
+
+# ------------------------------------------------------------------
+# DeepSeek model tiering by task difficulty.
+# The DeepSeek-driven baseline rollout uses the cheap `flash` model for
+# low/medium tasks and the stronger `pro` model for high-difficulty tasks
+# (the high-3 set). Tiering applies ONLY to cells whose resolved model is the
+# flash model (i.e. the openhands/baseline DeepSeek lane); every other agent
+# keeps its own per-agent model. If `pro_tasks` is omitted the planner falls
+# back to task_sets["high-3"].
+# ------------------------------------------------------------------
+deepseek_tiering:
+  flash_model: deepseek/deepseek-v4-flash
+  pro_model: deepseek/deepseek-v4-pro
+  pro_tasks:
+    - lake-warming-attribution
+    - weighted-gdp-calc
+    - shock-analysis-supply
+
+# ------------------------------------------------------------------
+# Per-set timeout_minutes for each cell (wall-clock cap on one rollout cell).
+# citation/low lanes are cheap; medium mid; high/nine heavy; expanded heaviest.
+# ------------------------------------------------------------------
+timeout_minutes:
+  citation: 45
+  low-smoke: 45
+  low-3: 45
+  medium-3: 90
+  high-3: 180
+  nine: 180
+  expanded: 330
+  custom: 90
+
+# ------------------------------------------------------------------
+# Before/after reward-band baseline (golden truth) — Q2b.
+# The SkillsBench leaderboard submissions are native BenchFlow result.json
+# (rewards.reward), referenced at the latest leaderboard `main`. The L3 review
+# job fetches the openhands deepseek-v4-flash run to a local root and passes it
+# to build_integration_review_pack.py --baseline-root, which band-compares
+# per-task reward via check_skillsbench_harbor_parity. Apples-to-apples with our
+# openhands + deepseek-v4-flash lane. No protected env is created — the golden
+# truth is simply this HF `main` run plus the latest benchflow main.
+#
+# Coverage: the flash run covers 6 of the 9 integration tasks (data-to-d3,
+# grid-dispatch-operator, jax-computing-basics, jpg-ocr-stat,
+# lake-warming-attribution, threejs-to-obj). The other 3 (python-scala-
+# translation, shock-analysis-supply, weighted-gdp-calc) are absent from the
+# leaderboard's deepseek runs, so they band-compare NA and fall back to oracle
+# determinism + the codex equivalence verdict. High tasks run the pro model
+# (tiering), so their flash-baseline comparison is advisory.
+# ------------------------------------------------------------------
+baseline:
+  source: huggingface
+  hf_repo: benchflow/skillsbench-leaderboard
+  hf_revision: main
+  submission_root: submissions/skillsbench/v1.1
+  config_no_skill: openhands-no-skills
+  config_with_skill: openhands-with-skills
+  band_model: deepseek-v4-flash
+  max_task_reward_delta: 0.0
+  max_mean_reward_delta: 0.25
+  max_outcome_rate_delta: 0.25

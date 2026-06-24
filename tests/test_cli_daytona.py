@@ -150,3 +150,33 @@ def test_environment_list_uses_daytona_import_compat(monkeypatch):
     assert hasattr(anyio, "AsyncContextManagerMixin")
     assert "active-sandb" in result.output
     assert "1 sandbox(es)" in result.output
+
+
+def test_sandbox_list_degrades_cleanly_when_daytona_sdk_absent(monkeypatch):
+    """`bench sandbox list` is a read command: a missing optional Daytona SDK is
+    an empty result (exit 0), not a hard failure (exit 1) telling the user to
+    install a dependency they may not want. Docker sandboxes are ephemeral and
+    Guards PR #789 (CLI error-handling hardening).
+    not listable, so there is genuinely nothing else to show."""
+    # A None entry in sys.modules makes `import daytona` raise ImportError,
+    # simulating the SDK being absent regardless of the host's install state.
+    monkeypatch.setitem(sys.modules, "daytona", None)
+
+    result = CliRunner().invoke(app, ["sandbox", "list"])
+
+    assert result.exit_code == 0
+    assert "No active sandboxes" in result.output
+    assert "sandbox-daytona" in result.output
+
+
+def test_sandbox_cleanup_degrades_cleanly_when_daytona_sdk_absent(monkeypatch):
+    """`bench sandbox cleanup` mirrors `list`: no Daytona SDK means nothing to
+    Guards PR #789 (CLI error-handling hardening).
+    reap, reported as a clean no-op rather than an install-nag exit 1."""
+    monkeypatch.setitem(sys.modules, "daytona", None)
+
+    result = CliRunner().invoke(app, ["sandbox", "cleanup", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "Nothing to clean up" in result.output
+    assert "sandbox-daytona" in result.output

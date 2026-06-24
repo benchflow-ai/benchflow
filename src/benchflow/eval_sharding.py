@@ -103,7 +103,6 @@ def _config_payload(
     config: EvaluationConfig,
     *,
     shard: EvalShard,
-    environment_manifest_path: Path | None,
 ) -> dict[str, Any]:
     if config.loop_strategy is not None and not isinstance(
         config.loop_strategy, LoopStrategySpec
@@ -137,9 +136,19 @@ def _config_payload(
         "self_gen_no_internet": config.self_gen_no_internet,
         "job_mode": config.job_mode,
         "source_provenance": config.source_provenance,
-        "environment_manifest_path": (
-            str(environment_manifest_path) if environment_manifest_path else None
+        # Serialize the already-resolved manifest OBJECT (the S axis), not a
+        # path. The parent resolves --state / --environment-manifest /
+        # name@version into config.environment_manifest before sharding; a
+        # path-only payload dropped that binding entirely for --state runs
+        # (request.environment_manifest is None) and lost any inline tool
+        # subset from resolve_state. model_dump round-trips the filtered
+        # services so the worker boots the exact same world.
+        "environment_manifest": (
+            config.environment_manifest.model_dump(mode="json")
+            if config.environment_manifest is not None
+            else None
         ),
+        "config_override": config.config_override,
         "loop_strategy": (
             config.loop_strategy.to_mapping() if config.loop_strategy else None
         ),
@@ -292,7 +301,6 @@ async def run_sharded_evaluation(
     worker_concurrency: int,
     worker_retries: int,
     worker_start_stagger_sec: float,
-    environment_manifest_path: Path | None = None,
 ) -> EvaluationResult:
     """Run a batch as isolated worker subprocesses and aggregate their summaries."""
     discovery = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config)
@@ -321,11 +329,7 @@ async def run_sharded_evaluation(
             "tasks_dir": str(tasks_dir),
             "jobs_dir": str(shard_dir / "jobs"),
             "result_path": str(result_path),
-            "config": _config_payload(
-                config,
-                shard=shard,
-                environment_manifest_path=environment_manifest_path,
-            ),
+            "config": _config_payload(config, shard=shard),
         }
         payload_path.write_text(json.dumps(payload, indent=2))
         log_path = shard_dir / "worker.log"

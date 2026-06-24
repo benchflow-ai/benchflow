@@ -15,8 +15,8 @@ def _make_task(tmp_path: Path) -> Path:
 
 
 def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
-    """`bench eval create --skill-mode self-gen` reaches strict self-gen orchestration."""
-    from benchflow.cli.main import eval_create
+    """`bench eval run --skill-mode self-gen` reaches strict self-gen orchestration."""
+    from benchflow.cli.main import eval_run
 
     task = _make_task(tmp_path)
     skill_creator = tmp_path / "skills" / "skill-creator"
@@ -36,7 +36,7 @@ def test_eval_create_single_task_self_gen_passes_trial_config(tmp_path: Path):
         )
 
     with patch("benchflow.self_gen.run_self_gen", new=fake_run_self_gen):
-        eval_create(
+        eval_run(
             config_file=None,
             tasks_dir=task,
             agent="claude-agent-acp",

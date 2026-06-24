@@ -233,7 +233,7 @@ async def main():
 
     if not args.config:
         logger.info("No config specified; tasks generated at %s", tasks_dir)
-        logger.info("Use: bench eval create -f <config.yaml> to run evaluations")
+        logger.info("Use: bench eval run -f <config.yaml> to run evaluations")
         return
 
     from benchflow.evaluation import Evaluation

@@ -118,7 +118,6 @@ def test_usage_tracking_shard_payload_preserves_implicit_env_mode(monkeypatch):
     payload = _config_payload(
         parent_config,
         shard=EvalShard(index=0, task_names=("task-a",), concurrency=1),
-        environment_manifest_path=None,
     )
     worker_config = _evaluation_config(payload)
 
@@ -142,7 +141,6 @@ def test_usage_tracking_shard_payload_uses_flat_yaml_shape():
     payload = _config_payload(
         parent_config,
         shard=EvalShard(index=0, task_names=("task-a",), concurrency=1),
-        environment_manifest_path=None,
     )
     worker_config = _evaluation_config(payload)
 

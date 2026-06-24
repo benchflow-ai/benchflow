@@ -4,7 +4,7 @@ Verifiers/ORS export.
 The data-path test proves the thread with no Docker. A full live rollout is
 run manually:
 
-    bench eval create --tasks-dir benchmarks/clawsbench/tasks/<task> \\
+    bench eval run --tasks-dir benchmarks/clawsbench/tasks/<task> \\
       --environment-manifest benchmarks/clawsbench/environment.toml \\
       --agent claude-agent-acp --model claude-haiku-4-5
 """

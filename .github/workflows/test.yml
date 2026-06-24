@@ -7,6 +7,15 @@ on:
     branches: [main]
   merge_group:
 
+# Cancel superseded runs on a PR branch (cheap, fast-feedback unit lane), but
+# never cancel push/merge_group runs on a protected ref — those gate merges and
+# must complete. The two new pure-python test files
+# (tests/test_opencode_proxy_tracking.py and tests/integration/rubric_checks.py
+# self-tests) run automatically in this lane via the existing `pytest tests/`.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Least-privilege defaults — elevate per-job only when a step needs more.
 permissions:
   contents: read

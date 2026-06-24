@@ -1,6 +1,6 @@
 """Subprocess worker for sharded evaluation runs.
 
-The public ``bench eval create`` command uses this module when the operator asks
+The public ``bench eval run`` command uses this module when the operator asks
 for worker-level isolation. A worker runs one normal :class:`Evaluation` over a
 small include set and exits zero when BenchFlow completed the shard, even if the
 benchmark tasks themselves failed. Non-zero exits are reserved for control-plane
@@ -33,12 +33,21 @@ def _retry_config(raw: dict[str, Any]) -> RetryConfig:
 
 
 def _environment_manifest(raw: dict[str, Any]):
-    manifest_path = raw.get("environment_manifest_path")
-    if not manifest_path:
-        return None
-    from benchflow.environment.manifest import load_manifest
+    from benchflow.environment.manifest import EnvironmentManifest, load_manifest
 
-    return load_manifest(Path(manifest_path))
+    manifest = raw.get("environment_manifest")
+    if manifest is not None:
+        # The parent serialized the already-resolved manifest object (S axis),
+        # so rebuild it directly. This preserves an inline --state tool subset
+        # and needs no $BENCHFLOW_ENV_REGISTRY (or registry re-resolution) in
+        # the worker subprocess.
+        return EnvironmentManifest.model_validate(manifest)
+    # Back-compat: a pre-fix shard payload (e.g. one mid-flight across an
+    # upgrade, retried) carried only a path.
+    manifest_path = raw.get("environment_manifest_path")
+    if manifest_path:
+        return load_manifest(Path(manifest_path))
+    return None
 
 
 def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
@@ -66,6 +75,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         source_provenance=raw.get("source_provenance"),
         usage_tracking=UsageTrackingConfig.from_mapping(raw),
         environment_manifest=_environment_manifest(raw),
+        config_override=raw.get("config_override"),
         loop_strategy=(
             LoopStrategySpec.from_mapping(raw["loop_strategy"])
             if raw.get("loop_strategy")

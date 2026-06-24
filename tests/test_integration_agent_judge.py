@@ -54,7 +54,7 @@ def _write_rollout(
     result: dict | None = None,
     trajectory: list[dict] | None = None,
 ) -> Path:
-    """Materialize a rollout dir shaped like a real ``bench eval create`` one."""
+    """Materialize a rollout dir shaped like a real ``bench eval run`` one."""
     root.mkdir(parents=True, exist_ok=True)
     (root / "result.json").write_text(json.dumps(result or _REAL_RESULT))
     if trajectory is not None:
