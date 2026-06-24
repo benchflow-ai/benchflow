@@ -8,9 +8,9 @@ keywords = ["benchmark", "llm-agents", "acp", "agent-evaluation", "multi-turn", 
 dependencies = [
     "agent-client-protocol>=0.10",
     "httpx>=0.27.0",
-    # httpx-ws (transitive via the daytona SDK) needs anyio>=4.9 for
-    # AsyncContextManagerMixin; anyio 4.8 makes the daytona SDK un-importable.
-    "anyio>=4.9",
+    # httpx-ws (transitive via the daytona SDK) needs anyio>=4.10 for
+    # AsyncContextManagerMixin; older anyio makes the daytona SDK un-importable.
+    "anyio>=4.10",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "rich>=13.0",

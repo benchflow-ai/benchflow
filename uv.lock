@@ -416,7 +416,7 @@ sandbox-modal = [
 requires-dist = [
     { name = "agent-client-protocol", specifier = ">=0.10" },
     { name = "anthropic", marker = "extra == 'judge'", specifier = ">=0.40" },
-    { name = "anyio", specifier = ">=4.9" },
+    { name = "anyio", specifier = ">=4.10" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.40" },
     { name = "cua-sandbox", marker = "python_full_version < '3.14' and extra == 'sandbox-cua'", specifier = ">=0.1.16" },
     { name = "cua-train", marker = "extra == 'sandbox-cua-cloud'", specifier = ">=0.1.0", index = "https://wheels.cua.ai/simple/" },
