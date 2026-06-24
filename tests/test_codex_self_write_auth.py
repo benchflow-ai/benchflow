@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 
 from benchflow.agents.registry import AGENTS
@@ -42,6 +43,7 @@ def test_launcher_writes_auth_json_byte_identical_when_key_set(tmp_path):
     # byte-identical to the old credential_files template '{"OPENAI_API_KEY": "{value}"}'
     assert auth.read_text() == '{"OPENAI_API_KEY": "sk-test-123"}'
     assert json.loads(auth.read_text()) == {"OPENAI_API_KEY": "sk-test-123"}
+    assert stat.S_IMODE(auth.stat().st_mode) == 0o600
 
 
 def test_launcher_does_not_clobber_subscription_auth_when_key_unset(tmp_path):

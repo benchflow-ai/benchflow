@@ -529,12 +529,14 @@ AGENTS: dict[str, AgentConfig] = {
         # instead of relying on core's credential_files writer. This makes the
         # decoupled manifest self-contained — like mimo/opencode — and is
         # byte-identical to the former credential_files template
-        # ({"OPENAI_API_KEY": "<key>"}). `exec` so signals/PID reach codex.
+        # ({"OPENAI_API_KEY": "<key>"}) and keeps the old 0600 secret mode.
+        # `exec` so signals/PID reach codex.
         launch_cmd=(
             'h="${BENCHFLOW_AGENT_HOME:-$HOME}"; '
             'if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && '
             'printf \'{"OPENAI_API_KEY": "%s"}\' "$OPENAI_API_KEY" '
-            '> "$h/.codex/auth.json"; fi; exec '
+            '> "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; '
+            "fi; exec "
             + _js_agent_launch(
                 "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
             )
