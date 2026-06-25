@@ -322,6 +322,8 @@ class LLMExchange(BaseModel):
     request: LLMRequest
     response: LLMResponse
     duration_ms: float = 0.0
+    verifiers_step: dict[str, Any] | None = None
+    verifiers_tool_defs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Trajectory(BaseModel):

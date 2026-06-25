@@ -21,10 +21,7 @@ from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.trajectories._export_common import aggregate_rollout_jsonl
-from benchflow.trajectories.export_prime_sft import (
-    _exchange_to_messages_and_tools,
-    _load_jsonl,
-)
+from benchflow.trajectories.export_prime_sft import _load_jsonl
 from benchflow.trajectories.types import redact_trajectory_text
 
 ROLLOUT_RESULTS_FILENAME = "results.jsonl"
@@ -155,29 +152,44 @@ def _llm_steps_from_trajectory(
         response = exchange.get("response")
         if not isinstance(response, dict) or response.get("status_code") != 200:
             continue
-        messages, tools, skip_reason = _exchange_to_messages_and_tools(exchange)
-        if skip_reason or not messages:
+        runtime_step = exchange.get("verifiers_step")
+        if not isinstance(runtime_step, dict):
             continue
-        if tools:
-            tool_defs = tools
-        prompt = messages[:-1]
-        completion = [messages[-1]]
-        response_body = (
-            response.get("body") if isinstance(response.get("body"), dict) else {}
+        prompt = runtime_step.get("prompt")
+        completion = runtime_step.get("completion")
+        if (
+            not isinstance(prompt, list)
+            or not isinstance(completion, list)
+            or not completion
+        ):
+            continue
+        tools = exchange.get("verifiers_tool_defs")
+        if isinstance(tools, list) and tools:
+            tool_defs = [tool for tool in tools if isinstance(tool, dict)]
+        step = dict(runtime_step)
+        extras = (
+            cast(dict[str, Any], step.get("extras"))
+            if isinstance(step.get("extras"), dict)
+            else {}
         )
-        steps.append(
+        extras = {
+            **extras,
+            "source": "llm_trajectory",
+            "tracking_source": "litellm_callback",
+            "exchange_index": exchange_idx,
+        }
+        step.update(
             {
                 "prompt": prompt,
                 "completion": completion,
-                "response": response_body,
-                "tokens": None,
                 "reward": reward,
                 "advantage": 0.0,
-                "is_truncated": is_truncated,
+                "is_truncated": bool(runtime_step.get("is_truncated") or is_truncated),
                 "trajectory_id": f"{trajectory_id_prefix}__llm_{exchange_idx}",
-                "extras": {"source": "llm_trajectory", "exchange_index": exchange_idx},
+                "extras": extras,
             }
         )
+        steps.append(step)
     return steps, tool_defs
 
 

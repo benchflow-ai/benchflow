@@ -39,6 +39,18 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
                 "cache_creation_input_tokens": 1,
             },
         },
+        "verifiers_step": {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "completion": [{"role": "assistant", "content": "hello"}],
+            "response": {"model": "anthropic/claude-haiku-4-5-20251001"},
+            "tokens": None,
+            "reward": None,
+            "advantage": None,
+            "is_truncated": False,
+            "trajectory_id": "",
+            "extras": {"source": "litellm_callback"},
+        },
+        "verifiers_tool_defs": [{"type": "function", "function": {"name": "bash"}}],
         "response_cost": 0.00042,
         "start_time": "2026-06-04T10:00:00",
         "end_time": "2026-06-04T10:00:01",
@@ -56,6 +68,13 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
     assert trajectory.total_cache_read_tokens == 2
     assert trajectory.total_cache_creation_tokens == 1
     assert trajectory.total_cost_usd == 0.00042
+    assert trajectory.exchanges[0].verifiers_step is not None
+    assert trajectory.exchanges[0].verifiers_step["completion"] == [
+        {"role": "assistant", "content": "hello"}
+    ]
+    assert trajectory.exchanges[0].verifiers_tool_defs == [
+        {"type": "function", "function": {"name": "bash"}}
+    ]
 
     usage = extract_usage_from_trajectory(
         trajectory,

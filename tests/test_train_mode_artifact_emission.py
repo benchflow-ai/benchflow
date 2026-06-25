@@ -83,32 +83,49 @@ def _llm_exchange(
     assistant: dict | None = None,
     tools: list[dict] | None = None,
 ) -> dict:
+    prompt = messages or [
+        {"role": "system", "content": "You are a tool-using agent."},
+        {"role": "user", "content": "List files."},
+    ]
+    completion = [
+        assistant
+        or {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": '{"command":"ls"}',
+                    },
+                }
+            ],
+        }
+    ]
+    tool_defs = tools or [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run shell commands.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
     return {
         "request": {
             "method": "POST",
             "path": "/v1/chat/completions",
             "body": {
                 "model": "openai-compatible-model",
-                "messages": messages
-                or [
-                    {"role": "system", "content": "You are a tool-using agent."},
-                    {"role": "user", "content": "List files."},
-                ],
-                "tools": tools
-                or [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "terminal",
-                            "description": "Run shell commands.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {"command": {"type": "string"}},
-                                "required": ["command"],
-                            },
-                        },
-                    }
-                ],
+                "messages": prompt,
+                "tools": tool_defs,
             },
         },
         "response": {
@@ -116,25 +133,7 @@ def _llm_exchange(
             "body": {
                 "id": "chatcmpl-test",
                 "model": "openai-compatible-model",
-                "choices": [
-                    {
-                        "message": assistant
-                        or {
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [
-                                {
-                                    "id": "call_1",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "terminal",
-                                        "arguments": '{"command":"ls"}',
-                                    },
-                                }
-                            ],
-                        }
-                    }
-                ],
+                "choices": [{"message": assistant or completion[0]}],
                 "usage": {
                     "prompt_tokens": 10,
                     "completion_tokens": 3,
@@ -143,6 +142,21 @@ def _llm_exchange(
             },
         },
         "duration_ms": 10,
+        "verifiers_step": {
+            "prompt": prompt,
+            "completion": completion,
+            "response": {
+                "id": "chatcmpl-test",
+                "model": "openai-compatible-model",
+            },
+            "tokens": None,
+            "reward": None,
+            "advantage": None,
+            "is_truncated": False,
+            "trajectory_id": "",
+            "extras": {"source": "litellm_callback"},
+        },
+        "verifiers_tool_defs": tool_defs,
     }
 
 
