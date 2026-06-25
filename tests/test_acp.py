@@ -486,6 +486,33 @@ class TestTransportProtocolFiltering:
         assert '["debug", "list"]' in log_text
 
     @pytest.mark.asyncio
+    async def test_container_transport_does_not_create_empty_agent_log(
+        self, tmp_path
+    ) -> None:
+        """Guards PR #832's fix for issue #535 against empty ACP agent logs."""
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            return_value=b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n'
+        )
+        agent_log = tmp_path / "agent" / "gemini.txt"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        assert not agent_log.exists()
+
+        try:
+            msg = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert msg == {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}
+        assert not agent_log.exists()
+
+    @pytest.mark.asyncio
     async def test_stdio_transport_skips_structured_json_logs(self) -> None:
         """Guards PR #236 against treating JSON object logs as ACP responses."""
         reader = asyncio.StreamReader()
