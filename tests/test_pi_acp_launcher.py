@@ -255,6 +255,9 @@ class TestSetupProviderModelMetadata:
                 )
 
     def test_defaults_when_provider_models_absent(self, monkeypatch, tmp_path):
+        """Guards issue #829: unknown pi-acp models must not request the whole
+        completion budget of common 16k-context self-hosted models by default.
+        """
         monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://localhost/v1")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "mystery-model")
@@ -267,7 +270,29 @@ class TestSetupProviderModelMetadata:
         config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
         model_entry = config["providers"]["custom-vllm"]["models"][0]
         assert model_entry["contextWindow"] == 128000
-        assert model_entry["maxTokens"] == 16384
+        assert model_entry["maxTokens"] == 4096
+
+    def test_default_max_tokens_uses_context_window_when_metadata_lacks_cap(
+        self, monkeypatch, tmp_path
+    ):
+        """Guards issue #829: a 16k contextWindow fallback leaves prompt room."""
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_PROTOCOL", "openai-completions")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "http://localhost/v1")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_MODEL", "qwen35-2b-base")
+        monkeypatch.setenv("BENCHFLOW_PROVIDER_NAME", "vllm")
+        monkeypatch.setenv(
+            "BENCHFLOW_PROVIDER_MODELS",
+            json.dumps([{"id": "qwen35-2b-base", "contextWindow": 16384}]),
+        )
+
+        from benchflow.agents.pi_acp_launcher import setup_provider
+
+        setup_provider()
+
+        config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
+        model_entry = config["providers"]["vllm"]["models"][0]
+        assert model_entry["contextWindow"] == 16384
+        assert model_entry["maxTokens"] == 4096
 
     def test_lookup_model_metadata_corrupt_json_returns_empty(
         self, monkeypatch, tmp_path
@@ -286,7 +311,7 @@ class TestSetupProviderModelMetadata:
         config = json.loads((tmp_path / ".pi" / "agent" / "models.json").read_text())
         entry = config["providers"]["custom-vllm"]["models"][0]
         assert entry["contextWindow"] == 128000
-        assert entry["maxTokens"] == 16384
+        assert entry["maxTokens"] == 4096
 
 
 @pytest.mark.usefixtures("_pi_env")

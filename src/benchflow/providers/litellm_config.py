@@ -386,6 +386,13 @@ def litellm_proxy_config(
     return {
         "model_list": model_list,
         "general_settings": {"master_key": master_key},
+        "router_settings": {
+            # BenchFlow owns task-level retry classification. Keep LiteLLM from
+            # multiplying deterministic provider rejects into proxy-local retry
+            # storms or deployment cooldown fast-fails (#830).
+            "num_retries": 0,
+            "disable_cooldowns": True,
+        },
         "litellm_settings": {
             "callbacks": [f"{callback_module}.proxy_handler_instance"],
             "drop_params": True,

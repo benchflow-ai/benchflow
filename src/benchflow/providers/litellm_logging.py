@@ -16,7 +16,7 @@ from benchflow.trajectories.types import (
 from benchflow.usage_tracking import usage_unavailable
 
 _PROVIDER_AUTH_STATUS_CODES = (401, 403)
-_PROVIDER_FAILURE_STATUS_CODES = (*_PROVIDER_AUTH_STATUS_CODES, 429, 503)
+_PROVIDER_FAILURE_STATUS_CODES = (400, 401, 402, 403, 404, 408, 422, 429, 500, 503)
 _STATUS_KEYS = {
     "httpstatus",
     "httpstatuscode",
@@ -58,6 +58,18 @@ _PROVIDER_UNAVAILABLE_HINT_RE = re.compile(
     r"temporarily unavailable|"
     r"overloaded|"
     r"upstream unavailable"
+    r")\b",
+    re.IGNORECASE,
+)
+_CONTEXT_LIMIT_HINT_RE = re.compile(
+    r"\b("
+    r"context[-_ ]?(?:length|window)|"
+    r"context_length_exceeded|"
+    r"contextwindowexceeded|"
+    r"max(?:imum)?[_ -]?model[_ -]?len|"
+    r"prompt is too long|"
+    r"requested token count exceeds|"
+    r"maximum context"
     r")\b",
     re.IGNORECASE,
 )
@@ -300,7 +312,25 @@ def _flatten_failure_text(value: Any) -> str:
     return str(value)
 
 
+def _flatten_context_traceback_text(value: Any) -> str:
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key, nested in value.items():
+            if str(key).lower() == "traceback":
+                parts.append(str(nested))
+            else:
+                nested_text = _flatten_context_traceback_text(nested)
+                if nested_text:
+                    parts.append(nested_text)
+        return " ".join(parts)
+    if isinstance(value, list | tuple):
+        return " ".join(_flatten_context_traceback_text(item) for item in value)
+    return ""
+
+
 def _text_provider_failure_status(text: str) -> int | None:
+    if _CONTEXT_LIMIT_HINT_RE.search(text):
+        return 400
     match = _PROVIDER_FAILURE_STATUS_RE.search(text)
     status = int(match.group(1)) if match is not None else None
     if status in _PROVIDER_AUTH_STATUS_CODES:
@@ -324,11 +354,18 @@ def _provider_failure_status_from_failure_record(record: dict[str, Any]) -> int 
         "error": record.get("error"),
         "response": record.get("response"),
     }
+    text = _flatten_failure_text(failure_payload)
+    if _CONTEXT_LIMIT_HINT_RE.search(text):
+        return 400
+
+    traceback_text = _flatten_context_traceback_text(failure_payload)
+    if _CONTEXT_LIMIT_HINT_RE.search(traceback_text):
+        return 400
+
     status = _explicit_provider_failure_status(failure_payload)
     if status is not None:
         return status
 
-    text = _flatten_failure_text(failure_payload)
     return _text_provider_failure_status(text)
 
 

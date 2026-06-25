@@ -24,7 +24,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 TOKEN_KEYS = {
     "input_tokens",
     "output_tokens",
@@ -109,9 +108,12 @@ def has_token_usage(value: Any) -> bool:
     for obj in iter_dicts(value):
         for key in TOKEN_KEYS:
             token_value = obj.get(key)
-            if isinstance(token_value, (int, float)) and not isinstance(token_value, bool):
-                if token_value > 0:
-                    return True
+            if (
+                isinstance(token_value, (int, float))
+                and not isinstance(token_value, bool)
+                and token_value > 0
+            ):
+                return True
     return False
 
 
