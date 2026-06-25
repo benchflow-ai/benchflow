@@ -29,6 +29,9 @@ _STATUS_KEYS = {
     "response_status",
     "response_status_code",
 }
+# Keep free-text matching narrower than structured status-code handling. Broad
+# codes like 400 or 500 are too common in tracebacks and payload snippets to infer
+# provider failure unless they arrive through a real status field.
 _PROVIDER_FAILURE_STATUS_RE = re.compile(r"\b(401|403|429|503)\b")
 _PROVIDER_AUTH_HINT_RE = re.compile(
     r"\b("
