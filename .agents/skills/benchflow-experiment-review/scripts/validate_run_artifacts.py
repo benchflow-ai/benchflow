@@ -24,7 +24,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 TOKEN_KEYS = {
     "input_tokens",
     "output_tokens",
@@ -109,9 +108,12 @@ def has_token_usage(value: Any) -> bool:
     for obj in iter_dicts(value):
         for key in TOKEN_KEYS:
             token_value = obj.get(key)
-            if isinstance(token_value, (int, float)) and not isinstance(token_value, bool):
-                if token_value > 0:
-                    return True
+            if (
+                isinstance(token_value, (int, float))
+                and not isinstance(token_value, bool)
+                and token_value > 0
+            ):
+                return True
     return False
 
 
@@ -215,7 +217,9 @@ def validate_acp(rows: list[dict[str, Any]], path: Path) -> list[str]:
     return issues
 
 
-def validate_llm(rows: list[dict[str, Any]], path: Path) -> tuple[list[str], dict[str, Any]]:
+def validate_llm(
+    rows: list[dict[str, Any]], path: Path
+) -> tuple[list[str], dict[str, Any]]:
     issues: list[str] = []
     request_count = 0
     response_count = 0
@@ -270,7 +274,9 @@ def load_run_config(root: Path) -> dict[str, Any] | None:
     return None
 
 
-def validate_rollout(root: Path, *, allow_oracle_without_llm: bool = False) -> dict[str, Any]:
+def validate_rollout(
+    root: Path, *, allow_oracle_without_llm: bool = False
+) -> dict[str, Any]:
     result_path = root / "result.json"
     result, result_error = read_json(result_path)
     issues: list[str] = []
@@ -319,7 +325,12 @@ def validate_rollout(root: Path, *, allow_oracle_without_llm: bool = False) -> d
 
     error_text = " ".join(
         str(result.get(key) or "")
-        for key in ("error", "verifier_error", "error_category", "verifier_error_category")
+        for key in (
+            "error",
+            "verifier_error",
+            "error_category",
+            "verifier_error_category",
+        )
     ).lower()
     if any(marker in error_text for marker in INFRA_ERROR_MARKERS):
         issues.append("result carries infra/provider error markers")
