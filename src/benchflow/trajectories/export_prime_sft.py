@@ -357,6 +357,21 @@ def _has_tool_calls(messages: list[dict[str, Any]]) -> bool:
     return any(bool(message.get("tool_calls")) for message in messages)
 
 
+def _row_messages(row: dict[str, Any], row_num: int) -> list[Any]:
+    messages = row.get("messages")
+    if isinstance(messages, list) and messages:
+        return messages
+    prompt = row.get("prompt")
+    completion = row.get("completion")
+    if isinstance(prompt, list) and isinstance(completion, list):
+        combined = prompt + completion
+        if combined:
+            return combined
+    raise ValueError(
+        f"row {row_num}: expected non-empty messages or prompt+completion lists"
+    )
+
+
 def validate_prime_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
     leaked = sorted(BANNED_ROW_KEYS.intersection(row))
     if leaked:
@@ -364,9 +379,7 @@ def validate_prime_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
             f"row {row_num}: banned leakage keys present: {', '.join(leaked)}"
         )
 
-    messages = row.get("messages")
-    if not isinstance(messages, list) or not messages:
-        raise ValueError(f"row {row_num}: messages must be a non-empty list")
+    messages = _row_messages(row, row_num)
 
     for idx, message in enumerate(messages):
         if not isinstance(message, dict):
@@ -438,7 +451,9 @@ def validate_prime_sft_jsonl(
             if not isinstance(row, dict):
                 raise ValueError(f"row {row_num}: top-level row must be object")
             validate_prime_sft_row(row, row_num)
-            if _has_tool_calls(row["messages"]):
+            row_messages = _row_messages(row, row_num)
+            typed_messages = [m for m in row_messages if isinstance(m, dict)]
+            if _has_tool_calls(typed_messages):
                 rows_with_tool_calls += 1
     if expected_rows is not None and rows != expected_rows:
         raise ValueError(f"row count {rows} != expected {expected_rows}")

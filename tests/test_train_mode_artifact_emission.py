@@ -25,6 +25,7 @@ from benchflow.trajectories.export import (
     write_job_verifiers_jsonl,
     write_rollout_verifiers_jsonl,
 )
+from benchflow.trajectories.results import write_job_results_jsonl
 
 _FAKE_GEMINI_KEY = "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"
 _FAKE_HEADER_SECRET = "plainSecretNoPrefix123"
@@ -74,6 +75,75 @@ def _secret_bearing_acp_trajectory() -> list[dict]:
             ],
         },
     ]
+
+
+def _llm_exchange(
+    *,
+    messages: list[dict] | None = None,
+    assistant: dict | None = None,
+    tools: list[dict] | None = None,
+) -> dict:
+    return {
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "openai-compatible-model",
+                "messages": messages
+                or [
+                    {"role": "system", "content": "You are a tool-using agent."},
+                    {"role": "user", "content": "List files."},
+                ],
+                "tools": tools
+                or [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "description": "Run shell commands.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"command": {"type": "string"}},
+                                "required": ["command"],
+                            },
+                        },
+                    }
+                ],
+            },
+        },
+        "response": {
+            "status_code": 200,
+            "body": {
+                "id": "chatcmpl-test",
+                "model": "openai-compatible-model",
+                "choices": [
+                    {
+                        "message": assistant
+                        or {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "terminal",
+                                        "arguments": '{"command":"ls"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 3,
+                    "total_tokens": 13,
+                },
+            },
+        },
+        "duration_ms": 10,
+    }
 
 
 def _assert_no_trainer_secret_leak(text: str) -> None:
@@ -326,6 +396,116 @@ def test_build_rollout_result_emits_trainer_artifact(tmp_path):
     assert parsed["reward"] == 1.0
     assert parsed["info"]["task_id"] == "archive-alice"
     assert parsed["info"]["model"] == "claude-haiku-4-5"
+
+
+def test_build_rollout_result_emits_verifiers_shaped_results_jsonl(tmp_path):
+    """Guards PR #828: every rollout writes root results.jsonl for Prime-RL."""
+    rollout_dir = tmp_path / "rollout-results"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(_llm_exchange()) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={
+            "reward": 1.0,
+            "exact_match": 1.0,
+            "metrics": {"created_event": 1},
+            "details": {"api_calls": 2},
+        },
+        started_at=datetime.now(),
+        timing={},
+        n_input_tokens=10,
+        n_output_tokens=3,
+        total_tokens=13,
+    )
+
+    artifact = rollout_dir / "results.jsonl"
+    assert artifact.exists()
+    row = json.loads(artifact.read_text())
+    assert row["prompt"] == [
+        {"role": "system", "content": "You are a tool-using agent."},
+        {"role": "user", "content": "List files."},
+    ]
+    assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert row["tool_defs"][0]["function"]["name"] == "terminal"
+    assert row["reward"] == 1.0
+    assert row["metrics"]["exact_match"] == 1.0
+    assert row["metrics"]["created_event"] == 1.0
+    assert row["info"]["reward_details"] == {"api_calls": 2}
+    assert row["token_usage"]["final_input_tokens"] == 10.0
+    assert row["token_usage"]["final_output_tokens"] == 3.0
+    assert row["trajectory"][0]["tokens"] is None
+    assert row["trajectory"][0]["prompt"] == row["prompt"]
+    assert row["trajectory"][0]["completion"] == row["completion"]
+    assert row["error"] is None
+    assert row["is_completed"] is True
+    assert row["stop_condition"] == "agent_completed"
+
+
+def test_build_rollout_result_results_jsonl_survives_error_without_llm(tmp_path):
+    """Guards PR #828: errored rollouts still get a Verifiers-shaped row."""
+    rollout_dir = tmp_path / "rollout-error"
+    rollout_dir.mkdir()
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="broken-task",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="m",
+        n_tool_calls=0,
+        prompts=["Solve this."],
+        error="agent crashed",
+        verifier_error=None,
+        trajectory=[],
+        partial_trajectory=True,
+        trajectory_source="partial_acp",
+        rewards=None,
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["prompt"] == [{"role": "user", "content": "Solve this."}]
+    assert row["completion"] is None
+    assert row["trajectory"] == []
+    assert row["reward"] == 0.0
+    assert row["error"]["error"] == "agent_error"
+    assert row["is_completed"] is False
+    assert row["is_truncated"] is True
+    assert row["stop_condition"] == "partial_trajectory"
+
+
+def test_write_job_results_jsonl_aggregates_rollout_results(tmp_path):
+    """Guards PR #828: job-level results.jsonl aggregates rollout rows."""
+    job_dir = tmp_path / "job"
+    for idx in range(2):
+        rollout_dir = job_dir / f"rollout-{idx}"
+        rollout_dir.mkdir(parents=True)
+        (rollout_dir / "results.jsonl").write_text(
+            json.dumps({"example_id": idx, "reward": float(idx)}) + "\n"
+        )
+
+    out = write_job_results_jsonl(job_dir)
+
+    assert out == job_dir / "results.jsonl"
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert [row["example_id"] for row in rows] == [0, 1]
 
 
 def test_build_rollout_result_emits_atif_and_adp(tmp_path):

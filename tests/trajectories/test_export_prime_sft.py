@@ -196,3 +196,47 @@ def test_validate_rejects_banned_message_keys(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="banned keys"):
         validate_prime_sft_jsonl(path)
+
+
+def test_validate_accepts_prime_rollout_prompt_completion_rows(tmp_path: Path) -> None:
+    """Guards PR #828: results.jsonl rows are valid Prime-RL SFT inputs too."""
+    path = tmp_path / "results.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "do it"}],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "finish",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            }
+        )
+        + "\n"
+    )
+
+    assert validate_prime_sft_jsonl(path, expected_rows=1) == {
+        "ok": True,
+        "rows": 1,
+        "rows_with_tool_calls": 1,
+    }

@@ -1860,6 +1860,12 @@ class Evaluation:
             write_job_adp_jsonl(job_dir)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Job-level ADP aggregation failed: %s", e)
+        try:
+            from benchflow.trajectories.results import write_job_results_jsonl
+
+            write_job_results_jsonl(job_dir)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Job-level results.jsonl aggregation failed: %s", e)
 
         # Per-diagnostic summary warnings — driven by the registry so a
         # new diagnostic class adds its warning automatically (issue #503).
