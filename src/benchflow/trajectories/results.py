@@ -9,7 +9,8 @@ beside, not inside, raw traces:
 
 The writer is fail-closed for training readiness but not for artifact
 emission: even errored or unstructured rollouts get one JSONL row with an
-``error`` and whatever prompt/trajectory evidence BenchFlow has.
+``error``. The trainer-shaped trajectory is produced only from healthy
+``llm_trajectory.jsonl`` exchanges; ACP is never used as a training fallback.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.trajectories._export_common import aggregate_rollout_jsonl
-from benchflow.trajectories.export import acp_events_to_messages
 from benchflow.trajectories.export_prime_sft import (
     _exchange_to_messages_and_tools,
     _load_jsonl,
@@ -82,11 +82,18 @@ def _metrics_from_rewards(
 def _token_usage_from_agent_result(agent_result: dict[str, Any]) -> dict[str, Any]:
     input_tokens = _nonnegative_number(agent_result.get("n_input_tokens"))
     output_tokens = _nonnegative_number(agent_result.get("n_output_tokens"))
+    total_tokens = _nonnegative_number(agent_result.get("total_tokens"))
+    if input_tokens + output_tokens == 0 and total_tokens > 0:
+        # Some harness/provider paths only expose a provider total. Prime-RL's
+        # token-batch path needs final_input_tokens + final_output_tokens to be
+        # non-zero; keep the total visible without inventing an output split.
+        input_tokens = total_tokens
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "final_input_tokens": input_tokens,
         "final_output_tokens": output_tokens,
+        "total_tokens": total_tokens,
     }
 
 
@@ -134,22 +141,6 @@ def _stop_condition(
     return "agent_completed"
 
 
-def _split_prompt_completion(
-    messages: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    first_assistant = next(
-        (
-            idx
-            for idx, message in enumerate(messages)
-            if message.get("role") == "assistant"
-        ),
-        None,
-    )
-    if first_assistant is None:
-        return list(messages), []
-    return messages[:first_assistant], messages[first_assistant:]
-
-
 def _llm_steps_from_trajectory(
     rollout_dir: Path,
     *,
@@ -188,35 +179,6 @@ def _llm_steps_from_trajectory(
             }
         )
     return steps, tool_defs
-
-
-def _fallback_step_from_acp(
-    *,
-    prompts: list[str],
-    trajectory: list[dict[str, Any]],
-    reward: float,
-    is_truncated: bool,
-    trajectory_id_prefix: str,
-) -> list[dict[str, Any]]:
-    messages = acp_events_to_messages(trajectory, prompts)
-    prompt, completion = _split_prompt_completion(messages)
-    if not prompt and prompts:
-        prompt = [{"role": "user", "content": prompt_text} for prompt_text in prompts]
-    if not completion:
-        return []
-    return [
-        {
-            "prompt": prompt,
-            "completion": completion,
-            "response": None,
-            "tokens": None,
-            "reward": reward,
-            "advantage": 0.0,
-            "is_truncated": is_truncated,
-            "trajectory_id": f"{trajectory_id_prefix}__acp",
-            "extras": {"source": "acp_trajectory"},
-        }
-    ]
 
 
 def _top_level_prompt_completion(
@@ -270,20 +232,22 @@ def build_rollout_results_record(
         is_truncated=is_truncated,
         trajectory_id_prefix=trajectory_id_prefix,
     )
-    if not steps:
-        steps = _fallback_step_from_acp(
-            prompts=prompts,
-            trajectory=trajectory,
-            reward=reward,
-            is_truncated=is_truncated,
-            trajectory_id_prefix=trajectory_id_prefix,
-        )
     prompt, completion = _top_level_prompt_completion(steps, prompts)
     error_obj = _error_payload(
         error=error,
         verifier_error=verifier_error,
         export_error=export_error,
     )
+    training_ready = bool(steps and completion)
+    training_ready_reason = None
+    if not training_ready:
+        training_ready_reason = "missing_healthy_structured_llm_trajectory"
+        if error_obj is None:
+            error_obj = {
+                "error": "missing_llm_trajectory",
+                "error_chain_str": "No healthy structured LLM trajectory was available for results.jsonl",
+                "error_chain_repr": "No healthy structured LLM trajectory was available for results.jsonl",
+            }
     completed = error_obj is None and not partial_trajectory
     token_usage = _token_usage_from_agent_result(agent_result or {})
     metrics = _metrics_from_rewards(
@@ -305,6 +269,8 @@ def build_rollout_results_record(
             "model": model,
             "source": "benchflow",
             "rollout_dir": str(rollout_path),
+            "training_ready": training_ready,
+            "training_ready_reason": training_ready_reason,
             **(
                 {"reward_details": rewards.get("details")}
                 if isinstance(rewards, dict)

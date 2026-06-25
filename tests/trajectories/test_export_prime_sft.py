@@ -240,3 +240,95 @@ def test_validate_accepts_prime_rollout_prompt_completion_rows(tmp_path: Path) -
         "rows": 1,
         "rows_with_tool_calls": 1,
     }
+
+
+def test_convert_openhands_responses_shape_preserves_tool_calls(tmp_path: Path) -> None:
+    """Guards PR #828: OpenHands mixed chat/request Responses output is structured."""
+    rollout = tmp_path / "job" / "openhands__abc123"
+    rollout.mkdir(parents=True)
+    (rollout / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "openhands-task",
+                "rewards": {"reward": 1.0},
+                "agent_result": {"total_tokens": 10},
+            }
+        )
+    )
+    traj = rollout / "trajectory"
+    traj.mkdir()
+    (traj / "llm_trajectory.jsonl").write_text(
+        json.dumps(
+            {
+                "request": {
+                    "body": {
+                        "model": "gpt-5.4-mini",
+                        "messages": [
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "Create the file.",
+                                    }
+                                ],
+                            },
+                            {
+                                "type": "function_call",
+                                "call_id": "call_1",
+                                "name": "file_editor",
+                                "arguments": '{"command":"create"}',
+                            },
+                            {
+                                "type": "function_call_output",
+                                "call_id": "call_1",
+                                "output": "File created.",
+                            },
+                        ],
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "file_editor",
+                                "description": "Edit files.",
+                                "parameters": {"type": "object", "properties": {}},
+                            }
+                        ],
+                    }
+                },
+                "response": {
+                    "status_code": 200,
+                    "body": {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": "Done.",
+                                    }
+                                ],
+                            }
+                        ],
+                        "usage": {"total_tokens": 10},
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(tmp_path / "job")
+
+    assert stats.rows_written == 1
+    row = rows[0]
+    assert row["tool_defs"][0]["function"]["name"] == "file_editor"
+    assert row["messages"][1]["role"] == "assistant"
+    assert row["messages"][1]["tool_calls"][0]["function"]["name"] == "file_editor"
+    assert row["messages"][2] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "File created.",
+    }
+    assert row["messages"][-1] == {"role": "assistant", "content": "Done."}

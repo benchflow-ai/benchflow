@@ -175,6 +175,31 @@ def _normalize_tool_call(call: dict[str, Any], index: int = 0) -> dict[str, Any]
 
 
 def _normalize_message(message: dict[str, Any], index: int) -> dict[str, Any]:
+    message_type = message.get("type")
+    if message_type == "function_call":
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                _normalize_tool_call(
+                    {
+                        "id": message.get("call_id") or message.get("id"),
+                        "type": "function",
+                        "function": {
+                            "name": message.get("name"),
+                            "arguments": message.get("arguments", {}),
+                        },
+                    },
+                    index,
+                )
+            ],
+        }
+    if message_type == "function_call_output":
+        return {
+            "role": "tool",
+            "tool_call_id": str(message.get("call_id") or message.get("id") or ""),
+            "content": _content_to_text(message.get("output")),
+        }
     role = _normalize_role(message.get("role"))
     out: dict[str, Any] = {"role": role}
     if role == "tool":
@@ -213,11 +238,15 @@ def _messages_from_chat_request(body: dict[str, Any]) -> list[dict[str, Any]]:
     messages = body.get("messages")
     if not isinstance(messages, list):
         return []
-    return [
-        _normalize_message(cast(dict[str, Any], message), idx)
-        for idx, message in enumerate(messages)
-        if isinstance(message, dict)
-    ]
+    normalized: list[dict[str, Any]] = []
+    for idx, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        message = cast(dict[str, Any], message)
+        if message.get("type") == "reasoning":
+            continue
+        normalized.append(_normalize_message(message, idx))
+    return normalized
 
 
 def _messages_from_responses_request(body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -230,8 +259,11 @@ def _messages_from_responses_request(body: dict[str, Any]) -> list[dict[str, Any
         messages.append({"role": "user", "content": raw_input})
     elif isinstance(raw_input, list):
         for idx, item in enumerate(raw_input):
-            if isinstance(item, dict):
-                messages.append(_normalize_message(cast(dict[str, Any], item), idx))
+            if not isinstance(item, dict):
+                continue
+            item = cast(dict[str, Any], item)
+            if item.get("type") != "reasoning":
+                messages.append(_normalize_message(item, idx))
     return messages
 
 
@@ -273,6 +305,9 @@ def _assistant_from_chat_response(body: dict[str, Any]) -> dict[str, Any] | None
     content = body.get("content")
     if content:
         return {"role": "assistant", "content": _content_to_text(content)}
+    assistant = _assistant_from_responses_response(body)
+    if assistant is not None:
+        return assistant
     return None
 
 

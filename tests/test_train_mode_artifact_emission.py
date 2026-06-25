@@ -442,12 +442,15 @@ def test_build_rollout_result_emits_verifiers_shaped_results_jsonl(tmp_path):
     ]
     assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
     assert row["tool_defs"][0]["function"]["name"] == "terminal"
+    assert row["info"]["training_ready"] is True
+    assert row["info"]["training_ready_reason"] is None
     assert row["reward"] == 1.0
     assert row["metrics"]["exact_match"] == 1.0
     assert row["metrics"]["created_event"] == 1.0
     assert row["info"]["reward_details"] == {"api_calls": 2}
     assert row["token_usage"]["final_input_tokens"] == 10.0
     assert row["token_usage"]["final_output_tokens"] == 3.0
+    assert row["token_usage"]["total_tokens"] == 13.0
     assert row["trajectory"][0]["tokens"] is None
     assert row["trajectory"][0]["prompt"] == row["prompt"]
     assert row["trajectory"][0]["completion"] == row["completion"]
@@ -456,8 +459,8 @@ def test_build_rollout_result_emits_verifiers_shaped_results_jsonl(tmp_path):
     assert row["stop_condition"] == "agent_completed"
 
 
-def test_build_rollout_result_results_jsonl_survives_error_without_llm(tmp_path):
-    """Guards PR #828: errored rollouts still get a Verifiers-shaped row."""
+def test_build_rollout_result_results_jsonl_is_unhealthy_without_llm(tmp_path):
+    """Guards PR #828: results.jsonl never falls back to ACP for training data."""
     rollout_dir = tmp_path / "rollout-error"
     rollout_dir.mkdir()
 
@@ -486,9 +489,53 @@ def test_build_rollout_result_results_jsonl_survives_error_without_llm(tmp_path)
     assert row["trajectory"] == []
     assert row["reward"] == 0.0
     assert row["error"]["error"] == "agent_error"
+    assert row["info"]["training_ready"] is False
+    assert (
+        row["info"]["training_ready_reason"]
+        == "missing_healthy_structured_llm_trajectory"
+    )
     assert row["is_completed"] is False
     assert row["is_truncated"] is True
     assert row["stop_condition"] == "partial_trajectory"
+
+
+def test_results_jsonl_token_usage_falls_back_to_provider_total(tmp_path):
+    """Guards PR #828: total-only telemetry still feeds Prime-RL token batches."""
+    rollout_dir = tmp_path / "rollout-total-only"
+    rollout_dir.mkdir()
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="token-total-task",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="m",
+        n_tool_calls=1,
+        prompts=["Say done."],
+        error=None,
+        verifier_error=None,
+        trajectory=[{"type": "agent_message", "text": "Done."}],
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+        n_input_tokens=0,
+        n_output_tokens=0,
+        total_tokens=123,
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["error"]["error"] == "missing_llm_trajectory"
+    assert row["info"]["training_ready"] is False
+    assert row["token_usage"] == {
+        "input_tokens": 123.0,
+        "output_tokens": 0.0,
+        "final_input_tokens": 123.0,
+        "final_output_tokens": 0.0,
+        "total_tokens": 123.0,
+    }
 
 
 def test_write_job_results_jsonl_aggregates_rollout_results(tmp_path):
