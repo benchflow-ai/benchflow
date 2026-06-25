@@ -52,6 +52,7 @@ from benchflow.cli.monitor import register_monitor
 from benchflow.cli.sandbox import register_sandbox
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
+from benchflow.cli.train import register_train
 from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
 from benchflow.sandbox.providers import providers_phrase
@@ -1098,6 +1099,7 @@ def eval_view(
 register_continue(eval_app, alias_app=app)
 register_skills(app)
 register_tasks(app)
+register_train(app)
 register_hub(app)
 register_agent(app)
 register_adopt_deprecated(app)
