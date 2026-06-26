@@ -513,6 +513,58 @@ class TestTransportProtocolFiltering:
         assert not agent_log.exists()
 
     @pytest.mark.asyncio
+    async def test_container_transport_clears_stale_log_on_retry(
+        self, tmp_path
+    ) -> None:
+        """Guards #535/PR#832: a failed connect attempt that logged a warning must
+        not leave stale text behind when a later JSON-RPC-only retry succeeds.
+
+        _connect_acp_session reuses the same agent/<agent>.txt path across retry
+        attempts, so start() must clear any stale log from a prior attempt.
+        """
+        agent_log = tmp_path / "agent" / "gemini.txt"
+
+        # Attempt 0: agent emits a non-protocol warning (captured to the log),
+        # then the connection "fails" (the caller discards the transport).
+        first_process = AsyncMock()
+        first_process.readline = AsyncMock(
+            side_effect=[
+                b"WARNING: provider hiccup\n",
+                b'{"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}\n',
+            ]
+        )
+        first = ContainerTransport(
+            container_process=first_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+        await first.start()
+        await asyncio.wait_for(first.receive(), timeout=5)
+        await first.close()
+        assert "provider hiccup" in agent_log.read_text()
+
+        # Attempt 1: a fresh transport on the SAME path, JSON-RPC only (no
+        # non-protocol output). start() must wipe the stale log.
+        second_process = AsyncMock()
+        second_process.readline = AsyncMock(
+            return_value=b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n'
+        )
+        second = ContainerTransport(
+            container_process=second_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+        await second.start()
+        assert not agent_log.exists()
+        try:
+            msg = await asyncio.wait_for(second.receive(), timeout=5)
+        finally:
+            await second.close()
+        assert msg == {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}
+        # The successful retry never logged non-protocol output, so no stale text.
+        assert not agent_log.exists()
+
+    @pytest.mark.asyncio
     async def test_stdio_transport_skips_structured_json_logs(self) -> None:
         """Guards PR #236 against treating JSON object logs as ACP responses."""
         reader = asyncio.StreamReader()

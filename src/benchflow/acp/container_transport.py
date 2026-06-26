@@ -39,6 +39,13 @@ class ContainerTransport(Transport):
         """Start the agent process inside the sandbox."""
         if self._agent_log_path:
             self._agent_log_path.parent.mkdir(parents=True, exist_ok=True)
+            # Clear any stale log from a previous connect attempt. _connect_acp_session
+            # reuses the same agent/<agent>.txt path across retries (runtime.py), so a
+            # failed attempt that logged a non-protocol warning before raising would
+            # otherwise leave stale text behind when a later JSON-RPC-only retry succeeds
+            # (which never re-opens the file). Unlink rather than truncating so we keep
+            # the lazy-open contract: no empty placeholder for protocol-only runs.
+            self._agent_log_path.unlink(missing_ok=True)
         await self._cp.start(
             command=self._command,
             env=self._env,
