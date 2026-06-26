@@ -7,6 +7,8 @@ kernel path is exercised without omnigent/sandbox deps.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from benchflow.acp.runtime import AgentPromptTimeoutError
@@ -45,8 +47,14 @@ class _FakeAgent:
         self.kwargs = kwargs
         self.connected: tuple | None = None
 
-    async def connect(self, sandbox, role, *, agent_env=None):
-        self.connected = (sandbox, role, agent_env)
+    async def connect(self, sandbox, role):
+        self.connected = (sandbox, role)
+        return _FakeSession()
+
+
+class _SlowConnectAgent:
+    async def connect(self, sandbox, role):
+        await asyncio.sleep(10)
         return _FakeSession()
 
 
@@ -59,8 +67,13 @@ def build_fake_agent(**kwargs) -> _FakeAgent:
     return agent
 
 
+def build_slow_connect_agent(**kwargs) -> _SlowConnectAgent:
+    return _SlowConnectAgent()
+
+
 @pytest.mark.asyncio
 async def test_connect_builds_agent_and_connects_with_proxy_env():
+    """Guards PR #825: session-factory connect uses Agent.connect(sandbox, role)."""
     _BUILT.clear()
     client, session, adapter, name = await connect_session_factory(
         env="SANDBOX-HANDLE",
@@ -70,17 +83,38 @@ async def test_connect_builds_agent_and_connects_with_proxy_env():
         sandbox_user="root",
         model="deepseek-v4-flash",
         rollout_dir=None,
+        timeout=30,
+        agent_cwd="/workspace",
     )
     # shape-compatible with connect_acp: no client/adapter for session-factory
     assert client is None and adapter is None and name == "fake-sf"
     assert isinstance(session, _FakeSession)
-    # the agent was connected with the sandbox + the proxy-routing agent_env
-    assert _BUILT["agent"].connected[0] == "SANDBOX-HANDLE"
-    assert _BUILT["agent"].connected[2] == {
-        "BENCHFLOW_PROVIDER_MODEL": "deepseek-v4-flash"
+    # the agent was connected with the sandbox wrapper + proxy-routing agent_env
+    connect_sandbox, role = _BUILT["agent"].connected
+    assert connect_sandbox.sandbox == "SANDBOX-HANDLE"
+    assert role == "agent"
+    assert connect_sandbox.agent_env == {
+        "BENCHFLOW_PROVIDER_MODEL": "deepseek-v4-flash",
+        "BENCHFLOW_AGENT_CWD": "/workspace",
     }
     # sandbox_user forwarded as exec_user (credential store + exec stay in lockstep)
     assert _BUILT["agent"].kwargs == {"exec_user": "root"}
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_raises():
+    """Guards PR #825: hung session-factory connect is bounded by the agent budget."""
+    with pytest.raises(TimeoutError, match=r"session-factory connect exceeded 0\.01s"):
+        await connect_session_factory(
+            env="SANDBOX-HANDLE",
+            agent="fake-sf",
+            session_factory=f"{__name__}:build_slow_connect_agent",
+            agent_env={},
+            sandbox_user=None,
+            model=None,
+            rollout_dir=None,
+            timeout=0.01,
+        )
 
 
 @pytest.mark.asyncio
@@ -126,7 +160,13 @@ def test_session_factory_entrypoint_is_the_dispatch_key():
     """Rollout._session_factory_entrypoint returns the entrypoint for a
     session-factory agent (→ the non-ACP path) and None for an ACP agent (→ the
     ACP path). This is the single key the connect + drive dispatch branches on."""
-    from benchflow.agents.registry import AGENTS, register_agent
+    from benchflow.agents.registry import (
+        AGENT_ALIASES,
+        AGENT_INSTALLERS,
+        AGENT_LAUNCH,
+        AGENTS,
+        register_agent,
+    )
     from benchflow.rollout import Rollout
 
     register_agent(
@@ -145,6 +185,9 @@ def test_session_factory_entrypoint_is_the_dispatch_key():
         assert r._session_factory_entrypoint("no-such-agent-xyz") is None
     finally:
         AGENTS.pop("fake-sf-agent", None)
+        AGENT_ALIASES.pop("fake-sf-agent", None)
+        AGENT_INSTALLERS.pop("fake-sf-agent", None)
+        AGENT_LAUNCH.pop("fake-sf-agent", None)
 
 
 @pytest.mark.asyncio

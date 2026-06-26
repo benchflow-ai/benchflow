@@ -4,10 +4,10 @@ A ``protocol="session-factory"`` agent declares a ``session_factory`` dotted
 entrypoint (``"module:callable"``) that builds an :class:`~benchflow.agents.
 protocol.Agent`. Unlike ACP there is no transport: :func:`connect_session_factory`
 imports the entrypoint, builds the Agent, and calls ``agent.connect(sandbox,
-role, agent_env=...)`` → :class:`~benchflow.agents.protocol.Session`. The drive
-loop :func:`execute_prompts_session_factory` calls ``session.prompt(text)`` per
-turn and captures the session's ``steps`` as the trajectory; ``on_change`` is
-wired by the kernel's ``_attach_trajectory_writer`` (same as ACP).
+role)`` → :class:`~benchflow.agents.protocol.Session`. The drive loop
+:func:`execute_prompts_session_factory` calls ``session.prompt(text)`` per turn
+and captures the session's ``steps`` as the trajectory; ``on_change`` is wired
+by the kernel's ``_attach_trajectory_writer`` (same as ACP).
 
 LLM-usage capture is **protocol-agnostic** — the agent's provider traffic is
 routed through the litellm proxy (via the ``BENCHFLOW_PROVIDER_*`` env the kernel
@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,23 @@ from benchflow.diagnostics import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SessionFactorySandbox:
+    """Sandbox handle plus session-factory connect metadata.
+
+    Session-factory agents still receive the declared ``Agent.connect(sandbox,
+    role)`` shape. The wrapper delegates the sandbox API while exposing the
+    kernel-resolved environment that an in-process agent may need during connect.
+    """
+
+    sandbox: Any
+    agent_env: dict[str, str]
+    agent_cwd: str | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.sandbox, name)
 
 
 def _load_session_factory(dotted: str) -> Any:
@@ -55,10 +73,11 @@ async def connect_session_factory(
     env: Any,
     agent: str,
     session_factory: str,
-    agent_env: dict,
+    agent_env: dict[str, str],
     sandbox_user: str | None,
     model: str | None,
     rollout_dir: Path | None,
+    timeout: float,
     agent_cwd: str | None = None,
     **_ignored: Any,
 ) -> tuple[None, object, None, str]:
@@ -72,8 +91,8 @@ async def connect_session_factory(
 
     ``agent_env`` carries the kernel's resolved per-role provider routing
     (``BENCHFLOW_PROVIDER_BASE_URL`` = the litellm proxy, ``_API_KEY`` = the
-    master key, ``_MODEL`` = the route alias). It is passed to ``connect``
-    explicitly because a session-factory agent runs in-process on the host (no
+    master key, ``_MODEL`` = the route alias). It is exposed on the sandbox
+    wrapper because a session-factory agent runs in-process on the host (no
     subprocess env injection), and it is what makes the agent's LLM traffic flow
     through the proxy → captured.
     """
@@ -84,12 +103,21 @@ async def connect_session_factory(
     agent_obj = factory(**kwargs)
     # Inject the kernel-resolved workspace (the same cwd ACP agents + the verifier
     # use) under BENCHFLOW_AGENT_CWD so the agent runs where the verifier reads,
-    # rather than a hardcoded path. Carried through agent_env to keep the
-    # Agent.connect(sandbox, role) protocol shape (no extra positional/kw).
+    # rather than a hardcoded path.
     connect_env = dict(agent_env)
     if agent_cwd:
         connect_env["BENCHFLOW_AGENT_CWD"] = agent_cwd
-    session = await agent_obj.connect(env, "agent", agent_env=connect_env)
+    connect_sandbox = SessionFactorySandbox(env, connect_env, agent_cwd)
+    connect_coro = agent_obj.connect(connect_sandbox, "agent")
+    try:
+        if timeout > 0:
+            session = await asyncio.wait_for(connect_coro, timeout=timeout)
+        else:
+            session = await connect_coro
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"session-factory connect exceeded {timeout}s budget"
+        ) from exc
     logger.info("session-factory agent %r connected via %s", agent, session_factory)
     return None, session, None, agent
 

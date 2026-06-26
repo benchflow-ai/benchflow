@@ -250,27 +250,32 @@ def register_manifest_agents(
 
     ``merge_shim_only=True`` is the additive/compatible mode (used by the
     BENCHFLOW_AGENTS_DIR loader): a manifest reproducing an existing core agent
-    intentionally overrides it, but its _SHIM_ONLY fields are taken from the core
-    entry (which the data-only manifest can't carry), so the merged config equals
-    the original. Implies override semantics (no collision raise)."""
-    if not override and not merge_shim_only:
+    intentionally overrides that agent's config, but its _SHIM_ONLY fields are
+    taken from the core entry (which the data-only manifest can't carry), so the
+    merged config equals the original. Alias collisions still fail loud because
+    remapping another agent's alias is not part of the compatibility shim."""
+    if not override:
+        seen_aliases: dict[str, str] = {}
         for name, lm in loaded.items():
-            if name in agents:
+            if name in agents and not merge_shim_only:
                 raise AgentManifestError(
                     f"agent {name!r} already in the registry; ship its manifest as "
                     "the sole source or pass override=True"
                 )
             for alias in lm.aliases:
-                if alias in aliases:
+                existing = aliases.get(alias)
+                if existing is None:
+                    existing = seen_aliases.get(alias)
+                if existing is not None and existing != name:
                     raise AgentManifestError(
-                        f"alias {alias!r} (for {name!r}) already maps to "
-                        f"{aliases[alias]!r}"
+                        f"alias {alias!r} (for {name!r}) already maps to {existing!r}"
                     )
-                if alias in agents:
+                if alias in agents and alias != name:
                     raise AgentManifestError(
                         f"alias {alias!r} (for {name!r}) collides with an existing "
                         "agent name"
                     )
+                seen_aliases[alias] = name
     for name, lm in loaded.items():
         config = lm.config
         if merge_shim_only and name in agents:

@@ -146,7 +146,7 @@ def test_merge_shim_only_keeps_core_shim_fields(tmp_path: Path):
     # (which the data-only manifest can't carry) from the existing core entry — so
     # the merged config equals the original.
     _put(
-        tmp_path, "demo", "demo"
+        tmp_path, "demo", "demo", extra='aliases = ["demo-code"]\n'
     )  # manifest: install_cmd="echo install", shim defaults
     m = _maps()
     m["agents"]["demo"] = AgentConfig(
@@ -155,11 +155,13 @@ def test_merge_shim_only_keeps_core_shim_fields(tmp_path: Path):
         launch_cmd="CORE-LAUNCH",
         acp_model_config_id="model",  # a _SHIM_ONLY field core owns
     )
+    m["aliases"]["demo-code"] = "demo"
     register_manifest_agents(load_agents_from_dir(tmp_path), **m, merge_shim_only=True)
     merged = m["agents"]["demo"]
     assert merged.install_cmd == "echo install"  # DATA field comes from the manifest
     assert merged.acp_model_config_id == "model"  # _SHIM_ONLY preserved from core
     assert m["installers"]["demo"] == "echo install"
+    assert m["aliases"]["demo-code"] == "demo"
 
 
 def test_merge_shim_only_adds_new_agent_without_core_entry(tmp_path: Path):
@@ -168,3 +170,23 @@ def test_merge_shim_only_adds_new_agent_without_core_entry(tmp_path: Path):
     m = _maps()
     register_manifest_agents(load_agents_from_dir(tmp_path), **m, merge_shim_only=True)
     assert m["agents"]["brand-new"].install_cmd == "echo install"
+
+
+def test_merge_shim_only_rejects_alias_collision(tmp_path: Path):
+    """Guards PR #825: additive manifest mode must not remap existing aliases."""
+    _put(tmp_path, "brand-new", "brand-new", extra='aliases = ["taken"]\n')
+    m = _maps()
+    m["agents"]["core"] = AgentConfig(
+        name="core",
+        install_cmd="CORE-INSTALL",
+        launch_cmd="CORE-LAUNCH",
+    )
+    m["aliases"]["taken"] = "core"
+
+    with pytest.raises(AgentManifestError, match="taken"):
+        register_manifest_agents(
+            load_agents_from_dir(tmp_path), **m, merge_shim_only=True
+        )
+
+    assert "brand-new" not in m["agents"]
+    assert m["aliases"] == {"taken": "core"}
