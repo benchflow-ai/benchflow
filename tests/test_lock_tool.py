@@ -11,11 +11,14 @@ import tomllib
 
 import pytest
 
+from tools import lock as lock_tool
 from tools.lock import (
     COOLDOWN_DAYS,
     LockError,
     compute_cooldown_cutoff,
     find_cooldown_violations,
+    find_expired_cooldown_overrides,
+    main,
     newest_upload_times,
     rewrite_exclude_newer,
 )
@@ -116,7 +119,55 @@ def test_find_cooldown_violations_honors_exemptions() -> None:
     assert violations == []
 
 
+def test_find_cooldown_violations_normalizes_exemption_names() -> None:
+    """Guards the fix from PR #788 so overrides are not spelling-sensitive."""
+    violations = find_cooldown_violations(_SYNTH_LOCK, exempt={"Fresh_Pkg"}, now=_NOW)
+    assert violations == []
+
+
 def test_find_cooldown_violations_only_grows_more_lenient_over_time() -> None:
     # The same lock, evaluated a month later: fresh-pkg has aged past the window.
     later = _NOW + datetime.timedelta(days=30)
     assert find_cooldown_violations(_SYNTH_LOCK, exempt=set(), now=later) == []
+
+
+def test_expired_cooldown_overrides_flags_aged_out_entries() -> None:
+    """Guards the PR #788 override escape hatch from becoming a package allowlist."""
+    overrides = {
+        "old-pkg": "2026-06-08T00:00:00Z",
+        "fresh-pkg": "2026-06-14T00:00:00Z",
+    }
+    expired = find_expired_cooldown_overrides(overrides, now=_NOW)
+    assert [(name, raw) for name, raw, _ in expired] == [
+        ("old-pkg", "2026-06-08T00:00:00Z")
+    ]
+
+
+def test_expired_cooldown_overrides_rejects_invalid_timestamp() -> None:
+    """Guards the PR #788 override gate against unclear TOML diagnostics."""
+    with pytest.raises(
+        LockError,
+        match=r"\[tool\.uv\.exclude-newer-package\] 'bad-pkg' must be an ISO timestamp",
+    ):
+        find_expired_cooldown_overrides({"bad-pkg": "not-a-date"}, now=_NOW)
+
+
+def test_main_wraps_pyproject_read_oserror(tmp_path, capsys) -> None:
+    """Guards the PR #788 lock helper from leaking raw OSError tracebacks."""
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--pyproject", str(tmp_path), "--no-lock"])
+
+    assert exc_info.value.code == 1
+    assert "Could not read" in capsys.readouterr().err
+
+
+def test_run_uv_lock_wraps_oserror(monkeypatch, tmp_path) -> None:
+    """Guards the PR #788 lock helper from leaking subprocess OSError."""
+
+    def raise_oserror(*args, **kwargs):
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(lock_tool.subprocess, "run", raise_oserror)
+
+    with pytest.raises(LockError, match="Could not run `uv lock`"):
+        lock_tool._run_uv_lock(tmp_path / "pyproject.toml")

@@ -31,7 +31,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 # Single source of truth for the cooldown window. `tests/test_dep_cooldown.py`
@@ -45,6 +45,7 @@ _EXCLUDE_NEWER_RE = re.compile(
     r'^(?P<prefix>exclude-newer\s*=\s*)"[^"]*"',
     re.MULTILINE,
 )
+_PACKAGE_NAME_RE = re.compile(r"[-_.]+")
 
 
 class LockError(RuntimeError):
@@ -82,11 +83,31 @@ def rewrite_exclude_newer(pyproject_text: str, cutoff: str) -> str:
     return _EXCLUDE_NEWER_RE.sub(rf'\g<prefix>"{cutoff}"', pyproject_text)
 
 
+def normalize_package_name(name: str) -> str:
+    """Return the package-name shape uv/PyPI use for comparisons."""
+    return _PACKAGE_NAME_RE.sub("-", name).lower()
+
+
 def _parse_lock_timestamp(raw: str) -> datetime.datetime:
     ts = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=datetime.UTC)
     return ts
+
+
+def _parse_override_timestamp(package: str, raw: object) -> datetime.datetime:
+    if not isinstance(raw, str):
+        raise LockError(
+            "[tool.uv.exclude-newer-package] "
+            f"{package!r} must be an ISO timestamp string, got {raw!r}."
+        )
+    try:
+        return _parse_lock_timestamp(raw)
+    except ValueError as exc:
+        raise LockError(
+            "[tool.uv.exclude-newer-package] "
+            f"{package!r} must be an ISO timestamp, got {raw!r}."
+        ) from exc
 
 
 def newest_upload_times(
@@ -137,21 +158,60 @@ def find_cooldown_violations(
     """
     floor = now.astimezone(datetime.UTC) - datetime.timedelta(days=cooldown_days)
     lock = tomllib.loads(lock_text)
+    normalized_exempt = {normalize_package_name(name) for name in exempt}
     violations = [
         (name, version, ts)
         for name, (version, ts) in newest_upload_times(lock).items()
-        if ts > floor and name not in exempt
+        if ts > floor and normalize_package_name(name) not in normalized_exempt
     ]
     violations.sort(key=lambda item: item[2], reverse=True)
     return violations
 
 
+def find_expired_cooldown_overrides(
+    overrides: Mapping[str, object],
+    now: datetime.datetime,
+    cooldown_days: int = COOLDOWN_DAYS,
+) -> list[tuple[str, str, datetime.datetime]]:
+    """Return package overrides whose temporary cutoff is no longer needed.
+
+    `[tool.uv.exclude-newer-package]` is the explicit escape hatch for a package
+    that must resolve newer than the global cooldown cap. Once the override's
+    timestamp is older than the active cooldown floor, the global cap can cover
+    the package and the override must be removed instead of becoming a permanent
+    package allowlist.
+    """
+    floor = now.astimezone(datetime.UTC) - datetime.timedelta(days=cooldown_days)
+    expired: list[tuple[str, str, datetime.datetime]] = []
+    for package, raw_cutoff in overrides.items():
+        cutoff = _parse_override_timestamp(package, raw_cutoff)
+        if cutoff <= floor:
+            expired.append((package, str(raw_cutoff), cutoff))
+    expired.sort(key=lambda item: normalize_package_name(item[0]))
+    return expired
+
+
+def _read_pyproject(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise LockError(f"Could not read {path}: {exc}") from exc
+
+
+def _write_pyproject(path: Path, text: str) -> None:
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise LockError(f"Could not write {path}: {exc}") from exc
+
+
 def _run_uv_lock(pyproject_path: Path) -> int:
+    cwd = pyproject_path.resolve().parent
     try:
         # Fixed argv, no shell — uv is resolved from PATH.
         completed = subprocess.run(
             ["uv", "lock"],
-            cwd=pyproject_path.resolve().parent,
+            cwd=cwd,
             check=False,
         )
     except FileNotFoundError as exc:
@@ -159,6 +219,8 @@ def _run_uv_lock(pyproject_path: Path) -> int:
             "`uv` was not found on PATH; install uv or pass --no-lock to only "
             "rewrite the cutoff date."
         ) from exc
+    except OSError as exc:
+        raise LockError(f"Could not run `uv lock` in {cwd}: {exc}") from exc
     return completed.returncode
 
 
@@ -200,10 +262,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(cutoff)
             return 0
 
-        original = args.pyproject.read_text(encoding="utf-8")
+        original = _read_pyproject(args.pyproject)
         updated = rewrite_exclude_newer(original, cutoff)
         if updated != original:
-            args.pyproject.write_text(updated, encoding="utf-8")
+            _write_pyproject(args.pyproject, updated)
             print(f"Set [tool.uv] exclude-newer = {cutoff!r} in {args.pyproject}.")
         else:
             print(f"[tool.uv] exclude-newer already {cutoff!r}; no change.")

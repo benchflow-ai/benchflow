@@ -23,7 +23,11 @@ import datetime
 import tomllib
 from pathlib import Path
 
-from tools.lock import COOLDOWN_DAYS, find_cooldown_violations
+from tools.lock import (
+    COOLDOWN_DAYS,
+    find_cooldown_violations,
+    find_expired_cooldown_overrides,
+)
 
 _PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 _LOCK = Path(__file__).resolve().parents[1] / "uv.lock"
@@ -60,4 +64,23 @@ def test_locked_packages_respect_cooldown() -> None:
         "without a documented [tool.uv.exclude-newer-package] override:\n"
         + "\n".join(f"  {n} {v} (uploaded {ts:%Y-%m-%d})" for n, v, ts in violations)
         + "\nRe-lock with `python tools/lock.py`, or add a commented override."
+    )
+
+
+def test_exclude_newer_package_overrides_expire_with_cooldown() -> None:
+    cfg = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    overrides = cfg.get("tool", {}).get("uv", {}).get("exclude-newer-package", {})
+    now = datetime.datetime.now(datetime.UTC)
+    expired = find_expired_cooldown_overrides(overrides, now=now)
+    floor = now - datetime.timedelta(days=COOLDOWN_DAYS)
+    assert not expired, (
+        "[tool.uv.exclude-newer-package] overrides are temporary security/urgent "
+        f"escape hatches and must be removed once their cutoff is older than the "
+        f"{COOLDOWN_DAYS}-day cooldown floor ({floor:%Y-%m-%dT%H:%M:%SZ}):\n"
+        + "\n".join(
+            f"  {name} = {raw!r} (override cutoff {cutoff:%Y-%m-%dT%H:%M:%SZ})"
+            for name, raw, cutoff in expired
+        )
+        + "\nRemove the stale override and re-lock with `python tools/lock.py`, "
+        "or keep an override only for a still-fresh security/urgent pin."
     )
