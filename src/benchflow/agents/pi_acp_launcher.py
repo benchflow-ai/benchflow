@@ -50,6 +50,10 @@ def _positive_int(value: object) -> int | None:
         return None
     if isinstance(value, int):
         parsed = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            return None
+        parsed = int(value)
     elif isinstance(value, str | bytes | bytearray):
         try:
             parsed = int(value)

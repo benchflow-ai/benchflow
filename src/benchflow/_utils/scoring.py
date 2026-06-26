@@ -22,6 +22,16 @@ PROVIDER_AUTH = "provider_auth"
 # self-surfacing throttle self-heals on backoff. The two paths track genuinely
 # different failure shapes, so the differing retry verdicts are intentional.
 PROVIDER_RATE_LIMIT = "provider_rate_limit"
+# A provider *rejected* the request (HTTP 400) and it surfaced as a *raised*
+# ``AgentProtocolError -32603`` sanitized at the ACP boundary
+# (``_classify_acp_error``). The canonical case is a context-window/token-budget
+# overflow (issue #830): the prompt + completion cap exceeds the model's context,
+# which is deterministic and futile to retry in-batch. Like ``provider_auth`` it
+# is permanent — no retry branch + listed in ``RetryConfig.exclude_categories``.
+# A 400 that instead surfaces post-rollout (every captured request failed, zero
+# tokens) is classified by ``_maybe_classify_api_error`` as
+# ``api_error[rejected_request/permanent]`` and is already non-retryable.
+PROVIDER_REJECTED = "provider_rejected"
 TIMED_OUT = "timeout"
 # Provider API failures detected post-rollout (rate limit, quota, rejected
 # request, 5xx). "api_error" is proxy-proven (every captured provider request
@@ -59,6 +69,13 @@ _PROVIDER_RATE_LIMIT_MARKERS = (
 _PROVIDER_UNAVAILABLE_MARKERS = (
     "provider unavailable",
     "http 503",
+)
+# Sanitized marker appended by ``_classify_acp_error`` when a raised ACP error
+# hides a provider request rejection (400) — most commonly a context-window
+# overflow (#830). Matched case-insensitively, same as the markers above.
+_PROVIDER_REJECTED_MARKERS = (
+    "provider rejected request",
+    "http 400",
 )
 
 # Verifier error category constants
@@ -117,6 +134,8 @@ def classify_error(error: str | None) -> str | None:
             return PROVIDER_RATE_LIMIT
         if any(m in lower for m in _PROVIDER_UNAVAILABLE_MARKERS):
             return INFRA_ERROR
+        if any(m in lower for m in _PROVIDER_REJECTED_MARKERS):
+            return PROVIDER_REJECTED
         return ACP_ERROR
     if "sandbox startup" in lower or "sandbox creation" in lower:
         return SANDBOX_SETUP

@@ -52,6 +52,7 @@ from benchflow._utils.scoring import (
     PIPE_CLOSED,
     PROVIDER_AUTH,
     PROVIDER_RATE_LIMIT,
+    PROVIDER_REJECTED,
     SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
@@ -195,7 +196,12 @@ class RetryConfig:
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
     exclude_categories: set[str] = field(
-        default_factory=lambda: {"timeout", PROVIDER_AUTH, PROVIDER_RATE_LIMIT}
+        default_factory=lambda: {
+            "timeout",
+            PROVIDER_AUTH,
+            PROVIDER_RATE_LIMIT,
+            PROVIDER_REJECTED,
+        }
     )
 
     @classmethod
