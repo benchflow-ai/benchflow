@@ -81,6 +81,16 @@ class PrimeSftExportStats:
         }
 
 
+@dataclass(frozen=True)
+class PrimeSftExchangeData:
+    messages: list[dict[str, Any]]
+    tool_defs: list[dict[str, Any]]
+
+
+class PrimeSftTrajectoryJsonlError(ValueError):
+    """Raised when an LLM trajectory JSONL file is not parseable."""
+
+
 def _json_line(record: dict[str, Any]) -> str:
     raw = dumps_finite(scrub_non_finite(record), default=str)
     return redact_trajectory_text(raw)
@@ -94,22 +104,42 @@ def _load_json(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+def load_llm_trajectory_jsonl(
+    path: Path,
+    *,
+    strict: bool = False,
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     try:
         lines = path.read_text().splitlines()
-    except OSError:
+    except OSError as exc:
+        if strict:
+            raise PrimeSftTrajectoryJsonlError(
+                f"{path}: cannot read LLM trajectory JSONL: {exc}"
+            ) from exc
         return records
-    for line in lines:
+    for line_num, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            if strict:
+                raise PrimeSftTrajectoryJsonlError(
+                    f"{path}: line {line_num}: invalid JSON: {exc}"
+                ) from exc
             continue
         if isinstance(record, dict):
             records.append(record)
+        elif strict:
+            raise PrimeSftTrajectoryJsonlError(
+                f"{path}: line {line_num}: top-level record must be an object"
+            )
     return records
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    return load_llm_trajectory_jsonl(path, strict=False)
 
 
 def _iter_rollout_dirs(root: str | Path) -> list[Path]:
@@ -540,6 +570,22 @@ def validate_prime_sft_jsonl(
     return {"ok": True, "rows": rows, "rows_with_tool_calls": rows_with_tool_calls}
 
 
+def normalize_prime_sft_exchange(
+    exchange: dict[str, Any],
+) -> tuple[PrimeSftExchangeData | None, str | None]:
+    """Normalize one raw LLM exchange through the Prime-SFT validator path."""
+    messages, tool_defs, skip_reason = _exchange_to_messages_and_tools(exchange)
+    if skip_reason:
+        return None, skip_reason
+    if _has_tool_calls(messages) and not tool_defs:
+        return None, "missing_tool_defs"
+    try:
+        validate_prime_sft_row({"messages": messages, "tool_defs": tool_defs}, 1)
+    except ValueError as exc:
+        return None, f"invalid_prime_sft_row: {exc}"
+    return PrimeSftExchangeData(messages=messages, tool_defs=tool_defs), None
+
+
 def _row_from_exchange(
     *,
     exchange: dict[str, Any],
@@ -548,16 +594,16 @@ def _row_from_exchange(
     reward: float | None,
     exchange_idx: int,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    messages, tool_defs, skip_reason = _exchange_to_messages_and_tools(exchange)
+    normalized, skip_reason = normalize_prime_sft_exchange(exchange)
     if skip_reason:
         return None, skip_reason
-    if _has_tool_calls(messages) and not tool_defs:
-        return None, "missing_tool_defs"
+    if normalized is None:
+        return None, "invalid_prime_sft_row"
 
     agent_result = result.get("agent_result") if isinstance(result, dict) else None
     row = {
-        "messages": messages,
-        "tool_defs": tool_defs,
+        "messages": normalized.messages,
+        "tool_defs": normalized.tool_defs,
         "task_name": (result or {}).get("task_name") or rollout_dir.name,
         "source": "benchflow-llm-trajectory",
         "source_path": str(rollout_dir / "trajectory" / "llm_trajectory.jsonl"),

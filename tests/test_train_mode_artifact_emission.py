@@ -25,6 +25,7 @@ from benchflow.trajectories.export import (
     write_job_verifiers_jsonl,
     write_rollout_verifiers_jsonl,
 )
+from benchflow.trajectories.export_prime_sft import validate_prime_sft_jsonl
 from benchflow.trajectories.results import write_job_results_jsonl
 
 _FAKE_GEMINI_KEY = "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"
@@ -471,6 +472,87 @@ def test_build_rollout_result_emits_verifiers_shaped_results_jsonl(tmp_path):
     assert row["error"] is None
     assert row["is_completed"] is True
     assert row["stop_condition"] == "agent_completed"
+
+
+def test_results_jsonl_uses_canonical_prime_sft_normalization(tmp_path):
+    """Guards PR #828 review: runtime rows do not trust callback-only messages."""
+    rollout_dir = tmp_path / "rollout-normalized"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    exchange = _llm_exchange(
+        messages=[
+            {"role": "system", "content": "Primary system prompt."},
+            {"role": "system", "content": "Second system prompt."},
+            {"role": "user", "content": "List files."},
+        ]
+    )
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(exchange) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    artifact = rollout_dir / "results.jsonl"
+    row = json.loads(artifact.read_text())
+    assert row["prompt"][0]["role"] == "system"
+    assert row["prompt"][1]["role"] == "user"
+    assert row["info"]["training_ready"] is True
+    assert validate_prime_sft_jsonl(artifact, expected_rows=1)["ok"] is True
+
+
+def test_results_jsonl_fails_closed_on_malformed_llm_jsonl(tmp_path):
+    """Guards PR #828 review: truncated LLM JSONL cannot yield training rows."""
+    rollout_dir = tmp_path / "rollout-truncated"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(_llm_exchange()) + "\n" + '{"request":\n'
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["completion"] is None
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "invalid_llm_trajectory_jsonl"
+    assert row["error"]["error"] == "export_error"
+    assert "line 2: invalid JSON" in row["error"]["error_chain_str"]
+    assert row["is_completed"] is False
+    assert row["stop_condition"] == "export_error"
 
 
 def test_build_rollout_result_results_jsonl_is_unhealthy_without_llm(tmp_path):

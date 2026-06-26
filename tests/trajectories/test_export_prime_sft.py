@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 
 from benchflow.trajectories.export_prime_sft import (
+    PrimeSftTrajectoryJsonlError,
     convert_benchflow_rollouts_to_prime_sft_rows,
     export_prime_sft_jsonl,
+    load_llm_trajectory_jsonl,
     validate_prime_sft_jsonl,
 )
 
@@ -336,6 +338,17 @@ def test_validate_accepts_prime_rollout_prompt_completion_rows(tmp_path: Path) -
         "rows": 1,
         "rows_with_tool_calls": 1,
     }
+
+
+def test_strict_llm_trajectory_loader_rejects_malformed_jsonl(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #828 review: malformed LLM JSONL must not be silently skipped."""
+    path = tmp_path / "llm_trajectory.jsonl"
+    path.write_text(json.dumps(_exchange(final=True)) + "\n" + '{"request":\n')
+
+    with pytest.raises(PrimeSftTrajectoryJsonlError, match="line 2: invalid JSON"):
+        load_llm_trajectory_jsonl(path, strict=True)
 
 
 def test_convert_openhands_responses_shape_preserves_tool_calls(tmp_path: Path) -> None:

@@ -21,7 +21,12 @@ from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.trajectories._export_common import aggregate_rollout_jsonl
-from benchflow.trajectories.export_prime_sft import _load_jsonl
+from benchflow.trajectories.export_prime_sft import (
+    PrimeSftTrajectoryJsonlError,
+    load_llm_trajectory_jsonl,
+    normalize_prime_sft_exchange,
+    validate_prime_sft_row,
+)
 from benchflow.trajectories.types import redact_trajectory_text
 
 ROLLOUT_RESULTS_FILENAME = "results.jsonl"
@@ -144,53 +149,56 @@ def _llm_steps_from_trajectory(
     reward: float,
     is_truncated: bool,
     trajectory_id_prefix: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     steps: list[dict[str, Any]] = []
     tool_defs: list[dict[str, Any]] = []
-    for exchange_idx, exchange in enumerate(_load_jsonl(path)):
+    if not path.exists():
+        return steps, tool_defs, None
+    try:
+        exchanges = load_llm_trajectory_jsonl(path, strict=True)
+    except PrimeSftTrajectoryJsonlError as exc:
+        return [], [], f"Invalid LLM trajectory JSONL: {exc}"
+    for exchange_idx, exchange in enumerate(exchanges):
         response = exchange.get("response")
         if not isinstance(response, dict) or response.get("status_code") != 200:
             continue
-        runtime_step = exchange.get("verifiers_step")
-        if not isinstance(runtime_step, dict):
+        normalized, _ = normalize_prime_sft_exchange(exchange)
+        if normalized is None:
             continue
-        prompt = runtime_step.get("prompt")
-        completion = runtime_step.get("completion")
-        if (
-            not isinstance(prompt, list)
-            or not isinstance(completion, list)
-            or not completion
-        ):
+        prompt = normalized.messages[:-1]
+        completion = normalized.messages[-1:]
+        if not completion:
             continue
-        tools = exchange.get("verifiers_tool_defs")
-        if isinstance(tools, list) and tools:
-            tool_defs = [tool for tool in tools if isinstance(tool, dict)]
-        step = dict(runtime_step)
-        extras = (
-            cast(dict[str, Any], step.get("extras"))
-            if isinstance(step.get("extras"), dict)
+        if normalized.tool_defs:
+            tool_defs = normalized.tool_defs
+        response_body = (
+            cast(dict[str, Any], response.get("body"))
+            if isinstance(response.get("body"), dict)
             else {}
         )
         extras = {
-            **extras,
             "source": "llm_trajectory",
             "tracking_source": "litellm_callback",
             "exchange_index": exchange_idx,
         }
-        step.update(
-            {
-                "prompt": prompt,
-                "completion": completion,
-                "reward": reward,
-                "advantage": 0.0,
-                "is_truncated": bool(runtime_step.get("is_truncated") or is_truncated),
-                "trajectory_id": f"{trajectory_id_prefix}__llm_{exchange_idx}",
-                "extras": extras,
-            }
-        )
+        step = {
+            "prompt": prompt,
+            "completion": completion,
+            "response": response_body,
+            "tokens": None,
+            "reward": reward,
+            "advantage": 0.0,
+            "is_truncated": bool(
+                response_body.get("incomplete_details")
+                or response_body.get("truncation")
+                or is_truncated
+            ),
+            "trajectory_id": f"{trajectory_id_prefix}__llm_{exchange_idx}",
+            "extras": extras,
+        }
         steps.append(step)
-    return steps, tool_defs
+    return steps, tool_defs, None
 
 
 def _top_level_prompt_completion(
@@ -238,22 +246,35 @@ def build_rollout_results_record(
         else f"{task_name}__{rollout_name}"
     )
     is_truncated = bool(partial_trajectory)
-    steps, tool_defs = _llm_steps_from_trajectory(
+    steps, tool_defs, llm_export_error = _llm_steps_from_trajectory(
         rollout_path,
         reward=reward,
         is_truncated=is_truncated,
         trajectory_id_prefix=trajectory_id_prefix,
     )
     prompt, completion = _top_level_prompt_completion(steps, prompts)
+    validation_error = _prime_sft_validation_error(
+        prompt=prompt,
+        completion=completion,
+        tool_defs=tool_defs,
+    )
+    effective_export_error = export_error or llm_export_error or validation_error
     error_obj = _error_payload(
         error=error,
         verifier_error=verifier_error,
-        export_error=export_error,
+        export_error=effective_export_error,
     )
-    training_ready = bool(steps and completion)
+    training_ready = bool(steps and completion and effective_export_error is None)
     training_ready_reason = None
     if not training_ready:
-        training_ready_reason = "missing_healthy_structured_llm_trajectory"
+        if llm_export_error:
+            training_ready_reason = "invalid_llm_trajectory_jsonl"
+        elif validation_error:
+            training_ready_reason = "invalid_prime_sft_row"
+        elif effective_export_error:
+            training_ready_reason = "export_error"
+        else:
+            training_ready_reason = "missing_healthy_structured_llm_trajectory"
         if error_obj is None:
             error_obj = {
                 "error": "missing_llm_trajectory",
@@ -298,7 +319,7 @@ def build_rollout_results_record(
         "stop_condition": _stop_condition(
             error=error,
             verifier_error=verifier_error,
-            export_error=export_error,
+            export_error=effective_export_error,
             partial_trajectory=partial_trajectory,
         ),
         "metrics": metrics,
@@ -309,6 +330,28 @@ def build_rollout_results_record(
         "trajectory": steps,
     }
     return record
+
+
+def _prime_sft_validation_error(
+    *,
+    prompt: list[dict[str, Any]],
+    completion: list[dict[str, Any]] | None,
+    tool_defs: list[dict[str, Any]],
+) -> str | None:
+    if not completion:
+        return None
+    try:
+        validate_prime_sft_row(
+            {
+                "prompt": prompt,
+                "completion": completion,
+                "tool_defs": tool_defs,
+            },
+            1,
+        )
+    except ValueError as exc:
+        return f"Prime-SFT results row validation failed: {exc}"
+    return None
 
 
 def write_rollout_results_jsonl(
