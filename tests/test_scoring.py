@@ -138,6 +138,16 @@ class TestClassifyError:
             == "infra_failure"
         )
 
+    def test_provider_rejected_marker_is_permanent(self):
+        """Guards #830: a context-window 400 surfaced as a raised ACP error
+        classifies as provider_rejected (permanent), not generic acp_error."""
+        assert (
+            classify_error(
+                "ACP error -32603: Internal error | provider rejected request (HTTP 400)"
+            )
+            == "provider_rejected"
+        )
+
     def test_generic_acp_internal_error_still_retryable(self):
         """Guards PR #564: a bare ACP internal error with no auth signal stays
         acp_error — only a real surfaced 401/403 should flip it to provider_auth."""

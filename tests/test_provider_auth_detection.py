@@ -64,6 +64,17 @@ def test_no_auth_status_when_all_ok():
     )
 
 
+def test_detects_400_rejected_in_trajectory():
+    """Guards #830: a provider 400 (context-window/token-budget reject) is
+    surfaced as a sanitized permanent failure, not an auth status."""
+    failure = _provider_failure_from_runtime(_runtime_with_statuses([200, 400]))
+    assert failure is not None
+    assert failure.status == 400
+    assert failure.marker == "provider rejected request"
+    # 400 is a rejection, not an auth failure — must not masquerade as 401/403.
+    assert _provider_auth_status_from_runtime(_runtime_with_statuses([400])) is None
+
+
 def test_missing_runtime_is_safe():
     """No proxy runtime (e.g. oracle runs) must not raise — returns None."""
     assert _provider_auth_status_from_runtime(None) is None

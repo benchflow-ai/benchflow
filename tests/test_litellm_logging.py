@@ -119,3 +119,31 @@ def test_litellm_failure_records_become_error_exchanges():
     assert trajectory.exchanges[0].response.body["error"]["message"] == "bad key"
     usage = extract_usage_from_trajectory(trajectory, fallback_model="openai/gpt-4")
     assert usage["usage_source"] == "unavailable"
+
+
+def test_context_length_failure_imports_as_permanent_rejected_request():
+    """Guards issue #830: context-window failures must not look like 500s."""
+    record = {
+        "event": "failure",
+        "request_model": "benchflow-qwen",
+        "request": {"method": "POST", "path": "/v1/chat/completions", "body": {}},
+        "error": {
+            "type": "NoneType",
+            "message": "None",
+            "traceback": (
+                "litellm.exceptions.BadRequestError: OpenAIException - Requested "
+                "token count exceeds the model's maximum context length of "
+                "16384 tokens."
+            ),
+        },
+        "start_time": "2026-06-04T10:00:00",
+        "end_time": "2026-06-04T10:00:00",
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="session",
+        agent_name="pi-acp",
+    )
+
+    assert trajectory.exchanges[0].response.status_code == 400
