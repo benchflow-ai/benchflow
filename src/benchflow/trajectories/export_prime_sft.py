@@ -51,7 +51,13 @@ class PrimeSftExportStats:
     skipped_no_result: int = 0
     skipped_no_trajectory: int = 0
     skipped_reward: int = 0
+    # Rollout-level: number of rollouts skipped because *every* captured exchange
+    # was a provider error (non-200). Counts rollouts (+= 1), like the other
+    # skipped_* fields, so the manifest stays comparable across granularities.
     skipped_provider_error: int = 0
+    # Exchange-level companion: total non-200 exchanges across those skipped
+    # rollouts. A single rollout with 20 failed calls adds 20 here but 1 above.
+    skipped_exchanges_provider_error: int = 0
     skipped_no_assistant: int = 0
     skipped_missing_tool_defs: int = 0
     skipped_invalid: int = 0
@@ -67,6 +73,7 @@ class PrimeSftExportStats:
             "skipped_no_trajectory": self.skipped_no_trajectory,
             "skipped_reward": self.skipped_reward,
             "skipped_provider_error": self.skipped_provider_error,
+            "skipped_exchanges_provider_error": self.skipped_exchanges_provider_error,
             "skipped_no_assistant": self.skipped_no_assistant,
             "skipped_missing_tool_defs": self.skipped_missing_tool_defs,
             "skipped_invalid": self.skipped_invalid,
@@ -221,15 +228,15 @@ def _normalize_message(message: dict[str, Any], index: int) -> dict[str, Any]:
 
 
 def _normalize_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Prime-RL SFT allows a system message only at index 0 (see
+    # validate_prime_sft_row). Any system message after the first position —
+    # including a *second consecutive* leading system message — is remapped to
+    # "user" so the whole row isn't silently dropped into skipped_invalid.
     normalized: list[dict[str, Any]] = []
-    seen_non_system = False
-    for message in messages:
+    for idx, message in enumerate(messages):
         out = dict(message)
-        role = out.get("role")
-        if role == "system" and seen_non_system:
+        if out.get("role") == "system" and idx != 0:
             out["role"] = "user"
-        elif role != "system":
-            seen_non_system = True
         normalized.append(out)
     return normalized
 
@@ -293,6 +300,41 @@ def _tool_defs_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
     return tools
 
 
+def _assistant_from_anthropic_content(content: Any) -> dict[str, Any] | None:
+    """Build an assistant row from Anthropic ``/v1/messages`` content blocks.
+
+    Anthropic responses carry a list of typed blocks: ``text`` blocks hold the
+    visible reply and ``tool_use`` blocks hold tool calls. The previous fallback
+    flattened the whole list to text, silently dropping the tool calls and
+    turning a tool-using assistant turn into corrupted SFT data. Preserve
+    ``tool_use`` blocks as OpenAI-shaped ``tool_calls`` instead. Returns ``None``
+    when ``content`` is not a block list, so the caller can fall back to text.
+    """
+    if not isinstance(content, list):
+        return None
+    raw_tool_calls = [
+        {
+            "id": item.get("id"),
+            "type": "function",
+            "function": {
+                "name": item.get("name"),
+                "arguments": item.get("input", {}),
+            },
+        }
+        for item in content
+        if isinstance(item, dict) and item.get("type") == "tool_use"
+    ]
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": _content_to_text(content),
+    }
+    if raw_tool_calls:
+        message["tool_calls"] = [
+            _normalize_tool_call(call, i) for i, call in enumerate(raw_tool_calls)
+        ]
+    return message
+
+
 def _assistant_from_chat_response(body: dict[str, Any]) -> dict[str, Any] | None:
     choices = body.get("choices")
     if isinstance(choices, list) and choices:
@@ -304,6 +346,9 @@ def _assistant_from_chat_response(body: dict[str, Any]) -> dict[str, Any] | None
         return _normalize_message(message, 0)
     content = body.get("content")
     if content:
+        assistant = _assistant_from_anthropic_content(content)
+        if assistant is not None:
+            return assistant
         return {"role": "assistant", "content": _content_to_text(content)}
     assistant = _assistant_from_responses_response(body)
     if assistant is not None:
@@ -558,7 +603,8 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
             if ((ex.get("response") or {}).get("status_code") == 200)
         ]
         if not successful:
-            stats.skipped_provider_error += len(exchanges)
+            stats.skipped_provider_error += 1
+            stats.skipped_exchanges_provider_error += len(exchanges)
             continue
 
         candidates = successful if row_mode == "exchange" else [successful[-1]]
@@ -602,6 +648,13 @@ def export_prime_sft_jsonl(
     expected_rows: int | None = None,
     manifest: str | Path | None = None,
 ) -> PrimeSftExportStats:
+    """Export BenchFlow rollouts to a Prime-RL SFT JSONL file.
+
+    When ``expected_rows`` is set, the row-count assertion fires *before* the
+    output file (or manifest) is opened — so a mismatch raises ``ValueError`` and
+    writes nothing, rather than leaving a partial file. Callers should not expect
+    ``out`` to exist on failure.
+    """
     rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(
         jobs_dir,
         min_reward=min_reward,

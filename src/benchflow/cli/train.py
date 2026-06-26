@@ -55,7 +55,11 @@ def register_train(app: typer.Typer) -> None:
         expected_rows: Annotated[
             int | None,
             typer.Option(
-                "--expected-rows", help="Fail unless this many rows are written"
+                "--expected-rows",
+                help=(
+                    "Fail (before writing the output file) unless exactly this "
+                    "many rows would be exported"
+                ),
             ),
         ] = None,
     ) -> None:

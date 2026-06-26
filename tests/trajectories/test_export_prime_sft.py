@@ -127,6 +127,102 @@ def test_convert_rollout_mode_uses_final_successful_exchange(tmp_path: Path) -> 
     assert row["messages"][-1] == {"role": "assistant", "content": "Done."}
 
 
+def _anthropic_exchange(*, status_code: int = 200) -> dict:
+    """An Anthropic /v1/messages exchange whose response carries content blocks
+    (text + tool_use), the shape the chat-response fallback used to flatten."""
+    return {
+        "request": {
+            "method": "POST",
+            "path": "/v1/messages",
+            "body": {
+                "model": "claude-test",
+                "messages": [{"role": "user", "content": "List files."}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "description": "Run shell commands.",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            },
+        },
+        "response": {
+            "status_code": status_code,
+            "body": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me list them."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "bash",
+                        "input": {"command": "ls"},
+                    },
+                ],
+            },
+        },
+        "duration_ms": 10,
+    }
+
+
+def test_anthropic_tool_use_content_preserved_as_tool_calls(tmp_path: Path) -> None:
+    """Guards #828 Codex P2: Anthropic tool_use blocks must export as tool_calls,
+    not be flattened to plain text (which corrupts tool-using training data)."""
+    _write_rollout(tmp_path / "job" / "rollout-1", exchanges=[_anthropic_exchange()])
+
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(tmp_path / "job")
+
+    assert stats.rows_written == 1
+    assistant = rows[0]["messages"][-1]
+    assert assistant["role"] == "assistant"
+    assert assistant["content"] == "Let me list them."
+    assert assistant["tool_calls"][0]["function"]["name"] == "bash"
+    assert json.loads(assistant["tool_calls"][0]["function"]["arguments"]) == {
+        "command": "ls"
+    }
+    assert stats.rows_with_tool_calls == 1
+
+
+def test_skipped_provider_error_counts_rollouts_not_exchanges(tmp_path: Path) -> None:
+    """Guards #828 greptile P1: an all-failed rollout counts as ONE rollout skip,
+    with the exchange count surfaced separately."""
+    failed = [
+        _anthropic_exchange(status_code=500),
+        _anthropic_exchange(status_code=500),
+        _anthropic_exchange(status_code=429),
+    ]
+    _write_rollout(tmp_path / "job" / "rollout-1", exchanges=failed)
+
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(tmp_path / "job")
+
+    assert rows == []
+    assert stats.skipped_provider_error == 1
+    assert stats.skipped_exchanges_provider_error == 3
+
+
+def test_consecutive_leading_system_messages_not_dropped(tmp_path: Path) -> None:
+    """Guards #828 greptile P2: a row that starts with two system messages must
+    remap the second to 'user' instead of being silently dropped as invalid."""
+    exchange = _exchange(final=True)
+    exchange["request"]["body"]["messages"] = [
+        {"role": "system", "content": "Primary system prompt."},
+        {"role": "system", "content": "Second system prompt."},
+        {"role": "user", "content": "List files."},
+    ]
+    _write_rollout(tmp_path / "job" / "rollout-1", exchanges=[exchange])
+
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(tmp_path / "job")
+
+    assert stats.rows_written == 1
+    assert stats.skipped_invalid == 0
+    roles = [m["role"] for m in rows[0]["messages"]]
+    assert roles[0] == "system"
+    assert roles[1] == "user"  # second leading system remapped
+
+
 def test_exchange_mode_writes_one_row_per_successful_exchange(tmp_path: Path) -> None:
     """Guards this PR's --row-mode exchange behavior."""
     _write_rollout(tmp_path / "job" / "rollout-1")
