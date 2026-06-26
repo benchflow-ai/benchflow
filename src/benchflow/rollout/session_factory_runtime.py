@@ -162,5 +162,26 @@ async def execute_prompts_session_factory(
                 diagnostic=diagnostic,
                 executed_prompts=prompts[: i + 1],
             ) from exc
+        except Exception as exc:
+            # Non-timeout failure (provider crash, one-shot CLI non-zero exit,
+            # ValueError, …): the turn did NOT complete, so the snapshot is
+            # PARTIAL. Preserve the steps captured so far by wrapping in the
+            # kernel's trajectory-carrying timeout error with
+            # terminal_trajectory_complete=False, so Rollout.execute()'s existing
+            # AgentPromptTimeoutError handler commits the partial trajectory +
+            # flag instead of the bare exception bubbling up and discarding it
+            # (#825). ``Exception`` (not ``BaseException``) deliberately lets
+            # asyncio ``CancelledError`` propagate untouched.
+            diagnostic = AgentPromptTimeoutDiagnostic(
+                timeout_sec=float(timeout),
+                n_tool_calls=0,
+                terminal_trajectory_complete=False,
+            )
+            raise AgentPromptTimeoutError(
+                f"session-factory prompt failed before completion: {exc}",
+                trajectory=list(session.steps),
+                diagnostic=diagnostic,
+                executed_prompts=prompts[: i + 1],
+            ) from exc
         logger.info("  → %s", stop_reason)
     return list(session.steps), 0

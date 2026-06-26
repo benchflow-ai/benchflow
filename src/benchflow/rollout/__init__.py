@@ -864,7 +864,10 @@ class Rollout:
 
     async def disconnect(self) -> None:
         """Close the ACP client and clean up agent process, keeping the environment alive."""
-        self._capture_partial_acp_trajectory()
+        if getattr(self, "_is_session_factory", False):
+            self._capture_partial_session_factory_trajectory()
+        else:
+            self._capture_partial_acp_trajectory()
         if self._acp_client:
             try:
                 await self._acp_client.close()
@@ -905,19 +908,32 @@ class Rollout:
         self._reapply_ask_user_handler()
 
     def _reapply_ask_user_handler(self) -> None:
-        """Re-bind any registered ``on_ask_user`` handler to the live adapter.
+        """Re-bind any registered ``on_ask_user`` handler to the live surface.
 
-        ``getattr`` defaults guard ``Rollout`` instances built via
-        ``__new__`` in tests that pre-date the on_ask_user field — they
-        skip ``__init__`` and only set the attributes their scenarios use.
+        For an ACP agent that surface is the ``ACPSessionAdapter``; for a
+        session-factory agent (``adapter is None``) it is the live ``Session``
+        itself, which implements ``on_ask_user`` directly (protocol.py). The
+        earlier ``adapter is None -> return`` guard silently dropped the handler
+        for every session-factory agent — they return ``adapter=None`` from
+        connect — so the agent-initiated branch hook never reached them (#825).
+
+        ``getattr`` defaults guard ``Rollout`` instances built via ``__new__``
+        in tests that pre-date the on_ask_user field — they skip ``__init__``
+        and only set the attributes their scenarios use.
         """
-        adapter = getattr(self, "_session_adapter", None)
-        if adapter is None:
-            return
         # No-op when the caller never touched on_ask_user — leaves the
         # default auto-approve path alone and avoids redundant client calls
         # from the connect()/_reconnect_for_role() hot paths.
         if not getattr(self, "_ask_user_handler_set", False):
+            return
+        adapter = getattr(self, "_session_adapter", None)
+        if adapter is None:
+            # Session-factory path: no adapter, bind onto the live Session.
+            if getattr(self, "_is_session_factory", False):
+                session = getattr(self, "_session", None)
+                handler = getattr(self, "_ask_user_handler", None)
+                if session is not None and handler is not None:
+                    session.on_ask_user(handler)
             return
         handler = getattr(self, "_ask_user_handler", None)
         if handler is None:
@@ -998,6 +1014,38 @@ class Rollout:
         if new_tools > 0:
             self._n_tool_calls += new_tools
         self._session_tool_count = len(session.tool_calls)
+
+    def _capture_partial_session_factory_trajectory(self) -> None:
+        """Session-factory analogue of :meth:`_capture_partial_acp_trajectory`.
+
+        A session-factory agent has no ACP client; its live trajectory lives
+        directly on ``self._session.steps`` (the protocol-conformant Session).
+        On the disconnect/cleanup path — where :meth:`execute` may have raised
+        before its normal extend — append the session's uncaptured tail to
+        ``self._trajectory``. ``_session_traj_count`` is the pointer to events
+        already extended from this session, so a partial scene's steps land on
+        top of prior scenes' (already-captured) events. Mirrors the
+        terminal-vs-partial source labelling of the ACP path (#825).
+        """
+        session = getattr(self, "_session", None)
+        if session is None:
+            return
+        try:
+            captured = list(session.steps)
+        except Exception as e:
+            logger.warning(f"Partial session-factory trajectory capture failed: {e}")
+            return
+        delta = captured[getattr(self, "_session_traj_count", 0) :]
+        if not delta:
+            return
+        self._trajectory.extend(delta)
+        self._session_traj_count = len(captured)
+        if getattr(self, "_terminal_timeout", False):
+            # Clean wall-clock terminal timeout: the captured tail is complete.
+            self._trajectory_source = "acp"
+        else:
+            self._partial_trajectory = True
+            self._trajectory_source = "partial_acp"
 
     # Phase 3c: EXECUTE
 

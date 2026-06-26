@@ -25,6 +25,10 @@ class _FakeSession:
         self.on_change = None
         self._steps: list[dict] = []
         self.prompts_seen: list[str] = []
+        # The Session protocol requires on_ask_user(handler) (protocol.py).
+        # Tracking the last-bound handler makes the session-factory ask-user
+        # rebinding observable instead of masking the gap with a missing method.
+        self.ask_user_handler = None
 
     async def prompt(self, text: str) -> StopReason:
         self.prompts_seen.append(text)
@@ -36,6 +40,9 @@ class _FakeSession:
 
     async def cancel(self) -> None:
         pass
+
+    def on_ask_user(self, handler) -> None:
+        self.ask_user_handler = handler
 
     @property
     def steps(self) -> list[dict]:
@@ -147,6 +154,120 @@ async def test_drive_timeout_raises_with_partial_trajectory():
     assert ei.value.n_tool_calls == 0
     assert ei.value.executed_prompts == ["slow"]
     assert ei.value.trajectory  # the user_message step captured before timeout
+    # a wall-clock timeout snapshot is terminal-complete (no pending tool calls)
+    assert ei.value.terminal_trajectory_complete is True
+
+
+@pytest.mark.asyncio
+async def test_session_factory_partial_trajectory_on_non_timeout_failure():
+    """A NON-timeout prompt failure must still preserve the partial trajectory.
+
+    A session-factory agent that appends steps then blows up mid-run (e.g. the
+    one-shot CLI raises ``RuntimeError``) must not lose the steps captured so
+    far. ``execute_prompts_session_factory`` wraps the failure in an
+    ``AgentPromptTimeoutError`` carrying the partial trajectory (marked partial,
+    not terminal-complete) so the kernel's existing handler commits it — instead
+    of the bare exception bubbling up and discarding the trajectory entirely.
+    """
+
+    class _FailSession(_FakeSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self._calls = 0
+
+        async def prompt(self, text: str) -> StopReason:
+            self._calls += 1
+            self._steps.append({"type": "user_message", "text": text})
+            if self._calls >= 2:
+                raise RuntimeError("provider exploded")
+            self._steps.append({"type": "agent_message", "text": f"did:{text}"})
+            return StopReason.END_TURN
+
+    session = _FailSession()
+    with pytest.raises(AgentPromptTimeoutError) as ei:
+        await execute_prompts_session_factory(session, ["one", "two"], timeout=30)
+
+    # the partial trajectory captured before the RuntimeError survives
+    assert ei.value.trajectory
+    assert {"type": "user_message", "text": "two"} in ei.value.trajectory
+    assert ei.value.n_tool_calls == 0
+    assert ei.value.executed_prompts == ["one", "two"]
+    # a non-timeout failure is partial, not a clean terminal snapshot
+    assert ei.value.terminal_trajectory_complete is False
+    # the real cause is preserved on the exception chain (not masked as a timeout)
+    assert isinstance(ei.value.__cause__, RuntimeError)
+
+
+def test_session_factory_on_ask_user_handler_wired():
+    """``on_ask_user`` must rebind onto the live session even when adapter=None.
+
+    A session-factory agent returns ``adapter=None`` from connect (the session
+    IS the protocol-conformant object). ``_reapply_ask_user_handler`` returned
+    early whenever the adapter was None, so the sticky on_ask_user handler never
+    reached a session-factory agent. The handler must instead bind onto
+    ``self._session.on_ask_user`` for the session-factory path (#825).
+    """
+    from benchflow.rollout import Rollout
+
+    session = _FakeSession()
+    r = Rollout.__new__(Rollout)  # bypass __init__ (only the method is exercised)
+    r._is_session_factory = True
+    r._session = session
+    r._session_adapter = None
+    r._ask_user_handler_set = True
+
+    async def handler(request):
+        return "ok"
+
+    r._ask_user_handler = handler
+    r._reapply_ask_user_handler()
+    assert session.ask_user_handler is handler
+
+
+@pytest.mark.asyncio
+async def test_session_factory_partial_trajectory_captured_on_disconnect():
+    """disconnect() must capture the session-factory session's partial tail.
+
+    For a session-factory agent ``self._acp_client`` is None, so the ACP partial
+    capture is a no-op; the live trajectory lives on ``self._session.steps``. If
+    ``execute`` raised before its normal extend, ``disconnect`` must still flush
+    those uncommitted steps into ``self._trajectory`` (marked partial) before it
+    tears the session down (#825).
+    """
+    from benchflow.rollout import Rollout
+
+    session = _FakeSession()
+    session._steps = [
+        {"type": "user_message", "text": "task"},
+        {"type": "agent_message", "text": "partial work"},
+    ]
+
+    r = Rollout.__new__(Rollout)
+    r._acp_client = None
+    r._session = session
+    r._session_adapter = None
+    r._is_session_factory = True
+    r._agent_launch = ""
+    r._env = None
+    r._active_role = None
+    r._trajectory = []
+    r._session_traj_count = 0
+    r._session_tool_count = 0
+    r._partial_trajectory = False
+    r._trajectory_source = None
+    r._phase = "connected"
+
+    await r.disconnect()
+
+    assert r._trajectory == [
+        {"type": "user_message", "text": "task"},
+        {"type": "agent_message", "text": "partial work"},
+    ]
+    assert r._partial_trajectory is True
+    assert r._trajectory_source == "partial_acp"
+    # state is still torn down after the capture
+    assert r._session is None
+    assert r._is_session_factory is False
 
 
 def test_load_session_factory_rejects_malformed():
