@@ -190,3 +190,33 @@ def test_merge_shim_only_rejects_alias_collision(tmp_path: Path):
 
     assert "brand-new" not in m["agents"]
     assert m["aliases"] == {"taken": "core"}
+
+
+def test_register_fails_loud_on_name_vs_existing_alias(tmp_path: Path):
+    # Alias-first resolution in registry.py (name = AGENT_ALIASES.get(name, name))
+    # means a manifest agent whose NAME equals an existing alias for a *different*
+    # agent is silently shadowed (unreachable). That must fail loud, not pass
+    # through — the asymmetric gap this guards (BLOCKER 9).
+    _put(tmp_path, "shadowed", "shadowed")
+    m = _maps()
+    m["aliases"]["shadowed"] = "other-agent"  # name 'shadowed' already maps elsewhere
+    with pytest.raises(AgentManifestError, match="shadowed"):
+        register_manifest_agents(load_agents_from_dir(tmp_path), **m)
+    # all-or-nothing: a rejected batch leaves every map untouched.
+    assert "shadowed" not in m["agents"]
+    assert m["installers"] == {}
+    assert m["aliases"] == {"shadowed": "other-agent"}
+
+
+def test_register_fails_loud_on_same_batch_name_alias_collision(tmp_path: Path):
+    # Same batch: 'beta' declares an alias 'alpha' equal to another incoming
+    # agent's NAME. Registering both would make 'alpha' resolve to 'beta'
+    # (alias-first), silently shadowing the real 'alpha' agent.
+    _put(tmp_path, "alpha-dir", "alpha")
+    _put(tmp_path, "beta-dir", "beta", extra='aliases = ["alpha"]\n')
+    m = _maps()
+    with pytest.raises(AgentManifestError, match="alpha"):
+        register_manifest_agents(load_agents_from_dir(tmp_path), **m)
+    # collision detected before any mutation: nothing is registered.
+    assert m["agents"] == {}
+    assert m["installers"] == {}

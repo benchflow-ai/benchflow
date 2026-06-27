@@ -255,12 +255,26 @@ def register_manifest_agents(
     merged config equals the original. Alias collisions still fail loud because
     remapping another agent's alias is not part of the compatibility shim."""
     if not override:
+        incoming_names = set(loaded)
         seen_aliases: dict[str, str] = {}
         for name, lm in loaded.items():
             if name in agents and not merge_shim_only:
                 raise AgentManifestError(
                     f"agent {name!r} already in the registry; ship its manifest as "
                     "the sole source or pass override=True"
+                )
+            # Precedence: the name-vs-existing-name check above is exempted by
+            # merge_shim_only (a deliberate shim reproducing a core agent's own
+            # name). The name-vs-alias checks below are NOT — alias collisions
+            # always fail loud (see docstring). registry.py resolves alias-first
+            # (name = AGENT_ALIASES.get(name, name)), so a manifest NAME equal to
+            # an existing alias for a *different* agent is silently shadowed
+            # (unreachable); reject it even in shim mode.
+            shadow = aliases.get(name)
+            if shadow is not None and shadow != name:
+                raise AgentManifestError(
+                    f"agent {name!r} collides with an existing alias mapping to "
+                    f"{shadow!r}; it would be silently shadowed by alias resolution"
                 )
             for alias in lm.aliases:
                 existing = aliases.get(alias)
@@ -274,6 +288,14 @@ def register_manifest_agents(
                     raise AgentManifestError(
                         f"alias {alias!r} (for {name!r}) collides with an existing "
                         "agent name"
+                    )
+                # Same-batch cross-collision: an alias equal to *another* incoming
+                # agent's name would shadow that agent once both register. Checked
+                # against the whole incoming name set so it is order-independent.
+                if alias in incoming_names and alias != name:
+                    raise AgentManifestError(
+                        f"alias {alias!r} (for {name!r}) collides with another "
+                        "agent name in the same batch"
                     )
                 seen_aliases[alias] = name
     for name, lm in loaded.items():
