@@ -144,9 +144,12 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
     assert (
         "exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/" in install_cmd
     )
-    assert launch_cmd.split()[0].startswith("/opt/benchflow/bin/")
-    assert launch_cmd.split()[0] not in {"export", "env"}
-    assert not launch_cmd.startswith("PATH=")
+    # The launched program is the isolated bin — directly, or (codex-acp) after a
+    # self-config-writing prefix ending in `; exec <bin>` (writes ~/.codex/auth.json).
+    launched = launch_cmd.rsplit("; exec ", 1)[-1]
+    assert launched.split()[0].startswith("/opt/benchflow/bin/")
+    assert launched.split()[0] not in {"export", "env"}
+    assert not launched.startswith("PATH=")
 
     forbidden_fragments = [
         'export PATH="/opt/benchflow/node/bin:/opt/benchflow/js-agents/bin:$PATH"',
