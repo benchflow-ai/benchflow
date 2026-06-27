@@ -97,6 +97,12 @@ axes:
       - pi-acp
     cheap_representative:
       - gemini
+    experimental:
+      # mimo runs the Xiaomi MiMo (MiMo Code) ACP path via the `xiaomi`
+      # provider and is intentionally OUTSIDE the credentialed release set
+      # (ENG-265). Listed here so the config<->manifest consistency check
+      # accepts configs/mimo.yaml rather than reporting it as drift.
+      - mimo
   models:
     default:
       gemini: gemini-3.1-flash-lite-preview

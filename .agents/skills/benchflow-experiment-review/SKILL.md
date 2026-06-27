@@ -31,27 +31,71 @@ Healthy run outcomes are:
 - `pass`: agent completed and verifier produced a valid score.
 - `fail`: agent completed incorrectly and verifier produced a valid score.
 - `normal_timeout`: agent genuinely ran, timed out, and still produced a
-  complete trajectory plus reward/scoring metadata.
+  complete ACP trajectory, complete LLM trajectory, and reward/scoring metadata.
 
 Infrastructure failures are not healthy failures. A stalled Docker daemon,
-Daytona transport failure, missing trajectory, missing reward, missing timing,
-missing token usage for new data, or verifier crash is unhealthy until rerun or
-explicitly quarantined.
+Daytona transport failure, missing `trajectory/acp_trajectory.jsonl`, missing
+`trajectory/llm_trajectory.jsonl`, malformed or empty trajectory files, missing
+reward, missing timing, missing token usage for new data, or verifier crash is
+unhealthy until rerun or explicitly quarantined.
+
+## Hard Trajectory Gate
+
+For every current BenchFlow model trial, both trajectory files plus the
+trainer-facing rollout row are mandatory:
+
+- `trajectory/acp_trajectory.jsonl`: ACP/tool trace with agent-side events.
+- `trajectory/llm_trajectory.jsonl`: provider LLM request/response trace with
+  token usage evidence.
+- `results.jsonl`: Verifiers / Prime-RL-shaped rollout row derived from the
+  healthy LLM trajectory.
+
+Do not treat ACP alone as sufficient. Do not treat `llm_trajectory.jsonl` alone
+as sufficient. Do not treat aggregate `result.json` fields as a substitute for
+either trajectory or `results.jsonl`. A trial with a scored reward, token
+counts, or a plausible final answer is still unhealthy if either required
+trajectory file or `results.jsonl` is missing, empty, truncated, unparsable, or
+usage-only without recoverable request/response evidence.
+
+`results.jsonl` must be reviewed as a training artifact, not just a sidecar. For
+a healthy model rollout it should contain a parseable row with
+`info.training_ready == true`, non-empty `prompt`, `completion`, and
+`trajectory`, positive token usage, reward/score metadata, task identity, and
+valid OpenAI-compatible message roles. If assistant `tool_calls` appear, the row
+must carry non-empty `tool_defs` or `tools`. Errored, verifier-failed, partial,
+malformed, or missing-LLM rollouts must fail closed with
+`training_ready == false` and an error/training-ready reason instead of being
+accepted as SFT-ready.
+
+Run the bundled validator before deeper manual review:
+
+```bash
+python .agents/skills/benchflow-experiment-review/scripts/validate_run_artifacts.py /path/to/rollout-or-jobs-root --json
+```
+
+The validator exits non-zero when any rollout is unhealthy. It is a deterministic
+fast path, not the whole audit: after it passes, continue with skill-loading,
+no-skill leakage, verifier-isolation, reward-hacking, and capability-attribution
+checks below. Oracle/reward-only lanes do not produce model LLM trajectories and
+must not be mixed into model-run publishability counts; if reviewed, report them
+as separate non-model evidence.
 
 ## Completed Trial Review
 
 For each trial, first locate the authoritative run artifacts. Prefer repo
 validators or existing scripts when available, then inspect raw files. Required
-evidence usually includes:
+evidence includes:
 
 - Run config: task id, harness, model, skill mode, trial id, source commit/ref,
   sandbox backend, timeout, provider settings, and output paths.
-- Trajectories: ACP/tool trajectory and LLM/model trajectory, parseable from
-  first event through final answer, failure, or timeout.
+- Trajectories: both `trajectory/acp_trajectory.jsonl` and
+  `trajectory/llm_trajectory.jsonl`, parseable from first event/model request
+  through final answer, failure, or timeout.
 - Metadata: start/end timestamps, elapsed duration, token usage, tool usage,
   provider/model response metadata, sandbox metadata, and error fields.
-- Results: verifier output, reward/score, result status, and enough provenance
-  to connect the score to the exact trajectory.
+- Results: verifier output, reward/score, result status, rollout-level
+  `results.jsonl`, and enough provenance to connect the score and training row
+  to the exact trajectory.
 
 Review the trajectory for meaning, not just existence:
 
@@ -70,7 +114,8 @@ Review the trajectory for meaning, not just existence:
   without-skill trials should report `0`, meaning task-specific skills were not
   injected into the agent's startup catalog.
 - Timeout trials show real progress or attempts before timeout and still have
-  complete timing, token, trajectory, and verifier result metadata.
+  complete timing, token, ACP trajectory, LLM trajectory, and verifier result
+  metadata.
 - The final answer/result and verifier score refer to the same task workspace
   and trial.
 - Failures and timeouts are attributable to agent capability, not missing
@@ -80,7 +125,15 @@ Review the trajectory for meaning, not just existence:
 
 Reject or quarantine the trial if any of these appear:
 
-- Missing, truncated, or unparsable trajectory files.
+- Missing `trajectory/acp_trajectory.jsonl`.
+- Missing `trajectory/llm_trajectory.jsonl`.
+- Missing rollout-level `results.jsonl`.
+- Empty, truncated, or unparsable trajectory files.
+- `llm_trajectory.jsonl` has no real provider request bodies, no provider
+  response bodies, or no provider token usage in response metadata.
+- `results.jsonl` lacks a Prime-RL-compatible row, marks an unhealthy rollout as
+  training-ready, misses prompt/completion/trajectory/token usage, or exposes
+  assistant tool calls without tool definitions.
 - Empty transcript, agent never launched, or only setup logs.
 - Missing token usage/timing/tool usage metadata for newly generated data.
 - The agent lacked required task information, required skills, API keys,
@@ -109,8 +162,9 @@ shape and sandbox behavior.
 3. Run the same canaries through Daytona and VM Docker with the same task,
    harness, model, skill mode, trial id pattern, timeout, and provider settings.
 4. Compare artifact schema and semantics, not exact model wording: trajectory
-   files, token usage, timing, tool usage, result status, verifier output, and
-   source provenance must be equivalent.
+   files (`acp_trajectory.jsonl` and `llm_trajectory.jsonl`), rollout/job
+   `results.jsonl`, token usage, timing, tool usage, result status, verifier
+   output, and source provenance must be equivalent.
 5. Exercise path/root behavior explicitly. Check task root, sandbox cwd,
    mounted resources, result paths, locked paths, and any previous root-path
    regression case.
@@ -219,6 +273,10 @@ Skill loading mismatch:
 
 Only export, commit, or push healthy latest trials. Exclude partial runs,
 infra-failed trials, stale duplicates, local caches, and secrets.
+
+Before reporting a trial as healthy or publishable, include the deterministic
+trajectory-gate outcome from `scripts/validate_run_artifacts.py` or equivalent
+manual evidence proving both required trajectory files are present and healthy.
 
 Report findings in this order:
 

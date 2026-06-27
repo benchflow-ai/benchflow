@@ -146,7 +146,11 @@ def _normalize_openhands_model(model: str) -> str:
     OpenHands expects provider-qualified model names for some providers even
     when benchflow uses bare model IDs or its own provider prefixes.
     """
-    from benchflow.agents.providers import find_provider, strip_provider_prefix
+    from benchflow.agents.providers import (
+        find_provider,
+        find_provider_for_bare_model,
+        strip_provider_prefix,
+    )
     from benchflow.agents.registry import is_vertex_model
 
     if model.startswith(("gemini/", "vertex_ai/", "openhands/")):
@@ -163,7 +167,7 @@ def _normalize_openhands_model(model: str) -> str:
         return f"vertex_ai/{stripped}"
     if "gemini" in lower:
         return f"gemini/{stripped}"
-    provider = find_provider(model)
+    provider = find_provider(model) or find_provider_for_bare_model(model)
     if provider is not None:
         _, cfg = provider
         if cfg.api_protocol == "openai-completions":
@@ -458,6 +462,7 @@ def resolve_provider_env(
     """Detect provider for model, inject BENCHFLOW_PROVIDER_* and env_mapping."""
     from benchflow.agents.providers import (
         find_provider,
+        find_provider_for_bare_model,
         resolve_base_url,
         strip_provider_prefix,
     )
@@ -467,7 +472,11 @@ def resolve_provider_env(
     # Agent-declared protocol takes precedence over provider's primary so
     # multi-endpoint providers (e.g. zai) route to the right URL.
     agent_protocol = agent_cfg.api_protocol if agent_cfg else ""
-    _prov = find_provider(model)
+    # Resolve bare family ids (e.g. "deepseek-v4-pro") too, not just explicit
+    # "provider/" prefixes — otherwise the provider env (NAME/BASE_URL/API_KEY)
+    # is never emitted and harnesses that rely on it misroute (openhands' litellm
+    # saw no provider; openclaw defaulted to anthropic/). Mirrors acp/runtime.py.
+    _prov = find_provider(model) or find_provider_for_bare_model(model)
     if _prov:
         _prov_name, _prov_cfg = _prov
         agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
@@ -581,6 +590,14 @@ def _configure_codex_custom_provider(
 ) -> None:
     """Expose BenchFlow provider routing through Codex's native config model."""
     if agent != "codex-acp" or not model:
+        return
+
+    # Native ChatGPT subscription auth must keep Codex on its built-in `openai`
+    # provider (chatgpt auth mode). A custom model_provider injected here carries
+    # env_key=OPENAI_API_KEY + wire_api=responses against api.openai.com, which
+    # forces API-key mode and makes Codex demand OPENAI_API_KEY -- defeating the
+    # subscription path. Verified by ACP repro.
+    if uses_native_subscription_auth(agent, model, agent_env):
         return
 
     base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(

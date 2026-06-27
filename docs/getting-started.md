@@ -190,6 +190,7 @@ Each run writes under `--jobs-dir` (default `jobs/`):
     summary.json                    # job-level aggregate
     <task>__<hash8>/                # one rollout: task name + 8-char id
       result.json                   # rollout summary: rewards, errors, token usage/cost
+      results.jsonl                 # Verifiers/Prime-RL shaped rollout row
       rewards.jsonl                 # reward record for this rollout
       timing.json                   # per-phase timing breakdown
       prompts.json                  # prompts sent to the agent

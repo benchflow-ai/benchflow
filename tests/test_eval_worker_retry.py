@@ -17,6 +17,17 @@ _PROVIDER_AUTH_ERROR = (
 _PROVIDER_RATE_LIMIT_ERROR = (
     "ACP error -32603: Internal error | provider rate limited (HTTP 429)"
 )
+_PROVIDER_REJECTED_ERROR = (
+    "ACP error -32603: Internal error | provider rejected request (HTTP 400)"
+)
+
+
+def test_from_mapping_omitted_exclude_excludes_provider_rejected():
+    """Guards #830: a context-window 400 raised as an ACP error must not retry,
+    even when the payload omits exclude_categories (falls back to defaults)."""
+    cfg = RetryConfig.from_mapping({"max_retries": 3})
+    assert not cfg.should_retry(_PROVIDER_REJECTED_ERROR)
+    assert "provider_rejected" in cfg.exclude_categories
 
 
 def test_from_mapping_omitted_exclude_keeps_provider_auth():

@@ -524,8 +524,22 @@ AGENTS: dict[str, AgentConfig] = {
         install_cmd=_js_agent_install(
             "codex-acp", "@agentclientprotocol/codex-acp@0.0.45"
         ),
-        launch_cmd=_js_agent_launch(
-            "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+        # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
+        # ONLY when the key is set (so subscription/host-auth mode is untouched),
+        # instead of relying on core's credential_files writer. This makes the
+        # decoupled manifest self-contained — like mimo/opencode — and is
+        # byte-identical to the former credential_files template
+        # ({"OPENAI_API_KEY": "<key>"}) and keeps the old 0600 secret mode.
+        # `exec` so signals/PID reach codex.
+        launch_cmd=(
+            'h="${BENCHFLOW_AGENT_HOME:-$HOME}"; '
+            'if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && '
+            'printf \'{"OPENAI_API_KEY": "%s"}\' "$OPENAI_API_KEY" '
+            '> "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; '
+            "fi; exec "
+            + _js_agent_launch(
+                "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+            )
         ),
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
@@ -534,13 +548,6 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
         },
-        credential_files=[
-            CredentialFile(
-                path="{home}/.codex/auth.json",
-                env_source="OPENAI_API_KEY",
-                template='{{"OPENAI_API_KEY": "{value}"}}',
-            ),
-        ],
         subscription_auth=SubscriptionAuth(
             replaces_env="OPENAI_API_KEY",
             detect_file="~/.codex/auth.json",
@@ -1191,3 +1198,18 @@ def register_agent(
     AGENT_INSTALLERS[name] = install_cmd
     AGENT_LAUNCH[name] = launch_cmd
     return config
+
+
+# --- Opt-in dual-source registry (agent-decoupling decision #7) ---------------
+# Merge agents declared as <dir>/manifest.toml files under $BENCHFLOW_AGENTS_DIR
+# into the registry. A NO-OP when the env var is unset, so a default import of
+# core is byte-for-byte unchanged; the manifest path only activates on explicit
+# opt-in. The import is deferred to here (end of module) on purpose: manifest.py
+# imports AgentConfig from this module, so a top-level import would be circular,
+# and the merge must run after AGENTS / AGENT_ALIASES / AGENT_INSTALLERS /
+# AGENT_LAUNCH are fully built above.
+from benchflow.agents.manifest import (  # noqa: E402
+    register_env_manifest_agents as _register_env_manifest_agents,
+)
+
+_register_env_manifest_agents()

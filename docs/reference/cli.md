@@ -240,6 +240,7 @@ bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-p
 | `--jobs-dir` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
+| `--context-root` | — | Repo/build-context root used to stage Dockerfile `COPY` sources for monorepo-authored local tasks |
 | `--skills-dir` | — | Advanced custom skills directory; valid only with `--skill-mode with-skill`. Omit it to use each task's `environment/skills`. |
 | `--skill-mode` | `no-skill` | Skill mode: `no-skill`, `with-skill`, or `self-gen` |
 | `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |
@@ -296,6 +297,45 @@ Serve a trial trajectory viewer in the browser for a rollout or job directory.
 bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
 ```
+
+## bench train
+
+Convert scored BenchFlow rollouts into trainer-ready datasets and validate
+trainer rows before handing them to a training framework.
+
+### bench train convert
+
+Convert a rollout directory or jobs directory into Prime-RL SFT JSONL. The
+default format is `prime-sft`, which writes one JSON object per row with
+OpenAI-compatible `messages` plus `tool_defs`.
+
+```bash
+bench train convert jobs/run-001 --out train.jsonl
+bench train convert jobs/run-001 --out train.jsonl --min-reward 1.0
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out`, `-o` | required | Output JSONL path |
+| `--format` | `prime-sft` | Trainer format |
+| `--min-reward` | — | Only include rows with reward greater than or equal to this value |
+| `--row-mode` | `rollout` | `rollout` writes one row per rollout; `exchange` writes one row per LLM exchange |
+| `--manifest` | — | Optional conversion stats JSON path |
+| `--expected-rows` | — | Fail before writing unless exactly this many rows would be exported |
+
+### bench train validate
+
+Validate Prime-RL SFT JSONL before upload or training.
+
+```bash
+bench train validate train.jsonl
+bench train validate train.jsonl --expected-rows 4417
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `prime-sft` | Trainer format |
+| `--expected-rows` | — | Fail unless this many rows are present |
 
 ## bench skills
 

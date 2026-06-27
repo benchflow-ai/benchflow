@@ -377,55 +377,51 @@ def _build_rollout_result(
     # (streaming + final) is scrubbed (#537/#585).
     TrajectoryWriter(traj_dir / "acp_trajectory.jsonl").write_final(trajectory)
     rollout_dir.mkdir(parents=True, exist_ok=True)
-    (rollout_dir / "result.json").write_text(
-        json.dumps(
+    result_data = {
+        "task_name": result.task_name,
+        "rollout_name": result.rollout_name,
+        "rewards": result.rewards,
+        "agent": result.agent,
+        "agent_name": result.agent_name,
+        "model": result.model,
+        **skill_policy.config_metadata(),
+        "n_tool_calls": result.n_tool_calls,
+        "n_skill_invocations": result.n_skill_invocations,
+        "n_prompts": result.n_prompts,
+        "agent_result": agent_result,
+        "final_metrics": final_metrics,
+        "trajectory_summary": trajectory_summary,
+        "usage_tracking": usage_tracking,
+        "error": result.error,
+        "error_category": result.error_category,
+        "verifier_error": result.verifier_error,
+        "verifier_error_category": result.verifier_error_category,
+        "export_error": result.export_error,
+        **diagnostics.to_result_fields(),
+        "partial_trajectory": result.partial_trajectory,
+        "trajectory_source": result.trajectory_source,
+        "started_at": str(result.started_at),
+        "finished_at": str(result.finished_at),
+        "timing": timing,
+        "scenes": _scene_metadata(scenes or []),
+        "loop": loop or loop_block(None),
+        **(
+            {"source": artifact_source_provenance(source_provenance)}
+            if source_provenance is not None
+            else {}
+        ),
+        **(
             {
-                "task_name": result.task_name,
-                "rollout_name": result.rollout_name,
-                "rewards": result.rewards,
-                "agent": result.agent,
-                "agent_name": result.agent_name,
-                "model": result.model,
-                **skill_policy.config_metadata(),
-                "n_tool_calls": result.n_tool_calls,
-                "n_skill_invocations": result.n_skill_invocations,
-                "n_prompts": result.n_prompts,
-                "agent_result": agent_result,
-                "final_metrics": final_metrics,
-                "trajectory_summary": trajectory_summary,
-                "usage_tracking": usage_tracking,
-                "error": result.error,
-                "error_category": result.error_category,
-                "verifier_error": result.verifier_error,
-                "verifier_error_category": result.verifier_error_category,
-                "export_error": result.export_error,
-                **diagnostics.to_result_fields(),
-                "partial_trajectory": result.partial_trajectory,
-                "trajectory_source": result.trajectory_source,
-                "started_at": str(result.started_at),
-                "finished_at": str(result.finished_at),
-                "timing": timing,
-                "scenes": _scene_metadata(scenes or []),
-                "loop": loop or loop_block(None),
-                **(
-                    {"source": artifact_source_provenance(source_provenance)}
-                    if source_provenance is not None
-                    else {}
-                ),
-                **(
-                    {
-                        "dataset_name": dataset.get("name"),
-                        "dataset_version": dataset.get("version"),
-                    }
-                    if dataset is not None
-                    else {}
-                ),
-                **({"task_digest": task_digest} if task_digest is not None else {}),
-                "sandbox_id": sandbox_id,
-            },
-            indent=2,
-        )
-    )
+                "dataset_name": dataset.get("name"),
+                "dataset_version": dataset.get("version"),
+            }
+            if dataset is not None
+            else {}
+        ),
+        **({"task_digest": task_digest} if task_digest is not None else {}),
+        "sandbox_id": sandbox_id,
+    }
+    (rollout_dir / "result.json").write_text(json.dumps(result_data, indent=2))
     (rollout_dir / "timing.json").write_text(json.dumps(timing, indent=2))
     (rollout_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
     _write_rewards_jsonl(rollout_dir, rewards, finished_at)
@@ -444,7 +440,38 @@ def _build_rollout_result(
         total_cached_tokens=n_cache_read_tokens,
         total_cost_usd=cost_usd,
     )
+    _write_results_jsonl(
+        rollout_dir,
+        task_name=task_name,
+        rollout_name=rollout_name,
+        agent=agent,
+        agent_name=agent_name,
+        model=model,
+        n_tool_calls=n_tool_calls,
+        prompts=prompts,
+        trajectory=trajectory,
+        partial_trajectory=partial_trajectory,
+        rewards=rewards,
+        error=error,
+        verifier_error=verifier_error,
+        export_error=export_error,
+        timing=timing,
+        agent_result=agent_result,
+    )
     return result
+
+
+def _write_results_jsonl(
+    rollout_dir: Path,
+    **kwargs: Any,
+) -> None:
+    """Emit the Verifiers/Prime-RL-shaped rollout result row."""
+    from benchflow.trajectories.results import write_rollout_results_jsonl
+
+    try:
+        write_rollout_results_jsonl(rollout_dir, **kwargs)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("results.jsonl write failed: %s", e)
 
 
 def _write_trainer_artifact(

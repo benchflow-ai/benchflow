@@ -1,0 +1,654 @@
+# integration-final-review — L3: the manual, golden-truth FINAL review.
+#
+# SECURITY MODEL (read before editing):
+#   * TRUSTED-MAIN INFRA: the planner (integration_matrix.py), the grader
+#     (build_integration_review_pack.py), the harness (scenarios), and the codex
+#     reviewer (codex_review.py) ALWAYS load from origin/main via sparse checkout.
+#     Only src/benchflow (the code-under-test) is overlaid from the PR head SHA.
+#   * TRIGGERS: workflow_dispatch (manual, any PR) OR a `pull_request` `labeled`
+#     event when the `ready-to-merge` label is added — the auto path: marking a PR
+#     ready to merge runs the FULL final review, codex included. NEVER on push and
+#     NEVER pull_request_target, so fork PRs receive no secrets; the plan job's
+#     resolve step additionally refuses any non-internal head repo, and only
+#     write-access users can apply labels. The jobs run under the existing
+#     'pypi-internal-preview' environment (provider + DAYTONA secrets). No separate
+#     protected env — the L3 golden truth is the HuggingFace leaderboard `main`
+#     runs (deepseek-v4-flash baseline) vs the PR and the latest benchflow main.
+#   * FAIL-CLOSED CODEX: at L3 codex_review.py is REQUIRED. A missing codex
+#     binary / codex auth (the repo OPENAI_API_KEY), or unparseable codex output, yields
+#     'not mergeable (codex unavailable)' and a red check. The published
+#     'integration-final-review' check-run conclusion = worst(deterministic,
+#     codex): codex can only make the verdict STRICTER, never upgrade a
+#     deterministic 'not mergeable'.
+#   * concurrency is keyed per pr_number with cancel-in-progress: FALSE — a real
+#     multi-cell rollout that has burned credits must finish, not be cancelled.
+name: integration-final-review
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to run the final review against.
+        required: true
+        type: string
+      scope:
+        description: Scope (auto|citation|low-3|medium-3|high-3|nine|expanded|custom).
+        required: false
+        type: string
+        default: auto
+      custom_tasks:
+        description: Comma-separated task ids for scope=custom.
+        required: false
+        type: string
+        default: ""
+      sandboxes:
+        description: Comma-separated sandbox override (docker,daytona).
+        required: false
+        type: string
+        default: docker
+      skill_modes:
+        description: Comma-separated skill-mode override (no-skill,with-skill,self-gen).
+        required: false
+        type: string
+        default: no-skill
+      codex_review:
+        description: Run the codex equivalence reviewer (required gate at L3).
+        required: false
+        type: boolean
+        default: true
+
+  # Auto path: adding the `ready-to-merge` label to an INTERNAL PR runs the full
+  # final review (codex included). Plain pull_request (NEVER pull_request_target),
+  # so fork PRs receive no secrets; the plan job's resolve step additionally
+  # refuses any non-internal head repo, and only write-access users can label.
+  pull_request:
+    types: [labeled]
+
+# One final review per PR at a time; do NOT cancel an in-flight rollout.
+concurrency:
+  group: integration-final-review-${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+  models: read
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # plan — TRUSTED main. Resolves the PR head SHA via the API, re-asserts the PR
+  # is internal, and runs the planner -> matrix + head_sha outputs. Fails on the
+  # planner's exit-2 hard-ceiling overflow.
+  # ----------------------------------------------------------------------------
+  plan:
+    runs-on: ubuntu-latest
+    # Manual dispatch (any PR) OR the `ready-to-merge` auto-label trigger. Any
+    # OTHER label added to a PR is a no-op: this job — and the run-matrix /
+    # review-pack jobs that depend on its outputs — are skipped, so an unrelated
+    # label never spins up a rollout and the workflow stays green.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'ready-to-merge')
+    # Run under the same env that run-matrix uses so the credential filter
+    # below can see the real provider secrets (DEEPSEEK/GEMINI/OPENAI/Bedrock).
+    environment: pypi-internal-preview
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.emit.outputs.matrix }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      has_cells: ${{ steps.emit.outputs.has_cells }}
+      base_ref: ${{ steps.resolve.outputs.base_ref }}
+    steps:
+      - name: Resolve + authorize PR
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          json=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")
+          head_repo=$(printf '%s' "$json" | jq -r '.head.repo.full_name // ""')
+          if [ "$head_repo" != "benchflow-ai/benchflow" ]; then
+            echo "::error::PR #${PR_NUMBER} head repo is '${head_repo}', not internal — refusing."
+            exit 1
+          fi
+          head_sha=$(printf '%s' "$json" | jq -r '.head.sha')
+          base_ref=$(printf '%s' "$json" | jq -r '.base.ref')
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "Resolved PR #${PR_NUMBER}: head=$head_sha base=$base_ref"
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ steps.resolve.outputs.base_ref }}
+          fetch-depth: 0
+          # pyproject.toml + README.md + src so `uv pip install .` below can build
+          # benchflow (hatchling) for the credential filter; uv.lock so the
+          # setup-uv cache key resolves. The planner itself is pure stdlib and
+          # needs only .github.
+          sparse-checkout: |
+            .github
+            tests/integration
+            pyproject.toml
+            uv.lock
+            README.md
+            src
+          sparse-checkout-cone-mode: false
+
+      - name: Fetch PR head SHA for the diff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+        run: git fetch --no-tags origin "$HEAD_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: Plan final-review scope (trusted)
+        id: plan
+        env:
+          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+          BASE_REF: ${{ steps.resolve.outputs.base_ref }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          SCOPE_INPUT: ${{ github.event.inputs.scope || 'auto' }}
+          CUSTOM_TASKS: ${{ github.event.inputs.custom_tasks || '' }}
+          SANDBOXES: ${{ github.event.inputs.sandboxes || 'docker' }}
+          SKILL_MODES: ${{ github.event.inputs.skill_modes || 'no-skill' }}
+        run: |
+          set -euo pipefail
+          ARGS=( --pr-number "$PR_NUMBER" --base-ref "$BASE_REF" --head-sha "$HEAD_SHA"
+                 --diff-from-git --scope "$SCOPE_INPUT" --out matrix.json )
+          if [ -n "$CUSTOM_TASKS" ]; then ARGS+=( --custom-tasks "$CUSTOM_TASKS" ); fi
+          if [ -n "$SANDBOXES" ]; then ARGS+=( --sandboxes "$SANDBOXES" ); fi
+          if [ -n "$SKILL_MODES" ]; then ARGS+=( --skill-modes "$SKILL_MODES" ); fi
+          set +e
+          python .github/scripts/integration_matrix.py "${ARGS[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 2 ]; then
+            REASON=$(jq -r '.rejected_overflow // "scope overflow"' matrix.json 2>/dev/null || echo "scope overflow")
+            echo "::error::integration scope overflow: $REASON"
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::scope planner failed (exit $rc)"
+            exit "$rc"
+          fi
+          # matrix output is emitted AFTER the credential filter below.
+          echo "Planned scope=$(jq -r '.scope' matrix.json) cells=$(jq '.matrix | length' matrix.json)"
+
+      # Install benchflow so the credential filter can import
+      # benchflow.agents.env. The planner above is pure (MiniYaml-safe) and
+      # needs nothing; only this env-aware step needs the package.
+      - name: Install benchflow (for the credential filter)
+        # uv pip install into the setup-python interpreter (--system). The filter
+        # is fail-open by design, so a failed install must NOT block the plan —
+        # warn and let the filter pass the matrix through unfiltered.
+        run: uv pip install --system --quiet . || echo "::warning::benchflow install failed; credential filter will fail-open (matrix unfiltered)"
+
+      # Drop any planned cell whose agent+model credential is absent from this
+      # environment BEFORE run-matrix consumes the matrix, so un-keyed agents
+      # never spin up a (doomed, sandbox-burning) cell that would log as a
+      # false-red slot. Fails OPEN: if benchflow import fails the matrix passes
+      # through unchanged. Credentials come from the pypi-internal-preview env.
+      - name: Filter uncredentialed cells (env-aware)
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          set -euo pipefail
+          python .github/scripts/filter_credentialed_cells.py \
+            --matrix matrix.json --out matrix.json
+          SKIPPED=$(jq -c '.skipped_uncredentialed // []' matrix.json)
+          if [ "$SKIPPED" != "[]" ]; then
+            echo "::notice::credential filter skipped uncredentialed cells: $SKIPPED"
+          fi
+
+      - name: Emit filtered matrix output
+        id: emit
+        run: |
+          set -euo pipefail
+          N=$(jq '.matrix | length' matrix.json)
+          echo "matrix=$(jq -c '.matrix' matrix.json)" >> "$GITHUB_OUTPUT"
+          echo "Run matrix cells=$N (after credential filter)"
+          # Empty matrix after credential filtering (NO provider key for ANY
+          # planned cell) must SKIP run-matrix/review-pack as a green no-op — NOT
+          # hard-fail fromJson([]) ("matrix must define at least one combination")
+          # into a false 'not mergeable' verdict on a manual final-review dispatch.
+          if [ "$N" -eq 0 ]; then
+            echo "has_cells=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::all planned cells filtered out (no provider credentials available) — passing as a green no-op; nothing ran"
+          else
+            echo "has_cells=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload matrix plan
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: integration-final-matrix
+          path: matrix.json
+          if-no-files-found: error
+          retention-days: 30
+
+  # ----------------------------------------------------------------------------
+  # run-matrix — PROTECTED environment (required reviewers = the human L3 gate).
+  # One leg per planned cell; per-cell timeout from the plan. Trusted-main harness
+  # + PR-head src/benchflow. All provider + DAYTONA keys. usage-tracking required;
+  # agent_judge per cell; skill-catalog audit when cell.audit_skills.
+  # ----------------------------------------------------------------------------
+  run-matrix:
+    needs: plan
+    if: needs.plan.outputs.has_cells == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi-internal-preview
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.plan.outputs.matrix) }}
+    timeout-minutes: ${{ matrix.cell.timeout_minutes }}
+    env:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+      GLM_BASE_URL: ${{ secrets.GLM_BASE_URL }}
+      QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+      QWEN_BASE_URL: ${{ secrets.QWEN_BASE_URL }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY || secrets.BF_TOKEN }}
+      LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL || 'http://llm-proxy.eval.all-hands.dev/v1' }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN || github.token }}
+      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      CELL_JSON: ${{ toJson(matrix.cell) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ needs.plan.outputs.base_ref }}
+          fetch-depth: 0
+
+      - name: Overlay PR-head src/benchflow (code-under-test)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ needs.plan.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$HEAD_SHA"
+          git checkout "$HEAD_SHA" -- src/benchflow
+
+      - name: Select integration provider
+        run: python .github/scripts/select_integration_provider.py
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra judge --extra sandbox-daytona --locked
+
+      - name: Run the cell (trusted-main scenarios.run_eval)
+        env:
+          # The provider-select step wrote OPENAI_*=DeepSeek into the job env for
+          # the DeepSeek agent-judge. The gated-native codex-acp rollout (gpt,
+          # OpenAI Responses) KEEPS ambient OPENAI_* (it does not recompute them
+          # in resolve_agent_env), so it would otherwise auth its rollout against
+          # DeepSeek and fail. Restore the REAL OpenAI creds for codex-acp cells
+          # ONLY — every DeepSeek cell keeps the job env unchanged (no-op), and the
+          # later agent-judge step keeps the DeepSeek OPENAI_* from $GITHUB_ENV.
+          OPENAI_API_KEY: ${{ matrix.cell.agent == 'codex-acp' && secrets.OPENAI_API_KEY || env.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ matrix.cell.agent == 'codex-acp' && 'https://api.openai.com/v1' || env.OPENAI_BASE_URL }}
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          sys.path.insert(0, "tests/integration")
+          import scenarios
+
+          cell = json.loads(os.environ["CELL_JSON"])
+          cid = cell["id"]
+          jobs_dir = pathlib.Path("jobs/integration-final") / cid
+          jobs_dir.mkdir(parents=True, exist_ok=True)
+
+          extra = [
+              "--skill-mode", cell.get("skill_mode", "no-skill"),
+              "--usage-tracking", "required",
+              "--agent-idle-timeout", str(cell.get("agent_idle_timeout", 240)),
+          ]
+          outcome = scenarios.run_eval(
+              jobs_dir=jobs_dir,
+              agent=cell["agent"],
+              sandbox=cell.get("sandbox", "docker"),
+              model=cell.get("model") or None,
+              include=(cell["task"],),
+              concurrency=1,
+              extra_args=tuple(extra),
+              source_repo="benchflow-ai/skillsbench",
+              source_path="tasks",
+              source_ref="main",
+          )
+          print(f"cell={cid} rc={outcome.returncode} jobs_dir={jobs_dir}")
+          PY
+
+      - name: Agent-judge the cell
+        run: |
+          uv run python tests/integration/agent_judge.py \
+            "jobs/integration-final/$(uv run python -c "import json,os;print(json.loads(os.environ['CELL_JSON'])['id'])")" \
+            --model "$BENCHFLOW_JUDGE_MODEL" \
+            --json || echo "::notice::agent_judge non-zero (graded downstream by review-pack)"
+
+      - name: Skill-catalog audit (when the cell requests it)
+        # Best-effort pre-extraction; the authoritative S-WITHSKILL gate runs in
+        # the trusted-main grader (rubric_checks via build_integration_review_pack).
+        # The extractor is the standalone CLI shipped in the experiment-review
+        # skill tree (positional trajectory path).
+        if: ${{ matrix.cell.audit_skills }}
+        env:
+          EXTRACT: .agents/skills/benchflow-experiment-review/scripts/extract_harness_skills.py
+        run: |
+          set -euo pipefail
+          CID=$(uv run python -c "import json,os;print(json.loads(os.environ['CELL_JSON'])['id'])")
+          while IFS= read -r -d '' traj; do
+            uv run python "$EXTRACT" "$traj" || \
+              echo "::notice::skill catalog extraction flagged $traj (quarantine downstream)"
+          done < <(find "jobs/integration-final/$CID" -path '*/trajectory/llm_trajectory.jsonl' -print0)
+
+      - name: Upload cell jobs
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: integration-final-${{ strategy.job-index }}
+          path: jobs/integration-final
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # ----------------------------------------------------------------------------
+  # review-pack — TRUSTED grader + REQUIRED codex. always() so it grades whatever
+  # ran. Builds the deterministic review pack (pinned baseline; rerun-base only
+  # for scope=expanded), then runs codex_review.py as the REQUIRED fail-closed
+  # gate. Sets the 'integration-final-review' check-run conclusion =
+  # worst(deterministic, codex) and upserts the sticky verdict comment.
+  # ----------------------------------------------------------------------------
+  review-pack:
+    needs: [plan, run-matrix]
+    if: always() && needs.plan.outputs.has_cells == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi-internal-preview
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    env:
+      LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY || secrets.BF_TOKEN }}
+      LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL || 'http://llm-proxy.eval.all-hands.dev/v1' }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN || github.token }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+      # L3 Codex reviewer auth: the existing repo-level OPENAI_API_KEY (durable,
+      # revocable) — codex_review.py writes it as an apikey auth.json. No
+      # personal-OAuth CODEX_AUTH_JSON blob is needed.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ needs.plan.outputs.base_ref }}
+          fetch-depth: 0
+
+      - name: Download matrix plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: integration-final-matrix
+          path: .
+
+      - name: Download all cell jobs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: integration-final-*
+          merge-multiple: true
+          path: jobs/integration-final
+
+      - name: Select judge provider
+        run: python .github/scripts/select_integration_provider.py
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra judge --locked
+
+      - name: Fetch leaderboard golden-truth baseline
+        # Pinned-baseline reward-band parity (Q2b). Downloads the matching-config
+        # SkillsBench leaderboard submissions (native BenchFlow result.json) from
+        # the HF dataset + revision recorded in scope_defaults.yml -> baseline.
+        # The band model covers every integration task; cheap deepseek runs band-
+        # compare advisory-only. Best-effort: a fetch miss leaves band parity NA
+        # rather than failing the gate (the deterministic floor + codex still run).
+        id: baseline
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          vals=$(uv run python -c "import yaml;d=yaml.safe_load(open('.github/integration/scope_defaults.yml'))['baseline'];print(d['hf_repo'],d['hf_revision'],d['submission_root'],d['config_no_skill'],d['band_model'])")
+          read -r HF_REPO HF_REV SUB_ROOT CONFIG BAND_MODEL <<< "$vals"
+          DIR="$SUB_ROOT/${CONFIG}__${BAND_MODEL}"
+          uvx --from huggingface_hub hf download "$HF_REPO" --repo-type dataset \
+            --revision "$HF_REV" --include "$DIR/**/result.json" \
+            --local-dir baseline-root
+          echo "baseline_dir=baseline-root/$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Build the deterministic review pack
+        id: pack
+        env:
+          SCOPE_INPUT: ${{ github.event.inputs.scope || 'auto' }}
+          BASELINE_DIR: ${{ steps.baseline.outputs.baseline_dir }}
+        run: |
+          set -euo pipefail
+          ARGS=( --matrix matrix.json --artifacts jobs/integration-final --out review-pack )
+          # Pinned leaderboard baseline (golden truth) is the default vehicle: the
+          # fetch step exported BASELINE_DIR. scope=expanded additionally allows a
+          # same-SHA base re-run via harbor-baseline.
+          if [ -n "${BASELINE_DIR:-}" ] && [ -d "${BASELINE_DIR}" ]; then
+            ARGS+=( --baseline-root "${BASELINE_DIR}" )
+          elif [ "$SCOPE_INPUT" = "expanded" ] && [ -d harbor-baseline ]; then
+            ARGS+=( --baseline-root harbor-baseline )
+          fi
+          set +e
+          uv run python .github/scripts/build_integration_review_pack.py "${ARGS[@]}"
+          rc=$?
+          set -e
+          echo "pack_exit=$rc" >> "$GITHUB_OUTPUT"
+          DET="not mergeable"
+          if [ -f review-pack/verdict.md ]; then
+            DET=$(grep -ioE 'mergeable with quarantines|not mergeable|mergeable' review-pack/verdict.md | head -1 || echo "not mergeable")
+          else
+            mkdir -p review-pack
+            printf '## Verdict\n\nnot mergeable\n\nThe review pack failed before writing a verdict (exit %s).\n' "$rc" > review-pack/verdict.md
+          fi
+          echo "deterministic_verdict=$DET" >> "$GITHUB_OUTPUT"
+          echo "deterministic verdict: $DET (pack exit $rc)"
+
+      # The host codex CLI (`codex exec`) the equivalence reviewer drives.
+      # continue-on-error so a failed install reaches the codex step, which then
+      # fail-closes to 'not mergeable (codex unavailable)' with a verdict, rather
+      # than dying as a raw step error.
+      - name: Install codex CLI
+        if: ${{ github.event.inputs.codex_review != 'false' }}
+        continue-on-error: true
+        run: npm install -g @openai/codex@0.141.0
+
+      # Route codex to DeepSeek-v4-pro via Moon Bridge (a local OpenAI-Responses
+      # <-> DeepSeek forwarding proxy) — codex speaks ONLY the Responses API and
+      # the OpenAI account quota is exhausted, so the reviewer runs on DeepSeek.
+      # Starts the bridge in the background + writes codex's config.toml. Method:
+      # github.com/deepseek-ai/awesome-deepseek-agent docs/codex.md.
+      - name: Set up codex DeepSeek bridge (Moon Bridge)
+        if: ${{ github.event.inputs.codex_review != 'false' }}
+        continue-on-error: true
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: bash .github/scripts/setup_codex_deepseek_bridge.sh
+
+      # REQUIRED at L3 (fail-closed). A dead/absent codex key => not mergeable.
+      - name: Codex equivalence review (REQUIRED, fail-closed)
+        id: codex
+        if: ${{ github.event.inputs.codex_review != 'false' }}
+        env:
+          # codex runs on DeepSeek-v4-pro through Moon Bridge (config.toml written
+          # by the setup step into ~/.codex, model `moonbridge` -> deepseek-v4-pro).
+          # CODEX_API_KEY is still set so has_codex_auth passes; the moonbridge
+          # provider is a local bridge and ignores it.
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_MODEL: moonbridge
+          CODEX_REASONING_EFFORT: xhigh
+          DETERMINISTIC_VERDICT: ${{ steps.pack.outputs.deterministic_verdict }}
+        run: |
+          set +e
+          # The bridge setup step is continue-on-error, so if it failed there is no
+          # ~/.codex/config.toml and codex would only emit a confusing
+          # connection-refused against the dead local proxy. Detect that absence up
+          # front and fail-closed with a clear message instead.
+          if [ ! -f "${CODEX_HOME:-$HOME/.codex}/config.toml" ]; then
+            echo "::error title=Moon Bridge unavailable::codex DeepSeek bridge setup did not complete (no config.toml) — codex (required at L3) cannot run; fail-closing to 'not mergeable (codex unavailable)'."
+            echo "codex_exit=1" >> "$GITHUB_OUTPUT"
+          else
+            uv run python .github/scripts/codex_review.py \
+              --review-pack review-pack \
+              --artifacts jobs/integration-final \
+              --deterministic-verdict "$DETERMINISTIC_VERDICT" \
+              --findings-out review-pack/codex_findings.json \
+              --codex-out review-pack/codex_output.txt
+            rc=$?
+            echo "codex_exit=$rc" >> "$GITHUB_OUTPUT"
+          fi
+          # The final verdict was written to GITHUB_OUTPUT by codex_review.py
+          # (final_verdict / codex_verdict). codex_exit != 0 => fail-closed.
+
+      - name: Compute the final published verdict
+        id: final
+        if: always()
+        env:
+          CODEX_REQUIRED: ${{ github.event.inputs.codex_review != 'false' }}
+          DET: ${{ steps.pack.outputs.deterministic_verdict }}
+          # The fail-closed trigger is an empty CODEX_FINAL (codex produced no
+          # verdict). codex_exit is intentionally not consulted: codex_review.py
+          # returns non-zero for a legitimately-computed "not mergeable" too, so
+          # gating on it would mislabel a real verdict as "codex unavailable".
+          CODEX_FINAL: ${{ steps.codex.outputs.final_verdict }}
+        run: |
+          set -euo pipefail
+          if [ "$CODEX_REQUIRED" = "false" ]; then
+            FINAL="$DET"
+          elif [ -n "$CODEX_FINAL" ]; then
+            FINAL="$CODEX_FINAL"
+          else
+            # Codex was required but produced no verdict — fail closed.
+            FINAL="not mergeable (codex unavailable)"
+          fi
+          echo "final_verdict=$FINAL" >> "$GITHUB_OUTPUT"
+          case "$FINAL" in
+            "mergeable"|"mergeable with quarantines") echo "conclusion=success" >> "$GITHUB_OUTPUT" ;;
+            *) echo "conclusion=failure" >> "$GITHUB_OUTPUT" ;;
+          esac
+          echo "FINAL VERDICT: $FINAL"
+
+      - name: Upsert final-review PR comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+          FINAL_VERDICT: ${{ steps.final.outputs.final_verdict }}
+          MARKER: "<!-- integration-final-review -->"
+        run: |
+          set -euo pipefail
+          BODY_FILE="$RUNNER_TEMP/final-comment.md"
+          {
+            printf '%s\n\n' "$MARKER"
+            printf '## Integration final review\n\n**Final verdict: %s**\n\n' "$FINAL_VERDICT"
+            cat review-pack/verdict.md
+          } > "$BODY_FILE"
+          EXISTING_ID=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -1 || echo "")
+          if [ -n "$EXISTING_ID" ]; then
+            gh api -X PATCH "repos/${REPO}/issues/comments/${EXISTING_ID}" -F body=@"$BODY_FILE" >/dev/null
+          else
+            gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" -F body=@"$BODY_FILE" >/dev/null
+          fi
+
+      - name: Publish integration-final-review check-run
+        if: always()
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        env:
+          HEAD_SHA: ${{ needs.plan.outputs.head_sha }}
+          CONCLUSION: ${{ steps.final.outputs.conclusion }}
+          FINAL_VERDICT: ${{ steps.final.outputs.final_verdict }}
+        with:
+          script: |
+            const fs = require('fs');
+            const headSha = process.env.HEAD_SHA;
+            const conclusion = process.env.CONCLUSION || 'failure';
+            const verdict = process.env.FINAL_VERDICT || 'not mergeable';
+            let summary = '';
+            try { summary = fs.readFileSync('review-pack/verdict.md', 'utf8'); }
+            catch (e) { summary = 'No review pack produced.'; }
+            if (summary.length > 60000) summary = summary.slice(0, 60000) + '\n\n…(truncated)';
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'integration-final-review',
+              head_sha: headSha,
+              status: 'completed',
+              conclusion: conclusion,
+              output: {
+                title: `integration-final-review: ${verdict}`,
+                summary: summary,
+              },
+            });
+
+      - name: Upload review pack
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: integration-final-review-pack
+          path: review-pack
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Enforce the final verdict (gate)
+        if: always()
+        env:
+          CONCLUSION: ${{ steps.final.outputs.conclusion }}
+          FINAL_VERDICT: ${{ steps.final.outputs.final_verdict }}
+        run: |
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::integration final review verdict: $FINAL_VERDICT"
+            exit 1
+          fi
+          echo "integration final review verdict: $FINAL_VERDICT"

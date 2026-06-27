@@ -386,9 +386,23 @@ def litellm_proxy_config(
     return {
         "model_list": model_list,
         "general_settings": {"master_key": master_key},
+        "router_settings": {
+            # BenchFlow owns task-level retry classification. Keep LiteLLM from
+            # multiplying deterministic provider rejects into proxy-local retry
+            # storms or deployment cooldown fast-fails (#830).
+            "num_retries": 0,
+            "disable_cooldowns": True,
+        },
         "litellm_settings": {
             "callbacks": [f"{callback_module}.proxy_handler_instance"],
             "drop_params": True,
             "set_verbose": False,
+            # Force the anthropic /v1/messages bridge onto /chat/completions.
+            # LiteLLM routes openai/-prefixed upstreams (e.g. the vllm
+            # provider) through its Responses-API adapter, whose *streaming*
+            # path never fires the success callback -- so streaming
+            # claude-agent-acp rollouts produced no llm_trajectory.jsonl
+            # (#833). /chat/completions logs success correctly.
+            "use_chat_completions_url_for_anthropic_messages": True,
         },
     }

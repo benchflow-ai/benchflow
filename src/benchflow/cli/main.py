@@ -52,6 +52,7 @@ from benchflow.cli.monitor import register_monitor
 from benchflow.cli.sandbox import register_sandbox
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
+from benchflow.cli.train import register_train
 from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
 from benchflow.sandbox.providers import providers_phrase
@@ -288,7 +289,12 @@ def eval_run(
         str | None,
         typer.Option(
             "--usage-tracking",
-            help="Token usage tracking policy: auto, required, or off",
+            help=(
+                "Telemetry-enforcement policy: auto, required, or off. The "
+                "LiteLLM proxy is always used for routable agents (usage, cost, "
+                "and llm_trajectory.jsonl are always captured); this flag only "
+                "controls whether trusted telemetry is required."
+            ),
         ),
     ] = None,
     environment_manifest: Annotated[
@@ -399,6 +405,16 @@ def eval_run(
             help="Timeout (seconds) for sandbox user setup inside the environment.",
         ),
     ] = 120,
+    context_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--context-root",
+            help=(
+                "Repo/build-context root used to stage Dockerfile COPY sources "
+                "for monorepo-authored local tasks."
+            ),
+        ),
+    ] = None,
     skills_dir: Annotated[
         Path | None,
         typer.Option("--skills-dir", help="Skills directory to deploy"),
@@ -505,6 +521,7 @@ def eval_run(
         jobs_dir=jobs_dir,
         sandbox_user=sandbox_user,
         sandbox_setup_timeout=sandbox_setup_timeout,
+        context_root=context_root,
         skills_dir=skills_dir,
         skill_mode=skill_mode,
         skill_creator_dir=skill_creator_dir,
@@ -699,7 +716,6 @@ def run_batch_eval(
                     worker_concurrency=plan.request.worker_concurrency,
                     worker_retries=plan.request.worker_retries,
                     worker_start_stagger_sec=plan.request.worker_start_stagger_sec,
-                    environment_manifest_path=plan.request.environment_manifest,
                 )
             )
     except EmptyTaskSelectionError as e:
@@ -773,6 +789,14 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # the config file.
         if plan.eval_env_manifest is not None:
             j._config.environment_manifest = plan.eval_env_manifest
+        # CLI --config / --config-override (the C axis) likewise wins over the
+        # YAML's own config_override. Parsed + allowlist-validated at plan time
+        # and applied per task at the rollout layer. Without this the
+        # file-config path silently dropped the overlay (it threaded every
+        # other override but never this one), so a --config-override on a
+        # run-config file was a no-op.
+        if plan.eval_config_override is not None:
+            j._config.config_override = plan.eval_config_override
     except subprocess.CalledProcessError as e:
         # A source.repo clone/fetch failure (git exits non-zero) otherwise escapes
         # as a raw traceback — it is not a config-parse error, so give it its own
@@ -1075,6 +1099,7 @@ def eval_view(
 register_continue(eval_app, alias_app=app)
 register_skills(app)
 register_tasks(app)
+register_train(app)
 register_hub(app)
 register_agent(app)
 register_adopt_deprecated(app)
