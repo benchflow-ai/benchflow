@@ -474,6 +474,79 @@ def test_build_rollout_result_emits_verifiers_shaped_results_jsonl(tmp_path):
     assert row["stop_condition"] == "agent_completed"
 
 
+def test_results_jsonl_fails_closed_on_agent_error_with_llm_steps(tmp_path):
+    """Guards PR #828 review: errored rollouts are never training-ready rows."""
+    rollout_dir = tmp_path / "rollout-agent-error"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(_llm_exchange()) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error="agent crashed",
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 0.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "agent_error"
+    assert row["error"]["error"] == "agent_error"
+    assert row["is_completed"] is False
+    assert row["stop_condition"] == "agent_error"
+
+
+def test_results_jsonl_fails_closed_on_partial_rollout_with_llm_steps(tmp_path):
+    """Guards PR #828 review: partial rollouts are never training-ready rows."""
+    rollout_dir = tmp_path / "rollout-partial"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(_llm_exchange()) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=True,
+        trajectory_source="partial_acp",
+        rewards={"reward": 0.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "partial_trajectory"
+    assert row["error"]["error"] == "partial_trajectory"
+    assert row["is_completed"] is False
+    assert row["is_truncated"] is True
+    assert row["stop_condition"] == "partial_trajectory"
+
+
 def test_results_jsonl_uses_canonical_prime_sft_normalization(tmp_path):
     """Guards PR #828 review: runtime rows do not trust callback-only messages."""
     rollout_dir = tmp_path / "rollout-normalized"
@@ -634,21 +707,47 @@ def test_results_jsonl_token_usage_falls_back_to_provider_total(tmp_path):
     }
 
 
-def test_write_job_results_jsonl_aggregates_rollout_results(tmp_path):
-    """Guards PR #828: job-level results.jsonl aggregates rollout rows."""
+def test_write_job_results_jsonl_groups_example_ids_by_task(tmp_path):
+    """Guards PR #828: job results group rollouts by task, not default 0."""
     job_dir = tmp_path / "job"
-    for idx in range(2):
-        rollout_dir = job_dir / f"rollout-{idx}"
+    rollout_specs = [
+        ("task-a", "task-a__trial-1"),
+        ("task-a", "task-a__trial-2"),
+        ("task-b", "task-b__trial-1"),
+    ]
+    for task_name, rollout_name in rollout_specs:
+        rollout_dir = job_dir / rollout_name
         rollout_dir.mkdir(parents=True)
-        (rollout_dir / "results.jsonl").write_text(
-            json.dumps({"example_id": idx, "reward": float(idx)}) + "\n"
+        traj_dir = rollout_dir / "trajectory"
+        traj_dir.mkdir()
+        (traj_dir / "llm_trajectory.jsonl").write_text(
+            json.dumps(_llm_exchange()) + "\n"
+        )
+        _build_rollout_result(
+            rollout_dir,
+            task_name=task_name,
+            rollout_name=rollout_name,
+            agent="openhands",
+            agent_name="OpenHands",
+            model="openai-compatible-model",
+            n_tool_calls=1,
+            prompts=["List files."],
+            error=None,
+            verifier_error=None,
+            trajectory=_acp_trajectory(),
+            partial_trajectory=False,
+            trajectory_source="acp",
+            rewards={"reward": 1.0},
+            started_at=datetime.now(),
+            timing={},
         )
 
     out = write_job_results_jsonl(job_dir)
 
     assert out == job_dir / "results.jsonl"
     rows = [json.loads(line) for line in out.read_text().splitlines()]
-    assert [row["example_id"] for row in rows] == [0, 1]
+    assert [row["info"]["task_id"] for row in rows] == ["task-a", "task-a", "task-b"]
+    assert [row["example_id"] for row in rows] == [0, 0, 1]
 
 
 def test_build_rollout_result_emits_atif_and_adp(tmp_path):

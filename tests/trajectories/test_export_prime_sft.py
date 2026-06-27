@@ -340,6 +340,38 @@ def test_validate_accepts_prime_rollout_prompt_completion_rows(tmp_path: Path) -
     }
 
 
+def test_validate_rejects_tool_calls_without_tool_defs(tmp_path: Path) -> None:
+    """Guards PR #828 review: tool-using rows must carry tool_defs/tools."""
+    path = tmp_path / "missing-tools.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "finish"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "finish",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                ],
+            }
+        )
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match="tool_calls require non-empty tool_defs"):
+        validate_prime_sft_jsonl(path)
+
+
 def test_strict_llm_trajectory_loader_rejects_malformed_jsonl(
     tmp_path: Path,
 ) -> None:
@@ -349,6 +381,20 @@ def test_strict_llm_trajectory_loader_rejects_malformed_jsonl(
 
     with pytest.raises(PrimeSftTrajectoryJsonlError, match="line 2: invalid JSON"):
         load_llm_trajectory_jsonl(path, strict=True)
+
+
+def test_convert_rejects_malformed_llm_jsonl(tmp_path: Path) -> None:
+    """Guards PR #828 review: bench train convert must fail closed on corruption."""
+    rollout = tmp_path / "job" / "rollout-1"
+    _write_rollout(rollout)
+    trajectory_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    trajectory_path.write_text(
+        trajectory_path.read_text() + '{"request":\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PrimeSftTrajectoryJsonlError, match="line 3: invalid JSON"):
+        convert_benchflow_rollouts_to_prime_sft_rows(tmp_path / "job")
 
 
 def test_convert_openhands_responses_shape_preserves_tool_calls(tmp_path: Path) -> None:

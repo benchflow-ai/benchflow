@@ -138,10 +138,6 @@ def load_llm_trajectory_jsonl(
     return records
 
 
-def _load_jsonl(path: Path) -> list[dict[str, Any]]:
-    return load_llm_trajectory_jsonl(path, strict=False)
-
-
 def _iter_rollout_dirs(root: str | Path) -> list[Path]:
     path = Path(root)
     if (path / "result.json").is_file():
@@ -467,6 +463,24 @@ def _has_tool_calls(messages: list[dict[str, Any]]) -> bool:
     return any(bool(message.get("tool_calls")) for message in messages)
 
 
+def _normalize_tools_for_validation(
+    row: dict[str, Any], row_num: int
+) -> list[Any] | None:
+    tools = row.get("tool_defs", row.get("tools"))
+    if tools is None:
+        return None
+    if isinstance(tools, str):
+        try:
+            tools = json.loads(tools)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"row {row_num}: tool_defs/tools is not valid JSON: {exc}"
+            ) from exc
+    if not isinstance(tools, list):
+        raise ValueError(f"row {row_num}: tool_defs/tools must be a list")
+    return tools
+
+
 def _row_messages(row: dict[str, Any], row_num: int) -> list[Any]:
     messages = row.get("messages")
     if isinstance(messages, list) and messages:
@@ -525,17 +539,13 @@ def validate_prime_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
     if not any(isinstance(m, dict) and m.get("role") == "assistant" for m in messages):
         raise ValueError(f"row {row_num}: no assistant message")
 
-    tools = row.get("tool_defs", row.get("tools"))
+    typed_messages = [m for m in messages if isinstance(m, dict)]
+    tools = _normalize_tools_for_validation(row, row_num)
+    if _has_tool_calls(typed_messages) and not tools:
+        raise ValueError(
+            f"row {row_num}: assistant tool_calls require non-empty tool_defs/tools"
+        )
     if tools is not None:
-        if isinstance(tools, str):
-            try:
-                tools = json.loads(tools)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"row {row_num}: tool_defs/tools is not valid JSON: {exc}"
-                ) from exc
-        if not isinstance(tools, list):
-            raise ValueError(f"row {row_num}: tool_defs/tools must be a list")
         for tool_idx, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 raise ValueError(f"row {row_num}: tool_defs[{tool_idx}] must be object")
@@ -638,7 +648,7 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
             continue
 
         trajectory_path = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
-        exchanges = _load_jsonl(trajectory_path)
+        exchanges = load_llm_trajectory_jsonl(trajectory_path, strict=True)
         if not exchanges:
             stats.skipped_no_trajectory += 1
             continue

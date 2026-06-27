@@ -16,11 +16,11 @@ emission: even errored or unstructured rollouts get one JSONL row with an
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
-from benchflow.trajectories._export_common import aggregate_rollout_jsonl
 from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
     load_llm_trajectory_jsonl,
@@ -31,6 +31,8 @@ from benchflow.trajectories.types import redact_trajectory_text
 
 ROLLOUT_RESULTS_FILENAME = "results.jsonl"
 JOB_RESULTS_FILENAME = "results.jsonl"
+
+logger = logging.getLogger(__name__)
 
 
 def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
@@ -264,7 +266,13 @@ def build_rollout_results_record(
         verifier_error=verifier_error,
         export_error=effective_export_error,
     )
-    training_ready = bool(steps and completion and effective_export_error is None)
+    terminal_health_error = bool(error or verifier_error or partial_trajectory)
+    training_ready = bool(
+        steps
+        and completion
+        and effective_export_error is None
+        and not terminal_health_error
+    )
     training_ready_reason = None
     if not training_ready:
         if llm_export_error:
@@ -273,13 +281,33 @@ def build_rollout_results_record(
             training_ready_reason = "invalid_prime_sft_row"
         elif effective_export_error:
             training_ready_reason = "export_error"
+        elif not steps or not completion:
+            training_ready_reason = "missing_healthy_structured_llm_trajectory"
+        elif partial_trajectory:
+            training_ready_reason = "partial_trajectory"
+        elif error:
+            training_ready_reason = "agent_error"
+        elif verifier_error:
+            training_ready_reason = "verifier_error"
         else:
             training_ready_reason = "missing_healthy_structured_llm_trajectory"
         if error_obj is None:
+            error_name = (
+                training_ready_reason
+                if training_ready_reason
+                in {"agent_error", "verifier_error", "partial_trajectory"}
+                else "missing_llm_trajectory"
+            )
             error_obj = {
-                "error": "missing_llm_trajectory",
-                "error_chain_str": "No healthy structured LLM trajectory was available for results.jsonl",
-                "error_chain_repr": "No healthy structured LLM trajectory was available for results.jsonl",
+                "error": error_name,
+                "error_chain_str": (
+                    "Rollout is not training-ready: "
+                    f"{training_ready_reason or 'unknown'}"
+                ),
+                "error_chain_repr": (
+                    "Rollout is not training-ready: "
+                    f"{training_ready_reason or 'unknown'}"
+                ),
             }
     completed = error_obj is None and not partial_trajectory
     token_usage = _token_usage_from_agent_result(agent_result or {})
@@ -368,8 +396,55 @@ def write_rollout_results_jsonl(
 
 def write_job_results_jsonl(job_dir: str | Path) -> Path | None:
     """Aggregate per-rollout ``results.jsonl`` files into ``job_dir/results.jsonl``."""
-    return aggregate_rollout_jsonl(
-        job_dir,
-        rollout_relpath=ROLLOUT_RESULTS_FILENAME,
-        out_filename=JOB_RESULTS_FILENAME,
-    )
+    job_path = Path(job_dir)
+    if not job_path.is_dir():
+        return None
+    rollout_files = sorted(job_path.glob(f"*/{ROLLOUT_RESULTS_FILENAME}"))
+    if not rollout_files:
+        return None
+
+    example_ids: dict[str, int] = {}
+    out = job_path / JOB_RESULTS_FILENAME
+    with out.open("w", encoding="utf-8") as handle:
+        for src in rollout_files:
+            try:
+                lines = src.read_text().splitlines()
+            except OSError as exc:
+                logger.warning("Skipping unreadable results artifact %s: %s", src, exc)
+                continue
+            for line_num, line in enumerate(lines, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "Skipping invalid results artifact row %s:%s: %s",
+                        src,
+                        line_num,
+                        exc,
+                    )
+                    continue
+                if not isinstance(row, dict):
+                    logger.warning(
+                        "Skipping non-object results artifact row %s:%s",
+                        src,
+                        line_num,
+                    )
+                    continue
+                key = _job_example_key(row, src.parent)
+                row["example_id"] = example_ids.setdefault(key, len(example_ids))
+                handle.write(_record_to_redacted_json_line(row) + "\n")
+    return out
+
+
+def _job_example_key(row: dict[str, Any], rollout_dir: Path) -> str:
+    info = row.get("info")
+    if isinstance(info, dict):
+        task_id = info.get("task_id") or info.get("task_name")
+        if task_id:
+            return str(task_id)
+    task_id = row.get("task_id") or row.get("task_name")
+    if task_id:
+        return str(task_id)
+    return rollout_dir.name

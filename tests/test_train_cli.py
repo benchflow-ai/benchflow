@@ -101,3 +101,25 @@ def test_train_convert_and_validate_cli(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert '"rows": 1' in result.output
+
+
+def test_train_convert_rejects_malformed_llm_jsonl(tmp_path: Path) -> None:
+    """Guards PR #828 review: CLI conversion fails closed on corrupted LLM traces."""
+    jobs = tmp_path / "jobs"
+    rollout = jobs / "run" / "task-a__abc123"
+    _write_rollout(rollout)
+    trajectory_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    trajectory_path.write_text(
+        trajectory_path.read_text() + '{"request":\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "train.jsonl"
+
+    result = runner.invoke(
+        app,
+        ["train", "convert", str(jobs), "--out", str(out), "--expected-rows", "1"],
+    )
+
+    assert result.exit_code == 1
+    assert "invalid JSON" in result.output
+    assert not out.exists()
