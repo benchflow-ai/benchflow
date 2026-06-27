@@ -178,8 +178,12 @@ def test_omnigent_pi_is_sole_core_unmanifested_agent() -> None:
     core = _pure_core_agents()
     loaded = _live_manifests()
     unmanifested = set(core) - set(loaded)
-    assert unmanifested == {_CORE_ONLY_EXCEPTION}, (
-        "unmanifested core agents mismatch: expected only "
+    # SUBSET, not equality: omnigent-pi is the only *tolerated* unmanifested core
+    # agent, but its presence in AGENTS is import-side-effect dependent (the omnigent
+    # session-factory package may be unregistered in a lean env such as CI), so its
+    # absence is fine; a *new* unmanifested core agent still fails this gate.
+    assert unmanifested <= {_CORE_ONLY_EXCEPTION}, (
+        "unmanifested core agents mismatch: tolerated only "
         f"{{{_CORE_ONLY_EXCEPTION!r}}}, got {sorted(unmanifested)}. "
         f"{_CORE_ONLY_EXCEPTION!r} is the documented exception — a session-factory "
         "agent registered via the #825 omnigent seam, not a manifest.toml. Every "
