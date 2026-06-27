@@ -173,15 +173,61 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
     )
 
 
-# Token families are redacted *whole* — prefix included — so the v0.5
-# secret-leak audit (which greps for raw prefixes like ``AIzaSy``/``dtn_``)
-# sees no live-key shape (#537/#585). Keeping the prefix (``AIzaSy***``) would
-# still trip that grep, so the entire matched token becomes ``***REDACTED***``.
+# Quote atom for the header/key-value carriers below: a run of 0-8 optional
+# backslashes followed by an optional quote. This makes every carrier fire on raw
+# text (``"k": "v"``), Python dict-repr (``'k': 'v'``), AND json.dumps-escaped
+# JSON at any nesting depth (``\"k\": \"v\"``, ``\\\"k\\\": …``) — the escaped
+# form is how a provider error body embedded in ``error.message`` reaches the
+# redactor after ``Trajectory.to_jsonl`` runs ``json.dumps`` over the record
+# before redacting it (#830). The ``{0,8}`` cap keeps it ReDoS-bounded.
+_ESCQ = r'\\{0,8}["\']?'
+# Secret value class for the carriers: stops at a quote (plain, or the backslash
+# of an escaped closing quote), whitespace, and the ``,`` ``}`` ``&`` delimiters
+# so a redacted value can never swallow a sibling JSON field or URL query param;
+# excludes ``*`` so an already-redacted value isn't re-matched.
+_SECVAL = r"[^\"'\s,}\\*&]+"
+# Name-prefix class for the env/JSON carriers, LENGTH-CAPPED. An uncapped
+# ``[A-Za-z0-9_]*`` before a required marker backtracks O(n²) on a long
+# alphanumeric run (e.g. a base64 image field), so a benign trajectory could
+# stall the redactor for tens of seconds. Real env-var/header names are short;
+# ``{0,64}`` makes each match attempt O(1) → overall O(n) (#830 ReDoS fix).
+_NAME = r"[A-Za-z0-9_]{0,64}"
+
 _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # PEM private-key blocks (GCP/Vertex service-account JSON, RSA keys). Redact
+    # the whole armored block incl. the base64 body; the carriers below stop at
+    # the first space and would leave the key material. Lazy + length-capped body
+    # keeps it bounded (#830).
+    (
+        re.compile(
+            r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----"
+            r"[\s\S]{0,8192}?"
+            r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----"
+        ),
+        "***REDACTED***",
+    ),
+    # --- Token families: redacted WHOLE (prefix included) so the v0.5 leak audit
+    # greps (``AIzaSy``/``dtn_``…) see no live-key shape (#537/#585). ---
     # Anthropic: sk-ant-api03-...
     (re.compile(r"sk-ant-[a-zA-Z0-9_-]{12,}"), "***REDACTED***"),
-    # OpenAI project key: sk-proj-...  (before generic sk- so it wins)
-    (re.compile(r"sk-proj-[a-zA-Z0-9_-]{12,}"), "***REDACTED***"),
+    # BenchFlow proxy master key (sk-benchflow-<token_urlsafe(24)>), OpenAI service
+    # account (sk-svcacct-), OpenRouter (sk-or-v1-): rare labels that won't appear
+    # in a normal kebab slug, so the hyphen-permitting entropy class is safe here.
+    (
+        re.compile(r"sk-(?:benchflow|svcacct|or-v1)-[A-Za-z0-9_-]{12,}"),
+        "***REDACTED***",
+    ),
+    # OpenAI org-scoped sk-proj-/sk-admin-: `proj`/`admin` ARE common identifier
+    # words, so a bare hyphen class would redact kebab slugs like
+    # `sk-proj-refactor-auth`. Real keys are high-entropy base64url and always
+    # carry an uppercase char; gate on a lookahead for one so lowercase slugs
+    # survive (#830). Before generic sk- so it wins.
+    (
+        re.compile(
+            r"sk-(?:proj|admin)-(?=[A-Za-z0-9_-]{0,200}[A-Z])[A-Za-z0-9_-]{12,}"
+        ),
+        "***REDACTED***",
+    ),
     # OpenAI / generic sk- (alphanumeric only — widening to include `-` would
     # match common slugs like `task-sk-us-east-1-...`)
     (re.compile(r"sk-[a-zA-Z0-9]{12,}"), "***REDACTED***"),
@@ -199,43 +245,133 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "***REDACTED***"),
     # Slack tokens: bot/user/app/refresh/legacy (xoxb-/xoxp-/xoxa-/xoxr-/xoxs-).
     (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "***REDACTED***"),
-    # Header / key-value secret carriers, in BOTH JSON and raw-text forms
-    # (agents print env, curl -v, request logs into trajectories — #585).
-    # Matches: `"x-api-key": "v"`, `x-api-key: v`, `api-key=v`,
-    # `authorization: <scheme> v`, etc. The name is kept; the value is dropped.
-    # Hyphenated header names (x-api-key / api-key / x-goog-api-key). No leading
-    # boundary needed — the hyphen makes them safe from matching inside
-    # underscore variable names. Value excludes backslash so a literal
-    # JSON-escaped `\n` after one secret can't swallow the next header, and
-    # excludes `*` so an already-redacted value isn't re-matched.
+    # Other provider key families with distinctive prefixes — caught here for the
+    # bare-token-in-prose form that no NAME=value carrier sees (a provider
+    # exception that echoes the key). Groq gsk_, xAI xai-, Replicate r8_,
+    # HuggingFace hf_, Fireworks fw_. ≥20-char anchors avoid short ids (#830).
+    (re.compile(r"gsk_[A-Za-z0-9]{20,}"), "***REDACTED***"),
+    (re.compile(r"xai-[A-Za-z0-9]{20,}"), "***REDACTED***"),
+    (re.compile(r"r8_[A-Za-z0-9]{20,}"), "***REDACTED***"),
+    (re.compile(r"hf_[A-Za-z0-9]{20,}"), "***REDACTED***"),
+    (re.compile(r"fw_[A-Za-z0-9]{20,}"), "***REDACTED***"),
+    # JSON Web Tokens (session/bearer creds): three base64url segments split by
+    # dots. The ``eyJ`` prefix is base64url of ``{"`` — a JWT header. The 3rd
+    # (signature) segment requires ≥20 chars (real HS256/RS256 sigs are 43+) so
+    # short dotted base64/method-chains that merely start ``eyJ`` aren't redacted;
+    # a left boundary keeps it from starting mid-identifier. Segment upper bounds
+    # keep it ReDoS-bounded (#830).
     (
         re.compile(
-            r'((?:"?(?:x-api-key|x-goog-api-key|api-key)"?)\s*[:=]\s*"?)'
-            r'[^"\s,}\\*]+',
+            r"(?<![A-Za-z0-9_-])"
+            r"eyJ[A-Za-z0-9_-]{10,512}\.[A-Za-z0-9_-]{6,512}\.[A-Za-z0-9_-]{20,512}"
+        ),
+        "***REDACTED***",
+    ),
+    # --- URL credentials ---
+    # Credentials in a URL's userinfo (scheme://user:pass@host) for KNOWN
+    # credential-bearing schemes (http/db/cache/mq) — a generic scheme class would
+    # scrub bespoke app deep-links (vscode://a:b@…). Drop the whole userinfo; keep
+    # scheme + host. The username class excludes `:` so it stops deterministically
+    # at the password separator (no catastrophic backtracking), both classes
+    # exclude `?`/`#` so the match can't span into a query string and grab an `@`
+    # from an email param, and the password may contain `@` so an un-encoded `@` in
+    # the password is fully scrubbed (greedy to the last `@`). Length caps keep it
+    # ReDoS-bounded. A plain host:port (no `@`) is untouched (#830).
+    (
+        re.compile(
+            r"((?:https?|ftp|ftps|postgres|postgresql|mysql|mongodb(?:\+srv)?|"
+            r"redis|rediss|amqp|amqps)://)"
+            r"[^\s/?#:@]{0,256}:[^\s/?#]{0,256}@"
+        ),
+        r"\1***REDACTED***@",
+    ),
+    # Secrets carried as URL query params. Curated EXACT param names (anchored to
+    # `?`/`&` with `=` right after the name) so non-secret params (`?page=`,
+    # `?key=name`, `?author=`, `?auth=basic`) are untouched; the value stops at
+    # `&` so sibling params survive. Bare `key`/`token`/`auth` are intentionally
+    # excluded (too often a non-secret field/mode); so are bare `sig`/`pwd` (a
+    # signature-scheme version / a working-directory path). A real key value under
+    # `?key=` is still caught by its token-family pattern above. Includes AWS
+    # SigV4 / Azure SAS / access-key names. Placed BEFORE the carriers below so the
+    # `*token*` carrier can't over-consume the rest of the query string past `&`.
+    (
+        re.compile(
+            r"([?&](?:"
+            r"api_?key|access_key|access_token|refresh_token|session_token|"
+            r"session_id|sessionid|client_secret|aws_secret_access_key|account_key|"
+            r"secret|password_hash|password|passwd|"
+            r"signature|x-amz-signature|x-amz-credential|x-amz-security-token|sas"
+            r")=)[^&\s\"']+",
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+    # Azure SAS `?sig=<token>` — bare `sig` is excluded from the curated list above
+    # (a `?sig=v2` scheme-version flag is a common non-secret), so gate on a
+    # high-entropy value length: a real SAS signature is a 40+ char base64 HMAC,
+    # while a version flag is short (#830).
+    (
+        re.compile(r"([?&]sig=)[^&\s\"']{16,}", re.IGNORECASE),
+        r"\1***REDACTED***",
+    ),
+    # --- Header / key-value secret carriers ---
+    # Match `name: value` / `name=value` in raw, JSON, Python dict-repr
+    # (single-quoted), AND json.dumps-escaped (`\"name\": \"value\"`) forms — see
+    # _ESCQ. The name is kept; only the value is dropped (#585/#830). No leading
+    # boundary on the hyphenated header names — the hyphen keeps them from matching
+    # inside underscore variable names.
+    (
+        re.compile(
+            rf"((?:{_ESCQ}(?:x-api-key|x-goog-api-key|api-key){_ESCQ})\s*[:=]\s*{_ESCQ})"
+            rf"{_SECVAL}",
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
     ),
     # Underscore form `api_key`. No leading boundary: namespaced env dumps like
-    # `GEMINI_API_KEY=secret` / `AZURE_OPENAI_API_KEY=...` and JSON keys such as
-    # `"openai_api_key"` must redact too (#585). The `\1` capture preserves the
-    # whole matched name+separator, so the key name (e.g. `GEMINI_API_KEY=`) is
-    # kept and only the value is dropped — no over-redaction of the name.
+    # `GEMINI_API_KEY=secret` / JSON keys such as `"openai_api_key"` must redact
+    # too (#585). The `\1` capture preserves the matched name+separator.
     (
         re.compile(
-            r'("?api_key"?\s*[:=]\s*"?)[^"\s,}\\*]+',
+            rf"({_ESCQ}api_key{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}", re.IGNORECASE
+        ),
+        r"\1***REDACTED***",
+    ),
+    # `master_key`/`master-key` and `private_key`/`private-key` carriers — the
+    # BenchFlow proxy master key and GCP/Vertex service-account private-key field
+    # as labelled values (the PEM body itself is scrubbed by the block rule above).
+    (
+        re.compile(
+            rf"({_ESCQ}(?:master|private)[_-]key{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}",
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
     ),
-    # Generic *TOKEN* / *SECRET* carriers (e.g. GITHUB_TOKEN=, SLACK_SECRET:),
-    # closing the name-coverage gap vs config.json's _SECRET_ENV_SUBSTRINGS. The
-    # name is kept, the value dropped. Value excludes backslash and `*` like the
-    # api_key/authorization carriers so an escaped `\n` can't swallow the next
-    # entry and an already-redacted value isn't re-matched.
+    # Bearer-token env vars whose NAME has BEARER_TOKEN in the MIDDLE, e.g.
+    # `AWS_BEARER_TOKEN_BEDROCK=` — the secret-suffix rule below anchors its marker
+    # at the name end, so a TOKEN in the middle slips through. `BEARER_TOKEN` is an
+    # unambiguous secret signal, safe as a substring (#830). Names length-capped.
     (
         re.compile(
-            r'("?[A-Za-z0-9_]*(?:TOKEN|SECRET)"?\s*[:=]\s*"?)[^"\s,}\\*]+',
+            rf"(?<![A-Za-z0-9])"
+            rf"({_ESCQ}{_NAME}BEARER_TOKEN{_NAME}{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}",
+            re.IGNORECASE,
+        ),
+        r"\1***REDACTED***",
+    ),
+    # Generic secret-NAME-suffix carriers: names ending in TOKEN/SECRET/PASSWORD or
+    # a specific *secret* key suffix (ACCESS_KEY/SECRET_KEY/ACCOUNT_KEY/…). The KEY
+    # forms are spelled out (NOT a bare `_KEY`) so common non-secret identifiers
+    # like `primary_key`/`foreign_key`/`sort_key` are NOT redacted, while
+    # `AWS_SECRET_ACCESS_KEY`/`AZURE_STORAGE_ACCOUNT_KEY` are. TOKEN/SECRET at the
+    # name end stay safe from `TOKENIZER`/`SECRETARY` (marker not at the end).
+    (
+        re.compile(
+            rf"(?<![A-Za-z0-9])({_ESCQ}{_NAME}"
+            r"(?:TOKEN|SECRET|PASSWORD|PASSWD|"
+            r"ACCESS_KEY|SECRET_KEY|ACCOUNT_KEY|PRIVATE_KEY|ENCRYPTION_KEY|"
+            r"CREDENTIALS?)"
+            rf"{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}",
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
@@ -243,22 +379,19 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # authorization header WITH a scheme (Bearer/Token/Basic/…): keep scheme.
     (
         re.compile(
-            r"(?<![A-Za-z0-9_-])"
-            r'("?authorization"?\s*[:=]\s*"?(?:Bearer|Token|Basic|ApiKey)\s+)'
-            r'[^"\s,}\\*]+',
+            rf"(?<![A-Za-z0-9_-])({_ESCQ}authorization{_ESCQ}\s*[:=]\s*{_ESCQ}"
+            rf"(?:Bearer|Token|Basic|ApiKey)\s+){_SECVAL}",
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
     ),
-    # authorization header with a bare value (no recognized scheme). The
-    # negative lookahead skips scheme-prefixed values already handled above,
-    # so `Bearer <tok>` isn't double-redacted into `***REDACTED*** ***...`.
+    # authorization header with a bare value (no recognized scheme). The negative
+    # lookahead skips scheme-prefixed values already handled above, so
+    # `Bearer <tok>` isn't double-redacted into `***REDACTED*** ***...`.
     (
         re.compile(
-            r"(?<![A-Za-z0-9_-])"
-            r'("?authorization"?\s*[:=]\s*"?)'
-            r"(?!(?:Bearer|Token|Basic|ApiKey)\b)"
-            r'[^"\s,}\\*]+',
+            rf"(?<![A-Za-z0-9_-])({_ESCQ}authorization{_ESCQ}\s*[:=]\s*{_ESCQ})"
+            rf"(?!(?:Bearer|Token|Basic|ApiKey)\b){_SECVAL}",
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
