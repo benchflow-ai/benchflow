@@ -141,6 +141,20 @@ def test_proxy_config_forces_chat_completions_for_anthropic_messages():
     )
 
 
+def test_litellm_exposes_anthropic_messages_chat_completions_flag():
+    """Guard against a LiteLLM upgrade silently dropping the flag.
+
+    litellm_proxy_config sets use_chat_completions_url_for_anthropic_messages
+    via LiteLLM's generic litellm_settings -> setattr(litellm, ...) path, which
+    does NOT raise on an unknown key. If a future LiteLLM renames or removes
+    this attribute the fix would become a silent no-op and regress #833, so
+    assert the attribute still exists.
+    """
+    import litellm
+
+    assert hasattr(litellm, "use_chat_completions_url_for_anthropic_messages")
+
+
 def test_proxy_config_registers_requested_bare_model_name():
     """Codex ACP sends the bare selected model name to the proxy."""
     route = resolve_litellm_route("openai/gpt-5.4-mini", {"OPENAI_API_KEY": "key"})
