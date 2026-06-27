@@ -10,7 +10,7 @@ repository-code: "https://github.com/benchflow-ai/benchflow"
 url: "https://github.com/benchflow-ai/benchflow"
 license: Apache-2.0
 version: 0.6.4
-date-released: 2026-06-17
+date-released: 2026-06-27
 keywords:
   - benchmark
   - llm-agents
