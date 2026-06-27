@@ -672,11 +672,6 @@ async def test_embedded_callback_logger_round_trips_to_provider_usage(
 
     text = log_path.read_text()
     assert text.strip(), "callback logger should have written a JSONL record"
-    record = json.loads(text)
-    assert record["verifiers_step"]["prompt"] == [{"role": "user", "content": "hi"}]
-    assert record["verifiers_step"]["completion"] == [
-        {"role": "assistant", "content": "hello"}
-    ]
 
     trajectory = trajectory_from_litellm_callback_log(
         text, session_id="s", agent_name="codex-acp"

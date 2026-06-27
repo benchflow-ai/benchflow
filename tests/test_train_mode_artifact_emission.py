@@ -143,21 +143,6 @@ def _llm_exchange(
             },
         },
         "duration_ms": 10,
-        "verifiers_step": {
-            "prompt": prompt,
-            "completion": completion,
-            "response": {
-                "id": "chatcmpl-test",
-                "model": "openai-compatible-model",
-            },
-            "tokens": None,
-            "reward": None,
-            "advantage": None,
-            "is_truncated": False,
-            "trajectory_id": "",
-            "extras": {"source": "litellm_callback"},
-        },
-        "verifiers_tool_defs": tool_defs,
     }
 
 

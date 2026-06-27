@@ -321,7 +321,7 @@ bench train convert jobs/run-001 --out train.jsonl --min-reward 1.0
 | `--min-reward` | — | Only include rows with reward greater than or equal to this value |
 | `--row-mode` | `rollout` | `rollout` writes one row per rollout; `exchange` writes one row per LLM exchange |
 | `--manifest` | — | Optional conversion stats JSON path |
-| `--expected-rows` | — | Fail unless this many rows are written |
+| `--expected-rows` | — | Fail before writing unless exactly this many rows would be exported |
 
 ### bench train validate
 

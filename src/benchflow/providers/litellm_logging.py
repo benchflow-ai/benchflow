@@ -129,170 +129,6 @@ def _usage_from_response(response: Any) -> Any:
     return None
 
 
-def _content_to_text(content: Any) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text") or item.get("content") or item.get("output")
-                if isinstance(text, list):
-                    text = _content_to_text(text)
-                if isinstance(text, str):
-                    parts.append(text)
-        return "\n".join(parts)
-    return str(content)
-
-
-def _normalize_tool_call(call: dict[str, Any], index: int = 0) -> dict[str, Any]:
-    function = call.get("function") if isinstance(call.get("function"), dict) else {}
-    name = function.get("name") or call.get("name") or "tool"
-    arguments = function.get("arguments", call.get("arguments", {}))
-    if not isinstance(arguments, str):
-        arguments = json.dumps(arguments or {}, sort_keys=True)
-    return {
-        "id": str(call.get("id") or call.get("tool_call_id") or call.get("call_id") or f"call_{index:06d}"),
-        "type": "function",
-        "function": {"name": str(name), "arguments": arguments},
-    }
-
-
-def _normalize_role(role: Any) -> str:
-    if role == "developer":
-        return "system"
-    if role == "model":
-        return "assistant"
-    return str(role or "user")
-
-
-def _normalize_message(message: dict[str, Any], index: int = 0) -> dict[str, Any] | None:
-    mtype = message.get("type")
-    if mtype == "reasoning":
-        return None
-    if mtype == "function_call":
-        return {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [_normalize_tool_call(message, index)],
-        }
-    if mtype == "function_call_output":
-        return {
-            "role": "tool",
-            "tool_call_id": str(message.get("call_id") or message.get("id") or ""),
-            "content": _content_to_text(message.get("output")),
-        }
-    out = {"role": _normalize_role(message.get("role")), "content": _content_to_text(message.get("content"))}
-    tool_calls = message.get("tool_calls")
-    if tool_calls is None and isinstance(message.get("function_call"), dict):
-        tool_calls = [message["function_call"]]
-    if isinstance(tool_calls, list) and tool_calls:
-        out["tool_calls"] = [
-            _normalize_tool_call(call, i) for i, call in enumerate(tool_calls) if isinstance(call, dict)
-        ]
-    if out["role"] == "tool" and message.get("tool_call_id"):
-        out["tool_call_id"] = str(message["tool_call_id"])
-    return out
-
-
-def _messages_from_request_body(body: dict[str, Any]) -> list[dict[str, Any]]:
-    messages = []
-    instructions = body.get("instructions")
-    if instructions:
-        messages.append({"role": "system", "content": _content_to_text(instructions)})
-    raw = body.get("messages") if isinstance(body.get("messages"), list) else body.get("input")
-    if isinstance(raw, str):
-        messages.append({"role": "user", "content": raw})
-    elif isinstance(raw, list):
-        for idx, item in enumerate(raw):
-            if isinstance(item, dict):
-                normalized = _normalize_message(item, idx)
-                if normalized is not None:
-                    messages.append(normalized)
-    return messages
-
-
-def _assistant_from_response_body(body: dict[str, Any]) -> dict[str, Any] | None:
-    choices = body.get("choices")
-    if isinstance(choices, list) and choices:
-        first = choices[0]
-        if isinstance(first, dict) and isinstance(first.get("message"), dict):
-            return _normalize_message(first["message"], 0)
-    if isinstance(body.get("message"), dict):
-        return _normalize_message(body["message"], 0)
-    output = body.get("output")
-    if isinstance(output, list):
-        texts = []
-        tool_calls = []
-        for idx, item in enumerate(output):
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "message":
-                text = _content_to_text(item.get("content"))
-                if text:
-                    texts.append(text)
-            elif item.get("type") in {"function_call", "tool_call"}:
-                tool_calls.append(_normalize_tool_call(item, idx))
-        if texts or tool_calls:
-            out = {"role": "assistant", "content": "\n".join(texts)}
-            if tool_calls:
-                out["tool_calls"] = tool_calls
-            return out
-    if body.get("content"):
-        return {"role": "assistant", "content": _content_to_text(body.get("content"))}
-    return None
-
-
-def _tool_defs_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_tools = body.get("tools") or body.get("tool_defs") or []
-    if not isinstance(raw_tools, list):
-        return []
-    tools = []
-    for item in raw_tools:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") == "function" and isinstance(item.get("function"), dict):
-            function = dict(item["function"])
-        elif isinstance(item.get("function"), dict):
-            function = dict(item["function"])
-        else:
-            function = {
-                "name": item.get("name"),
-                "description": item.get("description", ""),
-                "parameters": item.get("parameters", {"type": "object", "properties": {}}),
-            }
-        if not function.get("name"):
-            continue
-        function.setdefault("description", "")
-        function.setdefault("parameters", {"type": "object", "properties": {}})
-        tools.append({"type": "function", "function": function})
-    return tools
-
-
-def _verifiers_tracking(request_body: dict[str, Any], response_body: dict[str, Any]) -> dict[str, Any]:
-    prompt = _messages_from_request_body(request_body)
-    assistant = _assistant_from_response_body(response_body)
-    tool_defs = _tool_defs_from_body(request_body)
-    if assistant is None:
-        return {"step": None, "tool_defs": tool_defs}
-    step = {
-        "prompt": prompt,
-        "completion": [assistant],
-        "response": response_body,
-        "tokens": None,
-        "reward": None,
-        "advantage": None,
-        "is_truncated": bool(response_body.get("incomplete_details") or response_body.get("truncation")),
-        "trajectory_id": "",
-        "extras": {"source": "litellm_callback"},
-    }
-    return {"step": step, "tool_defs": tool_defs}
-
-
 def _failure_detail(response_obj: Any, exception: Any) -> Any:
     # On a deterministic provider reject (e.g. a context-window overflow,
     # #830) litellm fires the failure hook with response_obj=None and the real
@@ -401,9 +237,6 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 "response_cost": cost,
             }
         )
-        tracking = _verifiers_tracking(record["request"]["body"], response if isinstance(response, dict) else {})
-        record["verifiers_step"] = tracking["step"]
-        record["verifiers_tool_defs"] = tracking["tool_defs"]
         self._write(record)
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
@@ -608,12 +441,6 @@ def trajectory_from_litellm_callback_log(
                     body=response_body,
                 ),
                 duration_ms=float(record.get("duration_ms") or 0.0),
-                verifiers_step=record.get("verifiers_step")
-                if isinstance(record.get("verifiers_step"), dict)
-                else None,
-                verifiers_tool_defs=record.get("verifiers_tool_defs")
-                if isinstance(record.get("verifiers_tool_defs"), list)
-                else [],
             )
         )
         cost = record.get("response_cost")
