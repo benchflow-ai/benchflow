@@ -196,12 +196,4 @@ required-version = ">=0.8.4"
 # comment recording why. The CI gate fails stale overrides once their package
 # cutoff ages past the cooldown window, so they cannot become a permanent
 # package allowlist.
-exclude-newer = "2026-06-19T00:00:00Z"
-
-[tool.uv.exclude-newer-package]
-# Temporary exceptions for packages that must stay newer than the global cap.
-# Each entry must age out (be removed) once its cutoff crosses the 7-day window.
-#
-# GHSA-4xgf-cpjx-pc3j security fix; pydantic-settings 2.14.2 was published
-# 2026-06-19, inside the current 7-day window.
-pydantic-settings = "2026-06-20T00:00:00Z"
+exclude-newer = "2026-06-20T00:00:00Z"
