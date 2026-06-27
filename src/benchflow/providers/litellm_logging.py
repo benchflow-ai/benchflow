@@ -129,6 +129,16 @@ def _usage_from_response(response: Any) -> Any:
     return None
 
 
+def _failure_detail(response_obj: Any, exception: Any) -> Any:
+    # On a deterministic provider reject (e.g. a context-window overflow,
+    # #830) litellm fires the failure hook with response_obj=None and the real
+    # cause in kwargs['exception']. Fall back to it so error.type/message carry
+    # the upstream reason instead of the literal 'NoneType'/'None'. A non-None
+    # response_obj still wins, so the existing success-shaped-failure path is
+    # unchanged; both None degrades gracefully to the old behavior.
+    return response_obj if response_obj is not None else exception
+
+
 class BenchFlowLiteLLMLogger(CustomLogger):
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
@@ -214,13 +224,14 @@ class BenchFlowLiteLLMLogger(CustomLogger):
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         record = self._base_record(kwargs, start_time, end_time)
+        detail = _failure_detail(response_obj, (kwargs or {}).get("exception"))
         record.update(
             {
                 "event": "failure",
                 "response": _jsonable(response_obj),
                 "error": {
-                    "type": type(response_obj).__name__,
-                    "message": str(response_obj),
+                    "type": type(detail).__name__,
+                    "message": str(detail),
                     "traceback": traceback.format_exc()[-2000:],
                 },
             }

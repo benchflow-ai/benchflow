@@ -147,3 +147,69 @@ def test_context_length_failure_imports_as_permanent_rejected_request():
     )
 
     assert trajectory.exchanges[0].response.status_code == 400
+
+
+def _callback_namespace() -> dict:
+    """Exec the embedded callback module source so its helpers/classes can be
+    exercised directly — the source ships as a string (runs inside the proxy
+    process) and cannot be imported, so exec is the only faithful seam."""
+    namespace: dict = {}
+    exec(callback_module_source(), namespace)
+    return namespace
+
+
+_CONTEXT_CAUSE = (
+    "litellm.ContextWindowExceededError: OpenAIException - Requested token "
+    "count exceeds the model's maximum context length of 16384 tokens. You "
+    "requested a total of 17964 tokens: 1580 input + 16384 completion."
+)
+
+
+def test_failure_detail_prefers_exception_when_response_none():
+    """Guards issue #830 fix#2: when litellm fires the failure hook with
+    response_obj=None, the real cause in kwargs['exception'] must drive
+    error.type/message — not the literal 'None'/'NoneType'."""
+    _failure_detail = _callback_namespace()["_failure_detail"]
+    detail = _failure_detail(None, ValueError(_CONTEXT_CAUSE))
+    assert type(detail).__name__ == "ValueError"
+    assert "16384 tokens" in str(detail)
+
+
+def test_failure_detail_uses_response_when_present():
+    """No behavior change on the existing path: a non-None response_obj wins."""
+    _failure_detail = _callback_namespace()["_failure_detail"]
+    assert _failure_detail("boom", ValueError("ignored")) == "boom"
+
+
+def test_failure_detail_none_when_both_missing():
+    """Graceful degradation: no response and no exception stays the old 'None'."""
+    _failure_detail = _callback_namespace()["_failure_detail"]
+    assert _failure_detail(None, None) is None
+
+
+async def test_failure_event_records_exception_cause_when_response_none(
+    tmp_path, monkeypatch
+):
+    """End-to-end through the real write path: a context-window reject
+    (response_obj=None, cause in kwargs['exception']) lands a USABLE
+    error.message in the callback record, not 'None' (issue #830 fix#2)."""
+    from datetime import datetime
+
+    namespace = _callback_namespace()
+    logger = namespace["BenchFlowLiteLLMLogger"]()
+    log_path = tmp_path / "callback.jsonl"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+
+    now = datetime.now()
+    await logger.async_log_failure_event(
+        {"model": "benchflow-qwen", "exception": ValueError(_CONTEXT_CAUSE)},
+        None,
+        now,
+        now,
+    )
+
+    record = json.loads(log_path.read_text().splitlines()[-1])
+    assert record["event"] == "failure"
+    assert record["error"]["type"] == "ValueError"
+    assert "16384 tokens" in record["error"]["message"]
+    assert record["error"]["message"] != "None"
