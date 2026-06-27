@@ -390,6 +390,7 @@ jobs:
               source_repo="benchflow-ai/skillsbench",
               source_path="tasks",
               source_ref="main",
+              timeout=float(cell.get("timeout_minutes", 90)) * 60,
           )
           print(f"cell={cid} rc={outcome.returncode} jobs_dir={jobs_dir}")
           # A non-zero bench exit is recorded; the trusted grader (review-pack

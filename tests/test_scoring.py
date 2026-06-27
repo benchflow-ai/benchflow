@@ -80,6 +80,15 @@ class TestClassifyError:
             classify_error("Sandbox not found. Please retry later.") == "infra_failure"
         )
 
+    def test_docker_compose_build_failure_is_sandbox_setup(self):
+        assert (
+            classify_error(
+                "Docker compose command failed for environment jpg-ocr-stat. "
+                "failed to resolve source metadata for docker.io/library/ubuntu"
+            )
+            == "sandbox_setup"
+        )
+
     def test_other(self):
         assert classify_error("something unexpected") == "other"
 

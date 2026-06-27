@@ -169,6 +169,46 @@ def test_scan_native_file_editor_write_parses_path_without_key_order_assumption(
         (
             _native(
                 "execute",
+                "Manually compute expected values: $ python3 << 'EOF'\n"
+                "# Manual verification of calculations\n"
+                "import openpyxl\n"
+                "wb = openpyxl.load_workbook('/root/gdp.xlsx')\n"
+                "ws = wb['Task']\n"
+                "print(ws['A1'].value)\n"
+                "EOF",
+            ),
+            False,
+        ),
+        (
+            _native(
+                "execute",
+                "Check workbook: $ python3 << 'PYEOF'\n"
+                "import openpyxl\n"
+                "wb = openpyxl.load_workbook('/root/test-supply.xlsx')\n"
+                "print(wb.sheetnames)\n"
+                "PYEOF",
+            ),
+            False,
+        ),
+        (
+            _native(
+                "execute",
+                "Self-check translated code: $ cd /root && cat > TestTokenizer.scala "
+                "<< 'TESTEOF'\nobject TestTokenizer {}\nTESTEOF",
+            ),
+            False,
+        ),
+        (
+            _native(
+                "execute",
+                "Clean self-check files: $ rm -f /root/TestTokenizer.scala "
+                "/root/TestTokenizer*.class /root/test_output.txt",
+            ),
+            False,
+        ),
+        (
+            _native(
+                "execute",
                 "Verify DOIs for suspicious citations: $ curl -sI "
                 '"https://doi.org/10.5678/x" 2>&1 | head -5; echo "---"',
             ),

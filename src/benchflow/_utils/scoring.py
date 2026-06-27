@@ -137,7 +137,12 @@ def classify_error(error: str | None) -> str | None:
         if any(m in lower for m in _PROVIDER_REJECTED_MARKERS):
             return PROVIDER_REJECTED
         return ACP_ERROR
-    if "sandbox startup" in lower or "sandbox creation" in lower:
+    if (
+        "sandbox startup" in lower
+        or "sandbox creation" in lower
+        or "docker compose command failed" in lower
+        or "failed to resolve source metadata" in lower
+    ):
         return SANDBOX_SETUP
     if "prompt exceeded wall-clock budget" in lower:
         return TIMED_OUT

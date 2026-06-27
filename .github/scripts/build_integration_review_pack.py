@@ -362,15 +362,30 @@ def _classify_one(slot: Slot, expected_source_sha: str | None) -> None:
         ]
         # R-OUTCOME fails when the rollout's status is not a valid SCORED outcome
         # (an errored / unscored-timeout run, often a hard task the agent didn't
-        # finish in budget) — an experiment-fidelity issue on that one rollout, not
-        # a regression introduced by the PR. Demote an R-OUTCOME-ONLY reject to a
-        # QUARANTINE (visible, non-blocking). Any OTHER deterministic reject
-        # (realness, tamper, artifact, telemetry, schema) is a real health failure
-        # and still hard-blocks.
-        non_outcome = [r for r in rejects if r != "R-OUTCOME"]
-        if non_outcome:
+        # finish in budget). If C-ATTRIB says experiment-fidelity, an R-REAL
+        # failure from the same infra timeout / idle timeout is also a quarantine:
+        # visible and rerunnable, but not a code-regression blocker. Artifact,
+        # telemetry, tamper, schema, and model-capability realness failures remain
+        # hard blockers.
+        attrib_quarantine = any(
+            g["id"] == "C-ATTRIB"
+            and g["status"] == "quarantine"
+            and str(g.get("detail", "")).startswith("experiment-fidelity:")
+            for g in slot.grade["gates"]
+        )
+        demotable = {"R-OUTCOME"}
+        if attrib_quarantine:
+            demotable.add("R-REAL")
+            if any(
+                "infra error category=sandbox_setup" in str(g.get("detail", ""))
+                for g in slot.grade["gates"]
+                if g["id"] == "C-ATTRIB"
+            ):
+                demotable.add("R-TELEMETRY")
+        hard_rejects = [r for r in rejects if r not in demotable]
+        if hard_rejects:
             slot.status = "unhealthy"
-            slot.detail = f"deterministic reject: {non_outcome}"
+            slot.detail = f"deterministic reject: {hard_rejects}"
         else:
             slot.status = "healthy"
             # Demoted to healthy: clear the reject flag too, so the serialized
@@ -380,12 +395,34 @@ def _classify_one(slot: Slot, expected_source_sha: str | None) -> None:
             slot.grade["deterministic_reject"] = False
             slot.grade["quarantines"] = [
                 *slot.grade.get("quarantines", []),
-                "R-OUTCOME: rollout produced no valid scored outcome "
-                "(error / unscored timeout) — quarantined, not a PR regression",
+                *(
+                    [
+                        "R-REAL: rollout did not produce a real agent attempt "
+                        "because C-ATTRIB classified it as experiment-fidelity",
+                    ]
+                    if "R-REAL" in rejects
+                    else []
+                ),
+                *(
+                    [
+                        "R-OUTCOME: rollout produced no valid scored outcome "
+                        "(error / unscored timeout) — quarantined, not a PR regression",
+                    ]
+                    if "R-OUTCOME" in rejects
+                    else []
+                ),
+                *(
+                    [
+                        "R-TELEMETRY: sandbox setup failed before agent launch "
+                        "and C-ATTRIB classified it as experiment-fidelity",
+                    ]
+                    if "R-TELEMETRY" in rejects
+                    else []
+                ),
             ]
             slot.detail = (
                 f"healthy with {len(slot.grade['quarantines'])} quarantine(s) "
-                "(incl. R-OUTCOME)"
+                "(incl. infra realness/outcome)"
             )
     else:
         slot.status = "healthy"
