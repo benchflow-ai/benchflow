@@ -298,6 +298,45 @@ bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
 ```
 
+## bench train
+
+Convert scored BenchFlow rollouts into trainer-ready datasets and validate
+trainer rows before handing them to a training framework.
+
+### bench train convert
+
+Convert a rollout directory or jobs directory into Prime-RL SFT JSONL. The
+default format is `prime-sft`, which writes one JSON object per row with
+OpenAI-compatible `messages` plus `tool_defs`.
+
+```bash
+bench train convert jobs/run-001 --out train.jsonl
+bench train convert jobs/run-001 --out train.jsonl --min-reward 1.0
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out`, `-o` | required | Output JSONL path |
+| `--format` | `prime-sft` | Trainer format |
+| `--min-reward` | — | Only include rows with reward greater than or equal to this value |
+| `--row-mode` | `rollout` | `rollout` writes one row per rollout; `exchange` writes one row per LLM exchange |
+| `--manifest` | — | Optional conversion stats JSON path |
+| `--expected-rows` | — | Fail before writing unless exactly this many rows would be exported |
+
+### bench train validate
+
+Validate Prime-RL SFT JSONL before upload or training.
+
+```bash
+bench train validate train.jsonl
+bench train validate train.jsonl --expected-rows 4417
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `prime-sft` | Trainer format |
+| `--expected-rows` | — | Fail unless this many rows are present |
+
 ## bench skills
 
 ### bench skills list

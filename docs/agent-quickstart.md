@@ -124,6 +124,7 @@ and what it is:
   $JOBS_DIR/<timestamp>/<task>__<hash8>/
     result.json                      — rollout summary: rewards, tool calls,
                                        token usage/cost, errors, timing
+    results.jsonl                    — Verifiers/Prime-RL shaped rollout row
     config.json                      — the rollout's resolved configuration
                                        (secret-bearing env vars filtered out)
     prompts.json                     — the prompts sent to the agent
@@ -141,8 +142,8 @@ and what it is:
     verifier/reward.txt              — raw verifier reward
     verifier/test-stdout.txt         — verifier stdout (and ctrf.json when the
                                        test emits a CTRF report)
-Also note the job-level summary.json and the aggregated verifiers.jsonl /
-adp.jsonl in the job directory. The trainer/ files and the job-level
+Also note the job-level summary.json plus aggregated results.jsonl,
+verifiers.jsonl, and adp.jsonl in the job directory. The trainer/ files and the job-level
 aggregates are written by current BenchFlow releases; if they are missing,
 re-check `bench --version` and upgrade before reporting a bug. `cost` in
 result.json can be null for user-endpoint providers (cost telemetry is
