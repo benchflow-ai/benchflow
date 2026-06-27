@@ -41,18 +41,31 @@ unhealthy until rerun or explicitly quarantined.
 
 ## Hard Trajectory Gate
 
-For every current BenchFlow model trial, both trajectory files are mandatory:
+For every current BenchFlow model trial, both trajectory files plus the
+trainer-facing rollout row are mandatory:
 
 - `trajectory/acp_trajectory.jsonl`: ACP/tool trace with agent-side events.
 - `trajectory/llm_trajectory.jsonl`: provider LLM request/response trace with
   token usage evidence.
+- `results.jsonl`: Verifiers / Prime-RL-shaped rollout row derived from the
+  healthy LLM trajectory.
 
 Do not treat ACP alone as sufficient. Do not treat `llm_trajectory.jsonl` alone
 as sufficient. Do not treat aggregate `result.json` fields as a substitute for
-either trajectory. A trial with a scored reward, token counts, or a plausible
-final answer is still unhealthy if either required trajectory file is missing,
-empty, truncated, unparsable, or usage-only without recoverable request/response
-evidence.
+either trajectory or `results.jsonl`. A trial with a scored reward, token
+counts, or a plausible final answer is still unhealthy if either required
+trajectory file or `results.jsonl` is missing, empty, truncated, unparsable, or
+usage-only without recoverable request/response evidence.
+
+`results.jsonl` must be reviewed as a training artifact, not just a sidecar. For
+a healthy model rollout it should contain a parseable row with
+`info.training_ready == true`, non-empty `prompt`, `completion`, and
+`trajectory`, positive token usage, reward/score metadata, task identity, and
+valid OpenAI-compatible message roles. If assistant `tool_calls` appear, the row
+must carry non-empty `tool_defs` or `tools`. Errored, verifier-failed, partial,
+malformed, or missing-LLM rollouts must fail closed with
+`training_ready == false` and an error/training-ready reason instead of being
+accepted as SFT-ready.
 
 Run the bundled validator before deeper manual review:
 
@@ -80,8 +93,9 @@ evidence includes:
   through final answer, failure, or timeout.
 - Metadata: start/end timestamps, elapsed duration, token usage, tool usage,
   provider/model response metadata, sandbox metadata, and error fields.
-- Results: verifier output, reward/score, result status, and enough provenance
-  to connect the score to the exact trajectory.
+- Results: verifier output, reward/score, result status, rollout-level
+  `results.jsonl`, and enough provenance to connect the score and training row
+  to the exact trajectory.
 
 Review the trajectory for meaning, not just existence:
 
@@ -113,9 +127,13 @@ Reject or quarantine the trial if any of these appear:
 
 - Missing `trajectory/acp_trajectory.jsonl`.
 - Missing `trajectory/llm_trajectory.jsonl`.
+- Missing rollout-level `results.jsonl`.
 - Empty, truncated, or unparsable trajectory files.
 - `llm_trajectory.jsonl` has no real provider request bodies, no provider
   response bodies, or no provider token usage in response metadata.
+- `results.jsonl` lacks a Prime-RL-compatible row, marks an unhealthy rollout as
+  training-ready, misses prompt/completion/trajectory/token usage, or exposes
+  assistant tool calls without tool definitions.
 - Empty transcript, agent never launched, or only setup logs.
 - Missing token usage/timing/tool usage metadata for newly generated data.
 - The agent lacked required task information, required skills, API keys,
@@ -144,9 +162,9 @@ shape and sandbox behavior.
 3. Run the same canaries through Daytona and VM Docker with the same task,
    harness, model, skill mode, trial id pattern, timeout, and provider settings.
 4. Compare artifact schema and semantics, not exact model wording: trajectory
-   files (`acp_trajectory.jsonl` and `llm_trajectory.jsonl`), token usage,
-   timing, tool usage, result status, verifier output, and source provenance
-   must be equivalent.
+   files (`acp_trajectory.jsonl` and `llm_trajectory.jsonl`), rollout/job
+   `results.jsonl`, token usage, timing, tool usage, result status, verifier
+   output, and source provenance must be equivalent.
 5. Exercise path/root behavior explicitly. Check task root, sandbox cwd,
    mounted resources, result paths, locked paths, and any previous root-path
    regression case.
