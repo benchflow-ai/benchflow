@@ -119,6 +119,10 @@ def test_proxy_config_registers_plain_and_openai_aliases():
     assert config["litellm_settings"]["callbacks"] == [
         "benchflow_litellm_callback.proxy_handler_instance"
     ]
+    assert config["router_settings"] == {
+        "num_retries": 0,
+        "disable_cooldowns": True,
+    }
 
 
 def test_proxy_config_registers_requested_bare_model_name():

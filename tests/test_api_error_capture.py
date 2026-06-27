@@ -78,6 +78,18 @@ class TestStatusSubcategory:
         assert _api_error_subcategory(400) == ("rejected_request", False)
         assert _api_error_subcategory(422) == ("rejected_request", False)
 
+    def test_context_length_imported_as_400_is_permanent(self):
+        """Guards issue #830: imported context-window rejects are not retried."""
+        summary = _provider_api_failure_summary_from_runtime(_runtime([400]))
+
+        assert summary is not None
+        assert summary["subcategory"] == "rejected_request"
+        assert summary["transient"] is False
+        assert summary["fingerprint"] == "rejected_request:400"
+        assert not api_error_is_transient(
+            "provider api error [rejected_request/permanent] HTTP 400"
+        )
+
 
 class TestFailureSummary:
     def test_none_without_exchanges(self):

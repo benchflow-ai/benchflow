@@ -592,6 +592,14 @@ def _configure_codex_custom_provider(
     if agent != "codex-acp" or not model:
         return
 
+    # Native ChatGPT subscription auth must keep Codex on its built-in `openai`
+    # provider (chatgpt auth mode). A custom model_provider injected here carries
+    # env_key=OPENAI_API_KEY + wire_api=responses against api.openai.com, which
+    # forces API-key mode and makes Codex demand OPENAI_API_KEY -- defeating the
+    # subscription path. Verified by ACP repro.
+    if uses_native_subscription_auth(agent, model, agent_env):
+        return
+
     base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(
         "OPENAI_BASE_URL"
     )

@@ -1165,6 +1165,30 @@ class TestResolveAgentEnvCodexOpenAIPrefix:
 
         assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
 
+    def test_codex_subscription_auth_does_not_inject_custom_provider(
+        self, monkeypatch, tmp_path
+    ):
+        """Subscription mode must keep Codex on its built-in ``openai`` provider.
+
+        A custom model_provider (CODEX_CONFIG/MODEL_PROVIDER) points Codex at
+        api.openai.com with ``env_key=OPENAI_API_KEY`` + ``wire_api=responses``,
+        which forces API-key mode and makes Codex demand ``OPENAI_API_KEY`` —
+        defeating the ChatGPT subscription path. Verified end-to-end via an ACP
+        repro: CODEX_CONFIG/MODEL_PROVIDER is the sole trigger of the
+        ``Missing environment variable: OPENAI_API_KEY`` failure; OPENAI_BASE_URL
+        (canonical) is harmless. Regression guard for that bug.
+        """
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text("{}")
+        self._patch_expanduser(monkeypatch, tmp_path)
+
+        result = resolve_agent_env("codex-acp", "openai/gpt-5.5", {})
+
+        assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
+        assert "CODEX_CONFIG" not in result
+        assert "MODEL_PROVIDER" not in result
+
     def test_us_openai_prefix_still_requires_explicit_key(self, monkeypatch, tmp_path):
         """Regional endpoint is not the canonical api.openai.com — host auth must not apply."""
         codex_dir = tmp_path / ".codex"

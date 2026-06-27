@@ -18,7 +18,7 @@ from pathlib import Path
 # Pi model-metadata defaults if neither the provider registry nor per-run
 # overrides supply values. Conservative — most modern models exceed these.
 _DEFAULT_CONTEXT_WINDOW = 128000
-_DEFAULT_MAX_TOKENS = 16384
+_DEFAULT_MAX_TOKENS_CAP = 4096
 _BENCHFLOW_BIN_DIR = "/opt/benchflow/bin"
 _PI_ACP_BIN = "/opt/benchflow/bin/pi-acp"
 
@@ -45,6 +45,31 @@ def _derive_provider_name(model: str) -> str:
     return f"benchflow-{model}" if model else "benchflow-custom"
 
 
+def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            return None
+        parsed = int(value)
+    elif isinstance(value, str | bytes | bytearray):
+        try:
+            parsed = int(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _default_max_tokens(context_window: object) -> int:
+    """Return a fallback completion cap that leaves prompt budget available."""
+    window = _positive_int(context_window) or _DEFAULT_CONTEXT_WINDOW
+    return max(1, min(_DEFAULT_MAX_TOKENS_CAP, window // 4))
+
+
 def setup_provider() -> None:
     """Configure Pi for the detected provider protocol."""
     protocol = os.environ.get("BENCHFLOW_PROVIDER_PROTOCOL", "")
@@ -66,6 +91,10 @@ def setup_provider() -> None:
         # Register the provider so Pi routes API calls through the OpenAI
         # Chat Completions wire format instead of Anthropic Messages.
         meta = _lookup_model_metadata(model)
+        context_window = meta.get("contextWindow", _DEFAULT_CONTEXT_WINDOW)
+        max_tokens = meta.get("maxTokens")
+        if max_tokens is None:
+            max_tokens = _default_max_tokens(context_window)
         config = {
             "providers": {
                 provider_name: {
@@ -78,10 +107,8 @@ def setup_provider() -> None:
                             "name": meta.get("name", model),
                             "reasoning": meta.get("reasoning", False),
                             "input": meta.get("input", ["text"]),
-                            "contextWindow": meta.get(
-                                "contextWindow", _DEFAULT_CONTEXT_WINDOW
-                            ),
-                            "maxTokens": meta.get("maxTokens", _DEFAULT_MAX_TOKENS),
+                            "contextWindow": context_window,
+                            "maxTokens": max_tokens,
                         }
                     ],
                 }
