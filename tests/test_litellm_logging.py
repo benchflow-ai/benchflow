@@ -187,6 +187,38 @@ def test_failure_detail_none_when_both_missing():
     assert _failure_detail(None, None) is None
 
 
+def test_failure_traceback_falls_back_to_exception_without_active_exc():
+    """Greptile P2 / #830: when no exception is active (format_exc() is the
+    'NoneType: None' sentinel) but we recovered the cause from kwargs['exception'],
+    the traceback formats that exception so it doesn't go blank under a meaningful
+    error.message."""
+    _failure_traceback = _callback_namespace()["_failure_traceback"]
+    # Called OUTSIDE any except block → traceback.format_exc() == 'NoneType: None\n'.
+    tb = _failure_traceback(ValueError(_CONTEXT_CAUSE))
+    assert "ValueError" in tb
+    assert "16384 tokens" in tb
+    assert "NoneType: None" not in tb
+
+
+def test_failure_traceback_uses_active_exception():
+    """When an exception IS active, format_exc() (the real stack) is used as-is."""
+    _failure_traceback = _callback_namespace()["_failure_traceback"]
+    try:
+        raise RuntimeError("active boom")
+    except RuntimeError as exc:
+        tb = _failure_traceback(exc)
+    assert "RuntimeError" in tb
+    assert "active boom" in tb
+    assert "Traceback (most recent call last)" in tb
+
+
+def test_failure_traceback_non_exception_detail_keeps_sentinel():
+    """No active exception and a non-exception detail (both-None path) keeps the
+    old 'NoneType: None' behavior — no spurious formatting."""
+    _failure_traceback = _callback_namespace()["_failure_traceback"]
+    assert _failure_traceback(None).strip() == "NoneType: None"
+
+
 async def test_failure_event_records_exception_cause_when_response_none(
     tmp_path, monkeypatch
 ):

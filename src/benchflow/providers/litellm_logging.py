@@ -139,6 +139,23 @@ def _failure_detail(response_obj: Any, exception: Any) -> Any:
     return response_obj if response_obj is not None else exception
 
 
+def _failure_traceback(detail: Any) -> str:
+    # ``format_exc()`` reflects the exception that is CURRENTLY ACTIVE when the
+    # callback fires. For the #830 case (litellm calls the hook from inside its
+    # except block) that IS ``detail``, so the traceback agrees with the
+    # exception-derived error.message. But if litellm clears the exception
+    # context first, ``format_exc()`` returns the ``'NoneType: None'`` sentinel
+    # while ``detail`` (recovered from kwargs['exception']) still holds the real
+    # cause — format that exception directly so the traceback doesn't go blank
+    # under a meaningful error.message (#830).
+    tb = traceback.format_exc()
+    if isinstance(detail, BaseException) and tb.startswith("NoneType: None"):
+        tb = "".join(
+            traceback.format_exception(type(detail), detail, detail.__traceback__)
+        )
+    return tb[-2000:]
+
+
 class BenchFlowLiteLLMLogger(CustomLogger):
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
@@ -232,7 +249,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 "error": {
                     "type": type(detail).__name__,
                     "message": str(detail),
-                    "traceback": traceback.format_exc()[-2000:],
+                    "traceback": _failure_traceback(detail),
                 },
             }
         )
