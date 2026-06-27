@@ -397,5 +397,12 @@ def litellm_proxy_config(
             "callbacks": [f"{callback_module}.proxy_handler_instance"],
             "drop_params": True,
             "set_verbose": False,
+            # Force the anthropic /v1/messages bridge onto /chat/completions.
+            # LiteLLM routes openai/-prefixed upstreams (e.g. the vllm
+            # provider) through its Responses-API adapter, whose *streaming*
+            # path never fires the success callback -- so streaming
+            # claude-agent-acp rollouts produced no llm_trajectory.jsonl
+            # (#833). /chat/completions logs success correctly.
+            "use_chat_completions_url_for_anthropic_messages": True,
         },
     }

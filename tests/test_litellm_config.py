@@ -125,6 +125,22 @@ def test_proxy_config_registers_plain_and_openai_aliases():
     }
 
 
+def test_proxy_config_forces_chat_completions_for_anthropic_messages():
+    """Streaming /v1/messages must bridge via /chat/completions so the
+    LiteLLM success callback fires and llm_trajectory.jsonl is written for
+    claude-agent-acp. LiteLLM's Responses-API streaming adapter (used for
+    openai/-prefixed upstreams such as the vllm provider) skips the success
+    callback; this flag opts out of it (#833).
+    """
+    route = resolve_litellm_route("openai/gpt-5.4-mini", {"OPENAI_API_KEY": "key"})
+    config = litellm_proxy_config(route, master_key="sk-local")
+
+    assert (
+        config["litellm_settings"]["use_chat_completions_url_for_anthropic_messages"]
+        is True
+    )
+
+
 def test_proxy_config_registers_requested_bare_model_name():
     """Codex ACP sends the bare selected model name to the proxy."""
     route = resolve_litellm_route("openai/gpt-5.4-mini", {"OPENAI_API_KEY": "key"})
