@@ -108,6 +108,13 @@ def _snapshot_session_trajectory(session: ACPSession | None) -> list[dict]:
     """
     if session is None:
         return []
+    # Steps-only session-factory Session (benchflow.agents.protocol.Session):
+    # exposes .steps + .on_change but NOT the ACP streaming bookkeeping
+    # (_events_active / _pending_text live only on ACPSession). Duck-type off
+    # .steps so the live on_change sink works for both planes; the ACP paths
+    # below stay byte-identical when those attrs ARE present (#825 BLOCKER 8).
+    if not hasattr(session, "_events_active") or not hasattr(session, "_pending_text"):
+        return list(getattr(session, "steps", []))
     if not session._events_active:
         # Legacy path — no event log, fall back to flat capture which has
         # no pending-text bookkeeping anyway.

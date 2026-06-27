@@ -337,3 +337,44 @@ async def test_disconnect_clears_session_factory_state():
     assert rollout._session_tool_count == 0
     assert rollout._session_traj_count == 0
     assert rollout._phase == "installed"
+
+
+@pytest.mark.asyncio
+async def test_steps_only_session_trajectory_sink_writes_steps(tmp_path):
+    """The real streaming sink must work on a steps-only session-factory Session.
+
+    ``Rollout._attach_trajectory_writer`` wires
+    ``make_trajectory_sink(TrajectoryWriter(...))`` onto ``self._session.on_change``
+    for BOTH the ACP and session-factory paths. A session-factory ``self._session``
+    is the steps-only protocol ``Session`` (``benchflow.agents.protocol.Session``):
+    it exposes ``.steps`` + ``.on_change`` but NOT the ACP streaming bookkeeping
+    (``_events_active`` / ``_pending_text`` live only on ``ACPSession``). The sinks
+    ``_snapshot_session_trajectory`` must therefore duck-type off ``.steps`` — else
+    every streaming ``on_change`` raises ``AttributeError`` and
+    ``acp_trajectory.jsonl`` is never written (#825 BLOCKER 8).
+    """
+    import json
+    from pathlib import Path
+
+    from benchflow.trajectories._capture import (
+        TrajectoryWriter,
+        make_trajectory_sink,
+    )
+
+    session = _FakeSession()  # steps-only: no _events_active / _pending_text
+    assert not hasattr(session, "_events_active")
+    assert not hasattr(session, "_pending_text")
+
+    traj_path: Path = tmp_path / "trajectory" / "acp_trajectory.jsonl"
+    # Wire the REAL sink exactly as Rollout._attach_trajectory_writer does.
+    session.on_change = make_trajectory_sink(TrajectoryWriter(traj_path), [])
+
+    # Drive one turn: prompt() appends steps then fires on_change (the sink).
+    # (a) no AttributeError must leak out of the sink.
+    await session.prompt("do the thing")
+
+    # (b) the streamed file content equals the sessions steps.
+    written = [
+        json.loads(line) for line in traj_path.read_text().splitlines() if line.strip()
+    ]
+    assert written == session.steps
