@@ -220,3 +220,27 @@ def test_register_fails_loud_on_same_batch_name_alias_collision(tmp_path: Path):
     # collision detected before any mutation: nothing is registered.
     assert m["agents"] == {}
     assert m["installers"] == {}
+
+
+def test_discovery_walks_three_category_paths(tmp_path):
+    """A manifest dropped under each of the 3 category paths (acp/, ai-sdk/,
+    omnigent/) auto-registers. Discovery is recursive (rglob), so the eve-style
+    ``acp/<agent>/manifest.toml`` layout works exactly like a flat
+    ``<agent>/manifest.toml`` — adding a new agent is "drop it in the right path".
+    """
+    from benchflow.agents.manifest import load_agents_from_dir
+
+    def write(category: str, agent: str) -> None:
+        d = tmp_path / category / agent
+        d.mkdir(parents=True)
+        (d / "manifest.toml").write_text(
+            f'contract_version = "1.0"\nname = "{agent}"\n'
+            'install_cmd = "echo install"\nlaunch_cmd = "echo launch"\n'
+        )
+
+    write("acp", "cat-acp-agent")
+    write("ai-sdk", "cat-aisdk-agent")
+    write("omnigent", "cat-omnigent-agent")
+
+    loaded = load_agents_from_dir(tmp_path)
+    assert set(loaded) == {"cat-acp-agent", "cat-aisdk-agent", "cat-omnigent-agent"}
