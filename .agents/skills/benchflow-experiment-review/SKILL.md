@@ -61,8 +61,10 @@ usage-only without recoverable request/response evidence.
 a healthy model rollout it should contain a parseable row with
 `info.training_ready == true`, non-empty `prompt`, `completion`, and
 `trajectory`, positive token usage, reward/score metadata, task identity, and
-valid OpenAI-compatible message roles. If assistant `tool_calls` appear, the row
-must carry non-empty `tool_defs` or `tools`. Errored, verifier-failed, partial,
+valid OpenAI-compatible message roles. Token usage may be split into
+input/output fields or represented by a provider `total_tokens` value when the
+provider does not expose a split. If assistant `tool_calls` appear, the row must
+carry non-empty `tool_defs` or `tools`. Errored, verifier-failed, partial,
 malformed, or missing-LLM rollouts must fail closed with
 `training_ready == false` and an error/training-ready reason instead of being
 accepted as SFT-ready.
@@ -132,8 +134,8 @@ Reject or quarantine the trial if any of these appear:
 - `llm_trajectory.jsonl` has no real provider request bodies, no provider
   response bodies, or no provider token usage in response metadata.
 - `results.jsonl` lacks a Prime-RL-compatible row, marks an unhealthy rollout as
-  training-ready, misses prompt/completion/trajectory/token usage, or exposes
-  assistant tool calls without tool definitions.
+  training-ready, misses prompt/completion/trajectory/provider token usage, or
+  exposes assistant tool calls without tool definitions.
 - Empty transcript, agent never launched, or only setup logs.
 - Missing token usage/timing/tool usage metadata for newly generated data.
 - The agent lacked required task information, required skills, API keys,
