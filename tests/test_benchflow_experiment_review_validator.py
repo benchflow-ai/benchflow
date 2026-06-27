@@ -133,6 +133,25 @@ def test_validator_accepts_training_ready_results_jsonl(tmp_path: Path) -> None:
     }
 
 
+def test_validator_accepts_provider_total_only_token_usage(tmp_path: Path) -> None:
+    """Some providers expose only total tokens; Prime-RL can still render the row."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["token_usage"] = {
+        "input_tokens": 17,
+        "output_tokens": 0,
+        "final_input_tokens": 17,
+        "final_output_tokens": 0,
+        "total_tokens": 17,
+    }
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+
+
 def test_validator_rejects_missing_results_jsonl(tmp_path: Path) -> None:
     """Guards PR #828: results.jsonl is part of the model-run health gate."""
     validator = _load_validator()

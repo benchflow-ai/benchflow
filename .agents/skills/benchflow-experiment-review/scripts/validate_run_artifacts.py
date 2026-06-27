@@ -472,16 +472,17 @@ def validate_results_row(
         if not isinstance(token_usage, dict):
             issues.append(f"{row_path}: missing object token_usage")
         else:
-            if not (
-                positive_number(token_usage.get("final_input_tokens"))
-                or positive_number(token_usage.get("input_tokens"))
-            ):
-                issues.append(f"{row_path}: missing positive input token usage")
-            if not (
-                positive_number(token_usage.get("final_output_tokens"))
-                or positive_number(token_usage.get("output_tokens"))
-            ):
-                issues.append(f"{row_path}: missing positive output token usage")
+            has_total = positive_number(token_usage.get("total_tokens"))
+            has_input = positive_number(
+                token_usage.get("final_input_tokens")
+            ) or positive_number(token_usage.get("input_tokens"))
+            has_output = positive_number(
+                token_usage.get("final_output_tokens")
+            ) or positive_number(token_usage.get("output_tokens"))
+            if not (has_total or has_input):
+                issues.append(f"{row_path}: missing positive input/total token usage")
+            if not (has_total or has_output):
+                issues.append(f"{row_path}: missing positive output/total token usage")
         metrics = row.get("metrics")
         if not isinstance(metrics, dict):
             issues.append(f"{row_path}: missing object metrics")
