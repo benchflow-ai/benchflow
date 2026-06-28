@@ -369,7 +369,7 @@ that were present are recorded.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--backend` | `prime-rl` | Training backend. Currently only `prime-rl` is supported |
-| `--config` | required | Prime-RL SFT TOML config |
+| `--config` | required | Prime-RL SFT TOML config. Relative paths are resolved from the current directory first, then from `--prime-rl-dir` when set |
 | `--data` | — | Optional dataset override passed through as `--data.name` |
 | `--output-dir` | `<work-dir>/prime-rl-output` | Prime-RL trainer output directory |
 | `--work-dir` | `train-runs/sft` | BenchFlow training run directory |

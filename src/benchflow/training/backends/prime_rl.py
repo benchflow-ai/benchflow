@@ -62,8 +62,18 @@ def _parse_overrides(overrides: Iterable[str]) -> list[str]:
     return argv
 
 
+def _resolve_config_path(config: Path, cwd: Path | None) -> Path:
+    if config.is_file():
+        return config.resolve()
+    if cwd is not None and not config.is_absolute():
+        candidate = cwd / config
+        if candidate.is_file():
+            return candidate.resolve()
+    raise ValueError(f"--config not found: {config}")
+
+
 def build_prime_rl_sft_argv(spec: PrimeRlSftSpec) -> list[str]:
-    config = spec.config.resolve()
+    config = _resolve_config_path(spec.config, spec.cwd)
     work_dir = spec.work_dir.resolve()
     output_dir = (
         spec.output_dir.resolve() if spec.output_dir else work_dir / "prime-rl-output"
@@ -124,7 +134,7 @@ def _initial_manifest(
         schema_version=1,
         run_type="sft",
         backend="prime-rl",
-        config=str(spec.config.resolve()),
+        config=str(_resolve_config_path(spec.config, spec.cwd)),
         work_dir=str(work_dir),
         output_dir=str(output_dir),
         dry_run=spec.dry_run,
@@ -137,10 +147,9 @@ def _initial_manifest(
 
 
 def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
-    if not spec.config.is_file():
-        raise ValueError(f"--config not found: {spec.config}")
     if spec.cwd is not None and not spec.cwd.is_dir():
         raise ValueError(f"--prime-rl-dir not found: {spec.cwd}")
+    _resolve_config_path(spec.config, spec.cwd)
     work_dir = spec.work_dir.resolve()
     manifest_path = work_dir / "train-run.json"
     if manifest_path.exists() and not spec.force:
