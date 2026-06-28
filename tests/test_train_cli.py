@@ -105,6 +105,64 @@ def test_train_convert_and_validate_cli(tmp_path: Path) -> None:
     assert '"rows": 1' in result.output
 
 
+def test_train_convert_accepts_results_jsonl_cli(tmp_path: Path) -> None:
+    """Guards the public repro command that converts an existing results.jsonl."""
+    source = tmp_path / "results.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "do it"}],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "finish",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "reward": 1.0,
+            }
+        )
+        + "\n"
+    )
+    out = tmp_path / "prime-sft.jsonl"
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "convert",
+            str(source),
+            "--out",
+            str(out),
+            "--expected-rows",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Converted 1 row" in result.output
+    result = runner.invoke(app, ["train", "validate", str(out), "--expected-rows", "1"])
+    assert result.exit_code == 0, result.output
+
+
 def test_train_convert_rejects_malformed_llm_jsonl(tmp_path: Path) -> None:
     """Guards PR #828 review: CLI conversion fails closed on corrupted LLM traces."""
     jobs = tmp_path / "jobs"

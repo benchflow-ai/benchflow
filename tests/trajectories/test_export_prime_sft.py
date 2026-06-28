@@ -340,6 +340,78 @@ def test_validate_accepts_prime_rollout_prompt_completion_rows(tmp_path: Path) -
     }
 
 
+def test_export_accepts_existing_prime_sft_jsonl_input(tmp_path: Path) -> None:
+    """Guards blog repro: ``bench train convert <job>/results.jsonl`` works."""
+    source = tmp_path / "results.jsonl"
+    out = tmp_path / "prime-sft.jsonl"
+    manifest = tmp_path / "manifest.json"
+    source.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "prompt": [{"role": "user", "content": "do it"}],
+                        "completion": [
+                            {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "finish",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                        "tool_defs": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "finish",
+                                    "parameters": {"type": "object", "properties": {}},
+                                },
+                            }
+                        ],
+                        "reward": 1.0,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "messages": [
+                            {"role": "user", "content": "try"},
+                            {"role": "assistant", "content": "done"},
+                        ],
+                        "reward": 0.0,
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    stats = export_prime_sft_jsonl(
+        source,
+        out,
+        min_reward=0.5,
+        expected_rows=1,
+        manifest=manifest,
+    )
+
+    assert stats.rollouts_seen == 2
+    assert stats.rows_written == 1
+    assert stats.skipped_reward == 1
+    assert validate_prime_sft_jsonl(out, expected_rows=1) == {
+        "ok": True,
+        "rows": 1,
+        "rows_with_tool_calls": 1,
+    }
+    assert json.loads(manifest.read_text())["sources"] == [str(source)]
+
+
 def test_validate_rejects_tool_calls_without_tool_defs(tmp_path: Path) -> None:
     """Guards PR #828 review: tool-using rows must carry tool_defs/tools."""
     path = tmp_path / "missing-tools.jsonl"

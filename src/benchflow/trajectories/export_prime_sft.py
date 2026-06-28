@@ -11,6 +11,7 @@ exporters.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -580,6 +581,72 @@ def validate_prime_sft_jsonl(
     return {"ok": True, "rows": rows, "rows_with_tool_calls": rows_with_tool_calls}
 
 
+def _iter_prime_sft_jsonl_rows(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
+    with path.open("r", encoding="utf-8") as handle:
+        for row_num, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"row {row_num}: invalid JSON: {exc}") from exc
+            if not isinstance(row, dict):
+                raise ValueError(f"row {row_num}: top-level row must be object")
+            validate_prime_sft_row(row, row_num)
+            yield row_num, row
+
+
+def _row_reward(row: dict[str, Any]) -> float | None:
+    reward = row.get("reward", row.get("score"))
+    if isinstance(reward, (int, float)) and not isinstance(reward, bool):
+        return float(reward)
+    return None
+
+
+def _existing_prime_sft_jsonl_stats(
+    path: Path,
+    *,
+    min_reward: float | None,
+) -> PrimeSftExportStats:
+    stats = PrimeSftExportStats(sources=[str(path)])
+    for row_num, row in _iter_prime_sft_jsonl_rows(path):
+        stats.rollouts_seen += 1
+        reward = _row_reward(row)
+        if min_reward is not None and (reward is None or reward < min_reward):
+            stats.skipped_reward += 1
+            continue
+        messages = _row_messages(row, row_num)
+        typed_messages = [m for m in messages if isinstance(m, dict)]
+        if _has_tool_calls(typed_messages):
+            stats.rows_with_tool_calls += 1
+        stats.rows_written += 1
+    return stats
+
+
+def _copy_existing_prime_sft_jsonl(
+    source: Path,
+    out: Path,
+    *,
+    min_reward: float | None,
+) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if min_reward is None:
+        with (
+            source.open("r", encoding="utf-8") as source_handle,
+            out.open("w", encoding="utf-8") as out_handle,
+        ):
+            for line in source_handle:
+                if line.strip():
+                    out_handle.write(line)
+        return
+    with out.open("w", encoding="utf-8") as handle:
+        for _, row in _iter_prime_sft_jsonl_rows(source):
+            reward = _row_reward(row)
+            if reward is None or reward < min_reward:
+                continue
+            handle.write(_json_line(row) + "\n")
+
+
 def normalize_prime_sft_exchange(
     exchange: dict[str, Any],
 ) -> tuple[PrimeSftExchangeData | None, str | None]:
@@ -711,6 +778,28 @@ def export_prime_sft_jsonl(
     writes nothing, rather than leaving a partial file. Callers should not expect
     ``out`` to exist on failure.
     """
+    source_path = Path(jobs_dir)
+    out_path = Path(out)
+    manifest_path = Path(manifest) if manifest is not None else None
+
+    if source_path.is_file() and source_path.suffix == ".jsonl":
+        if source_path.resolve() == out_path.resolve():
+            raise ValueError("--out must differ from the source JSONL path")
+        stats = _existing_prime_sft_jsonl_stats(source_path, min_reward=min_reward)
+        if expected_rows is not None and stats.rows_written != expected_rows:
+            raise ValueError(f"row count {stats.rows_written} != expected {expected_rows}")
+        _copy_existing_prime_sft_jsonl(
+            source_path,
+            out_path,
+            min_reward=min_reward,
+        )
+        if manifest_path is not None:
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(
+                json.dumps(stats.as_dict(), indent=2, sort_keys=True) + "\n"
+            )
+        return stats
+
     rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(
         jobs_dir,
         min_reward=min_reward,
@@ -719,13 +808,11 @@ def export_prime_sft_jsonl(
     if expected_rows is not None and len(rows) != expected_rows:
         raise ValueError(f"row count {len(rows)} != expected {expected_rows}")
 
-    out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(_json_line(row) + "\n")
 
-    manifest_path = Path(manifest) if manifest is not None else None
     if manifest_path is not None:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(
