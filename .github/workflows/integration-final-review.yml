@@ -336,6 +336,9 @@ jobs:
               "--usage-tracking", "required",
               "--agent-idle-timeout", str(cell.get("agent_idle_timeout", 240)),
           ]
+          # Leave the job a few minutes to upload artifacts and run cleanup after
+          # the subprocess times out; otherwise GitHub can kill the whole job first.
+          subprocess_timeout = max(1.0, float(cell.get("timeout_minutes", 90)) - 5.0) * 60
           outcome = scenarios.run_eval(
               jobs_dir=jobs_dir,
               agent=cell["agent"],
@@ -347,7 +350,7 @@ jobs:
               source_repo="benchflow-ai/skillsbench",
               source_path="tasks",
               source_ref="main",
-              timeout=float(cell.get("timeout_minutes", 90)) * 60,
+              timeout=subprocess_timeout,
           )
           print(f"cell={cid} rc={outcome.returncode} jobs_dir={jobs_dir}")
           PY
