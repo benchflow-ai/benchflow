@@ -260,3 +260,51 @@ def test_train_run_sft_prime_rl_failure_updates_manifest(
     assert manifest["components"][0]["status"] == "failed"
     assert manifest["components"][0]["extra"] == {"returncode": 7}
     assert (work_dir / "prime-rl" / "stderr.log").read_text() == "boom\n"
+
+
+def test_train_run_sft_resolves_config_relative_to_prime_rl_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Guards the Prime-RL wrapper's native-checkout config path handling."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            del kwargs
+            captured["argv"] = argv
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    prime_rl_dir = tmp_path / "prime-rl"
+    config = prime_rl_dir / "examples" / "reverse_text" / "sft.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("max_steps = 1\n", encoding="utf-8")
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(prime_rl.subprocess, "Popen", FakeProcess)
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            "examples/reverse_text/sft.toml",
+            "--prime-rl-dir",
+            str(prime_rl_dir),
+            "--work-dir",
+            str(work_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["argv"][4] == str(config.resolve())
+    manifest = json.loads((work_dir / "train-run.json").read_text())
+    assert manifest["config"] == str(config.resolve())
