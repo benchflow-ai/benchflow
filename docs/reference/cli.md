@@ -337,6 +337,49 @@ bench train validate train.jsonl --expected-rows 4417
 | `--format` | `prime-sft` | Trainer format |
 | `--expected-rows` | — | Fail unless this many rows are present |
 
+### bench train run sft
+
+Launch a supervised fine-tuning job and record BenchFlow launch metadata. The
+first supported backend is `prime-rl`; BenchFlow wraps the native Prime-RL SFT
+entrypoint instead of re-modeling trainer internals.
+
+```bash
+bench train run sft \
+  --backend prime-rl \
+  --config configs/qwen35-env0-sft.toml \
+  --data benchflow/env0-prime-sft \
+  --prime-rl-dir .local/prime-rl \
+  --work-dir train-runs/qwen35-env0-sft \
+  --follow
+```
+
+The wrapper runs:
+
+```bash
+uv run sft @ configs/qwen35-env0-sft.toml \
+  --data.name benchflow/env0-prime-sft \
+  --output-dir train-runs/qwen35-env0-sft/prime-rl-output
+```
+
+BenchFlow writes `<work-dir>/train-run.json`, `<work-dir>/command.txt`, and
+separate Prime-RL stdout/stderr logs under `<work-dir>/prime-rl/`. Secrets are
+not written to the manifest; only the names of recognized credential env vars
+that were present are recorded.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--backend` | `prime-rl` | Training backend. Currently only `prime-rl` is supported |
+| `--config` | required | Prime-RL SFT TOML config |
+| `--data` | — | Optional dataset override passed through as `--data.name` |
+| `--output-dir` | `<work-dir>/prime-rl-output` | Prime-RL trainer output directory |
+| `--work-dir` | `train-runs/sft` | BenchFlow training run directory |
+| `--prime-rl-dir` | current directory | Prime-RL checkout to run `uv run sft` from |
+| `--dry-run` | `false` | Pass `--dry-run` through to Prime-RL |
+| `--follow` | `false` | Stream trainer stdout while writing logs |
+| `--uv-no-sync` | `false` | Run Prime-RL as `uv run --no-sync sft ...`, useful after backend post-install steps such as `flash-attn` |
+| `--override` | — | Prime-RL override as `KEY=VALUE`; repeatable, emitted as `--KEY VALUE` |
+| `--force` | `false` | Overwrite an existing `<work-dir>/train-run.json` manifest |
+
 ## bench skills
 
 ### bench skills list
