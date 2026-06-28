@@ -140,8 +140,7 @@ def classify_error(error: str | None) -> str | None:
     if (
         "sandbox startup" in lower
         or "sandbox creation" in lower
-        or "docker compose command failed" in lower
-        or "failed to resolve source metadata" in lower
+        or _looks_like_docker_registry_metadata_error(lower)
     ):
         return SANDBOX_SETUP
     if "prompt exceeded wall-clock budget" in lower:
@@ -178,6 +177,16 @@ def _looks_like_infra_error(error: str) -> bool:
             "api timeout",
             "temporarily unavailable",
         )
+    )
+
+
+def _looks_like_docker_registry_metadata_error(error: str) -> bool:
+    if "docker compose command failed" not in error:
+        return False
+    return (
+        "failed to resolve source metadata" in error
+        or "failed to do request: head" in error
+        or "deadlineexceeded" in error
     )
 
 

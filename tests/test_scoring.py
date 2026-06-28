@@ -89,6 +89,15 @@ class TestClassifyError:
             == "sandbox_setup"
         )
 
+    def test_generic_docker_compose_failure_still_blocks(self):
+        assert (
+            classify_error(
+                "Docker compose command failed for environment authored-task. "
+                "Stdout: syntax error in docker-compose.yaml"
+            )
+            == "other"
+        )
+
     def test_other(self):
         assert classify_error("something unexpected") == "other"
 
