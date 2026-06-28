@@ -67,6 +67,7 @@ async def _main() -> None:
             res = await run_arena(seats, floor, lambda s: policies[s],
                                   deadline_s=180.0, poll_s=0.05)
     finally:
+        await asyncio.sleep(1.5)  # let the proxy's async callback flush the last call
         await stop_provider_runtime(runtime)  # parses the proxy callback log
     usage = extract_usage(runtime)            # aggregate tokens/cost after stop
 

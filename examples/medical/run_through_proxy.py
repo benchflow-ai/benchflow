@@ -54,6 +54,7 @@ async def _main() -> None:
     try:
         result = await asyncio.to_thread(run, query)  # the LangGraph agent
     finally:
+        await asyncio.sleep(1.5)  # let the proxy's async callback flush the last call
         await stop_provider_runtime(runtime)
     usage = extract_usage(runtime)
 
