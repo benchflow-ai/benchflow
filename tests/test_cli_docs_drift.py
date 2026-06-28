@@ -179,6 +179,8 @@ def test_documented_subcommands_exist() -> None:
         ["eval", "view"],
         ["train", "convert"],
         ["train", "validate"],
+        ["train", "run"],
+        ["train", "run", "sft"],
         # Adoption is canonically under `eval` (cli.md documents `bench eval adopt`).
         ["eval", "adopt", "init"],
         ["eval", "adopt", "convert"],
@@ -188,6 +190,7 @@ def test_documented_subcommands_exist() -> None:
         ["tasks", "init"],
         ["tasks", "check"],
         ["tasks", "generate"],
+        ["tasks", "overlap"],
         ["tasks", "list-sources"],
         ["skills", "list"],
         ["skills", "eval"],

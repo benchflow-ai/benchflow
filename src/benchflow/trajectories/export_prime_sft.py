@@ -148,6 +148,50 @@ def _iter_rollout_dirs(root: str | Path) -> list[Path]:
     return sorted({p.parent for p in path.rglob("result.json")})
 
 
+def _iter_selected_rollout_dirs(selection_path: str | Path) -> list[Path]:
+    path = Path(selection_path)
+    try:
+        selection = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid canonical selection JSON: {path}: {exc}") from exc
+    if not isinstance(selection, dict):
+        raise ValueError(f"canonical selection must be an object: {path}")
+    job_dir = Path(str(selection.get("job_dir") or ""))
+    selected = selection.get("selected", selection.get("selection"))
+    if not isinstance(selected, list):
+        raise ValueError(
+            f"canonical selection {path} must contain selected or selection list"
+        )
+    rollout_dirs = []
+    for idx, row in enumerate(selected, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"canonical selection row {idx} must be an object")
+        row = cast(dict[str, Any], row)
+        raw_dir = row.get("rollout_dir")
+        if not isinstance(raw_dir, str) or not raw_dir:
+            raise ValueError(f"canonical selection row {idx} missing rollout_dir")
+        rollout_dir = Path(raw_dir)
+        if (
+            not (rollout_dir / "result.json").is_file()
+            and not rollout_dir.is_absolute()
+        ):
+            rollout_dir = job_dir / rollout_dir
+        if not (rollout_dir / "result.json").is_file() and isinstance(
+            row.get("result_json"), str
+        ):
+            result_json = Path(row["result_json"])
+            if result_json.is_absolute() and not result_json.is_file():
+                marker = f"/{path.parent.name}/"
+                _, sep, suffix = str(result_json).partition(marker)
+                if sep:
+                    result_json = path.parent / suffix
+            rollout_dir = result_json.parent
+        if not (rollout_dir / "result.json").is_file():
+            raise ValueError(f"selected rollout has no result.json: {rollout_dir}")
+        rollout_dirs.append(rollout_dir)
+    return rollout_dirs
+
+
 def _reward_from_result(result: dict[str, Any] | None) -> float | None:
     if not isinstance(result, dict):
         return None
@@ -196,7 +240,15 @@ def _normalize_tool_call(call: dict[str, Any], index: int = 0) -> dict[str, Any]
         function = {}
     name = function.get("name") or call.get("name") or "tool"
     arguments = function.get("arguments", call.get("arguments", {}))
-    if not isinstance(arguments, str):
+    if isinstance(arguments, str):
+        try:
+            json.loads(arguments)
+        except json.JSONDecodeError:
+            arguments = json.dumps(
+                {"_malformed_json_arguments": arguments},
+                sort_keys=True,
+            )
+    else:
         arguments = json.dumps(arguments or {}, sort_keys=True)
     return {
         "id": str(call.get("id") or call.get("tool_call_id") or f"call_{index:06d}"),
@@ -497,6 +549,38 @@ def _row_messages(row: dict[str, Any], row_num: int) -> list[Any]:
     )
 
 
+def _sanitize_message_tool_call_arguments(messages: list[Any]) -> list[Any]:
+    sanitized: list[Any] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            sanitized.append(message)
+            continue
+        out = dict(message)
+        tool_calls = out.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            out["tool_calls"] = [
+                _normalize_tool_call(cast(dict[str, Any], tool_call), idx)
+                for idx, tool_call in enumerate(tool_calls)
+                if isinstance(tool_call, dict)
+            ]
+        sanitized.append(out)
+    return sanitized
+
+
+def _sanitize_prime_sft_row_tool_call_arguments(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    messages = out.get("messages")
+    if isinstance(messages, list):
+        out["messages"] = _sanitize_message_tool_call_arguments(messages)
+    prompt = out.get("prompt")
+    if isinstance(prompt, list):
+        out["prompt"] = _sanitize_message_tool_call_arguments(prompt)
+    completion = out.get("completion")
+    if isinstance(completion, list):
+        out["completion"] = _sanitize_message_tool_call_arguments(completion)
+    return out
+
+
 def validate_prime_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
     leaked = sorted(BANNED_ROW_KEYS.intersection(row))
     if leaked:
@@ -536,6 +620,27 @@ def validate_prime_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
             )
         if role == "tool" and not message.get("tool_call_id"):
             raise ValueError(f"row {row_num}: tool message requires tool_call_id")
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tool_call_idx, tool_call in enumerate(tool_calls):
+                if not isinstance(tool_call, dict):
+                    raise ValueError(
+                        f"row {row_num}: messages[{idx}].tool_calls[{tool_call_idx}] must be object"
+                    )
+                tool_call = cast(dict[str, Any], tool_call)
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    raise ValueError(
+                        f"row {row_num}: messages[{idx}].tool_calls[{tool_call_idx}].function must be object"
+                    )
+                arguments = function.get("arguments")
+                if isinstance(arguments, str):
+                    try:
+                        json.loads(arguments)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(
+                            f"row {row_num}: messages[{idx}].tool_calls[{tool_call_idx}].function.arguments is not valid JSON: {exc}"
+                        ) from exc
 
     if not any(isinstance(m, dict) and m.get("role") == "assistant" for m in messages):
         raise ValueError(f"row {row_num}: no assistant message")
@@ -581,7 +686,9 @@ def validate_prime_sft_jsonl(
     return {"ok": True, "rows": rows, "rows_with_tool_calls": rows_with_tool_calls}
 
 
-def _iter_prime_sft_jsonl_rows(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
+def _iter_prime_sft_jsonl_rows(
+    path: Path, *, sanitize_tool_call_arguments: bool = False
+) -> Iterator[tuple[int, dict[str, Any]]]:
     with path.open("r", encoding="utf-8") as handle:
         for row_num, line in enumerate(handle, start=1):
             if not line.strip():
@@ -592,6 +699,8 @@ def _iter_prime_sft_jsonl_rows(path: Path) -> Iterator[tuple[int, dict[str, Any]
                 raise ValueError(f"row {row_num}: invalid JSON: {exc}") from exc
             if not isinstance(row, dict):
                 raise ValueError(f"row {row_num}: top-level row must be object")
+            if sanitize_tool_call_arguments:
+                row = _sanitize_prime_sft_row_tool_call_arguments(row)
             validate_prime_sft_row(row, row_num)
             yield row_num, row
 
@@ -609,7 +718,9 @@ def _existing_prime_sft_jsonl_stats(
     min_reward: float | None,
 ) -> PrimeSftExportStats:
     stats = PrimeSftExportStats(sources=[str(path)])
-    for row_num, row in _iter_prime_sft_jsonl_rows(path):
+    for row_num, row in _iter_prime_sft_jsonl_rows(
+        path, sanitize_tool_call_arguments=True
+    ):
         stats.rollouts_seen += 1
         reward = _row_reward(row)
         if min_reward is not None and (reward is None or reward < min_reward):
@@ -630,20 +741,14 @@ def _copy_existing_prime_sft_jsonl(
     min_reward: float | None,
 ) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
-    if min_reward is None:
-        with (
-            source.open("r", encoding="utf-8") as source_handle,
-            out.open("w", encoding="utf-8") as out_handle,
-        ):
-            for line in source_handle:
-                if line.strip():
-                    out_handle.write(line)
-        return
     with out.open("w", encoding="utf-8") as handle:
-        for _, row in _iter_prime_sft_jsonl_rows(source):
-            reward = _row_reward(row)
-            if reward is None or reward < min_reward:
-                continue
+        for _, row in _iter_prime_sft_jsonl_rows(
+            source, sanitize_tool_call_arguments=True
+        ):
+            if min_reward is not None:
+                reward = _row_reward(row)
+                if reward is None or reward < min_reward:
+                    continue
             handle.write(_json_line(row) + "\n")
 
 
@@ -699,11 +804,17 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
     *,
     min_reward: float | None = None,
     row_mode: PrimeSftRowMode = "rollout",
+    canonical_selection: str | Path | None = None,
 ) -> tuple[list[dict[str, Any]], PrimeSftExportStats]:
     stats = PrimeSftExportStats()
     rows: list[dict[str, Any]] = []
 
-    for rollout_dir in _iter_rollout_dirs(jobs_dir):
+    rollout_dirs = (
+        _iter_selected_rollout_dirs(canonical_selection)
+        if canonical_selection is not None
+        else _iter_rollout_dirs(jobs_dir)
+    )
+    for rollout_dir in rollout_dirs:
         stats.rollouts_seen += 1
         result = _load_json(rollout_dir / "result.json")
         if result is None:
@@ -770,6 +881,7 @@ def export_prime_sft_jsonl(
     row_mode: PrimeSftRowMode = "rollout",
     expected_rows: int | None = None,
     manifest: str | Path | None = None,
+    canonical_selection: str | Path | None = None,
 ) -> PrimeSftExportStats:
     """Export BenchFlow rollouts to a Prime-RL SFT JSONL file.
 
@@ -787,7 +899,9 @@ def export_prime_sft_jsonl(
             raise ValueError("--out must differ from the source JSONL path")
         stats = _existing_prime_sft_jsonl_stats(source_path, min_reward=min_reward)
         if expected_rows is not None and stats.rows_written != expected_rows:
-            raise ValueError(f"row count {stats.rows_written} != expected {expected_rows}")
+            raise ValueError(
+                f"row count {stats.rows_written} != expected {expected_rows}"
+            )
         _copy_existing_prime_sft_jsonl(
             source_path,
             out_path,
@@ -804,6 +918,7 @@ def export_prime_sft_jsonl(
         jobs_dir,
         min_reward=min_reward,
         row_mode=row_mode,
+        canonical_selection=canonical_selection,
     )
     if expected_rows is not None and len(rows) != expected_rows:
         raise ValueError(f"row count {len(rows)} != expected {expected_rows}")

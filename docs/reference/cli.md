@@ -182,6 +182,19 @@ bench eval run \
 # From local directory
 bench eval run --tasks-dir ./tasks --agent gemini --model gemini-3.1-flash-lite-preview
 
+# Emit reproducible training/eval artifacts and publish them to Hugging Face
+bench eval run \
+  --tasks-dir ./tasks \
+  --agent openhands \
+  --model openai/gpt-5.4-mini \
+  --sandbox daytona \
+  --task-manifest-out task-manifest.json \
+  --health-summary-out health.json \
+  --canonicalize one-healthy-per-task \
+  --canonical-selection-out canonical-selection.json \
+  --publish-hf benchflow/env0-experiment-trajectories \
+  --hf-prefix experiments/my-run
+
 # From a hosted PrimeIntellect / Verifiers environment
 bench eval run \
   --source-env primeintellect/general-agent \
@@ -202,6 +215,9 @@ bench eval run \
 # Pinned registry dataset: resolves skillsbench@1.1, verifies task digests,
 # and stamps dataset identity into every result.json/config.json
 bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-preview
+
+# Matrix eval over multiple models/trials
+bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 ```
 
 | Flag | Default | Description |
@@ -250,6 +266,21 @@ bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-p
 | `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |
 | `--loop-strategy` | — | Wrap each rollout in a loop, e.g. `verify-retry:k=3,feedback=names` or `self-review:k=3` (omit for single-shot) |
 | `--ignore-bench-version` | `false` | With `--dataset`, skip the dataset's `bench_version` compatibility gate |
+| `--task-manifest-out` | — | Write selected task-set manifest JSON with task ids, paths, digests, and source provenance |
+| `--run-config-out` | — | Write a redacted normalized run config JSON |
+| `--health-summary-out` | — | Write trajectory health summary JSON for the completed job |
+| `--expected-tasks` | — | Fail unless the selected task count, and canonical selected count when used, matches this value |
+| `--canonicalize` | `none` | Canonicalization policy: `none` or `one-healthy-per-task` |
+| `--canonical-selection-out` | — | Write canonical rollout-selection JSON |
+| `--canonical-jobs-dir` | — | Materialize selected rollout directories for trainer conversion |
+| `--retry-policy` | `default` | Retry policy label for reproducible eval artifacts: `default` or `unscored-only` |
+| `--retry-attempts` | — | Override retry attempts for the eval run |
+| `--retry-concurrency` | — | Reserved retry concurrency setting recorded in run config |
+| `--publish-hf` | — | Upload final eval artifacts to this Hugging Face dataset repo |
+| `--hf-prefix` | — | Path prefix inside the Hugging Face repo; requires `--publish-hf` |
+| `--hf-public-read-check` | `false` | Verify public Hugging Face reads after upload |
+| `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
+| `--trials` | `1` | Number of trials for `--matrix` |
 
 When mounting skills, the recommended docs default is
 `--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
@@ -312,6 +343,7 @@ OpenAI-compatible `messages` plus `tool_defs`.
 ```bash
 bench train convert jobs/run-001 --out train.jsonl
 bench train convert jobs/run-001 --out train.jsonl --min-reward 1.0
+bench train convert jobs/run-001 --out train.jsonl --canonical-selection canonical-selection.json
 ```
 
 | Flag | Default | Description |
@@ -322,6 +354,7 @@ bench train convert jobs/run-001 --out train.jsonl --min-reward 1.0
 | `--row-mode` | `rollout` | `rollout` writes one row per rollout; `exchange` writes one row per LLM exchange |
 | `--manifest` | — | Optional conversion stats JSON path |
 | `--expected-rows` | — | Fail before writing unless exactly this many rows would be exported |
+| `--canonical-selection` | — | Restrict conversion to rows selected by `canonical-selection.json` |
 
 ### bench train validate
 
@@ -330,12 +363,21 @@ Validate Prime-RL SFT JSONL before upload or training.
 ```bash
 bench train validate train.jsonl
 bench train validate train.jsonl --expected-rows 4417
+bench train validate train.jsonl \
+  --source-jobs jobs/run-001 \
+  --require-llm-trajectory \
+  --require-tool-calls
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--format` | `prime-sft` | Trainer format |
 | `--expected-rows` | — | Fail unless this many rows are present |
+| `--source-jobs` | — | Source BenchFlow jobs directory to audit alongside trainer JSONL |
+| `--source-canonical-selection` | — | Canonical selection JSON used for this trainer data |
+| `--task-manifest` | — | Task manifest for source rows |
+| `--require-llm-trajectory` | `false` | Fail unless source selected rows have valid `llm_trajectory.jsonl` |
+| `--require-tool-calls` | `false` | Fail unless trainer rows and source rows include tool calls |
 
 ### bench train run sft
 
@@ -350,6 +392,9 @@ bench train run sft \
   --data benchflow/env0-prime-sft \
   --prime-rl-dir .local/prime-rl \
   --work-dir train-runs/qwen35-env0-sft \
+  --publish-model benchflow/benchflow-qwen35-9b \
+  --publish-artifacts benchflow/env0-experiment-trajectories \
+  --hf-prefix experiments/env0-mobile-pr828/training \
   --follow
 ```
 
@@ -379,6 +424,12 @@ that were present are recorded.
 | `--uv-no-sync` | `false` | Run Prime-RL as `uv run --no-sync sft ...`, useful after backend post-install steps such as `flash-attn` |
 | `--override` | — | Prime-RL override as `KEY=VALUE`; repeatable, emitted as `--KEY VALUE` |
 | `--force` | `false` | Overwrite an existing `<work-dir>/train-run.json` manifest |
+| `--publish-model` | — | Upload trainer output to this Hugging Face model repo |
+| `--model-tag` | — | Path prefix/tag for the model upload |
+| `--model-card` | — | Model card mode; currently accepts `auto` |
+| `--publish-artifacts` | — | Upload BenchFlow train run artifacts to this Hugging Face dataset repo |
+| `--hf-prefix` | — | Path prefix for `--publish-artifacts` |
+| `--hf-public-read-check` | `false` | Verify public Hugging Face reads after upload |
 
 ## bench skills
 
@@ -505,6 +556,24 @@ bench tasks digest tasks/                  # one "<name> sha256:<hex>" line per 
 ```
 
 Arguments: `PATH` (a task directory, or a directory of task directories).
+
+### bench tasks overlap
+
+Compare two task manifests, typically one emitted by a training-data collection
+run and one emitted by an evaluation run.
+
+```bash
+bench tasks overlap train-task-manifest.json eval-task-manifest.json
+bench tasks overlap train-task-manifest.json eval-task-manifest.json --out overlap.json
+```
+
+The command reports exact task-id overlap and exact digest overlap. A zero
+overlap result means the task ids/digests are disjoint; it does not prove domain
+or generator-family disjointness.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out`, `-o` | — | Optional JSON output path |
 
 ### bench tasks generate
 
