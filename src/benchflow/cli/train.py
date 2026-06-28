@@ -64,6 +64,13 @@ def register_train(app: typer.Typer) -> None:
                 ),
             ),
         ] = None,
+        canonical_selection: Annotated[
+            Path | None,
+            typer.Option(
+                "--canonical-selection",
+                help="Restrict conversion to rows selected by canonical-selection.json",
+            ),
+        ] = None,
     ) -> None:
         """Convert BenchFlow rollout artifacts into trainer-ready data."""
         _ensure_prime_sft(format_name)
@@ -77,6 +84,7 @@ def register_train(app: typer.Typer) -> None:
                 row_mode=row_mode,
                 expected_rows=expected_rows,
                 manifest=manifest,
+                canonical_selection=canonical_selection,
             )
         except ValueError as exc:
             print_error(str(exc))
@@ -105,6 +113,35 @@ def register_train(app: typer.Typer) -> None:
                 "--expected-rows", help="Fail unless this many rows are present"
             ),
         ] = None,
+        source_jobs: Annotated[
+            Path | None,
+            typer.Option("--source-jobs", help="Source BenchFlow jobs dir to audit"),
+        ] = None,
+        source_canonical_selection: Annotated[
+            Path | None,
+            typer.Option(
+                "--source-canonical-selection",
+                help="Canonical selection JSON used for this trainer data",
+            ),
+        ] = None,
+        task_manifest: Annotated[
+            Path | None,
+            typer.Option("--task-manifest", help="Task manifest for source rows"),
+        ] = None,
+        require_llm_trajectory: Annotated[
+            bool,
+            typer.Option(
+                "--require-llm-trajectory",
+                help="Fail unless source selected rows have valid llm_trajectory.jsonl",
+            ),
+        ] = False,
+        require_tool_calls: Annotated[
+            bool,
+            typer.Option(
+                "--require-tool-calls",
+                help="Fail unless trainer rows and source rows include tool calls",
+            ),
+        ] = False,
     ) -> None:
         """Validate trainer-ready data."""
         _ensure_prime_sft(format_name)
@@ -112,6 +149,61 @@ def register_train(app: typer.Typer) -> None:
 
         try:
             result = validate_prime_sft_jsonl(jsonl, expected_rows=expected_rows)
+            if require_tool_calls and result["rows_with_tool_calls"] != result["rows"]:
+                raise ValueError(
+                    "not all trainer rows contain tool calls: "
+                    f"{result['rows_with_tool_calls']} / {result['rows']}"
+                )
+            if source_jobs is not None:
+                from benchflow.eval_artifacts import build_health_summary
+
+                health = build_health_summary(
+                    source_jobs, canonical_selection=source_canonical_selection
+                )
+                if require_llm_trajectory and (
+                    health["missing_llm_trajectory"]
+                    or health["malformed_llm_trajectory"]
+                ):
+                    raise ValueError(
+                        "source jobs contain missing/malformed llm_trajectory.jsonl"
+                    )
+                if (
+                    require_tool_calls
+                    and health["rows_with_tool_calls"] != health["total_rows"]
+                ):
+                    raise ValueError(
+                        "not all source rows contain tool calls: "
+                        f"{health['rows_with_tool_calls']} / {health['total_rows']}"
+                    )
+                result["source_health"] = {
+                    key: health[key]
+                    for key in (
+                        "total_rows",
+                        "scored_rows",
+                        "unscored_rows",
+                        "rows_with_tool_calls",
+                        "missing_llm_trajectory",
+                        "malformed_llm_trajectory",
+                    )
+                }
+            if source_canonical_selection is not None:
+                data = json.loads(source_canonical_selection.read_text())
+                selected = (
+                    data.get("selected", data.get("selection"))
+                    if isinstance(data, dict)
+                    else None
+                )
+                if not isinstance(selected, list):
+                    raise ValueError(
+                        f"{source_canonical_selection}: selected or selection must be a list"
+                    )
+                result["canonical_selected_rows"] = len(selected)
+            if task_manifest is not None:
+                data = json.loads(task_manifest.read_text())
+                tasks = data.get("tasks") if isinstance(data, dict) else None
+                if not isinstance(tasks, list):
+                    raise ValueError(f"{task_manifest}: tasks must be a list")
+                result["task_manifest_rows"] = len(tasks)
         except (OSError, ValueError) as exc:
             print_error(str(exc))
             raise typer.Exit(1) from None
@@ -184,6 +276,41 @@ def register_train(app: typer.Typer) -> None:
                 help="Overwrite an existing <work-dir>/train-run.json manifest",
             ),
         ] = False,
+        publish_model: Annotated[
+            str | None,
+            typer.Option(
+                "--publish-model", help="Upload trainer output to this HF model repo"
+            ),
+        ] = None,
+        model_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--model-tag", help="Path prefix/tag for --publish-model upload"
+            ),
+        ] = None,
+        model_card: Annotated[
+            str | None,
+            typer.Option(
+                "--model-card", help="Model card mode; currently accepts 'auto'"
+            ),
+        ] = None,
+        publish_artifacts: Annotated[
+            str | None,
+            typer.Option(
+                "--publish-artifacts",
+                help="Upload BenchFlow train run artifacts to this HF dataset repo",
+            ),
+        ] = None,
+        hf_prefix: Annotated[
+            str | None,
+            typer.Option("--hf-prefix", help="Path prefix for --publish-artifacts"),
+        ] = None,
+        hf_public_read_check: Annotated[
+            bool,
+            typer.Option(
+                "--hf-public-read-check", help="Verify public HF reads after upload"
+            ),
+        ] = False,
     ) -> None:
         """Run a Prime-RL SFT job and record a BenchFlow manifest."""
         del backend  # Typer validates the single supported backend for now.
@@ -205,6 +332,12 @@ def register_train(app: typer.Typer) -> None:
                     overrides=tuple(override or ()),
                     force=force,
                     cwd=prime_rl_dir,
+                    publish_model=publish_model,
+                    model_tag=model_tag,
+                    model_card=model_card,
+                    publish_artifacts=publish_artifacts,
+                    hf_prefix=hf_prefix,
+                    hf_public_read_check=hf_public_read_check,
                 )
             )
         except ValueError as exc:
