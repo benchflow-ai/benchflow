@@ -70,6 +70,14 @@ async def _main() -> None:
         await stop_provider_runtime(runtime)  # parses the proxy callback log
     usage = extract_usage(runtime)            # aggregate tokens/cost after stop
 
+    # persist the proxy's raw-LLM trajectory in BenchFlow's canonical format
+    # (mirrors rollout._write_llm_trajectory).
+    proxy_traj = getattr(getattr(runtime, "server", None), "trajectory", None)
+    if proxy_traj is not None and proxy_traj.exchanges:
+        traj_dir = run_dir / "trajectory"
+        traj_dir.mkdir(parents=True, exist_ok=True)
+        (traj_dir / "llm_trajectory.jsonl").write_text(proxy_traj.to_jsonl(redact_keys=True))
+
     st = floor.standings()
     print("\npicks       :", floor.picks)
     print("standings   :", st)
@@ -77,7 +85,10 @@ async def _main() -> None:
     print("seat status :", {s: r["status"] for s, r in res.items()})
     print("conserved   :", sum(st.values()), f"(== {n * 1000})")
     print("proxy usage :", json.dumps(usage))  # tokens + cost from the proxy callback log
-    print(f"trajectories: {run_dir}/<seat>.trajectory.jsonl")
+    if proxy_traj is not None and proxy_traj.exchanges:
+        print(f"llm_trajectory: {run_dir}/trajectory/llm_trajectory.jsonl "
+              f"({len(proxy_traj.exchanges)} raw exchanges, canonical format)")
+    print(f"decision traj : {run_dir}/<seat>.trajectory.jsonl")
     for s in seats:
         line = tr.path(s).read_text().strip().splitlines()[-1]
         rec = json.loads(line)
