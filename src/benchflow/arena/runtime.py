@@ -20,6 +20,9 @@ from benchflow.arena.protocol import Observation, SeatClient, SeatPolicy, SeatSt
 __all__ = ["run_arena"]
 
 
+OnTurn = Callable[[str, int, Observation, dict[str, object]], None]
+
+
 async def _run_seat(
     seat_id: str,
     client: SeatClient,
@@ -28,6 +31,7 @@ async def _run_seat(
     sem: asyncio.Semaphore,
     poll_s: float,
     deadline: float,
+    on_turn: OnTurn | None,
 ) -> dict[str, object]:
     acts = 0
     while True:
@@ -41,6 +45,8 @@ async def _run_seat(
                 action = await policy.act(obs)
             await client.act(seat_id, obs.request_id or "", action)
             acts += 1
+            if on_turn is not None:  # the bench's per-seat decision trajectory
+                on_turn(seat_id, acts, obs, action)
         else:  # waiting / not_your_turn — yield and poll again
             await asyncio.sleep(poll_s)
 
@@ -53,10 +59,13 @@ async def run_arena(
     workers: int = 16,
     deadline_s: float = 120.0,
     poll_s: float = 0.05,
+    on_turn: OnTurn | None = None,
 ) -> dict[str, dict[str, object]]:
     """Drive ``seat_ids`` concurrently against ``client`` until each is done or
-    the deadline fires. ``policy_for(seat_id)`` supplies that seat's brain.
-    Returns ``{seat_id: {status, acts, ...}}`` (status ∈ done | deadline | error).
+    the deadline fires. ``policy_for(seat_id)`` supplies that seat's brain;
+    ``on_turn(seat, turn, obs, action)`` (optional) is called after each move —
+    the hook the bench uses to capture per-seat trajectories. Returns
+    ``{seat_id: {status, acts, ...}}`` (status ∈ done | deadline | error).
     """
     sem = asyncio.Semaphore(max(1, workers))
     deadline = time.monotonic() + deadline_s
@@ -65,7 +74,7 @@ async def run_arena(
         try:
             return await _run_seat(
                 seat_id, client, policy_for(seat_id),
-                sem=sem, poll_s=poll_s, deadline=deadline,
+                sem=sem, poll_s=poll_s, deadline=deadline, on_turn=on_turn,
             )
         except Exception as exc:  # one bad seat must not kill the floor
             return {"seat": seat_id, "status": "error", "error": repr(exc), "acts": 0}
