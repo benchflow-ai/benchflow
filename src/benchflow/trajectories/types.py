@@ -180,7 +180,7 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
 # form is how a provider error body embedded in ``error.message`` reaches the
 # redactor after ``Trajectory.to_jsonl`` runs ``json.dumps`` over the record
 # before redacting it (#830). The ``{0,8}`` cap keeps it ReDoS-bounded.
-_ESCQ = r'\\{0,8}["\']?'
+_ESCQ = r'(?:\\{0,8}["\']|)'
 # Secret value class for the carriers: stops at a quote (plain, or the backslash
 # of an escaped closing quote), whitespace, and the ``,`` ``}`` ``&`` delimiters
 # so a redacted value can never swallow a sibling JSON field or URL query param;

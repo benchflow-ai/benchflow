@@ -137,7 +137,11 @@ def classify_error(error: str | None) -> str | None:
         if any(m in lower for m in _PROVIDER_REJECTED_MARKERS):
             return PROVIDER_REJECTED
         return ACP_ERROR
-    if "sandbox startup" in lower or "sandbox creation" in lower:
+    if (
+        "sandbox startup" in lower
+        or "sandbox creation" in lower
+        or _looks_like_docker_registry_metadata_error(lower)
+    ):
         return SANDBOX_SETUP
     if "prompt exceeded wall-clock budget" in lower:
         return TIMED_OUT
@@ -173,6 +177,16 @@ def _looks_like_infra_error(error: str) -> bool:
             "api timeout",
             "temporarily unavailable",
         )
+    )
+
+
+def _looks_like_docker_registry_metadata_error(error: str) -> bool:
+    if "docker compose command failed" not in error:
+        return False
+    return (
+        "failed to resolve source metadata" in error
+        or "failed to do request: head" in error
+        or "deadlineexceeded" in error
     )
 
 

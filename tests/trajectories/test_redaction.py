@@ -6,6 +6,8 @@ token families (Google/Daytona/AWS) must be redacted whole â€” prefix included â
 so the v0.5 secret-leak audit grep sees no live-key shape.
 """
 
+import json
+
 import pytest
 
 from benchflow.trajectories.types import (
@@ -652,8 +654,6 @@ def test_redacts_escaped_json_provider_body(carrier_json, leaked):
     error body into error.message; Trajectory.to_jsonl runs json.dumps over the
     record (escaping inner quotes to \\") BEFORE redacting. The carriers must fire
     on that backslash-escaped form, not just raw/JSON/dict-repr."""
-    import json
-
     # Exactly what to_jsonl feeds redact_trajectory_text: json.dumps of a record
     # whose error.message embeds the provider's JSON body.
     serialized = json.dumps({"event": "failure", "error": {"message": carrier_json}})
@@ -667,14 +667,42 @@ def test_redacts_double_escaped_json_carrier():
     """Issue #830: a body that is json.dumps'd twice has THREE backslashes before
     each quote; _ESCQ absorbs a run of backslashes, so even double-escaped carriers
     redact (guards against a single-backslash-only escape atom)."""
-    import json
-
     secret = "DBL" + "771b8b5e9f2a4c6d8e0f1a2b"
     double = json.dumps(json.dumps(f'{{"api-key": "{secret}"}}'))
     assert secret in double
     out = redact_trajectory_text(double)
     assert secret not in out
     assert "***REDACTED***" in out
+
+
+def test_redaction_preserves_json_when_code_mentions_token_label():
+    """Guards the expanded integration run: ordinary code text like ``class Token:``
+    must not be treated as a secret carrier after JSON serialization."""
+
+    serialized = json.dumps(
+        {
+            "request": {
+                "body": {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "class Token:\n"
+                                '    """Immutable token representation."""\n'
+                                "    value: str\n"
+                            ),
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    redacted = redact_trajectory_text(serialized)
+
+    json.loads(redacted)
+    assert "class Token" in redacted
+    assert "***REDACTED***" not in redacted
 
 
 @pytest.mark.parametrize(
