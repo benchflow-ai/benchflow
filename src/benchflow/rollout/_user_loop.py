@@ -6,18 +6,6 @@ generated-skill export hook. They are free functions taking the ``Rollout`` as
 their first argument — mirroring the ``rollout_branch.py`` engine convention —
 so the lifecycle file stays under its size threshold while the driver logic
 stays independently testable.
-
-``Rollout`` keeps thin one-line methods (``_run_steps``, ``_run_user_loop``,
-``_activate_step_skills``, ``_export_generated_skills``) that delegate here, so
-instance-level patching (``monkeypatch.setattr(rollout, "_run_steps", ...)``)
-and unbound calls (``Rollout._export_generated_skills(rollout)``) keep working
-exactly as before.
-
-Note: the two driver loops in :func:`_run_user_loop` — the scene-step loop and
-the free-round loop — are *deliberately* kept distinct. They differ in prompt
-source (scene prompt vs. plain instruction), role selection (per-step role vs.
-sticky last role), scene metadata, and the ``use_scene_prompts`` branch, so
-they are not provably equivalent and are not collapsed.
 """
 
 from __future__ import annotations
@@ -46,6 +34,7 @@ from benchflow.scenes import (
     scene_step_skills_dir,
 )
 from benchflow.skill_policy import SKILL_MODE_SELF_GEN
+from benchflow.trajectories.multiagent import RealAgentTraceRecorder
 from benchflow.trajectories.tree import Step
 from benchflow.usage_tracking import is_token_usage_available
 
@@ -56,14 +45,8 @@ logger = logging.getLogger(__name__)
 
 
 def _round_tokens(rollout: Rollout) -> int | None:
-    """Cumulative native-ACP tokens spent so far, or ``None`` if untrusted.
+    """Cumulative native-ACP tokens spent so far, or ``None`` if untrusted."""
 
-    ``_native_usage_metrics`` is initialized to a zeroed ``usage_unavailable()``
-    payload (``usage_source="unavailable"``, ``total_tokens=0``), so a bare read
-    can't tell "spent 0 tokens" apart from "no usage captured". Gating on the
-    trusted-source check keeps uninstrumented paths reporting ``None`` rather
-    than a spurious ``0`` — preserving the cost-curve's best-effort contract.
-    """
     metrics = getattr(rollout, "_native_usage_metrics", None)
     if metrics and is_token_usage_available(metrics):
         return metrics.get("total_tokens")
@@ -71,14 +54,8 @@ def _round_tokens(rollout: Rollout) -> int | None:
 
 
 async def _export_generated_skills(rollout: Rollout) -> None:
-    """Download creator-produced skills before sandbox cleanup.
+    """Download creator-produced skills before sandbox cleanup."""
 
-    Also captures the exported skill packs into ``self._evolved_skills``
-    — the ``name -> body`` dict a continual-learning Job commits to its
-    persistent LearnerStore (capability 5).
-
-    Retries transient download failures up to 3 times (guards ENG-147).
-    """
     export_target = rollout._config.export_generated_skills_to
     if export_target is None:
         return
@@ -88,9 +65,7 @@ async def _export_generated_skills(rollout: Rollout) -> None:
     last_err: Exception | None = None
     for attempt in range(3):
         try:
-            await rollout._env.download_dir(
-                rollout._config.generated_skills_root, target
-            )
+            await rollout._env.download_dir(rollout._config.generated_skills_root, target)
             break
         except Exception as e:
             last_err = e
@@ -121,6 +96,7 @@ async def _export_generated_skills(rollout: Rollout) -> None:
 
 async def _activate_step_skills(rollout: Rollout, step: Step) -> None:
     """Activate scene-local skills attached by the Scene desugaring pass."""
+
     skills_dir = scene_step_skills_dir(step)
     if not skills_dir:
         return
@@ -131,16 +107,6 @@ async def _activate_step_skills(rollout: Rollout, step: Step) -> None:
     role = scene_step_role(step)
     source = str(skills_dir)
     local_source = Path(source).expanduser()
-    # Upload whenever skills_dir resolves to a real directory on the
-    # orchestrator host, regardless of whether it arrived as a str or a
-    # PathLike. The SkillsBench entrypoint passes an absolute *str* host
-    # path (EvaluationConfig.skills_dir is typed str), so gating the upload
-    # on isinstance(..., os.PathLike) silently skipped it: the path then
-    # fell through to the "already inside the sandbox" branch below and
-    # _link_skill_paths produced a dangling symlink, so deployed task skills
-    # never reached the agent. An absolute path that does NOT exist on the
-    # host is a sandbox path produced by an earlier scene and is linked
-    # as-is.
     if local_source.is_dir():
         remote_source = f"/skills/{_safe_skill_name(scene_name)}"
         await _ensure_sandbox_dir(rollout._env, Path(remote_source).parent)
@@ -169,8 +135,45 @@ async def _activate_step_skills(rollout: Rollout, step: Step) -> None:
 
 
 async def _run_steps(rollout: Rollout, steps: list[Step]) -> None:
-    """Execute already-compiled rollout Steps in declaration order."""
+    """Execute already-compiled rollout Steps in declaration order.
+
+    Every concrete role connection is recorded as a real agent session when the
+    rollout directory is available. The existing merged ACP trajectory is left
+    untouched; this adds per-session source views and relationship artifacts.
+    """
+
+    recorder = RealAgentTraceRecorder.for_rollout(rollout)
     current_role_key: tuple[Any, ...] | None = None
+    current_session_id: str | None = None
+    current_session_start = 0
+    current_session_error: str | None = None
+
+    def start_recording_session(step: Step, role: Role) -> None:
+        nonlocal current_session_id, current_session_start
+        if recorder is None:
+            return
+        driver = "session-factory" if getattr(rollout, "_is_session_factory", False) else "acp"
+        current_session_id = recorder.start_session(
+            agent_id=role.name,
+            agent_type=role.agent,
+            model=role.model,
+            driver=driver,
+            scene=str(step.data.get("scene") or "") or None,
+            scene_index=step.data.get("scene_index"),
+            turn_index=step.data.get("turn_index"),
+        )
+        current_session_start = len(getattr(rollout, "_trajectory", []) or [])
+
+    def finish_recording_session(error: str | None = None) -> None:
+        nonlocal current_session_id, current_session_start, current_session_error
+        if recorder is None or current_session_id is None:
+            current_session_error = None
+            return
+        trajectory = (getattr(rollout, "_trajectory", []) or [])[current_session_start:]
+        recorder.finish_session(current_session_id, trajectory, error=error)
+        current_session_id = None
+        current_session_error = None
+
     try:
         for step in steps:
             role = scene_step_role(step)
@@ -193,17 +196,28 @@ async def _run_steps(rollout: Rollout, steps: list[Step]) -> None:
             await rollout._activate_step_skills(step)
             if current_role_key != role_key:
                 if current_role_key is not None:
-                    await rollout.disconnect()
+                    try:
+                        await rollout.disconnect()
+                    finally:
+                        finish_recording_session(current_session_error)
+                    current_role_key = None
                 await rollout.connect_as(role)
                 current_role_key = role_key
-            await rollout.execute(prompts=[scene_step_prompt(step)])
+                current_session_error = None
+                start_recording_session(step, role)
+            try:
+                await rollout.execute(prompts=[scene_step_prompt(step)])
+            except Exception as exc:
+                current_session_error = str(exc)
+                raise
     finally:
         if current_role_key is not None:
-            await rollout.disconnect()
+            try:
+                await rollout.disconnect()
+            finally:
+                finish_recording_session(current_session_error)
 
 
-# Per-iteration view of a round-log entry, persisted to loop/iterations.jsonl
-# for loop-strategy runs.
 _ITERATION_RECORD_KEYS = (
     "round",
     "rewards",
@@ -217,13 +231,8 @@ _ITERATION_RECORD_KEYS = (
 def _persist_round_logs(
     rollout: Rollout, rounds_log: list[dict], *, loop_active: bool
 ) -> None:
-    """Write user_rounds.jsonl (and loop/iterations.jsonl for strategy runs).
+    """Write user_rounds.jsonl and loop/iterations.jsonl when relevant."""
 
-    Called from the user-loop ``finally`` so rounds completed before a
-    mid-loop crash (agent timeout, ACP error, isolation failure) still land
-    on disk — the round log is also what the result.json ``loop`` block is
-    derived from at build time.
-    """
     if not rounds_log or rollout._rollout_dir is None:
         return
     log_path = rollout._rollout_dir / "user_rounds.jsonl"
@@ -246,12 +255,8 @@ def _persist_round_logs(
 
 
 async def _run_user_loop(rollout: Rollout) -> None:
-    """Execute a user-driven progressive-disclosure loop.
+    """Execute a user-driven progressive-disclosure loop."""
 
-    Each round: user.run() → connect → agent.execute() → disconnect →
-    soft_verify() → build RoundResult → repeat. Stops when user.run()
-    returns None or max_user_rounds is reached.
-    """
     cfg = rollout._config
     user = cfg.user
     assert user is not None
@@ -288,26 +293,17 @@ async def _run_user_loop(rollout: Rollout) -> None:
         ),
     )
     if not steps:
-        raise ValueError(
-            "User-driven loops require at least one single-role scene turn."
-        )
+        raise ValueError("User-driven loops require at least one single-role scene turn.")
     if len(steps) > cfg.max_user_rounds:
         raise ValueError(
             "User-driven loops require max_user_rounds to cover every "
             f"scene turn. Got {len(steps)} turns and "
             f"max_user_rounds={cfg.max_user_rounds}."
         )
-    installed_confirmation_handler = rollout._install_document_confirmation_handler(
-        user
-    )
-
-    # The engine's authoritative per-round log. Each round is appended as
-    # soon as its soft verify completes — before anything that can raise —
-    # and the list is aliased onto the rollout so _build_result() can derive
-    # the result.json ``loop`` block from whatever rounds finished, on every
-    # path including a mid-loop timeout or ACP error.
+    installed_confirmation_handler = rollout._install_document_confirmation_handler(user)
     rounds_log: list[dict] = []
     rollout._user_rounds_log = rounds_log
+    recorder = RealAgentTraceRecorder.for_rollout(rollout)
 
     try:
         instruction = (
@@ -316,7 +312,6 @@ async def _run_user_loop(rollout: Rollout) -> None:
             else ("Solve the task described in /app/instruction.md")
         )
 
-        # Oracle access: read /solution before the agent runs, then remove it
         solution: str | None = None
         if cfg.oracle_access:
             cat = await rollout._env.exec(
@@ -328,8 +323,6 @@ async def _run_user_loop(rollout: Rollout) -> None:
 
         await user.setup(instruction, solution)
 
-        # Hide oracle files from agent — move rather than delete so the
-        # final verify() can still access them if the verifier needs them.
         if cfg.oracle_access:
             await rollout._env.exec(
                 "mv /oracle /oracle_backup 2>/dev/null || true; "
@@ -357,14 +350,38 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 else f"[User] round {round_num}: prompt={prompt!r}"
             )
 
-            # Fresh ACP session each round — agent starts clean but sees
-            # its previous workspace changes in the shared sandbox.
             traj_before = len(rollout._trajectory)
+            session_id: str | None = None
+            session_error: str | None = None
             try:
                 await rollout.connect_as(role)
-                await rollout.execute(prompts=[prompt])
+                if recorder is not None:
+                    driver = "session-factory" if getattr(rollout, "_is_session_factory", False) else "acp"
+                    session_id = recorder.start_session(
+                        agent_id=role.name,
+                        agent_type=role.agent,
+                        model=role.model,
+                        driver=driver,
+                        scene=scene_name,
+                        scene_index=None,
+                        turn_index=round_num,
+                    )
+                    traj_before = len(rollout._trajectory)
+                try:
+                    await rollout.execute(prompts=[prompt])
+                except Exception as exc:
+                    session_error = str(exc)
+                    raise
             finally:
-                await rollout.disconnect()
+                try:
+                    await rollout.disconnect()
+                finally:
+                    if recorder is not None and session_id is not None:
+                        recorder.finish_session(
+                            session_id,
+                            rollout._trajectory[traj_before:],
+                            error=session_error,
+                        )
 
             round_trajectory = rollout._trajectory[traj_before:]
             round_tools = sum(
@@ -373,9 +390,6 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 if isinstance(e, dict) and e.get("type") == "tool_call"
             )
 
-            # Soft verify: run tests after agent disconnected but before
-            # next round. Temporarily restore /solution so the verifier can
-            # access it, then re-hide before the next agent round.
             if cfg.oracle_access:
                 await rollout._env.exec(
                     "mv /oracle_backup /oracle 2>/dev/null || true; "
@@ -398,11 +412,6 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 handoff_from if handoff_from and handoff_from != role.name else None
             )
             handoff_to_role = role.name if handoff_from_role else None
-
-            # Logged BEFORE the isolation re-lock below: everything after
-            # this point can raise (sandbox exec, the next round's agent),
-            # and a completed round must survive into user_rounds.jsonl and
-            # the result.json loop block regardless.
             entry: dict[str, Any] = {
                 "round": round_num,
                 "scene": scene_name,
@@ -415,34 +424,12 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 "n_tool_calls": round_tools,
                 "n_trajectory_events": len(round_trajectory),
                 "wall_sec": round(time.monotonic() - round_started, 1),
-                # Cumulative native-ACP tokens spent through this round — the
-                # cost-curve x-axis. None (NOT 0) when no trusted usage was
-                # captured: _native_usage_metrics defaults to a zeroed
-                # usage_unavailable() payload, so a bare total_tokens read would
-                # report a spurious 0 on uninstrumented paths (e.g. a
-                # LiteLLM-proxied run that never surfaces native ACP usage).
                 "tokens": _round_tokens(rollout),
             }
             if isinstance(user, LoopStrategyUser):
                 entry["feedback_level"] = user.feedback_level.value
             rounds_log.append(entry)
 
-            # Mid-loop verifier isolation. soft_verify() uploads the verifier
-            # tests after the install-time lockdown ran and leaves its raw
-            # stdout under the world-writable /logs/verifier — both readable
-            # by the agent on the next round, bypassing the feedback filter.
-            # Re-lock and clear now that verifier_output is captured, before
-            # the next connect_as. Both are no-ops without a sandbox user
-            # (setup() already warned loudly about that configuration).
-            #
-            # BEST-EFFORT: mid-loop isolation is defense-in-depth for the NEXT
-            # round's feedback. The final verify() ALWAYS runs harden_before_verify
-            # and is the only result that scores, so a mid-loop isolation failure
-            # (e.g. a single-container task whose verifier service is no longer
-            # running mid-loop — "service main is not running") must NOT crash the
-            # whole run. Warn loudly and continue; the worst case is the
-            # pre-existing, less-isolated next-round feedback, never a mis-scored
-            # result.
             try:
                 if rollout._effective_locked:
                     await rollout._planes.lockdown_paths(
@@ -476,27 +463,17 @@ async def _run_user_loop(rollout: Rollout) -> None:
                 handoff_from=handoff_from_role,
                 handoff_to=handoff_to_role,
             )
-
             logger.info(
                 f"[User] round {round_num} done: rewards={rewards}, tools={round_tools}"
             )
             return result
 
         round_num = 0
-        # Tracks whether the scene-step loop terminated because the user
-        # stopped (returned None) or raised. When set, the free-round loop
-        # below must NOT run: re-calling user.run() would resurrect a
-        # stopped user or retry one that already errored, while self._error
-        # stays set — producing a half-script rollout reported as errored.
         loop_terminated = False
         for step in steps:
             scene_prompt = scene_step_prompt(step)
             try:
-                user_prompt = await user.run(
-                    round_num,
-                    scene_prompt,
-                    round_result,
-                )
+                user_prompt = await user.run(round_num, scene_prompt, round_result)
             except Exception as e:
                 rollout._error = f"user.run() failed at round {round_num}: {e}"
                 logger.error(rollout._error, exc_info=True)
