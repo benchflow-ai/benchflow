@@ -1,7 +1,7 @@
-# Multi-agent adapter fixture
+# Real multi-agent adapter fixture
 
-This directory is a schema-only `task.md` fixture for the proposed uniform multi-agent adapter surface.
+This directory is a schema-only `task.md` fixture for launching different real agent sessions and preserving isolated per-agent trajectories.
 
 Validate it with `uv run --extra dev bench tasks check docs/examples/task-md/multi-agent-adapter --level schema`.
 
-The fixture is not a runnable eval task because it intentionally omits `environment/`, `verifier/`, and workflow implementation sidecars.
+The fixture is not runnable because it intentionally omits `environment/`, `verifier/`, and workflow sidecars.
