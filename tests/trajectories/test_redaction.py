@@ -786,3 +786,91 @@ def test_redactor_no_redos(label, pathological):
     redact_trajectory_text(pathological)
     elapsed_ms = (time.perf_counter() - start) * 1000
     assert elapsed_ms < 750, f"possible ReDoS on {label}: {elapsed_ms:.0f} ms"
+
+
+# Regression: the redactor used to run over the already-serialized JSON
+# (``json.dumps`` then ``re.sub``). When a redacted secret sat next to a ``\``
+# escape, the substitution could split it and leave an invalid ``\X``, corrupting
+# llm_trajectory.jsonl / acp_trajectory.jsonl so they no longer parsed and
+# ``bench train convert`` hard-failed. The writers now redact string *values*
+# before serialization (``redact_trajectory_obj``), so output is always valid JSON.
+
+_ADVERSARIAL_CONTENTS = [
+    # secret immediately after a backslash
+    "auth header:\\" + "sk-abc1234567defghijklmnop987654",
+    # carrier-tripping code (``token =`` / ``if not token:``) with escaped quotes,
+    # newlines, and a secret in a comment — mirrors a real agent code edit that
+    # reproduced the corruption in the wild.
+    'token = form.get("token")\n'
+    "    if not token:\n"
+    '        raise HTTPException(400, "invalid")  '
+    "# key sk-abc1234567defghijklmnop987654\n",
+    # windows-style path backslashes adjacent to an AWS key
+    "C:\\Users\\app\\AKIAIOSFODNN7EXAMPLE",
+    # a JSON blob (escaped quotes once serialized) carrying a Google key
+    '{"x-api-key": "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"}',
+]
+
+_ADVERSARIAL_LEAKS = (
+    "abc1234567defghijklmnop987654",
+    "IOSFODNN7EXAMPLE",
+    "FORTESTSONLYxxxxxxxxxxxxxxx",
+)
+
+
+@pytest.mark.parametrize("content", _ADVERSARIAL_CONTENTS)
+def test_to_jsonl_emits_valid_json_with_secret_adjacent_escapes(content):
+    traj = Trajectory(
+        session_id="t",
+        exchanges=[
+            LLMExchange(
+                request=LLMRequest(
+                    body={"messages": [{"role": "user", "content": content}]}
+                ),
+                response=LLMResponse(
+                    status_code=200,
+                    body={
+                        "choices": [
+                            {"message": {"role": "assistant", "content": content}}
+                        ]
+                    },
+                ),
+            )
+        ],
+    )
+    jsonl = traj.to_jsonl(redact_keys=True)
+    for line in jsonl.splitlines():
+        json.loads(line)  # must round-trip — no corrupt escapes
+    for leaked in _ADVERSARIAL_LEAKS:
+        assert leaked not in jsonl
+
+
+@pytest.mark.parametrize("content", _ADVERSARIAL_CONTENTS)
+def test_acp_jsonl_emits_valid_json_with_secret_adjacent_escapes(content):
+    out = redact_acp_trajectory_jsonl(
+        [{"type": "agent_message", "content": content}, {"type": "tool_call"}]
+    )
+    lines = out.splitlines()
+    assert len(lines) == 2
+    for line in lines:
+        json.loads(line)
+    for leaked in _ADVERSARIAL_LEAKS:
+        assert leaked not in out
+
+
+def test_redact_trajectory_obj_redacts_nested_string_leaves():
+    from benchflow.trajectories.types import redact_trajectory_obj
+
+    obj = {
+        "a": "sk-abc1234567defghijklmnop987654",
+        "b": ["plain", {"c": "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"}],
+        "n": 5,
+        "ok": True,
+    }
+    out = redact_trajectory_obj(obj)
+    dumped = json.dumps(out)  # re-serializes to valid JSON
+    for leaked in ("abc1234567defghijklmnop987654", "FORTESTSONLYxxxxxxxxxxxxxxx"):
+        assert leaked not in dumped
+    # non-string leaves and structure are preserved
+    assert out["n"] == 5 and out["ok"] is True
+    assert out["b"][0] == "plain"

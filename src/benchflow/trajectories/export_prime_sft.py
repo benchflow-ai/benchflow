@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.types import redact_trajectory_obj
 
 PrimeSftRowMode = Literal["rollout", "exchange"]
 
@@ -93,8 +93,11 @@ class PrimeSftTrajectoryJsonlError(ValueError):
 
 
 def _json_line(record: dict[str, Any]) -> str:
-    raw = dumps_finite(scrub_non_finite(record), default=str)
-    return redact_trajectory_text(raw)
+    # Redact secrets in the record's string values BEFORE serializing so the
+    # emitted SFT row is always valid JSON; redacting the serialized text could
+    # split a backslash escape next to a secret and corrupt the line.
+    redacted = redact_trajectory_obj(scrub_non_finite(record))
+    return dumps_finite(redacted, default=str)
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:
