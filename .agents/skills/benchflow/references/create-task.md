@@ -1,174 +1,153 @@
 ---
 name: benchflow-create-task
-description: Create benchmark tasks for BenchFlow in the Harbor task format. Use when asked to create a new benchmark task, write a verifier, or set up a task environment.
+description: Create native BenchFlow task.md benchmark tasks. Use when asked to create a new benchmark task, write a verifier, set up a task environment, or define multi-agent roles/scenes/adapters.
 ---
 
 # BenchFlow Create Task Skill
 
-Use this skill to create benchmark tasks that BenchFlow can run. Tasks follow the Harbor format — a directory with an instruction, environment, and verifier.
+Use this skill to create benchmark tasks that BenchFlow can run. Prefer the native `task.md` package format. The older split layout (`task.toml` plus `instruction.md` plus `tests/` plus `solution/`) is compatibility input/output, not the recommended authoring surface.
 
-## When to Use
+## When to use
 
 Activate this skill when the user asks to:
-- Create a new benchmark task
-- Write a verifier/test for a task
-- Set up a task environment (Dockerfile)
-- Convert an existing problem into a benchmark task
 
-## Task Structure
+- create a new benchmark task;
+- write a verifier or rubric;
+- set up an environment Dockerfile;
+- convert an existing problem into a BenchFlow task;
+- define multi-agent roles, scenes, simulated-user loops, or external workflow adapters.
 
-```
-my-task/
-├── task.toml          # required: timeouts and resources
-├── instruction.md     # required: what the agent should do
-├── environment/
-│   └── Dockerfile     # required: sandbox setup
-├── tests/
-│   └── test.sh        # required: verifier script
-└── solution/          # optional: reference solution
-    └── solve.sh
-```
+## Native task structure
 
-## Step 1: task.toml
+A minimal native package has:
 
-```toml
-version = "1.0"
+- `task.md` — YAML frontmatter plus the prompt body;
+- `environment/Dockerfile` — sandbox setup;
+- `verifier/test.sh` or `verifier/verifier.md` — reward contract;
+- optional `oracle/solve.sh` — held-out reference behavior;
+- optional `prompts/role.<name>.md`, `prompts/scene.<name>.md`, and `prompts/user-persona.md` sidecars for multi-prompt tasks.
 
-[metadata]
-author_name = "Your Name"
-difficulty = "medium"           # easy, medium, hard
-category = "engineering"
-tags = ["python", "testing"]
+## Minimal task.md frontmatter
 
-[verifier]
-timeout_sec = 300.0
+Use this shape for a simple task:
 
-[agent]
-timeout_sec = 600.0
+```yaml
+---
+schema_version: "1.3"
+task:
+  name: benchflow/my-task
+  description: Short task description
+  authors:
+    - name: Your Name
+agent:
+  timeout_sec: 600
+verifier:
+  timeout_sec: 300
+environment:
+  cpus: 1
+  memory_mb: 4096
+---
 
-[environment]
-build_timeout_sec = 600.0
-cpus = 1
-memory_mb = 4096
-storage_mb = 10240
+Write the task prompt here. The prompt body is what the agent sees.
 ```
 
-## Step 2: instruction.md
+## Verifier contract
 
-Write a clear, self-contained instruction. The agent sees only this text (plus whatever is in the environment).
+The verifier must write a scalar reward from `0.0` to `1.0` to `/logs/verifier/reward.txt`. Prefer also writing a structured `/logs/verifier/reward.json` when the task has rubric details, metrics, or evidence.
 
-Good instructions:
-- State the goal clearly in the first sentence
-- Specify exact file paths for input and output
-- Define what "success" looks like
-- Don't assume the agent knows the context
+Verifier guidance:
 
-```markdown
-Create a Python script at `/app/solve.py` that reads the CSV file at `/app/data.csv`
-and outputs a JSON summary to `/app/output.json`.
+- deterministic checks should use `verifier/test.sh`;
+- richer scoring should declare `verifier/verifier.md` with a selected strategy;
+- hidden fixtures and judge prompts belong under `verifier/`, not in the agent prompt;
+- nonzero verifier exit without a fresh reward is infrastructure failure, not a task score.
 
-The summary should contain:
-- `total_rows`: number of data rows (excluding header)
-- `columns`: list of column names
-- `missing_values`: count of empty cells per column
+## Multi-agent native roles and scenes
+
+Use root `agents` and `scenes` for stable BenchFlow-native orchestration:
+
+```yaml
+agents:
+  roles:
+    planner:
+      agent: claude-agent-acp
+      model: claude-sonnet-4-6
+    implementer:
+      agent: codex-acp
+      model: gpt-5.5
+    reviewer:
+      agent: claude-agent-acp
+      model: claude-sonnet-4-6
+scenes:
+  - name: plan
+    turns:
+      - role: planner
+  - name: implement
+    turns:
+      - role: implementer
+  - name: review
+    turns:
+      - role: reviewer
 ```
 
-## Step 3: Dockerfile
+BenchFlow uses the shared sandbox as the explicit handoff medium. Ask roles to write handoff artifacts under `/app`, such as `/app/plan.md` or `/app/review-feedback.md`.
 
-The Dockerfile sets up the sandbox. Keep it minimal — install only what the task needs.
+## External multi-agent workflow adapters
 
-```dockerfile
-FROM ubuntu:24.04
-ENV DEBIAN_FRONTEND=noninteractive
+For external frameworks such as LangGraph, AutoGen, CrewAI, Harbor, or a generic OpenAI-compatible workflow, keep the stable role declarations above and put experimental adapter metadata under `benchflow.multi_agent`:
 
-RUN apt-get update && apt-get install -y python3 python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# Copy task-specific files
-COPY data.csv /app/data.csv
+```yaml
+benchflow:
+  multi_agent:
+    adapter: langgraph
+    mode: external-workflow
+    entrypoint: workflows.design_review:run
+    workflow_root: workflow/
+    trace:
+      llm_proxy: litellm
+      capture_raw_llm: required
+      capture_framework_events: best-effort
+      relationship_graph: required
+    agents:
+      mapping:
+        planner: {role: planner, framework_node: plan_node}
+        implementer: {role: implementer, framework_node: implement_node}
+        reviewer: {role: reviewer, framework_node: review_node}
 ```
 
-Put any task data files in `environment/` alongside the Dockerfile.
+The adapter should emit:
 
-## Step 4: Verifier (test.sh)
+- `trajectory/llm_raw.jsonl` for LiteLLM proxy request/response records;
+- `trajectory/multiagent_events.jsonl` for normalized relationship-aware events;
+- `trajectory/agent_graph.json` for agent, team, subgraph, and handoff relationships;
+- `trajectory/index.json` for counts, checksums, coverage, and diagnostics.
 
-The verifier runs after the agent finishes. It must write a reward to `/logs/verifier/reward.txt`.
+If raw LLM capture is required but no LiteLLM calls are recorded, the run should fail closed instead of silently reporting a partial trace.
 
-```bash
-#!/bin/bash
+## Prompt sidecars
 
-REWARD_FILE="/logs/verifier/reward.txt"
-mkdir -p "$(dirname "$REWARD_FILE")"
+Use prompt sidecars when roles or scenes need distinct instructions:
 
-# Check if output exists
-if [ ! -f /app/output.json ]; then
-    echo "0" > "$REWARD_FILE"
-    echo "FAIL: /app/output.json not found"
-    exit 0
-fi
+- `prompts/role.planner.md` — planner-specific role prompt;
+- `prompts/role.implementer.md` — implementation role prompt;
+- `prompts/role.reviewer.md` — review role prompt;
+- `prompts/scene.review.md` — scene-level review guidance.
 
-# Validate output with Python
-python3 -c "
-import json, sys
+Prompt precedence is: inline turn prompt, scene prompt, role prompt, then base prompt.
 
-with open('/app/output.json') as f:
-    data = json.load(f)
+## Local validation
 
-errors = []
-if 'total_rows' not in data:
-    errors.append('missing total_rows')
-if 'columns' not in data:
-    errors.append('missing columns')
-if 'missing_values' not in data:
-    errors.append('missing missing_values')
-if data.get('total_rows') != 100:
-    errors.append(f'wrong total_rows: {data.get(\"total_rows\")} != 100')
+Use schema validation for authoring-only fixtures and structural validation for runnable tasks.
 
-if errors:
-    print('FAIL:', '; '.join(errors))
-    sys.exit(1)
-print('PASS')
-"
-
-if [ $? -eq 0 ]; then
-    echo "1" > "$REWARD_FILE"
-else
-    echo "0" > "$REWARD_FILE"
-fi
-```
-
-## Step 5: Test Locally
-
-```bash
-# Run with benchflow
-bench eval run --tasks-dir my-task/ --agent claude-agent-acp --sandbox daytona
-
-# Or with SDK
-python -c "
-import asyncio
-from benchflow import SDK
-result = asyncio.run(SDK().run('my-task', agent='claude-agent-acp', environment='daytona'))
-print(f'Reward: {result.rewards}, Error: {result.error}')
-"
-```
+- Schema-only: `bench tasks check tasks/my-task --level schema`
+- Runnable package: `bench tasks check tasks/my-task`
+- Publication-grade package: `bench tasks check tasks/my-task --level publication-grade`
 
 ## Tips
 
-- **Verifier should be deterministic** — same agent output should always get the same reward.
-- **Use partial rewards** for complex tasks — write `0.5` to reward.txt if the agent got halfway.
-- **Keep Dockerfiles small** — large images slow down Daytona workspace creation.
-- **Test the verifier independently** — run `test.sh` against the reference solution before using it.
-- **Put data files in `environment/`** — they get copied into the Docker build context.
-- **WORKDIR matters** — the agent starts in whatever WORKDIR the Dockerfile sets (usually `/app` or `/root`).
-
-## Adding Skills to Tasks
-
-To give the agent skills (like in SkillsBench), create a `skills/` directory in `environment/` and add to the Dockerfile:
-
-```dockerfile
-COPY skills /root/.claude/skills
-```
-
-Each skill is a directory with a `SKILL.md` (instructions) and optional scripts. Claude Code auto-discovers skills in `~/.claude/skills/`.
+- Set `agent.timeout_sec` on every published task.
+- Keep prompts self-contained and specify exact file paths.
+- Put task data in `environment/` and copy it from the Dockerfile.
+- Keep verifier code deterministic unless the task intentionally uses an LLM or agent judge.
+- Keep adapter-specific fields under `benchflow:` until the task standard promotes them.
+- Compare multi-agent workflows against a matched single-agent baseline with the same task set, tool access, answer contract, usage accounting, and trajectory logging coverage.
