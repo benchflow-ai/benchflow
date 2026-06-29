@@ -1,10 +1,27 @@
 # Multi-agent real-agent adapters and tracing
 
-Status: proposal.
+Status: proposal plus M0 implementation slice.
 
 This design is about **real agent runs**, not graph-framework LLM calls. A BenchFlow multi-agent run should launch, supervise, and trace independent agent sessions such as Claude Code, Codex, Gemini CLI, OpenHands, or any ACP / CLI / A2A-compatible agent. LangGraph-style LLM workflows can be supported later as a low-priority adapter, but they are not the target primitive.
 
 The primary trace source is the agent session transcript: ACP events when the agent speaks ACP, native transcript scraping when the agent has its own session log, or a session-factory wrapper when the agent is only available as a CLI or SDK. LiteLLM proxy capture is optional auxiliary evidence for agents that expose model calls through an OpenAI-compatible endpoint. It must not be the main multi-agent abstraction because subscription agents and opaque coding agents may not expose raw provider calls.
+
+## Implemented in this PR
+
+The first executable slice is implemented for BenchFlow-native Scene / Role / Turn execution:
+
+- `src/benchflow/trajectories/multiagent.py` adds `RealAgentTraceRecorder` and session/handoff records.
+- `src/benchflow/rollout/_user_loop.py` now records every real `connect_as(role)` session in `_run_steps()` and user-loop rounds.
+- Existing `trajectory/acp_trajectory.jsonl` remains the merged compatibility view.
+- New real-agent artifacts are emitted when a rollout directory exists:
+  - `trajectory/sessions.jsonl`
+  - `trajectory/handoffs.jsonl`
+  - `trajectory/multiagent_events.jsonl`
+  - `trajectory/agent_graph.json`
+  - `trajectory/agents/<role>/<session>/acp.jsonl`
+- Tests cover the pure recorder and scene integration.
+
+Still not implemented here: MCP delegation, A2A remote agents, native team import, and workspace diff capture.
 
 ## Desired behavior
 
@@ -24,7 +41,7 @@ The core rule: **each agent gets its own session and own trajectory; BenchFlow a
 
 | Work | What it gives us | BenchFlow adapter implication |
 |---|---|---|
-| BenchFlow current native scenes | Real ACP-backed roles run sequentially in one sandbox. Each role can use a different `agent` and `model`; context is reset by reconnecting. | Treat this as M0. Add per-role session directories and relationship metadata. |
+| BenchFlow current native scenes | Real ACP-backed roles run sequentially in one sandbox. Each role can use a different `agent` and `model`; context is reset by reconnecting. | This PR implements the first M0 trace layer there: per-role session artifacts plus relationship metadata. |
 | Agent Client Protocol (ACP) | Client-to-coding-agent protocol for local or remote coding agents. Local agents can run as subprocesses over JSON-RPC stdio. | BenchFlow is the ACP client/orchestrator. Use ACP sessions as the first-class real-agent driver. |
 | Claude Code subagents and agent teams | Real Claude Code subagents/teammates have separate context windows. Agent teams have a lead, teammates, task list, mailbox, and direct teammate messaging. | Borrow the data model: lead, teammate, task, mailbox, isolated context, task claiming, cross-agent messages. Do not assume all agents are Claude. |
 | A2A Protocol | Agent-to-agent task protocol with Agent Cards, task ids, context ids, streaming task updates, artifacts, and terminal task states. | Add an `a2a-remote-agent` adapter. Map A2A tasks/artifacts/status updates into session and handoff events. |
@@ -38,7 +55,7 @@ The core rule: **each agent gets its own session and own trajectory; BenchFlow a
 
 ### 1. Real agent session is the primitive
 
-Add a `RealAgentSession` runtime record for every launched agent instance:
+The new `RealAgentSession` record tracks every launched agent instance:
 
 ```json
 {
@@ -49,13 +66,13 @@ Add a `RealAgentSession` runtime record for every launched agent instance:
   "driver": "acp",
   "workspace_mode": "shared",
   "trajectory_path": "trajectory/agents/planner/sess_planner_001/acp.jsonl",
-  "native_transcript_path": "trajectory/agents/planner/sess_planner_001/native.jsonl",
-  "workspace_diff_path": "trajectory/agents/planner/sess_planner_001/workspace.diff",
-  "handoff_out": ["handoff_plan_to_implementer"]
+  "native_transcript_path": null,
+  "workspace_diff_path": null,
+  "handoff_out": ["handoff_001"]
 }
 ```
 
-Supported drivers:
+Supported drivers target:
 
 - `acp`: existing BenchFlow ACP connection path.
 - `session-factory`: Python session wrapper for SDK-only agents.
@@ -66,7 +83,7 @@ Supported drivers:
 
 ### 2. Multi-agent run is a graph of sessions
 
-Add `trajectory/agent_graph.json` with nodes for agent sessions and handoff artifacts, and edges such as `handoff_to`, `delegates_to`, `supervises`, `reviews`, `critiques`, `revises_after`, `messages`, `produces`, `consumed_by`, `branches_to`, `merges_into`, and `verifies`.
+`trajectory/agent_graph.json` has nodes for agent sessions and handoff artifacts, and edges such as `handoff_to`, `delegates_to`, `supervises`, `reviews`, `critiques`, `revises_after`, `messages`, `produces`, `consumed_by`, `branches_to`, `merges_into`, and `verifies`.
 
 ### 3. Per-agent isolated trajectories
 
@@ -181,41 +198,17 @@ benchflow:
       transcript_sharing: none
 ```
 
-For supervisor/delegation mode:
-
-```yaml
-benchflow:
-  multi_agent:
-    runtime: real-agent-sessions
-    mode: delegate-tool
-    supervisor: planner
-    delegate_tool:
-      type: mcp
-      name: benchflow_delegate_to_agent
-      allowed_workers: [implementer, reviewer]
-      worker_workspace: forked-worktree
-      return_to_supervisor: summary-and-artifacts
-```
-
-Validation rules:
-
-- Every role in `handoffs.from`, `handoffs.to`, `supervisor`, and `allowed_workers` must exist in `agents.roles`.
-- `per_agent_trajectories: required` must fail closed if no transcript can be collected for any launched session.
-- `workspace_diffs: required` must fail closed when a role with write access has no before/after diff or declared write artifact.
-- `transcript_sharing: none` means downstream agents may receive summaries or artifacts, but not upstream raw conversation history.
-- `raw_llm_proxy` may only enrich the trace; absence of raw LLM calls cannot make an otherwise valid real-agent transcript incomplete unless explicitly set to `required`.
-
 ## Implementation plan
 
 ### M0: direct real-agent sessions
 
-1. Reuse current role/scene execution to run different real agents sequentially.
-2. On every `connect_as(role)`, create a `RealAgentSession` record and per-session trajectory directory.
-3. Write ACP events to both the compatibility merged file and the per-agent file.
-4. On disconnect, collect native transcript if the agent has a known scraper.
-5. Capture workspace diff and declared handoff artifacts after each role.
-6. Emit `sessions.jsonl`, `handoffs.jsonl`, `multiagent_events.jsonl`, and `agent_graph.json`.
-7. Add viewer data for swimlanes: one lane per real agent session.
+1. Reuse current role/scene execution to run different real agents sequentially. **Implemented.**
+2. On every real role session, create a `RealAgentSession` record and per-session trajectory directory. **Implemented.**
+3. Write ACP events to both the compatibility merged file and the per-agent file. **Implemented.**
+4. On disconnect, collect native transcript if the agent has a known scraper. **Pending.**
+5. Capture workspace diff and declared handoff artifacts after each role. **Pending.**
+6. Emit `sessions.jsonl`, `handoffs.jsonl`, `multiagent_events.jsonl`, and `agent_graph.json`. **Implemented.**
+7. Add viewer data for swimlanes: one lane per real agent session. **Pending.**
 
 ### M1: supervisor starts workers
 
@@ -234,15 +227,7 @@ Validation rules:
 
 ## Viewer requirements
 
-The viewer should show:
-
-- session swimlanes by real agent instance;
-- handoff artifacts and message edges between sessions;
-- supervisor `delegate_to_agent` tool calls linked to worker transcripts;
-- per-agent tokens/cost/latency/tool calls;
-- workspace diffs by agent;
-- verifier and reward events anchored to the final state;
-- coverage warnings when an agent only provided a partial/native-scraped trace.
+The viewer should show session swimlanes by real agent instance, handoff artifacts and message edges, supervisor delegation calls linked to worker transcripts, per-agent tokens/cost/latency/tool calls, workspace diffs by agent, verifier/reward events anchored to final state, and coverage warnings when an agent only provided a partial/native-scraped trace.
 
 ## Benchmark reporting policy
 
