@@ -289,7 +289,11 @@ def _aggregate_result(
         "shards": shard_results,
     }
     jobs_dir.mkdir(parents=True, exist_ok=True)
-    (jobs_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    summary_text = json.dumps(summary, indent=2)
+    (jobs_dir / "summary.json").write_text(summary_text)
+    aggregate_job_dir = jobs_dir / result.job_name
+    aggregate_job_dir.mkdir(parents=True, exist_ok=True)
+    (aggregate_job_dir / "summary.json").write_text(summary_text)
     return result
 
 
