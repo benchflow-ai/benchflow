@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 
@@ -476,10 +477,8 @@ def _write_job_results_errors(
 ) -> None:
     out = job_path / JOB_RESULTS_ERRORS_FILENAME
     if not skipped_errors:
-        try:
+        with suppress(FileNotFoundError):
             out.unlink()
-        except FileNotFoundError:
-            pass
         return
     payload = {
         "schema_version": 1,
