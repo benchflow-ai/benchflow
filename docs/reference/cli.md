@@ -358,7 +358,9 @@ bench train convert jobs/run-001 --out train.jsonl --canonical-selection canonic
 
 ### bench train validate
 
-Validate Prime-RL SFT JSONL before upload or training.
+Validate Prime-RL SFT JSONL before upload or training. This fails closed on
+malformed tool-call arguments, undeclared tool names, orphan tool outputs, and
+row-count mismatches before Prime-RL can hit the bad row mid-training.
 
 ```bash
 bench train validate train.jsonl
