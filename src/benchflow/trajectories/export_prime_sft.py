@@ -62,6 +62,7 @@ class PrimeSftExportStats:
     skipped_exchanges_provider_error: int = 0
     skipped_no_assistant: int = 0
     skipped_missing_tool_defs: int = 0
+    skipped_terminal_error: int = 0
     skipped_invalid: int = 0
     tool_call_ids_rewritten: int = 0
     tool_messages_merged: int = 0
@@ -80,6 +81,7 @@ class PrimeSftExportStats:
             "skipped_exchanges_provider_error": self.skipped_exchanges_provider_error,
             "skipped_no_assistant": self.skipped_no_assistant,
             "skipped_missing_tool_defs": self.skipped_missing_tool_defs,
+            "skipped_terminal_error": self.skipped_terminal_error,
             "skipped_invalid": self.skipped_invalid,
             "tool_call_ids_rewritten": self.tool_call_ids_rewritten,
             "tool_messages_merged": self.tool_messages_merged,
@@ -994,6 +996,25 @@ def _is_benchflow_results_row(row: dict[str, Any]) -> bool:
     )
 
 
+def _benchflow_row_training_skip_reason(row: dict[str, Any]) -> str | None:
+    if not _is_benchflow_results_row(row):
+        return None
+    info = row.get("info")
+    if isinstance(info, dict) and info.get("training_ready") is False:
+        return "not_training_ready"
+    if row.get("error"):
+        return "terminal_error"
+    if row.get("is_truncated") is True:
+        return "partial_trajectory"
+    stop_condition = row.get("stop_condition")
+    if isinstance(stop_condition, str) and stop_condition not in {
+        "",
+        "agent_completed",
+    }:
+        return stop_condition
+    return None
+
+
 def _existing_prime_sft_jsonl_stats(
     path: Path,
     *,
@@ -1006,6 +1027,9 @@ def _existing_prime_sft_jsonl_stats(
         stats.tool_call_ids_rewritten += repair_stats["tool_call_ids_rewritten"]
         stats.tool_messages_merged += repair_stats["tool_messages_merged"]
         stats.rollouts_seen += 1
+        if _benchflow_row_training_skip_reason(row) is not None:
+            stats.skipped_terminal_error += 1
+            continue
         reward = _row_reward(row)
         if min_reward is not None and (reward is None or reward < min_reward):
             stats.skipped_reward += 1
@@ -1029,6 +1053,8 @@ def _copy_existing_prime_sft_jsonl(
         for row_num, row, _ in _iter_prime_sft_jsonl_rows(
             source, sanitize_tool_call_arguments=True
         ):
+            if _benchflow_row_training_skip_reason(row) is not None:
+                continue
             if min_reward is not None:
                 reward = _row_reward(row)
                 if reward is None or reward < min_reward:
@@ -1115,6 +1141,9 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
         if result is None:
             stats.skipped_no_result += 1
             continue
+        if _result_training_skip_reason(result) is not None:
+            stats.skipped_terminal_error += 1
+            continue
         reward = _reward_from_result(result)
         if min_reward is not None and (reward is None or reward < min_reward):
             stats.skipped_reward += 1
@@ -1166,6 +1195,16 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
             stats.sources.append(str(trajectory_path))
 
     return rows, stats
+
+
+def _result_training_skip_reason(result: dict[str, Any]) -> str | None:
+    if result.get("error"):
+        return "agent_error"
+    if result.get("verifier_error"):
+        return "verifier_error"
+    if result.get("partial_trajectory") is True:
+        return "partial_trajectory"
+    return None
 
 
 def export_prime_sft_jsonl(

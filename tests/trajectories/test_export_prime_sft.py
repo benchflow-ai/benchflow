@@ -21,17 +21,18 @@ def _write_rollout(
     *,
     reward: float = 1.0,
     exchanges: list[dict] | None = None,
+    result_overrides: dict | None = None,
 ) -> None:
     rollout_dir.mkdir(parents=True)
+    result = {
+        "task_name": "demo-task",
+        "agent": "openhands",
+        "rewards": {"reward": reward},
+        "agent_result": {"total_tokens": 123, "n_tool_calls": 1},
+    }
+    result.update(result_overrides or {})
     (rollout_dir / "result.json").write_text(
-        json.dumps(
-            {
-                "task_name": "demo-task",
-                "agent": "openhands",
-                "rewards": {"reward": reward},
-                "agent_result": {"total_tokens": 123, "n_tool_calls": 1},
-            }
-        )
+        json.dumps(result)
     )
     traj = rollout_dir / "trajectory"
     traj.mkdir()
@@ -248,6 +249,19 @@ def test_convert_filters_by_min_reward(tmp_path: Path) -> None:
 
     assert rows == []
     assert stats.skipped_reward == 1
+
+
+def test_convert_skips_terminal_errored_rollouts(tmp_path: Path) -> None:
+    _write_rollout(
+        tmp_path / "job" / "timeout",
+        result_overrides={"error": "Agent prompt exceeded wall-clock budget 600s"},
+    )
+
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(tmp_path / "job")
+
+    assert rows == []
+    assert stats.rows_written == 0
+    assert stats.skipped_terminal_error == 1
 
 
 def test_export_and_validate_prime_sft_jsonl(tmp_path: Path) -> None:
@@ -480,6 +494,39 @@ def test_export_windows_benchflow_results_rows_for_prime_rl_8k(
         "rows": 1,
         "rows_with_tool_calls": 1,
     }
+
+
+def test_export_skips_benchflow_results_rows_marked_not_training_ready(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "results.jsonl"
+    out = tmp_path / "prime-sft.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "do it"}],
+                "completion": [{"role": "assistant", "content": "done"}],
+                "info": {
+                    "source": "benchflow",
+                    "training_ready": False,
+                    "training_ready_reason": "agent_error",
+                },
+                "error": {
+                    "error": "agent_error",
+                    "error_chain_str": "timeout",
+                },
+                "reward": 0.7,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stats = export_prime_sft_jsonl(source, out, expected_rows=0)
+
+    assert out.read_text() == ""
+    assert stats.rows_written == 0
+    assert stats.skipped_terminal_error == 1
 
 
 def test_export_repairs_legacy_results_tool_call_ids(tmp_path: Path) -> None:
