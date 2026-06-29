@@ -445,7 +445,7 @@ def test_validate_rejects_tool_calls_without_tool_defs(tmp_path: Path) -> None:
 
 
 def test_validate_rejects_malformed_tool_call_arguments(tmp_path: Path) -> None:
-    """Guards the 1703-row SFT crash: bad tool-call JSON fails before training."""
+    """Guards PR #848: bad tool-call JSON fails before training."""
     path = tmp_path / "bad-arguments.jsonl"
     path.write_text(
         json.dumps(
@@ -487,7 +487,7 @@ def test_validate_rejects_malformed_tool_call_arguments(tmp_path: Path) -> None:
 
 
 def test_validate_rejects_non_object_tool_call_arguments(tmp_path: Path) -> None:
-    """Prime-RL tool-call args must parse to a JSON object, not any JSON value."""
+    """Guards PR #848: tool-call args must parse to a JSON object."""
     path = tmp_path / "list-arguments.jsonl"
     path.write_text(
         json.dumps(
@@ -527,7 +527,7 @@ def test_validate_rejects_non_object_tool_call_arguments(tmp_path: Path) -> None
 def test_validate_rejects_unknown_tool_name_and_orphan_tool_output(
     tmp_path: Path,
 ) -> None:
-    """Tool calls must reference declared tools and tool outputs must link back."""
+    """Guards PR #848: tool calls must declare tools and linked outputs."""
     unknown_tool = tmp_path / "unknown-tool.jsonl"
     unknown_tool.write_text(
         json.dumps(
