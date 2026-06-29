@@ -214,6 +214,10 @@ _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text(
 # Path to the deepagents ACP shim (runs LangChain's create_deep_agent as an ACP agent)
 _DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text()
 
+# Path to the medical-assistant ACP shim (runs a LangGraph supervisor→specialists
+# medical graph — the Multi-Agent-Medical-Assistant pattern — as an ACP agent)
+_MEDICAL_SHIM = (Path(__file__).parent / "medical_acp_shim.py").read_text()
+
 
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
@@ -765,6 +769,45 @@ AGENTS: dict[str, AgentConfig] = {
         # directly (set unconditionally by resolve_provider_env when the model
         # carries a registered provider prefix), with DEEPSEEK_* as a fallback
         # (auto_inherit_env propagates those).
+    ),
+    "medical-assistant": AgentConfig(
+        name="medical-assistant",
+        description="Multi-Agent Medical Assistant — a LangGraph supervisor→"
+        "specialists graph (router → KB/web specialists → confidence-gated handoff "
+        "→ output guardrail), the Multi-Agent-Medical-Assistant pattern, run via "
+        "ACP shim driving deepseek-v4-pro through the OpenAI-compatible provider",
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            # Pinned interpreter via uv (same pattern as deepagents/openhands): task
+            # base images ship Python as old as 3.6/3.8, but langgraph needs >=3.11.
+            "( command -v curl >/dev/null 2>&1 || "
+            f"  {_apt_install('curl', 'ca-certificates')} ) && "
+            "( command -v uv >/dev/null 2>&1 || "
+            "  ( curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 ) ) && "
+            'export PATH="$HOME/.local/bin:$PATH" && '
+            "uv venv --python 3.12 /opt/benchflow/medical-venv && "
+            # langgraph drives the StateGraph; langchain-openai is the OpenAI-
+            # compatible chat model for deepseek-v4-pro.
+            "uv pip install -q --python /opt/benchflow/medical-venv/bin/python "
+            "langgraph langchain-openai && "
+            "chmod -R a+rX /opt/benchflow/medical-venv && "
+            "chmod o+x /root /root/.local /root/.local/share "
+            "/root/.local/share/uv /root/.local/share/uv/python 2>/dev/null; "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/medical-acp-shim", _MEDICAL_SHIM
+            )
+            # Verify langgraph imports through the pinned venv (mirrors deepagents'
+            # import check) so a failed install fails loudly here, not at launch.
+            + " && /opt/benchflow/medical-venv/bin/python -c "
+            "'import langgraph, langchain_openai' >/dev/null 2>&1"
+        ),
+        launch_cmd=(
+            f"/opt/benchflow/medical-venv/bin/python {_BENCHFLOW_BIN_PREFIX}/medical-acp-shim"
+        ),
+        protocol="acp",
+        requires_env=[],  # inferred from --model at runtime (DEEPSEEK_API_KEY, etc.)
+        # api_protocol / env_mapping intentionally empty — the shim builds an
+        # OpenAI-compatible ChatOpenAI from BENCHFLOW_PROVIDER_* (DEEPSEEK_* fallback).
     ),
     "openhands": AgentConfig(
         name="openhands",

@@ -1,0 +1,15 @@
+{
+  "question": "When is low-dose aspirin used, and what is its main risk?",
+  "keyword_groups": [
+    [
+      "cardiovascular",
+      "secondary prevention",
+      "antiplatelet",
+      "heart",
+      "stroke"
+    ],
+    [
+      "bleed"
+    ]
+  ]
+}

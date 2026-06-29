@@ -1,0 +1,16 @@
+{
+  "question": "What are the main side effects of metformin?",
+  "keyword_groups": [
+    [
+      "gastrointestinal",
+      "gi upset",
+      "gi ",
+      "nausea",
+      "diarrhea",
+      "diarrhoea"
+    ],
+    [
+      "lactic acidosis"
+    ]
+  ]
+}
