@@ -12,7 +12,9 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
-async def test_scene_steps_emit_isolated_real_agent_trajectories(tmp_path: Path) -> None:
+async def test_scene_steps_emit_isolated_real_agent_trajectories(
+    tmp_path: Path,
+) -> None:
     scene = Scene(
         name="handoff",
         roles=[
@@ -49,7 +51,6 @@ async def test_scene_steps_emit_isolated_real_agent_trajectories(tmp_path: Path)
 
     rollout.connect_as = fake_connect_as  # type: ignore[method-assign]
     rollout.disconnect = AsyncMock()
-
     rollout.execute = fake_execute  # type: ignore[method-assign,assignment]
 
     await rollout._run_steps(compile_scenes_to_steps([scene], default_prompt="Solve"))
@@ -59,8 +60,14 @@ async def test_scene_steps_emit_isolated_real_agent_trajectories(tmp_path: Path)
     graph = json.loads((tmp_path / "trajectory" / "agent_graph.json").read_text())
 
     assert [session["agent_id"] for session in sessions] == ["planner", "implementer"]
-    assert sessions[0]["trajectory_path"] == "trajectory/agents/planner/sess_planner_001/acp.jsonl"
-    assert sessions[1]["trajectory_path"] == "trajectory/agents/implementer/sess_implementer_001/acp.jsonl"
+    assert (
+        sessions[0]["trajectory_path"]
+        == "trajectory/agents/planner/sess_planner_001/acp.jsonl"
+    )
+    assert (
+        sessions[1]["trajectory_path"]
+        == "trajectory/agents/implementer/sess_implementer_001/acp.jsonl"
+    )
     assert _read_jsonl(tmp_path / sessions[0]["trajectory_path"]) == [
         {"type": "agent_message", "text": "planner: Write /app/plan.md"}
     ]
