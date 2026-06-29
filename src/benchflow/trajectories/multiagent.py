@@ -1,9 +1,7 @@
 """Relationship-aware trajectory artifacts for real multi-agent rollouts.
 
 This module is intentionally framework-agnostic: a multi-agent run is a graph of
-real agent sessions, not a graph of LLM calls. The rollout/user-loop drivers call
-this recorder around actual agent sessions and it writes durable artifacts next
-to the existing ACP trajectory.
+real agent sessions sharing one rollout environment, not a graph of LLM calls.
 """
 
 from __future__ import annotations
@@ -31,6 +29,7 @@ class RealAgentSessionRecord:
     turn_index: int | None
     started_at: str
     ended_at: str | None = None
+    environment_id: str | None = None
     trajectory_path: str | None = None
     native_transcript_path: str | None = None
     workspace_diff_path: str | None = None
@@ -59,14 +58,20 @@ class RealAgentHandoffRecord:
 class RealAgentTraceRecorder:
     """Write per-agent trajectories and a relationship graph for a rollout.
 
-    The recorder is additive. It does not replace ``trajectory/acp_trajectory``;
-    it preserves isolated source views under ``trajectory/agents`` and writes a
-    normalized graph for viewers and downstream analysis.
+    The recorder is additive. It preserves isolated source views under
+    ``trajectory/agents`` while keeping the existing merged ACP trajectory intact.
     """
 
-    def __init__(self, rollout_dir: Path, *, rollout_id: str | None = None) -> None:
+    def __init__(
+        self,
+        rollout_dir: Path,
+        *,
+        rollout_id: str | None = None,
+        shared_environment_id: str | None = None,
+    ) -> None:
         self.rollout_dir = Path(rollout_dir)
         self.rollout_id = rollout_id or self.rollout_dir.name
+        self.shared_environment_id = shared_environment_id
         self.trajectory_dir = self.rollout_dir / "trajectory"
         self.agents_dir = self.trajectory_dir / "agents"
         self._sessions: list[RealAgentSessionRecord] = []
@@ -81,7 +86,11 @@ class RealAgentTraceRecorder:
         if rollout_dir is None:
             return None
         rollout_id = getattr(rollout, "_rollout_name", None) or Path(rollout_dir).name
-        return cls(Path(rollout_dir), rollout_id=rollout_id)
+        return cls(
+            Path(rollout_dir),
+            rollout_id=rollout_id,
+            shared_environment_id=_shared_environment_id(rollout),
+        )
 
     def start_session(
         self,
@@ -111,25 +120,26 @@ class RealAgentTraceRecorder:
             scene_index=scene_index,
             turn_index=turn_index,
             started_at=_now_iso(),
+            environment_id=self.shared_environment_id,
         )
         self._sessions.append(record)
         self._events.append(
-            {
-                "schema_version": "benchflow.real_agents.event.v0",
-                "event_id": f"{session_id}:start",
-                "rollout_id": self.rollout_id,
-                "timestamp": record.started_at,
-                "source": "benchflow-runtime",
-                "session_id": session_id,
-                "agent_id": agent_id,
-                "role": agent_id,
-                "scene": scene,
-                "turn_index": turn_index,
-                "relation": "starts",
-            }
+            self._event(
+                event_id=f"{session_id}:start",
+                timestamp=record.started_at,
+                source="benchflow-runtime",
+                session_id=session_id,
+                agent_id=agent_id,
+                role=agent_id,
+                scene=scene,
+                turn_index=turn_index,
+                relation="starts",
+            )
         )
         if self._last_finished_session_id is not None:
-            self._record_handoff(self._last_finished_session_id, session_id, scene=scene)
+            self._record_handoff(
+                self._last_finished_session_id, session_id, scene=scene
+            )
         self.write_indexes()
         return session_id
 
@@ -164,42 +174,40 @@ class RealAgentTraceRecorder:
         record.error = error
 
         for index, event in enumerate(trajectory):
-            event_type = event.get("type", "event") if isinstance(event, dict) else "event"
+            event_type = (
+                event.get("type", "event") if isinstance(event, dict) else "event"
+            )
             self._events.append(
-                {
-                    "schema_version": "benchflow.real_agents.event.v0",
-                    "event_id": f"{session_id}:acp:{index}",
-                    "rollout_id": self.rollout_id,
-                    "timestamp": record.ended_at,
-                    "source": "acp",
-                    "session_id": session_id,
-                    "agent_id": record.agent_id,
-                    "role": record.agent_id,
-                    "scene": record.scene,
-                    "turn_index": record.turn_index,
-                    "relation": "agent_event",
-                    "acp_event_index": index,
-                    "event_type": event_type,
-                    "trajectory_path": record.trajectory_path,
-                }
+                self._event(
+                    event_id=f"{session_id}:acp:{index}",
+                    timestamp=record.ended_at,
+                    source="acp",
+                    session_id=session_id,
+                    agent_id=record.agent_id,
+                    role=record.agent_id,
+                    scene=record.scene,
+                    turn_index=record.turn_index,
+                    relation="agent_event",
+                    acp_event_index=index,
+                    event_type=event_type,
+                    trajectory_path=record.trajectory_path,
+                )
             )
         self._events.append(
-            {
-                "schema_version": "benchflow.real_agents.event.v0",
-                "event_id": f"{session_id}:end",
-                "rollout_id": self.rollout_id,
-                "timestamp": record.ended_at,
-                "source": "benchflow-runtime",
-                "session_id": session_id,
-                "agent_id": record.agent_id,
-                "role": record.agent_id,
-                "scene": record.scene,
-                "turn_index": record.turn_index,
-                "relation": "terminates",
-                "n_trajectory_events": record.n_trajectory_events,
-                "n_tool_calls": record.n_tool_calls,
-                "error": error,
-            }
+            self._event(
+                event_id=f"{session_id}:end",
+                timestamp=record.ended_at,
+                source="benchflow-runtime",
+                session_id=session_id,
+                agent_id=record.agent_id,
+                role=record.agent_id,
+                scene=record.scene,
+                turn_index=record.turn_index,
+                relation="terminates",
+                n_trajectory_events=record.n_trajectory_events,
+                n_tool_calls=record.n_tool_calls,
+                error=error,
+            )
         )
         self._last_finished_session_id = session_id
         self.write_indexes()
@@ -221,6 +229,15 @@ class RealAgentTraceRecorder:
             json.dumps(self._graph(), sort_keys=True, indent=2) + "\n"
         )
 
+    def _event(self, **fields: Any) -> dict[str, Any]:
+        event = {
+            "schema_version": "benchflow.real_agents.event.v0",
+            "rollout_id": self.rollout_id,
+            "environment_id": self.shared_environment_id,
+        }
+        event.update(fields)
+        return event
+
     def _record_handoff(
         self, from_session_id: str, to_session_id: str, *, scene: str | None
     ) -> None:
@@ -228,7 +245,11 @@ class RealAgentTraceRecorder:
         to_record = self._find_session(to_session_id)
         if from_record is None or to_record is None:
             return
-        relation = "continues_as" if from_record.agent_id == to_record.agent_id else "handoff_to"
+        relation = (
+            "continues_as"
+            if from_record.agent_id == to_record.agent_id
+            else "handoff_to"
+        )
         handoff_id = f"handoff_{len(self._handoffs) + 1:03d}"
         record = RealAgentHandoffRecord(
             handoff_id=handoff_id,
@@ -244,22 +265,20 @@ class RealAgentTraceRecorder:
         from_record.handoff_out.append(handoff_id)
         to_record.handoff_in.append(handoff_id)
         self._events.append(
-            {
-                "schema_version": "benchflow.real_agents.event.v0",
-                "event_id": f"{handoff_id}:edge",
-                "rollout_id": self.rollout_id,
-                "timestamp": record.created_at,
-                "source": "benchflow-runtime",
-                "session_id": from_session_id,
-                "agent_id": from_record.agent_id,
-                "role": from_record.agent_id,
-                "scene": scene,
-                "relation": relation,
-                "handoff_id": handoff_id,
-                "handoff_from": from_record.agent_id,
-                "handoff_to": to_record.agent_id,
-                "related_session_id": to_session_id,
-            }
+            self._event(
+                event_id=f"{handoff_id}:edge",
+                timestamp=record.created_at,
+                source="benchflow-runtime",
+                session_id=from_session_id,
+                agent_id=from_record.agent_id,
+                role=from_record.agent_id,
+                scene=scene,
+                relation=relation,
+                handoff_id=handoff_id,
+                handoff_from=from_record.agent_id,
+                handoff_to=to_record.agent_id,
+                related_session_id=to_session_id,
+            )
         )
 
     def _find_session(self, session_id: str) -> RealAgentSessionRecord | None:
@@ -269,37 +288,61 @@ class RealAgentTraceRecorder:
         return None
 
     def _graph(self) -> dict[str, Any]:
+        nodes = [
+            {
+                "id": record.session_id,
+                "kind": "agent_session",
+                "agent_id": record.agent_id,
+                "agent_type": record.agent_type,
+                "model": record.model,
+                "driver": record.driver,
+                "scene": record.scene,
+                "environment_id": record.environment_id,
+                "trajectory_path": record.trajectory_path,
+                "n_trajectory_events": record.n_trajectory_events,
+                "n_tool_calls": record.n_tool_calls,
+            }
+            for record in self._sessions
+        ]
+        if self.shared_environment_id is not None:
+            nodes.append(
+                {
+                    "id": self.shared_environment_id,
+                    "kind": "shared_environment",
+                    "name": self.shared_environment_id,
+                }
+            )
+
+        edges = [
+            {
+                "id": record.handoff_id,
+                "from": record.from_session_id,
+                "to": record.to_session_id,
+                "relation": record.relation,
+                "from_agent_id": record.from_agent_id,
+                "to_agent_id": record.to_agent_id,
+                "scene": record.scene,
+                "artifacts": record.artifacts,
+            }
+            for record in self._handoffs
+        ]
+        if self.shared_environment_id is not None:
+            edges.extend(
+                {
+                    "id": f"{record.session_id}:environment",
+                    "from": record.session_id,
+                    "to": self.shared_environment_id,
+                    "relation": "plays_in",
+                }
+                for record in self._sessions
+            )
+
         return {
             "schema_version": "benchflow.real_agents.graph.v0",
             "rollout_id": self.rollout_id,
-            "nodes": [
-                {
-                    "id": record.session_id,
-                    "kind": "agent_session",
-                    "agent_id": record.agent_id,
-                    "agent_type": record.agent_type,
-                    "model": record.model,
-                    "driver": record.driver,
-                    "scene": record.scene,
-                    "trajectory_path": record.trajectory_path,
-                    "n_trajectory_events": record.n_trajectory_events,
-                    "n_tool_calls": record.n_tool_calls,
-                }
-                for record in self._sessions
-            ],
-            "edges": [
-                {
-                    "id": record.handoff_id,
-                    "from": record.from_session_id,
-                    "to": record.to_session_id,
-                    "relation": record.relation,
-                    "from_agent_id": record.from_agent_id,
-                    "to_agent_id": record.to_agent_id,
-                    "scene": record.scene,
-                    "artifacts": record.artifacts,
-                }
-                for record in self._handoffs
-            ],
+            "shared_environment_id": self.shared_environment_id,
+            "nodes": nodes,
+            "edges": edges,
             "metrics": {
                 "n_sessions": len(self._sessions),
                 "n_handoffs": len(self._handoffs),
@@ -308,9 +351,24 @@ class RealAgentTraceRecorder:
         }
 
 
+def _shared_environment_id(rollout: Any) -> str | None:
+    config = getattr(rollout, "_config", None)
+    manifest = getattr(config, "environment_manifest", None)
+    if manifest is None:
+        return None
+    name = getattr(manifest, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    if isinstance(manifest, (str, Path)):
+        return Path(manifest).stem
+    return None
+
+
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(record, sort_keys=True) + "\n" for record in records))
+    path.write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records)
+    )
 
 
 def _now_iso() -> str:
