@@ -1,0 +1,33 @@
+# CasinoBench — Environment-plane manifest
+#
+# CasinoBench is a stateful casino / poker tournament benchmark. The casino
+# service runs inside the rollout sandbox so every real agent role reaches the
+# same dealer, event log, and chip ledger on localhost.
+
+[environment]
+name           = "casinobench"
+base_image     = "ghcr.io/benchflow-ai/casinobench-base:latest"
+owns_lifecycle = false
+isolation      = "per_task"
+
+# CasinoBench tasks bake the selected game into the per-task image, matching the
+# ClawsBench/env-0 pattern: choose a task by running that task image.
+[environment.task_selection]
+mechanism = "image"
+
+[environment.readiness]
+timeout_sec = 60
+
+[environment.forward_env]
+keys = [
+  "BENCHFLOW_SEED",
+  "CASINOBENCH_SEED",
+  "CASINOBENCH_HANDS",
+  "CASINOBENCH_STAKE",
+]
+
+[[environment.services]]
+name        = "casino"
+command     = "casino-service --host 0.0.0.0 --port 9001"
+port        = 9001
+health_path = "/health"
