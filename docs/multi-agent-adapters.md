@@ -1,294 +1,260 @@
-# Multi-agent workflow adapters and tracing
+# Multi-agent real-agent adapters and tracing
 
 Status: proposal.
 
-BenchFlow already supports native Scene / Role / Turn execution. This document defines the next layer: a uniform adapter contract for external multi-agent workflow frameworks and relationship-aware trajectory artifacts backed by LiteLLM proxy logging.
+This design is about **real agent runs**, not graph-framework LLM calls. A BenchFlow multi-agent run should launch, supervise, and trace independent agent sessions such as Claude Code, Codex, Gemini CLI, OpenHands, or any ACP / CLI / A2A-compatible agent. LangGraph-style LLM workflows can be supported later as a low-priority adapter, but they are not the target primitive.
 
-The feature should preserve each framework's native workflow semantics while emitting one BenchFlow artifact set that can answer:
+The primary trace source is the agent session transcript: ACP events when the agent speaks ACP, native transcript scraping when the agent has its own session log, or a session-factory wrapper when the agent is only available as a CLI or SDK. LiteLLM proxy capture is optional auxiliary evidence for agents that expose model calls through an OpenAI-compatible endpoint. It must not be the main multi-agent abstraction because subscription agents and opaque coding agents may not expose raw provider calls.
 
-- which agent acted;
-- which agent delegated, reviewed, supervised, or handed off to another agent;
-- which LLM calls produced each visible message, tool call, or handoff;
-- how much each agent, scene, team, branch, and external workflow node cost;
-- how the multi-agent run compares with a matched single-agent baseline.
+## Desired behavior
 
-## Scope notes
+BenchFlow should be able to run a real multi-agent evaluation like this:
 
-I could not identify a public multi-agent benchmark or workflow project named `lingtai` under that spelling. Keep `lingtai` as a reserved adapter id until a repository, package, or workflow contract is supplied.
+1. start Claude Code as `planner`;
+2. stop or pause that session and save its isolated transcript;
+3. start Codex as `implementer` using only the declared handoff artifact;
+4. start Gemini CLI as `reviewer` with read-only policy;
+5. optionally let a supervisor delegate to worker agents through a BenchFlow MCP tool or A2A bridge;
+6. show a single relationship graph over the isolated agent trajectories;
+7. score the final environment with the normal verifier.
 
-Comparable public systems considered here:
+The core rule: **each agent gets its own session and own trajectory; BenchFlow adds the relationships.** Shared context is explicit through files, diffs, messages, task ids, or declared handoff artifacts, never by silently merging conversation histories.
 
-- LangGraph: graph nodes, edges, subgraphs, routing, parallel workers, persistence, and streamed state.
-- AutoGen AgentChat: teams such as RoundRobin, Selector, MagenticOne, and Swarm handoff.
-- CrewAI: crews of agents and tasks with sequential or hierarchical manager-driven execution.
-- HARBOR: bounded stages executed by specialized agents through commands, gates, artifacts, and parallel trials.
-- BenchAgent: protocol-aligned comparison of single-agent, fixed multi-agent, and evolving multi-agent workflows.
+## Existing work to learn from
 
-## Current BenchFlow baseline
+| Work | What it gives us | BenchFlow adapter implication |
+|---|---|---|
+| BenchFlow current native scenes | Real ACP-backed roles run sequentially in one sandbox. Each role can use a different `agent` and `model`; context is reset by reconnecting. | Treat this as M0. Add per-role session directories and relationship metadata. |
+| Agent Client Protocol (ACP) | Client-to-coding-agent protocol for local or remote coding agents. Local agents can run as subprocesses over JSON-RPC stdio. | BenchFlow is the ACP client/orchestrator. Use ACP sessions as the first-class real-agent driver. |
+| Claude Code subagents and agent teams | Real Claude Code subagents/teammates have separate context windows. Agent teams have a lead, teammates, task list, mailbox, and direct teammate messaging. | Borrow the data model: lead, teammate, task, mailbox, isolated context, task claiming, cross-agent messages. Do not assume all agents are Claude. |
+| A2A Protocol | Agent-to-agent task protocol with Agent Cards, task ids, context ids, streaming task updates, artifacts, and terminal task states. | Add an `a2a-remote-agent` adapter. Map A2A tasks/artifacts/status updates into session and handoff events. |
+| MCP | Tool/resource/prompt protocol, not agent-to-agent by itself. | Add a `benchflow_delegate_to_agent` MCP server. A supervisor agent calls this tool; BenchFlow starts a real worker session and links the worker transcript to the supervisor tool call. |
+| HARBOR | Staged automation with specialized agents, standardized commands, persistent artifacts, gates, and parallel trials. | Model stages as scenes, gates as verifier/checkpoint events, artifacts as handoff/evidence, and parallel trials as forked session groups. |
+| BenchAgent | Normalized evaluation of single-agent, fixed MAS, and evolving MAS workflows under common loader, tools, answer contract, usage accounting, and trajectory logging. | Require matched baselines and report cost/accuracy tradeoffs. Multi-agent is not assumed better. |
+| AaaS-AN / Agent Network | Agents and agent groups are vertices; routes are edges; the scheduler maintains an execution graph and context isolation. | Use this as the long-term shape for dynamic networks: session nodes plus route/handoff edges. |
+| `lingtai` | No public repo/package/spec found under that spelling during this pass. | Keep as a reserved adapter id until an actual contract is provided. |
 
-BenchFlow-native multi-agent support is centered on declarative scenes, roles, and turns. A multi-role rollout executes in one sandbox, switches active roles, reconnects the selected agent session, and keeps the workspace as the explicit handoff medium.
+## Architecture
 
-The current trajectory path is ACP-first: `trajectory/acp_trajectory.jsonl` records ACP-visible user messages, agent messages, thoughts, tool calls, and timeouts. That is enough for linear BenchFlow-authored role handoff. It is not enough for external multi-agent workflows that contain nested graphs, parallel workers, supervisor delegation, manager validation, dynamic agent spawning, or framework-native state that never appears in ACP events.
+### 1. Real agent session is the primitive
 
-The missing layer is a normalized multi-agent event graph plus proxy-level LLM-call capture.
+Add a `RealAgentSession` runtime record for every launched agent instance:
 
-## Comparison
+```json
+{
+  "session_id": "sess_planner_001",
+  "agent_id": "planner",
+  "agent_type": "claude-agent-acp",
+  "model": "claude-sonnet-4-6",
+  "driver": "acp",
+  "workspace_mode": "shared",
+  "trajectory_path": "trajectory/agents/planner/sess_planner_001/acp.jsonl",
+  "native_transcript_path": "trajectory/agents/planner/sess_planner_001/native.jsonl",
+  "workspace_diff_path": "trajectory/agents/planner/sess_planner_001/workspace.diff",
+  "handoff_out": ["handoff_plan_to_implementer"]
+}
+```
 
-| System | Native primitive | Relationship semantics | Trace surface | BenchFlow implication |
-|---|---|---|---|---|
-| BenchFlow native | `agents.roles`, `scenes`, `turns`, `benchflow.teams` | Linear role turns and sequential shared-workspace handoff | ACP trajectory and rollout tree | Keep as canonical simple path; enrich every event with scene, turn, role, and handoff metadata. |
-| LangGraph | Graph nodes, edges, subgraphs, dynamic workers | Routing, parallel fan-out/fan-in, orchestrator-worker, nested subgraphs | Framework state, streams, and LangSmith traces | Adapter must preserve node id, subgraph id, parent graph id, and dynamic worker edges. |
-| AutoGen AgentChat | Team presets and participant messages | Shared context, selected speaker, round-robin order, handoff messages | Streamed team messages and `TaskResult.messages` | Adapter maps participant `source` to agent node and message order to speaker/handoff edges. |
-| CrewAI | Crews of agents and tasks | Task sequence, manager delegation, validation before proceeding | Crew output, task outputs, usage metrics, execution hooks/logs | Adapter maps tasks to scene spans and manager delegation to `supervises` / `delegates` edges. |
-| HARBOR | Bounded stages with specialized agents | Stage gates, persistent artifacts, reusable knowledge, parallel trials | Stage logs, commands, gates, artifacts | Adapter maps stages to scenes, gates to verifier/checkpoint events, artifacts to evidence. |
-| BenchAgent | Normalized workflow protocol | Fixed and evolving MAS under matched loader, tools, answer contract, usage, and trajectory logging | Protocol-aligned execution and logs | BenchFlow reports multi-agent lift only against matched single-agent baselines and cost. |
-| Generic OpenAI-compatible workflow | Any command that calls an OpenAI-compatible endpoint | Unknown unless app supplies metadata | LiteLLM proxy request/response logs | Best-effort adapter: reliable LLM calls, weaker relationship graph. |
+Supported drivers:
 
-## Target artifacts
+- `acp`: existing BenchFlow ACP connection path.
+- `session-factory`: Python session wrapper for SDK-only agents.
+- `cli`: prompt-in, transcript/log-out wrapper for CLI agents without ACP.
+- `a2a`: remote agent task execution through A2A.
+- `mcp-delegate`: supervisor tool call that launches another real agent through BenchFlow.
+- `native-team-import`: ingest an agent's own team transcript when BenchFlow did not supervise every spawned member directly.
 
-Existing artifacts remain stable:
+### 2. Multi-agent run is a graph of sessions
 
-- `trajectory/acp_trajectory.jsonl`
-- `result.json`
-- trainer artifacts such as ATIF / ADP
+Add `trajectory/agent_graph.json` with nodes for agent sessions and handoff artifacts, and edges such as `handoff_to`, `delegates_to`, `supervises`, `reviews`, `critiques`, `revises_after`, `messages`, `produces`, `consumed_by`, `branches_to`, `merges_into`, and `verifies`.
 
-Add multi-agent artifacts:
+### 3. Per-agent isolated trajectories
 
-- `trajectory/llm_raw.jsonl` — one record per LiteLLM proxy request/response, redacted according to policy.
-- `trajectory/multiagent_events.jsonl` — normalized relationship-aware events from ACP, LiteLLM, and framework-native logs.
-- `trajectory/agent_graph.json` — nodes and edges for the run-level agent/workflow DAG.
-- `trajectory/index.json` — schema versions, counts, checksums, coverage diagnostics, and artifact pointers.
-- `trajectory/redaction_report.json` — whether message bodies, tool arguments, and model responses were persisted, hashed, or omitted.
-- `viewer/multiagent_timeline.json` — denormalized UI view for swimlanes, fan-out/fan-in, handoffs, nested calls, and cost overlays.
+Do not collapse all agent events into one flat ACP file. Preserve both a merged compatibility view and the isolated source views:
 
-## Normalized event fields
+```text
+trajectory/
+  acp_trajectory.jsonl
+  multiagent_events.jsonl
+  agent_graph.json
+  sessions.jsonl
+  handoffs.jsonl
+  agents/
+    planner/sess_planner_001/acp.jsonl
+    planner/sess_planner_001/native.jsonl
+    planner/sess_planner_001/workspace.diff
+    implementer/sess_impl_001/acp.jsonl
+    reviewer/sess_reviewer_001/acp.jsonl
+```
 
-Every `multiagent_events.jsonl` record should be stable, addressable, and relationship-aware.
+`multiagent_events.jsonl` should contain normalized event pointers and relationship metadata. Heavy transcript content stays under per-session directories.
 
-Required in M0:
+### 4. Handoff modes
 
-- `schema_version`
-- `event_id`
-- `rollout_id`
-- `timestamp`
-- `source`: `acp`, `litellm_proxy`, or `framework_native`
-- `framework`: `benchflow-native`, `langgraph`, `autogen`, `crewai`, `harbor`, `lingtai`, or `generic-openai-compatible`
-- `adapter`
-- `scene`
-- `turn_index`
-- `team_id`
-- `agent_id`
-- `role`
-- `relation`
-- one of `llm.call_id`, `framework_run_id`, or `acp_event_index`
+| Mode | Meaning | Implementation |
+|---|---|---|
+| `sequential-shared-workspace` | Agents run one after another in the same sandbox, with fresh context and shared files. | Current scenes plus per-session trajectories and handoff records. |
+| `sequential-artifact-handoff` | Agents run one after another but can only consume declared artifacts, not full prior transcript. | Copy handoff files/diffs into next prompt; do not inject prior conversation. |
+| `parallel-worktree` | Multiple agents run concurrently on isolated worktrees or sandbox snapshots. | Fork workspace, run sessions, capture diffs, then merge or judge. |
+| `delegate-tool` | A supervisor agent calls a tool to start a worker agent. | BenchFlow MCP server exposes `delegate_to_agent`; worker is a real session. |
+| `a2a-remote` | BenchFlow sends a task to a remote agent service. | A2A client creates/subscribes to tasks and collects artifacts/status updates. |
+| `native-team-import` | A real agent spawns its own internal team. | Ingest native team logs and map members/tasks/mailbox to sessions and edges. |
 
-Suggested optional fields:
+## Uniform adapter contract
 
-- `framework_node_id`
-- `framework_parent_id`
-- `parent_event_id`
-- `root_event_id`
-- `related_agent_id`
-- `handoff_from`
-- `handoff_to`
-- `branch_id`
-- `subgraph_id`
-- `span_id`
-- `llm.model`
-- `llm.provider`
-- `llm.status`
-- `llm.prompt_tokens`
-- `llm.completion_tokens`
-- `llm.total_tokens`
-- `llm.cost_usd`
-- `llm.prompt_sha256`
-- `llm.response_sha256`
-- `llm.raw_request_path`
-- `llm.raw_response_path`
+The adapter should host real agent sessions. It is not a wrapper around a multi-agent LLM library.
 
-Suggested `relation` enum:
+```python
+class RealAgentAdapter(Protocol):
+    name: str
 
-- `starts`
-- `responds_to`
-- `delegates`
-- `supervises`
-- `handoff`
-- `reviews`
-- `critiques`
-- `revises`
-- `parallel_child`
-- `fan_in`
-- `tool_subagent`
-- `llm_call`
-- `verifies`
-- `terminates`
+    async def start_session(self, ctx: StartSessionContext) -> RealAgentSession:
+        """Launch or attach to one real agent session."""
 
-`agent_graph.json` should summarize the run-level structure: agent nodes, team nodes, subgraph nodes, tool-subagent nodes, and edges with `relation`, `first_event_id`, `last_event_id`, and per-edge metrics.
+    async def send_prompt(self, session: RealAgentSession, prompt: str) -> None:
+        """Send the prompt/task to that real agent."""
 
-## LiteLLM proxy tracing
+    async def wait(self, session: RealAgentSession) -> SessionResult:
+        """Wait until the agent reaches done/failed/timeout."""
 
-Use LiteLLM as the raw LLM-call capture layer because most external workflows can be pointed at an OpenAI-compatible endpoint even when their native event model differs.
+    async def collect_trajectory(self, session: RealAgentSession) -> TrajectoryBundle:
+        """Collect ACP/native transcript, tool calls, usage, artifacts, and diff."""
 
-Implementation requirements:
+    async def stop_session(self, session: RealAgentSession) -> None:
+        """Close the session and clean up leaked processes."""
+```
 
-1. Start one LiteLLM proxy per rollout or per job, depending on isolation and concurrency.
-2. Attach a BenchFlow custom callback to persist LiteLLM's standard logging payload for every successful and failed call.
-3. Pass BenchFlow metadata in every request when the adapter controls the client: `rollout_id`, `scene`, `turn`, `team_id`, `agent_id`, `role`, `framework`, `framework_node_id`, `parent_event_id`, and `trace_id`.
-4. Pass tags for quick filtering, such as `benchflow:rollout:<id>`, `agent:planner`, and `framework:langgraph`.
-5. If a framework cannot pass per-request metadata, use one LiteLLM virtual key or route alias per role as a fallback attribution channel.
-6. Persist `x-litellm-call-id` and map it to normalized events through `llm.call_id`.
-7. Redact or hash prompt/response bodies when task policy disables body persistence.
-8. Fail closed when `capture_raw_llm: required` and no LiteLLM calls are captured.
-
-## Uniform adapter protocol
-
-Adapters should be thin normalizers around external workflow runtimes. They should not reimplement the framework.
-
-Required adapter operations:
-
-- `detect(task_dir, spec)`: decide whether the adapter can host the workflow.
-- `prepare(ctx)`: install dependencies, write LiteLLM env, and compile the launch command.
-- `run(ctx)`: run the external workflow inside the BenchFlow sandbox.
-- `collect(ctx)`: collect native logs and normalize them into BenchFlow events and graph edges.
-
-`AdapterTraceBundle` should contain:
-
-- normalized events for `multiagent_events.jsonl`;
-- graph nodes and edges for `agent_graph.json`;
-- framework-native raw logs under `trajectory/raw/<adapter>/`;
-- coverage diagnostics: attribution quality, missing metadata, unsupported relationship semantics, and redaction state.
-
-Built-in adapters:
-
-| Adapter | First behavior |
-|---|---|
-| `benchflow-native` | Enrich current Scene / Role / Turn events with scene, turn, role, agent, and handoff edges. |
-| `generic-openai-compatible` | Run any declared command through the LiteLLM proxy and attribute calls from metadata, tags, virtual keys, and process env. |
-| `autogen` | Capture streamed team messages and final task result messages; map message `source` to agents. |
-| `crewai` | Capture crew task outputs, usage metrics, process mode, manager/delegation relationships, and available hooks. |
-| `langgraph` | Capture node, edge, subgraph, checkpoint/thread, and dynamic worker mappings. |
-| `harbor` | Preserve stage, command, gate, artifact, specialized-agent, and parallel-trial metadata. |
-| `lingtai` | Reserved until a concrete workflow contract is supplied. |
+A separate `MultiAgentOrchestrator` composes these sessions according to the task spec and writes `sessions.jsonl`, `handoffs.jsonl`, `multiagent_events.jsonl`, and `agent_graph.json`.
 
 ## `task.md` authoring surface
 
-Keep stable orchestration fields at the existing root keys: `agents`, `scenes`, and `user`. Put adapter-specific and experimental fields under the reserved `benchflow` namespace until they are promoted into typed task-standard models.
+Keep root `agents` and `scenes` for stable BenchFlow roles. Put experimental real-agent tracing under `benchflow.multi_agent`.
 
 ```yaml
 agents:
   roles:
-    orchestrator:
-      agent: python-workflow
-      model: litellm/gpt-5.5
     planner:
-      agent: external
-      model: litellm/gpt-5.5
+      agent: claude-agent-acp
+      model: claude-sonnet-4-6
     implementer:
-      agent: external
-      model: litellm/gpt-5.5
+      agent: codex-acp
+      model: gpt-5.5
     reviewer:
-      agent: external
-      model: litellm/gpt-5.5
+      agent: gemini
+      model: gemini-3.1-flash-lite-preview
 
 scenes:
-  - name: external-workflow
+  - name: plan
     turns:
-      - role: orchestrator
+      - role: planner
+  - name: implement
+    turns:
+      - role: implementer
+  - name: review
+    turns:
+      - role: reviewer
 
 benchflow:
   multi_agent:
-    adapter: langgraph
-    mode: external-workflow
-    entrypoint: workflows.design_review:run
-    workflow_root: workflow/
+    runtime: real-agent-sessions
+    mode: sequential-artifact-handoff
     trace:
-      llm_proxy: litellm
-      capture_raw_llm: required      # required | best-effort | disabled
-      capture_framework_events: best-effort
-      relationship_graph: required   # required | best-effort | disabled
-      redact_messages: false
-    agents:
-      mapping:
-        planner: {role: planner, framework_node: plan_node}
-        implementer: {role: implementer, framework_node: implement_node}
-        reviewer: {role: reviewer, framework_node: review_node}
-    relationships:
-      allowed: [delegates, reviews, handoff, parallel_child, fan_in]
+      per_agent_trajectories: required
+      merged_compat_trajectory: true
+      native_transcripts: best-effort
+      workspace_diffs: required
+      raw_llm_proxy: optional
+    handoffs:
+      - id: plan-to-implementer
+        from: planner
+        to: implementer
+        artifacts: [/app/plan.md]
+        inject: prompt-summary
+      - id: implementation-to-reviewer
+        from: implementer
+        to: reviewer
+        artifacts: [/app, /logs/artifacts/patch.diff]
+        relation: reviews
+    isolation:
+      agent_context: fresh-per-session
+      workspace: shared
+      transcript_sharing: none
+```
+
+For supervisor/delegation mode:
+
+```yaml
+benchflow:
+  multi_agent:
+    runtime: real-agent-sessions
+    mode: delegate-tool
+    supervisor: planner
+    delegate_tool:
+      type: mcp
+      name: benchflow_delegate_to_agent
+      allowed_workers: [implementer, reviewer]
+      worker_workspace: forked-worktree
+      return_to_supervisor: summary-and-artifacts
 ```
 
 Validation rules:
 
-- `benchflow.multi_agent.adapter` must be known or explicitly set to `generic-openai-compatible`.
-- `capture_raw_llm: required` requires a LiteLLM runtime and at least one captured LLM call.
-- Every mapped role must reference a declared `agents.roles` role.
-- `relationship_graph: required` must fail closed if the adapter cannot emit parent/child or handoff edges.
-- Message persistence must obey task-level privacy and redaction policy.
+- Every role in `handoffs.from`, `handoffs.to`, `supervisor`, and `allowed_workers` must exist in `agents.roles`.
+- `per_agent_trajectories: required` must fail closed if no transcript can be collected for any launched session.
+- `workspace_diffs: required` must fail closed when a role with write access has no before/after diff or declared write artifact.
+- `transcript_sharing: none` means downstream agents may receive summaries or artifacts, but not upstream raw conversation history.
+- `raw_llm_proxy` may only enrich the trace; absence of raw LLM calls cannot make an otherwise valid real-agent transcript incomplete unless explicitly set to `required`.
+
+## Implementation plan
+
+### M0: direct real-agent sessions
+
+1. Reuse current role/scene execution to run different real agents sequentially.
+2. On every `connect_as(role)`, create a `RealAgentSession` record and per-session trajectory directory.
+3. Write ACP events to both the compatibility merged file and the per-agent file.
+4. On disconnect, collect native transcript if the agent has a known scraper.
+5. Capture workspace diff and declared handoff artifacts after each role.
+6. Emit `sessions.jsonl`, `handoffs.jsonl`, `multiagent_events.jsonl`, and `agent_graph.json`.
+7. Add viewer data for swimlanes: one lane per real agent session.
+
+### M1: supervisor starts workers
+
+1. Add `delegate-tool` mode with a BenchFlow MCP server exposing `delegate_to_agent(role, prompt, workspace_mode, artifacts)`.
+2. When the supervisor calls the tool, launch the requested real agent as a child session and return only declared summary/artifacts.
+3. Link supervisor tool call id to child session id in `agent_graph.json`.
+4. Support parallel forked worktrees/sandbox snapshots for independent workers.
+5. Add per-agent usage and cost rollups from ACP usage, native usage metadata, or LiteLLM when available.
+
+### M2: remote and native-team import
+
+1. Add A2A remote-agent adapter using Agent Cards for discovery and A2A tasks for execution.
+2. Map A2A task id/context id/status updates/artifacts to `RealAgentSession`, handoff, and relationship events.
+3. Add native-team import for Claude Code agent teams: team lead, teammates, task list, mailbox messages, session ids, and transcript pointers.
+4. Only after these real-agent paths exist, consider low-priority adapters for LangGraph/CrewAI/AutoGen LLM-workflow traces.
 
 ## Viewer requirements
 
-The viewer should expose three synchronized views:
+The viewer should show:
 
-1. Swimlane timeline — one lane per agent/role with LLM calls, tool calls, messages, handoffs, and verifier checkpoints.
-2. Relationship DAG — supervisor, delegation, handoff, review, parallel child, fan-in, and subgraph edges.
-3. Cost/outcome overlay — tokens, cost, latency, tool calls, and reward by agent, scene, team, branch, and whole rollout.
+- session swimlanes by real agent instance;
+- handoff artifacts and message edges between sessions;
+- supervisor `delegate_to_agent` tool calls linked to worker transcripts;
+- per-agent tokens/cost/latency/tool calls;
+- workspace diffs by agent;
+- verifier and reward events anchored to the final state;
+- coverage warnings when an agent only provided a partial/native-scraped trace.
 
-Clicking an event should show normalized event JSON, raw LiteLLM payload pointer if allowed, framework-native raw event pointer, ACP event pointer when available, and parent/child links.
+## Benchmark reporting policy
 
-## Benchmark comparison policy
-
-Multi-agent support should not assume that more agents are better. Every report should include matched baselines:
-
-- same task set;
-- same tool access;
-- same answer contract;
-- same usage accounting;
-- same trajectory logging coverage;
-- single-agent baseline, fixed multi-agent workflow, and dynamic/evolving workflow when available.
-
-Report reward/pass rate, token cost, wall-clock latency, LLM calls, tool calls, active agents, relationship graph coverage, raw LLM capture coverage, and attribution failures.
-
-## Milestones
-
-### M0 — native enrichment and schema
-
-- Add `benchflow.multi_agent` task.md parser surface under the raw `benchflow` namespace.
-- Enrich BenchFlow-native Scene / Role / Turn ACP events with `scene`, `turn_index`, `role`, `agent_id`, and sequential handoff edges.
-- Add artifact writers for `multiagent_events.jsonl`, `agent_graph.json`, `index.json`, and `redaction_report.json`.
-- Add a schema-only task.md fixture and docs.
-
-### M1 — LiteLLM raw trajectory capture
-
-- Add a BenchFlow LiteLLM custom callback that writes `llm_raw.jsonl`.
-- Add request metadata/tag injection for native roles and adapter launches.
-- Add required/best-effort/disabled policy and fail-closed validation.
-- Add per-agent usage rollups in `result.json` and `summary.json`.
-
-### M2 — first external adapters
-
-- Implement `generic-openai-compatible`, `autogen`, and `crewai` adapters.
-- Preserve framework-native logs under `trajectory/raw/<adapter>/`.
-- Map native messages/tasks to normalized events and graph edges.
-
-### M3 — graph-native adapter
-
-- Implement `langgraph` adapter with node, edge, subgraph, checkpoint/thread, and dynamic worker mapping.
-- Add fan-out/fan-in and subgraph visualization.
-
-### M4 — benchmark-platform parity and arena concurrency
-
-- Implement `harbor` adapter once the concrete Harbor task/workflow contract is selected.
-- Add `lingtai` adapter once a concrete workflow contract is supplied.
-- Promote stable fields from `benchflow.multi_agent` into typed task-standard models.
-- Integrate with future arena-concurrent / A2A support.
+Multi-agent support must report whether it helped under matched conditions: single-agent baseline, same task set, same sandbox and verifier, same tool permissions or explicitly reported differences, same answer contract, per-agent and total usage, trajectory coverage by agent, relationship graph coverage, and success/cost tradeoff.
 
 ## References
 
-- AutoGen AgentChat teams: https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/tutorial/teams.html
-- CrewAI crews: https://docs.crewai.com/en/concepts/crews
-- LangGraph workflow/agent patterns: https://docs.langchain.com/oss/python/langgraph/workflows-agents
-- LangGraph subgraphs: https://docs.langchain.com/oss/python/langgraph/use-subgraphs
-- LiteLLM proxy logging: https://docs.litellm.ai/docs/proxy/logging
-- LiteLLM custom callbacks: https://docs.litellm.ai/docs/observability/custom_callback
-- LiteLLM StandardLoggingPayload: https://docs.litellm.ai/docs/proxy/logging_spec
+- Agent Client Protocol: https://agentclientprotocol.com/get-started/introduction
+- A2A Protocol: https://a2a-protocol.org/latest/specification/
+- MCP specification: https://modelcontextprotocol.io/specification/2025-06-18
+- Claude Code subagents: https://code.claude.com/docs/en/sub-agents
+- Claude Code agent teams: https://code.claude.com/docs/en/agent-teams
 - HARBOR paper: https://arxiv.org/abs/2606.08610
 - BenchAgent paper: https://arxiv.org/abs/2606.05670
+- Agent-as-a-Service based on Agent Network: https://arxiv.org/abs/2505.08446
