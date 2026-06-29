@@ -31,9 +31,7 @@ def _write_rollout(
         "agent_result": {"total_tokens": 123, "n_tool_calls": 1},
     }
     result.update(result_overrides or {})
-    (rollout_dir / "result.json").write_text(
-        json.dumps(result)
-    )
+    (rollout_dir / "result.json").write_text(json.dumps(result))
     traj = rollout_dir / "trajectory"
     traj.mkdir()
     records = (

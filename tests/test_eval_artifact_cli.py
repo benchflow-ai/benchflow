@@ -146,11 +146,7 @@ def test_sharded_health_and_selection_discover_worker_shards(tmp_path: Path) -> 
     jobs_dir = tmp_path / "jobs"
     advertised_job_dir = jobs_dir / "worker-sharded"
     shard_job_dir = (
-        jobs_dir
-        / "worker-shards"
-        / "shard-000"
-        / "jobs"
-        / "2026-06-29__15-02-55"
+        jobs_dir / "worker-shards" / "shard-000" / "jobs" / "2026-06-29__15-02-55"
     )
     _write_rollout(shard_job_dir / "task-a__abc", "task-a")
     (jobs_dir / "worker-shards" / "plan.json").write_text(
