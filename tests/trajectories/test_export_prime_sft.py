@@ -699,11 +699,12 @@ def test_convert_openhands_responses_shape_preserves_tool_calls(tmp_path: Path) 
 def test_convert_succeeds_when_trajectory_written_via_to_jsonl_with_secrets(
     tmp_path: Path,
 ) -> None:
-    """End-to-end regression: a trajectory whose content carries a secret next to
-    a backslash escape must be written as valid JSON by ``Trajectory.to_jsonl``
-    and convert cleanly to a prime-sft row. Before the redactor was moved ahead of
-    serialization, the post-``json.dumps`` regex split the escape, producing an
-    unparseable ``llm_trajectory.jsonl`` and a hard ``Invalid \\escape`` failure.
+    """PR #849 end-to-end regression: a trajectory whose content carries a secret
+    next to a backslash escape must be written as valid JSON by
+    ``Trajectory.to_jsonl`` and convert cleanly to a prime-sft row. Before the
+    redactor was moved ahead of serialization, the post-``json.dumps`` regex split
+    the escape, producing an unparseable ``llm_trajectory.jsonl`` and a hard
+    ``Invalid \\escape`` failure.
     """
     from benchflow.trajectories.types import (
         LLMExchange,

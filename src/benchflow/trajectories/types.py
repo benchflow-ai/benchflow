@@ -424,19 +424,51 @@ def redact_trajectory_obj(obj: Any) -> Any:
     already-``json.dumps``-ed record. Redacting the serialized *text* can split a
     ``\\`` escape — a secret sitting next to one leaves a lone ``\\X`` — which
     corrupts the JSON so the trajectory file no longer parses and
-    ``bench train convert`` fails. Redacting the *values* first and serializing
-    afterwards keeps escaping valid. Coverage is unchanged for captured
-    exchanges: secrets live in free-text string leaves (request/response bodies,
-    message content) where the token-family and ``name: value`` carriers still
-    fire; structured auth headers are not stored.
+    ``bench train convert`` fails. Redacting the *values* before serializing keeps
+    escaping valid while preserving coverage: free-text leaves are scrubbed by the
+    token-family and inline ``name: value`` carriers, and structured fields (e.g.
+    a ``{"x-api-key": "<prefixless>"}`` header) are scrubbed in their key context
+    by :func:`_redact_field` so the carriers that key off a field name still fire.
     """
-    if isinstance(obj, str):
-        return redact_trajectory_text(obj)
     if isinstance(obj, dict):
-        return {key: redact_trajectory_obj(value) for key, value in obj.items()}
+        return {key: _redact_field(key, value) for key, value in obj.items()}
     if isinstance(obj, list):
         return [redact_trajectory_obj(item) for item in obj]
+    if isinstance(obj, str):
+        return redact_trajectory_text(obj)
     return obj
+
+
+def _redact_field(key: Any, value: Any) -> Any:
+    """Redact a dict field's *value*, keeping the field name as carrier context.
+
+    The ``name: value`` carriers (``x-api-key``, ``api_key``, ``authorization``,
+    ``*_TOKEN`` …) strip *prefixless* secret values only when they can see the
+    field name; in a parsed object the name and value are separate. So redact the
+    value inside a ``{"<key>": "<value>"}`` probe and read it back. The probe
+    round-trips through json so escaping stays valid; if redacting the serialized
+    probe would corrupt it (the escape hazard this module guards), fall back to
+    redacting the bare value, which still catches the prefixed token families.
+    """
+    if isinstance(value, (dict, list)):
+        return redact_trajectory_obj(value)
+    if not isinstance(value, str):
+        return value
+    if isinstance(key, str):
+        import json
+
+        probe = json.dumps({key: value})
+        redacted = redact_trajectory_text(probe)
+        if redacted == probe:
+            return value
+        try:
+            restored = json.loads(redacted)
+        except ValueError:
+            pass
+        else:
+            if isinstance(restored, dict) and isinstance(restored.get(key), str):
+                return restored[key]
+    return redact_trajectory_text(value)
 
 
 def redact_acp_trajectory_jsonl(trajectory: list[dict[str, Any]]) -> str:
