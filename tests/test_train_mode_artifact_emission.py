@@ -286,6 +286,35 @@ def test_write_rollout_verifiers_jsonl_redacts_trajectory_secrets(tmp_path):
     json.loads(text)
 
 
+def test_write_rollout_verifiers_jsonl_preserves_secret_named_booleans(tmp_path):
+    rollout_dir = tmp_path / "rollout-bool-redaction"
+    rollout_dir.mkdir()
+    record = write_rollout_verifiers_jsonl(
+        rollout_dir,
+        task_id="t-secret-bool",
+        prompts=["Inspect the security report."],
+        trajectory=[
+            {
+                "type": "tool_call",
+                "tool_call_id": "tc1",
+                "kind": "execute",
+                "title": "check report",
+                "status": "completed",
+                "content": [
+                    {"text": '{"leaked_credentials": false, "leaked_kind": null}'}
+                ],
+            }
+        ],
+        rewards={"reward": 1.0},
+        model="m",
+        environment="bench",
+    )
+
+    artifact = rollout_dir / ROLLOUT_ARTIFACT_RELPATH
+    parsed = json.loads(artifact.read_text())
+    assert parsed == record
+
+
 # job-level aggregation
 
 

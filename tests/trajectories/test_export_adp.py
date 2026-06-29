@@ -241,6 +241,33 @@ def test_write_redacts_secrets(tmp_path):
     assert "***REDACTED***" in observation["content"]
 
 
+def test_write_preserves_json_when_secret_named_boolean_appears_in_text(tmp_path):
+    events = [
+        {
+            "type": "tool_call",
+            "tool_call_id": "tc1",
+            "kind": "execute",
+            "title": "check",
+            "status": "completed",
+            "content": [{"text": '{"leaked_credentials": false, "leaked_kind": null}'}],
+        }
+    ]
+
+    write_rollout_adp_jsonl(
+        tmp_path,
+        trajectory_id="r",
+        task_id="t",
+        prompts=None,
+        trajectory=events,
+        model=None,
+        environment="demo",
+    )
+
+    raw = (tmp_path / "trainer" / "adp.jsonl").read_text()
+    parsed = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    assert len(parsed) == 1
+
+
 def test_write_job_adp_jsonl_aggregates_rollouts(tmp_path):
     for i in range(2):
         write_rollout_adp_jsonl(
