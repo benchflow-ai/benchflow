@@ -73,6 +73,22 @@ class TestFindProvider:
             == "openai/gpt-4.1-mini"
         )
 
+    def test_openrouter_prefix(self):
+        name, cfg = find_provider("openrouter/qwen/qwen3.5-397b-a17b")
+
+        assert name == "openrouter"
+        assert cfg.api_protocol == "openai-completions"
+        assert cfg.auth_env == "OPENROUTER_API_KEY"
+        assert cfg.base_url == "https://openrouter.ai/api/v1"
+        assert (
+            resolve_auth_env("openrouter/qwen/qwen3.5-397b-a17b")
+            == "OPENROUTER_API_KEY"
+        )
+        assert (
+            strip_provider_prefix("openrouter/qwen/qwen3.5-397b-a17b")
+            == "qwen/qwen3.5-397b-a17b"
+        )
+
     @pytest.mark.parametrize(
         ("model", "expected_protocol"),
         [

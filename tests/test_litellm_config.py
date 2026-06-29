@@ -103,6 +103,18 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
 
+def test_openrouter_route_uses_openai_compatible_endpoint():
+    route = resolve_litellm_route(
+        "openrouter/qwen/qwen3.5-397b-a17b",
+        {"OPENROUTER_API_KEY": "sk-openrouter"},
+    )
+
+    assert route.upstream_model == "openai/qwen/qwen3.5-397b-a17b"
+    assert route.litellm_params["api_base"] == "https://openrouter.ai/api/v1"
+    assert route.litellm_params["api_key"] == "os.environ/OPENROUTER_API_KEY"
+    assert route.required_env == ("OPENROUTER_API_KEY",)
+
+
 def test_proxy_config_registers_plain_and_openai_aliases():
     route = resolve_litellm_route(
         "aws-bedrock/us.anthropic.claude-opus-4-8",

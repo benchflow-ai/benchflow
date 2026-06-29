@@ -94,6 +94,22 @@ class TestEnvMappingField:
         assert env["LLM_API_KEY"] == "ghs_test_token"
         assert env["LLM_MODEL"] == "openai/openai/gpt-4.1-mini"
 
+    def test_openhands_normalizes_openrouter_model(self):
+        env = {"OPENROUTER_API_KEY": "sk-openrouter"}
+        resolve_provider_env(
+            agent="openhands",
+            model="openrouter/qwen/qwen3.5-397b-a17b",
+            agent_env=env,
+        )
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "openrouter"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "qwen/qwen3.5-397b-a17b"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://openrouter.ai/api/v1"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-openrouter"
+        assert env["LLM_BASE_URL"] == "https://openrouter.ai/api/v1"
+        assert env["LLM_API_KEY"] == "sk-openrouter"
+        assert env["LLM_MODEL"] == "openai/qwen/qwen3.5-397b-a17b"
+
     def test_openhands_bedrock_initial_env_marks_registered_provider(self):
         """Guards the LiteLLM runtime refactor: Bedrock is detected before runtime rewrite."""
         env = {
