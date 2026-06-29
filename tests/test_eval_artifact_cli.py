@@ -10,6 +10,7 @@ from typing import Any
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
+from benchflow.eval_artifacts import build_canonical_selection, build_health_summary
 from benchflow.evaluation import Evaluation
 
 runner = CliRunner()
@@ -139,6 +140,41 @@ def test_eval_run_writes_manifest_health_and_canonical_artifacts(
     assert json.loads(health.read_text())["rows_with_tool_calls"] == 1
     assert json.loads(selection.read_text())["selected_count"] == 1
     assert (canonical_jobs / "task-a__abc" / "result.json").is_file()
+
+
+def test_sharded_health_and_selection_discover_worker_shards(tmp_path: Path) -> None:
+    jobs_dir = tmp_path / "jobs"
+    advertised_job_dir = jobs_dir / "worker-sharded"
+    shard_job_dir = (
+        jobs_dir
+        / "worker-shards"
+        / "shard-000"
+        / "jobs"
+        / "2026-06-29__15-02-55"
+    )
+    _write_rollout(shard_job_dir / "task-a__abc", "task-a")
+    (jobs_dir / "worker-shards" / "plan.json").write_text(
+        json.dumps(
+            {
+                "total_concurrency": 10,
+                "worker_concurrency": 2,
+                "shards": [{"index": 0, "concurrency": 2, "task_names": ["task-a"]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    health = build_health_summary(advertised_job_dir)
+    selection = build_canonical_selection(
+        advertised_job_dir,
+        policy="one-healthy-per-task",
+        expected_tasks=1,
+    )
+
+    assert health["total_rows"] == 1
+    assert health["rows"][0]["task_id"] == "task-a"
+    assert selection["selected_count"] == 1
+    assert selection["selected"][0]["task_id"] == "task-a"
 
 
 def test_eval_run_matrix_runs_each_alias_and_trial(tmp_path: Path, monkeypatch) -> None:

@@ -25,19 +25,21 @@ from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
     load_llm_trajectory_jsonl,
     normalize_prime_sft_exchange,
+    prime_sft_last_user_training_window,
     validate_prime_sft_row,
 )
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.types import redact_trajectory_obj
 
 ROLLOUT_RESULTS_FILENAME = "results.jsonl"
 JOB_RESULTS_FILENAME = "results.jsonl"
+JOB_RESULTS_ERRORS_FILENAME = "results.errors.json"
 
 logger = logging.getLogger(__name__)
 
 
 def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
-    raw = json.dumps(scrub_non_finite(record), default=str, allow_nan=False)
-    return redact_trajectory_text(raw)
+    redacted = redact_trajectory_obj(scrub_non_finite(record))
+    return json.dumps(redacted, default=str, allow_nan=False)
 
 
 def _reward_value(rewards: dict[str, Any] | None) -> float:
@@ -215,6 +217,12 @@ def _top_level_prompt_completion(
     full_messages = list(final_step.get("prompt") or []) + list(
         final_step.get("completion") or []
     )
+    typed_full_messages = [
+        message for message in full_messages if isinstance(message, dict)
+    ]
+    window = prime_sft_last_user_training_window(typed_full_messages)
+    if window is not None:
+        return window
     if prompt and len(full_messages) >= len(prompt):
         return prompt, full_messages[len(prompt) :]
     return prompt, list(final_step.get("completion") or [])
@@ -404,6 +412,7 @@ def write_job_results_jsonl(job_dir: str | Path) -> Path | None:
         return None
 
     example_ids: dict[str, int] = {}
+    skipped_errors: list[dict[str, Any]] = []
     out = job_path / JOB_RESULTS_FILENAME
     with out.open("w", encoding="utf-8") as handle:
         for src in rollout_files:
@@ -411,6 +420,13 @@ def write_job_results_jsonl(job_dir: str | Path) -> Path | None:
                 lines = src.read_text().splitlines()
             except OSError as exc:
                 logger.warning("Skipping unreadable results artifact %s: %s", src, exc)
+                skipped_errors.append(
+                    {
+                        "path": str(src),
+                        "error": "unreadable_results_artifact",
+                        "message": str(exc),
+                    }
+                )
                 continue
             for line_num, line in enumerate(lines, start=1):
                 if not line.strip():
@@ -424,6 +440,14 @@ def write_job_results_jsonl(job_dir: str | Path) -> Path | None:
                         line_num,
                         exc,
                     )
+                    skipped_errors.append(
+                        {
+                            "path": str(src),
+                            "line": line_num,
+                            "error": "invalid_results_artifact_json",
+                            "message": str(exc),
+                        }
+                    )
                     continue
                 if not isinstance(row, dict):
                     logger.warning(
@@ -431,11 +455,39 @@ def write_job_results_jsonl(job_dir: str | Path) -> Path | None:
                         src,
                         line_num,
                     )
+                    skipped_errors.append(
+                        {
+                            "path": str(src),
+                            "line": line_num,
+                            "error": "non_object_results_artifact_row",
+                        }
+                    )
                     continue
                 key = _job_example_key(row, src.parent)
                 row["example_id"] = example_ids.setdefault(key, len(example_ids))
                 handle.write(_record_to_redacted_json_line(row) + "\n")
+    _write_job_results_errors(job_path, skipped_errors)
     return out
+
+
+def _write_job_results_errors(
+    job_path: Path,
+    skipped_errors: list[dict[str, Any]],
+) -> None:
+    out = job_path / JOB_RESULTS_ERRORS_FILENAME
+    if not skipped_errors:
+        try:
+            out.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    payload = {
+        "schema_version": 1,
+        "error": "skipped_results_artifact_rows",
+        "skipped_count": len(skipped_errors),
+        "skipped": skipped_errors,
+    }
+    out.write_text(_record_to_redacted_json_line(payload) + "\n")
 
 
 def _job_example_key(row: dict[str, Any], rollout_dir: Path) -> str:

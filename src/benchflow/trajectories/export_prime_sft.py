@@ -336,6 +336,28 @@ def _normalize_system_messages(messages: list[dict[str, Any]]) -> list[dict[str,
     return normalized
 
 
+def prime_sft_last_user_training_window(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+    """Return a compact prompt/completion window anchored at the last user turn.
+
+    OpenHands-style system prompts are large enough that a full conversation
+    prefix can push the first trainable assistant token beyond an 8k SFT
+    sequence. Prime-RL can then skip the row even though the JSONL is valid.
+    Keeping the latest user instruction plus the following assistant/tool turns
+    preserves the supervised action trace while moving trainable tokens into the
+    loaded context window.
+    """
+    for idx in range(len(messages) - 2, -1, -1):
+        message = messages[idx]
+        if message.get("role") != "user":
+            continue
+        completion = messages[idx + 1 :]
+        if any(item.get("role") == "assistant" for item in completion):
+            return [message], completion
+    return None
+
+
 def _messages_from_chat_request(body: dict[str, Any]) -> list[dict[str, Any]]:
     messages = body.get("messages")
     if not isinstance(messages, list):
@@ -906,6 +928,11 @@ def _compact_existing_prime_sft_row(
     messages = [
         message for message in _row_messages(row, row_num) if isinstance(message, dict)
     ]
+    if _is_benchflow_results_row(row):
+        window = prime_sft_last_user_training_window(messages)
+        if window is not None:
+            prompt, completion = window
+            messages = prompt + completion
     out: dict[str, Any] = {"messages": messages}
 
     tools = row.get("tool_defs", row.get("tools"))
@@ -949,6 +976,22 @@ def _compact_existing_prime_sft_row(
     out["source_index"] = row_num - 1
     out["source_format"] = "benchflow-results-jsonl"
     return out
+
+
+def _is_benchflow_results_row(row: dict[str, Any]) -> bool:
+    info = row.get("info")
+    if isinstance(info, dict) and info.get("source") == "benchflow":
+        return True
+    return any(
+        key in row
+        for key in (
+            "trajectory",
+            "stop_condition",
+            "token_usage",
+            "is_completed",
+            "is_truncated",
+        )
+    )
 
 
 def _existing_prime_sft_jsonl_stats(
@@ -1028,10 +1071,15 @@ def _row_from_exchange(
         return None, skip_reason
     if normalized is None:
         return None, "invalid_prime_sft_row"
+    messages = normalized.messages
+    window = prime_sft_last_user_training_window(messages)
+    if window is not None:
+        prompt, completion = window
+        messages = prompt + completion
 
     agent_result = result.get("agent_result") if isinstance(result, dict) else None
     row = {
-        "messages": normalized.messages,
+        "messages": messages,
         "tool_defs": normalized.tool_defs,
         "task_name": (result or {}).get("task_name") or rollout_dir.name,
         "source": "benchflow-llm-trajectory",

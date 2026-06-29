@@ -124,7 +124,7 @@ def test_convert_rollout_mode_uses_final_successful_exchange(tmp_path: Path) -> 
     assert row["source"] == "benchflow-llm-trajectory"
     assert row["reward"] == 1.0
     assert row["tool_defs"][0]["function"]["name"] == "bash"
-    assert row["messages"][0] == {"role": "system", "content": "You are an agent."}
+    assert row["messages"][0] == {"role": "user", "content": "List files."}
     assert any(message.get("role") == "tool" for message in row["messages"])
     assert row["messages"][-1] == {"role": "assistant", "content": "Done."}
 
@@ -206,8 +206,7 @@ def test_skipped_provider_error_counts_rollouts_not_exchanges(tmp_path: Path) ->
 
 
 def test_consecutive_leading_system_messages_not_dropped(tmp_path: Path) -> None:
-    """Guards #828 greptile P2: a row that starts with two system messages must
-    remap the second to 'user' instead of being silently dropped as invalid."""
+    """A valid row with leading system messages must still export cleanly."""
     exchange = _exchange(final=True)
     exchange["request"]["body"]["messages"] = [
         {"role": "system", "content": "Primary system prompt."},
@@ -221,8 +220,8 @@ def test_consecutive_leading_system_messages_not_dropped(tmp_path: Path) -> None
     assert stats.rows_written == 1
     assert stats.skipped_invalid == 0
     roles = [m["role"] for m in rows[0]["messages"]]
-    assert roles[0] == "system"
-    assert roles[1] == "user"  # second leading system remapped
+    assert roles[0] == "user"
+    assert "system" not in roles
 
 
 def test_exchange_mode_writes_one_row_per_successful_exchange(tmp_path: Path) -> None:
@@ -414,6 +413,73 @@ def test_export_accepts_existing_prime_sft_jsonl_input(tmp_path: Path) -> None:
         "rows_with_tool_calls": 1,
     }
     assert json.loads(manifest.read_text())["sources"] == [str(source)]
+
+
+def test_export_windows_benchflow_results_rows_for_prime_rl_8k(
+    tmp_path: Path,
+) -> None:
+    """BenchFlow results rows must not strand assistant tokens past 8k context."""
+    source = tmp_path / "results.jsonl"
+    out = tmp_path / "prime-sft.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [
+                    {"role": "system", "content": "system prompt\n" * 5000},
+                    {"role": "user", "content": "Solve the current task."},
+                ],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_1",
+                        "content": "ok",
+                    },
+                    {"role": "assistant", "content": "Done."},
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "info": {"source": "benchflow", "task_id": "task-a"},
+                "reward": 1.0,
+                "trajectory": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stats = export_prime_sft_jsonl(source, out, expected_rows=1)
+
+    assert stats.rows_written == 1
+    row = json.loads(out.read_text())
+    assert row["messages"][0] == {"role": "user", "content": "Solve the current task."}
+    assert all(message.get("role") != "system" for message in row["messages"])
+    assert row["messages"][1]["role"] == "assistant"
+    assert validate_prime_sft_jsonl(out, expected_rows=1) == {
+        "ok": True,
+        "rows": 1,
+        "rows_with_tool_calls": 1,
+    }
 
 
 def test_export_repairs_legacy_results_tool_call_ids(tmp_path: Path) -> None:
