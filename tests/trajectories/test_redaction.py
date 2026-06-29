@@ -786,3 +786,167 @@ def test_redactor_no_redos(label, pathological):
     redact_trajectory_text(pathological)
     elapsed_ms = (time.perf_counter() - start) * 1000
     assert elapsed_ms < 750, f"possible ReDoS on {label}: {elapsed_ms:.0f} ms"
+
+
+# Regression (PR #849): the redactor used to run over the already-serialized JSON
+# (``json.dumps`` then ``re.sub``). When a redacted secret sat next to a ``\``
+# escape, the substitution could split it and leave an invalid ``\X``, corrupting
+# llm_trajectory.jsonl / acp_trajectory.jsonl so they no longer parsed and
+# ``bench train convert`` hard-failed. The writers now redact string *values*
+# before serialization (``redact_trajectory_obj``), so output is always valid JSON.
+
+_ADVERSARIAL_CONTENTS = [
+    # secret immediately after a backslash
+    "auth header:\\" + "sk-abc1234567defghijklmnop987654",
+    # carrier-tripping code (``token =`` / ``if not token:``) with escaped quotes,
+    # newlines, and a secret in a comment — mirrors a real agent code edit that
+    # reproduced the corruption in the wild.
+    'token = form.get("token")\n'
+    "    if not token:\n"
+    '        raise HTTPException(400, "invalid")  '
+    "# key sk-abc1234567defghijklmnop987654\n",
+    # windows-style path backslashes adjacent to an AWS key
+    "C:\\Users\\app\\AKIAIOSFODNN7EXAMPLE",
+    # a JSON blob (escaped quotes once serialized) carrying a Google key
+    '{"x-api-key": "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"}',
+]
+
+_ADVERSARIAL_LEAKS = (
+    "abc1234567defghijklmnop987654",
+    "IOSFODNN7EXAMPLE",
+    "FORTESTSONLYxxxxxxxxxxxxxxx",
+)
+
+
+@pytest.mark.parametrize("content", _ADVERSARIAL_CONTENTS)
+def test_to_jsonl_emits_valid_json_with_secret_adjacent_escapes(content):
+    """PR #849: to_jsonl round-trips to valid JSON even when content puts a secret
+    next to a backslash escape, and still strips the secret."""
+    traj = Trajectory(
+        session_id="t",
+        exchanges=[
+            LLMExchange(
+                request=LLMRequest(
+                    body={"messages": [{"role": "user", "content": content}]}
+                ),
+                response=LLMResponse(
+                    status_code=200,
+                    body={
+                        "choices": [
+                            {"message": {"role": "assistant", "content": content}}
+                        ]
+                    },
+                ),
+            )
+        ],
+    )
+    jsonl = traj.to_jsonl(redact_keys=True)
+    for line in jsonl.splitlines():
+        json.loads(line)  # must round-trip — no corrupt escapes
+    for leaked in _ADVERSARIAL_LEAKS:
+        assert leaked not in jsonl
+
+
+@pytest.mark.parametrize("content", _ADVERSARIAL_CONTENTS)
+def test_acp_jsonl_emits_valid_json_with_secret_adjacent_escapes(content):
+    """PR #849: redact_acp_trajectory_jsonl emits valid JSON lines for the same
+    secret-adjacent-escape content."""
+    out = redact_acp_trajectory_jsonl(
+        [{"type": "agent_message", "content": content}, {"type": "tool_call"}]
+    )
+    lines = out.splitlines()
+    assert len(lines) == 2
+    for line in lines:
+        json.loads(line)
+    for leaked in _ADVERSARIAL_LEAKS:
+        assert leaked not in out
+
+
+def test_redact_trajectory_obj_redacts_nested_string_leaves():
+    """PR #849: redact_trajectory_obj scrubs string leaves at any depth, leaving
+    non-string values and structure intact."""
+    from benchflow.trajectories.types import redact_trajectory_obj
+
+    obj = {
+        "a": "sk-abc1234567defghijklmnop987654",
+        "b": ["plain", {"c": "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"}],
+        "n": 5,
+        "ok": True,
+    }
+    out = redact_trajectory_obj(obj)
+    dumped = json.dumps(out)  # re-serializes to valid JSON
+    for leaked in ("abc1234567defghijklmnop987654", "FORTESTSONLYxxxxxxxxxxxxxxx"):
+        assert leaked not in dumped
+    # non-string leaves and structure are preserved
+    assert out["n"] == 5 and out["ok"] is True
+    assert out["b"][0] == "plain"
+
+
+# PR #849 review (discussion_r3494557495): object-level redaction must keep the
+# field-name context, or the ``name: value`` carriers stop stripping *prefixless*
+# secrets held in structured fields (LLM request/response headers + body, ACP
+# structured events). A prefixless value has no token prefix and no inline
+# ``name: value`` text, so only key context can flag it.
+
+_PREFIXLESS_SECRET = "prefixlessSecretValue1234567890"
+
+
+def test_to_jsonl_redacts_prefixless_secret_in_structured_headers_and_body():
+    """PR #849 review: prefixless secrets in request/response headers or body must
+    still redact via key context, with valid-JSON output."""
+    traj = Trajectory(
+        session_id="t",
+        exchanges=[
+            LLMExchange(
+                request=LLMRequest(
+                    headers={"x-api-key": _PREFIXLESS_SECRET},
+                    body={
+                        "api_key": _PREFIXLESS_SECRET,
+                        "authorization": "Bearer " + _PREFIXLESS_SECRET,
+                    },
+                ),
+                response=LLMResponse(
+                    status_code=200,
+                    headers={"x-api-key": _PREFIXLESS_SECRET},
+                    body={
+                        "choices": [{"message": {"role": "assistant", "content": "ok"}}]
+                    },
+                ),
+            )
+        ],
+    )
+    jsonl = traj.to_jsonl(redact_keys=True)
+    parsed = json.loads(jsonl)  # single exchange -> one valid line
+    assert _PREFIXLESS_SECRET not in jsonl
+    assert parsed["request"]["headers"]["x-api-key"] == "***REDACTED***"
+    assert parsed["request"]["body"]["api_key"] == "***REDACTED***"
+    assert parsed["request"]["body"]["authorization"] == "Bearer ***REDACTED***"
+    assert parsed["response"]["headers"]["x-api-key"] == "***REDACTED***"
+
+
+def test_acp_jsonl_redacts_prefixless_secret_in_structured_event():
+    """PR #849 review: a prefixless secret in a structured ACP event field (key
+    separate from value, possibly nested) must redact via key context."""
+    out = redact_acp_trajectory_jsonl(
+        [
+            {
+                "type": "tool_result",
+                "headers": {"authorization": _PREFIXLESS_SECRET},
+                "api_key": _PREFIXLESS_SECRET,
+            }
+        ]
+    )
+    event = json.loads(out)  # valid JSON
+    assert _PREFIXLESS_SECRET not in out
+    assert event["headers"]["authorization"] == "***REDACTED***"
+    assert event["api_key"] == "***REDACTED***"
+
+
+def test_redact_trajectory_obj_preserves_key_context_for_structured_secret():
+    """PR #849 review: object-level redaction keys off the field name (parity with
+    the prior serialized-text path) without touching non-secret fields."""
+    from benchflow.trajectories.types import redact_trajectory_obj
+
+    out = redact_trajectory_obj({"x-api-key": _PREFIXLESS_SECRET, "note": "plain text"})
+    assert out["x-api-key"] == "***REDACTED***"
+    assert out["note"] == "plain text"

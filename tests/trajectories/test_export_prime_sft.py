@@ -694,3 +694,68 @@ def test_convert_openhands_responses_shape_preserves_tool_calls(tmp_path: Path) 
         "content": "File created.",
     }
     assert row["messages"][-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_convert_succeeds_when_trajectory_written_via_to_jsonl_with_secrets(
+    tmp_path: Path,
+) -> None:
+    """PR #849 end-to-end regression: a trajectory whose content carries a secret
+    next to a backslash escape must be written as valid JSON by
+    ``Trajectory.to_jsonl`` and convert cleanly to a prime-sft row. Before the
+    redactor was moved ahead of serialization, the post-``json.dumps`` regex split
+    the escape, producing an unparseable ``llm_trajectory.jsonl`` and a hard
+    ``Invalid \\escape`` failure.
+    """
+    from benchflow.trajectories.types import (
+        LLMExchange,
+        LLMRequest,
+        LLMResponse,
+        Trajectory,
+    )
+
+    secret = "sk-abc1234567defghijklmnop987654"
+    code = (
+        'token = form.get("token")\n'
+        "    if not token:\n"
+        f'        raise HTTPException(400, "invalid")  # {secret}\n'
+    )
+    messages = [
+        {"role": "system", "content": [{"type": "text", "text": "agent"}]},
+        {"role": "user", "content": "Edit the revoke handler."},
+    ]
+    traj = Trajectory(
+        session_id="s",
+        exchanges=[
+            LLMExchange(
+                request=LLMRequest(
+                    body={"model": "m", "messages": messages, "tools": []}
+                ),
+                response=LLMResponse(
+                    status_code=200,
+                    body={
+                        "choices": [{"message": {"role": "assistant", "content": code}}]
+                    },
+                ),
+            )
+        ],
+    )
+
+    rollout = tmp_path / "job" / "rollout-1"
+    (rollout / "trajectory").mkdir(parents=True)
+    (rollout / "result.json").write_text(
+        json.dumps({"task_name": "t", "agent": "openhands", "rewards": {"reward": 1.0}})
+    )
+    traj_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    traj_path.write_text(traj.to_jsonl(redact_keys=True) + "\n", encoding="utf-8")
+
+    # the written trajectory parses (the fix) ...
+    for line in traj_path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            json.loads(line)
+    # ... and converts to one valid prime-sft row with the secret redacted.
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(
+        tmp_path / "job", min_reward=1.0
+    )
+    assert stats.rows_written == 1
+    assert stats.skipped_invalid == 0
+    assert secret not in json.dumps(rows[0])

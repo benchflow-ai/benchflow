@@ -177,9 +177,12 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
 # backslashes followed by an optional quote. This makes every carrier fire on raw
 # text (``"k": "v"``), Python dict-repr (``'k': 'v'``), AND json.dumps-escaped
 # JSON at any nesting depth (``\"k\": \"v\"``, ``\\\"k\\\": …``) — the escaped
-# form is how a provider error body embedded in ``error.message`` reaches the
-# redactor after ``Trajectory.to_jsonl`` runs ``json.dumps`` over the record
-# before redacting it (#830). The ``{0,8}`` cap keeps it ReDoS-bounded.
+# form still appears when a serialized artifact is redacted as text (the
+# ADP/ATIF exporters, ``results.py``), or when a provider error body embedded in
+# ``error.message`` is itself JSON (#830). (``Trajectory.to_jsonl`` and the ACP
+# writer now redact record *values* before ``json.dumps`` via
+# ``redact_trajectory_obj`` so they can never emit a corrupt escape.) The
+# ``{0,8}`` cap keeps it ReDoS-bounded.
 _ESCQ = r'(?:\\{0,8}["\']|)'
 # Secret value class for the carriers: stops at a quote (plain, or the backslash
 # of an escaped closing quote), whitespace, and the ``,`` ``}`` ``&`` delimiters
@@ -414,20 +417,77 @@ def redact_trajectory_text(text: str) -> str:
     return text
 
 
+def redact_trajectory_obj(obj: Any) -> Any:
+    """Recursively redact secrets in the string leaves of a JSON-serializable value.
+
+    Prefer this over running :func:`redact_trajectory_text` on an
+    already-``json.dumps``-ed record. Redacting the serialized *text* can split a
+    ``\\`` escape — a secret sitting next to one leaves a lone ``\\X`` — which
+    corrupts the JSON so the trajectory file no longer parses and
+    ``bench train convert`` fails. Redacting the *values* before serializing keeps
+    escaping valid while preserving coverage: free-text leaves are scrubbed by the
+    token-family and inline ``name: value`` carriers, and structured fields (e.g.
+    a ``{"x-api-key": "<prefixless>"}`` header) are scrubbed in their key context
+    by :func:`_redact_field` so the carriers that key off a field name still fire.
+    """
+    if isinstance(obj, dict):
+        return {key: _redact_field(key, value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [redact_trajectory_obj(item) for item in obj]
+    if isinstance(obj, str):
+        return redact_trajectory_text(obj)
+    return obj
+
+
+def _redact_field(key: Any, value: Any) -> Any:
+    """Redact a dict field's *value*, keeping the field name as carrier context.
+
+    The ``name: value`` carriers (``x-api-key``, ``api_key``, ``authorization``,
+    ``*_TOKEN`` …) strip *prefixless* secret values only when they can see the
+    field name; in a parsed object the name and value are separate. So redact the
+    value inside a ``{"<key>": "<value>"}`` probe and read it back. The probe
+    round-trips through json so escaping stays valid; if redacting the serialized
+    probe would corrupt it (the escape hazard this module guards), fall back to
+    redacting the bare value, which still catches the prefixed token families.
+    """
+    if isinstance(value, (dict, list)):
+        return redact_trajectory_obj(value)
+    if not isinstance(value, str):
+        return value
+    if isinstance(key, str):
+        import json
+
+        probe = json.dumps({key: value})
+        redacted = redact_trajectory_text(probe)
+        if redacted == probe:
+            return value
+        try:
+            restored = json.loads(redacted)
+        except ValueError:
+            pass
+        else:
+            if isinstance(restored, dict) and isinstance(restored.get(key), str):
+                return restored[key]
+    return redact_trajectory_text(value)
+
+
 def redact_acp_trajectory_jsonl(trajectory: list[dict[str, Any]]) -> str:
     """Serialize an ACP trajectory list to redacted JSONL.
 
-    Each event is JSON-encoded and then run through ``redact_trajectory_text``
-    so secrets the agent echoed into ``acp_trajectory.jsonl`` (env dumps, curl
-    -v output, header logs) are stripped before the file is written or uploaded
-    (#537/#585). Returns the joined lines without a trailing newline; callers
-    that need one (e.g. uploaded copies) append it themselves.
+    Each event's string values are redacted (env dumps, curl -v output, header
+    logs the agent echoed into ``acp_trajectory.jsonl``) *before* serialization,
+    so secrets are stripped (#537/#585) without a post-serialization regex
+    corrupting backslash escapes. Events are normalized to JSON primitives first
+    (applying ``default=str``) so non-JSON leaves are covered too. Returns the
+    joined lines without a trailing newline; callers that need one append it.
     """
     import json
 
-    return "\n".join(
-        redact_trajectory_text(json.dumps(event, default=str)) for event in trajectory
-    )
+    lines = []
+    for event in trajectory:
+        normalized = json.loads(json.dumps(event, default=str))
+        lines.append(json.dumps(redact_trajectory_obj(normalized)))
+    return "\n".join(lines)
 
 
 class LLMRequest(BaseModel):
@@ -528,14 +588,18 @@ class Trajectory(BaseModel):
         return msgs
 
     def to_jsonl(self, *, redact_keys: bool = True) -> str:
-        """Export as JSONL (one exchange per line)."""
+        """Export as JSONL (one exchange per line).
+
+        Redaction runs on the record's string *values* before ``json.dumps`` so
+        the emitted JSON is always valid — regexing the serialized text could
+        split a ``\\`` escape next to a secret and produce an unparseable line.
+        """
         import json
 
         lines = []
         for ex in self.exchanges:
             data = ex.model_dump(mode="json")
-            raw = json.dumps(data, default=str)
             if redact_keys:
-                raw = redact_trajectory_text(raw)
-            lines.append(raw)
+                data = redact_trajectory_obj(data)
+            lines.append(json.dumps(data, default=str))
         return "\n".join(lines)
