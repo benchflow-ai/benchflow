@@ -65,7 +65,10 @@ async def _export_generated_skills(rollout: Rollout) -> None:
     last_err: Exception | None = None
     for attempt in range(3):
         try:
-            await rollout._env.download_dir(rollout._config.generated_skills_root, target)
+            await rollout._env.download_dir(
+                rollout._config.generated_skills_root,
+                target,
+            )
             break
         except Exception as e:
             last_err = e
@@ -152,7 +155,11 @@ async def _run_steps(rollout: Rollout, steps: list[Step]) -> None:
         nonlocal current_session_id, current_session_start
         if recorder is None:
             return
-        driver = "session-factory" if getattr(rollout, "_is_session_factory", False) else "acp"
+        driver = (
+            "session-factory"
+            if getattr(rollout, "_is_session_factory", False)
+            else "acp"
+        )
         current_session_id = recorder.start_session(
             agent_id=role.name,
             agent_type=role.agent,
@@ -293,14 +300,18 @@ async def _run_user_loop(rollout: Rollout) -> None:
         ),
     )
     if not steps:
-        raise ValueError("User-driven loops require at least one single-role scene turn.")
+        raise ValueError(
+            "User-driven loops require at least one single-role scene turn."
+        )
     if len(steps) > cfg.max_user_rounds:
         raise ValueError(
             "User-driven loops require max_user_rounds to cover every "
             f"scene turn. Got {len(steps)} turns and "
             f"max_user_rounds={cfg.max_user_rounds}."
         )
-    installed_confirmation_handler = rollout._install_document_confirmation_handler(user)
+    installed_confirmation_handler = rollout._install_document_confirmation_handler(
+        user
+    )
     rounds_log: list[dict] = []
     rollout._user_rounds_log = rounds_log
     recorder = RealAgentTraceRecorder.for_rollout(rollout)
@@ -356,7 +367,11 @@ async def _run_user_loop(rollout: Rollout) -> None:
             try:
                 await rollout.connect_as(role)
                 if recorder is not None:
-                    driver = "session-factory" if getattr(rollout, "_is_session_factory", False) else "acp"
+                    driver = (
+                        "session-factory"
+                        if getattr(rollout, "_is_session_factory", False)
+                        else "acp"
+                    )
                     session_id = recorder.start_session(
                         agent_id=role.name,
                         agent_type=role.agent,
@@ -433,7 +448,8 @@ async def _run_user_loop(rollout: Rollout) -> None:
             try:
                 if rollout._effective_locked:
                     await rollout._planes.lockdown_paths(
-                        rollout._env, rollout._effective_locked
+                        rollout._env,
+                        rollout._effective_locked,
                     )
                 if cfg.sandbox_user:
                     await rollout._planes.clear_verifier_output_dir(
