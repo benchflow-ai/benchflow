@@ -42,11 +42,25 @@ class S(TypedDict, total=False):
     trace: list
 
 
-def _llm() -> ChatOpenAI:
-    base = os.environ.get("BENCHFLOW_PROVIDER_BASE_URL") or "https://api.deepseek.com/v1"
-    key = (os.environ.get("BENCHFLOW_PROVIDER_API_KEY")
-           or os.environ.get("DEEPSEEK_API_KEY") or "EMPTY")
-    model = os.environ.get("BENCHFLOW_PROVIDER_MODEL") or "deepseek/deepseek-v4-pro"
+# agent_name -> (base_url, api_key, model). A runner sets one entry per
+# specialist to route that agent through its OWN proxy, so each gets a separate
+# llm_trajectory + usage. Empty => every node shares one endpoint (shared/native).
+_AGENT_PROVIDERS: dict[str, tuple[str, str, str]] = {}
+
+
+def set_agent_provider(agent: str, base: str, key: str, model: str) -> None:
+    _AGENT_PROVIDERS[agent] = (base, key, model)
+
+
+def _llm(agent: str = "default") -> ChatOpenAI:
+    cfg = _AGENT_PROVIDERS.get(agent)
+    if cfg is not None:
+        base, key, model = cfg
+    else:
+        base = os.environ.get("BENCHFLOW_PROVIDER_BASE_URL") or "https://api.deepseek.com/v1"
+        key = (os.environ.get("BENCHFLOW_PROVIDER_API_KEY")
+               or os.environ.get("DEEPSEEK_API_KEY") or "EMPTY")
+        model = os.environ.get("BENCHFLOW_PROVIDER_MODEL") or "deepseek/deepseek-v4-pro"
     return ChatOpenAI(model=model, base_url=base, api_key=key,
                       temperature=0.2, max_tokens=2048)
 
@@ -56,7 +70,7 @@ def _log(state: S, node: str, note: str) -> None:
 
 
 def supervisor(state: S) -> S:
-    out = _llm().invoke([{"role": "user", "content":
+    out = _llm("supervisor").invoke([{"role": "user", "content":
         f"You route a medical question to a specialist. Question: {state['query']!r}. "
         "Reply with ONE word: 'kb' if a drug/condition knowledge base likely covers "
         "it, else 'web'."}]).content.lower()
@@ -80,7 +94,7 @@ def web_search(state: S) -> S:
 
 
 def answer(state: S) -> S:
-    out = _llm().invoke([{"role": "user", "content":
+    out = _llm("answer").invoke([{"role": "user", "content":
         f"Question: {state['query']}\nEvidence: {state.get('evidence') or '(none)'}\n"
         "Answer concisely for a clinician. Then on a NEW line output "
         "'CONFIDENCE: <0.0-1.0>' for how well the evidence supports your answer."}]
@@ -93,7 +107,7 @@ def answer(state: S) -> S:
 
 
 def guardrail(state: S) -> S:
-    out = _llm().invoke([{"role": "user", "content":
+    out = _llm("guardrail").invoke([{"role": "user", "content":
         f"Output guardrail. The assistant answered: {state['answer']!r}. Is it safe and "
         "appropriately cautious as medical information (not a diagnosis)? Reply yes/no."}]
     ).content.lower()
