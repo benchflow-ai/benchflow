@@ -284,6 +284,95 @@ def test_export_and_validate_prime_sft_jsonl(tmp_path: Path) -> None:
     assert json.loads(manifest.read_text())["rows_written"] == 1
 
 
+def test_export_redacts_malformed_tool_call_arguments_before_serializing(
+    tmp_path: Path,
+) -> None:
+    """Nested tool-call arguments are JSON strings; redact before encoding them."""
+    exchange = _exchange(final=False)
+    exchange["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "Let me request a token.",
+        "tool_calls": [
+            {
+                "id": "call_token",
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "arguments": (
+                        '{"command": "curl -d \\"password=sk-abc1234567890def"'
+                        ' | jq .", "summary": "request token"}'
+                    ),
+                },
+            }
+        ],
+    }
+    _write_rollout(tmp_path / "job" / "rollout-1", exchanges=[exchange])
+    out = tmp_path / "train.jsonl"
+
+    export_prime_sft_jsonl(tmp_path / "job", out, expected_rows=1)
+
+    assert validate_prime_sft_jsonl(out, expected_rows=1) == {
+        "ok": True,
+        "rows": 1,
+        "rows_with_tool_calls": 1,
+    }
+    row = json.loads(out.read_text())
+    arguments = row["messages"][-1]["tool_calls"][0]["function"]["arguments"]
+    parsed_arguments = json.loads(arguments)
+    assert parsed_arguments == {
+        "_malformed_json_arguments": (
+            '{"command": "curl -d \\"password=***REDACTED***"'
+            ' | jq .", "summary": "request token"}'
+        )
+    }
+
+
+def test_export_keeps_already_redacted_tool_call_arguments_valid(
+    tmp_path: Path,
+) -> None:
+    """A later request can replay already-redacted malformed arguments."""
+    exchange = _exchange(final=False)
+    exchange["request"]["body"]["messages"] = [
+        {"role": "user", "content": "Request a token."},
+        {
+            "role": "assistant",
+            "content": "Let me request a token.",
+            "tool_calls": [
+                {
+                    "id": "call_token",
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "arguments": json.dumps(
+                            {
+                                "_malformed_json_arguments": (
+                                    '{"command": "curl -d '
+                                    '\\"password=***REDACTED***" | jq ."}'
+                                )
+                            }
+                        ),
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_token", "content": "ok"},
+    ]
+    _write_rollout(tmp_path / "job" / "rollout-1", exchanges=[exchange])
+    out = tmp_path / "train.jsonl"
+
+    export_prime_sft_jsonl(tmp_path / "job", out, expected_rows=1)
+
+    assert validate_prime_sft_jsonl(out, expected_rows=1) == {
+        "ok": True,
+        "rows": 1,
+        "rows_with_tool_calls": 1,
+    }
+    row = json.loads(out.read_text())
+    arguments = row["messages"][1]["tool_calls"][0]["function"]["arguments"]
+    parsed_arguments = json.loads(arguments)
+    assert "_malformed_json_arguments" in parsed_arguments
+
+
 def test_validate_rejects_banned_message_keys(tmp_path: Path) -> None:
     """Guards this PR's leakage-key validation before Prime-RL ingestion."""
     path = tmp_path / "bad.jsonl"

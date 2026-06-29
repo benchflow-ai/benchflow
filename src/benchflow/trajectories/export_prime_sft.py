@@ -104,6 +104,7 @@ def _json_line(record: dict[str, Any]) -> str:
     # emitted SFT row is always valid JSON; redacting the serialized text could
     # split a backslash escape next to a secret and corrupt the line.
     redacted = redact_trajectory_obj(scrub_non_finite(record))
+    redacted = _sanitize_prime_sft_row_tool_call_arguments(redacted)
     return dumps_finite(redacted, default=str)
 
 
@@ -259,7 +260,7 @@ def _json_tool_call_arguments(arguments: Any) -> str:
         parsed = {}
     else:
         parsed = {"_non_object_arguments": arguments}
-    return json.dumps(parsed, sort_keys=True)
+    return dumps_finite(redact_trajectory_obj(parsed), sort_keys=True, default=str)
 
 
 def _normalize_tool_call(call: dict[str, Any], index: int = 0) -> dict[str, Any]:
