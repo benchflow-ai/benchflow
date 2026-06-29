@@ -234,28 +234,36 @@ def _normalize_role(role: Any) -> str:
     return str(role or "user")
 
 
+def _json_tool_call_arguments(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            parsed = {"_malformed_json_arguments": arguments}
+        else:
+            if not isinstance(parsed, dict):
+                parsed = {"_non_object_json_arguments": parsed}
+    elif isinstance(arguments, dict):
+        parsed = arguments
+    elif arguments is None:
+        parsed = {}
+    else:
+        parsed = {"_non_object_arguments": arguments}
+    return json.dumps(parsed, sort_keys=True)
+
+
 def _normalize_tool_call(call: dict[str, Any], index: int = 0) -> dict[str, Any]:
     function = call.get("function")
     if not isinstance(function, dict):
         function = {}
     name = function.get("name") or call.get("name") or "tool"
     arguments = function.get("arguments", call.get("arguments", {}))
-    if isinstance(arguments, str):
-        try:
-            json.loads(arguments)
-        except json.JSONDecodeError:
-            arguments = json.dumps(
-                {"_malformed_json_arguments": arguments},
-                sort_keys=True,
-            )
-    else:
-        arguments = json.dumps(arguments or {}, sort_keys=True)
     return {
         "id": str(call.get("id") or call.get("tool_call_id") or f"call_{index:06d}"),
         "type": "function",
         "function": {
             "name": str(name),
-            "arguments": arguments,
+            "arguments": _json_tool_call_arguments(arguments),
         },
     }
 
@@ -534,6 +542,18 @@ def _normalize_tools_for_validation(
     return tools
 
 
+def _tool_names_for_validation(tools: list[Any] | None) -> set[str]:
+    names: set[str] = set()
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        name = function.get("name") if isinstance(function, dict) else tool.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
 def _row_messages(row: dict[str, Any], row_num: int) -> list[Any]:
     messages = row.get("messages")
     if isinstance(messages, list) and messages:
@@ -589,6 +609,9 @@ def validate_prime_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
         )
 
     messages = _row_messages(row, row_num)
+    tools = _normalize_tools_for_validation(row, row_num)
+    known_tool_names = _tool_names_for_validation(tools)
+    pending_tool_call_ids: set[str] = set()
 
     for idx, message in enumerate(messages):
         if not isinstance(message, dict):
@@ -610,43 +633,68 @@ def validate_prime_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
             raise ValueError(
                 f"row {row_num}: messages[{idx}] needs content or tool_calls"
             )
-        if (
-            "tool_calls" in message
-            and message.get("tool_calls")
-            and role != "assistant"
-        ):
+        tool_calls = message.get("tool_calls")
+        if tool_calls and role != "assistant":
             raise ValueError(
                 f"row {row_num}: only assistant messages may contain tool_calls"
             )
         if role == "tool" and not message.get("tool_call_id"):
             raise ValueError(f"row {row_num}: tool message requires tool_call_id")
-        tool_calls = message.get("tool_calls")
+        if role == "tool" and message.get("tool_call_id") not in pending_tool_call_ids:
+            raise ValueError(
+                f"row {row_num}: tool message references unknown tool_call_id"
+            )
+        if role == "tool":
+            pending_tool_call_ids.discard(cast(str, message.get("tool_call_id")))
+        if tool_calls is not None and not isinstance(tool_calls, list):
+            raise ValueError(
+                f"row {row_num}: messages[{idx}].tool_calls must be a list"
+            )
         if isinstance(tool_calls, list):
             for tool_call_idx, tool_call in enumerate(tool_calls):
+                prefix = f"row {row_num}: messages[{idx}].tool_calls[{tool_call_idx}]"
                 if not isinstance(tool_call, dict):
-                    raise ValueError(
-                        f"row {row_num}: messages[{idx}].tool_calls[{tool_call_idx}] must be object"
-                    )
+                    raise ValueError(f"{prefix} must be object")
                 tool_call = cast(dict[str, Any], tool_call)
                 function = tool_call.get("function")
                 if not isinstance(function, dict):
+                    raise ValueError(f"{prefix}.function must be object")
+                tool_call_id = tool_call.get("id")
+                if not isinstance(tool_call_id, str) or not tool_call_id:
+                    raise ValueError(f"{prefix}.id must be a non-empty string")
+                if tool_call.get("type") != "function":
+                    raise ValueError(f"{prefix}.type must be 'function'")
+                name = function.get("name")
+                if not isinstance(name, str) or not name:
                     raise ValueError(
-                        f"row {row_num}: messages[{idx}].tool_calls[{tool_call_idx}].function must be object"
+                        f"{prefix}.function.name must be a non-empty string"
+                    )
+                if known_tool_names and name not in known_tool_names:
+                    raise ValueError(
+                        f"{prefix}.function.name {name!r} not found in tool_defs/tools"
                     )
                 arguments = function.get("arguments")
                 if isinstance(arguments, str):
                     try:
-                        json.loads(arguments)
+                        parsed_arguments = json.loads(arguments)
                     except json.JSONDecodeError as exc:
                         raise ValueError(
-                            f"row {row_num}: messages[{idx}].tool_calls[{tool_call_idx}].function.arguments is not valid JSON: {exc}"
+                            f"{prefix}.function.arguments is not valid JSON: {exc}"
                         ) from exc
+                    if not isinstance(parsed_arguments, dict):
+                        raise ValueError(
+                            f"{prefix}.function.arguments must be a JSON object"
+                        )
+                elif not isinstance(arguments, dict):
+                    raise ValueError(
+                        f"{prefix}.function.arguments must be a JSON object or JSON-encoded object"
+                    )
+                pending_tool_call_ids.add(tool_call_id)
 
     if not any(isinstance(m, dict) and m.get("role") == "assistant" for m in messages):
         raise ValueError(f"row {row_num}: no assistant message")
 
     typed_messages = [m for m in messages if isinstance(m, dict)]
-    tools = _normalize_tools_for_validation(row, row_num)
     if _has_tool_calls(typed_messages) and not tools:
         raise ValueError(
             f"row {row_num}: assistant tool_calls require non-empty tool_defs/tools"
@@ -655,6 +703,14 @@ def validate_prime_sft_row(row: dict[str, Any], row_num: int = 1) -> None:
         for tool_idx, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 raise ValueError(f"row {row_num}: tool_defs[{tool_idx}] must be object")
+            function = tool.get("function")
+            name = (
+                function.get("name") if isinstance(function, dict) else tool.get("name")
+            )
+            if not isinstance(name, str) or not name:
+                raise ValueError(
+                    f"row {row_num}: tool_defs[{tool_idx}] missing function name"
+                )
 
 
 def validate_prime_sft_jsonl(

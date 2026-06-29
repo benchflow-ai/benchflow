@@ -444,6 +444,141 @@ def test_validate_rejects_tool_calls_without_tool_defs(tmp_path: Path) -> None:
         validate_prime_sft_jsonl(path)
 
 
+def test_validate_rejects_malformed_tool_call_arguments(tmp_path: Path) -> None:
+    """Guards PR #848: bad tool-call JSON fails before training."""
+    path = tmp_path / "bad-arguments.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "task_name": "gdoc-rebrand-juniper-cloud-to-umbra-software-69",
+                "messages": [
+                    {"role": "user", "content": "Replace the old brand."},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_588",
+                                "type": "function",
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": '{"security_risk":"MEDIUM","summary":"Replace old brand"',
+                                },
+                            }
+                        ],
+                    },
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            }
+        )
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match=r"function\.arguments is not valid JSON"):
+        validate_prime_sft_jsonl(path, expected_rows=1)
+
+
+def test_validate_rejects_non_object_tool_call_arguments(tmp_path: Path) -> None:
+    """Guards PR #848: tool-call args must parse to a JSON object."""
+    path = tmp_path / "list-arguments.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "Call the tool."},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "finish", "arguments": "[]"},
+                            }
+                        ],
+                    },
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            }
+        )
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match=r"function\.arguments must be a JSON object"):
+        validate_prime_sft_jsonl(path, expected_rows=1)
+
+
+def test_validate_rejects_unknown_tool_name_and_orphan_tool_output(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #848: tool calls must declare tools and linked outputs."""
+    unknown_tool = tmp_path / "unknown-tool.jsonl"
+    unknown_tool.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "Call the tool."},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "missing", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            }
+        )
+        + "\n"
+    )
+    orphan_tool = tmp_path / "orphan-tool.jsonl"
+    orphan_tool.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "Call the tool."},
+                    {"role": "assistant", "content": "No tool call."},
+                    {"role": "tool", "tool_call_id": "call_missing", "content": "ok"},
+                ]
+            }
+        )
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match="not found in tool_defs/tools"):
+        validate_prime_sft_jsonl(unknown_tool, expected_rows=1)
+    with pytest.raises(ValueError, match="unknown tool_call_id"):
+        validate_prime_sft_jsonl(orphan_tool, expected_rows=1)
+
+
 def test_strict_llm_trajectory_loader_rejects_malformed_jsonl(
     tmp_path: Path,
 ) -> None:
