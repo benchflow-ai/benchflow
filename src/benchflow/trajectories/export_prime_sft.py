@@ -62,6 +62,7 @@ class PrimeSftExportStats:
     skipped_exchanges_provider_error: int = 0
     skipped_no_assistant: int = 0
     skipped_missing_tool_defs: int = 0
+    skipped_terminal_error: int = 0
     skipped_invalid: int = 0
     tool_call_ids_rewritten: int = 0
     tool_messages_merged: int = 0
@@ -80,6 +81,7 @@ class PrimeSftExportStats:
             "skipped_exchanges_provider_error": self.skipped_exchanges_provider_error,
             "skipped_no_assistant": self.skipped_no_assistant,
             "skipped_missing_tool_defs": self.skipped_missing_tool_defs,
+            "skipped_terminal_error": self.skipped_terminal_error,
             "skipped_invalid": self.skipped_invalid,
             "tool_call_ids_rewritten": self.tool_call_ids_rewritten,
             "tool_messages_merged": self.tool_messages_merged,
@@ -102,6 +104,7 @@ def _json_line(record: dict[str, Any]) -> str:
     # emitted SFT row is always valid JSON; redacting the serialized text could
     # split a backslash escape next to a secret and corrupt the line.
     redacted = redact_trajectory_obj(scrub_non_finite(record))
+    redacted = _sanitize_prime_sft_row_tool_call_arguments(redacted)
     return dumps_finite(redacted, default=str)
 
 
@@ -257,7 +260,7 @@ def _json_tool_call_arguments(arguments: Any) -> str:
         parsed = {}
     else:
         parsed = {"_non_object_arguments": arguments}
-    return json.dumps(parsed, sort_keys=True)
+    return dumps_finite(redact_trajectory_obj(parsed), sort_keys=True, default=str)
 
 
 def _normalize_tool_call(call: dict[str, Any], index: int = 0) -> dict[str, Any]:
@@ -334,6 +337,28 @@ def _normalize_system_messages(messages: list[dict[str, Any]]) -> list[dict[str,
             out["role"] = "user"
         normalized.append(out)
     return normalized
+
+
+def prime_sft_last_user_training_window(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+    """Return a compact prompt/completion window anchored at the last user turn.
+
+    OpenHands-style system prompts are large enough that a full conversation
+    prefix can push the first trainable assistant token beyond an 8k SFT
+    sequence. Prime-RL can then skip the row even though the JSONL is valid.
+    Keeping the latest user instruction plus the following assistant/tool turns
+    preserves the supervised action trace while moving trainable tokens into the
+    loaded context window.
+    """
+    for idx in range(len(messages) - 2, -1, -1):
+        message = messages[idx]
+        if message.get("role") != "user":
+            continue
+        completion = messages[idx + 1 :]
+        if any(item.get("role") == "assistant" for item in completion):
+            return [message], completion
+    return None
 
 
 def _messages_from_chat_request(body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -906,6 +931,11 @@ def _compact_existing_prime_sft_row(
     messages = [
         message for message in _row_messages(row, row_num) if isinstance(message, dict)
     ]
+    if _is_benchflow_results_row(row):
+        window = prime_sft_last_user_training_window(messages)
+        if window is not None:
+            prompt, completion = window
+            messages = prompt + completion
     out: dict[str, Any] = {"messages": messages}
 
     tools = row.get("tool_defs", row.get("tools"))
@@ -951,6 +981,41 @@ def _compact_existing_prime_sft_row(
     return out
 
 
+def _is_benchflow_results_row(row: dict[str, Any]) -> bool:
+    info = row.get("info")
+    if isinstance(info, dict) and info.get("source") == "benchflow":
+        return True
+    return any(
+        key in row
+        for key in (
+            "trajectory",
+            "stop_condition",
+            "token_usage",
+            "is_completed",
+            "is_truncated",
+        )
+    )
+
+
+def _benchflow_row_training_skip_reason(row: dict[str, Any]) -> str | None:
+    if not _is_benchflow_results_row(row):
+        return None
+    info = row.get("info")
+    if isinstance(info, dict) and info.get("training_ready") is False:
+        return "not_training_ready"
+    if row.get("error"):
+        return "terminal_error"
+    if row.get("is_truncated") is True:
+        return "partial_trajectory"
+    stop_condition = row.get("stop_condition")
+    if isinstance(stop_condition, str) and stop_condition not in {
+        "",
+        "agent_completed",
+    }:
+        return stop_condition
+    return None
+
+
 def _existing_prime_sft_jsonl_stats(
     path: Path,
     *,
@@ -963,6 +1028,9 @@ def _existing_prime_sft_jsonl_stats(
         stats.tool_call_ids_rewritten += repair_stats["tool_call_ids_rewritten"]
         stats.tool_messages_merged += repair_stats["tool_messages_merged"]
         stats.rollouts_seen += 1
+        if _benchflow_row_training_skip_reason(row) is not None:
+            stats.skipped_terminal_error += 1
+            continue
         reward = _row_reward(row)
         if min_reward is not None and (reward is None or reward < min_reward):
             stats.skipped_reward += 1
@@ -986,6 +1054,8 @@ def _copy_existing_prime_sft_jsonl(
         for row_num, row, _ in _iter_prime_sft_jsonl_rows(
             source, sanitize_tool_call_arguments=True
         ):
+            if _benchflow_row_training_skip_reason(row) is not None:
+                continue
             if min_reward is not None:
                 reward = _row_reward(row)
                 if reward is None or reward < min_reward:
@@ -1028,10 +1098,15 @@ def _row_from_exchange(
         return None, skip_reason
     if normalized is None:
         return None, "invalid_prime_sft_row"
+    messages = normalized.messages
+    window = prime_sft_last_user_training_window(messages)
+    if window is not None:
+        prompt, completion = window
+        messages = prompt + completion
 
     agent_result = result.get("agent_result") if isinstance(result, dict) else None
     row = {
-        "messages": normalized.messages,
+        "messages": messages,
         "tool_defs": normalized.tool_defs,
         "task_name": (result or {}).get("task_name") or rollout_dir.name,
         "source": "benchflow-llm-trajectory",
@@ -1066,6 +1141,9 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
         result = _load_json(rollout_dir / "result.json")
         if result is None:
             stats.skipped_no_result += 1
+            continue
+        if _result_training_skip_reason(result) is not None:
+            stats.skipped_terminal_error += 1
             continue
         reward = _reward_from_result(result)
         if min_reward is not None and (reward is None or reward < min_reward):
@@ -1118,6 +1196,16 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
             stats.sources.append(str(trajectory_path))
 
     return rows, stats
+
+
+def _result_training_skip_reason(result: dict[str, Any]) -> str | None:
+    if result.get("error"):
+        return "agent_error"
+    if result.get("verifier_error"):
+        return "verifier_error"
+    if result.get("partial_trajectory") is True:
+        return "partial_trajectory"
+    return None
 
 
 def export_prime_sft_jsonl(

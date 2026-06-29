@@ -102,7 +102,29 @@ def write_task_manifest(path: Path, options: TaskManifestOptions) -> dict[str, A
 def _iter_rollouts(job_dir: Path) -> list[Path]:
     if (job_dir / "result.json").is_file():
         return [job_dir]
-    return sorted({path.parent for path in job_dir.rglob("result.json")})
+    roots = [job_dir]
+    shard_root = _worker_shards_root(job_dir)
+    if shard_root is not None:
+        roots.append(shard_root)
+    return sorted(
+        {
+            path.parent
+            for root in roots
+            if root.is_dir()
+            for path in root.rglob("result.json")
+        }
+    )
+
+
+def _worker_shards_root(job_dir: Path) -> Path | None:
+    candidates = [
+        job_dir / "worker-shards",
+        job_dir.parent / "worker-shards",
+    ]
+    for candidate in candidates:
+        if (candidate / "plan.json").is_file():
+            return candidate
+    return None
 
 
 def _rollout_dir_from_selection_row(
