@@ -404,12 +404,90 @@ def test_export_accepts_existing_prime_sft_jsonl_input(tmp_path: Path) -> None:
     assert stats.rollouts_seen == 2
     assert stats.rows_written == 1
     assert stats.skipped_reward == 1
+    row = json.loads(out.read_text())
+    assert "messages" in row
+    assert "prompt" not in row
+    assert "completion" not in row
     assert validate_prime_sft_jsonl(out, expected_rows=1) == {
         "ok": True,
         "rows": 1,
         "rows_with_tool_calls": 1,
     }
     assert json.loads(manifest.read_text())["sources"] == [str(source)]
+
+
+def test_export_repairs_legacy_results_tool_call_ids(tmp_path: Path) -> None:
+    """Guards historical BenchFlow results rows whose assistant/tool ids drifted."""
+    source = tmp_path / "results.jsonl"
+    out = tmp_path / "prime-sft.jsonl"
+    manifest = tmp_path / "manifest.json"
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "Inspect the app."}],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "fc_legacy_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_runtime_1",
+                        "content": "first chunk",
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_runtime_1",
+                        "content": "second chunk",
+                    },
+                    {"role": "assistant", "content": "Done."},
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "reward": 1.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stats = export_prime_sft_jsonl(source, out, expected_rows=1, manifest=manifest)
+
+    row = json.loads(out.read_text())
+    assert stats.tool_call_ids_rewritten == 1
+    assert stats.tool_messages_merged == 1
+    assert "trajectory" not in row
+    assert row["messages"][1]["tool_calls"][0]["id"] == "call_runtime_1"
+    assert row["messages"][2] == {
+        "role": "tool",
+        "tool_call_id": "call_runtime_1",
+        "content": "first chunk\nsecond chunk",
+    }
+    assert validate_prime_sft_jsonl(out, expected_rows=1) == {
+        "ok": True,
+        "rows": 1,
+        "rows_with_tool_calls": 1,
+    }
+    manifest_payload = json.loads(manifest.read_text())
+    assert manifest_payload["tool_call_ids_rewritten"] == 1
+    assert manifest_payload["tool_messages_merged"] == 1
 
 
 def test_validate_rejects_tool_calls_without_tool_defs(tmp_path: Path) -> None:

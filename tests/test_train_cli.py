@@ -221,10 +221,79 @@ def test_train_convert_sanitizes_malformed_tool_call_arguments(
 
     assert result.exit_code == 0, result.output
     row = json.loads(out.read_text())
-    arguments = row["completion"][0]["tool_calls"][0]["function"]["arguments"]
+    arguments = row["messages"][1]["tool_calls"][0]["function"]["arguments"]
     assert json.loads(arguments) == {
         "_malformed_json_arguments": '{"command":"python - <<\'PY\'\nunterminated'
     }
+    result = runner.invoke(app, ["train", "validate", str(out), "--expected-rows", "1"])
+    assert result.exit_code == 0, result.output
+
+
+def test_train_convert_repairs_legacy_results_tool_call_ids(tmp_path: Path) -> None:
+    source = tmp_path / "results.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "Inspect the app."}],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "fc_legacy_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_runtime_1",
+                        "content": "ok",
+                    },
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "reward": 1.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "prime-sft.jsonl"
+    manifest = tmp_path / "manifest.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "convert",
+            str(source),
+            "--out",
+            str(out),
+            "--expected-rows",
+            "1",
+            "--manifest",
+            str(manifest),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = json.loads(out.read_text())
+    assert "trajectory" not in row
+    assert row["messages"][1]["tool_calls"][0]["id"] == "call_runtime_1"
+    assert json.loads(manifest.read_text())["tool_call_ids_rewritten"] == 1
     result = runner.invoke(app, ["train", "validate", str(out), "--expected-rows", "1"])
     assert result.exit_code == 0, result.output
 
