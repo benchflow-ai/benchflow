@@ -76,7 +76,7 @@ class RealAgentTraceRecorder:
         self._session_counts: dict[str, int] = {}
 
     @classmethod
-    def for_rollout(cls, rollout: Any) -> "RealAgentTraceRecorder | None":
+    def for_rollout(cls, rollout: Any) -> RealAgentTraceRecorder | None:
         rollout_dir = getattr(rollout, "_rollout_dir", None)
         if rollout_dir is None:
             return None
