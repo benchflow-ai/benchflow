@@ -3,11 +3,13 @@
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
+from benchflow.diagnostics import DIAGNOSTIC_REASON_IDLE_TIMEOUT
+
 # Error category constants
 INSTALL_FAILED = "install_failure"
 PIPE_CLOSED = "pipe_closed"
 ACP_ERROR = "acp_error"
-IDLE_TIMEOUT = "idle_timeout"
+IDLE_TIMEOUT = DIAGNOSTIC_REASON_IDLE_TIMEOUT
 INFRA_ERROR = "infra_failure"
 SANDBOX_SETUP = "sandbox_setup"
 PROVIDER_AUTH = "provider_auth"
