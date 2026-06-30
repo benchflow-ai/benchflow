@@ -17,6 +17,7 @@ uv run ruff check .
 - **Regression tests must name the PR/commit they guard** in the docstring (e.g. `Guards the fix from PR #198 against the regression introduced by PR #193`).
 - **Human review before `main`.** PRs only. No force-pushes to `main`. Self-approval doesn't count.
 - **Trunk-based:** branch off `main`, PR back to `main`. No long-lived release branches.
+- **Dependency cooldown:** `uv lock` never resolves to a release younger than 7 days. Don't hand-edit `[tool.uv] exclude-newer` — run `python tools/lock.py` to set it to `now - 7d` and re-lock; `tests/test_dep_cooldown.py` fails if the committed cutoff is younger than the window. A genuinely urgent fix gets a commented `[tool.uv.exclude-newer-package]` override.
 - **Releases:** current mechanics live in [`docs/release.md`](./docs/release.md). Merges to `main` publish internal preview `.devN` builds after CI passes; public releases require a reviewed stable-version PR, a matching `v<version>` tag on `main`, then a bump back to the next `.dev0`.
 
 ## Experiment guidance (when using benchflow to run batch tasks experiments)
