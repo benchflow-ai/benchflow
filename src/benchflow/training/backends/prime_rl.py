@@ -887,10 +887,10 @@ _REPLACEMENT = """\
             token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
             per_sample_token_count = loss_mask.sum(dim=1)
             valid_sample_mask = per_sample_token_count > 0
-            if not torch.all(valid_sample_mask):
+            if not torch.any(valid_sample_mask):
                 raise RuntimeError(
-                    "BenchFlow sample-mean loss received a batch row with no "
-                    "trainable tokens."
+                    "BenchFlow sample-mean loss received a batch with no "
+                    "trainable samples."
                 )
             per_sample_loss_sum = (token_loss * loss_mask.to(token_loss.dtype)).sum(dim=1)
             loss_sum = (
@@ -1051,7 +1051,7 @@ def _write_prime_rl_sft_compat_shim(
                 "data.pack_function=stack",
                 "model.cp=1",
                 "loss_impl=torch or loss_impl=liger",
-                "every batch row must contain at least one trainable token",
+                "every effective batch must contain at least one trainable row",
             ]
         )
     if pretokenized_data:

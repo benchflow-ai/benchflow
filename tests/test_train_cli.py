@@ -1236,11 +1236,12 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
     shim = manifest["extra"]["prime_rl_sft_shim"]
     shim_dir = Path(shim["shim_dir"])
     assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(shim_dir)
-    assert (
-        Path(shim["sitecustomize"])
-        .read_text(encoding="utf-8")
-        .startswith('"""BenchFlow Prime-RL SFT compatibility shim.')
+    sitecustomize_text = Path(shim["sitecustomize"]).read_text(encoding="utf-8")
+    assert sitecustomize_text.startswith(
+        '"""BenchFlow Prime-RL SFT compatibility shim.'
     )
+    assert "if not torch.any(valid_sample_mask):" in sitecustomize_text
+    assert "if not torch.all(valid_sample_mask):" not in sitecustomize_text
     assert shim["name"] == "prime_rl_sft_compatibility"
     assert manifest["extra"]["prime_rl_sft_compat_profile"]["name"] == (
         "env0-mobile300-pr828"
