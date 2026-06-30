@@ -291,7 +291,9 @@ def _parse_chat_template_kwargs(raw: Iterable[str]) -> dict[str, Any]:
         key, value = item.split("=", 1)
         key = key.strip()
         if not key:
-            raise ValueError(f"--chat-template-kwarg must have a non-empty key: {item!r}")
+            raise ValueError(
+                f"--chat-template-kwarg must have a non-empty key: {item!r}"
+            )
         values[key] = _parse_chat_template_value(value)
     return values
 
