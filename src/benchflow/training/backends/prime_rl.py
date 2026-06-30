@@ -860,6 +860,7 @@ def _tail_truncate_messages_keep_first_user(
             low = mid + 1
 
     if best_start is not None:
+        assert best_len is not None
         start = best_start
         while start > first_user_idx + 1:
             try:
