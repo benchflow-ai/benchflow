@@ -216,6 +216,7 @@ class RuntimeConfig:
     skills_dir: str | Path | None = None
     skill_mode: str = SKILL_MODE_NO_SKILL
     context_root: str | Path | None = None
+    base_image_override: str | None = None
     pre_agent_hooks: list | None = None
     sandbox_locked_paths: list[str] | None = None
     usage_tracking: Any = None
@@ -339,6 +340,7 @@ class Runtime:
             rollout_name=config.rollout_name,
             timeout=config.timeout,
             context_root=config.context_root,
+            base_image_override=config.base_image_override,
             pre_agent_hooks=config.pre_agent_hooks,
             agent=self.agent.name,
             model=self.agent.model,
@@ -438,6 +440,7 @@ async def run(
             sandbox_setup_timeout=rc.sandbox_setup_timeout,
             jobs_dir=rc.jobs_dir,
             context_root=rc.context_root,
+            base_image_override=rc.base_image_override,
             pre_agent_hooks=rc.pre_agent_hooks,
             skills_dir=rc.skills_dir,
             skill_mode=rc.skill_mode,
