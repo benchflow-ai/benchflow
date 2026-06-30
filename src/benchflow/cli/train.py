@@ -354,6 +354,18 @@ def register_train(app: typer.Typer) -> None:
                 ),
             ),
         ] = None,
+        message_tail_truncation: Annotated[
+            str,
+            typer.Option(
+                "--message-tail-truncation",
+                help=(
+                    "Local Prime-SFT row truncation before Prime-RL tokenizes it: "
+                    "off or keep-first-user. The keep-first-user mode keeps the "
+                    "initial user instruction plus the longest final message "
+                    "suffix that fits data.seq_len * data.micro_batch_size."
+                ),
+            ),
+        ] = "off",
         allow_unsafe_stack_flash_attn: Annotated[
             bool,
             typer.Option(
@@ -434,6 +446,7 @@ def register_train(app: typer.Typer) -> None:
                     renderer_mode=renderer_mode,
                     tool_defs_mode=tool_defs_mode,
                     chat_template_kwargs=tuple(chat_template_kwarg or ()),
+                    message_tail_truncation=message_tail_truncation,
                     allow_unsafe_stack_flash_attn=allow_unsafe_stack_flash_attn,
                     force=force,
                     cwd=prime_rl_dir,

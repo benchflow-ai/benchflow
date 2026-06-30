@@ -14,6 +14,20 @@ from benchflow.cli.main import app
 runner = CliRunner()
 
 
+class _FakeTailTokenizer:
+    eos_token_id = 0
+
+    def apply_chat_template(self, messages: list[dict[str, Any]], **kwargs: Any):
+        del kwargs
+        length = 0
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, str):
+                length += len(content)
+            length += 4 * len(message.get("tool_calls") or [])
+        return [1] * length + [self.eos_token_id]
+
+
 def _write_rollout(rollout_dir: Path) -> None:
     rollout_dir.mkdir(parents=True)
     (rollout_dir / "result.json").write_text(
@@ -587,6 +601,11 @@ def test_train_run_sft_prime_rl_packages_local_jsonl_data(
         "tool_defs_removed_rows": None,
         "chat_template_kwargs": None,
         "chat_template_kwargs_rows": None,
+        "message_tail_truncation": "off",
+        "message_tail_truncated_rows": None,
+        "message_tail_max_area": None,
+        "message_tail_max_tokens_before": None,
+        "message_tail_max_tokens_after": None,
         "validation": {"ok": True, "rows": 1, "rows_with_tool_calls": 1},
     }
 
@@ -941,6 +960,11 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
 
     monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(prime_rl.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(
+        prime_rl,
+        "_load_tail_truncation_tokenizer",
+        lambda model_name: _FakeTailTokenizer(),
+    )
 
     result = runner.invoke(
         app,
@@ -1001,6 +1025,7 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "renderer_mode": "none",
         "tool_defs_mode": "omit",
         "chat_template_kwargs": {"enable_thinking": False},
+        "message_tail_truncation": "keep-first-user",
     }
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_mode"] == "omit"
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_removed_rows"] == 1
@@ -1008,6 +1033,11 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "enable_thinking": False
     }
     assert manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs_rows"] == 1
+    assert manifest["extra"]["prime_rl_sft_dataset"]["message_tail_truncation"] == (
+        "keep-first-user"
+    )
+    assert manifest["extra"]["prime_rl_sft_dataset"]["message_tail_truncated_rows"] == 0
+    assert manifest["extra"]["prime_rl_sft_dataset"]["message_tail_max_area"] == 128
 
 
 def test_train_run_sft_prime_rl_custom_trainer_compatibility_mode(
@@ -1150,6 +1180,125 @@ def test_train_run_sft_prime_rl_custom_trainer_compatibility_mode(
     }
 
 
+def test_train_run_sft_prime_rl_message_tail_truncation_keeps_user_and_suffix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Overlength rows are staged before Prime-RL can truncate from the head."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            del kwargs
+            captured["argv"] = argv
+            self.stdout = io.StringIO("trainer ok\n")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    config = tmp_path / "sft.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "max_steps = 1",
+                "[model]",
+                'name = "Qwen/Qwen3.5-9B"',
+                "[data]",
+                "batch_size = 1",
+                "seq_len = 10",
+                "micro_batch_size = 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source_jsonl = tmp_path / "prime-sft.jsonl"
+    source_jsonl.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "uu"},
+                    {"role": "assistant", "content": "aaaaaa"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "finish",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "content": "bbbbbb"},
+                    {"role": "assistant", "content": "cccccc"},
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "reward": 1.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(prime_rl.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(
+        prime_rl,
+        "_load_tail_truncation_tokenizer",
+        lambda model_name: _FakeTailTokenizer(),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(work_dir),
+            "--data",
+            str(source_jsonl),
+            "--message-tail-truncation",
+            "keep-first-user",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data_idx = captured["argv"].index("--data.name")
+    staged_dir = Path(captured["argv"][data_idx + 1])
+    staged_row = json.loads((staged_dir / "train.jsonl").read_text())
+    assert [message["content"] for message in staged_row["messages"]] == [
+        "uu",
+        "cccccc",
+    ]
+
+    dataset_plan = json.loads((work_dir / "train-run.json").read_text())["extra"][
+        "prime_rl_sft_dataset"
+    ]
+    assert dataset_plan["message_tail_truncation"] == "keep-first-user"
+    assert dataset_plan["message_tail_truncated_rows"] == 1
+    assert dataset_plan["message_tail_max_area"] == 10
+    assert dataset_plan["message_tail_max_tokens_before"] == 24
+    assert dataset_plan["message_tail_max_tokens_after"] == 8
+
+
 def test_train_run_sft_prime_rl_rejects_tool_defs_omit_for_remote_data(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1210,6 +1359,47 @@ def test_train_run_sft_prime_rl_rejects_chat_template_kwargs_for_remote_data(
 
     assert result.exit_code == 1
     assert "--chat-template-kwarg requires --data to be a local JSONL" in result.output
+
+
+def test_train_run_sft_prime_rl_rejects_message_tail_truncation_for_remote_data(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    config = tmp_path / "sft.toml"
+    config.write_text(
+        "\n".join(["[model]", 'name = "Qwen/Qwen3.5-9B"']) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(
+        prime_rl,
+        "_load_tail_truncation_tokenizer",
+        lambda model_name: _FakeTailTokenizer(),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(tmp_path / "train-run"),
+            "--data",
+            "benchflow/remote-dataset",
+            "--message-tail-truncation",
+            "keep-first-user",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--message-tail-truncation requires --data to be a local JSONL" in (
+        result.output
+    )
 
 
 def test_train_run_sft_prime_rl_rejects_qwen35_stack_flash_attn(
