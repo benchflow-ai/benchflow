@@ -206,6 +206,28 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             "duration_ms": max((getattr(end_time, "timestamp", lambda: time.time())() - getattr(start_time, "timestamp", lambda: time.time())()) * 1000, 0),
         }
 
+    async def async_pre_call_hook(
+        self, user_api_key_dict, cache, data, call_type
+    ):
+        # Drop non-"function" tools before they reach a chat-only backend. A
+        # responses-API client (codex) sends tools the Responses wire allows but
+        # chat completions does not, e.g. a {"type": "namespace"} tool. When the
+        # proxy bridges /v1/responses to /chat/completions for a chat-only backend
+        # (deepseek, vllm), that stray tool makes the backend reject the whole
+        # request ("unknown variant namespace, expected function"). The dropped
+        # tools cannot be represented on the chat wire anyway; the function tools
+        # (shell, file IO, ...) survive untouched.
+        tools = data.get("tools") if isinstance(data, dict) else None
+        if isinstance(tools, list):
+            kept = [
+                t
+                for t in tools
+                if not isinstance(t, dict) or t.get("type", "function") == "function"
+            ]
+            if len(kept) != len(tools):
+                data["tools"] = kept
+        return data
+
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         record = self._base_record(kwargs, start_time, end_time)
         response = _jsonable(response_obj)
