@@ -336,6 +336,17 @@ def register_train(app: typer.Typer) -> None:
                 ),
             ),
         ] = None,
+        loss_normalization: Annotated[
+            str | None,
+            typer.Option(
+                "--loss-normalization",
+                help=(
+                    "Prime-RL SFT loss normalization: token_mean for native "
+                    "Prime-RL behavior, or sample_mean to match the historical "
+                    "custom trainer's per-row mean loss"
+                ),
+            ),
+        ] = None,
         model_attn: Annotated[
             str | None,
             typer.Option(
@@ -468,6 +479,7 @@ def register_train(app: typer.Typer) -> None:
                     sync_ckpt_to_max_steps=sync_ckpt_to_max_steps,
                     pack_function=pack_function,
                     loss_mask=loss_mask,
+                    loss_normalization=loss_normalization,
                     model_attn=model_attn,
                     renderer_mode=renderer_mode,
                     tool_defs_mode=tool_defs_mode,

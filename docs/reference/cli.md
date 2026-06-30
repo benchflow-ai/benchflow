@@ -414,6 +414,13 @@ separate Prime-RL stdout/stderr logs under `<work-dir>/prime-rl/`. Secrets are
 not written to the manifest; only the names of recognized credential env vars
 that were present are recorded.
 
+For the Mobile300 PR828 reproduction, use `--compat-profile
+env0-mobile300-pr828`. That profile stages the historical custom-trainer token
+suffix, preserves row boundaries with `stack`, and enables `sample_mean` loss
+normalization through a run-local `sitecustomize.py` shim. The shim leaves
+Prime-RL package files untouched but fails closed if the Prime-RL SFT train loop
+source no longer matches the expected token-mean block.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--backend` | `prime-rl` | Training backend. Currently only `prime-rl` is supported |
@@ -433,6 +440,7 @@ that were present are recorded.
 | `--sync-ckpt-to-max-steps` / `--no-sync-ckpt-to-max-steps` | `false` | When deriving `max_steps`, also derive `ckpt.interval` and `ckpt.keep_interval` |
 | `--pack-function` | — | First-class Prime-RL `data.pack_function` override: `cat` or `stack` |
 | `--loss-mask` | — | First-class Prime-RL `data.loss_mask` override: `assistant`, `all`, or comma-separated roles from `system,user,assistant,tool` |
+| `--loss-normalization` | — | Prime-RL SFT loss normalization. `token_mean` keeps native Prime-RL behavior; `sample_mean` launches a run-local compatibility shim that matches the historical custom trainer's per-row mean loss and requires `data.pack_function=stack` |
 | `--model-attn` | — | First-class Prime-RL `model.attn` override, e.g. `sdpa` |
 | `--renderer-mode` | — | Prime-RL renderer override. `none` emits `--renderer None`, making Prime-RL use tokenizer `apply_chat_template` tokenization |
 | `--tool-defs-mode` | `preserve` | For local JSONL or local dataset dirs, keep tool schemas (`preserve`) or remove `tool_defs`/`tools` from the temporary training copy (`omit`) |

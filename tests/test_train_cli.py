@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -897,8 +898,8 @@ def test_train_run_sft_prime_rl_records_reproduction_semantics(
 
     class FakeProcess:
         def __init__(self, argv: list[str], **kwargs: Any) -> None:
-            del kwargs
             captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
             self.stdout = io.StringIO("trainer ok\n")
             self.stderr = io.StringIO("")
 
@@ -995,6 +996,94 @@ def test_train_run_sft_prime_rl_records_reproduction_semantics(
     }
 
 
+def test_train_run_sft_prime_rl_sample_mean_requires_stack(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Sample-mean loss is only valid when Prime-RL preserves row boundaries."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    config = tmp_path / "sft.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "max_steps = 1",
+                "[data]",
+                "batch_size = 8",
+                'pack_function = "cat"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(work_dir),
+            "--loss-normalization",
+            "sample_mean",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "sample_mean requires data.pack_function=stack" in result.output
+
+
+def test_train_run_sft_prime_rl_mobile300_requires_sample_mean(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The Mobile300 profile refuses native token-weighted Prime-RL loss."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    config = tmp_path / "sft.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "max_steps = 300",
+                "[model]",
+                'name = "Qwen/Qwen3.5-9B"',
+                "[data]",
+                "batch_size = 8",
+                'pack_function = "stack"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(work_dir),
+            "--compat-profile",
+            "env0-mobile300-pr828",
+            "--loss-normalization",
+            "token_mean",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "requires --loss-normalization sample_mean" in result.output
+
+
 def test_train_run_sft_prime_rl_mobile300_compat_profile(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1005,8 +1094,8 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
 
     class FakeProcess:
         def __init__(self, argv: list[str], **kwargs: Any) -> None:
-            del kwargs
             captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
             self.stdout = io.StringIO("trainer ok\n")
             self.stderr = io.StringIO("")
 
@@ -1092,6 +1181,7 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
 
     assert result.exit_code == 0, result.output
     argv = captured["argv"]
+    assert captured["env"]["BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS"] == "1"
     assert "--tokenizer.chat_template" in argv
     template_idx = argv.index("--tokenizer.chat_template")
     template_path = Path(argv[template_idx + 1])
@@ -1138,6 +1228,18 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
     }
 
     manifest = json.loads((work_dir / "train-run.json").read_text())
+    command_text = (work_dir / "command.txt").read_text()
+    assert "BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS=1" in command_text
+    assert "PYTHONPATH=" in command_text
+    shim = manifest["extra"]["prime_rl_sft_shim"]
+    shim_dir = Path(shim["shim_dir"])
+    assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(shim_dir)
+    assert (
+        Path(shim["sitecustomize"])
+        .read_text(encoding="utf-8")
+        .startswith('"""BenchFlow Prime-RL sample-mean SFT loss compatibility shim.')
+    )
+    assert shim["name"] == "prime_rl_sample_mean_loss"
     assert manifest["extra"]["prime_rl_sft_compat_profile"]["name"] == (
         "env0-mobile300-pr828"
     )
@@ -1148,6 +1250,7 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "sync_ckpt_to_max_steps": True,
         "pack_function": "stack",
         "loss_mask": "assistant",
+        "loss_normalization": "sample_mean",
         "model_attn": "sdpa",
         "renderer_mode": "none",
         "tool_defs_mode": "omit",
