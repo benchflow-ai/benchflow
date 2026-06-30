@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from benchflow.providers.litellm_logging import (
     callback_module_source,
     extract_usage_from_trajectory,
@@ -14,6 +16,38 @@ def test_callback_module_source_exposes_proxy_handler_instance():
 
     assert "class BenchFlowLiteLLMLogger" in source
     assert "proxy_handler_instance = BenchFlowLiteLLMLogger()" in source
+
+
+@pytest.mark.asyncio
+async def test_callback_pre_call_hook_strips_chat_input_compat_field():
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+
+    data = {
+        "model": "accounts/example/deployments/qwen",
+        "messages": [{"role": "user", "content": "hi"}],
+        "input": [{"role": "user", "content": "hi"}],
+        "stream": True,
+    }
+
+    cleaned = await logger.async_pre_call_hook(None, None, data, "completion")
+
+    assert cleaned is not data
+    assert "input" not in cleaned
+    assert cleaned["messages"] == data["messages"]
+    assert cleaned["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_callback_pre_call_hook_preserves_input_only_requests():
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+
+    data = {"model": "responses-model", "input": "hello"}
+
+    assert await logger.async_pre_call_hook(None, None, data, "responses") is None
 
 
 def test_litellm_callback_jsonl_imports_usage_and_cost():
