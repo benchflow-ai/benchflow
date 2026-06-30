@@ -269,6 +269,33 @@ def register_train(app: typer.Typer) -> None:
                 help="Prime-RL config override as KEY=VALUE; repeatable",
             ),
         ] = None,
+        target_examples: Annotated[
+            int | None,
+            typer.Option(
+                "--target-examples",
+                help=(
+                    "Derive Prime-RL max_steps from a target number of training "
+                    "examples using data.batch_size"
+                ),
+            ),
+        ] = None,
+        sync_scheduler_to_max_steps: Annotated[
+            bool,
+            typer.Option(
+                "--sync-scheduler-to-max-steps/--no-sync-scheduler-to-max-steps",
+                help=(
+                    "When --target-examples is set, also derive "
+                    "scheduler.decay_steps from the computed max_steps"
+                ),
+            ),
+        ] = True,
+        pack_function: Annotated[
+            str | None,
+            typer.Option(
+                "--pack-function",
+                help="Optional first-class Prime-RL data.pack_function override: cat or stack",
+            ),
+        ] = None,
         force: Annotated[
             bool,
             typer.Option(
@@ -330,6 +357,9 @@ def register_train(app: typer.Typer) -> None:
                     follow=follow,
                     uv_no_sync=uv_no_sync,
                     overrides=tuple(override or ()),
+                    target_examples=target_examples,
+                    sync_scheduler_to_max_steps=sync_scheduler_to_max_steps,
+                    pack_function=pack_function,
                     force=force,
                     cwd=prime_rl_dir,
                     publish_model=publish_model,

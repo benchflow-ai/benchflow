@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from collections.abc import Iterable
+import tomllib
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from threading import Thread
-from typing import TextIO
+from typing import Any, TextIO
 
 from benchflow.training.run_manifest import (
     CommandRecord,
@@ -38,6 +40,9 @@ class PrimeRlSftSpec:
     follow: bool = False
     uv_no_sync: bool = False
     overrides: tuple[str, ...] = ()
+    target_examples: int | None = None
+    sync_scheduler_to_max_steps: bool = True
+    pack_function: str | None = None
     force: bool = False
     cwd: Path | None = None
     publish_model: str | None = None
@@ -55,6 +60,32 @@ class PrimeRlSftResult:
     returncode: int
 
 
+@dataclass(frozen=True)
+class PrimeRlSftExposurePlan:
+    target_examples: int | None = None
+    data_batch_size: int | None = None
+    derived_max_steps: int | None = None
+    sync_scheduler_to_max_steps: bool = False
+    pack_function: str | None = None
+    generated_overrides: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target_examples": self.target_examples,
+            "data_batch_size": self.data_batch_size,
+            "derived_max_steps": self.derived_max_steps,
+            "sync_scheduler_to_max_steps": self.sync_scheduler_to_max_steps,
+            "pack_function": self.pack_function,
+            "generated_overrides": list(self.generated_overrides),
+        }
+
+
+@dataclass(frozen=True)
+class PrimeRlSftLaunch:
+    argv: list[str]
+    exposure_plan: PrimeRlSftExposurePlan | None = None
+
+
 def _parse_overrides(overrides: Iterable[str]) -> list[str]:
     argv: list[str] = []
     for override in overrides:
@@ -68,6 +99,19 @@ def _parse_overrides(overrides: Iterable[str]) -> list[str]:
     return argv
 
 
+def _override_map(overrides: Iterable[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for override in overrides:
+        if "=" not in override:
+            raise ValueError(f"--override must be KEY=VALUE, got {override!r}")
+        key, value = override.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"--override must have a non-empty key: {override!r}")
+        values[key] = value
+    return values
+
+
 def _resolve_config_path(config: Path, cwd: Path | None) -> Path:
     if config.is_file():
         return config.resolve()
@@ -78,11 +122,116 @@ def _resolve_config_path(config: Path, cwd: Path | None) -> Path:
     raise ValueError(f"--config not found: {config}")
 
 
-def build_prime_rl_sft_argv(spec: PrimeRlSftSpec) -> list[str]:
+def _load_toml(path: Path) -> Mapping[str, Any]:
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    return data if isinstance(data, Mapping) else {}
+
+
+def _nested_config_value(data: Mapping[str, Any], key: str) -> Any:
+    current: Any = data
+    for part in key.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _parse_positive_int(value: Any, *, key: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{key} must be a positive integer, got {value!r}")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        raise ValueError(f"{key} must be a positive integer, got {value!r}")
+    if parsed <= 0:
+        raise ValueError(f"{key} must be a positive integer, got {value!r}")
+    return parsed
+
+
+def _resolve_data_batch_size(
+    config: Mapping[str, Any], overrides: Mapping[str, str]
+) -> int:
+    raw = overrides.get("data.batch_size")
+    source = "--override data.batch_size" if raw is not None else "config data.batch_size"
+    if raw is None:
+        raw = _nested_config_value(config, "data.batch_size")
+    if raw is None:
+        raise ValueError(
+            "--target-examples requires data.batch_size in the Prime-RL config "
+            "or an explicit --override data.batch_size=..."
+        )
+    return _parse_positive_int(raw, key=source)
+
+
+def _build_generated_overrides(
+    spec: PrimeRlSftSpec, config: Mapping[str, Any]
+) -> PrimeRlSftExposurePlan | None:
+    overrides = _override_map(spec.overrides)
+    generated: list[str] = []
+    target_examples: int | None = None
+    data_batch_size: int | None = None
+    derived_max_steps: int | None = None
+    pack_function: str | None = None
+
+    if spec.target_examples is not None:
+        if "max_steps" in overrides:
+            raise ValueError(
+                "--target-examples cannot be combined with --override max_steps=..."
+            )
+        target_examples = _parse_positive_int(
+            spec.target_examples, key="--target-examples"
+        )
+        data_batch_size = _resolve_data_batch_size(config, overrides)
+        derived_max_steps = ceil(target_examples / data_batch_size)
+        generated.append(f"max_steps={derived_max_steps}")
+        if spec.sync_scheduler_to_max_steps:
+            if "scheduler.decay_steps" in overrides:
+                raise ValueError(
+                    "--sync-scheduler-to-max-steps cannot be combined with "
+                    "--override scheduler.decay_steps=..."
+                )
+            generated.append(f"scheduler.decay_steps={derived_max_steps}")
+
+    if spec.pack_function is not None:
+        if spec.pack_function not in {"cat", "stack"}:
+            raise ValueError("--pack-function must be either 'cat' or 'stack'")
+        if "data.pack_function" in overrides:
+            raise ValueError(
+                "--pack-function cannot be combined with "
+                "--override data.pack_function=..."
+            )
+        pack_function = spec.pack_function
+        generated.append(f"data.pack_function={pack_function}")
+
+    if not generated:
+        return None
+    return PrimeRlSftExposurePlan(
+        target_examples=target_examples,
+        data_batch_size=data_batch_size,
+        derived_max_steps=derived_max_steps,
+        sync_scheduler_to_max_steps=(
+            bool(spec.sync_scheduler_to_max_steps)
+            if target_examples is not None
+            else False
+        ),
+        pack_function=pack_function,
+        generated_overrides=tuple(generated),
+    )
+
+
+def build_prime_rl_sft_launch(spec: PrimeRlSftSpec) -> PrimeRlSftLaunch:
     config = _resolve_config_path(spec.config, spec.cwd)
+    config_data = _load_toml(config)
     work_dir = spec.work_dir.resolve()
     output_dir = (
         spec.output_dir.resolve() if spec.output_dir else work_dir / "prime-rl-output"
+    )
+    exposure_plan = _build_generated_overrides(spec, config_data)
+    effective_overrides = spec.overrides + (
+        exposure_plan.generated_overrides if exposure_plan is not None else ()
     )
     argv = ["uv", "run"]
     if spec.uv_no_sync:
@@ -93,8 +242,12 @@ def build_prime_rl_sft_argv(spec: PrimeRlSftSpec) -> list[str]:
     argv.extend(["--output-dir", str(output_dir)])
     if spec.dry_run:
         argv.append("--dry-run")
-    argv.extend(_parse_overrides(spec.overrides))
-    return argv
+    argv.extend(_parse_overrides(effective_overrides))
+    return PrimeRlSftLaunch(argv=argv, exposure_plan=exposure_plan)
+
+
+def build_prime_rl_sft_argv(spec: PrimeRlSftSpec) -> list[str]:
+    return build_prime_rl_sft_launch(spec).argv
 
 
 def _recorded_env_keys() -> list[str]:
@@ -116,7 +269,10 @@ def _copy_stream(stream: TextIO, handle: TextIO, *, echo: bool) -> None:
 
 
 def _initial_manifest(
-    spec: PrimeRlSftSpec, argv: list[str], logs: list[str]
+    spec: PrimeRlSftSpec,
+    argv: list[str],
+    logs: list[str],
+    exposure_plan: PrimeRlSftExposurePlan | None = None,
 ) -> TrainRunManifest:
     work_dir = spec.work_dir.resolve()
     output_dir = (
@@ -136,7 +292,7 @@ def _initial_manifest(
         logs=logs,
     )
     now = utc_now()
-    return TrainRunManifest(
+    manifest = TrainRunManifest(
         schema_version=1,
         run_type="sft",
         backend="prime-rl",
@@ -150,6 +306,9 @@ def _initial_manifest(
         commands=[command],
         components=[component],
     )
+    if exposure_plan is not None:
+        manifest.extra["prime_rl_sft_exposure_plan"] = exposure_plan.to_dict()
+    return manifest
 
 
 def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
@@ -172,7 +331,8 @@ def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
     stderr_path = log_dir / "stderr.log"
     command_path = work_dir / "command.txt"
 
-    argv = build_prime_rl_sft_argv(spec)
+    launch = build_prime_rl_sft_launch(spec)
+    argv = launch.argv
     command_path.write_text(_shell_quote(argv) + "\n", encoding="utf-8")
     manifest = _initial_manifest(
         spec,
@@ -181,6 +341,7 @@ def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
             str(stdout_path.relative_to(work_dir)),
             str(stderr_path.relative_to(work_dir)),
         ],
+        launch.exposure_plan,
     )
     manifest.overall_status = "running"
     manifest.components[0].status = "running"
