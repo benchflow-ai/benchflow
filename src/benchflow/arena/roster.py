@@ -59,6 +59,12 @@ class Roster(BaseModel):
         roster._base_dir = path.resolve().parent
         return roster
 
+    def instructions_path(self, spec: AgentSpec) -> Path | None:
+        """Resolve a seat's instruction file relative to the roster's directory."""
+        if not spec.instructions:
+            return None
+        return self._base_dir / spec.instructions
+
     def seats(self) -> list[Seat]:
         """Resolve + fan out every entry into runnable seats (ids must be unique)."""
         out: list[Seat] = []

@@ -1,4 +1,7 @@
-"""Shared-sandbox concurrent floor: fan-out, separate trajectories, drive modes."""
+"""Shared-sandbox concurrent floor: fan-out, separate trajectories, drive modes.
+
+The floor consumes a decoupled ``Roster`` (agents only) + a ``FloorConfig`` (the
+run-level params that come from CLI flags) — not a task-coupled manifest."""
 
 from __future__ import annotations
 
@@ -9,7 +12,8 @@ import pytest
 
 from benchflow.arena import concurrent_floor as cf
 from benchflow.arena.agent_driver import SeatConn
-from benchflow.arena.agents_manifest import AgentsManifest
+from benchflow.arena.concurrent_floor import FloorConfig
+from benchflow.arena.roster import Roster
 
 
 class _FakeSandbox:
@@ -55,25 +59,23 @@ def _patch_subscription(monkeypatch):
 
 
 @pytest.fixture
-def base_yaml(tmp_path):
-    def _make(body):
+def make_roster(tmp_path):
+    def _make(agents_body):
         (tmp_path / "claude.md").write_text("be bold")
-        p = tmp_path / "agents.yaml"
-        p.write_text(textwrap.dedent(body))
-        return AgentsManifest.from_yaml(p)
+        p = tmp_path / "roster.yaml"
+        p.write_text(textwrap.dedent(agents_body))
+        return Roster.from_yaml(p)
     return _make
 
 
 @pytest.mark.asyncio
-async def test_auto_loop_separate_acp_files_and_artifacts(base_yaml, tmp_path, monkeypatch):
-    m = base_yaml("""
-        drive: auto-loop
-        prompt: play the game
-        out: %s
+async def test_auto_loop_separate_acp_files_and_artifacts(make_roster, tmp_path, monkeypatch):
+    roster = make_roster("""
         agents:
           - { name: claude, agent: claude-agent-acp, model: claude-sonnet-4-6, count: 2, instructions: claude.md }
           - { name: codex, agent: codex-acp, model: gpt-5.5 }
-    """ % (tmp_path / "out"))
+    """)
+    cfg = FloorConfig(out=str(tmp_path / "out"), drive="auto-loop", prompt="play the game")
     _patch_driver(monkeypatch, {
         "claude-agent-acp": [{"type": "agent_message", "text": "hi"}, {"type": "tool_call"}],
         "codex-acp": [{"type": "tool_call"}],
@@ -81,9 +83,7 @@ async def test_auto_loop_separate_acp_files_and_artifacts(base_yaml, tmp_path, m
     _patch_subscription(monkeypatch)
     sb = _FakeSandbox()
 
-    summary = await cf.run_concurrent_floor(
-        m, sandbox=sb, service_url="http://svc", environment="docker",
-    )
+    summary = await cf.run_concurrent_floor(roster, sandbox=sb, service_url="http://svc", config=cfg)
 
     out = tmp_path / "out"
     # fan-out: claude-0, claude-1, codex → 3 seats, 3 separate acp files
@@ -95,8 +95,8 @@ async def test_auto_loop_separate_acp_files_and_artifacts(base_yaml, tmp_path, m
         # subscription seats → NO raw llm trajectory
         assert not (out / seat / "trajectory" / "llm_trajectory.jsonl").exists()
     # roster + floor written
-    roster = json.loads((out / "roster.json").read_text())
-    assert {r["seat"] for r in roster} == seats
+    roster_json = json.loads((out / "roster.json").read_text())
+    assert {r["seat"] for r in roster_json} == seats
     assert json.loads((out / "floor.json").read_text())["drive"] == "auto-loop"
     # instructions (CLAUDE.md) uploaded for the two claude seats only
     claude_uploads = [d for _, d in sb.uploads if d.endswith("CLAUDE.md")]
@@ -104,14 +104,12 @@ async def test_auto_loop_separate_acp_files_and_artifacts(base_yaml, tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_proxy_seat_gets_separate_raw_llm_file(base_yaml, tmp_path, monkeypatch):
-    m = base_yaml("""
-        drive: auto-loop
-        prompt: play
-        out: %s
+async def test_proxy_seat_gets_separate_raw_llm_file(make_roster, tmp_path, monkeypatch):
+    roster = make_roster("""
         agents:
           - { name: ds, agent: deepagents, model: deepseek-v4-pro }
-    """ % (tmp_path / "out"))
+    """)
+    cfg = FloorConfig(out=str(tmp_path / "out"), prompt="play")
     _patch_driver(monkeypatch, {})
 
     class _RtTraj:
@@ -134,7 +132,7 @@ async def test_proxy_seat_gets_separate_raw_llm_file(base_yaml, tmp_path, monkey
     monkeypatch.setattr(cf, "stop_provider_runtime", fake_stop)
     sb = _FakeSandbox()
 
-    summary = await cf.run_concurrent_floor(m, sandbox=sb, service_url="http://svc")
+    summary = await cf.run_concurrent_floor(roster, sandbox=sb, service_url="http://svc", config=cfg)
 
     seat_dir = tmp_path / "out" / "ds" / "trajectory"
     assert (seat_dir / "acp_trajectory.jsonl").exists()
@@ -146,17 +144,16 @@ async def test_proxy_seat_gets_separate_raw_llm_file(base_yaml, tmp_path, monkey
 
 @pytest.mark.asyncio
 async def test_subscription_capable_agent_with_api_key_uses_proxy(
-    base_yaml, tmp_path, monkeypatch
+    make_roster, tmp_path, monkeypatch
 ):
     # claude-agent-acp WITH an API key (uses_native_subscription_auth → False) must
     # take the proxy path (its own per-seat proxy, raw=True) — NOT be forced
     # subscription-only just because it *can* do oauth.
-    m = base_yaml("""
-        prompt: play
-        out: %s
+    roster = make_roster("""
         agents:
           - { name: claude, agent: claude-agent-acp, model: claude-sonnet-4-6 }
-    """ % (tmp_path / "out"))
+    """)
+    cfg = FloorConfig(out=str(tmp_path / "out"), prompt="play")
     _patch_driver(monkeypatch, {})
     monkeypatch.setattr(cf, "uses_native_subscription_auth", lambda *a, **k: False)
     started = {}
@@ -171,26 +168,26 @@ async def test_subscription_capable_agent_with_api_key_uses_proxy(
     monkeypatch.setattr(cf, "ensure_litellm_runtime", fake_runtime)
     monkeypatch.setattr(cf, "stop_provider_runtime", fake_stop)
 
-    summary = await cf.run_concurrent_floor(m, sandbox=_FakeSandbox(), service_url="http://s")
+    summary = await cf.run_concurrent_floor(
+        roster, sandbox=_FakeSandbox(), service_url="http://s", config=cfg)
     assert started["session_id"] == "floor-claude"  # its OWN per-seat proxy
     assert summary["results"][0]["raw"] is True
 
 
 @pytest.mark.asyncio
-async def test_one_bad_seat_does_not_kill_floor(base_yaml, tmp_path, monkeypatch):
-    m = base_yaml("""
-        prompt: play
-        out: %s
+async def test_one_bad_seat_does_not_kill_floor(make_roster, tmp_path, monkeypatch):
+    roster = make_roster("""
         agents:
           - { name: good, agent: codex-acp }
           - { name: bad, agent: claude-agent-acp }
-    """ % (tmp_path / "out"))
+    """)
+    cfg = FloorConfig(out=str(tmp_path / "out"), prompt="play")
     _patch_subscription(monkeypatch)
 
-    async def fake_connect_seat(cfg, **kw):
-        if cfg.name == "claude-agent-acp":
+    async def fake_connect_seat(cfg_, **kw):
+        if cfg_.name == "claude-agent-acp":
             raise RuntimeError("boom")
-        return SeatConn(protocol="acp", session=_FakeSession(), client=None, name=cfg.name)
+        return SeatConn(protocol="acp", session=_FakeSession(), client=None, name=cfg_.name)
 
     async def fake_prompt_seat(conn, prompt, *, timeout, idle_timeout=None):
         return [{"type": "tool_call"}], 1
@@ -199,7 +196,8 @@ async def test_one_bad_seat_does_not_kill_floor(base_yaml, tmp_path, monkeypatch
     monkeypatch.setattr(cf, "prompt_seat", fake_prompt_seat)
     monkeypatch.setattr(cf, "close_seat", lambda conn: _noop())
 
-    summary = await cf.run_concurrent_floor(m, sandbox=_FakeSandbox(), service_url="http://s")
+    summary = await cf.run_concurrent_floor(
+        roster, sandbox=_FakeSandbox(), service_url="http://s", config=cfg)
     by_seat = {r["seat"]: r for r in summary["results"]}
     assert by_seat["good"]["status"] == "ok"
     assert by_seat["bad"]["status"].startswith("error:")
@@ -210,14 +208,12 @@ async def _noop():
 
 
 @pytest.mark.asyncio
-async def test_service_rounds_nudges_only_on_your_turn(base_yaml, tmp_path, monkeypatch):
-    m = base_yaml("""
-        drive: service-rounds
-        prompt: take your turn
-        out: %s
+async def test_service_rounds_nudges_only_on_your_turn(make_roster, tmp_path, monkeypatch):
+    roster = make_roster("""
         agents:
           - { name: p, agent: codex-acp }
-    """ % (tmp_path / "out"))
+    """)
+    cfg = FloorConfig(out=str(tmp_path / "out"), drive="service-rounds", prompt="take your turn")
     _patch_driver(monkeypatch, {"codex-acp": [{"type": "tool_call"}]})
     _patch_subscription(monkeypatch)  # codex seat → no real proxy in the test
 
@@ -252,7 +248,7 @@ async def test_service_rounds_nudges_only_on_your_turn(base_yaml, tmp_path, monk
     monkeypatch.setattr(cf, "prompt_seat", fake_prompt_seat)
 
     summary = await cf.run_concurrent_floor(
-        m, sandbox=_FakeSandbox(), service_url="http://svc",
+        roster, sandbox=_FakeSandbox(), service_url="http://svc", config=cfg,
         seat_client_factory=lambda seat_id: _FakeClient(seat_id),
     )
     r = summary["results"][0]

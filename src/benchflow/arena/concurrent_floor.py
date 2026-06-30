@@ -1,18 +1,21 @@
 """Shared-sandbox concurrent multi-agent runner — the native floor.
 
-``run_concurrent_floor(manifest, sandbox, service_url)`` runs every seat of an
-``agents.yaml`` CONCURRENTLY against ONE shared task service, all inside ONE
-shared sandbox, each agent pinned to its own ``/work/<seat>`` folder (cwd =
+``run_concurrent_floor(roster, sandbox, service_url, config)`` runs every seat of
+a decoupled ``Roster`` CONCURRENTLY against ONE shared task service, all inside
+ONE shared sandbox, each agent pinned to its own ``/work/<seat>`` folder (cwd =
 identity = I/O). Per seat it captures a separate ACP trajectory, and — for
 proxy-routed seats — a separate raw ``llm_trajectory.jsonl`` from that seat's own
 LiteLLM proxy. Subscription seats (codex/claude oauth) call their provider
 directly, so they get an ACP trajectory only (flagged ``raw=false``).
 
-The orchestrator is pure over an *already-started* ``sandbox`` + ``service_url``;
-the docker/daytona/service bootstrap is the caller's job (the CLI and the casino
-example), which keeps this testable with in-memory fakes.
+The roster is the A/M axis only; the run-level config (out, drive, prompt,
+deadlines, the service-env var names) arrives as a :class:`FloorConfig` built from
+the standard ``bench eval run`` flags — NOT baked into the roster file. The
+orchestrator stays pure over an *already-started* ``sandbox`` + ``service_url``
+(the docker/daytona/in-sandbox-service bootstrap is the caller's job), which keeps
+it testable with in-memory fakes.
 
-Two drive modes (manifest ``drive:``), orthogonal to agent protocol:
+Two drive modes (``FloorConfig.drive``), orthogonal to agent protocol:
   * ``auto-loop`` (default, verified) — one prompt; the agent runs its own
     observe→act loop via the in-sandbox CLI. Multi-round happens inside the prompt.
   * ``service-rounds`` (structural) — the mock service drives the rounds: poll the
@@ -28,6 +31,7 @@ import json
 import os
 import shlex
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,13 +39,30 @@ from benchflow.acp.runtime import AgentPromptTimeoutError
 from benchflow.agents.credentials import upload_subscription_auth
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.arena.agent_driver import close_seat, connect_seat, prompt_seat
-from benchflow.arena.agents_manifest import AgentsManifest, Seat
+from benchflow.arena.agents_manifest import Seat
 from benchflow.arena.instructions import write_agent_instructions
 from benchflow.arena.protocol import Observation, SeatStatus
+from benchflow.arena.roster import Roster
 from benchflow.providers import ensure_litellm_runtime, stop_provider_runtime
 from benchflow.trajectories._capture import TrajectoryWriter, make_trajectory_sink
 
-__all__ = ["run_concurrent_floor", "HttpSeatClient"]
+__all__ = ["FloorConfig", "run_concurrent_floor", "HttpSeatClient"]
+
+
+@dataclass
+class FloorConfig:
+    """Run-level config for a floor — the bits that come from CLI flags, not the
+    roster file. ``url_env``/``seat_env`` name the env vars the task CLI reads for
+    the service URL and this seat's id (e.g. ``CASINO_URL`` / ``CASINOBENCH_SEAT_ID``)."""
+
+    out: str | Path
+    drive: str = "auto-loop"
+    prompt: str | None = None
+    deadline_s: int = 1200
+    idle_timeout_s: int = 300
+    url_env: str | None = None
+    seat_env: str | None = None
+    environment: str = "docker"
 
 
 def _provider_keys() -> dict[str, str]:
@@ -71,12 +92,12 @@ class HttpSeatClient:
         return r.json()
 
 
-def _seat_env(manifest: AgentsManifest, seat: Seat, service_url: str) -> dict[str, str]:
+def _seat_env(cfg: FloorConfig, seat: Seat, service_url: str) -> dict[str, str]:
     env = {"BENCHFLOW_SERVICE_URL": service_url, "BENCHFLOW_SEAT_ID": seat.seat_id}
-    if manifest.services.url_env:  # e.g. CASINO_URL — the var the task CLI reads
-        env[manifest.services.url_env] = service_url
-    if manifest.services.seat_env:  # e.g. CASINOBENCH_SEAT_ID — the player id
-        env[manifest.services.seat_env] = seat.seat_id
+    if cfg.url_env:  # e.g. CASINO_URL — the var the task CLI reads
+        env[cfg.url_env] = service_url
+    if cfg.seat_env:  # e.g. CASINOBENCH_SEAT_ID — the player id
+        env[cfg.seat_env] = seat.seat_id
     env.update(seat.spec.env)
     return env
 
@@ -92,13 +113,13 @@ def _render_round(base_prompt: str, obs: Observation, round_no: int) -> str:
 
 
 async def _drive_service_rounds(
-    conn, seat: Seat, manifest: AgentsManifest, seat_client, deadline: float
+    conn, seat: Seat, cfg: FloorConfig, seat_client, deadline: float
 ) -> tuple[str, int, list[dict]]:
     """The mock service drives the rounds: nudge the seat only on its turn.
 
     Returns ``(status, total_tool_calls, last_trajectory)`` — tool calls summed
     across rounds (the status string carries the round count)."""
-    base = manifest.prompt or "Play your turn."
+    base = cfg.prompt or "Play your turn."
     rounds, tools = 0, 0
     last_traj: list[dict] = []
     while time.monotonic() < deadline:
@@ -109,7 +130,7 @@ async def _drive_service_rounds(
             rounds += 1
             last_traj, n = await prompt_seat(
                 conn, _render_round(base, obs, rounds),
-                timeout=manifest.deadline_s, idle_timeout=manifest.idle_timeout_s,
+                timeout=cfg.deadline_s, idle_timeout=cfg.idle_timeout_s,
             )
             tools += n
         else:
@@ -120,41 +141,41 @@ async def _drive_service_rounds(
 async def _run_seat(
     seat: Seat,
     *,
-    manifest: AgentsManifest,
+    roster: Roster,
+    cfg: FloorConfig,
     sandbox: Any,
     service_url: str,
     run_dir: Path,
-    environment: str,
     http: Any | None,
     seat_client_factory,
 ) -> dict[str, Any]:
     out = run_dir / seat.seat_id
     (out / "trajectory").mkdir(parents=True, exist_ok=True)
-    cfg = seat.config
+    agent_cfg = seat.config
     runtime = None
     status, n_tools, n_llm = "ok", 0, 0
     try:
         await sandbox.exec(f"mkdir -p {shlex.quote(seat.agent_cwd)}", timeout_sec=20)
         await write_agent_instructions(
-            sandbox, seat.agent_cwd, cfg, manifest.instructions_path(seat.spec)
+            sandbox, seat.agent_cwd, agent_cfg, roster.instructions_path(seat.spec)
         )
         # Decide subscription vs proxy by ACTUAL auth, not capability: a claude/codex
         # seat with an API key wants the proxy (raw+acp); only an oauth-only seat
         # (no key, host login present) goes provider-direct (acp-only).
-        agent_env = {**_provider_keys(), **_seat_env(manifest, seat, service_url)}
-        if uses_native_subscription_auth(cfg.name, seat.spec.model, agent_env):
-            await upload_subscription_auth(sandbox, cfg.name, "/root")
+        agent_env = {**_provider_keys(), **_seat_env(cfg, seat, service_url)}
+        if uses_native_subscription_auth(agent_cfg.name, seat.spec.model, agent_env):
+            await upload_subscription_auth(sandbox, agent_cfg.name, "/root")
         else:  # API-key seat → its OWN proxy → separate raw llm_trajectory
             provider_env, runtime = await ensure_litellm_runtime(
-                agent=cfg.name, agent_env=agent_env, model=seat.spec.model,
-                runtime=None, environment=environment,
+                agent=agent_cfg.name, agent_env=agent_env, model=seat.spec.model,
+                runtime=None, environment=cfg.environment,
                 session_id=f"floor-{seat.seat_id}",
             )
             agent_env = {**agent_env, **provider_env}
 
         conn = await connect_seat(
-            cfg, env=sandbox, agent_cwd=seat.agent_cwd, agent_env=agent_env,
-            model=seat.spec.model, rollout_dir=out, environment=environment,
+            agent_cfg, env=sandbox, agent_cwd=seat.agent_cwd, agent_env=agent_env,
+            model=seat.spec.model, rollout_dir=out, environment=cfg.environment,
             seat_id=seat.seat_id, reasoning_effort=seat.spec.reasoning_effort,
         )
         # stream the ACP trajectory live (survives a wall-clock timeout)
@@ -163,21 +184,21 @@ async def _run_seat(
         with contextlib.suppress(Exception):
             conn.session.on_change = make_trajectory_sink(writer, [])
         try:
-            if manifest.drive == "service-rounds":
+            if cfg.drive == "service-rounds":
                 if seat_client_factory is not None:
                     client = seat_client_factory(seat.seat_id)
                 else:
                     client = HttpSeatClient(service_url, http)
-                deadline = time.monotonic() + manifest.deadline_s
+                deadline = time.monotonic() + cfg.deadline_s
                 status, n_tools, traj = await _drive_service_rounds(
-                    conn, seat, manifest, client, deadline
+                    conn, seat, cfg, client, deadline
                 )
             else:  # auto-loop
-                if not manifest.prompt:
-                    raise ValueError("auto-loop drive requires a top-level `prompt:`")
+                if not cfg.prompt:
+                    raise ValueError("auto-loop drive requires a prompt (--prompt)")
                 traj, n_tools = await prompt_seat(
-                    conn, manifest.prompt,
-                    timeout=manifest.deadline_s, idle_timeout=manifest.idle_timeout_s,
+                    conn, cfg.prompt,
+                    timeout=cfg.deadline_s, idle_timeout=cfg.idle_timeout_s,
                 )
             if traj:
                 writer.write_final(traj)
@@ -202,32 +223,32 @@ async def _run_seat(
         )
         n_llm = len(rt_traj.exchanges)
     return {
-        "seat": seat.seat_id, "agent": cfg.name, "model": seat.spec.model,
-        "protocol": cfg.protocol, "byoa": seat.is_byoa,
+        "seat": seat.seat_id, "agent": agent_cfg.name, "model": seat.spec.model,
+        "protocol": agent_cfg.protocol, "byoa": seat.is_byoa,
         "raw": runtime is not None,  # raw captured iff a proxy ran for this seat
         "status": status, "acp_tool_calls": n_tools, "llm_calls": n_llm,
     }
 
 
 async def run_concurrent_floor(
-    manifest: AgentsManifest,
+    roster: Roster,
     *,
     sandbox: Any,
     service_url: str,
-    run_dir: str | Path | None = None,
-    environment: str = "docker",
+    config: FloorConfig,
     http: Any | None = None,
     seat_client_factory=None,
 ) -> dict[str, Any]:
-    """Run all seats concurrently in one shared ``sandbox`` against ``service_url``.
+    """Run all seats of ``roster`` concurrently in one shared ``sandbox`` against
+    ``service_url``.
 
     ``sandbox`` is already started; ``service_url`` already reachable from inside
-    it. Writes ``<run_dir>/<seat>/trajectory/{acp,llm}_trajectory.jsonl`` +
+    it. Writes ``<config.out>/<seat>/trajectory/{acp,llm}_trajectory.jsonl`` +
     ``roster.json`` + ``floor.json``. Returns the floor summary.
     """
-    run_dir = Path(run_dir or manifest.out)
+    run_dir = Path(config.out)
     run_dir.mkdir(parents=True, exist_ok=True)
-    seats = manifest.seats()
+    seats = roster.seats()
     (run_dir / "roster.json").write_text(json.dumps(
         [{"seat": s.seat_id, "agent": s.config.name, "model": s.spec.model,
           "protocol": s.config.protocol, "byoa": s.is_byoa} for s in seats],
@@ -236,14 +257,12 @@ async def run_concurrent_floor(
 
     results = await asyncio.gather(*[
         _run_seat(
-            s, manifest=manifest, sandbox=sandbox, service_url=service_url,
-            run_dir=run_dir, environment=environment, http=http,
-            seat_client_factory=seat_client_factory,
+            s, roster=roster, cfg=config, sandbox=sandbox, service_url=service_url,
+            run_dir=run_dir, http=http, seat_client_factory=seat_client_factory,
         )
         for s in seats
     ])
 
-    summary = {"results": results, "drive": manifest.drive,
-               "service_url": service_url}
+    summary = {"results": results, "drive": config.drive, "service_url": service_url}
     (run_dir / "floor.json").write_text(json.dumps(summary, indent=2))
     return summary
