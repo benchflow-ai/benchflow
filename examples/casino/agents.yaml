@@ -12,7 +12,8 @@ sandbox:
   name: casinoseat
 
 services:
-  url_env: CASINO_URL             # the var the in-sandbox `casino` CLI reads
+  url_env: CASINO_URL             # the var the in-sandbox `casino` CLI reads for the service
+  seat_env: CASINOBENCH_SEAT_ID   # the var that identifies this seat/player
   command: "uv run casino-service --host 0.0.0.0 --port {port}"
   cwd: ~/casinobench              # your casinobench checkout
   port: 9100

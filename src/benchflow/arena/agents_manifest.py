@@ -67,6 +67,8 @@ class Services(BaseModel):
     shared: bool = True
     url_env: str | None = None  # extra env var to export the service URL under
     # (e.g. CASINO_URL — the var the task's in-sandbox CLI reads).
+    seat_env: str | None = None  # extra env var to export THIS seat's id under
+    # (e.g. CASINOBENCH_SEAT_ID — how the task identifies the player/seat).
     url: str | None = None  # external service URL → skip bootstrap, use as-is
     command: str | None = None  # host subprocess that starts the shared service
     # ({port} is substituted). Reached from inside the sandbox over the bridge.

@@ -227,6 +227,10 @@ class DockerProcess(LiveProcess):
         self._project_dir = project_dir
         self._compose_files = compose_files
         self._service = service
+        # Unique per process: N agents may run concurrently in ONE shared
+        # container (the arena concurrent floor), so a fixed path would race —
+        # one agent's `source && rm` deletes the file another is about to source.
+        self._env_path = f"/tmp/.benchflow_env_{uuid.uuid4().hex[:16]}"
 
     @classmethod
     def from_sandbox_env(cls, env: Any, service: str = "main") -> "DockerProcess":
@@ -286,8 +290,6 @@ class DockerProcess(LiveProcess):
                 logger.debug("Could not inspect docker context", exc_info=True)
         return proc_env
 
-    _ENV_PATH = "/tmp/.benchflow_env"
-
     async def _write_env_to_container(
         self,
         env: dict[str, str],
@@ -303,7 +305,7 @@ class DockerProcess(LiveProcess):
                 self._service,
                 "bash",
                 "-c",
-                f"cat > {self._ENV_PATH} && chmod 600 {self._ENV_PATH}",
+                f"cat > {self._env_path} && chmod 600 {self._env_path}",
             ]
         )
         proc = await asyncio.create_subprocess_exec(
@@ -334,7 +336,7 @@ class DockerProcess(LiveProcess):
         # and avoids `--env-file` (not supported in all Compose versions).
         if env:
             await self._write_env_to_container(env, proc_env)
-            command = f"source {self._ENV_PATH} && rm -f {self._ENV_PATH} && {command}"
+            command = f"source {self._env_path} && rm -f {self._env_path} && {command}"
 
         cmd = self._compose_cmd()
         cmd.extend(["exec", "-i", "-T"])

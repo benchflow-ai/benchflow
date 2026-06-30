@@ -75,6 +75,8 @@ def _seat_env(manifest: AgentsManifest, seat: Seat, service_url: str) -> dict[st
     env = {"BENCHFLOW_SERVICE_URL": service_url, "BENCHFLOW_SEAT_ID": seat.seat_id}
     if manifest.services.url_env:  # e.g. CASINO_URL — the var the task CLI reads
         env[manifest.services.url_env] = service_url
+    if manifest.services.seat_env:  # e.g. CASINOBENCH_SEAT_ID — the player id
+        env[manifest.services.seat_env] = seat.seat_id
     env.update(seat.spec.env)
     return env
 
