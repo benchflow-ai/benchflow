@@ -585,6 +585,8 @@ def test_train_run_sft_prime_rl_packages_local_jsonl_data(
         "train_jsonl": str(train_jsonl),
         "tool_defs_mode": "preserve",
         "tool_defs_removed_rows": None,
+        "chat_template_kwargs": None,
+        "chat_template_kwargs_rows": None,
         "validation": {"ok": True, "rows": 1, "rows_with_tool_calls": 1},
     }
 
@@ -959,8 +961,7 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
 
     assert result.exit_code == 0, result.output
     argv = captured["argv"]
-    assert "--renderer" not in argv
-    assert argv[-16:] == [
+    assert argv[-18:] == [
         "--max_steps",
         "38",
         "--scheduler.decay_steps",
@@ -977,12 +978,15 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "true",
         "--model.attn",
         "sdpa",
+        "--renderer",
+        "None",
     ]
     data_idx = argv.index("--data.name")
     staged_dir = Path(argv[data_idx + 1])
     staged_row = json.loads((staged_dir / "train.jsonl").read_text())
     assert "tool_defs" not in staged_row
     assert "tools" not in staged_row
+    assert staged_row["chat_template_kwargs"] == {"enable_thinking": False}
 
     manifest = json.loads((work_dir / "train-run.json").read_text())
     assert manifest["extra"]["prime_rl_sft_compat_profile"]["name"] == (
@@ -994,11 +998,16 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "pack_function": "stack",
         "loss_mask": "all",
         "model_attn": "sdpa",
-        "renderer_mode": None,
+        "renderer_mode": "none",
         "tool_defs_mode": "omit",
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_mode"] == "omit"
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_removed_rows"] == 1
+    assert manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs"] == {
+        "enable_thinking": False
+    }
+    assert manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs_rows"] == 1
 
 
 def test_train_run_sft_prime_rl_custom_trainer_compatibility_mode(
@@ -1099,6 +1108,8 @@ def test_train_run_sft_prime_rl_custom_trainer_compatibility_mode(
             "none",
             "--tool-defs-mode",
             "omit",
+            "--chat-template-kwarg",
+            "enable_thinking=false",
         ],
     )
 
@@ -1112,6 +1123,7 @@ def test_train_run_sft_prime_rl_custom_trainer_compatibility_mode(
     staged_row = json.loads((staged_dir / "train.jsonl").read_text())
     assert "tool_defs" not in staged_row
     assert "tools" not in staged_row
+    assert staged_row["chat_template_kwargs"] == {"enable_thinking": False}
     assert "tool_defs" in json.loads(source_jsonl.read_text())
 
     manifest = json.loads((work_dir / "train-run.json").read_text())
@@ -1127,6 +1139,10 @@ def test_train_run_sft_prime_rl_custom_trainer_compatibility_mode(
     assert manifest["extra"]["prime_rl_sft_exposure_plan"]["renderer_mode"] == "none"
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_mode"] == "omit"
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_removed_rows"] == 1
+    assert manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs"] == {
+        "enable_thinking": False
+    }
+    assert manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs_rows"] == 1
     assert manifest["extra"]["prime_rl_sft_dataset"]["validation"] == {
         "ok": True,
         "rows": 1,
@@ -1163,6 +1179,37 @@ def test_train_run_sft_prime_rl_rejects_tool_defs_omit_for_remote_data(
 
     assert result.exit_code == 1
     assert "--tool-defs-mode omit requires --data to be a local JSONL" in result.output
+
+
+def test_train_run_sft_prime_rl_rejects_chat_template_kwargs_for_remote_data(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    config = tmp_path / "sft.toml"
+    config.write_text("max_steps = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(tmp_path / "train-run"),
+            "--data",
+            "benchflow/remote-dataset",
+            "--chat-template-kwarg",
+            "enable_thinking=false",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--chat-template-kwarg requires --data to be a local JSONL" in result.output
 
 
 def test_train_run_sft_prime_rl_rejects_qwen35_stack_flash_attn(

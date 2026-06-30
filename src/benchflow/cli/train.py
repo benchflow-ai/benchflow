@@ -343,6 +343,17 @@ def register_train(app: typer.Typer) -> None:
                 ),
             ),
         ] = "preserve",
+        chat_template_kwarg: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--chat-template-kwarg",
+                help=(
+                    "Apply KEY=VALUE to every local Prime-SFT row's "
+                    "chat_template_kwargs before Prime-RL loads it; repeatable. "
+                    "Values are parsed as JSON literals when possible."
+                ),
+            ),
+        ] = None,
         allow_unsafe_stack_flash_attn: Annotated[
             bool,
             typer.Option(
@@ -422,6 +433,7 @@ def register_train(app: typer.Typer) -> None:
                     model_attn=model_attn,
                     renderer_mode=renderer_mode,
                     tool_defs_mode=tool_defs_mode,
+                    chat_template_kwargs=tuple(chat_template_kwarg or ()),
                     allow_unsafe_stack_flash_attn=allow_unsafe_stack_flash_attn,
                     force=force,
                     cwd=prime_rl_dir,
