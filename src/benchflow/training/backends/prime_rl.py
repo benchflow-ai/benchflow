@@ -45,6 +45,7 @@ class PrimeRlSftSpec:
     uv_no_sync: bool = False
     overrides: tuple[str, ...] = ()
     target_examples: int | None = None
+    target_micro_steps: int | None = None
     sync_scheduler_to_max_steps: bool = True
     pack_function: str | None = None
     loss_mask: str | None = None
@@ -74,8 +75,11 @@ class PrimeRlSftResult:
 @dataclass(frozen=True)
 class PrimeRlSftExposurePlan:
     target_examples: int | None = None
+    target_micro_steps: int | None = None
     data_batch_size: int | None = None
     derived_max_steps: int | None = None
+    effective_train_examples: int | None = None
+    unapplied_micro_steps: int | None = None
     sync_scheduler_to_max_steps: bool = False
     pack_function: str | None = None
     loss_mask: str | None = None
@@ -86,8 +90,11 @@ class PrimeRlSftExposurePlan:
     def to_dict(self) -> dict[str, Any]:
         return {
             "target_examples": self.target_examples,
+            "target_micro_steps": self.target_micro_steps,
             "data_batch_size": self.data_batch_size,
             "derived_max_steps": self.derived_max_steps,
+            "effective_train_examples": self.effective_train_examples,
+            "unapplied_micro_steps": self.unapplied_micro_steps,
             "sync_scheduler_to_max_steps": self.sync_scheduler_to_max_steps,
             "pack_function": self.pack_function,
             "loss_mask": self.loss_mask,
@@ -406,12 +413,20 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
         raise ValueError(
             f"--compat-profile {profile} requires --sync-scheduler-to-max-steps"
         )
+    if spec.target_examples is not None:
+        _profile_field(
+            spec.target_examples, 300, field="--target-examples", profile=profile
+        )
     return replace(
         spec,
         compat_profile=profile,
-        target_examples=int(
+        target_examples=None,
+        target_micro_steps=int(
             _profile_field(
-                spec.target_examples, 300, field="--target-examples", profile=profile
+                spec.target_micro_steps,
+                300,
+                field="--target-micro-steps",
+                profile=profile,
             )
         ),
         pack_function=str(
@@ -497,12 +512,20 @@ def _build_generated_overrides(
     overrides = _override_map(spec.overrides)
     generated: list[str] = []
     target_examples: int | None = None
+    target_micro_steps: int | None = None
     data_batch_size: int | None = None
     derived_max_steps: int | None = None
+    effective_train_examples: int | None = None
+    unapplied_micro_steps: int | None = None
     pack_function: str | None = None
     loss_mask: str | None = None
     model_attn: str | None = None
     renderer_mode: str | None = None
+
+    if spec.target_examples is not None and spec.target_micro_steps is not None:
+        raise ValueError(
+            "--target-examples and --target-micro-steps cannot be combined"
+        )
 
     if spec.target_examples is not None:
         if "max_steps" in overrides:
@@ -514,6 +537,33 @@ def _build_generated_overrides(
         )
         data_batch_size = _resolve_data_batch_size(config, overrides)
         derived_max_steps = ceil(target_examples / data_batch_size)
+        effective_train_examples = derived_max_steps * data_batch_size
+        generated.append(f"max_steps={derived_max_steps}")
+        if spec.sync_scheduler_to_max_steps:
+            if "scheduler.decay_steps" in overrides:
+                raise ValueError(
+                    "--sync-scheduler-to-max-steps cannot be combined with "
+                    "--override scheduler.decay_steps=..."
+                )
+            generated.append(f"scheduler.decay_steps={derived_max_steps}")
+
+    if spec.target_micro_steps is not None:
+        if "max_steps" in overrides:
+            raise ValueError(
+                "--target-micro-steps cannot be combined with --override max_steps=..."
+            )
+        target_micro_steps = _parse_positive_int(
+            spec.target_micro_steps, key="--target-micro-steps"
+        )
+        data_batch_size = _resolve_data_batch_size(config, overrides)
+        derived_max_steps = target_micro_steps // data_batch_size
+        if derived_max_steps <= 0:
+            raise ValueError(
+                "--target-micro-steps must cover at least one effective "
+                f"Prime-RL batch ({target_micro_steps} < {data_batch_size})"
+            )
+        effective_train_examples = derived_max_steps * data_batch_size
+        unapplied_micro_steps = target_micro_steps - effective_train_examples
         generated.append(f"max_steps={derived_max_steps}")
         if spec.sync_scheduler_to_max_steps:
             if "scheduler.decay_steps" in overrides:
@@ -578,11 +628,14 @@ def _build_generated_overrides(
         return None
     return PrimeRlSftExposurePlan(
         target_examples=target_examples,
+        target_micro_steps=target_micro_steps,
         data_batch_size=data_batch_size,
         derived_max_steps=derived_max_steps,
+        effective_train_examples=effective_train_examples,
+        unapplied_micro_steps=unapplied_micro_steps,
         sync_scheduler_to_max_steps=(
             bool(spec.sync_scheduler_to_max_steps)
-            if target_examples is not None
+            if target_examples is not None or target_micro_steps is not None
             else False
         ),
         pack_function=pack_function,
@@ -1227,11 +1280,12 @@ def _initial_manifest(
             "description": (
                 "BenchFlow Mobile300 PR828 Prime-RL wrapper settings that match "
                 "the historical custom-trainer run where Prime-SFT rows had "
-                "tool_defs but no tools and Qwen3.5 thinking was disabled in the "
-                "chat-template render."
+                "tool_defs but no tools and max_steps counted batch-size-1 "
+                "micro-batches before gradient accumulation."
             ),
             "resolved_settings": {
                 "target_examples": spec.target_examples,
+                "target_micro_steps": spec.target_micro_steps,
                 "sync_scheduler_to_max_steps": spec.sync_scheduler_to_max_steps,
                 "pack_function": spec.pack_function,
                 "loss_mask": spec.loss_mask,
@@ -1244,9 +1298,9 @@ def _initial_manifest(
                 "message_tail_truncation": spec.message_tail_truncation,
             },
             "known_prime_rl_gap": (
-                "Prime-RL still owns sequence packing; BenchFlow only stages "
-                "local rows to avoid known head truncation where possible and "
-                "does not patch Prime-RL internals."
+                "Prime-RL still owns token masking and sequence packing; "
+                "BenchFlow stages local rows to reduce known truncation and "
+                "tool-schema mismatches but does not patch Prime-RL internals."
             ),
         }
     return manifest
