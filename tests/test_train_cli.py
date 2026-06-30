@@ -480,6 +480,179 @@ def test_train_run_sft_prime_rl_records_manifest(tmp_path: Path, monkeypatch) ->
     assert (work_dir / "prime-rl" / "stdout.log").read_text() == "trainer ok\n"
 
 
+def test_train_run_sft_prime_rl_target_examples_derives_exposure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Guards sample-exposure parity for small BenchFlow SFT trajectory sets."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            captured["argv"] = argv
+            captured["cwd"] = kwargs["cwd"]
+            self.stdout = io.StringIO("trainer ok\n")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    config = tmp_path / "sft.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "max_steps = 300",
+                "[data]",
+                "batch_size = 8",
+                'pack_function = "cat"',
+                "[scheduler]",
+                "decay_steps = 300",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "train-run"
+    output_dir = tmp_path / "prime-output"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(prime_rl.subprocess, "Popen", FakeProcess)
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--output-dir",
+            str(output_dir),
+            "--work-dir",
+            str(work_dir),
+            "--target-examples",
+            "300",
+            "--pack-function",
+            "stack",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["argv"] == [
+        "uv",
+        "run",
+        "sft",
+        "@",
+        str(config),
+        "--output-dir",
+        str(output_dir),
+        "--max_steps",
+        "38",
+        "--scheduler.decay_steps",
+        "38",
+        "--data.pack_function",
+        "stack",
+    ]
+    manifest = json.loads((work_dir / "train-run.json").read_text())
+    assert manifest["extra"]["prime_rl_sft_exposure_plan"] == {
+        "data_batch_size": 8,
+        "derived_max_steps": 38,
+        "generated_overrides": [
+            "max_steps=38",
+            "scheduler.decay_steps=38",
+            "data.pack_function=stack",
+        ],
+        "pack_function": "stack",
+        "sync_scheduler_to_max_steps": True,
+        "target_examples": 300,
+    }
+
+
+def test_train_run_sft_prime_rl_target_examples_respects_batch_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            del kwargs
+            captured["argv"] = argv
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    config = tmp_path / "sft.toml"
+    config.write_text("max_steps = 300\n[data]\nbatch_size = 1\n", encoding="utf-8")
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(prime_rl.subprocess, "Popen", FakeProcess)
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(work_dir),
+            "--target-examples",
+            "300",
+            "--no-sync-scheduler-to-max-steps",
+            "--override",
+            "data.batch_size=8",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "--data.batch_size" in captured["argv"]
+    assert captured["argv"][-2:] == ["--max_steps", "38"]
+    manifest = json.loads((work_dir / "train-run.json").read_text())
+    assert (
+        manifest["extra"]["prime_rl_sft_exposure_plan"]["sync_scheduler_to_max_steps"]
+        is False
+    )
+
+
+def test_train_run_sft_prime_rl_target_examples_rejects_manual_max_steps(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    config = tmp_path / "sft.toml"
+    config.write_text("max_steps = 300\n[data]\nbatch_size = 8\n", encoding="utf-8")
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(work_dir),
+            "--target-examples",
+            "300",
+            "--override",
+            "max_steps=300",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--target-examples cannot be combined" in result.output
+
+
 def test_train_run_sft_prime_rl_publish_flags_update_manifest(
     tmp_path: Path, monkeypatch
 ) -> None:
