@@ -10,6 +10,7 @@ import tomllib
 from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from math import ceil
 from pathlib import Path
 from threading import Thread
@@ -657,6 +658,31 @@ class _JsonlTransformStats:
     message_tail_max_tokens_after: int | None = None
 
 
+def _sha256_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _staged_dataset_dir(work_dir: Path) -> Path:
+    dataset_dir = work_dir / "prime-rl-dataset-staging"
+    if dataset_dir.exists():
+        shutil.rmtree(dataset_dir)
+    return dataset_dir
+
+
+def _finalize_staged_dataset_dir(work_dir: Path, dataset_dir: Path) -> Path:
+    train_jsonl = dataset_dir / "train.jsonl"
+    digest = _sha256_file(train_jsonl)[:12]
+    final_dir = work_dir / f"prime-rl-dataset-{digest}"
+    if final_dir.exists():
+        shutil.rmtree(final_dir)
+    dataset_dir.rename(final_dir)
+    return final_dir
+
+
 def _load_tail_truncation_tokenizer(model_name: str) -> Any:
     try:
         from transformers import AutoTokenizer
@@ -1051,9 +1077,7 @@ def _prepare_prime_rl_data(
                     f"local Prime-RL data transforms require {source_path} "
                     "to contain train.jsonl"
                 )
-            dataset_dir = work_dir / "prime-rl-dataset"
-            if dataset_dir.exists():
-                shutil.rmtree(dataset_dir)
+            dataset_dir = _staged_dataset_dir(work_dir)
             shutil.copytree(source_path, dataset_dir)
             transformed_train_jsonl = dataset_dir / "train.jsonl"
             stats = _copy_prime_rl_jsonl(
@@ -1065,6 +1089,8 @@ def _prepare_prime_rl_data(
                 tokenizer=tokenizer,
                 message_tail_max_area=message_tail_max_area,
             )
+            dataset_dir = _finalize_staged_dataset_dir(work_dir, dataset_dir)
+            transformed_train_jsonl = dataset_dir / "train.jsonl"
             resolved_spec = replace(spec, data=str(dataset_dir))
             return resolved_spec, PrimeRlSftDatasetPlan(
                 source_data=spec.data,
@@ -1108,9 +1134,7 @@ def _prepare_prime_rl_data(
     from benchflow.trajectories.export_prime_sft import validate_prime_sft_jsonl
 
     validation = validate_prime_sft_jsonl(source_path)
-    dataset_dir = work_dir / "prime-rl-dataset"
-    if dataset_dir.exists():
-        shutil.rmtree(dataset_dir)
+    dataset_dir = _staged_dataset_dir(work_dir)
     dataset_dir.mkdir(parents=True)
     train_jsonl = dataset_dir / "train.jsonl"
     stats = _JsonlTransformStats()
@@ -1130,6 +1154,8 @@ def _prepare_prime_rl_data(
         )
     else:
         shutil.copy2(source_path, train_jsonl)
+    dataset_dir = _finalize_staged_dataset_dir(work_dir, dataset_dir)
+    train_jsonl = dataset_dir / "train.jsonl"
     resolved_spec = replace(spec, data=str(dataset_dir))
     return resolved_spec, PrimeRlSftDatasetPlan(
         source_data=spec.data,

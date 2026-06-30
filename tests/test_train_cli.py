@@ -576,7 +576,10 @@ def test_train_run_sft_prime_rl_packages_local_jsonl_data(
     )
 
     assert result.exit_code == 0, result.output
-    dataset_dir = work_dir / "prime-rl-dataset"
+    dataset_dirs = sorted(work_dir.glob("prime-rl-dataset-*"))
+    assert len(dataset_dirs) == 1
+    dataset_dir = dataset_dirs[0]
+    assert not (work_dir / "prime-rl-dataset").exists()
     train_jsonl = dataset_dir / "train.jsonl"
     assert train_jsonl.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
     assert captured["argv"] == [
