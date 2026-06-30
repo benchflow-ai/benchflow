@@ -124,9 +124,8 @@ class PrimeRlSftDatasetPlan:
     message_tail_max_area: int | None = None
     message_tail_max_tokens_before: int | None = None
     message_tail_max_tokens_after: int | None = None
-    custom_trainer_token_suffix_rows: int | None = None
-    custom_trainer_token_suffix_padded_rows: int | None = None
-    passthrough_chat_template: str | None = None
+    custom_trainer_pretokenized_rows: int | None = None
+    custom_trainer_pretokenized_trainable_tokens: int | None = None
     validation: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -145,11 +144,10 @@ class PrimeRlSftDatasetPlan:
             "message_tail_max_area": self.message_tail_max_area,
             "message_tail_max_tokens_before": self.message_tail_max_tokens_before,
             "message_tail_max_tokens_after": self.message_tail_max_tokens_after,
-            "custom_trainer_token_suffix_rows": self.custom_trainer_token_suffix_rows,
-            "custom_trainer_token_suffix_padded_rows": (
-                self.custom_trainer_token_suffix_padded_rows
+            "custom_trainer_pretokenized_rows": (self.custom_trainer_pretokenized_rows),
+            "custom_trainer_pretokenized_trainable_tokens": (
+                self.custom_trainer_pretokenized_trainable_tokens
             ),
-            "passthrough_chat_template": self.passthrough_chat_template,
             "validation": self.validation,
         }
 
@@ -182,16 +180,11 @@ class PrimeRlSftLaunch:
 
 _MOBILE300_PROFILE = "env0-mobile300-pr828"
 _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE = "custom-trainer-token-suffix"
+_CUSTOM_TRAINER_PRETOKENIZED_MODE = "custom-trainer-pretokenized"
 _TOKEN_MEAN_LOSS_NORMALIZATION = "token_mean"
 _SAMPLE_MEAN_LOSS_NORMALIZATION = "sample_mean"
 _SAMPLE_MEAN_SHIM_ENV = "BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS"
-_PASSTHROUGH_CHAT_TEMPLATE = (
-    "{% for message in messages %}"
-    "{{ message.get('prefix_ws', '') }}"
-    "{{ message['content'] }}"
-    "{{ message.get('suffix_ws', '') }}"
-    "{% endfor %}"
-)
+_PRETOKENIZED_DATA_SHIM_ENV = "BENCHFLOW_PRIME_RL_PRETOKENIZED_SFT_DATA"
 _COMPAT_PROFILE_ALIASES = {
     _MOBILE300_PROFILE: _MOBILE300_PROFILE,
     "env-0-mobile300-pr828": _MOBILE300_PROFILE,
@@ -379,16 +372,17 @@ def _normalize_message_tail_truncation(raw: str) -> str:
         "keep-user": "keep-first-user",
         "first-user": "keep-first-user",
         "keep-user-suffix": "keep-first-user",
-        "token-suffix": _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE,
-        "rendered-token-suffix": _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE,
-        "custom-token-suffix": _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE,
-        "custom-trainer-suffix": _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE,
+        "token-suffix": _CUSTOM_TRAINER_PRETOKENIZED_MODE,
+        "rendered-token-suffix": _CUSTOM_TRAINER_PRETOKENIZED_MODE,
+        "custom-token-suffix": _CUSTOM_TRAINER_PRETOKENIZED_MODE,
+        "custom-trainer-suffix": _CUSTOM_TRAINER_PRETOKENIZED_MODE,
+        _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE: _CUSTOM_TRAINER_PRETOKENIZED_MODE,
     }
     value = aliases.get(value, value)
-    if value not in {"off", "keep-first-user", _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE}:
+    if value not in {"off", "keep-first-user", _CUSTOM_TRAINER_PRETOKENIZED_MODE}:
         raise ValueError(
             "--message-tail-truncation must be 'off', 'keep-first-user', or "
-            f"'{_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE}'"
+            f"'{_CUSTOM_TRAINER_PRETOKENIZED_MODE}'"
         )
     return value
 
@@ -486,8 +480,8 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
         )
     if spec.chat_template_kwargs:
         raise ValueError(
-            f"--compat-profile {profile} stages a passthrough chat template and "
-            "does not support --chat-template-kwarg"
+            f"--compat-profile {profile} stages pre-tokenized custom-trainer "
+            "samples and does not support --chat-template-kwarg"
         )
     loss_normalization = _normalize_loss_normalization(spec.loss_normalization)
     if loss_normalization not in {None, _SAMPLE_MEAN_LOSS_NORMALIZATION}:
@@ -515,9 +509,7 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
             )
         ),
         loss_mask=str(
-            _profile_field(
-                spec.loss_mask, "assistant", field="--loss-mask", profile=profile
-            )
+            _profile_field(spec.loss_mask, "all", field="--loss-mask", profile=profile)
         ),
         loss_normalization=_SAMPLE_MEAN_LOSS_NORMALIZATION,
         model_attn=str(
@@ -532,7 +524,7 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
         ),
         tool_defs_mode="omit",
         chat_template_kwargs=(),
-        message_tail_truncation=_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE,
+        message_tail_truncation=_CUSTOM_TRAINER_PRETOKENIZED_MODE,
     )
 
 
@@ -829,12 +821,12 @@ def _shell_quote_env(env: Mapping[str, str]) -> str:
     return " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
 
 
-_SAMPLE_MEAN_SITE_CUSTOMIZE = r'''
-"""BenchFlow Prime-RL sample-mean SFT loss compatibility shim.
+_PRIME_RL_SFT_COMPAT_SITE_CUSTOMIZE = r'''
+"""BenchFlow Prime-RL SFT compatibility shim.
 
 This file is generated by BenchFlow for one trainer subprocess. It does not
-modify the installed Prime-RL package; it intercepts the SFT train module import
-and rewrites the known token-weighted loss block before Python compiles it.
+modify the installed Prime-RL package. It can patch loss reduction and make
+BenchFlow pre-tokenized tensor rows bypass Prime-RL message rendering.
 """
 
 from __future__ import annotations
@@ -844,8 +836,10 @@ import importlib.machinery
 import os
 import sys
 
-_ENV = "BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS"
-_TARGET = "prime_rl.trainer.sft.train"
+_LOSS_ENV = "BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS"
+_DATA_ENV = "BENCHFLOW_PRIME_RL_PRETOKENIZED_SFT_DATA"
+_LOSS_TARGET = "prime_rl.trainer.sft.train"
+_DATA_TARGET = "prime_rl.trainer.sft.data"
 
 _EXPECTED = """\
         if config.model.lora is not None:
@@ -935,7 +929,7 @@ class _BenchFlowSampleMeanLoader(importlib.machinery.SourceFileLoader):
 
 class _BenchFlowSampleMeanFinder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path, target=None):
-        if fullname != _TARGET or os.environ.get(_ENV) != "1":
+        if fullname != _LOSS_TARGET or os.environ.get(_LOSS_ENV) != "1":
             return None
         spec = importlib.machinery.PathFinder.find_spec(fullname, path)
         if spec is None or not isinstance(
@@ -943,44 +937,143 @@ class _BenchFlowSampleMeanFinder(importlib.abc.MetaPathFinder):
         ):
             raise ImportError(
                 "BenchFlow Prime-RL sample-mean shim requires a source-backed "
-                f"loader for {_TARGET}."
+                f"loader for {_LOSS_TARGET}."
             )
         spec.loader = _BenchFlowSampleMeanLoader(spec.loader.name, spec.loader.path)
         return spec
 
 
-if os.environ.get(_ENV) == "1":
+class _BenchFlowPretokenizedDataLoader(importlib.machinery.SourceFileLoader):
+    def exec_module(self, module):
+        super().exec_module(module)
+        if os.environ.get(_DATA_ENV) != "1":
+            return
+        dataset_cls = getattr(module, "SFTDataset", None)
+        if dataset_cls is None:
+            raise RuntimeError(
+                "BenchFlow Prime-RL pretokenized data shim could not find "
+                "SFTDataset."
+            )
+        original_process = dataset_cls._process
+
+        def _as_int_list(example, key):
+            value = example.get(key)
+            if not isinstance(value, (list, tuple)):
+                raise ValueError(f"{key} must be a list")
+            return [int(item) for item in value]
+
+        def _as_bool_list(example, key):
+            value = example.get(key)
+            if not isinstance(value, (list, tuple)):
+                raise ValueError(f"{key} must be a list")
+            return [bool(item) for item in value]
+
+        def benchflow_process(self, example):
+            if (
+                isinstance(example, dict)
+                and example.get("benchflow_custom_trainer_pretokenized")
+            ):
+                input_ids = _as_int_list(example, "benchflow_input_ids")
+                target_ids = _as_int_list(example, "benchflow_target_ids")
+                loss_mask = _as_bool_list(example, "benchflow_loss_mask")
+                position_ids = _as_int_list(example, "benchflow_position_ids")
+                lengths = {
+                    len(input_ids),
+                    len(target_ids),
+                    len(loss_mask),
+                    len(position_ids),
+                }
+                if len(lengths) != 1:
+                    raise ValueError(
+                        "BenchFlow pretokenized SFT row has inconsistent "
+                        "input_ids/target_ids/loss_mask/position_ids lengths"
+                    )
+                if not input_ids:
+                    raise ValueError("BenchFlow pretokenized SFT row is empty")
+                if not any(loss_mask):
+                    raise ValueError(
+                        "BenchFlow pretokenized SFT row has no trainable tokens"
+                    )
+                return {
+                    "input_ids": input_ids,
+                    "target_ids": target_ids,
+                    "loss_mask": loss_mask,
+                    "position_ids": position_ids,
+                }
+            return original_process(self, example)
+
+        dataset_cls._process = benchflow_process
+        sys.stderr.write("BenchFlow Prime-RL pretokenized SFT data shim enabled\\n")
+
+
+class _BenchFlowPretokenizedDataFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname != _DATA_TARGET or os.environ.get(_DATA_ENV) != "1":
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is None or not isinstance(
+            spec.loader, importlib.machinery.SourceFileLoader
+        ):
+            raise ImportError(
+                "BenchFlow Prime-RL pretokenized data shim requires a "
+                f"source-backed loader for {_DATA_TARGET}."
+            )
+        spec.loader = _BenchFlowPretokenizedDataLoader(
+            spec.loader.name, spec.loader.path
+        )
+        return spec
+
+
+if os.environ.get(_LOSS_ENV) == "1":
     sys.meta_path.insert(0, _BenchFlowSampleMeanFinder())
     sys.stderr.write("BenchFlow Prime-RL sample-mean loss shim enabled\\n")
+if os.environ.get(_DATA_ENV) == "1":
+    sys.meta_path.insert(0, _BenchFlowPretokenizedDataFinder())
 '''
 
 
-def _write_sample_mean_loss_shim(work_dir: Path) -> PrimeRlSftShimPlan:
-    shim_dir = work_dir / "prime-rl-sample-mean-loss-shim"
+def _write_prime_rl_sft_compat_shim(
+    work_dir: Path, *, sample_mean: bool, pretokenized_data: bool
+) -> PrimeRlSftShimPlan:
+    shim_dir = work_dir / "prime-rl-sft-compat-shim"
     shim_dir.mkdir(parents=True, exist_ok=True)
     sitecustomize = shim_dir / "sitecustomize.py"
-    sitecustomize.write_text(_SAMPLE_MEAN_SITE_CUSTOMIZE.lstrip(), encoding="utf-8")
-    env = {
-        _SAMPLE_MEAN_SHIM_ENV: "1",
-        "PYTHONPATH": str(shim_dir),
-    }
+    sitecustomize.write_text(
+        _PRIME_RL_SFT_COMPAT_SITE_CUSTOMIZE.lstrip(), encoding="utf-8"
+    )
+    env = {"PYTHONPATH": str(shim_dir)}
+    guards: list[str] = []
+    if sample_mean:
+        env[_SAMPLE_MEAN_SHIM_ENV] = "1"
+        guards.extend(
+            [
+                "Prime-RL train.py loss block must match the known token-mean source",
+                "data.pack_function=stack",
+                "model.cp=1",
+                "loss_impl=torch or loss_impl=liger",
+                "every batch row must contain at least one trainable token",
+            ]
+        )
+    if pretokenized_data:
+        env[_PRETOKENIZED_DATA_SHIM_ENV] = "1"
+        guards.extend(
+            [
+                "Prime-RL SFTDataset must be source-backed",
+                "pretokenized rows must carry input_ids/target_ids/loss_mask/position_ids",
+            ]
+        )
     return PrimeRlSftShimPlan(
-        name="prime_rl_sample_mean_loss",
+        name="prime_rl_sft_compatibility",
         description=(
-            "Import-time Prime-RL SFT train-loop compatibility shim that changes "
-            "loss reduction from token mean to per-sample mean while leaving the "
-            "Prime-RL package files untouched."
+            "Import-time Prime-RL SFT compatibility shim that can change loss "
+            "reduction from token mean to per-sample mean and can feed "
+            "BenchFlow pre-tokenized custom-trainer tensor rows while leaving "
+            "the Prime-RL package files untouched."
         ),
         shim_dir=str(shim_dir),
         sitecustomize=str(sitecustomize),
         env=env,
-        guards=(
-            "Prime-RL train.py loss block must match the known token-mean source",
-            "data.pack_function=stack",
-            "model.cp=1",
-            "loss_impl=torch or loss_impl=liger",
-            "every batch row must contain at least one trainable token",
-        ),
+        guards=tuple(guards),
     )
 
 
@@ -995,7 +1088,9 @@ def _build_prime_rl_env(shim_plan: PrimeRlSftShimPlan | None) -> dict[str, str] 
         if not existing_pythonpath
         else os.pathsep.join((shim_pythonpath, existing_pythonpath))
     )
-    env[_SAMPLE_MEAN_SHIM_ENV] = shim_plan.env[_SAMPLE_MEAN_SHIM_ENV]
+    for key, value in shim_plan.env.items():
+        if key != "PYTHONPATH":
+            env[key] = value
     return env
 
 
@@ -1008,10 +1103,19 @@ def _command_env(shim_plan: PrimeRlSftShimPlan | None) -> dict[str, str]:
 def _prepare_prime_rl_shim(
     spec: PrimeRlSftSpec, work_dir: Path
 ) -> PrimeRlSftShimPlan | None:
-    loss_normalization = _normalize_loss_normalization(spec.loss_normalization)
-    if loss_normalization != _SAMPLE_MEAN_LOSS_NORMALIZATION:
+    sample_mean = (
+        _normalize_loss_normalization(spec.loss_normalization)
+        == _SAMPLE_MEAN_LOSS_NORMALIZATION
+    )
+    pretokenized_data = (
+        _normalize_message_tail_truncation(spec.message_tail_truncation)
+        == _CUSTOM_TRAINER_PRETOKENIZED_MODE
+    )
+    if not sample_mean and not pretokenized_data:
         return None
-    return _write_sample_mean_loss_shim(work_dir)
+    return _write_prime_rl_sft_compat_shim(
+        work_dir, sample_mean=sample_mean, pretokenized_data=pretokenized_data
+    )
 
 
 def _copy_stream(stream: TextIO, handle: TextIO, *, echo: bool) -> None:
@@ -1039,8 +1143,8 @@ class _JsonlTransformStats:
     message_tail_max_area: int | None = None
     message_tail_max_tokens_before: int | None = None
     message_tail_max_tokens_after: int | None = None
-    custom_trainer_token_suffix_rows: int | None = None
-    custom_trainer_token_suffix_padded_rows: int | None = None
+    custom_trainer_pretokenized_rows: int | None = None
+    custom_trainer_pretokenized_trainable_tokens: int | None = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -1077,15 +1181,6 @@ def _load_tail_truncation_tokenizer(model_name: str) -> Any:
             "environment so BenchFlow can match Prime-RL tokenizer lengths"
         ) from exc
     return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-
-
-def _split_outer_whitespace(text: str) -> tuple[str, str, str]:
-    stripped = text.strip()
-    if not stripped:
-        return text, "", ""
-    start = len(text) - len(text.lstrip())
-    end = len(text.rstrip())
-    return text[:start], text[start:end], text[end:]
 
 
 def _normalize_tool_call_for_custom_trainer(call: Mapping[str, Any]) -> dict[str, Any]:
@@ -1128,16 +1223,13 @@ def _normalize_messages_for_custom_trainer(messages: Any) -> list[dict[str, Any]
     return out
 
 
-def _render_custom_trainer_token_ids(
-    tokenizer: Any,
-    row: Mapping[str, Any],
-    *,
-    max_length: int,
-) -> tuple[list[int], int]:
-    """Render/tokenize one row the way the historical custom trainer did."""
+def _render_custom_trainer_full_token_ids(
+    tokenizer: Any, row: Mapping[str, Any]
+) -> list[int]:
+    """Return the untruncated custom-trainer token stream for one source row."""
     messages = _normalize_messages_for_custom_trainer(row.get("messages") or [])
     if not messages:
-        return [], 0
+        return []
     tools = row.get("tools") or None
     try:
         rendered = tokenizer.apply_chat_template(
@@ -1153,88 +1245,92 @@ def _render_custom_trainer_token_ids(
             add_generation_prompt=False,
         )
     token_ids = tokenizer(rendered, add_special_tokens=False)["input_ids"]
-    if not token_ids:
-        return [], 0
-    return list(token_ids[-max_length:]), len(token_ids)
+    return list(token_ids)
 
 
-def _custom_trainer_token_suffix_row(
+def _custom_trainer_prefix_token_count(tokenizer: Any, row: Mapping[str, Any]) -> int:
+    messages = _normalize_messages_for_custom_trainer(row.get("messages") or [])
+    if not messages or messages[-1].get("role") != "assistant":
+        return 0
+    prefix_messages = messages[:-1]
+    tools = row.get("tools") or None
+    try:
+        rendered = tokenizer.apply_chat_template(
+            prefix_messages,
+            tools=tools,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    except TypeError:
+        rendered = tokenizer.apply_chat_template(
+            prefix_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    return len(tokenizer(rendered, add_special_tokens=False)["input_ids"])
+
+
+def _custom_trainer_pretokenized_row(
     tokenizer: Any,
     row: Mapping[str, Any],
     *,
     max_length: int,
 ) -> tuple[dict[str, Any], int, int, int]:
-    token_ids, before = _render_custom_trainer_token_ids(
-        tokenizer, row, max_length=max_length
-    )
-    if not token_ids:
-        raise ValueError("cannot stage empty custom-trainer token suffix row")
+    """Stage one row as the exact shifted tensor sample used by Prime-RL.
 
-    text = tokenizer.decode(
-        token_ids,
-        skip_special_tokens=False,
-        clean_up_tokenization_spaces=False,
-    )
-    prefix_ws, content, suffix_ws = _split_outer_whitespace(text)
-    assistant: dict[str, Any] = {"role": "assistant", "content": content}
-    if prefix_ws:
-        assistant["prefix_ws"] = prefix_ws
-    if suffix_ws:
-        assistant["suffix_ws"] = suffix_ws
-    messages = [assistant]
+    The historical custom trainer passed ``input_ids`` and ``labels`` directly
+    to Hugging Face, whose CausalLM loss shifts labels internally. Prime-RL's
+    SFT loop shifts before the model call, so BenchFlow materializes the same
+    target positions as ``target_ids`` plus a boolean ``loss_mask``.
+    """
+    full_ids = _render_custom_trainer_full_token_ids(tokenizer, row)
+    before = len(full_ids)
+    if before < 2:
+        raise ValueError("cannot stage custom-trainer row with fewer than 2 tokens")
 
-    pad_count = max_length - len(token_ids)
-    if pad_count < 0:
-        raise AssertionError("custom-trainer token suffix exceeded max length")
-    if pad_count:
-        eos_token_id = getattr(tokenizer, "eos_token_id", None)
-        if eos_token_id is None:
-            raise ValueError(
-                "custom-trainer token suffix staging requires eos_token_id"
+    labels = list(full_ids)
+    if row.get("label_last_assistant_only"):
+        messages = _normalize_messages_for_custom_trainer(row.get("messages") or [])
+        if messages and messages[-1].get("role") == "assistant":
+            prefix_len = min(
+                _custom_trainer_prefix_token_count(tokenizer, row), len(labels)
             )
-        eos_text = tokenizer.decode(
-            [eos_token_id],
-            skip_special_tokens=False,
-            clean_up_tokenization_spaces=False,
-        )
-        messages.append({"role": "user", "content": eos_text * pad_count})
+            labels = [-100] * prefix_len + labels[prefix_len:]
+
+    if len(full_ids) > max_length:
+        full_ids = full_ids[-max_length:]
+        labels = labels[-max_length:]
+    if len(full_ids) < 2:
+        raise ValueError("custom-trainer tail kept fewer than 2 tokens")
+
+    input_ids = full_ids[:-1]
+    target_ids = full_ids[1:]
+    loss_mask = [label != -100 for label in labels[1:]]
+    if not any(loss_mask):
+        raise ValueError("custom-trainer row has no trainable shifted labels")
 
     staged = {
         key: value
         for key, value in row.items()
-        if key not in {"messages", "tools", "tool_defs", "chat_template_kwargs"}
+        if key
+        not in {
+            "messages",
+            "tools",
+            "tool_defs",
+            "chat_template_kwargs",
+            "label_last_assistant_only",
+        }
     }
-    staged["messages"] = messages
-    staged["benchflow_custom_trainer_token_suffix"] = {
+    staged["benchflow_custom_trainer_pretokenized"] = {
         "original_token_count": before,
-        "staged_token_count": len(token_ids),
-        "pad_token_count": pad_count,
+        "staged_token_count": len(full_ids),
+        "trainable_token_count": int(sum(loss_mask)),
     }
-    return staged, before, len(token_ids), pad_count
-
-
-def _write_passthrough_chat_template(dataset_dir: Path) -> Path:
-    template_path = dataset_dir / "benchflow_passthrough_chat_template.jinja"
-    template_path.write_text(_PASSTHROUGH_CHAT_TEMPLATE + "\n", encoding="utf-8")
-    return template_path
-
-
-def _spec_with_passthrough_template(
-    spec: PrimeRlSftSpec, template_path: Path
-) -> PrimeRlSftSpec:
-    overrides = _override_map(spec.overrides)
-    if "tokenizer.chat_template" in overrides:
-        raise ValueError(
-            f"--message-tail-truncation {_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE} "
-            "cannot be combined with --override tokenizer.chat_template=..."
-        )
-    return replace(
-        spec,
-        overrides=(
-            *spec.overrides,
-            f"tokenizer.chat_template={template_path}",
-        ),
-    )
+    staged["benchflow_input_ids"] = input_ids
+    staged["benchflow_target_ids"] = target_ids
+    staged["benchflow_loss_mask"] = loss_mask
+    staged["benchflow_position_ids"] = list(range(len(input_ids)))
+    return staged, before, len(full_ids), int(sum(loss_mask))
 
 
 def _normalize_messages_for_prime_rl_render(
@@ -1471,8 +1567,8 @@ def _copy_prime_rl_jsonl(
     removed_rows = 0
     chat_template_kwargs_rows = 0
     message_tail_truncated_rows = 0
-    custom_trainer_token_suffix_rows = 0
-    custom_trainer_token_suffix_padded_rows = 0
+    custom_trainer_pretokenized_rows = 0
+    custom_trainer_pretokenized_trainable_tokens = 0
     max_tokens_before: int | None = None
     max_tokens_after: int | None = None
     with (
@@ -1486,20 +1582,21 @@ def _copy_prime_rl_jsonl(
             row = json.loads(line)
             if not isinstance(row, dict):
                 raise ValueError(f"{source}: every JSONL row must be an object")
-            if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE:
+            if message_tail_truncation == _CUSTOM_TRAINER_PRETOKENIZED_MODE:
                 if omit_tool_defs and ("tool_defs" in row or "tools" in row):
                     removed_rows += 1
                 if tokenizer is None or message_tail_max_area is None:
                     raise AssertionError(
-                        "custom-trainer token suffix requires tokenizer and max area"
+                        "custom-trainer pretokenized staging requires tokenizer "
+                        "and max area"
                     )
-                row, before, after, pad_count = _custom_trainer_token_suffix_row(
+                row, before, after, trainable_tokens = _custom_trainer_pretokenized_row(
                     tokenizer,
                     row,
                     max_length=message_tail_max_area,
                 )
-                custom_trainer_token_suffix_rows += 1
-                custom_trainer_token_suffix_padded_rows += int(pad_count > 0)
+                custom_trainer_pretokenized_rows += 1
+                custom_trainer_pretokenized_trainable_tokens += trainable_tokens
                 message_tail_truncated_rows += int(before > after)
                 max_tokens_before = (
                     before
@@ -1574,14 +1671,14 @@ def _copy_prime_rl_jsonl(
         ),
         message_tail_max_tokens_before=max_tokens_before,
         message_tail_max_tokens_after=max_tokens_after,
-        custom_trainer_token_suffix_rows=(
-            custom_trainer_token_suffix_rows
-            if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE
+        custom_trainer_pretokenized_rows=(
+            custom_trainer_pretokenized_rows
+            if message_tail_truncation == _CUSTOM_TRAINER_PRETOKENIZED_MODE
             else None
         ),
-        custom_trainer_token_suffix_padded_rows=(
-            custom_trainer_token_suffix_padded_rows
-            if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE
+        custom_trainer_pretokenized_trainable_tokens=(
+            custom_trainer_pretokenized_trainable_tokens
+            if message_tail_truncation == _CUSTOM_TRAINER_PRETOKENIZED_MODE
             else None
         ),
     )
@@ -1604,17 +1701,17 @@ def _prepare_prime_rl_data(
 
     tool_defs_mode = _normalize_tool_defs_mode(spec.tool_defs_mode)
     chat_template_kwargs = _parse_chat_template_kwargs(spec.chat_template_kwargs)
-    if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE:
+    if message_tail_truncation == _CUSTOM_TRAINER_PRETOKENIZED_MODE:
         if tool_defs_mode != "omit":
             raise ValueError(
-                f"--message-tail-truncation {_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE} "
-                "requires --tool-defs-mode omit because it stages rendered text "
-                "instead of chat/tool schema rows"
+                f"--message-tail-truncation {_CUSTOM_TRAINER_PRETOKENIZED_MODE} "
+                "requires --tool-defs-mode omit because it stages pre-tokenized "
+                "custom-trainer tensors instead of chat/tool schema rows"
             )
         if chat_template_kwargs:
             raise ValueError(
-                f"--message-tail-truncation {_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE} "
-                "stages a passthrough chat template and cannot be combined with "
+                f"--message-tail-truncation {_CUSTOM_TRAINER_PRETOKENIZED_MODE} "
+                "stages pre-tokenized tensors and cannot be combined with "
                 "--chat-template-kwarg"
             )
     effective_overrides = _override_map(spec.overrides)
@@ -1684,12 +1781,6 @@ def _prepare_prime_rl_data(
                 message_tail_max_area=message_tail_max_area,
             )
             dataset_dir = _finalize_staged_dataset_dir(work_dir, dataset_dir)
-            passthrough_template_path = None
-            if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE:
-                passthrough_template_path = _write_passthrough_chat_template(
-                    dataset_dir
-                )
-                spec = _spec_with_passthrough_template(spec, passthrough_template_path)
             transformed_train_jsonl = dataset_dir / "train.jsonl"
             resolved_spec = replace(spec, data=str(dataset_dir))
             return resolved_spec, PrimeRlSftDatasetPlan(
@@ -1709,16 +1800,11 @@ def _prepare_prime_rl_data(
                 message_tail_max_area=stats.message_tail_max_area,
                 message_tail_max_tokens_before=stats.message_tail_max_tokens_before,
                 message_tail_max_tokens_after=stats.message_tail_max_tokens_after,
-                custom_trainer_token_suffix_rows=(
-                    stats.custom_trainer_token_suffix_rows
+                custom_trainer_pretokenized_rows=(
+                    stats.custom_trainer_pretokenized_rows
                 ),
-                custom_trainer_token_suffix_padded_rows=(
-                    stats.custom_trainer_token_suffix_padded_rows
-                ),
-                passthrough_chat_template=(
-                    str(passthrough_template_path)
-                    if passthrough_template_path is not None
-                    else None
+                custom_trainer_pretokenized_trainable_tokens=(
+                    stats.custom_trainer_pretokenized_trainable_tokens
                 ),
                 validation=validation,
             )
@@ -1766,10 +1852,6 @@ def _prepare_prime_rl_data(
     else:
         shutil.copy2(source_path, train_jsonl)
     dataset_dir = _finalize_staged_dataset_dir(work_dir, dataset_dir)
-    passthrough_template_path = None
-    if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE:
-        passthrough_template_path = _write_passthrough_chat_template(dataset_dir)
-        spec = _spec_with_passthrough_template(spec, passthrough_template_path)
     train_jsonl = dataset_dir / "train.jsonl"
     resolved_spec = replace(spec, data=str(dataset_dir))
     return resolved_spec, PrimeRlSftDatasetPlan(
@@ -1789,14 +1871,9 @@ def _prepare_prime_rl_data(
         message_tail_max_area=stats.message_tail_max_area,
         message_tail_max_tokens_before=stats.message_tail_max_tokens_before,
         message_tail_max_tokens_after=stats.message_tail_max_tokens_after,
-        custom_trainer_token_suffix_rows=stats.custom_trainer_token_suffix_rows,
-        custom_trainer_token_suffix_padded_rows=(
-            stats.custom_trainer_token_suffix_padded_rows
-        ),
-        passthrough_chat_template=(
-            str(passthrough_template_path)
-            if passthrough_template_path is not None
-            else None
+        custom_trainer_pretokenized_rows=stats.custom_trainer_pretokenized_rows,
+        custom_trainer_pretokenized_trainable_tokens=(
+            stats.custom_trainer_pretokenized_trainable_tokens
         ),
         validation=validation,
     )
@@ -1875,13 +1952,14 @@ def _initial_manifest(
             },
             "known_prime_rl_gap": (
                 "BenchFlow stages each row as the historical custom trainer's "
-                "rendered token suffix and uses a passthrough chat template so "
-                "Prime-RL trains on that suffix without tool-schema rerendering. "
-                "BenchFlow also enables a run-local sample-mean loss shim because "
-                "Prime-RL's native SFT loop normalizes by trainable token count, "
-                "while the historical custom trainer averaged per-row losses. "
-                "The Prime-RL optimizer, scheduler, checkpoint writer, and batch "
-                "ordering are still Prime-RL implementations."
+                "shifted input_ids/target_ids/loss_mask tensors and enables a "
+                "run-local Prime-RL data shim so Prime-RL trains those tensors "
+                "without message rerendering. BenchFlow also enables a run-local "
+                "sample-mean loss shim because Prime-RL's native SFT loop "
+                "normalizes by trainable token count, while the historical custom "
+                "trainer averaged per-row losses. The Prime-RL optimizer, "
+                "scheduler, checkpoint writer, and batch ordering are still "
+                "Prime-RL implementations."
             ),
         }
     return manifest
