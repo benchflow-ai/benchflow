@@ -37,6 +37,7 @@ class PrimeRlSftSpec:
     work_dir: Path
     data: str | None = None
     output_dir: Path | None = None
+    compat_profile: str | None = None
     dry_run: bool = False
     follow: bool = False
     uv_no_sync: bool = False
@@ -120,6 +121,15 @@ class PrimeRlSftDatasetPlan:
 class PrimeRlSftLaunch:
     argv: list[str]
     exposure_plan: PrimeRlSftExposurePlan | None = None
+
+
+_MOBILE300_PROFILE = "env0-mobile300-pr828"
+_COMPAT_PROFILE_ALIASES = {
+    _MOBILE300_PROFILE: _MOBILE300_PROFILE,
+    "env-0-mobile300-pr828": _MOBILE300_PROFILE,
+    "env0-mobile300-custom-sft": _MOBILE300_PROFILE,
+    "env-0-mobile300-custom-sft": _MOBILE300_PROFILE,
+}
 
 
 def _parse_overrides(overrides: Iterable[str]) -> list[str]:
@@ -256,6 +266,77 @@ def _normalize_tool_defs_mode(raw: str) -> str:
     if value not in {"preserve", "omit"}:
         raise ValueError("--tool-defs-mode must be either 'preserve' or 'omit'")
     return value
+
+
+def _normalize_compat_profile(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    value = raw.strip().lower().replace("_", "-")
+    if not value:
+        raise ValueError("--compat-profile must be non-empty")
+    normalized = _COMPAT_PROFILE_ALIASES.get(value)
+    if normalized is None:
+        supported = ", ".join(sorted(_COMPAT_PROFILE_ALIASES))
+        raise ValueError(
+            f"Unsupported --compat-profile {raw!r}; supported profiles: {supported}"
+        )
+    return normalized
+
+
+def _profile_field(
+    value: str | int | None,
+    required: str | int,
+    *,
+    field: str,
+    profile: str,
+) -> str | int:
+    if value is None:
+        return required
+    if str(value).lower() != str(required).lower():
+        raise ValueError(
+            f"--compat-profile {profile} requires {field}={required!r}; got {value!r}"
+        )
+    return required
+
+
+def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
+    profile = _normalize_compat_profile(spec.compat_profile)
+    if profile is None:
+        return spec
+    if profile != _MOBILE300_PROFILE:
+        raise AssertionError(f"unhandled compat profile: {profile}")
+    if spec.renderer_mode is not None:
+        raise ValueError(
+            f"--compat-profile {profile} keeps the Prime-RL renderer enabled; "
+            "--renderer-mode cannot be set"
+        )
+    if not spec.sync_scheduler_to_max_steps:
+        raise ValueError(
+            f"--compat-profile {profile} requires --sync-scheduler-to-max-steps"
+        )
+    return replace(
+        spec,
+        compat_profile=profile,
+        target_examples=int(
+            _profile_field(
+                spec.target_examples, 300, field="--target-examples", profile=profile
+            )
+        ),
+        pack_function=str(
+            _profile_field(
+                spec.pack_function, "stack", field="--pack-function", profile=profile
+            )
+        ),
+        loss_mask=str(
+            _profile_field(spec.loss_mask, "all", field="--loss-mask", profile=profile)
+        ),
+        model_attn=str(
+            _profile_field(
+                spec.model_attn, "sdpa", field="--model-attn", profile=profile
+            )
+        ),
+        tool_defs_mode="omit",
+    )
 
 
 def _is_qwen35_model(model_name: str | None) -> bool:
@@ -609,10 +690,33 @@ def _initial_manifest(
         manifest.extra["prime_rl_sft_exposure_plan"] = exposure_plan.to_dict()
     if dataset_plan is not None:
         manifest.extra["prime_rl_sft_dataset"] = dataset_plan.to_dict()
+    if spec.compat_profile:
+        manifest.extra["prime_rl_sft_compat_profile"] = {
+            "name": spec.compat_profile,
+            "description": (
+                "BenchFlow Mobile300 PR828 Prime-RL wrapper settings that match "
+                "the historical custom-trainer run where Prime-SFT rows had "
+                "tool_defs but no tools."
+            ),
+            "resolved_settings": {
+                "target_examples": spec.target_examples,
+                "sync_scheduler_to_max_steps": spec.sync_scheduler_to_max_steps,
+                "pack_function": spec.pack_function,
+                "loss_mask": spec.loss_mask,
+                "model_attn": spec.model_attn,
+                "renderer_mode": spec.renderer_mode,
+                "tool_defs_mode": spec.tool_defs_mode,
+            },
+            "known_prime_rl_gap": (
+                "Prime-RL still owns renderer tokenization and loss-mask "
+                "construction; BenchFlow does not patch Prime-RL internals."
+            ),
+        }
     return manifest
 
 
 def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
+    spec = _apply_compat_profile(spec)
     if spec.cwd is not None and not spec.cwd.is_dir():
         raise ValueError(f"--prime-rl-dir not found: {spec.cwd}")
     _resolve_config_path(spec.config, spec.cwd)

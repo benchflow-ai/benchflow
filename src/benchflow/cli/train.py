@@ -233,6 +233,16 @@ def register_train(app: typer.Typer) -> None:
                 help="Prime-RL trainer output dir. Defaults to <work-dir>/prime-rl-output.",
             ),
         ] = None,
+        compat_profile: Annotated[
+            str | None,
+            typer.Option(
+                "--compat-profile",
+                help=(
+                    "Named BenchFlow Prime-RL SFT compatibility profile. "
+                    "Currently supports env0-mobile300-pr828."
+                ),
+            ),
+        ] = None,
         work_dir: Annotated[
             Path,
             typer.Option("--work-dir", help="BenchFlow training run directory"),
@@ -400,6 +410,7 @@ def register_train(app: typer.Typer) -> None:
                     work_dir=work_dir,
                     data=data,
                     output_dir=output_dir,
+                    compat_profile=compat_profile,
                     dry_run=dry_run,
                     follow=follow,
                     uv_no_sync=uv_no_sync,

@@ -488,6 +488,7 @@ class EvaluationConfig:
     skip_agent_install: bool = False
     agent_idle_timeout: int | None = 600
     context_root: str | None = None
+    base_image_override: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
     skill_mode: str = SKILL_MODE_NO_SKILL
@@ -863,6 +864,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            context_root=raw.get("context_root"),
+            base_image_override=raw.get("base_image_override"),
             exclude_tasks=exclude,
             include_tasks=include,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -957,6 +960,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            context_root=raw.get("context_root"),
+            base_image_override=raw.get("base_image_override"),
             include_tasks=include,
             exclude_tasks=exclude,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -1216,6 +1221,7 @@ class Evaluation:
             skip_agent_install=cfg.skip_agent_install,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
+            base_image_override=cfg.base_image_override,
             skill_mode=skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -1262,6 +1268,7 @@ class Evaluation:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
+            base_image_override=cfg.base_image_override,
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,

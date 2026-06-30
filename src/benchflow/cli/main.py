@@ -416,6 +416,16 @@ def eval_run(
             ),
         ),
     ] = None,
+    base_image_override: Annotated[
+        str | None,
+        typer.Option(
+            "--base-image-override",
+            help=(
+                "Rewrite task Dockerfile FROM images on the runtime task copy. "
+                "Use only for reproducing runs whose base image moved namespaces."
+            ),
+        ),
+    ] = None,
     skills_dir: Annotated[
         Path | None,
         typer.Option("--skills-dir", help="Skills directory to deploy"),
@@ -604,6 +614,7 @@ def eval_run(
         sandbox_user=sandbox_user,
         sandbox_setup_timeout=sandbox_setup_timeout,
         context_root=context_root,
+        base_image_override=base_image_override,
         skills_dir=skills_dir,
         skill_mode=skill_mode,
         skill_creator_dir=skill_creator_dir,

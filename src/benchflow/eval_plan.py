@@ -101,6 +101,7 @@ class EvalCreateRequest:
     sandbox_user: str | None = "agent"
     sandbox_setup_timeout: int = 120
     context_root: Path | None = None
+    base_image_override: str | None = None
     skills_dir: Path | None = None
     skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: Path | None = None
@@ -192,6 +193,7 @@ class EvalPlan:
             sandbox_user=self.sandbox_user,
             sandbox_setup_timeout=req.sandbox_setup_timeout,
             context_root=str(req.context_root) if req.context_root else None,
+            base_image_override=req.base_image_override,
             skills_dir=str(req.skills_dir) if req.skills_dir else None,
             skill_mode=req.skill_mode,
             skill_creator_dir=(
@@ -280,6 +282,12 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(f"--matrix not found: {request.matrix}")
     if request.context_root and not Path(request.context_root).is_dir():
         raise EvalPlanError(f"--context-root not found: {request.context_root}")
+    if request.base_image_override is not None:
+        image = request.base_image_override.strip()
+        if not image or any(char.isspace() for char in image):
+            raise EvalPlanError(
+                "--base-image-override must be a non-empty image reference"
+            )
     # Validate --config here so a typo'd / missing / non-file path becomes a clean
     # CLI error instead of a raw FileNotFoundError/IsADirectoryError traceback from
     # the bare open() in Evaluation.from_yaml.
