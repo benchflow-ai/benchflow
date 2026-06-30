@@ -52,6 +52,41 @@ def set_agent_provider(agent: str, base: str, key: str, model: str) -> None:
     _AGENT_PROVIDERS[agent] = (base, key, model)
 
 
+# Agent-tree edges for this graph: who dispatched/answered to whom. The router is
+# the root; the answer specialist is its child; the guardrail reviews the answer.
+# This is the parent map sent as bf.parent_agent_id so ONE shared proxy log
+# reconstructs into an unmixed agent tree (no per-agent proxies needed).
+_AGENT_PARENT = {"supervisor": None, "answer": "supervisor", "guardrail": "answer"}
+_run_counter: dict[str, int] = {}
+
+
+def reset_run(session_id: str | None = None) -> str:
+    """Start a fresh agent-tree run: clear per-agent call counters and pin the
+    session id stamped on every ``bf.*`` tag this run."""
+    _run_counter.clear()
+    sid = session_id or os.environ.get("BF_SESSION_ID") or "medical-run"
+    os.environ["BF_SESSION_ID"] = sid
+    return sid
+
+
+def _bf_metadata(agent: str) -> dict:
+    """The per-call ``bf.*`` attribution for one agent's LLM call (see
+    docs/reference/multi-agent-trajectory.md)."""
+    n = _run_counter.get(agent, 0) + 1
+    _run_counter[agent] = n
+    bf = {
+        "bf.agent_id": agent,
+        "bf.agent_name": agent,
+        "bf.span_kind": "chat",
+        "bf.run_id": f"{agent}#{n}",
+        "bf.session_id": os.environ.get("BF_SESSION_ID") or "medical-run",
+    }
+    parent = _AGENT_PARENT.get(agent)
+    if parent:
+        bf["bf.parent_agent_id"] = parent
+    return bf
+
+
 def _llm(agent: str = "default") -> ChatOpenAI:
     cfg = _AGENT_PROVIDERS.get(agent)
     if cfg is not None:
@@ -61,8 +96,12 @@ def _llm(agent: str = "default") -> ChatOpenAI:
         key = (os.environ.get("BENCHFLOW_PROVIDER_API_KEY")
                or os.environ.get("DEEPSEEK_API_KEY") or "EMPTY")
         model = os.environ.get("BENCHFLOW_PROVIDER_MODEL") or "deepseek/deepseek-v4-pro"
+    # extra_body lands `metadata` as a top-level request-body field (verified to
+    # reach the proxy callback; model_kwargs does NOT survive). One proxy, tagged
+    # per agent → an unmixed agent tree.
     return ChatOpenAI(model=model, base_url=base, api_key=key,
-                      temperature=0.2, max_tokens=2048)
+                      temperature=0.2, max_tokens=2048,
+                      extra_body={"metadata": _bf_metadata(agent)})
 
 
 def _log(state: S, node: str, note: str) -> None:
@@ -144,4 +183,5 @@ def build_graph():
 
 
 def run(query: str) -> S:
+    reset_run()  # fresh per-agent bf.run_id counters for this run
     return build_graph().invoke({"query": query, "trace": []})

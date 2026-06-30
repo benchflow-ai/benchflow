@@ -99,6 +99,86 @@ def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
     assert trajectory.exchanges[0].request.body["reasoning_effort"] == "max"
 
 
+def _instantiate_callback_logger():
+    """Exec the proxy-side callback module source and return a logger instance."""
+    namespace: dict = {}
+    exec(callback_module_source(), namespace)
+    return namespace["BenchFlowLiteLLMLogger"]()
+
+
+def test_callback_records_bf_agent_attribution_from_request_metadata():
+    """A multi-agent run tags each LLM call with ``bf.*`` fields in request
+    ``metadata``; the proxy callback must record them (under
+    ``request.body['bf']``) so one shared proxy log can be split into an unmixed
+    agent tree. Today the callback keeps only ``model_group`` and drops the rest."""
+    from datetime import datetime
+
+    logger = _instantiate_callback_logger()
+    record = logger._base_record(
+        kwargs={
+            "model": "benchflow-deepseek-v4-pro",
+            "messages": [{"role": "user", "content": "side effects?"}],
+            "metadata": {
+                "model_group": "benchflow-deepseek-v4-pro",  # litellm-internal, untouched
+                "bf.agent_id": "answer",
+                "bf.agent_name": "answer",
+                "bf.span_kind": "chat",
+                "bf.parent_agent_id": "supervisor",
+                "bf.run_id": "answer#1",
+                "bf.session_id": "medical-run-1",
+            },
+        },
+        start_time=datetime(2026, 6, 29, 10, 0, 0),
+        end_time=datetime(2026, 6, 29, 10, 0, 1),
+    )
+
+    assert record["request"]["body"]["bf"] == {
+        "agent_id": "answer",
+        "agent_name": "answer",
+        "span_kind": "chat",
+        "parent_agent_id": "supervisor",
+        "run_id": "answer#1",
+        "session_id": "medical-run-1",
+    }
+
+
+def test_callback_records_extended_bf_vocabulary_without_code_change():
+    """The callback captures ANY ``bf.*`` key generically, so the richer
+    attribution dimensions from the adapter proposal (#847) — role, scene,
+    turn_index, team_id, framework, framework_node_id, trace_id — flow through
+    with no code change. One shared ``bf.*`` vocabulary across PRs, not two."""
+    from datetime import datetime
+
+    logger = _instantiate_callback_logger()
+    record = logger._base_record(
+        kwargs={
+            "model": "m",
+            "messages": [],
+            "metadata": {
+                "bf.agent_id": "planner",
+                "bf.role": "planner",
+                "bf.scene": "review",
+                "bf.turn_index": 2,
+                "bf.team_id": "core",
+                "bf.framework": "langgraph",
+                "bf.framework_node_id": "plan_node",
+                "bf.trace_id": "t-abc",
+            },
+        },
+        start_time=datetime(2026, 6, 29, 10, 0, 0),
+        end_time=datetime(2026, 6, 29, 10, 0, 1),
+    )
+
+    bf = record["request"]["body"]["bf"]
+    assert bf["role"] == "planner"
+    assert bf["scene"] == "review"
+    assert bf["turn_index"] == 2
+    assert bf["team_id"] == "core"
+    assert bf["framework"] == "langgraph"
+    assert bf["framework_node_id"] == "plan_node"
+    assert bf["trace_id"] == "t-abc"
+
+
 def test_litellm_failure_records_become_error_exchanges():
     record = {
         "event": "failure",

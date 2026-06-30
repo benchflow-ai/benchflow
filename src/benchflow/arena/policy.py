@@ -54,13 +54,20 @@ class ProxyChatPolicy:
         render: Callable[[Observation], str],
         pick: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
         model: str | None = None,
+        base: str | None = None,
+        api_key: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 256,
         recorder: SeatTrajectory | None = None,
     ) -> None:
         self.seat, self.http = seat, http
         self.render, self.pick = render, pick
-        self.base, self.key, self.model = provider_config(model)
+        # Explicit base/api_key/model win — pass this seat's OWN proxy here to get
+        # a separate trajectory + usage per agent; else fall back to the shared env.
+        pc_base, pc_key, pc_model = provider_config(model)
+        self.base = base or pc_base
+        self.key = api_key or pc_key
+        self.model = model or pc_model
         self.temperature, self.max_tokens = temperature, max_tokens
         self.recorder = recorder
 

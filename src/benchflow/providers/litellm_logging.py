@@ -144,6 +144,19 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             if value is not None:
                 request_body[key] = value
         request_body = {k: v for k, v in request_body.items() if v is not None}
+        # Multi-agent attribution: a hosted multi-agent workflow tags each call
+        # with bf.* fields in request metadata (agent id/name, span kind, parent
+        # pointer, run id, conversation id). Record them under request.body["bf"]
+        # so one shared proxy log reconstructs into an unmixed agent tree. The
+        # "bf." prefix isolates ours from litellm-internal metadata keys.
+        if isinstance(metadata, dict):
+            bf = {
+                key[3:]: value
+                for key, value in metadata.items()
+                if isinstance(key, str) and key.startswith("bf.")
+            }
+            if bf:
+                request_body["bf"] = bf
         return {
             "request_model": kwargs.get("model"),
             "provider_model": litellm_params.get("model") or kwargs.get("model"),
