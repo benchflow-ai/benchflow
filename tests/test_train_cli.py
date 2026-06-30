@@ -700,6 +700,8 @@ def test_train_run_sft_prime_rl_target_examples_derives_exposure(
             "scheduler.decay_steps=38",
             "data.pack_function=stack",
         ],
+        "loss_mask": None,
+        "model_attn": None,
         "pack_function": "stack",
         "sync_scheduler_to_max_steps": True,
         "target_examples": 300,
@@ -756,6 +758,187 @@ def test_train_run_sft_prime_rl_target_examples_respects_batch_override(
         manifest["extra"]["prime_rl_sft_exposure_plan"]["sync_scheduler_to_max_steps"]
         is False
     )
+
+
+def test_train_run_sft_prime_rl_records_reproduction_semantics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Guards explicit Prime-RL semantics for custom-trainer reproduction runs."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            del kwargs
+            captured["argv"] = argv
+            self.stdout = io.StringIO("trainer ok\n")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    config = tmp_path / "sft.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "max_steps = 300",
+                "[model]",
+                'name = "Qwen/Qwen3.5-9B"',
+                'attn = "flash_attention_2"',
+                "[data]",
+                "batch_size = 8",
+                'pack_function = "cat"',
+                "[scheduler]",
+                "decay_steps = 300",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(prime_rl.subprocess, "Popen", FakeProcess)
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(work_dir),
+            "--target-examples",
+            "300",
+            "--pack-function",
+            "stack",
+            "--loss-mask",
+            "all",
+            "--model-attn",
+            "sdpa",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["argv"][-16:] == [
+        "--max_steps",
+        "38",
+        "--scheduler.decay_steps",
+        "38",
+        "--data.pack_function",
+        "stack",
+        "--data.loss_mask.system",
+        "true",
+        "--data.loss_mask.user",
+        "true",
+        "--data.loss_mask.assistant",
+        "true",
+        "--data.loss_mask.tool",
+        "true",
+        "--model.attn",
+        "sdpa",
+    ]
+    manifest = json.loads((work_dir / "train-run.json").read_text())
+    assert manifest["extra"]["prime_rl_sft_exposure_plan"] == {
+        "data_batch_size": 8,
+        "derived_max_steps": 38,
+        "generated_overrides": [
+            "max_steps=38",
+            "scheduler.decay_steps=38",
+            "data.pack_function=stack",
+            "data.loss_mask.system=true",
+            "data.loss_mask.user=true",
+            "data.loss_mask.assistant=true",
+            "data.loss_mask.tool=true",
+            "model.attn=sdpa",
+        ],
+        "loss_mask": "all",
+        "model_attn": "sdpa",
+        "pack_function": "stack",
+        "sync_scheduler_to_max_steps": True,
+        "target_examples": 300,
+    }
+
+
+def test_train_run_sft_prime_rl_rejects_qwen35_stack_flash_attn(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fail closed on the Prime-RL Qwen3.5 stack/flash-attention path seen on H100."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    config = tmp_path / "sft.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "[model]",
+                'name = "Qwen/Qwen3.5-9B"',
+                'attn = "flash_attention_2"',
+                "[data]",
+                "batch_size = 8",
+                'pack_function = "cat"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(tmp_path / "train-run"),
+            "--pack-function",
+            "stack",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert (
+        "stack packing with Qwen/Qwen3.5-* and flash attention is blocked"
+        in result.output
+    )
+    assert "--model-attn sdpa" in result.output
+
+
+def test_train_run_sft_prime_rl_loss_mask_rejects_override_conflict(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    config = tmp_path / "sft.toml"
+    config.write_text("max_steps = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(tmp_path / "train-run"),
+            "--loss-mask",
+            "all",
+            "--override",
+            "data.loss_mask.user=false",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--loss-mask cannot be combined" in result.output
 
 
 def test_train_run_sft_prime_rl_target_examples_rejects_manual_max_steps(

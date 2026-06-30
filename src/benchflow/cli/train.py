@@ -296,6 +296,33 @@ def register_train(app: typer.Typer) -> None:
                 help="Optional first-class Prime-RL data.pack_function override: cat or stack",
             ),
         ] = None,
+        loss_mask: Annotated[
+            str | None,
+            typer.Option(
+                "--loss-mask",
+                help=(
+                    "Optional first-class Prime-RL data.loss_mask override: "
+                    "'assistant', 'all', or comma-separated roles"
+                ),
+            ),
+        ] = None,
+        model_attn: Annotated[
+            str | None,
+            typer.Option(
+                "--model-attn",
+                help="Optional first-class Prime-RL model.attn override, e.g. sdpa",
+            ),
+        ] = None,
+        allow_unsafe_stack_flash_attn: Annotated[
+            bool,
+            typer.Option(
+                "--allow-unsafe-stack-flash-attn",
+                help=(
+                    "Allow Qwen3.5 stack packing with flash attention despite "
+                    "known Prime-RL varlen-kernel risk"
+                ),
+            ),
+        ] = False,
         force: Annotated[
             bool,
             typer.Option(
@@ -360,6 +387,9 @@ def register_train(app: typer.Typer) -> None:
                     target_examples=target_examples,
                     sync_scheduler_to_max_steps=sync_scheduler_to_max_steps,
                     pack_function=pack_function,
+                    loss_mask=loss_mask,
+                    model_attn=model_attn,
+                    allow_unsafe_stack_flash_attn=allow_unsafe_stack_flash_attn,
                     force=force,
                     cwd=prime_rl_dir,
                     publish_model=publish_model,

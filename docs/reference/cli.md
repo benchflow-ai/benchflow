@@ -425,6 +425,12 @@ that were present are recorded.
 | `--follow` | `false` | Stream trainer stdout while writing logs |
 | `--uv-no-sync` | `false` | Run Prime-RL as `uv run --no-sync sft ...`, useful after backend post-install steps such as `flash-attn` |
 | `--override` | — | Prime-RL override as `KEY=VALUE`; repeatable, emitted as `--KEY VALUE` |
+| `--target-examples` | — | Derive Prime-RL `max_steps` from target sample exposure and effective `data.batch_size` |
+| `--sync-scheduler-to-max-steps` / `--no-sync-scheduler-to-max-steps` | `true` | When `--target-examples` is set, also derive `scheduler.decay_steps` |
+| `--pack-function` | — | First-class Prime-RL `data.pack_function` override: `cat` or `stack` |
+| `--loss-mask` | — | First-class Prime-RL `data.loss_mask` override: `assistant`, `all`, or comma-separated roles from `system,user,assistant,tool` |
+| `--model-attn` | — | First-class Prime-RL `model.attn` override, e.g. `sdpa` |
+| `--allow-unsafe-stack-flash-attn` | `false` | Allow Qwen3.5 `stack` packing with flash attention despite the known Prime-RL varlen-kernel risk |
 | `--force` | `false` | Overwrite an existing `<work-dir>/train-run.json` manifest |
 | `--publish-model` | — | Upload trainer output to this Hugging Face model repo |
 | `--model-tag` | — | Path prefix/tag for the model upload |
