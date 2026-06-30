@@ -224,6 +224,18 @@ relationship graph. `agent_id` from (A) is the clean join key for (B).
   tree, instead of (or alongside) the bespoke JSONL.
 - **Omnigent track.** Wire `HARNESS_*_GATEWAY_*` at the proxy to close the bypass;
   drive server/session mode; export the conversation tree.
+- **Concurrent-seats track ✅ DONE — native multi-agent floor.** `benchflow arena run
+  --agents agents.yaml` (`src/benchflow/arena/`) runs N agents on ONE shared task +
+  service CONCURRENTLY in ONE shared sandbox, each in `/work/<seat>`, each with its
+  own ACP trajectory and — for proxy seats — a separate raw `llm_trajectory.jsonl`
+  from that seat's own proxy (`session_id=floor-<seat>`). This answers the "concurrent
+  seats" open question below: **distinct per-seat files**, separated at the proxy by a
+  per-seat `bf.session_id`, rather than sibling sub-trees under one trace (which remains
+  the model for a single agent's supervisor→specialist calls). Agents resolve from all
+  three benchflow-ai/agents paths (raw ACP / ai-sdk / omnigent) or a BYOA manifest, and
+  carry a per-agent instruction file (`CLAUDE.md`/`GEMINI.md`/`AGENTS.md`). See
+  `examples/arena/README.md`. Unit-tested in `tests/test_{agents_manifest,agent_driver,
+  agent_instructions,concurrent_floor,arena_cli}.py`.
 
 ## Verification (the research's #1 open question)
 

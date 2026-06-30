@@ -45,6 +45,7 @@ from benchflow.cli._shared import (
 )
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
 from benchflow.cli.agent import register_agent
+from benchflow.cli.arena import register_arena
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.environment import register_environment
 from benchflow.cli.hub import register_hub
@@ -1104,6 +1105,7 @@ register_adopt_deprecated(app)
 register_sandbox(app)
 register_environment(app)
 register_monitor(app)
+register_arena(app)
 
 
 if __name__ == "__main__":
