@@ -285,7 +285,17 @@ def register_train(app: typer.Typer) -> None:
                 "--target-examples",
                 help=(
                     "Derive Prime-RL max_steps from a target number of training "
-                    "examples using data.batch_size"
+                    "examples using data.batch_size, rounding up"
+                ),
+            ),
+        ] = None,
+        target_micro_steps: Annotated[
+            int | None,
+            typer.Option(
+                "--target-micro-steps",
+                help=(
+                    "Derive Prime-RL max_steps from custom-trainer batch-size-1 "
+                    "microsteps, dropping the final partial accumulation"
                 ),
             ),
         ] = None,
@@ -294,8 +304,8 @@ def register_train(app: typer.Typer) -> None:
             typer.Option(
                 "--sync-scheduler-to-max-steps/--no-sync-scheduler-to-max-steps",
                 help=(
-                    "When --target-examples is set, also derive "
-                    "scheduler.decay_steps from the computed max_steps"
+                    "When --target-examples or --target-micro-steps is set, "
+                    "also derive scheduler.decay_steps from the computed max_steps"
                 ),
             ),
         ] = True,
@@ -439,6 +449,7 @@ def register_train(app: typer.Typer) -> None:
                     uv_no_sync=uv_no_sync,
                     overrides=tuple(override or ()),
                     target_examples=target_examples,
+                    target_micro_steps=target_micro_steps,
                     sync_scheduler_to_max_steps=sync_scheduler_to_max_steps,
                     pack_function=pack_function,
                     loss_mask=loss_mask,

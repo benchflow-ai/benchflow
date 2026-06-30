@@ -721,6 +721,7 @@ def test_train_run_sft_prime_rl_target_examples_derives_exposure(
     assert manifest["extra"]["prime_rl_sft_exposure_plan"] == {
         "data_batch_size": 8,
         "derived_max_steps": 38,
+        "effective_train_examples": 304,
         "generated_overrides": [
             "max_steps=38",
             "scheduler.decay_steps=38",
@@ -732,6 +733,8 @@ def test_train_run_sft_prime_rl_target_examples_derives_exposure(
         "renderer_mode": None,
         "sync_scheduler_to_max_steps": True,
         "target_examples": 300,
+        "target_micro_steps": None,
+        "unapplied_micro_steps": None,
     }
 
 
@@ -785,6 +788,76 @@ def test_train_run_sft_prime_rl_target_examples_respects_batch_override(
         manifest["extra"]["prime_rl_sft_exposure_plan"]["sync_scheduler_to_max_steps"]
         is False
     )
+
+
+def test_train_run_sft_prime_rl_target_micro_steps_drops_partial_accumulation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Custom-trainer max_steps counted micro-batches, not optimizer updates."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            del kwargs
+            captured["argv"] = argv
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    config = tmp_path / "sft.toml"
+    config.write_text(
+        "max_steps = 300\n[data]\nbatch_size = 8\n[scheduler]\ndecay_steps = 300\n",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(prime_rl.subprocess, "Popen", FakeProcess)
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(work_dir),
+            "--target-micro-steps",
+            "300",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["argv"][-4:] == [
+        "--max_steps",
+        "37",
+        "--scheduler.decay_steps",
+        "37",
+    ]
+    manifest = json.loads((work_dir / "train-run.json").read_text())
+    assert manifest["extra"]["prime_rl_sft_exposure_plan"] == {
+        "data_batch_size": 8,
+        "derived_max_steps": 37,
+        "effective_train_examples": 296,
+        "generated_overrides": [
+            "max_steps=37",
+            "scheduler.decay_steps=37",
+        ],
+        "loss_mask": None,
+        "model_attn": None,
+        "pack_function": None,
+        "renderer_mode": None,
+        "sync_scheduler_to_max_steps": True,
+        "target_examples": None,
+        "target_micro_steps": 300,
+        "unapplied_micro_steps": 4,
+    }
 
 
 def test_train_run_sft_prime_rl_records_reproduction_semantics(
@@ -872,6 +945,7 @@ def test_train_run_sft_prime_rl_records_reproduction_semantics(
     assert manifest["extra"]["prime_rl_sft_exposure_plan"] == {
         "data_batch_size": 8,
         "derived_max_steps": 38,
+        "effective_train_examples": 304,
         "generated_overrides": [
             "max_steps=38",
             "scheduler.decay_steps=38",
@@ -888,6 +962,8 @@ def test_train_run_sft_prime_rl_records_reproduction_semantics(
         "renderer_mode": None,
         "sync_scheduler_to_max_steps": True,
         "target_examples": 300,
+        "target_micro_steps": None,
+        "unapplied_micro_steps": None,
     }
 
 
@@ -990,9 +1066,9 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
     argv = captured["argv"]
     assert argv[-18:] == [
         "--max_steps",
-        "38",
+        "37",
         "--scheduler.decay_steps",
-        "38",
+        "37",
         "--data.pack_function",
         "stack",
         "--data.loss_mask.system",
@@ -1020,7 +1096,8 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "env0-mobile300-pr828"
     )
     assert manifest["extra"]["prime_rl_sft_compat_profile"]["resolved_settings"] == {
-        "target_examples": 300,
+        "target_examples": None,
+        "target_micro_steps": 300,
         "sync_scheduler_to_max_steps": True,
         "pack_function": "stack",
         "loss_mask": "all",
@@ -1030,6 +1107,11 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "chat_template_kwargs": {"enable_thinking": False},
         "message_tail_truncation": "keep-first-user",
     }
+    assert (
+        manifest["extra"]["prime_rl_sft_exposure_plan"]["effective_train_examples"]
+        == 296
+    )
+    assert manifest["extra"]["prime_rl_sft_exposure_plan"]["unapplied_micro_steps"] == 4
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_mode"] == "omit"
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_removed_rows"] == 1
     assert manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs"] == {
