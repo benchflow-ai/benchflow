@@ -1,5 +1,7 @@
 # Assembled into the build context at setup time, not checked in (see ../README.md):
 #   deepagents-acp-shim  — copied from src/benchflow/agents/deepagents_acp_shim.py
 #   casino-pkg/          — copied from <casinobench>/packages/environments/casino
+#   casinobench-engine/  — copied from <casinobench> (proprietary engine; base image)
 deepagents-acp-shim
 casino-pkg/
+casinobench-engine/
