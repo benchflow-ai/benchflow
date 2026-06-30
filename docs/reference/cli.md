@@ -430,6 +430,8 @@ that were present are recorded.
 | `--pack-function` | — | First-class Prime-RL `data.pack_function` override: `cat` or `stack` |
 | `--loss-mask` | — | First-class Prime-RL `data.loss_mask` override: `assistant`, `all`, or comma-separated roles from `system,user,assistant,tool` |
 | `--model-attn` | — | First-class Prime-RL `model.attn` override, e.g. `sdpa` |
+| `--renderer-mode` | — | Prime-RL renderer override. `none` emits `--renderer None`, making Prime-RL use tokenizer `apply_chat_template` tokenization |
+| `--tool-defs-mode` | `preserve` | For local JSONL or local dataset dirs, keep tool schemas (`preserve`) or remove `tool_defs`/`tools` from the temporary training copy (`omit`) |
 | `--allow-unsafe-stack-flash-attn` | `false` | Allow Qwen3.5 `stack` packing with flash attention despite the known Prime-RL varlen-kernel risk |
 | `--force` | `false` | Overwrite an existing `<work-dir>/train-run.json` manifest |
 | `--publish-model` | — | Upload trainer output to this Hugging Face model repo |
@@ -438,6 +440,12 @@ that were present are recorded.
 | `--publish-artifacts` | — | Upload BenchFlow train run artifacts to this Hugging Face dataset repo |
 | `--hf-prefix` | — | Path prefix for `--publish-artifacts` |
 | `--hf-public-read-check` | `false` | Verify public Hugging Face reads after upload |
+
+Local JSONL files are packaged automatically into a temporary Hugging Face
+dataset directory under `<work-dir>/prime-rl-dataset`, with source validation
+metadata recorded in the manifest. If `--tool-defs-mode omit` is set,
+BenchFlow validates the source JSONL first and then strips tool schema columns
+only from the temporary training copy.
 
 ## bench skills
 

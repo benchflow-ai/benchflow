@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -45,6 +46,8 @@ class PrimeRlSftSpec:
     pack_function: str | None = None
     loss_mask: str | None = None
     model_attn: str | None = None
+    renderer_mode: str | None = None
+    tool_defs_mode: str = "preserve"
     allow_unsafe_stack_flash_attn: bool = False
     force: bool = False
     cwd: Path | None = None
@@ -72,6 +75,7 @@ class PrimeRlSftExposurePlan:
     pack_function: str | None = None
     loss_mask: str | None = None
     model_attn: str | None = None
+    renderer_mode: str | None = None
     generated_overrides: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,6 +87,7 @@ class PrimeRlSftExposurePlan:
             "pack_function": self.pack_function,
             "loss_mask": self.loss_mask,
             "model_attn": self.model_attn,
+            "renderer_mode": self.renderer_mode,
             "generated_overrides": list(self.generated_overrides),
         }
 
@@ -94,6 +99,8 @@ class PrimeRlSftDatasetPlan:
     kind: str
     dataset_dir: str | None = None
     train_jsonl: str | None = None
+    tool_defs_mode: str = "preserve"
+    tool_defs_removed_rows: int | None = None
     validation: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -103,6 +110,8 @@ class PrimeRlSftDatasetPlan:
             "kind": self.kind,
             "dataset_dir": self.dataset_dir,
             "train_jsonl": self.train_jsonl,
+            "tool_defs_mode": self.tool_defs_mode,
+            "tool_defs_removed_rows": self.tool_defs_removed_rows,
             "validation": self.validation,
         }
 
@@ -240,6 +249,15 @@ def _string_or_none(value: Any) -> str | None:
     return str(value)
 
 
+def _normalize_tool_defs_mode(raw: str) -> str:
+    value = raw.strip().lower().replace("_", "-")
+    aliases = {"keep": "preserve", "strip": "omit", "drop": "omit"}
+    value = aliases.get(value, value)
+    if value not in {"preserve", "omit"}:
+        raise ValueError("--tool-defs-mode must be either 'preserve' or 'omit'")
+    return value
+
+
 def _is_qwen35_model(model_name: str | None) -> bool:
     if model_name is None:
         return False
@@ -288,6 +306,7 @@ def _build_generated_overrides(
     pack_function: str | None = None
     loss_mask: str | None = None
     model_attn: str | None = None
+    renderer_mode: str | None = None
 
     if spec.target_examples is not None:
         if "max_steps" in overrides:
@@ -342,6 +361,20 @@ def _build_generated_overrides(
             )
         generated.append(f"model.attn={model_attn}")
 
+    if spec.renderer_mode is not None:
+        renderer_mode = spec.renderer_mode.strip().lower().replace("_", "-")
+        if renderer_mode != "none":
+            raise ValueError("--renderer-mode currently supports only 'none'")
+        conflicting = sorted(
+            key for key in overrides if key == "renderer" or key.startswith("renderer.")
+        )
+        if conflicting:
+            raise ValueError(
+                "--renderer-mode cannot be combined with --override "
+                + ", ".join(f"{key}=..." for key in conflicting)
+            )
+        generated.append("renderer=None")
+
     effective_overrides = _override_map((*spec.overrides, *generated))
     _validate_prime_rl_mode(spec, config, effective_overrides)
 
@@ -359,6 +392,7 @@ def _build_generated_overrides(
         pack_function=pack_function,
         loss_mask=loss_mask,
         model_attn=model_attn,
+        renderer_mode=renderer_mode,
         generated_overrides=tuple(generated),
     )
 
@@ -418,6 +452,28 @@ def _local_data_path(data: str) -> Path | None:
     return None
 
 
+def _copy_jsonl_omitting_tool_defs(source: Path, destination: Path) -> int:
+    """Copy JSONL while dropping tool schema columns from the training copy."""
+    removed_rows = 0
+    with (
+        source.open("r", encoding="utf-8") as src,
+        destination.open("w", encoding="utf-8") as dst,
+    ):
+        for line in src:
+            if not line.strip():
+                dst.write(line)
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValueError(f"{source}: every JSONL row must be an object")
+            if "tool_defs" in row or "tools" in row:
+                removed_rows += 1
+            row.pop("tool_defs", None)
+            row.pop("tools", None)
+            dst.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    return removed_rows
+
+
 def _prepare_prime_rl_data(
     spec: PrimeRlSftSpec, work_dir: Path
 ) -> tuple[PrimeRlSftSpec, PrimeRlSftDatasetPlan | None]:
@@ -425,8 +481,14 @@ def _prepare_prime_rl_data(
     if not spec.data:
         return spec, None
 
+    tool_defs_mode = _normalize_tool_defs_mode(spec.tool_defs_mode)
     source_path = _local_data_path(spec.data)
     if source_path is None:
+        if tool_defs_mode != "preserve":
+            raise ValueError(
+                "--tool-defs-mode omit requires --data to be a local JSONL file "
+                "or a local dataset directory"
+            )
         return spec, None
 
     if source_path.is_dir():
@@ -438,6 +500,30 @@ def _prepare_prime_rl_data(
             )
 
             validation = validate_prime_sft_jsonl(train_jsonl)
+        if tool_defs_mode == "omit":
+            if not train_jsonl.is_file():
+                raise ValueError(
+                    f"--tool-defs-mode omit requires {source_path} to contain train.jsonl"
+                )
+            dataset_dir = work_dir / "prime-rl-dataset"
+            if dataset_dir.exists():
+                shutil.rmtree(dataset_dir)
+            shutil.copytree(source_path, dataset_dir)
+            transformed_train_jsonl = dataset_dir / "train.jsonl"
+            removed_rows = _copy_jsonl_omitting_tool_defs(
+                train_jsonl, transformed_train_jsonl
+            )
+            resolved_spec = replace(spec, data=str(dataset_dir))
+            return resolved_spec, PrimeRlSftDatasetPlan(
+                source_data=spec.data,
+                resolved_data=str(dataset_dir),
+                kind="local_dataset_dir_transformed",
+                dataset_dir=str(dataset_dir),
+                train_jsonl=str(transformed_train_jsonl),
+                tool_defs_mode=tool_defs_mode,
+                tool_defs_removed_rows=removed_rows,
+                validation=validation,
+            )
         resolved_spec = replace(spec, data=str(source_path))
         return resolved_spec, PrimeRlSftDatasetPlan(
             source_data=spec.data,
@@ -445,6 +531,7 @@ def _prepare_prime_rl_data(
             kind="local_dataset_dir",
             dataset_dir=str(source_path),
             train_jsonl=str(train_jsonl) if train_jsonl.is_file() else None,
+            tool_defs_mode=tool_defs_mode,
             validation=validation,
         )
 
@@ -461,7 +548,11 @@ def _prepare_prime_rl_data(
         shutil.rmtree(dataset_dir)
     dataset_dir.mkdir(parents=True)
     train_jsonl = dataset_dir / "train.jsonl"
-    shutil.copy2(source_path, train_jsonl)
+    removed_rows = None
+    if tool_defs_mode == "omit":
+        removed_rows = _copy_jsonl_omitting_tool_defs(source_path, train_jsonl)
+    else:
+        shutil.copy2(source_path, train_jsonl)
     resolved_spec = replace(spec, data=str(dataset_dir))
     return resolved_spec, PrimeRlSftDatasetPlan(
         source_data=spec.data,
@@ -469,6 +560,8 @@ def _prepare_prime_rl_data(
         kind="local_jsonl_packaged",
         dataset_dir=str(dataset_dir),
         train_jsonl=str(train_jsonl),
+        tool_defs_mode=tool_defs_mode,
+        tool_defs_removed_rows=removed_rows,
         validation=validation,
     )
 

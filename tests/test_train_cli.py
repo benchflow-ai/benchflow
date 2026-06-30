@@ -583,6 +583,8 @@ def test_train_run_sft_prime_rl_packages_local_jsonl_data(
         "resolved_data": str(dataset_dir.resolve()),
         "source_data": str(source),
         "train_jsonl": str(train_jsonl),
+        "tool_defs_mode": "preserve",
+        "tool_defs_removed_rows": None,
         "validation": {"ok": True, "rows": 1, "rows_with_tool_calls": 1},
     }
 
@@ -703,6 +705,7 @@ def test_train_run_sft_prime_rl_target_examples_derives_exposure(
         "loss_mask": None,
         "model_attn": None,
         "pack_function": "stack",
+        "renderer_mode": None,
         "sync_scheduler_to_max_steps": True,
         "target_examples": 300,
     }
@@ -858,9 +861,174 @@ def test_train_run_sft_prime_rl_records_reproduction_semantics(
         "loss_mask": "all",
         "model_attn": "sdpa",
         "pack_function": "stack",
+        "renderer_mode": None,
         "sync_scheduler_to_max_steps": True,
         "target_examples": 300,
     }
+
+
+def test_train_run_sft_prime_rl_custom_trainer_compatibility_mode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Prime-RL can be launched against a custom-trainer-compatible data copy."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            del kwargs
+            captured["argv"] = argv
+            self.stdout = io.StringIO("trainer ok\n")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    config = tmp_path / "sft.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "max_steps = 300",
+                "[renderer]",
+                'name = "qwen3.5"',
+                "[data]",
+                "batch_size = 8",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source_jsonl = tmp_path / "prime-sft.jsonl"
+    source_jsonl.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "finish"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "finish",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_1",
+                        "content": "ok",
+                    },
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "reward": 1.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(prime_rl.subprocess, "Popen", FakeProcess)
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(work_dir),
+            "--data",
+            str(source_jsonl),
+            "--target-examples",
+            "300",
+            "--loss-mask",
+            "all",
+            "--renderer-mode",
+            "none",
+            "--tool-defs-mode",
+            "omit",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "--renderer" in captured["argv"]
+    renderer_idx = captured["argv"].index("--renderer")
+    assert captured["argv"][renderer_idx + 1] == "None"
+    assert "--data.name" in captured["argv"]
+    data_idx = captured["argv"].index("--data.name")
+    staged_dir = Path(captured["argv"][data_idx + 1])
+    staged_row = json.loads((staged_dir / "train.jsonl").read_text())
+    assert "tool_defs" not in staged_row
+    assert "tools" not in staged_row
+    assert "tool_defs" in json.loads(source_jsonl.read_text())
+
+    manifest = json.loads((work_dir / "train-run.json").read_text())
+    assert manifest["extra"]["prime_rl_sft_exposure_plan"]["generated_overrides"] == [
+        "max_steps=38",
+        "scheduler.decay_steps=38",
+        "data.loss_mask.system=true",
+        "data.loss_mask.user=true",
+        "data.loss_mask.assistant=true",
+        "data.loss_mask.tool=true",
+        "renderer=None",
+    ]
+    assert manifest["extra"]["prime_rl_sft_exposure_plan"]["renderer_mode"] == "none"
+    assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_mode"] == "omit"
+    assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_removed_rows"] == 1
+    assert manifest["extra"]["prime_rl_sft_dataset"]["validation"] == {
+        "ok": True,
+        "rows": 1,
+        "rows_with_tool_calls": 1,
+    }
+
+
+def test_train_run_sft_prime_rl_rejects_tool_defs_omit_for_remote_data(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    config = tmp_path / "sft.toml"
+    config.write_text("max_steps = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(tmp_path / "train-run"),
+            "--data",
+            "benchflow/remote-dataset",
+            "--tool-defs-mode",
+            "omit",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--tool-defs-mode omit requires --data to be a local JSONL" in result.output
 
 
 def test_train_run_sft_prime_rl_rejects_qwen35_stack_flash_attn(
