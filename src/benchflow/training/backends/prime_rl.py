@@ -50,6 +50,7 @@ class PrimeRlSftSpec:
     sync_ckpt_to_max_steps: bool = False
     pack_function: str | None = None
     loss_mask: str | None = None
+    loss_normalization: str | None = None
     model_attn: str | None = None
     renderer_mode: str | None = None
     tool_defs_mode: str = "preserve"
@@ -154,6 +155,26 @@ class PrimeRlSftDatasetPlan:
 
 
 @dataclass(frozen=True)
+class PrimeRlSftShimPlan:
+    name: str
+    description: str
+    shim_dir: str
+    sitecustomize: str
+    env: dict[str, str]
+    guards: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "shim_dir": self.shim_dir,
+            "sitecustomize": self.sitecustomize,
+            "env": dict(self.env),
+            "guards": list(self.guards),
+        }
+
+
+@dataclass(frozen=True)
 class PrimeRlSftLaunch:
     argv: list[str]
     exposure_plan: PrimeRlSftExposurePlan | None = None
@@ -161,6 +182,9 @@ class PrimeRlSftLaunch:
 
 _MOBILE300_PROFILE = "env0-mobile300-pr828"
 _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE = "custom-trainer-token-suffix"
+_TOKEN_MEAN_LOSS_NORMALIZATION = "token_mean"
+_SAMPLE_MEAN_LOSS_NORMALIZATION = "sample_mean"
+_SAMPLE_MEAN_SHIM_ENV = "BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS"
 _PASSTHROUGH_CHAT_TEMPLATE = (
     "{% for message in messages %}"
     "{{ message.get('prefix_ws', '') }}"
@@ -287,6 +311,25 @@ def _loss_mask_overrides(raw: str) -> tuple[str, tuple[str, ...]]:
         f"data.loss_mask.{role}={'true' if role in enabled else 'false'}"
         for role in role_names
     )
+
+
+def _normalize_loss_normalization(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    value = raw.strip().lower().replace("-", "_")
+    aliases = {
+        "token": _TOKEN_MEAN_LOSS_NORMALIZATION,
+        "token_mean": _TOKEN_MEAN_LOSS_NORMALIZATION,
+        "token_weighted": _TOKEN_MEAN_LOSS_NORMALIZATION,
+        "sample": _SAMPLE_MEAN_LOSS_NORMALIZATION,
+        "sample_mean": _SAMPLE_MEAN_LOSS_NORMALIZATION,
+        "row": _SAMPLE_MEAN_LOSS_NORMALIZATION,
+        "row_mean": _SAMPLE_MEAN_LOSS_NORMALIZATION,
+    }
+    normalized = aliases.get(value)
+    if normalized is None:
+        raise ValueError("--loss-normalization must be 'token_mean' or 'sample_mean'")
+    return normalized
 
 
 def _resolve_effective_value(
@@ -446,6 +489,13 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
             f"--compat-profile {profile} stages a passthrough chat template and "
             "does not support --chat-template-kwarg"
         )
+    loss_normalization = _normalize_loss_normalization(spec.loss_normalization)
+    if loss_normalization not in {None, _SAMPLE_MEAN_LOSS_NORMALIZATION}:
+        raise ValueError(
+            f"--compat-profile {profile} requires "
+            f"--loss-normalization {_SAMPLE_MEAN_LOSS_NORMALIZATION}; "
+            f"got {loss_normalization!r}"
+        )
     return replace(
         spec,
         compat_profile=profile,
@@ -469,6 +519,7 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
                 spec.loss_mask, "assistant", field="--loss-mask", profile=profile
             )
         ),
+        loss_normalization=_SAMPLE_MEAN_LOSS_NORMALIZATION,
         model_attn=str(
             _profile_field(
                 spec.model_attn, "sdpa", field="--model-attn", profile=profile
@@ -519,6 +570,44 @@ def _validate_prime_rl_mode(
             "--model-attn sdpa or --override model.attn=sdpa for the "
             "custom-trainer-compatible stack path, or pass "
             "--allow-unsafe-stack-flash-attn to run the native Prime-RL mode anyway."
+        )
+
+
+def _validate_prime_rl_loss_normalization(
+    spec: PrimeRlSftSpec,
+    config: Mapping[str, Any],
+    effective_overrides: Mapping[str, str],
+) -> None:
+    loss_normalization = _normalize_loss_normalization(spec.loss_normalization)
+    if loss_normalization in {None, _TOKEN_MEAN_LOSS_NORMALIZATION}:
+        return
+    pack_function = _string_or_none(
+        _resolve_effective_value(config, effective_overrides, "data.pack_function")
+    )
+    if pack_function != "stack":
+        raise ValueError(
+            "--loss-normalization sample_mean requires data.pack_function=stack "
+            "so each batch row remains one original training example"
+        )
+    model_cp = _resolve_effective_positive_int(
+        config, effective_overrides, "model.cp", default=1
+    )
+    if model_cp != 1:
+        raise ValueError(
+            "--loss-normalization sample_mean requires model.cp=1 because "
+            "sequence-sharded rows cannot be reduced to per-sample means by "
+            "the BenchFlow Prime-RL wrapper"
+        )
+    loss_impl = (
+        _string_or_none(
+            _resolve_effective_value(config, effective_overrides, "loss_impl")
+        )
+        or "torch"
+    )
+    if loss_impl in {"liger_fused", "quack_fused"}:
+        raise ValueError(
+            "--loss-normalization sample_mean does not support fused Prime-RL "
+            f"loss_impl={loss_impl!r}; use loss_impl=torch or loss_impl=liger"
         )
 
 
@@ -671,6 +760,7 @@ def _build_generated_overrides(
 
     effective_overrides = _override_map((*spec.overrides, *generated))
     _validate_prime_rl_mode(spec, config, effective_overrides)
+    _validate_prime_rl_loss_normalization(spec, config, effective_overrides)
 
     if not generated:
         return None
@@ -731,6 +821,197 @@ def _shell_quote(argv: list[str]) -> str:
     import shlex
 
     return " ".join(shlex.quote(arg) for arg in argv)
+
+
+def _shell_quote_env(env: Mapping[str, str]) -> str:
+    import shlex
+
+    return " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
+
+
+_SAMPLE_MEAN_SITE_CUSTOMIZE = r'''
+"""BenchFlow Prime-RL sample-mean SFT loss compatibility shim.
+
+This file is generated by BenchFlow for one trainer subprocess. It does not
+modify the installed Prime-RL package; it intercepts the SFT train module import
+and rewrites the known token-weighted loss block before Python compiles it.
+"""
+
+from __future__ import annotations
+
+import importlib.abc
+import importlib.machinery
+import os
+import sys
+
+_ENV = "BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS"
+_TARGET = "prime_rl.trainer.sft.train"
+
+_EXPECTED = """\
+        if config.model.lora is not None:
+            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
+
+        token_count = loss_mask.sum(dtype=torch.int64)
+
+        with maybe_activation_offloading(config.model.ac_offloading):
+            if config.loss_impl in ("liger_fused", "quack_fused"):
+                masked_target_ids = target_ids.clone()
+                masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
+                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
+                loss_sum = out["loss"] * token_count
+            else:
+                out = forward(model, input_ids, position_ids)
+                logits = out["logits"]
+                B, L, V = logits.shape
+                token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+                loss_sum = token_loss[loss_mask].sum()
+                del logits
+
+        del out
+        return loss_sum, token_count
+"""
+
+_REPLACEMENT = """\
+        if cp_enabled:
+            raise RuntimeError(
+                "BenchFlow sample-mean loss requires model.cp=1; context parallel "
+                "sequence shards cannot preserve original row means."
+            )
+
+        if config.model.lora is not None:
+            set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
+
+        with maybe_activation_offloading(config.model.ac_offloading):
+            if config.loss_impl in ("liger_fused", "quack_fused"):
+                raise RuntimeError(
+                    "BenchFlow sample-mean loss supports loss_impl=torch or "
+                    "loss_impl=liger, not fused loss kernels."
+                )
+            out = forward(model, input_ids, position_ids)
+            logits = out["logits"]
+            B, L, V = logits.shape
+            token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+            per_sample_token_count = loss_mask.sum(dim=1)
+            valid_sample_mask = per_sample_token_count > 0
+            if not torch.all(valid_sample_mask):
+                raise RuntimeError(
+                    "BenchFlow sample-mean loss received a batch row with no "
+                    "trainable tokens."
+                )
+            per_sample_loss_sum = (token_loss * loss_mask.to(token_loss.dtype)).sum(dim=1)
+            loss_sum = (
+                per_sample_loss_sum[valid_sample_mask]
+                / per_sample_token_count[valid_sample_mask].to(token_loss.dtype)
+            ).sum()
+            sample_count = valid_sample_mask.sum(dtype=torch.int64)
+            del logits
+
+        del out
+        return loss_sum, sample_count
+"""
+
+_COMMENT_EXPECTED = "        # All-reduce token counts and rescale gradients to get a global token-weighted mean."
+_COMMENT_REPLACEMENT = "        # All-reduce sample counts and rescale gradients to get a global sample-weighted mean."
+
+
+class _BenchFlowSampleMeanLoader(importlib.machinery.SourceFileLoader):
+    def get_code(self, fullname: str):
+        source_path = self.get_filename(fullname)
+        source_bytes = self.get_data(source_path)
+        return self.source_to_code(source_bytes, source_path)
+
+    def source_to_code(self, data, path, *, _optimize=-1):
+        source = data.decode("utf-8") if isinstance(data, bytes) else data
+        if _EXPECTED not in source:
+            raise RuntimeError(
+                "BenchFlow Prime-RL sample-mean shim could not find the expected "
+                f"loss block in {path}. Refusing to run against an unknown "
+                "Prime-RL train loop."
+            )
+        patched = source.replace(_EXPECTED, _REPLACEMENT, 1)
+        patched = patched.replace(_COMMENT_EXPECTED, _COMMENT_REPLACEMENT, 1)
+        return super().source_to_code(patched, path, _optimize=_optimize)
+
+
+class _BenchFlowSampleMeanFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname != _TARGET or os.environ.get(_ENV) != "1":
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is None or not isinstance(
+            spec.loader, importlib.machinery.SourceFileLoader
+        ):
+            raise ImportError(
+                "BenchFlow Prime-RL sample-mean shim requires a source-backed "
+                f"loader for {_TARGET}."
+            )
+        spec.loader = _BenchFlowSampleMeanLoader(spec.loader.name, spec.loader.path)
+        return spec
+
+
+if os.environ.get(_ENV) == "1":
+    sys.meta_path.insert(0, _BenchFlowSampleMeanFinder())
+    sys.stderr.write("BenchFlow Prime-RL sample-mean loss shim enabled\\n")
+'''
+
+
+def _write_sample_mean_loss_shim(work_dir: Path) -> PrimeRlSftShimPlan:
+    shim_dir = work_dir / "prime-rl-sample-mean-loss-shim"
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    sitecustomize = shim_dir / "sitecustomize.py"
+    sitecustomize.write_text(_SAMPLE_MEAN_SITE_CUSTOMIZE.lstrip(), encoding="utf-8")
+    env = {
+        _SAMPLE_MEAN_SHIM_ENV: "1",
+        "PYTHONPATH": str(shim_dir),
+    }
+    return PrimeRlSftShimPlan(
+        name="prime_rl_sample_mean_loss",
+        description=(
+            "Import-time Prime-RL SFT train-loop compatibility shim that changes "
+            "loss reduction from token mean to per-sample mean while leaving the "
+            "Prime-RL package files untouched."
+        ),
+        shim_dir=str(shim_dir),
+        sitecustomize=str(sitecustomize),
+        env=env,
+        guards=(
+            "Prime-RL train.py loss block must match the known token-mean source",
+            "data.pack_function=stack",
+            "model.cp=1",
+            "loss_impl=torch or loss_impl=liger",
+            "every batch row must contain at least one trainable token",
+        ),
+    )
+
+
+def _build_prime_rl_env(shim_plan: PrimeRlSftShimPlan | None) -> dict[str, str] | None:
+    if shim_plan is None:
+        return None
+    env = os.environ.copy()
+    shim_pythonpath = shim_plan.env["PYTHONPATH"]
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        shim_pythonpath
+        if not existing_pythonpath
+        else os.pathsep.join((shim_pythonpath, existing_pythonpath))
+    )
+    env[_SAMPLE_MEAN_SHIM_ENV] = shim_plan.env[_SAMPLE_MEAN_SHIM_ENV]
+    return env
+
+
+def _command_env(shim_plan: PrimeRlSftShimPlan | None) -> dict[str, str]:
+    if shim_plan is None:
+        return {}
+    return dict(shim_plan.env)
+
+
+def _prepare_prime_rl_shim(
+    spec: PrimeRlSftSpec, work_dir: Path
+) -> PrimeRlSftShimPlan | None:
+    loss_normalization = _normalize_loss_normalization(spec.loss_normalization)
+    if loss_normalization != _SAMPLE_MEAN_LOSS_NORMALIZATION:
+        return None
+    return _write_sample_mean_loss_shim(work_dir)
 
 
 def _copy_stream(stream: TextIO, handle: TextIO, *, echo: bool) -> None:
@@ -1527,6 +1808,7 @@ def _initial_manifest(
     logs: list[str],
     exposure_plan: PrimeRlSftExposurePlan | None = None,
     dataset_plan: PrimeRlSftDatasetPlan | None = None,
+    shim_plan: PrimeRlSftShimPlan | None = None,
 ) -> TrainRunManifest:
     work_dir = spec.work_dir.resolve()
     output_dir = (
@@ -1564,6 +1846,8 @@ def _initial_manifest(
         manifest.extra["prime_rl_sft_exposure_plan"] = exposure_plan.to_dict()
     if dataset_plan is not None:
         manifest.extra["prime_rl_sft_dataset"] = dataset_plan.to_dict()
+    if shim_plan is not None:
+        manifest.extra["prime_rl_sft_shim"] = shim_plan.to_dict()
     if spec.compat_profile:
         manifest.extra["prime_rl_sft_compat_profile"] = {
             "name": spec.compat_profile,
@@ -1580,6 +1864,7 @@ def _initial_manifest(
                 "sync_ckpt_to_max_steps": spec.sync_ckpt_to_max_steps,
                 "pack_function": spec.pack_function,
                 "loss_mask": spec.loss_mask,
+                "loss_normalization": spec.loss_normalization,
                 "model_attn": spec.model_attn,
                 "renderer_mode": spec.renderer_mode,
                 "tool_defs_mode": spec.tool_defs_mode,
@@ -1592,8 +1877,11 @@ def _initial_manifest(
                 "BenchFlow stages each row as the historical custom trainer's "
                 "rendered token suffix and uses a passthrough chat template so "
                 "Prime-RL trains on that suffix without tool-schema rerendering. "
-                "The Prime-RL optimizer, scheduler, checkpoint writer, and "
-                "batch ordering are still Prime-RL implementations."
+                "BenchFlow also enables a run-local sample-mean loss shim because "
+                "Prime-RL's native SFT loop normalizes by trainable token count, "
+                "while the historical custom trainer averaged per-row losses. "
+                "The Prime-RL optimizer, scheduler, checkpoint writer, and batch "
+                "ordering are still Prime-RL implementations."
             ),
         }
     return manifest
@@ -1624,7 +1912,15 @@ def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
     launch_spec, dataset_plan = _prepare_prime_rl_data(spec, work_dir, config_data)
     launch = build_prime_rl_sft_launch(launch_spec)
     argv = launch.argv
-    command_path.write_text(_shell_quote(argv) + "\n", encoding="utf-8")
+    shim_plan = _prepare_prime_rl_shim(launch_spec, work_dir)
+    command_env = _command_env(shim_plan)
+    command_prefix = _shell_quote_env(command_env)
+    command_text = (
+        f"{command_prefix} {_shell_quote(argv)}"
+        if command_prefix
+        else _shell_quote(argv)
+    )
+    command_path.write_text(command_text + "\n", encoding="utf-8")
     manifest = _initial_manifest(
         launch_spec,
         argv,
@@ -1634,6 +1930,7 @@ def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
         ],
         launch.exposure_plan,
         dataset_plan,
+        shim_plan,
     )
     manifest.overall_status = "running"
     manifest.components[0].status = "running"
@@ -1647,6 +1944,7 @@ def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
         process = subprocess.Popen(
             argv,
             cwd=str(cwd),
+            env=_build_prime_rl_env(shim_plan),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
