@@ -74,14 +74,21 @@ async def test_bootstrap_starts_service_in_sandbox_on_localhost(tmp_path, monkey
     assert ("teardown", None) in env.calls
 
 
-@pytest.mark.asyncio
-async def test_service_env_injected_before_provision(tmp_path):
-    env, sandbox = _FakeEnv(), _FakeSandbox()
-    await bs.bootstrap_shared_env(
-        _write_manifest(tmp_path), service_env={"CASINO_MULTIPLAYER": "1"},
-        _sandbox=sandbox, _env=env,
-    )
-    assert any("CASINO_MULTIPLAYER=1" in c for c in sandbox.execs if isinstance(c, str))
+def test_service_env_goes_into_sandbox_persistent_env(tmp_path, monkeypatch):
+    # CASINO_MULTIPLAYER (floor mode) must land in the sandbox's persistent env so
+    # ManifestEnvironment's own `nohup casino-service` exec inherits it — not a
+    # throwaway `export` exec.
+    captured = {}
+
+    class _FakeDocker:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkeypatch.setattr("benchflow.sandbox.docker.DockerSandbox", _FakeDocker)
+    bs._make_sandbox("img:latest", tmp_path, "docker", {"CASINO_MULTIPLAYER": "1"})
+    cfg = captured["task_env_config"]
+    assert cfg.env["CASINO_MULTIPLAYER"] == "1"
+    assert cfg.docker_image == "img:latest"
 
 
 def _no_popen(*a, **k):

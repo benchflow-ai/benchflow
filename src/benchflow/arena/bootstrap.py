@@ -23,8 +23,15 @@ from benchflow.arena.roster import Roster
 __all__ = ["bootstrap_shared_env", "run_native_floor"]
 
 
-def _make_sandbox(image: str, manifest_dir: Path, environment: str) -> Any:
-    """A ONE shared sandbox started from the manifest's prebuilt image."""
+def _make_sandbox(
+    image: str, manifest_dir: Path, environment: str, service_env: dict[str, str] | None
+) -> Any:
+    """A ONE shared sandbox started from the manifest's prebuilt image.
+
+    ``service_env`` (e.g. ``CASINO_MULTIPLAYER=1``) goes into the sandbox's
+    persistent env, so it reaches EVERY exec — including ManifestEnvironment's
+    ``nohup casino-service`` start, which is how the service comes up in floor
+    (multiplayer) mode."""
     from benchflow.sandbox.docker import DockerSandbox
     from benchflow.task.config import SandboxConfig
 
@@ -33,7 +40,9 @@ def _make_sandbox(image: str, manifest_dir: Path, environment: str) -> Any:
         environment_name="native-floor",
         session_id="native-floor",
         rollout_paths=None,
-        task_env_config=SandboxConfig(docker_image=image, allow_internet=True),
+        task_env_config=SandboxConfig(
+            docker_image=image, allow_internet=True, env=dict(service_env or {})
+        ),
     )
 
 
@@ -64,14 +73,10 @@ async def bootstrap_shared_env(
                 f"{environment_manifest}: no runnable `image` in the manifest "
                 "(set [environment].image to the prebuilt base)."
             )
-        sandbox = _make_sandbox(image, Path(environment_manifest).resolve().parent, environment)
+        sandbox = _make_sandbox(
+            image, Path(environment_manifest).resolve().parent, environment, service_env
+        )
         await sandbox.start(force_build=False)
-
-    # Inject the floor's service env (e.g. CASINO_MULTIPLAYER=1) before provision so
-    # the in-sandbox service starts in the right mode.
-    for key, value in (service_env or {}).items():
-        with contextlib.suppress(Exception):
-            await sandbox.exec(f"export {key}={value}", timeout_sec=10)
 
     env = _env or ManifestEnvironment(manifest, sandbox=sandbox)
     await env.provision({"task_id": game})
