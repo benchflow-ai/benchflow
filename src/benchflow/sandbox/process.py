@@ -336,7 +336,13 @@ class DockerProcess(LiveProcess):
         # and avoids `--env-file` (not supported in all Compose versions).
         if env:
             await self._write_env_to_container(env, proc_env)
-            command = f"source {self._env_path} && rm -f {self._env_path} && {command}"
+            # trap-based cleanup (parity with the Daytona path): the env file is
+            # removed even if `source` fails or the process is signalled, so a
+            # per-uuid file can't leak in a long-lived reused container.
+            command = (
+                f"trap 'rm -f {self._env_path}' EXIT; "
+                f"source {self._env_path} && {command}"
+            )
 
         cmd = self._compose_cmd()
         cmd.extend(["exec", "-i", "-T"])

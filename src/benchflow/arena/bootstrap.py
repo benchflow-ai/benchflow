@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
 import socket
 import subprocess
 from pathlib import Path
@@ -33,6 +34,16 @@ def _free_port() -> int:
     return port
 
 
+def _kill_service_group(proc: subprocess.Popen, sig: int) -> None:
+    """Signal the service's whole process group, not just the launcher.
+
+    The host service (e.g. ``uv run …`` → uvicorn) spawns children in its own
+    session; signalling only ``proc`` leaves the uvicorn workers running. We start
+    it with ``start_new_session=True`` so it leads a process group we can reap."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(os.getpgid(proc.pid), sig)
+
+
 async def _start_host_service(manifest: AgentsManifest, port: int) -> subprocess.Popen:
     svc = manifest.services
     assert svc.command is not None
@@ -41,6 +52,7 @@ async def _start_host_service(manifest: AgentsManifest, port: int) -> subprocess
         cmd,
         cwd=os.path.expanduser(svc.cwd) if svc.cwd else None,
         env={**os.environ, **svc.env, "PORT": str(port)},
+        start_new_session=True,  # own process group → teardown reaps children
     )
     for _ in range(200):
         try:
@@ -50,7 +62,9 @@ async def _start_host_service(manifest: AgentsManifest, port: int) -> subprocess
         except httpx.HTTPError:
             pass
         await asyncio.sleep(0.2)
-    proc.kill()
+    _kill_service_group(proc, signal.SIGKILL)
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=5)
     raise SystemExit(f"service never became healthy on :{port}")
 
 
@@ -86,11 +100,13 @@ async def bootstrap_shared_env(manifest: AgentsManifest, *, environment: str = "
         with contextlib.suppress(Exception):
             await sandbox.stop(delete=True)
         if proc is not None:
-            proc.terminate()
-            try:
+            _kill_service_group(proc, signal.SIGTERM)
+            with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            # sweep any worker that outlived the leader, then reap the leader
+            _kill_service_group(proc, signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
 
     return sandbox, service_url, teardown
 
