@@ -49,6 +49,7 @@ class PrimeRlSftSpec:
     model_attn: str | None = None
     renderer_mode: str | None = None
     tool_defs_mode: str = "preserve"
+    chat_template_kwargs: tuple[str, ...] = ()
     allow_unsafe_stack_flash_attn: bool = False
     force: bool = False
     cwd: Path | None = None
@@ -102,6 +103,8 @@ class PrimeRlSftDatasetPlan:
     train_jsonl: str | None = None
     tool_defs_mode: str = "preserve"
     tool_defs_removed_rows: int | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
+    chat_template_kwargs_rows: int | None = None
     validation: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -113,6 +116,8 @@ class PrimeRlSftDatasetPlan:
             "train_jsonl": self.train_jsonl,
             "tool_defs_mode": self.tool_defs_mode,
             "tool_defs_removed_rows": self.tool_defs_removed_rows,
+            "chat_template_kwargs": self.chat_template_kwargs,
+            "chat_template_kwargs_rows": self.chat_template_kwargs_rows,
             "validation": self.validation,
         }
 
@@ -268,6 +273,50 @@ def _normalize_tool_defs_mode(raw: str) -> str:
     return value
 
 
+def _parse_chat_template_value(raw: str) -> Any:
+    value = raw.strip()
+    if value.lower() in {"true", "false", "null"}:
+        value = value.lower()
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return raw
+
+
+def _parse_chat_template_kwargs(raw: Iterable[str]) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for item in raw:
+        if "=" not in item:
+            raise ValueError(f"--chat-template-kwarg must be KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"--chat-template-kwarg must have a non-empty key: {item!r}")
+        values[key] = _parse_chat_template_value(value)
+    return values
+
+
+def _profile_chat_template_kwargs(
+    raw: tuple[str, ...],
+    defaults: Mapping[str, Any],
+    *,
+    profile: str,
+) -> tuple[str, ...]:
+    values = _parse_chat_template_kwargs(raw)
+    generated: list[str] = []
+    for key, required in defaults.items():
+        if key in values:
+            if values[key] != required:
+                rendered = json.dumps(required, sort_keys=True)
+                raise ValueError(
+                    f"--compat-profile {profile} requires "
+                    f"--chat-template-kwarg {key}={rendered}; got {values[key]!r}"
+                )
+            continue
+        generated.append(f"{key}={json.dumps(required, sort_keys=True)}")
+    return (*raw, *generated)
+
+
 def _normalize_compat_profile(raw: str | None) -> str | None:
     if raw is None:
         return None
@@ -305,11 +354,6 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
         return spec
     if profile != _MOBILE300_PROFILE:
         raise AssertionError(f"unhandled compat profile: {profile}")
-    if spec.renderer_mode is not None:
-        raise ValueError(
-            f"--compat-profile {profile} keeps the Prime-RL renderer enabled; "
-            "--renderer-mode cannot be set"
-        )
     if not spec.sync_scheduler_to_max_steps:
         raise ValueError(
             f"--compat-profile {profile} requires --sync-scheduler-to-max-steps"
@@ -335,7 +379,17 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
                 spec.model_attn, "sdpa", field="--model-attn", profile=profile
             )
         ),
+        renderer_mode=str(
+            _profile_field(
+                spec.renderer_mode, "none", field="--renderer-mode", profile=profile
+            )
+        ),
         tool_defs_mode="omit",
+        chat_template_kwargs=_profile_chat_template_kwargs(
+            spec.chat_template_kwargs,
+            {"enable_thinking": False},
+            profile=profile,
+        ),
     )
 
 
@@ -533,9 +587,22 @@ def _local_data_path(data: str) -> Path | None:
     return None
 
 
-def _copy_jsonl_omitting_tool_defs(source: Path, destination: Path) -> int:
-    """Copy JSONL while dropping tool schema columns from the training copy."""
+@dataclass(frozen=True)
+class _JsonlTransformStats:
+    tool_defs_removed_rows: int | None = None
+    chat_template_kwargs_rows: int | None = None
+
+
+def _copy_prime_rl_jsonl(
+    source: Path,
+    destination: Path,
+    *,
+    omit_tool_defs: bool,
+    chat_template_kwargs: Mapping[str, Any],
+) -> _JsonlTransformStats:
+    """Copy JSONL while applying BenchFlow-owned Prime-RL data transforms."""
     removed_rows = 0
+    chat_template_kwargs_rows = 0
     with (
         source.open("r", encoding="utf-8") as src,
         destination.open("w", encoding="utf-8") as dst,
@@ -547,12 +614,31 @@ def _copy_jsonl_omitting_tool_defs(source: Path, destination: Path) -> int:
             row = json.loads(line)
             if not isinstance(row, dict):
                 raise ValueError(f"{source}: every JSONL row must be an object")
-            if "tool_defs" in row or "tools" in row:
+            if omit_tool_defs and ("tool_defs" in row or "tools" in row):
                 removed_rows += 1
-            row.pop("tool_defs", None)
-            row.pop("tools", None)
+            if omit_tool_defs:
+                row.pop("tool_defs", None)
+                row.pop("tools", None)
+            if chat_template_kwargs:
+                existing = row.get("chat_template_kwargs")
+                if existing is None:
+                    existing = {}
+                if not isinstance(existing, dict):
+                    raise ValueError(
+                        f"{source}: chat_template_kwargs must be an object when present"
+                    )
+                row["chat_template_kwargs"] = {
+                    **existing,
+                    **dict(chat_template_kwargs),
+                }
+                chat_template_kwargs_rows += 1
             dst.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-    return removed_rows
+    return _JsonlTransformStats(
+        tool_defs_removed_rows=removed_rows if omit_tool_defs else None,
+        chat_template_kwargs_rows=(
+            chat_template_kwargs_rows if chat_template_kwargs else None
+        ),
+    )
 
 
 def _prepare_prime_rl_data(
@@ -560,14 +646,22 @@ def _prepare_prime_rl_data(
 ) -> tuple[PrimeRlSftSpec, PrimeRlSftDatasetPlan | None]:
     """Make local BenchFlow JSONL usable by Prime-RL's ``load_dataset`` path."""
     if not spec.data:
+        if spec.chat_template_kwargs:
+            raise ValueError("--chat-template-kwarg requires --data")
         return spec, None
 
     tool_defs_mode = _normalize_tool_defs_mode(spec.tool_defs_mode)
+    chat_template_kwargs = _parse_chat_template_kwargs(spec.chat_template_kwargs)
     source_path = _local_data_path(spec.data)
     if source_path is None:
         if tool_defs_mode != "preserve":
             raise ValueError(
                 "--tool-defs-mode omit requires --data to be a local JSONL file "
+                "or a local dataset directory"
+            )
+        if chat_template_kwargs:
+            raise ValueError(
+                "--chat-template-kwarg requires --data to be a local JSONL file "
                 "or a local dataset directory"
             )
         return spec, None
@@ -581,18 +675,23 @@ def _prepare_prime_rl_data(
             )
 
             validation = validate_prime_sft_jsonl(train_jsonl)
-        if tool_defs_mode == "omit":
+        should_transform = tool_defs_mode == "omit" or bool(chat_template_kwargs)
+        if should_transform:
             if not train_jsonl.is_file():
                 raise ValueError(
-                    f"--tool-defs-mode omit requires {source_path} to contain train.jsonl"
+                    f"local Prime-RL data transforms require {source_path} "
+                    "to contain train.jsonl"
                 )
             dataset_dir = work_dir / "prime-rl-dataset"
             if dataset_dir.exists():
                 shutil.rmtree(dataset_dir)
             shutil.copytree(source_path, dataset_dir)
             transformed_train_jsonl = dataset_dir / "train.jsonl"
-            removed_rows = _copy_jsonl_omitting_tool_defs(
-                train_jsonl, transformed_train_jsonl
+            stats = _copy_prime_rl_jsonl(
+                train_jsonl,
+                transformed_train_jsonl,
+                omit_tool_defs=tool_defs_mode == "omit",
+                chat_template_kwargs=chat_template_kwargs,
             )
             resolved_spec = replace(spec, data=str(dataset_dir))
             return resolved_spec, PrimeRlSftDatasetPlan(
@@ -602,7 +701,11 @@ def _prepare_prime_rl_data(
                 dataset_dir=str(dataset_dir),
                 train_jsonl=str(transformed_train_jsonl),
                 tool_defs_mode=tool_defs_mode,
-                tool_defs_removed_rows=removed_rows,
+                tool_defs_removed_rows=stats.tool_defs_removed_rows,
+                chat_template_kwargs=(
+                    dict(chat_template_kwargs) if chat_template_kwargs else None
+                ),
+                chat_template_kwargs_rows=stats.chat_template_kwargs_rows,
                 validation=validation,
             )
         resolved_spec = replace(spec, data=str(source_path))
@@ -613,6 +716,9 @@ def _prepare_prime_rl_data(
             dataset_dir=str(source_path),
             train_jsonl=str(train_jsonl) if train_jsonl.is_file() else None,
             tool_defs_mode=tool_defs_mode,
+            chat_template_kwargs=(
+                dict(chat_template_kwargs) if chat_template_kwargs else None
+            ),
             validation=validation,
         )
 
@@ -629,9 +735,14 @@ def _prepare_prime_rl_data(
         shutil.rmtree(dataset_dir)
     dataset_dir.mkdir(parents=True)
     train_jsonl = dataset_dir / "train.jsonl"
-    removed_rows = None
-    if tool_defs_mode == "omit":
-        removed_rows = _copy_jsonl_omitting_tool_defs(source_path, train_jsonl)
+    stats = _JsonlTransformStats()
+    if tool_defs_mode == "omit" or chat_template_kwargs:
+        stats = _copy_prime_rl_jsonl(
+            source_path,
+            train_jsonl,
+            omit_tool_defs=tool_defs_mode == "omit",
+            chat_template_kwargs=chat_template_kwargs,
+        )
     else:
         shutil.copy2(source_path, train_jsonl)
     resolved_spec = replace(spec, data=str(dataset_dir))
@@ -642,7 +753,11 @@ def _prepare_prime_rl_data(
         dataset_dir=str(dataset_dir),
         train_jsonl=str(train_jsonl),
         tool_defs_mode=tool_defs_mode,
-        tool_defs_removed_rows=removed_rows,
+        tool_defs_removed_rows=stats.tool_defs_removed_rows,
+        chat_template_kwargs=(
+            dict(chat_template_kwargs) if chat_template_kwargs else None
+        ),
+        chat_template_kwargs_rows=stats.chat_template_kwargs_rows,
         validation=validation,
     )
 
@@ -696,7 +811,8 @@ def _initial_manifest(
             "description": (
                 "BenchFlow Mobile300 PR828 Prime-RL wrapper settings that match "
                 "the historical custom-trainer run where Prime-SFT rows had "
-                "tool_defs but no tools."
+                "tool_defs but no tools and Qwen3.5 thinking was disabled in the "
+                "chat-template render."
             ),
             "resolved_settings": {
                 "target_examples": spec.target_examples,
@@ -706,10 +822,13 @@ def _initial_manifest(
                 "model_attn": spec.model_attn,
                 "renderer_mode": spec.renderer_mode,
                 "tool_defs_mode": spec.tool_defs_mode,
+                "chat_template_kwargs": _parse_chat_template_kwargs(
+                    spec.chat_template_kwargs
+                ),
             },
             "known_prime_rl_gap": (
-                "Prime-RL still owns renderer tokenization and loss-mask "
-                "construction; BenchFlow does not patch Prime-RL internals."
+                "Prime-RL still owns sequence packing and truncation; BenchFlow "
+                "does not patch Prime-RL internals."
             ),
         }
     return manifest
