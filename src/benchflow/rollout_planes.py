@@ -45,6 +45,7 @@ from benchflow.sandbox.setup import (
     _create_environment,
     _inject_skills_into_dockerfile,
     _patch_docker_dind,
+    override_dockerfile_base_image,
     stage_dockerfile_deps,
 )
 
@@ -82,6 +83,9 @@ class DefaultRolloutPlanes:
 
     def stage_dockerfile_deps(self, task_path: Path, context_root: Path) -> None:
         stage_dockerfile_deps(task_path, context_root)
+
+    def override_dockerfile_base_image(self, task_path: Path, base_image: str) -> int:
+        return override_dockerfile_base_image(task_path, base_image)
 
     def inject_skills_into_dockerfile(
         self, task_path: Path, skills_dir: Path, *, sandbox_dir: str = "/skills"

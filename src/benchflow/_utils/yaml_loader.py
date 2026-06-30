@@ -122,6 +122,7 @@ def rollout_config_from_dict(
             "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
         ),
         context_root=raw.get("context_root"),
+        base_image_override=raw.get("base_image_override"),
         agent=raw.get("agent", "claude-agent-acp"),
         model=raw.get("model"),
         reasoning_effort=raw.get("reasoning_effort"),

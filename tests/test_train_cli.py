@@ -867,6 +867,140 @@ def test_train_run_sft_prime_rl_records_reproduction_semantics(
     }
 
 
+def test_train_run_sft_prime_rl_mobile300_compat_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The Mobile300 profile expands to the validated Prime-RL wrapper settings."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            del kwargs
+            captured["argv"] = argv
+            self.stdout = io.StringIO("trainer ok\n")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    config = tmp_path / "sft.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "max_steps = 300",
+                "[model]",
+                'name = "Qwen/Qwen3.5-9B"',
+                'attn = "flash_attention_2"',
+                "[renderer]",
+                'name = "qwen3.5"',
+                "[data]",
+                "batch_size = 8",
+                'pack_function = "cat"',
+                "[scheduler]",
+                "decay_steps = 300",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    data_dir = tmp_path / "dataset"
+    data_dir.mkdir()
+    (data_dir / "train.jsonl").write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "finish"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "finish",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+                ],
+                "tool_defs": [{"name": "finish", "parameters": {"type": "object"}}],
+                "reward": 1.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(prime_rl.subprocess, "Popen", FakeProcess)
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--work-dir",
+            str(work_dir),
+            "--data",
+            str(data_dir),
+            "--compat-profile",
+            "env0-mobile300-pr828",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    argv = captured["argv"]
+    assert "--renderer" not in argv
+    assert argv[-16:] == [
+        "--max_steps",
+        "38",
+        "--scheduler.decay_steps",
+        "38",
+        "--data.pack_function",
+        "stack",
+        "--data.loss_mask.system",
+        "true",
+        "--data.loss_mask.user",
+        "true",
+        "--data.loss_mask.assistant",
+        "true",
+        "--data.loss_mask.tool",
+        "true",
+        "--model.attn",
+        "sdpa",
+    ]
+    data_idx = argv.index("--data.name")
+    staged_dir = Path(argv[data_idx + 1])
+    staged_row = json.loads((staged_dir / "train.jsonl").read_text())
+    assert "tool_defs" not in staged_row
+    assert "tools" not in staged_row
+
+    manifest = json.loads((work_dir / "train-run.json").read_text())
+    assert manifest["extra"]["prime_rl_sft_compat_profile"]["name"] == (
+        "env0-mobile300-pr828"
+    )
+    assert manifest["extra"]["prime_rl_sft_compat_profile"]["resolved_settings"] == {
+        "target_examples": 300,
+        "sync_scheduler_to_max_steps": True,
+        "pack_function": "stack",
+        "loss_mask": "all",
+        "model_attn": "sdpa",
+        "renderer_mode": None,
+        "tool_defs_mode": "omit",
+    }
+    assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_mode"] == "omit"
+    assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_removed_rows"] == 1
+
+
 def test_train_run_sft_prime_rl_custom_trainer_compatibility_mode(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -129,6 +129,7 @@ def _config_payload(
         "sandbox_setup_timeout": config.sandbox_setup_timeout,
         "agent_idle_timeout": config.agent_idle_timeout,
         "context_root": config.context_root,
+        "base_image_override": config.base_image_override,
         "exclude_tasks": sorted(config.exclude_tasks),
         "include_tasks": sorted(shard.task_names),
         "skill_mode": config.skill_mode,

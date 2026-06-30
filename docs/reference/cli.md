@@ -257,6 +257,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
 | `--context-root` | — | Repo/build-context root used to stage Dockerfile `COPY` sources for monorepo-authored local tasks |
+| `--base-image-override` | — | Rewrite task Dockerfile `FROM` images on the runtime task copy; use for reproducing runs whose base image moved namespaces |
 | `--skills-dir` | — | Advanced custom skills directory; valid only with `--skill-mode with-skill`. Omit it to use each task's `environment/skills`. |
 | `--skill-mode` | `no-skill` | Skill mode: `no-skill`, `with-skill`, or `self-gen` |
 | `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |
@@ -419,6 +420,7 @@ that were present are recorded.
 | `--config` | required | Prime-RL SFT TOML config. Relative paths are resolved from the current directory first, then from `--prime-rl-dir` when set |
 | `--data` | — | Optional dataset override passed through as `--data.name` |
 | `--output-dir` | `<work-dir>/prime-rl-output` | Prime-RL trainer output directory |
+| `--compat-profile` | — | Named BenchFlow Prime-RL SFT compatibility profile. `env0-mobile300-pr828` expands to the Mobile300 PR828 reproduction settings |
 | `--work-dir` | `train-runs/sft` | BenchFlow training run directory |
 | `--prime-rl-dir` | current directory | Prime-RL checkout to run `uv run sft` from |
 | `--dry-run` | `false` | Pass `--dry-run` through to Prime-RL |

@@ -149,6 +149,7 @@ def _write_config(
     timeout: int,
     started_at: datetime,
     agent_env: dict[str, str],
+    base_image_override: str | None = None,
     reasoning_effort: str | None = None,
     usage_tracking: UsageTrackingConfig | None = None,
     concurrency: int | None = None,
@@ -189,6 +190,7 @@ def _write_config(
         if skip_agent_install
         else effective_install_timeout(agent, sandbox_setup_timeout),
         "context_root": str(context_root) if context_root else None,
+        "base_image_override": base_image_override,
         "timeout_sec": timeout,
         "concurrency": concurrency,
         "agent_idle_timeout_sec": agent_idle_timeout,

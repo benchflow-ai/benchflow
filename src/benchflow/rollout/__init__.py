@@ -521,7 +521,11 @@ class Rollout:
         # (_inject_skills writes into environment/_deps/, stage_dockerfile
         # rewrites COPY paths — neither should modify the source tree)
         effective_task_path = cfg.task_path
-        if cfg.context_root or task_skill_policy.needs_task_copy:
+        if (
+            cfg.context_root
+            or cfg.base_image_override
+            or task_skill_policy.needs_task_copy
+        ):
             tmp = Path(tempfile.mkdtemp(prefix="benchflow-task-"))
             shutil.copytree(cfg.task_path, tmp / cfg.task_path.name, dirs_exist_ok=True)
             effective_task_path = tmp / cfg.task_path.name
@@ -529,6 +533,10 @@ class Rollout:
             if task_skill_policy.strip_bundled_dir_from_copy:
                 strip_task_bundled_skills(effective_task_path)
 
+        if cfg.base_image_override:
+            self._planes.override_dockerfile_base_image(
+                effective_task_path, cfg.base_image_override
+            )
         if cfg.context_root:
             self._planes.stage_dockerfile_deps(
                 effective_task_path, Path(cfg.context_root)
@@ -594,6 +602,7 @@ class Rollout:
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
+            base_image_override=cfg.base_image_override,
             usage_tracking=cfg.usage_tracking.with_env_defaults(),
             concurrency=cfg.concurrency,
             agent_idle_timeout=cfg.agent_idle_timeout,
