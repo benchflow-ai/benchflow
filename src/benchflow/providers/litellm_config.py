@@ -383,6 +383,30 @@ def litellm_proxy_config(
             model_list.append(
                 {"model_name": model_name, "litellm_params": dict(params)}
             )
+
+    # Responses-API bridge entries. A responses-only client (e.g. the codex CLI,
+    # which dropped the chat wire) hits /v1/responses, but a chat-only OpenAI-
+    # compatible backend (deepseek, vllm) has no /responses endpoint — LiteLLM's
+    # native responses path then 404s the model. Register the same model under an
+    # ``openai/chat_completions/<name>`` model_name whose UPSTREAM carries that
+    # prefix; LiteLLM strips it and bridges responses→chat_completions
+    # (use_chat_completions_api), so /v1/responses reaches the chat backend. Only
+    # for openai/-prefixed upstreams (chat-only); native-responses providers are
+    # untouched, and the bridge names are never sent on the /chat route.
+    upstream = str(params.get("model", ""))
+    if upstream.startswith("openai/") and bare_requested:
+        bridge_params = {**params, "model": f"openai/chat_completions/{bare_requested}"}
+        existing = {entry["model_name"] for entry in model_list}
+        # Non-slashed bridge model_names (the codex CLI mis-parses a slashed model
+        # id and then sends no request); the prefix that triggers the bridge lives
+        # on the UPSTREAM (bridge_params["model"]), not the client-facing name.
+        for name in (route.model_alias, bare_requested):
+            bridge_name = f"{name}-responses-bridge"
+            if bridge_name not in existing:
+                existing.add(bridge_name)
+                model_list.append(
+                    {"model_name": bridge_name, "litellm_params": dict(bridge_params)}
+                )
     return {
         "model_list": model_list,
         "general_settings": {"master_key": master_key},

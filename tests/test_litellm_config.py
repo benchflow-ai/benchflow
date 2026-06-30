@@ -163,3 +163,38 @@ def test_proxy_config_registers_requested_bare_model_name():
     names = [entry["model_name"] for entry in config["model_list"]]
     assert "gpt-5.4-mini" in names
     assert "openai/gpt-5.4-mini" in names
+
+
+def test_proxy_config_registers_responses_bridge_for_openai_upstream():
+    """A responses-only CLI (codex) hits /v1/responses; a chat-only OpenAI-
+    compatible backend has no /responses endpoint, so the proxy must expose a
+    bridge deployment named ``<model>-responses-bridge`` whose upstream carries
+    the ``openai/chat_completions/`` prefix (LiteLLM strips it and bridges
+    responses→chat). The bridge name is non-slashed (codex mis-parses a slashed
+    model id and then sends no request)."""
+    route = resolve_litellm_route("openai/gpt-5.4-mini", {"OPENAI_API_KEY": "key"})
+    config = litellm_proxy_config(route, master_key="sk-local")
+
+    by_name = {e["model_name"]: e for e in config["model_list"]}
+    bridge_name = "gpt-5.4-mini-responses-bridge"
+    assert bridge_name in by_name
+    assert f"{route.model_alias}-responses-bridge" in by_name
+    # the bridge entry's UPSTREAM carries the chat-completions prefix
+    assert (
+        by_name[bridge_name]["litellm_params"]["model"]
+        == "openai/chat_completions/gpt-5.4-mini"
+    )
+    # never slashed (would break codex's model parsing)
+    assert "/" not in bridge_name
+
+
+def test_proxy_config_no_responses_bridge_for_non_openai_upstream():
+    """The bridge is openai/-upstream only; native-responses/anthropic/bedrock
+    providers are untouched."""
+    route = resolve_litellm_route(
+        "aws-bedrock/us.anthropic.claude-opus-4-8",
+        {"AWS_BEARER_TOKEN_BEDROCK": "token", "AWS_REGION": "us-west-2"},
+    )
+    config = litellm_proxy_config(route, master_key="sk-local")
+    names = [entry["model_name"] for entry in config["model_list"]]
+    assert not any(n.endswith("-responses-bridge") for n in names)
