@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -1182,6 +1184,7 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
     argv = captured["argv"]
     assert captured["env"]["BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS"] == "1"
     assert captured["env"]["BENCHFLOW_PRIME_RL_PRETOKENIZED_SFT_DATA"] == "1"
+    assert captured["env"]["BENCHFLOW_PRIME_RL_STUB_FLASH_ATTN"] == "1"
     assert "--tokenizer.chat_template" not in argv
     assert argv[-22:] == [
         "--max_steps",
@@ -1232,16 +1235,21 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
     command_text = (work_dir / "command.txt").read_text()
     assert "BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS=1" in command_text
     assert "BENCHFLOW_PRIME_RL_PRETOKENIZED_SFT_DATA=1" in command_text
+    assert "BENCHFLOW_PRIME_RL_STUB_FLASH_ATTN=1" in command_text
     assert "PYTHONPATH=" in command_text
     shim = manifest["extra"]["prime_rl_sft_shim"]
     shim_dir = Path(shim["shim_dir"])
     assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(shim_dir)
+    assert shim["env"]["BENCHFLOW_PRIME_RL_STUB_FLASH_ATTN"] == "1"
+    assert "model.attn=sdpa" in shim["guards"]
     sitecustomize_text = Path(shim["sitecustomize"]).read_text(encoding="utf-8")
     assert sitecustomize_text.startswith(
         '"""BenchFlow Prime-RL SFT compatibility shim.'
     )
     assert "if not torch.any(valid_sample_mask):" in sitecustomize_text
     assert "if not torch.all(valid_sample_mask):" not in sitecustomize_text
+    assert "_flash_attn_varlen_forward" in sitecustomize_text
+    assert "flash-attn import stub enabled for SDPA" in sitecustomize_text
     assert shim["name"] == "prime_rl_sft_compatibility"
     assert manifest["extra"]["prime_rl_sft_compat_profile"]["name"] == (
         "env0-mobile300-pr828"
@@ -1294,6 +1302,64 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         ]
         == 11
     )
+
+
+def test_prime_rl_sft_flash_attn_stub_imports_and_fails_closed(tmp_path: Path) -> None:
+    """The SDPA shim satisfies import-time ring_flash_attn symbols only."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    fake_transformers_utils = tmp_path / "fake" / "transformers" / "utils"
+    fake_transformers_utils.mkdir(parents=True)
+    (fake_transformers_utils.parent / "__init__.py").write_text("", encoding="utf-8")
+    (fake_transformers_utils / "__init__.py").write_text("", encoding="utf-8")
+    (fake_transformers_utils / "import_utils.py").write_text(
+        "PACKAGE_DISTRIBUTION_MAPPING = {}\n",
+        encoding="utf-8",
+    )
+
+    plan = prime_rl._write_prime_rl_sft_compat_shim(
+        tmp_path,
+        sample_mean=False,
+        pretokenized_data=False,
+        stub_flash_attn=True,
+    )
+    env = os.environ.copy()
+    env.update(plan.env)
+    env["PYTHONPATH"] = os.pathsep.join(
+        (plan.env["PYTHONPATH"], str(tmp_path / "fake"))
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "\n".join(
+                [
+                    "from flash_attn.flash_attn_interface import _flash_attn_forward",
+                    (
+                        "from transformers.utils.import_utils import "
+                        "PACKAGE_DISTRIBUTION_MAPPING"
+                    ),
+                    "print(PACKAGE_DISTRIBUTION_MAPPING['flash_attn'])",
+                    "try:",
+                    "    _flash_attn_forward()",
+                    "except RuntimeError as exc:",
+                    "    print(str(exc))",
+                    "else:",
+                    "    raise SystemExit('expected RuntimeError')",
+                ]
+            ),
+        ],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "flash-attn import stub enabled for SDPA" in completed.stderr
+    assert "['flash-attn']" in completed.stdout
+    assert "model.attn=sdpa" in completed.stdout
+    assert "called unexpectedly" in completed.stdout
 
 
 def test_prime_rl_custom_trainer_pretokenized_row_masks_last_assistant_only() -> None:
