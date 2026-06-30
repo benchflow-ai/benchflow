@@ -19,6 +19,7 @@ services:
   port: 9100
   health: /health
   standings_path: /_admin/standings   # → per-seat reward vector in floor.json
+  events_path: /_admin/events         # → events.jsonl for the town viewer's board
   env: { CASINO_MULTIPLAYER: "1", CASINOBENCH_GAMES: "", CASINOBENCH_HANDS: "1" }
 
 out: out/native-floor/casino

@@ -78,6 +78,8 @@ class Services(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)  # extra env for `command`
     standings_path: str | None = None  # path → final {seat: score}; if set, the
     # floor writes a per-seat reward vector (SharedEnvReward) into floor.json.
+    events_path: str | None = None  # path → {"jsonl": …} event log; if set, the
+    # floor snapshots it to events.jsonl (for the town viewer's animated board).
 
 
 class SandboxSpec(BaseModel):

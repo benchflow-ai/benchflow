@@ -123,6 +123,7 @@ async def run_native_floor(manifest: AgentsManifest, *, environment: str = "dock
             environment=environment, http=http,
         )
         await _attach_reward(manifest, summary, service_url, http)
+        await _snapshot_events(manifest, service_url, http)
         return summary
     finally:
         await http.aclose()
@@ -143,3 +144,16 @@ async def _attach_reward(manifest, summary, service_url, http) -> None:
             summary["standings"] = standings
             summary["reward"] = SharedEnvReward().score(standings)
             (Path(manifest.out) / "floor.json").write_text(json.dumps(summary, indent=2))
+
+
+async def _snapshot_events(manifest, service_url, http) -> None:
+    """Opt-in: snapshot the shared service's event log to events.jsonl (before
+    teardown) so the town viewer can replay the run's animated board."""
+    path = manifest.services.events_path
+    if not path:
+        return
+    with contextlib.suppress(Exception):
+        data = (await http.get(f"{service_url}{path}", timeout=10)).json()
+        jsonl = data.get("jsonl") if isinstance(data, dict) else None
+        if jsonl:
+            (Path(manifest.out) / "events.jsonl").write_text(jsonl)
