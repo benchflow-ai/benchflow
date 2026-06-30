@@ -380,9 +380,13 @@ def register_train(app: typer.Typer) -> None:
                 "--message-tail-truncation",
                 help=(
                     "Local Prime-SFT row truncation before Prime-RL tokenizes it: "
-                    "off or keep-first-user. The keep-first-user mode keeps the "
-                    "initial user instruction plus the longest final message "
-                    "suffix that fits data.seq_len * data.micro_batch_size."
+                    "off, keep-first-user, or custom-trainer-token-suffix. "
+                    "The keep-first-user mode keeps the initial user instruction "
+                    "plus the longest final message suffix that fits "
+                    "data.seq_len * data.micro_batch_size. The "
+                    "custom-trainer-token-suffix mode renders rows like the "
+                    "historical custom trainer, keeps the exact token suffix, "
+                    "and stages a passthrough Prime-RL chat template."
                 ),
             ),
         ] = "off",

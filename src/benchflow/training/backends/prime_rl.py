@@ -123,6 +123,9 @@ class PrimeRlSftDatasetPlan:
     message_tail_max_area: int | None = None
     message_tail_max_tokens_before: int | None = None
     message_tail_max_tokens_after: int | None = None
+    custom_trainer_token_suffix_rows: int | None = None
+    custom_trainer_token_suffix_padded_rows: int | None = None
+    passthrough_chat_template: str | None = None
     validation: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -141,6 +144,11 @@ class PrimeRlSftDatasetPlan:
             "message_tail_max_area": self.message_tail_max_area,
             "message_tail_max_tokens_before": self.message_tail_max_tokens_before,
             "message_tail_max_tokens_after": self.message_tail_max_tokens_after,
+            "custom_trainer_token_suffix_rows": self.custom_trainer_token_suffix_rows,
+            "custom_trainer_token_suffix_padded_rows": (
+                self.custom_trainer_token_suffix_padded_rows
+            ),
+            "passthrough_chat_template": self.passthrough_chat_template,
             "validation": self.validation,
         }
 
@@ -152,6 +160,14 @@ class PrimeRlSftLaunch:
 
 
 _MOBILE300_PROFILE = "env0-mobile300-pr828"
+_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE = "custom-trainer-token-suffix"
+_PASSTHROUGH_CHAT_TEMPLATE = (
+    "{% for message in messages %}"
+    "{{ message.get('prefix_ws', '') }}"
+    "{{ message['content'] }}"
+    "{{ message.get('suffix_ws', '') }}"
+    "{% endfor %}"
+)
 _COMPAT_PROFILE_ALIASES = {
     _MOBILE300_PROFILE: _MOBILE300_PROFILE,
     "env-0-mobile300-pr828": _MOBILE300_PROFILE,
@@ -320,11 +336,16 @@ def _normalize_message_tail_truncation(raw: str) -> str:
         "keep-user": "keep-first-user",
         "first-user": "keep-first-user",
         "keep-user-suffix": "keep-first-user",
+        "token-suffix": _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE,
+        "rendered-token-suffix": _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE,
+        "custom-token-suffix": _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE,
+        "custom-trainer-suffix": _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE,
     }
     value = aliases.get(value, value)
-    if value not in {"off", "keep-first-user"}:
+    if value not in {"off", "keep-first-user", _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE}:
         raise ValueError(
-            "--message-tail-truncation must be either 'off' or 'keep-first-user'"
+            "--message-tail-truncation must be 'off', 'keep-first-user', or "
+            f"'{_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE}'"
         )
     return value
 
@@ -420,6 +441,11 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
         _profile_field(
             spec.target_examples, 300, field="--target-examples", profile=profile
         )
+    if spec.chat_template_kwargs:
+        raise ValueError(
+            f"--compat-profile {profile} stages a passthrough chat template and "
+            "does not support --chat-template-kwarg"
+        )
     return replace(
         spec,
         compat_profile=profile,
@@ -439,7 +465,9 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
             )
         ),
         loss_mask=str(
-            _profile_field(spec.loss_mask, "all", field="--loss-mask", profile=profile)
+            _profile_field(
+                spec.loss_mask, "assistant", field="--loss-mask", profile=profile
+            )
         ),
         model_attn=str(
             _profile_field(
@@ -452,12 +480,8 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
             )
         ),
         tool_defs_mode="omit",
-        chat_template_kwargs=_profile_chat_template_kwargs(
-            spec.chat_template_kwargs,
-            {"enable_thinking": False},
-            profile=profile,
-        ),
-        message_tail_truncation="keep-first-user",
+        chat_template_kwargs=(),
+        message_tail_truncation=_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE,
     )
 
 
@@ -734,6 +758,8 @@ class _JsonlTransformStats:
     message_tail_max_area: int | None = None
     message_tail_max_tokens_before: int | None = None
     message_tail_max_tokens_after: int | None = None
+    custom_trainer_token_suffix_rows: int | None = None
+    custom_trainer_token_suffix_padded_rows: int | None = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -770,6 +796,164 @@ def _load_tail_truncation_tokenizer(model_name: str) -> Any:
             "environment so BenchFlow can match Prime-RL tokenizer lengths"
         ) from exc
     return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+
+
+def _split_outer_whitespace(text: str) -> tuple[str, str, str]:
+    stripped = text.strip()
+    if not stripped:
+        return text, "", ""
+    start = len(text) - len(text.lstrip())
+    end = len(text.rstrip())
+    return text[:start], text[start:end], text[end:]
+
+
+def _normalize_tool_call_for_custom_trainer(call: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = json.loads(json.dumps(call))
+    function = normalized.get("function")
+    if not isinstance(function, dict):
+        function = {
+            "name": normalized.get("name") or "tool",
+            "arguments": normalized.get("arguments") or {},
+        }
+        normalized = {"type": "function", "function": function}
+    arguments = function.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            arguments = {"raw": arguments}
+    function["arguments"] = arguments or {}
+    return normalized
+
+
+def _normalize_messages_for_custom_trainer(messages: Any) -> list[dict[str, Any]]:
+    if not isinstance(messages, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, Mapping):
+            continue
+        item = dict(message)
+        if item.get("role") == "assistant" and item.get("tool_calls"):
+            tool_calls = item.get("tool_calls") or []
+            if not isinstance(tool_calls, list):
+                tool_calls = []
+            item["tool_calls"] = [
+                _normalize_tool_call_for_custom_trainer(call)
+                for call in tool_calls
+                if isinstance(call, Mapping)
+            ]
+        out.append(item)
+    return out
+
+
+def _render_custom_trainer_token_ids(
+    tokenizer: Any,
+    row: Mapping[str, Any],
+    *,
+    max_length: int,
+) -> tuple[list[int], int]:
+    """Render/tokenize one row the way the historical custom trainer did."""
+    messages = _normalize_messages_for_custom_trainer(row.get("messages") or [])
+    if not messages:
+        return [], 0
+    tools = row.get("tools") or None
+    try:
+        rendered = tokenizer.apply_chat_template(
+            messages,
+            tools=tools,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+    except TypeError:
+        rendered = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+    token_ids = tokenizer(rendered, add_special_tokens=False)["input_ids"]
+    if not token_ids:
+        return [], 0
+    return list(token_ids[-max_length:]), len(token_ids)
+
+
+def _custom_trainer_token_suffix_row(
+    tokenizer: Any,
+    row: Mapping[str, Any],
+    *,
+    max_length: int,
+) -> tuple[dict[str, Any], int, int, int]:
+    token_ids, before = _render_custom_trainer_token_ids(
+        tokenizer, row, max_length=max_length
+    )
+    if not token_ids:
+        raise ValueError("cannot stage empty custom-trainer token suffix row")
+
+    text = tokenizer.decode(
+        token_ids,
+        skip_special_tokens=False,
+        clean_up_tokenization_spaces=False,
+    )
+    prefix_ws, content, suffix_ws = _split_outer_whitespace(text)
+    assistant: dict[str, Any] = {"role": "assistant", "content": content}
+    if prefix_ws:
+        assistant["prefix_ws"] = prefix_ws
+    if suffix_ws:
+        assistant["suffix_ws"] = suffix_ws
+    messages = [assistant]
+
+    pad_count = max_length - len(token_ids)
+    if pad_count < 0:
+        raise AssertionError("custom-trainer token suffix exceeded max length")
+    if pad_count:
+        eos_token_id = getattr(tokenizer, "eos_token_id", None)
+        if eos_token_id is None:
+            raise ValueError(
+                "custom-trainer token suffix staging requires eos_token_id"
+            )
+        eos_text = tokenizer.decode(
+            [eos_token_id],
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        messages.append({"role": "user", "content": eos_text * pad_count})
+
+    staged = {
+        key: value
+        for key, value in row.items()
+        if key not in {"messages", "tools", "tool_defs", "chat_template_kwargs"}
+    }
+    staged["messages"] = messages
+    staged["benchflow_custom_trainer_token_suffix"] = {
+        "original_token_count": before,
+        "staged_token_count": len(token_ids),
+        "pad_token_count": pad_count,
+    }
+    return staged, before, len(token_ids), pad_count
+
+
+def _write_passthrough_chat_template(dataset_dir: Path) -> Path:
+    template_path = dataset_dir / "benchflow_passthrough_chat_template.jinja"
+    template_path.write_text(_PASSTHROUGH_CHAT_TEMPLATE + "\n", encoding="utf-8")
+    return template_path
+
+
+def _spec_with_passthrough_template(
+    spec: PrimeRlSftSpec, template_path: Path
+) -> PrimeRlSftSpec:
+    overrides = _override_map(spec.overrides)
+    if "tokenizer.chat_template" in overrides:
+        raise ValueError(
+            f"--message-tail-truncation {_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE} "
+            "cannot be combined with --override tokenizer.chat_template=..."
+        )
+    return replace(
+        spec,
+        overrides=(
+            *spec.overrides,
+            f"tokenizer.chat_template={template_path}",
+        ),
+    )
 
 
 def _normalize_messages_for_prime_rl_render(
@@ -1006,6 +1190,8 @@ def _copy_prime_rl_jsonl(
     removed_rows = 0
     chat_template_kwargs_rows = 0
     message_tail_truncated_rows = 0
+    custom_trainer_token_suffix_rows = 0
+    custom_trainer_token_suffix_padded_rows = 0
     max_tokens_before: int | None = None
     max_tokens_after: int | None = None
     with (
@@ -1019,6 +1205,31 @@ def _copy_prime_rl_jsonl(
             row = json.loads(line)
             if not isinstance(row, dict):
                 raise ValueError(f"{source}: every JSONL row must be an object")
+            if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE:
+                if omit_tool_defs and ("tool_defs" in row or "tools" in row):
+                    removed_rows += 1
+                if tokenizer is None or message_tail_max_area is None:
+                    raise AssertionError(
+                        "custom-trainer token suffix requires tokenizer and max area"
+                    )
+                row, before, after, pad_count = _custom_trainer_token_suffix_row(
+                    tokenizer,
+                    row,
+                    max_length=message_tail_max_area,
+                )
+                custom_trainer_token_suffix_rows += 1
+                custom_trainer_token_suffix_padded_rows += int(pad_count > 0)
+                message_tail_truncated_rows += int(before > after)
+                max_tokens_before = (
+                    before
+                    if max_tokens_before is None
+                    else max(max_tokens_before, before)
+                )
+                max_tokens_after = (
+                    after if max_tokens_after is None else max(max_tokens_after, after)
+                )
+                dst.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+                continue
             if omit_tool_defs and ("tool_defs" in row or "tools" in row):
                 removed_rows += 1
             if omit_tool_defs:
@@ -1082,6 +1293,16 @@ def _copy_prime_rl_jsonl(
         ),
         message_tail_max_tokens_before=max_tokens_before,
         message_tail_max_tokens_after=max_tokens_after,
+        custom_trainer_token_suffix_rows=(
+            custom_trainer_token_suffix_rows
+            if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE
+            else None
+        ),
+        custom_trainer_token_suffix_padded_rows=(
+            custom_trainer_token_suffix_padded_rows
+            if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE
+            else None
+        ),
     )
 
 
@@ -1098,9 +1319,23 @@ def _prepare_prime_rl_data(
         if message_tail_truncation != "off":
             raise ValueError("--message-tail-truncation requires --data")
         return spec, None
+    source_data = spec.data
 
     tool_defs_mode = _normalize_tool_defs_mode(spec.tool_defs_mode)
     chat_template_kwargs = _parse_chat_template_kwargs(spec.chat_template_kwargs)
+    if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE:
+        if tool_defs_mode != "omit":
+            raise ValueError(
+                f"--message-tail-truncation {_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE} "
+                "requires --tool-defs-mode omit because it stages rendered text "
+                "instead of chat/tool schema rows"
+            )
+        if chat_template_kwargs:
+            raise ValueError(
+                f"--message-tail-truncation {_CUSTOM_TRAINER_TOKEN_SUFFIX_MODE} "
+                "stages a passthrough chat template and cannot be combined with "
+                "--chat-template-kwarg"
+            )
     effective_overrides = _override_map(spec.overrides)
     message_tail_max_area: int | None = None
     tokenizer: Any | None = None
@@ -1168,10 +1403,16 @@ def _prepare_prime_rl_data(
                 message_tail_max_area=message_tail_max_area,
             )
             dataset_dir = _finalize_staged_dataset_dir(work_dir, dataset_dir)
+            passthrough_template_path = None
+            if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE:
+                passthrough_template_path = _write_passthrough_chat_template(
+                    dataset_dir
+                )
+                spec = _spec_with_passthrough_template(spec, passthrough_template_path)
             transformed_train_jsonl = dataset_dir / "train.jsonl"
             resolved_spec = replace(spec, data=str(dataset_dir))
             return resolved_spec, PrimeRlSftDatasetPlan(
-                source_data=spec.data,
+                source_data=source_data,
                 resolved_data=str(dataset_dir),
                 kind="local_dataset_dir_transformed",
                 dataset_dir=str(dataset_dir),
@@ -1187,11 +1428,22 @@ def _prepare_prime_rl_data(
                 message_tail_max_area=stats.message_tail_max_area,
                 message_tail_max_tokens_before=stats.message_tail_max_tokens_before,
                 message_tail_max_tokens_after=stats.message_tail_max_tokens_after,
+                custom_trainer_token_suffix_rows=(
+                    stats.custom_trainer_token_suffix_rows
+                ),
+                custom_trainer_token_suffix_padded_rows=(
+                    stats.custom_trainer_token_suffix_padded_rows
+                ),
+                passthrough_chat_template=(
+                    str(passthrough_template_path)
+                    if passthrough_template_path is not None
+                    else None
+                ),
                 validation=validation,
             )
         resolved_spec = replace(spec, data=str(source_path))
         return resolved_spec, PrimeRlSftDatasetPlan(
-            source_data=spec.data,
+            source_data=source_data,
             resolved_data=str(source_path),
             kind="local_dataset_dir",
             dataset_dir=str(source_path),
@@ -1233,10 +1485,14 @@ def _prepare_prime_rl_data(
     else:
         shutil.copy2(source_path, train_jsonl)
     dataset_dir = _finalize_staged_dataset_dir(work_dir, dataset_dir)
+    passthrough_template_path = None
+    if message_tail_truncation == _CUSTOM_TRAINER_TOKEN_SUFFIX_MODE:
+        passthrough_template_path = _write_passthrough_chat_template(dataset_dir)
+        spec = _spec_with_passthrough_template(spec, passthrough_template_path)
     train_jsonl = dataset_dir / "train.jsonl"
     resolved_spec = replace(spec, data=str(dataset_dir))
     return resolved_spec, PrimeRlSftDatasetPlan(
-        source_data=spec.data,
+        source_data=source_data,
         resolved_data=str(dataset_dir),
         kind="local_jsonl_packaged",
         dataset_dir=str(dataset_dir),
@@ -1252,6 +1508,15 @@ def _prepare_prime_rl_data(
         message_tail_max_area=stats.message_tail_max_area,
         message_tail_max_tokens_before=stats.message_tail_max_tokens_before,
         message_tail_max_tokens_after=stats.message_tail_max_tokens_after,
+        custom_trainer_token_suffix_rows=stats.custom_trainer_token_suffix_rows,
+        custom_trainer_token_suffix_padded_rows=(
+            stats.custom_trainer_token_suffix_padded_rows
+        ),
+        passthrough_chat_template=(
+            str(passthrough_template_path)
+            if passthrough_template_path is not None
+            else None
+        ),
         validation=validation,
     )
 
@@ -1324,9 +1589,11 @@ def _initial_manifest(
                 "message_tail_truncation": spec.message_tail_truncation,
             },
             "known_prime_rl_gap": (
-                "Prime-RL still owns token masking and sequence packing; "
-                "BenchFlow stages local rows to reduce known truncation and "
-                "tool-schema mismatches but does not patch Prime-RL internals."
+                "BenchFlow stages each row as the historical custom trainer's "
+                "rendered token suffix and uses a passthrough chat template so "
+                "Prime-RL trains on that suffix without tool-schema rerendering. "
+                "The Prime-RL optimizer, scheduler, checkpoint writer, and "
+                "batch ordering are still Prime-RL implementations."
             ),
         }
     return manifest
