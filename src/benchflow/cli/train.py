@@ -313,6 +313,26 @@ def register_train(app: typer.Typer) -> None:
                 help="Optional first-class Prime-RL model.attn override, e.g. sdpa",
             ),
         ] = None,
+        renderer_mode: Annotated[
+            str | None,
+            typer.Option(
+                "--renderer-mode",
+                help=(
+                    "Optional Prime-RL renderer mode override. Use 'none' to "
+                    "fall back to tokenizer.apply_chat_template tokenization."
+                ),
+            ),
+        ] = None,
+        tool_defs_mode: Annotated[
+            str,
+            typer.Option(
+                "--tool-defs-mode",
+                help=(
+                    "How local training JSONL exposes tool schemas to Prime-RL: "
+                    "preserve or omit"
+                ),
+            ),
+        ] = "preserve",
         allow_unsafe_stack_flash_attn: Annotated[
             bool,
             typer.Option(
@@ -389,6 +409,8 @@ def register_train(app: typer.Typer) -> None:
                     pack_function=pack_function,
                     loss_mask=loss_mask,
                     model_attn=model_attn,
+                    renderer_mode=renderer_mode,
+                    tool_defs_mode=tool_defs_mode,
                     allow_unsafe_stack_flash_attn=allow_unsafe_stack_flash_attn,
                     force=force,
                     cwd=prime_rl_dir,
