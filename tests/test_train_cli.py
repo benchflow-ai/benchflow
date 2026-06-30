@@ -615,9 +615,10 @@ def test_train_run_sft_prime_rl_target_examples_respects_batch_override(
     assert "--data.batch_size" in captured["argv"]
     assert captured["argv"][-2:] == ["--max_steps", "38"]
     manifest = json.loads((work_dir / "train-run.json").read_text())
-    assert manifest["extra"]["prime_rl_sft_exposure_plan"][
-        "sync_scheduler_to_max_steps"
-    ] is False
+    assert (
+        manifest["extra"]["prime_rl_sft_exposure_plan"]["sync_scheduler_to_max_steps"]
+        is False
+    )
 
 
 def test_train_run_sft_prime_rl_target_examples_rejects_manual_max_steps(

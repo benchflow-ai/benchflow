@@ -155,7 +155,9 @@ def _resolve_data_batch_size(
     config: Mapping[str, Any], overrides: Mapping[str, str]
 ) -> int:
     raw = overrides.get("data.batch_size")
-    source = "--override data.batch_size" if raw is not None else "config data.batch_size"
+    source = (
+        "--override data.batch_size" if raw is not None else "config data.batch_size"
+    )
     if raw is None:
         raw = _nested_config_value(config, "data.batch_size")
     if raw is None:
