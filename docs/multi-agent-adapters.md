@@ -48,8 +48,37 @@ The core rule: **each agent gets its own session and own trajectory; BenchFlow a
 | MCP | Tool/resource/prompt protocol, not agent-to-agent by itself. | Add a `benchflow_delegate_to_agent` MCP server. A supervisor agent calls this tool; BenchFlow starts a real worker session and links the worker transcript to the supervisor tool call. |
 | HARBOR | Staged automation with specialized agents, standardized commands, persistent artifacts, gates, and parallel trials. | Model stages as scenes, gates as verifier/checkpoint events, artifacts as handoff/evidence, and parallel trials as forked session groups. |
 | BenchAgent | Normalized evaluation of single-agent, fixed MAS, and evolving MAS workflows under common loader, tools, answer contract, usage accounting, and trajectory logging. | Require matched baselines and report cost/accuracy tradeoffs. Multi-agent is not assumed better. |
+| SWE-Interact | Converts SWE tasks into vague, progressive user-driven tasks; the LLM user simulator reveals requirements and inspects the workspace. | Useful as a stress test, but BenchFlow should add an explicit intent/reveal/drift audit layer before treating simulator behavior as benchmark-stable. |
+| SWE-Together | Reconstructs 109 real user-agent coding sessions from 11,260 raw sessions; uses anchored, state-conditional replay with decomposed intents, trigger conditions, Intent Coverage, and User Correction. | Prefer SWE-Together's anchored replay discipline for BenchFlow interactive-user tasks: immutable intent objects, trigger-gated feedback, simulator-fidelity metrics, and correction-cost reporting. |
 | AaaS-AN / Agent Network | Agents and agent groups are vertices; routes are edges; the scheduler maintains an execution graph and context isolation. | Use this as the long-term shape for dynamic networks: session nodes plus route/handoff edges. |
 | `lingtai` | No public repo/package/spec found under that spelling during this pass. | Keep as a reserved adapter id until an actual contract is provided. |
+
+## Interactive-user benchmark comparison
+
+SWE-Interact and SWE-Together are both interactive coding-agent benchmarks, but they make different choices about simulator control.
+
+| Axis | SWE-Interact | SWE-Together | BenchFlow target |
+|---|---|---|---|
+| Source tasks | Converts existing SWE-style tasks into multi-turn user-driven variants. | Reconstructs tasks from real user-agent coding sessions with recoverable repositories, clear goals, and observable outcomes. | Support both converted tasks and recorded-session imports, but preserve provenance and validation evidence separately. |
+| User simulator | Model-backed user starts vague, reveals requirements, inspects workspace, and gives feedback. | Reactive LLM simulator anchored to original session analysis; speaks only when trigger conditions arise in the evaluated trajectory. | `BaseUser` plus `IntentSpec`: deterministic/scripted users first, model users second, both audited against immutable intent. |
+| Drift handling | Drift is mainly visible as a post-hoc failure mode such as missing requirements. | The paper explicitly names interaction drift as a threat and uses Intent Coverage to audit recall and scope precision. | First-class drift audit: no new intent, no contradiction, no hidden-test leak, requirement reveal ledger, and simulator-failure channel. |
+| Turn timing | Progressive reveal across rounds. | State-conditional replay: no-op unless feedback is warranted by the live trajectory. | User loop should allow no-op turns and trigger-gated feedback, not only fixed scripted rounds. |
+| Metrics | Final correctness plus trajectory/failure analysis. | Final correctness plus User Correction and Intent Coverage. | Final reward plus user effort, correction/nudge counts, ask-user call quality, intent coverage, drift violations, and simulator failure rate. |
+| Runtime exposure | Public repo primarily provides task data and Harbor configs. | Public repo exposes tasks, launcher, eval code, agent harness choices, and task images. | BenchFlow should keep simulator runtime, user tool calls, intent ledger, and drift audit as first-class artifacts. |
+
+SWE-Together is closer to the benchmark contract BenchFlow should adopt for user simulation because it separates task correctness from simulator fidelity. Its Intent Coverage is especially important: it measures whether replayed simulator messages preserve original-session intents and stay within scope, so low intent coverage can be treated as simulator instability rather than agent failure. BenchFlow should generalize that into a typed `IntentSpec` and `intent_reveal_ledger.jsonl` rather than relying only on post-hoc LLM judging.
+
+The key BenchFlow delta is an explicit artifact contract:
+
+```text
+trajectory/user/ask_user_calls.jsonl
+trajectory/user/intent_reveal_ledger.jsonl
+trajectory/user/drift_audit.jsonl
+trajectory/user/user_tool_calls.jsonl
+trajectory/user/simulator_decisions.jsonl
+```
+
+These artifacts should exist for both SWE-Interact-style progressive tasks and SWE-Together-style recorded-session replay. Publication-grade interactive tasks should fail closed when the intent ledger or drift audit is missing.
 
 ## Architecture
 
@@ -225,13 +254,21 @@ benchflow:
 3. Add native-team import for Claude Code agent teams: team lead, teammates, task list, mailbox messages, session ids, and transcript pointers.
 4. Only after these real-agent paths exist, consider low-priority adapters for LangGraph/CrewAI/AutoGen LLM-workflow traces.
 
+### M3: interactive-user validity
+
+1. Add `IntentSpec` and requirement ids to native `task.md` or verifier-private sidecars.
+2. Record `ask_user_calls.jsonl`, `intent_reveal_ledger.jsonl`, `drift_audit.jsonl`, and `simulator_decisions.jsonl` for user-driven runs.
+3. Support state-conditional no-op user turns so SWE-Together-style replay can wait until trigger conditions arise.
+4. Report User Correction-style intervention counts and Intent Coverage-style simulator-fidelity metrics separately from task reward.
+5. Add a publication-grade interactive validity gate that rejects tasks without intent, reveal, and drift-audit evidence.
+
 ## Viewer requirements
 
 The viewer should show session swimlanes by real agent instance, handoff artifacts and message edges, supervisor delegation calls linked to worker transcripts, per-agent tokens/cost/latency/tool calls, workspace diffs by agent, verifier/reward events anchored to final state, and coverage warnings when an agent only provided a partial/native-scraped trace.
 
 ## Benchmark reporting policy
 
-Multi-agent support must report whether it helped under matched conditions: single-agent baseline, same task set, same sandbox and verifier, same tool permissions or explicitly reported differences, same answer contract, per-agent and total usage, trajectory coverage by agent, relationship graph coverage, and success/cost tradeoff.
+Multi-agent support must report whether it helped under matched conditions: single-agent baseline, same task set, same sandbox and verifier, same tool permissions or explicitly reported differences, same answer contract, per-agent and total usage, trajectory coverage by agent, relationship graph coverage, success/cost tradeoff, user-correction effort, intent coverage, and simulator drift/audit failures.
 
 ## References
 
@@ -242,4 +279,7 @@ Multi-agent support must report whether it helped under matched conditions: sing
 - Claude Code agent teams: https://code.claude.com/docs/en/agent-teams
 - HARBOR paper: https://arxiv.org/abs/2606.08610
 - BenchAgent paper: https://arxiv.org/abs/2606.05670
+- SWE-Interact paper: https://arxiv.org/abs/2606.30573
+- SWE-Together paper: https://arxiv.org/abs/2606.29957
+- SWE-Together repo: https://github.com/Togetherbench/SWE-Together
 - Agent-as-a-Service based on Agent Network: https://arxiv.org/abs/2505.08446
