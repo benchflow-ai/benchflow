@@ -43,6 +43,9 @@ class PrimeRlSftSpec:
     target_examples: int | None = None
     sync_scheduler_to_max_steps: bool = True
     pack_function: str | None = None
+    loss_mask: str | None = None
+    model_attn: str | None = None
+    allow_unsafe_stack_flash_attn: bool = False
     force: bool = False
     cwd: Path | None = None
     publish_model: str | None = None
@@ -67,6 +70,8 @@ class PrimeRlSftExposurePlan:
     derived_max_steps: int | None = None
     sync_scheduler_to_max_steps: bool = False
     pack_function: str | None = None
+    loss_mask: str | None = None
+    model_attn: str | None = None
     generated_overrides: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -76,6 +81,8 @@ class PrimeRlSftExposurePlan:
             "derived_max_steps": self.derived_max_steps,
             "sync_scheduler_to_max_steps": self.sync_scheduler_to_max_steps,
             "pack_function": self.pack_function,
+            "loss_mask": self.loss_mask,
+            "model_attn": self.model_attn,
             "generated_overrides": list(self.generated_overrides),
         }
 
@@ -188,6 +195,88 @@ def _resolve_data_batch_size(
     return _parse_positive_int(raw, key=source)
 
 
+def _loss_mask_overrides(raw: str) -> tuple[str, tuple[str, ...]]:
+    value = raw.strip().lower().replace("_", "-")
+    role_names = ("system", "user", "assistant", "tool")
+    role_set = set(role_names)
+    if value == "all":
+        enabled = role_set
+    elif value == "assistant":
+        enabled = {"assistant"}
+    else:
+        enabled = {part.strip().replace("_", "-") for part in value.split(",")}
+        if not enabled or any(not part for part in enabled):
+            raise ValueError(
+                "--loss-mask must be 'all', 'assistant', or comma-separated roles"
+            )
+        unknown = sorted(enabled - role_set)
+        if unknown:
+            raise ValueError(
+                "--loss-mask roles must be drawn from system,user,assistant,tool; "
+                f"got {','.join(unknown)}"
+            )
+    normalized = (
+        "all"
+        if enabled == role_set
+        else ",".join(role for role in role_names if role in enabled)
+    )
+    return normalized, tuple(
+        f"data.loss_mask.{role}={'true' if role in enabled else 'false'}"
+        for role in role_names
+    )
+
+
+def _resolve_effective_value(
+    config: Mapping[str, Any], overrides: Mapping[str, str], key: str
+) -> Any:
+    if key in overrides:
+        return overrides[key]
+    return _nested_config_value(config, key)
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _is_qwen35_model(model_name: str | None) -> bool:
+    if model_name is None:
+        return False
+    normalized = model_name.lower().replace("_", "-")
+    return normalized.startswith("qwen/qwen3.5-")
+
+
+def _validate_prime_rl_mode(
+    spec: PrimeRlSftSpec,
+    config: Mapping[str, Any],
+    effective_overrides: Mapping[str, str],
+) -> None:
+    pack_function = _string_or_none(
+        _resolve_effective_value(config, effective_overrides, "data.pack_function")
+    )
+    model_name = _string_or_none(
+        _resolve_effective_value(config, effective_overrides, "model.name")
+    )
+    model_attn = _string_or_none(
+        _resolve_effective_value(config, effective_overrides, "model.attn")
+    )
+    if (
+        not spec.allow_unsafe_stack_flash_attn
+        and pack_function == "stack"
+        and _is_qwen35_model(model_name)
+        and model_attn in {"flash_attention_2", "flash_attention_3", "fa4"}
+    ):
+        raise ValueError(
+            "Prime-RL stack packing with Qwen/Qwen3.5-* and flash attention is "
+            "blocked because it can misinterpret padded position_ids as packed "
+            "sequence starts and fail inside Qwen3.5 varlen kernels. Use "
+            "--model-attn sdpa or --override model.attn=sdpa for the "
+            "custom-trainer-compatible stack path, or pass "
+            "--allow-unsafe-stack-flash-attn to run the native Prime-RL mode anyway."
+        )
+
+
 def _build_generated_overrides(
     spec: PrimeRlSftSpec, config: Mapping[str, Any]
 ) -> PrimeRlSftExposurePlan | None:
@@ -197,6 +286,8 @@ def _build_generated_overrides(
     data_batch_size: int | None = None
     derived_max_steps: int | None = None
     pack_function: str | None = None
+    loss_mask: str | None = None
+    model_attn: str | None = None
 
     if spec.target_examples is not None:
         if "max_steps" in overrides:
@@ -228,6 +319,32 @@ def _build_generated_overrides(
         pack_function = spec.pack_function
         generated.append(f"data.pack_function={pack_function}")
 
+    if spec.loss_mask is not None:
+        loss_keys = [
+            f"data.loss_mask.{role}" for role in ("system", "user", "assistant", "tool")
+        ]
+        conflicting = sorted(key for key in loss_keys if key in overrides)
+        if conflicting:
+            raise ValueError(
+                "--loss-mask cannot be combined with --override "
+                + ", ".join(f"{key}=..." for key in conflicting)
+            )
+        loss_mask, loss_overrides = _loss_mask_overrides(spec.loss_mask)
+        generated.extend(loss_overrides)
+
+    if spec.model_attn is not None:
+        model_attn = spec.model_attn.strip()
+        if not model_attn:
+            raise ValueError("--model-attn must be non-empty")
+        if "model.attn" in overrides:
+            raise ValueError(
+                "--model-attn cannot be combined with --override model.attn=..."
+            )
+        generated.append(f"model.attn={model_attn}")
+
+    effective_overrides = _override_map((*spec.overrides, *generated))
+    _validate_prime_rl_mode(spec, config, effective_overrides)
+
     if not generated:
         return None
     return PrimeRlSftExposurePlan(
@@ -240,6 +357,8 @@ def _build_generated_overrides(
             else False
         ),
         pack_function=pack_function,
+        loss_mask=loss_mask,
+        model_attn=model_attn,
         generated_overrides=tuple(generated),
     )
 
