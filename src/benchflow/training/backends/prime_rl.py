@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tomllib
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import ceil
 from pathlib import Path
 from threading import Thread
@@ -77,6 +77,26 @@ class PrimeRlSftExposurePlan:
             "sync_scheduler_to_max_steps": self.sync_scheduler_to_max_steps,
             "pack_function": self.pack_function,
             "generated_overrides": list(self.generated_overrides),
+        }
+
+
+@dataclass(frozen=True)
+class PrimeRlSftDatasetPlan:
+    source_data: str
+    resolved_data: str
+    kind: str
+    dataset_dir: str | None = None
+    train_jsonl: str | None = None
+    validation: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_data": self.source_data,
+            "resolved_data": self.resolved_data,
+            "kind": self.kind,
+            "dataset_dir": self.dataset_dir,
+            "train_jsonl": self.train_jsonl,
+            "validation": self.validation,
         }
 
 
@@ -270,11 +290,76 @@ def _copy_stream(stream: TextIO, handle: TextIO, *, echo: bool) -> None:
             print(line, end="", flush=True)
 
 
+def _local_data_path(data: str) -> Path | None:
+    path = Path(data).expanduser()
+    if path.exists():
+        return path.resolve()
+    if path.suffix == ".jsonl":
+        raise ValueError(f"--data JSONL file not found: {data}")
+    return None
+
+
+def _prepare_prime_rl_data(
+    spec: PrimeRlSftSpec, work_dir: Path
+) -> tuple[PrimeRlSftSpec, PrimeRlSftDatasetPlan | None]:
+    """Make local BenchFlow JSONL usable by Prime-RL's ``load_dataset`` path."""
+    if not spec.data:
+        return spec, None
+
+    source_path = _local_data_path(spec.data)
+    if source_path is None:
+        return spec, None
+
+    if source_path.is_dir():
+        train_jsonl = source_path / "train.jsonl"
+        validation = None
+        if train_jsonl.is_file():
+            from benchflow.trajectories.export_prime_sft import (
+                validate_prime_sft_jsonl,
+            )
+
+            validation = validate_prime_sft_jsonl(train_jsonl)
+        resolved_spec = replace(spec, data=str(source_path))
+        return resolved_spec, PrimeRlSftDatasetPlan(
+            source_data=spec.data,
+            resolved_data=str(source_path),
+            kind="local_dataset_dir",
+            dataset_dir=str(source_path),
+            train_jsonl=str(train_jsonl) if train_jsonl.is_file() else None,
+            validation=validation,
+        )
+
+    if source_path.suffix != ".jsonl":
+        raise ValueError(
+            f"--data local files must be Prime-SFT JSONL files, got {source_path}"
+        )
+
+    from benchflow.trajectories.export_prime_sft import validate_prime_sft_jsonl
+
+    validation = validate_prime_sft_jsonl(source_path)
+    dataset_dir = work_dir / "prime-rl-dataset"
+    if dataset_dir.exists():
+        shutil.rmtree(dataset_dir)
+    dataset_dir.mkdir(parents=True)
+    train_jsonl = dataset_dir / "train.jsonl"
+    shutil.copy2(source_path, train_jsonl)
+    resolved_spec = replace(spec, data=str(dataset_dir))
+    return resolved_spec, PrimeRlSftDatasetPlan(
+        source_data=spec.data,
+        resolved_data=str(dataset_dir),
+        kind="local_jsonl_packaged",
+        dataset_dir=str(dataset_dir),
+        train_jsonl=str(train_jsonl),
+        validation=validation,
+    )
+
+
 def _initial_manifest(
     spec: PrimeRlSftSpec,
     argv: list[str],
     logs: list[str],
     exposure_plan: PrimeRlSftExposurePlan | None = None,
+    dataset_plan: PrimeRlSftDatasetPlan | None = None,
 ) -> TrainRunManifest:
     work_dir = spec.work_dir.resolve()
     output_dir = (
@@ -310,6 +395,8 @@ def _initial_manifest(
     )
     if exposure_plan is not None:
         manifest.extra["prime_rl_sft_exposure_plan"] = exposure_plan.to_dict()
+    if dataset_plan is not None:
+        manifest.extra["prime_rl_sft_dataset"] = dataset_plan.to_dict()
     return manifest
 
 
@@ -333,17 +420,19 @@ def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
     stderr_path = log_dir / "stderr.log"
     command_path = work_dir / "command.txt"
 
-    launch = build_prime_rl_sft_launch(spec)
+    launch_spec, dataset_plan = _prepare_prime_rl_data(spec, work_dir)
+    launch = build_prime_rl_sft_launch(launch_spec)
     argv = launch.argv
     command_path.write_text(_shell_quote(argv) + "\n", encoding="utf-8")
     manifest = _initial_manifest(
-        spec,
+        launch_spec,
         argv,
         [
             str(stdout_path.relative_to(work_dir)),
             str(stderr_path.relative_to(work_dir)),
         ],
         launch.exposure_plan,
+        dataset_plan,
     )
     manifest.overall_status = "running"
     manifest.components[0].status = "running"
