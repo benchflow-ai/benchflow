@@ -632,9 +632,8 @@ def test_train_run_sft_prime_rl_packages_local_jsonl_data(
         "message_tail_max_area": None,
         "message_tail_max_tokens_before": None,
         "message_tail_max_tokens_after": None,
-        "custom_trainer_token_suffix_rows": None,
-        "custom_trainer_token_suffix_padded_rows": None,
-        "passthrough_chat_template": None,
+        "custom_trainer_pretokenized_rows": None,
+        "custom_trainer_pretokenized_trainable_tokens": None,
         "validation": {"ok": True, "rows": 1, "rows_with_tool_calls": 1},
     }
 
@@ -1182,11 +1181,8 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
     assert result.exit_code == 0, result.output
     argv = captured["argv"]
     assert captured["env"]["BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS"] == "1"
-    assert "--tokenizer.chat_template" in argv
-    template_idx = argv.index("--tokenizer.chat_template")
-    template_path = Path(argv[template_idx + 1])
-    assert template_path.name == "benchflow_passthrough_chat_template.jinja"
-    assert template_path.read_text(encoding="utf-8").strip()
+    assert captured["env"]["BENCHFLOW_PRIME_RL_PRETOKENIZED_SFT_DATA"] == "1"
+    assert "--tokenizer.chat_template" not in argv
     assert argv[-22:] == [
         "--max_steps",
         "37",
@@ -1199,13 +1195,13 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "--data.pack_function",
         "stack",
         "--data.loss_mask.system",
-        "false",
+        "true",
         "--data.loss_mask.user",
-        "false",
+        "true",
         "--data.loss_mask.assistant",
         "true",
         "--data.loss_mask.tool",
-        "false",
+        "true",
         "--model.attn",
         "sdpa",
         "--renderer",
@@ -1217,29 +1213,36 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
     assert "tool_defs" not in staged_row
     assert "tools" not in staged_row
     assert "chat_template_kwargs" not in staged_row
-    assert [message["role"] for message in staged_row["messages"]] == [
-        "assistant",
-        "user",
-    ]
-    assert staged_row["benchflow_custom_trainer_token_suffix"] == {
+    assert "messages" not in staged_row
+    assert staged_row["benchflow_custom_trainer_pretokenized"] == {
         "original_token_count": 12,
-        "pad_token_count": 116,
         "staged_token_count": 12,
+        "trainable_token_count": 11,
     }
+    assert staged_row["benchflow_input_ids"] == [
+        ord(char) for char in "finishTTTTok"[:-1]
+    ]
+    assert staged_row["benchflow_target_ids"] == [
+        ord(char) for char in "finishTTTTok"[1:]
+    ]
+    assert staged_row["benchflow_loss_mask"] == [True] * 11
+    assert staged_row["benchflow_position_ids"] == list(range(11))
 
     manifest = json.loads((work_dir / "train-run.json").read_text())
     command_text = (work_dir / "command.txt").read_text()
     assert "BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS=1" in command_text
+    assert "BENCHFLOW_PRIME_RL_PRETOKENIZED_SFT_DATA=1" in command_text
     assert "PYTHONPATH=" in command_text
     shim = manifest["extra"]["prime_rl_sft_shim"]
     shim_dir = Path(shim["shim_dir"])
     assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(shim_dir)
-    assert (
-        Path(shim["sitecustomize"])
-        .read_text(encoding="utf-8")
-        .startswith('"""BenchFlow Prime-RL sample-mean SFT loss compatibility shim.')
+    sitecustomize_text = Path(shim["sitecustomize"]).read_text(encoding="utf-8")
+    assert sitecustomize_text.startswith(
+        '"""BenchFlow Prime-RL SFT compatibility shim.'
     )
-    assert shim["name"] == "prime_rl_sample_mean_loss"
+    assert "if not torch.any(valid_sample_mask):" in sitecustomize_text
+    assert "if not torch.all(valid_sample_mask):" not in sitecustomize_text
+    assert shim["name"] == "prime_rl_sft_compatibility"
     assert manifest["extra"]["prime_rl_sft_compat_profile"]["name"] == (
         "env0-mobile300-pr828"
     )
@@ -1249,13 +1252,13 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "sync_scheduler_to_max_steps": True,
         "sync_ckpt_to_max_steps": True,
         "pack_function": "stack",
-        "loss_mask": "assistant",
+        "loss_mask": "all",
         "loss_normalization": "sample_mean",
         "model_attn": "sdpa",
         "renderer_mode": "none",
         "tool_defs_mode": "omit",
         "chat_template_kwargs": {},
-        "message_tail_truncation": "custom-trainer-token-suffix",
+        "message_tail_truncation": "custom-trainer-pretokenized",
     }
     assert (
         manifest["extra"]["prime_rl_sft_exposure_plan"]["effective_train_examples"]
@@ -1277,23 +1280,56 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs_rows"] is None
     )
     assert manifest["extra"]["prime_rl_sft_dataset"]["message_tail_truncation"] == (
-        "custom-trainer-token-suffix"
+        "custom-trainer-pretokenized"
     )
     assert manifest["extra"]["prime_rl_sft_dataset"]["message_tail_truncated_rows"] == 0
     assert manifest["extra"]["prime_rl_sft_dataset"]["message_tail_max_area"] == 128
     assert (
-        manifest["extra"]["prime_rl_sft_dataset"]["custom_trainer_token_suffix_rows"]
+        manifest["extra"]["prime_rl_sft_dataset"]["custom_trainer_pretokenized_rows"]
         == 1
     )
     assert (
         manifest["extra"]["prime_rl_sft_dataset"][
-            "custom_trainer_token_suffix_padded_rows"
+            "custom_trainer_pretokenized_trainable_tokens"
         ]
-        == 1
+        == 11
     )
-    assert manifest["extra"]["prime_rl_sft_dataset"][
-        "passthrough_chat_template"
-    ] == str(template_path)
+
+
+def test_prime_rl_custom_trainer_pretokenized_row_masks_last_assistant_only() -> None:
+    """The compatibility row matches the old shifted-label custom trainer path."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    assert (
+        prime_rl._normalize_message_tail_truncation("custom-trainer-token-suffix")
+        == "custom-trainer-pretokenized"
+    )
+
+    row, before, after, trainable_tokens = prime_rl._custom_trainer_pretokenized_row(
+        _FakeTailTokenizer(),
+        {
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "OK"},
+            ],
+            "label_last_assistant_only": True,
+            "reward": 1.0,
+        },
+        max_length=64,
+    )
+
+    assert before == 7
+    assert after == 7
+    assert trainable_tokens == 2
+    assert row["benchflow_input_ids"] == [ord(char) for char in "helloO"]
+    assert row["benchflow_target_ids"] == [ord(char) for char in "elloOK"]
+    assert row["benchflow_loss_mask"] == [False, False, False, False, True, True]
+    assert row["benchflow_position_ids"] == list(range(6))
+    assert row["benchflow_custom_trainer_pretokenized"] == {
+        "original_token_count": 7,
+        "staged_token_count": 7,
+        "trainable_token_count": 2,
+    }
 
 
 def test_train_run_sft_prime_rl_custom_trainer_compatibility_mode(
