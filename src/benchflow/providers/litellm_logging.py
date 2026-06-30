@@ -157,6 +157,13 @@ def _failure_traceback(detail: Any) -> str:
 
 
 class BenchFlowLiteLLMLogger(CustomLogger):
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+        if isinstance(data, dict) and data.get("messages") is not None and "input" in data:
+            cleaned = dict(data)
+            cleaned.pop("input", None)
+            return cleaned
+        return None
+
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
         if not path:
