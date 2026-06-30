@@ -1565,7 +1565,7 @@ class TestDiagnosticRegistry:
             assert empty[diag_cls.field] is None
 
     def test_diagnostic_reason_constants_share_scoring_source(self) -> None:
-        """Guards GitHub issue #531: diagnostic reasons use typed shared constants."""
+        """Guards the fix from PR #858 against diagnostic reasons drifting off the shared scoring source."""
         from typing import get_args, get_type_hints
 
         from benchflow._utils.scoring import IDLE_TIMEOUT

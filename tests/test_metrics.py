@@ -426,7 +426,7 @@ def test_collect_metrics_usage_aggregation_mixed_telemetry(tmp_path):
 
 
 def test_usage_source_type_contract_tracks_trusted_sources():
-    """Guards GitHub issue #531: usage_source keeps a closed typed value set."""
+    """Guards the fix from PR #858 against usage_source_type drifting from the trusted source contract."""
     from typing import get_args
 
     from benchflow.usage_tracking import (
