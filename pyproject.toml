@@ -46,6 +46,11 @@ dev = [
     "ruff>=0.7.0",
     "ty>=0.0.1a1",
 ]
+train = [
+    # Used by the Prime-RL SFT wrapper for local token-window staging before
+    # handing JSONL rows to Prime-RL.
+    "transformers==5.6.2",
+]
 sandbox-daytona = [
     # >=0.183: list() returns an auto-paginating Iterator[Sandbox] (the older
     # paged list(page=, limit=) -> .items API was removed).
