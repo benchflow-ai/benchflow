@@ -185,6 +185,7 @@ _TOKEN_MEAN_LOSS_NORMALIZATION = "token_mean"
 _SAMPLE_MEAN_LOSS_NORMALIZATION = "sample_mean"
 _SAMPLE_MEAN_SHIM_ENV = "BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS"
 _PRETOKENIZED_DATA_SHIM_ENV = "BENCHFLOW_PRIME_RL_PRETOKENIZED_SFT_DATA"
+_STUB_FLASH_ATTN_ENV = "BENCHFLOW_PRIME_RL_STUB_FLASH_ATTN"
 _COMPAT_PROFILE_ALIASES = {
     _MOBILE300_PROFILE: _MOBILE300_PROFILE,
     "env-0-mobile300-pr828": _MOBILE300_PROFILE,
@@ -835,11 +836,14 @@ import importlib.abc
 import importlib.machinery
 import os
 import sys
+import types
 
 _LOSS_ENV = "BENCHFLOW_PRIME_RL_SAMPLE_MEAN_LOSS"
 _DATA_ENV = "BENCHFLOW_PRIME_RL_PRETOKENIZED_SFT_DATA"
+_FLASH_ATTN_ENV = "BENCHFLOW_PRIME_RL_STUB_FLASH_ATTN"
 _LOSS_TARGET = "prime_rl.trainer.sft.train"
 _DATA_TARGET = "prime_rl.trainer.sft.data"
+_TRANSFORMERS_IMPORT_UTILS_TARGET = "transformers.utils.import_utils"
 
 _EXPECTED = """\
         if config.model.lora is not None:
@@ -906,6 +910,73 @@ _REPLACEMENT = """\
 
 _COMMENT_EXPECTED = "        # All-reduce token counts and rescale gradients to get a global token-weighted mean."
 _COMMENT_REPLACEMENT = "        # All-reduce sample counts and rescale gradients to get a global sample-weighted mean."
+
+
+def _stubbed_flash_attn(*args, **kwargs):
+    raise RuntimeError(
+        "BenchFlow stubbed flash_attn imports because this run is configured "
+        "for model.attn=sdpa. A flash-attention kernel was called unexpectedly."
+    )
+
+
+def _install_flash_attn_stub():
+    package = types.ModuleType("flash_attn")
+    package.__benchflow_stub__ = True
+    package.__version__ = "0.0.0"
+    package.__path__ = []
+    package.__package__ = "flash_attn"
+    package.__spec__ = importlib.machinery.ModuleSpec(
+        "flash_attn", loader=None, is_package=True
+    )
+
+    interface = types.ModuleType("flash_attn.flash_attn_interface")
+    interface.__benchflow_stub__ = True
+    interface.__package__ = "flash_attn"
+    interface.__spec__ = importlib.machinery.ModuleSpec(
+        "flash_attn.flash_attn_interface", loader=None
+    )
+    for name in (
+        "_flash_attn_forward",
+        "_flash_attn_backward",
+        "_flash_attn_varlen_forward",
+        "_flash_attn_varlen_backward",
+        "flash_attn_func",
+        "flash_attn_qkvpacked_func",
+        "flash_attn_kvpacked_func",
+        "flash_attn_varlen_func",
+        "flash_attn_varlen_qkvpacked_func",
+        "flash_attn_varlen_kvpacked_func",
+        "flash_attn_with_kvcache",
+    ):
+        setattr(interface, name, _stubbed_flash_attn)
+        setattr(package, name, _stubbed_flash_attn)
+
+    package.flash_attn_interface = interface
+    sys.modules["flash_attn"] = package
+    sys.modules["flash_attn.flash_attn_interface"] = interface
+
+
+class _BenchFlowTransformersFlashAttnMapLoader(importlib.machinery.SourceFileLoader):
+    def exec_module(self, module):
+        super().exec_module(module)
+        mapping = getattr(module, "PACKAGE_DISTRIBUTION_MAPPING", None)
+        if isinstance(mapping, dict):
+            mapping.setdefault("flash_attn", ["flash-attn"])
+
+
+class _BenchFlowTransformersFlashAttnMapFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname != _TRANSFORMERS_IMPORT_UTILS_TARGET:
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is None or not isinstance(
+            spec.loader, importlib.machinery.SourceFileLoader
+        ):
+            return None
+        spec.loader = _BenchFlowTransformersFlashAttnMapLoader(
+            spec.loader.name, spec.loader.path
+        )
+        return spec
 
 
 class _BenchFlowSampleMeanLoader(importlib.machinery.SourceFileLoader):
@@ -1029,11 +1100,19 @@ if os.environ.get(_LOSS_ENV) == "1":
     sys.stderr.write("BenchFlow Prime-RL sample-mean loss shim enabled\\n")
 if os.environ.get(_DATA_ENV) == "1":
     sys.meta_path.insert(0, _BenchFlowPretokenizedDataFinder())
+if os.environ.get(_FLASH_ATTN_ENV) == "1":
+    _install_flash_attn_stub()
+    sys.meta_path.insert(0, _BenchFlowTransformersFlashAttnMapFinder())
+    sys.stderr.write("BenchFlow Prime-RL flash-attn import stub enabled for SDPA\\n")
 '''
 
 
 def _write_prime_rl_sft_compat_shim(
-    work_dir: Path, *, sample_mean: bool, pretokenized_data: bool
+    work_dir: Path,
+    *,
+    sample_mean: bool,
+    pretokenized_data: bool,
+    stub_flash_attn: bool,
 ) -> PrimeRlSftShimPlan:
     shim_dir = work_dir / "prime-rl-sft-compat-shim"
     shim_dir.mkdir(parents=True, exist_ok=True)
@@ -1062,13 +1141,22 @@ def _write_prime_rl_sft_compat_shim(
                 "pretokenized rows must carry input_ids/target_ids/loss_mask/position_ids",
             ]
         )
+    if stub_flash_attn:
+        env[_STUB_FLASH_ATTN_ENV] = "1"
+        guards.extend(
+            [
+                "model.attn=sdpa",
+                "flash-attn imports may succeed, but any flash-attn kernel call raises",
+            ]
+        )
     return PrimeRlSftShimPlan(
         name="prime_rl_sft_compatibility",
         description=(
             "Import-time Prime-RL SFT compatibility shim that can change loss "
             "reduction from token mean to per-sample mean and can feed "
-            "BenchFlow pre-tokenized custom-trainer tensor rows while leaving "
-            "the Prime-RL package files untouched."
+            "BenchFlow pre-tokenized custom-trainer tensor rows. For SDPA runs "
+            "it can also stub optional flash-attn imports while leaving the "
+            "Prime-RL package files untouched."
         ),
         shim_dir=str(shim_dir),
         sitecustomize=str(sitecustomize),
@@ -1111,10 +1199,18 @@ def _prepare_prime_rl_shim(
         _normalize_message_tail_truncation(spec.message_tail_truncation)
         == _CUSTOM_TRAINER_PRETOKENIZED_MODE
     )
-    if not sample_mean and not pretokenized_data:
+    stub_flash_attn = (
+        spec.model_attn is not None
+        and spec.model_attn.strip().lower() == "sdpa"
+        and (sample_mean or pretokenized_data)
+    )
+    if not sample_mean and not pretokenized_data and not stub_flash_attn:
         return None
     return _write_prime_rl_sft_compat_shim(
-        work_dir, sample_mean=sample_mean, pretokenized_data=pretokenized_data
+        work_dir,
+        sample_mean=sample_mean,
+        pretokenized_data=pretokenized_data,
+        stub_flash_attn=stub_flash_attn,
     )
 
 
