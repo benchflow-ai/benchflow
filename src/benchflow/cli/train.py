@@ -309,6 +309,16 @@ def register_train(app: typer.Typer) -> None:
                 ),
             ),
         ] = True,
+        sync_ckpt_to_max_steps: Annotated[
+            bool,
+            typer.Option(
+                "--sync-ckpt-to-max-steps/--no-sync-ckpt-to-max-steps",
+                help=(
+                    "When deriving max_steps, also derive ckpt.interval and "
+                    "ckpt.keep_interval from the computed max_steps"
+                ),
+            ),
+        ] = False,
         pack_function: Annotated[
             str | None,
             typer.Option(
@@ -451,6 +461,7 @@ def register_train(app: typer.Typer) -> None:
                     target_examples=target_examples,
                     target_micro_steps=target_micro_steps,
                     sync_scheduler_to_max_steps=sync_scheduler_to_max_steps,
+                    sync_ckpt_to_max_steps=sync_ckpt_to_max_steps,
                     pack_function=pack_function,
                     loss_mask=loss_mask,
                     model_attn=model_attn,

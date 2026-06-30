@@ -430,6 +430,7 @@ that were present are recorded.
 | `--target-examples` | — | Derive Prime-RL `max_steps` from target sample exposure and effective `data.batch_size`, rounding up |
 | `--target-micro-steps` | — | Derive Prime-RL `max_steps` from custom-trainer batch-size-1 microsteps, dropping the final partial accumulation |
 | `--sync-scheduler-to-max-steps` / `--no-sync-scheduler-to-max-steps` | `true` | When `--target-examples` or `--target-micro-steps` is set, also derive `scheduler.decay_steps` |
+| `--sync-ckpt-to-max-steps` / `--no-sync-ckpt-to-max-steps` | `false` | When deriving `max_steps`, also derive `ckpt.interval` and `ckpt.keep_interval` |
 | `--pack-function` | — | First-class Prime-RL `data.pack_function` override: `cat` or `stack` |
 | `--loss-mask` | — | First-class Prime-RL `data.loss_mask` override: `assistant`, `all`, or comma-separated roles from `system,user,assistant,tool` |
 | `--model-attn` | — | First-class Prime-RL `model.attn` override, e.g. `sdpa` |

@@ -47,6 +47,7 @@ class PrimeRlSftSpec:
     target_examples: int | None = None
     target_micro_steps: int | None = None
     sync_scheduler_to_max_steps: bool = True
+    sync_ckpt_to_max_steps: bool = False
     pack_function: str | None = None
     loss_mask: str | None = None
     model_attn: str | None = None
@@ -81,6 +82,7 @@ class PrimeRlSftExposurePlan:
     effective_train_examples: int | None = None
     unapplied_micro_steps: int | None = None
     sync_scheduler_to_max_steps: bool = False
+    sync_ckpt_to_max_steps: bool = False
     pack_function: str | None = None
     loss_mask: str | None = None
     model_attn: str | None = None
@@ -96,6 +98,7 @@ class PrimeRlSftExposurePlan:
             "effective_train_examples": self.effective_train_examples,
             "unapplied_micro_steps": self.unapplied_micro_steps,
             "sync_scheduler_to_max_steps": self.sync_scheduler_to_max_steps,
+            "sync_ckpt_to_max_steps": self.sync_ckpt_to_max_steps,
             "pack_function": self.pack_function,
             "loss_mask": self.loss_mask,
             "model_attn": self.model_attn,
@@ -429,6 +432,7 @@ def _apply_compat_profile(spec: PrimeRlSftSpec) -> PrimeRlSftSpec:
                 profile=profile,
             )
         ),
+        sync_ckpt_to_max_steps=True,
         pack_function=str(
             _profile_field(
                 spec.pack_function, "stack", field="--pack-function", profile=profile
@@ -573,6 +577,26 @@ def _build_generated_overrides(
                 )
             generated.append(f"scheduler.decay_steps={derived_max_steps}")
 
+    if spec.sync_ckpt_to_max_steps:
+        if derived_max_steps is None:
+            raise ValueError(
+                "--sync-ckpt-to-max-steps requires --target-examples or "
+                "--target-micro-steps"
+            )
+        ckpt_keys = ("ckpt.interval", "ckpt.keep_interval")
+        conflicting = sorted(key for key in ckpt_keys if key in overrides)
+        if conflicting:
+            raise ValueError(
+                "--sync-ckpt-to-max-steps cannot be combined with --override "
+                + ", ".join(f"{key}=..." for key in conflicting)
+            )
+        generated.extend(
+            [
+                f"ckpt.interval={derived_max_steps}",
+                f"ckpt.keep_interval={derived_max_steps}",
+            ]
+        )
+
     if spec.pack_function is not None:
         if spec.pack_function not in {"cat", "stack"}:
             raise ValueError("--pack-function must be either 'cat' or 'stack'")
@@ -638,6 +662,7 @@ def _build_generated_overrides(
             if target_examples is not None or target_micro_steps is not None
             else False
         ),
+        sync_ckpt_to_max_steps=bool(spec.sync_ckpt_to_max_steps),
         pack_function=pack_function,
         loss_mask=loss_mask,
         model_attn=model_attn,
@@ -1287,6 +1312,7 @@ def _initial_manifest(
                 "target_examples": spec.target_examples,
                 "target_micro_steps": spec.target_micro_steps,
                 "sync_scheduler_to_max_steps": spec.sync_scheduler_to_max_steps,
+                "sync_ckpt_to_max_steps": spec.sync_ckpt_to_max_steps,
                 "pack_function": spec.pack_function,
                 "loss_mask": spec.loss_mask,
                 "model_attn": spec.model_attn,
