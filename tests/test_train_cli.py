@@ -731,6 +731,7 @@ def test_train_run_sft_prime_rl_target_examples_derives_exposure(
         "model_attn": None,
         "pack_function": "stack",
         "renderer_mode": None,
+        "sync_ckpt_to_max_steps": False,
         "sync_scheduler_to_max_steps": True,
         "target_examples": 300,
         "target_micro_steps": None,
@@ -853,6 +854,7 @@ def test_train_run_sft_prime_rl_target_micro_steps_drops_partial_accumulation(
         "model_attn": None,
         "pack_function": None,
         "renderer_mode": None,
+        "sync_ckpt_to_max_steps": False,
         "sync_scheduler_to_max_steps": True,
         "target_examples": None,
         "target_micro_steps": 300,
@@ -960,6 +962,7 @@ def test_train_run_sft_prime_rl_records_reproduction_semantics(
         "model_attn": "sdpa",
         "pack_function": "stack",
         "renderer_mode": None,
+        "sync_ckpt_to_max_steps": False,
         "sync_scheduler_to_max_steps": True,
         "target_examples": 300,
         "target_micro_steps": None,
@@ -1064,10 +1067,14 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
 
     assert result.exit_code == 0, result.output
     argv = captured["argv"]
-    assert argv[-18:] == [
+    assert argv[-22:] == [
         "--max_steps",
         "37",
         "--scheduler.decay_steps",
+        "37",
+        "--ckpt.interval",
+        "37",
+        "--ckpt.keep_interval",
         "37",
         "--data.pack_function",
         "stack",
@@ -1099,6 +1106,7 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "target_examples": None,
         "target_micro_steps": 300,
         "sync_scheduler_to_max_steps": True,
+        "sync_ckpt_to_max_steps": True,
         "pack_function": "stack",
         "loss_mask": "all",
         "model_attn": "sdpa",
@@ -1112,6 +1120,14 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         == 296
     )
     assert manifest["extra"]["prime_rl_sft_exposure_plan"]["unapplied_micro_steps"] == 4
+    assert manifest["extra"]["prime_rl_sft_exposure_plan"]["generated_overrides"][
+        :4
+    ] == [
+        "max_steps=37",
+        "scheduler.decay_steps=37",
+        "ckpt.interval=37",
+        "ckpt.keep_interval=37",
+    ]
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_mode"] == "omit"
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_removed_rows"] == 1
     assert manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs"] == {
