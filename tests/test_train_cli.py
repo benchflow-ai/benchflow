@@ -480,6 +480,143 @@ def test_train_run_sft_prime_rl_records_manifest(tmp_path: Path, monkeypatch) ->
     assert (work_dir / "prime-rl" / "stdout.log").read_text() == "trainer ok\n"
 
 
+def test_train_run_sft_prime_rl_packages_local_jsonl_data(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Prime-RL load_dataset accepts local dataset dirs, not raw JSONL paths."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            captured["argv"] = argv
+            captured["cwd"] = kwargs["cwd"]
+            self.stdout = io.StringIO("trainer ok\n")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    config = tmp_path / "sft.toml"
+    config.write_text("max_steps = 1\n", encoding="utf-8")
+    source = tmp_path / "prime-sft.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "do it"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "finish",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_1",
+                        "content": "ok",
+                    },
+                    {"role": "assistant", "content": "done"},
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "train-run"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(prime_rl.subprocess, "Popen", FakeProcess)
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--data",
+            str(source),
+            "--work-dir",
+            str(work_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    dataset_dir = work_dir / "prime-rl-dataset"
+    train_jsonl = dataset_dir / "train.jsonl"
+    assert train_jsonl.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+    assert captured["argv"] == [
+        "uv",
+        "run",
+        "sft",
+        "@",
+        str(config),
+        "--data.name",
+        str(dataset_dir.resolve()),
+        "--output-dir",
+        str(work_dir / "prime-rl-output"),
+    ]
+    manifest = json.loads((work_dir / "train-run.json").read_text())
+    assert manifest["extra"]["prime_rl_sft_dataset"] == {
+        "dataset_dir": str(dataset_dir.resolve()),
+        "kind": "local_jsonl_packaged",
+        "resolved_data": str(dataset_dir.resolve()),
+        "source_data": str(source),
+        "train_jsonl": str(train_jsonl),
+        "validation": {"ok": True, "rows": 1, "rows_with_tool_calls": 1},
+    }
+
+
+def test_train_run_sft_prime_rl_rejects_missing_local_jsonl_data(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    config = tmp_path / "sft.toml"
+    config.write_text("max_steps = 1\n", encoding="utf-8")
+    missing = tmp_path / "missing.jsonl"
+
+    monkeypatch.setattr(prime_rl.shutil, "which", lambda name: "/usr/bin/uv")
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "run",
+            "sft",
+            "--config",
+            str(config),
+            "--data",
+            str(missing),
+            "--work-dir",
+            str(tmp_path / "train-run"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--data JSONL file not found" in result.output
+
+
 def test_train_run_sft_prime_rl_target_examples_derives_exposure(
     tmp_path: Path, monkeypatch
 ) -> None:
