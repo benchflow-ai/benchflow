@@ -18,14 +18,36 @@ class _FakeTailTokenizer:
     eos_token_id = 0
 
     def apply_chat_template(self, messages: list[dict[str, Any]], **kwargs: Any):
-        del kwargs
+        if kwargs.get("tokenize") is False:
+            return "".join(
+                str(message.get("content") or "")
+                + ("T" * (4 * len(message.get("tool_calls") or [])))
+                for message in messages
+            )
         length = 0
         for message in messages:
             content = message.get("content")
             if isinstance(content, str):
                 length += len(content)
+            prefix_ws = message.get("prefix_ws")
+            if isinstance(prefix_ws, str):
+                length += len(prefix_ws)
+            suffix_ws = message.get("suffix_ws")
+            if isinstance(suffix_ws, str):
+                length += len(suffix_ws)
             length += 4 * len(message.get("tool_calls") or [])
         return [1] * length + [self.eos_token_id]
+
+    def __call__(self, text: str, **kwargs: Any) -> dict[str, list[int]]:
+        del kwargs
+        return {"input_ids": [ord(char) for char in text]}
+
+    def decode(self, token_ids: list[int], **kwargs: Any) -> str:
+        del kwargs
+        return "".join(
+            "<eos>" if token_id == self.eos_token_id else chr(token_id)
+            for token_id in token_ids
+        )
 
 
 def _write_rollout(rollout_dir: Path) -> None:
@@ -609,6 +631,9 @@ def test_train_run_sft_prime_rl_packages_local_jsonl_data(
         "message_tail_max_area": None,
         "message_tail_max_tokens_before": None,
         "message_tail_max_tokens_after": None,
+        "custom_trainer_token_suffix_rows": None,
+        "custom_trainer_token_suffix_padded_rows": None,
+        "passthrough_chat_template": None,
         "validation": {"ok": True, "rows": 1, "rows_with_tool_calls": 1},
     }
 
@@ -1067,6 +1092,11 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
 
     assert result.exit_code == 0, result.output
     argv = captured["argv"]
+    assert "--tokenizer.chat_template" in argv
+    template_idx = argv.index("--tokenizer.chat_template")
+    template_path = Path(argv[template_idx + 1])
+    assert template_path.name == "benchflow_passthrough_chat_template.jinja"
+    assert template_path.read_text(encoding="utf-8").strip()
     assert argv[-22:] == [
         "--max_steps",
         "37",
@@ -1079,13 +1109,13 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "--data.pack_function",
         "stack",
         "--data.loss_mask.system",
-        "true",
+        "false",
         "--data.loss_mask.user",
-        "true",
+        "false",
         "--data.loss_mask.assistant",
         "true",
         "--data.loss_mask.tool",
-        "true",
+        "false",
         "--model.attn",
         "sdpa",
         "--renderer",
@@ -1096,7 +1126,16 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
     staged_row = json.loads((staged_dir / "train.jsonl").read_text())
     assert "tool_defs" not in staged_row
     assert "tools" not in staged_row
-    assert staged_row["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "chat_template_kwargs" not in staged_row
+    assert [message["role"] for message in staged_row["messages"]] == [
+        "assistant",
+        "user",
+    ]
+    assert staged_row["benchflow_custom_trainer_token_suffix"] == {
+        "original_token_count": 12,
+        "pad_token_count": 116,
+        "staged_token_count": 12,
+    }
 
     manifest = json.loads((work_dir / "train-run.json").read_text())
     assert manifest["extra"]["prime_rl_sft_compat_profile"]["name"] == (
@@ -1108,12 +1147,12 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
         "sync_scheduler_to_max_steps": True,
         "sync_ckpt_to_max_steps": True,
         "pack_function": "stack",
-        "loss_mask": "all",
+        "loss_mask": "assistant",
         "model_attn": "sdpa",
         "renderer_mode": "none",
         "tool_defs_mode": "omit",
-        "chat_template_kwargs": {"enable_thinking": False},
-        "message_tail_truncation": "keep-first-user",
+        "chat_template_kwargs": {},
+        "message_tail_truncation": "custom-trainer-token-suffix",
     }
     assert (
         manifest["extra"]["prime_rl_sft_exposure_plan"]["effective_train_examples"]
@@ -1130,15 +1169,28 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
     ]
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_mode"] == "omit"
     assert manifest["extra"]["prime_rl_sft_dataset"]["tool_defs_removed_rows"] == 1
-    assert manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs"] == {
-        "enable_thinking": False
-    }
-    assert manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs_rows"] == 1
+    assert manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs"] is None
+    assert (
+        manifest["extra"]["prime_rl_sft_dataset"]["chat_template_kwargs_rows"] is None
+    )
     assert manifest["extra"]["prime_rl_sft_dataset"]["message_tail_truncation"] == (
-        "keep-first-user"
+        "custom-trainer-token-suffix"
     )
     assert manifest["extra"]["prime_rl_sft_dataset"]["message_tail_truncated_rows"] == 0
     assert manifest["extra"]["prime_rl_sft_dataset"]["message_tail_max_area"] == 128
+    assert (
+        manifest["extra"]["prime_rl_sft_dataset"]["custom_trainer_token_suffix_rows"]
+        == 1
+    )
+    assert (
+        manifest["extra"]["prime_rl_sft_dataset"][
+            "custom_trainer_token_suffix_padded_rows"
+        ]
+        == 1
+    )
+    assert manifest["extra"]["prime_rl_sft_dataset"][
+        "passthrough_chat_template"
+    ] == str(template_path)
 
 
 def test_train_run_sft_prime_rl_custom_trainer_compatibility_mode(
