@@ -1,159 +1,135 @@
-"""Seed ONE shared sandbox + ONE shared service, then run the native floor.
+"""Seed ONE shared sandbox + ONE IN-SANDBOX service, then run the native floor.
 
-The orchestrator (:func:`run_concurrent_floor`) is pure over an already-started
-sandbox + service URL. This module is the runnable glue that produces them from an
-``agents.yaml`` and tears them down — the proven docker + host-subprocess-service
-path (one shared sandbox for all seats, the service reached over the docker
-bridge). In-sandbox / daytona service bootstrap is deferred (see the PR notes).
+The casino (and any benchmark) service runs **inside** the rollout's own sandbox,
+declared by an ``environment.toml`` ``[[environment.services]]`` manifest and
+started by :class:`ManifestEnvironment` (``nohup`` over ``sandbox.exec``,
+health-gated on in-sandbox ``curl localhost:<port>/health``) — NOT a host
+subprocess, never reached over a docker bridge. Agents share the sandbox's network
+namespace, so they reach the service on ``localhost``. This is the env-0/ClawsBench
+contract; the runner is just the caller that seeds the env and hands the
+already-started ``(sandbox, service_url)`` to :func:`run_concurrent_floor`.
 """
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
-import os
-import signal
-import socket
-import subprocess
 from pathlib import Path
+from typing import Any
 
-import httpx
-
-from benchflow.arena.agents_manifest import AgentsManifest
-from benchflow.arena.concurrent_floor import run_concurrent_floor
+from benchflow.arena.concurrent_floor import FloorConfig, run_concurrent_floor
+from benchflow.arena.roster import Roster
 
 __all__ = ["bootstrap_shared_env", "run_native_floor"]
 
 
-def _free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
-def _kill_service_group(proc: subprocess.Popen, sig: int) -> None:
-    """Signal the service's whole process group, not just the launcher.
-
-    The host service (e.g. ``uv run …`` → uvicorn) spawns children in its own
-    session; signalling only ``proc`` leaves the uvicorn workers running. We start
-    it with ``start_new_session=True`` so it leads a process group we can reap."""
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(os.getpgid(proc.pid), sig)
-
-
-async def _start_host_service(manifest: AgentsManifest, port: int) -> subprocess.Popen:
-    svc = manifest.services
-    assert svc.command is not None
-    cmd = svc.command.format(port=port).split()
-    proc = subprocess.Popen(
-        cmd,
-        cwd=os.path.expanduser(svc.cwd) if svc.cwd else None,
-        env={**os.environ, **svc.env, "PORT": str(port)},
-        start_new_session=True,  # own process group → teardown reaps children
-    )
-    for _ in range(200):
-        try:
-            r = httpx.get(f"http://127.0.0.1:{port}{svc.health}", timeout=2)
-            if r.status_code == 200:
-                return proc
-        except httpx.HTTPError:
-            pass
-        await asyncio.sleep(0.2)
-    _kill_service_group(proc, signal.SIGKILL)
-    with contextlib.suppress(Exception):
-        proc.wait(timeout=5)
-    raise SystemExit(f"service never became healthy on :{port}")
-
-
-async def bootstrap_shared_env(manifest: AgentsManifest, *, environment: str = "docker"):
-    """Return ``(sandbox, service_url, teardown)`` — ONE shared sandbox + service."""
-    from benchflow.providers.litellm_runtime import _docker_host_address
+def _make_sandbox(image: str, manifest_dir: Path, environment: str) -> Any:
+    """A ONE shared sandbox started from the manifest's prebuilt image."""
     from benchflow.sandbox.docker import DockerSandbox
     from benchflow.task.config import SandboxConfig
 
-    if not manifest.sandbox.image_dir:
-        raise SystemExit("agents.yaml needs `sandbox.image_dir` (the shared image)")
-
-    proc: subprocess.Popen | None = None
-    if manifest.services.url:  # external service → use as-is
-        service_url = manifest.services.url
-    elif manifest.services.command:  # host subprocess, reached over the bridge
-        port = manifest.services.port or _free_port()
-        proc = await _start_host_service(manifest, port)
-        service_url = f"http://{_docker_host_address()}:{port}"
-    else:
-        raise SystemExit("agents.yaml needs services.url or services.command")
-
-    sandbox = DockerSandbox(
-        environment_dir=manifest.resolve_path(manifest.sandbox.image_dir),
-        environment_name=manifest.sandbox.name,
+    return DockerSandbox(
+        environment_dir=manifest_dir,
+        environment_name="native-floor",
         session_id="native-floor",
         rollout_paths=None,
-        task_env_config=SandboxConfig(allow_internet=True),
+        task_env_config=SandboxConfig(docker_image=image, allow_internet=True),
     )
-    await sandbox.start(force_build=False)
+
+
+async def bootstrap_shared_env(
+    environment_manifest: str | Path,
+    *,
+    environment: str = "docker",
+    game: str | None = None,
+    service_env: dict[str, str] | None = None,
+    _sandbox: Any | None = None,
+    _env: Any | None = None,
+):
+    """Return ``(sandbox, service_url, teardown)`` — ONE shared sandbox with the
+    manifest's service started IN-SANDBOX on ``localhost:<port>``.
+
+    ``_sandbox``/``_env`` are injection seams for unit tests (no docker needed).
+    ``game`` is the ``task_selection`` value (e.g. the casino game id).
+    """
+    from benchflow.environment.manifest import load_manifest, resolve_manifest_image
+    from benchflow.environment.manifest_env import ManifestEnvironment
+
+    manifest = load_manifest(environment_manifest)
+    sandbox = _sandbox
+    if sandbox is None:
+        image = resolve_manifest_image(manifest)
+        if not image:
+            raise SystemExit(
+                f"{environment_manifest}: no runnable `image` in the manifest "
+                "(set [environment].image to the prebuilt base)."
+            )
+        sandbox = _make_sandbox(image, Path(environment_manifest).resolve().parent, environment)
+        await sandbox.start(force_build=False)
+
+    # Inject the floor's service env (e.g. CASINO_MULTIPLAYER=1) before provision so
+    # the in-sandbox service starts in the right mode.
+    for key, value in (service_env or {}).items():
+        with contextlib.suppress(Exception):
+            await sandbox.exec(f"export {key}={value}", timeout_sec=10)
+
+    env = _env or ManifestEnvironment(manifest, sandbox=sandbox)
+    await env.provision({"task_id": game})
+    await env.readiness()
+
+    port = manifest.services[0].port if manifest.services else 9001
+    service_url = f"http://localhost:{port}"
 
     async def teardown() -> None:
         with contextlib.suppress(Exception):
+            await env.teardown()
+        with contextlib.suppress(Exception):
             await sandbox.stop(delete=True)
-        if proc is not None:
-            _kill_service_group(proc, signal.SIGTERM)
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(timeout=10)
-            # sweep any worker that outlived the leader, then reap the leader
-            _kill_service_group(proc, signal.SIGKILL)
-            with contextlib.suppress(Exception):
-                proc.wait(timeout=5)
 
     return sandbox, service_url, teardown
 
 
-async def run_native_floor(manifest: AgentsManifest, *, environment: str = "docker") -> dict:
-    """Bootstrap the shared env, run every seat concurrently, then tear down."""
-    sandbox, service_url, teardown = await bootstrap_shared_env(
-        manifest, environment=environment
-    )
-    http = httpx.AsyncClient()
-    try:
-        summary = await run_concurrent_floor(
-            manifest, sandbox=sandbox, service_url=service_url,
-            environment=environment, http=http,
-        )
-        await _attach_reward(manifest, summary, service_url, http)
-        await _snapshot_events(manifest, service_url, http)
-        return summary
-    finally:
-        await http.aclose()
-        await teardown()
+async def _read_service_json(sandbox: Any, service_url: str, path: str) -> Any:
+    """GET a service endpoint FROM INSIDE the sandbox (the service is on the
+    sandbox's localhost, unreachable from the host orchestrator)."""
+    res = await sandbox.exec(f"curl -sf {service_url}{path}", timeout_sec=15)
+    out = getattr(res, "stdout", res)
+    return json.loads(out) if out and str(out).strip() else None
 
 
-async def _attach_reward(manifest, summary, service_url, http) -> None:
-    """Opt-in: fetch the shared service's final standings (before teardown) and
-    write a per-seat reward vector into floor.json."""
-    path = manifest.services.standings_path
+async def _attach_reward(sandbox: Any, summary: dict, service_url: str, cfg: FloorConfig) -> None:
+    """Opt-in: fetch final standings IN-SANDBOX and write a per-seat reward vector."""
+    path = getattr(cfg, "standings_path", None)
     if not path:
         return
     with contextlib.suppress(Exception):
         from benchflow.arena.reward import SharedEnvReward
 
-        standings = (await http.get(f"{service_url}{path}", timeout=10)).json()
+        standings = await _read_service_json(sandbox, service_url, path)
         if isinstance(standings, dict) and standings:
             summary["standings"] = standings
             summary["reward"] = SharedEnvReward().score(standings)
-            (Path(manifest.out) / "floor.json").write_text(json.dumps(summary, indent=2))
+            (Path(cfg.out) / "floor.json").write_text(json.dumps(summary, indent=2))
 
 
-async def _snapshot_events(manifest, service_url, http) -> None:
-    """Opt-in: snapshot the shared service's event log to events.jsonl (before
-    teardown) so the town viewer can replay the run's animated board."""
-    path = manifest.services.events_path
-    if not path:
-        return
-    with contextlib.suppress(Exception):
-        data = (await http.get(f"{service_url}{path}", timeout=10)).json()
-        jsonl = data.get("jsonl") if isinstance(data, dict) else None
-        if jsonl:
-            (Path(manifest.out) / "events.jsonl").write_text(jsonl)
+async def run_native_floor(
+    roster: Roster,
+    *,
+    environment_manifest: str | Path,
+    config: FloorConfig,
+    game: str | None = None,
+    service_env: dict[str, str] | None = None,
+) -> dict:
+    """Bootstrap the in-sandbox shared env, run every seat concurrently, tear down."""
+    sandbox, service_url, teardown = await bootstrap_shared_env(
+        environment_manifest, environment=config.environment, game=game,
+        service_env=service_env,
+    )
+    try:
+        summary = await run_concurrent_floor(
+            roster, sandbox=sandbox, service_url=service_url, config=config,
+        )
+        await _attach_reward(sandbox, summary, service_url, config)
+        return summary
+    finally:
+        await teardown()

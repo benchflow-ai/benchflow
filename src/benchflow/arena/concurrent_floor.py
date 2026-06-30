@@ -62,6 +62,8 @@ class FloorConfig:
     idle_timeout_s: int = 300
     url_env: str | None = None
     seat_env: str | None = None
+    standings_path: str | None = None  # in-sandbox path → {seat: score} for reward
+    events_path: str | None = None  # in-sandbox path → service event log
     environment: str = "docker"
 
 

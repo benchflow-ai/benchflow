@@ -274,6 +274,21 @@ def eval_run(
         typer.Option("--agent", help="Agent name"),
     ] = None,
     model: ModelOption = None,
+    agents: Annotated[
+        Path | None,
+        typer.Option(
+            "--agents",
+            help=(
+                "Roster file for a CONCURRENT multi-agent floor — the plural of "
+                "--agent (mutually exclusive with it). N seats share ONE task + its "
+                "ONE in-sandbox service; per-seat acp + raw trajectories."
+            ),
+        ),
+    ] = None,
+    drive: Annotated[
+        str,
+        typer.Option("--drive", help="Multi-agent floor drive: auto-loop | service-rounds."),
+    ] = "auto-loop",
     reasoning_effort: Annotated[
         str | None,
         typer.Option(
@@ -497,6 +512,28 @@ def eval_run(
     Sandbox: docker, daytona, or modal.
     """
     _apply_dotenv_to_process_env()
+
+    # Multi-agent floor: --agents is the plural of --agent. N seats share the SAME
+    # task + its ONE in-sandbox service concurrently (per-seat acp + raw traj).
+    if agents is not None:
+        from benchflow.cli.arena import run_floor_from_cli
+
+        if agent is not None:
+            print_error("--agents (multi-agent floor) is mutually exclusive with --agent.")
+            raise typer.Exit(1)
+        if environment_manifest is None:
+            print_error("--agents requires --environment-manifest (the in-sandbox service).")
+            raise typer.Exit(1)
+        run_floor_from_cli(
+            agents=agents,
+            environment_manifest=environment_manifest,
+            out=Path(jobs_dir or "out/native-floor"),
+            game=(tasks_dir.name if tasks_dir is not None else None),
+            sandbox=(environment or "docker"),
+            drive=drive,
+            prompt=("\n".join(prompt) if prompt else None),
+        )
+        return
 
     request = EvalCreateRequest(
         config_file=config_file,

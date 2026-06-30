@@ -1,4 +1,4 @@
-"""`benchflow arena run` is registered and wired to the manifest runner."""
+"""Multi-agent floor is the standard `bench eval run --agents` (plural of --agent)."""
 
 from __future__ import annotations
 
@@ -11,26 +11,36 @@ from benchflow.cli.main import app
 runner = CliRunner()
 
 
-def test_arena_group_registered():
-    r = runner.invoke(app, ["arena", "--help"])
-    assert r.exit_code == 0
-    assert "run" in r.output
-
-
-def test_arena_run_help_lists_agents_option():
-    r = runner.invoke(app, ["arena", "run", "--help"])
-    assert r.exit_code == 0
-    assert "--agents" in r.output
-
-
-def test_arena_run_bootstrap_error_exits_nonzero(tmp_path, monkeypatch):
-    # A manifest with no service + no image_dir → bootstrap fails closed (exit 1),
-    # without touching docker.
-    p = tmp_path / "agents.yaml"
+def _roster(tmp_path):
+    p = tmp_path / "roster.yaml"
     p.write_text(textwrap.dedent("""
-        prompt: play
         agents:
           - { name: codex, agent: codex-acp }
     """))
-    r = runner.invoke(app, ["arena", "run", "--agents", str(p)])
+    return p
+
+
+def test_eval_run_exposes_agents_and_drive():
+    r = runner.invoke(app, ["eval", "run", "--help"])
+    assert r.exit_code == 0
+    assert "--agents" in r.output and "--drive" in r.output
+
+
+def test_agents_requires_environment_manifest(tmp_path):
+    # --agents without --environment-manifest fails closed (no docker touched).
+    r = runner.invoke(app, ["eval", "run", "--agents", str(_roster(tmp_path))])
     assert r.exit_code == 1
+
+
+def test_agents_mutually_exclusive_with_agent(tmp_path):
+    r = runner.invoke(app, [
+        "eval", "run", "--agents", str(_roster(tmp_path)),
+        "--agent", "codex-acp", "--environment-manifest", "x.toml",
+    ])
+    assert r.exit_code == 1
+
+
+def test_arena_run_is_deprecated_alias(tmp_path):
+    # The old `arena run` still works (hidden alias) and requires the manifest.
+    r = runner.invoke(app, ["arena", "run", "--agents", str(_roster(tmp_path))])
+    assert r.exit_code != 0  # missing required --environment-manifest
