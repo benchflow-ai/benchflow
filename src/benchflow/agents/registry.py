@@ -1072,11 +1072,25 @@ def resolve_agent(spec: str) -> AgentConfig:
     if name not in AGENTS:
         from difflib import get_close_matches
 
+        # Breadcrumb: if agent plugin packages failed to load at import time
+        # (see FAILED_AGENT_PLUGINS / _load_agent_plugin_packages), the missing
+        # name is very likely one of theirs — connect the two events here, at
+        # the point the user actually sees a failure.
+        plugin_hint = ""
+        if FAILED_AGENT_PLUGINS:
+            failed = ", ".join(sorted(FAILED_AGENT_PLUGINS))
+            plugin_hint = (
+                f" Note: agent plugin(s) failed to load at startup: {failed} "
+                "(see the startup warning for details)."
+            )
         close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
         if close:
-            raise KeyError(f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?")
+            raise KeyError(
+                f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?{plugin_hint}"
+            )
         raise KeyError(
-            f"Unknown agent: {name!r}. Available: {', '.join(sorted(AGENTS.keys()))}"
+            f"Unknown agent: {name!r}. Available: "
+            f"{', '.join(sorted(AGENTS.keys()))}{plugin_hint}"
         )
 
     config = AGENTS[name]
@@ -1104,6 +1118,20 @@ def resolve_agent_key(spec: str) -> str:
     try:
         config = resolve_agent(spec)
     except KeyError:
+        # The raw-command fallback bypasses resolve_agent's error entirely (the
+        # spec is later exec'd verbatim in the sandbox), so surface the failed-
+        # plugin breadcrumb HERE too — otherwise a plugin load failure manifests
+        # only as a deep, minutes-later "command not found" in the rollout.
+        if FAILED_AGENT_PLUGINS:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Agent spec %r is not a registered agent and will be treated as "
+                "a raw command; note that agent plugin(s) failed to load at "
+                "startup: %s",
+                spec,
+                ", ".join(sorted(FAILED_AGENT_PLUGINS)),
+            )
         return spec
     if config.name not in AGENTS:
         AGENTS[config.name] = config
@@ -1216,31 +1244,52 @@ _register_env_manifest_agents()
 
 
 # --- Agent plugin packages (entry-point autoload) ------------------------------
-# Out-of-core agent packages (benchflow-ai/agents: omnigent, mimo-acp, the
-# ai-sdk family, acp-registry, ...) register their agents either as an import
-# side effect or via a zero-arg ``register()``. Without discovery,
-# `bench eval run --agent omnigent-pi` only works if something in the process
-# happened to import/call them first — in practice a hand-planted
-# sitecustomize/.pth hack. Standard plugin pattern instead: any installed
-# distribution may declare
+# Out-of-core agent packages (e.g. the benchflow-ai/agents packages) register
+# their agents either as an import side effect or via a zero-arg ``register()``.
+# Without discovery, `bench eval run --agent omnigent-pi` only works if
+# something in the process happened to import/call them first — in practice a
+# hand-planted sitecustomize/.pth hack. Standard plugin pattern instead: any
+# installed distribution may declare
 #
 #     [project.entry-points."benchflow.agents"]
-#     omnigent = "omnigent"                          # module: import registers
-#     ai-sdk-acp = "ai_sdk_acp.register:register"    # callable: it is invoked
+#     my-agents = "my_agents"                          # module: import registers
+#     # ...or:  my-agents = "my_agents.register:register"  (callable: invoked)
 #
 # and it is loaded here (after the core + manifest registries are built, so
-# `register_agent` overwrite-by-name semantics apply). A module-style value
-# registers by import; a callable-style value is additionally invoked with no
-# arguments. `uv pip install benchflow <agent-pkg>` (or `uv add`) is then
-# sufficient for `--agent <name>` to resolve. Guarded per-plugin: a broken
-# plugin logs a warning, never breaks the CLI.
+# `register_agent` overwrite-by-name semantics apply — though a plugin may still
+# choose not to overwrite, e.g. acp-registry skips names built-ins already own).
+# A module-style value registers by import; a callable-style value is
+# additionally invoked with no arguments. Installing the plugin distribution
+# alongside benchflow (PyPI, git-subdirectory URL, or path) is then sufficient
+# for `--agent <registered-name>` to resolve — note the DIST name, entry-point
+# name, and registered AGENT name may all differ (installing dist `mimo-acp`
+# registers agent `mimo`).
+#
+# Failure handling: each plugin is guarded (a broken plugin logs a warning with
+# traceback and is skipped — siblings still load, the CLI never crashes), and a
+# failed metadata scan disables discovery with a warning. Failures are recorded
+# in FAILED_AGENT_PLUGINS so the eventual "Unknown agent" / raw-command-fallback
+# paths can point back at the real cause.
+
+# entry-point name -> "ExcType: message" for plugins that failed to load; the
+# sentinel key "<entry-point-scan>" means discovery itself failed.
+FAILED_AGENT_PLUGINS: dict[str, str] = {}
+
+
 def _load_agent_plugin_packages() -> None:
     import logging
     from importlib.metadata import entry_points
 
     try:
         eps = entry_points(group="benchflow.agents")
-    except Exception:  # pragma: no cover - metadata backend quirks
+    except Exception as exc:  # pragma: no cover - metadata backend quirks
+        FAILED_AGENT_PLUGINS["<entry-point-scan>"] = f"{type(exc).__name__}: {exc}"
+        logging.getLogger(__name__).warning(
+            "benchflow.agents entry-point scan failed; ALL agent plugins are "
+            "disabled: %s",
+            exc,
+            exc_info=True,
+        )
         return
     for ep in eps:
         try:
@@ -1248,11 +1297,13 @@ def _load_agent_plugin_packages() -> None:
             if callable(loaded):
                 loaded()
         except Exception as exc:
+            FAILED_AGENT_PLUGINS[ep.name] = f"{type(exc).__name__}: {exc}"
             logging.getLogger(__name__).warning(
-                "benchflow.agents plugin %r failed to load (agents from it will "
-                "be unavailable): %s",
+                "benchflow.agents plugin %r failed to load (some or all of its "
+                "agents may be unavailable or partially registered): %s",
                 ep.name,
                 exc,
+                exc_info=True,
             )
 
 
