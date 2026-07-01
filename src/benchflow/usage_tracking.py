@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 UsageTrackingMode = Literal["auto", "required", "off"]
+UsageSource = Literal["provider_response", "agent_native_acp", "unavailable"]
 
 USAGE_TRACKING_ENV = "BENCHFLOW_USAGE_TRACKING"
 USAGE_SOURCE_PROVIDER_RESPONSE = "provider_response"
@@ -17,6 +18,11 @@ TRUSTED_USAGE_SOURCES: frozenset[str] = frozenset(
 )
 
 _MODES: set[str] = {"auto", "required", "off"}
+_USAGE_SOURCES: set[str] = {
+    USAGE_SOURCE_PROVIDER_RESPONSE,
+    USAGE_SOURCE_AGENT_NATIVE_ACP,
+    USAGE_SOURCE_UNAVAILABLE,
+}
 _LEGACY_USAGE_PROXY_KEYS: frozenset[str] = frozenset(
     {
         "usage_proxy",
@@ -34,6 +40,13 @@ def normalize_usage_tracking_mode(value: str) -> UsageTrackingMode:
         expected = ", ".join(sorted(_MODES))
         raise ValueError(f"usage_tracking must be one of: {expected}")
     return cast(UsageTrackingMode, mode)
+
+
+def normalize_usage_source(value: str) -> UsageSource:
+    if value not in _USAGE_SOURCES:
+        expected = ", ".join(sorted(_USAGE_SOURCES))
+        raise ValueError(f"usage_source must be one of: {expected}")
+    return cast(UsageSource, value)
 
 
 def _optional_mode(value: Any) -> UsageTrackingMode | None:

@@ -20,7 +20,7 @@ from benchflow._utils.scoring import (
     pass_rate_excl_errors,
 )
 from benchflow.trajectories.metrics import result_skill_invocations
-from benchflow.usage_tracking import is_trusted_usage_source
+from benchflow.usage_tracking import UsageSource, is_trusted_usage_source
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class TaskMetrics:
     cache_creation_tokens: int | None = None
     total_tokens: int | None = None
     cost_usd: float | None = None
-    usage_source: str = "unavailable"
+    usage_source: UsageSource = "unavailable"
     memory_score: float | None = None
 
     @property

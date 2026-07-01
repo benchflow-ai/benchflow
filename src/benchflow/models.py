@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
+from benchflow.usage_tracking import UsageSource
+
 if TYPE_CHECKING:
     from benchflow.rewards.events import RewardEvent
 
@@ -138,7 +140,7 @@ class RolloutResult:
         n_cache_creation_tokens: int | None = None,
         total_tokens: int | None = None,
         cost_usd: float | None = None,
-        usage_source: str = "unavailable",
+        usage_source: UsageSource = "unavailable",
         price_source: str | None = None,
         usage_details: dict[str, Any] | None = None,
         error: str | None = None,
