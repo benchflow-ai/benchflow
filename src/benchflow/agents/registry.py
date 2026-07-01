@@ -1216,20 +1216,24 @@ _register_env_manifest_agents()
 
 
 # --- Agent plugin packages (entry-point autoload) ------------------------------
-# Out-of-core agent packages (benchflow-ai/agents: omnigent, mimo-acp,
-# mini-swe-acp, ...) register their agents as an import side effect. Without
-# discovery, `bench eval run --agent omnigent-pi` only works if something in the
-# process happened to `import omnigent` first — in practice a hand-planted
+# Out-of-core agent packages (benchflow-ai/agents: omnigent, mimo-acp, the
+# ai-sdk family, acp-registry, ...) register their agents either as an import
+# side effect or via a zero-arg ``register()``. Without discovery,
+# `bench eval run --agent omnigent-pi` only works if something in the process
+# happened to import/call them first — in practice a hand-planted
 # sitecustomize/.pth hack. Standard plugin pattern instead: any installed
 # distribution may declare
 #
 #     [project.entry-points."benchflow.agents"]
-#     omnigent = "omnigent"
+#     omnigent = "omnigent"                          # module: import registers
+#     ai-sdk-acp = "ai_sdk_acp.register:register"    # callable: it is invoked
 #
-# and its module is imported here (after the core + manifest registries are
-# built, so `register_agent` overwrite-by-name semantics apply). `pip install
-# benchflow <agent-pkg>` is then sufficient for `--agent <name>` to resolve.
-# Guarded per-plugin: a broken plugin logs a warning, never breaks the CLI.
+# and it is loaded here (after the core + manifest registries are built, so
+# `register_agent` overwrite-by-name semantics apply). A module-style value
+# registers by import; a callable-style value is additionally invoked with no
+# arguments. `uv pip install benchflow <agent-pkg>` (or `uv add`) is then
+# sufficient for `--agent <name>` to resolve. Guarded per-plugin: a broken
+# plugin logs a warning, never breaks the CLI.
 def _load_agent_plugin_packages() -> None:
     import logging
     from importlib.metadata import entry_points
@@ -1240,7 +1244,9 @@ def _load_agent_plugin_packages() -> None:
         return
     for ep in eps:
         try:
-            ep.load()
+            loaded = ep.load()
+            if callable(loaded):
+                loaded()
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "benchflow.agents plugin %r failed to load (agents from it will "
