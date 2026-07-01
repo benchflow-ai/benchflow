@@ -1074,6 +1074,50 @@ class _BenchFlowPretokenizedDataLoader(importlib.machinery.SourceFileLoader):
             return original_process(self, example)
 
         dataset_cls._process = benchflow_process
+        stateful_dataloader_cls = getattr(module, "StatefulDataLoader", None)
+        torch_mod = getattr(module, "torch", None)
+        if (
+            getattr(module, "setup_dataloader", None) is None
+            or stateful_dataloader_cls is None
+        ):
+            raise RuntimeError(
+                "BenchFlow Prime-RL pretokenized data shim could not find "
+                "setup_dataloader or StatefulDataLoader."
+            )
+
+        def benchflow_row_collate(samples):
+            if torch_mod is None:
+                raise RuntimeError(
+                    "BenchFlow row-wise pretokenized collate requires torch in "
+                    "prime_rl.trainer.sft.data."
+                )
+            if len(samples) != 1:
+                raise ValueError(
+                    "BenchFlow row-wise pretokenized dataloader expected one "
+                    f"sample per micro-batch, got {len(samples)}"
+                )
+            sample = samples[0]
+            return {
+                "input_ids": torch_mod.tensor(
+                    [sample["input_ids"]], dtype=torch_mod.long, device="cuda"
+                ),
+                "position_ids": torch_mod.tensor(
+                    [sample["position_ids"]], dtype=torch_mod.long, device="cuda"
+                ),
+                "target_ids": torch_mod.tensor(
+                    [sample["target_ids"]], dtype=torch_mod.long, device="cuda"
+                ),
+                "loss_mask": torch_mod.tensor(
+                    [sample["loss_mask"]], dtype=torch_mod.bool, device="cuda"
+                ),
+            }
+
+        def benchflow_setup_dataloader(dataset, config):
+            return stateful_dataloader_cls(
+                dataset, batch_size=1, collate_fn=benchflow_row_collate
+            )
+
+        module.setup_dataloader = benchflow_setup_dataloader
         sys.stderr.write("BenchFlow Prime-RL pretokenized SFT data shim enabled\\n")
 
 
@@ -1139,6 +1183,7 @@ def _write_prime_rl_sft_compat_shim(
             [
                 "Prime-RL SFTDataset must be source-backed",
                 "pretokenized rows must carry input_ids/target_ids/loss_mask/position_ids",
+                "pretokenized rows bypass Prime-RL stack/cat packing and train one original row per micro-batch",
             ]
         )
     if stub_flash_attn:

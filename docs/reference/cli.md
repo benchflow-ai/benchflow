@@ -415,11 +415,12 @@ not written to the manifest; only the names of recognized credential env vars
 that were present are recorded.
 
 For the Mobile300 PR828 reproduction, use `--compat-profile
-env0-mobile300-pr828`. That profile stages the historical custom-trainer token
-suffix, preserves row boundaries with `stack`, and enables `sample_mean` loss
-normalization through a run-local `sitecustomize.py` shim. The shim leaves
-Prime-RL package files untouched but fails closed if the Prime-RL SFT train loop
-source no longer matches the expected token-mean block.
+env0-mobile300-pr828`. That profile stages the historical custom-trainer
+pretokenized shifted-label rows, bypasses Prime-RL `stack`/`cat` packing for
+those staged rows so training sees one original trajectory per micro-batch, and
+enables `sample_mean` loss normalization through a run-local `sitecustomize.py`
+shim. The shim leaves Prime-RL package files untouched but fails closed if the
+Prime-RL SFT train loop or data module no longer exposes the expected hooks.
 
 | Flag | Default | Description |
 |------|---------|-------------|
