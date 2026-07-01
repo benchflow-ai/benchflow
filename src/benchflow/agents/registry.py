@@ -419,12 +419,26 @@ class AgentConfig:
     disallow_web_tools_launch_suffix: str = ""
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
+    vendor: str = ""
+    # The underlying vendor agent id ("pi", "codex", "mimo", ...). One vendor
+    # agent may be hosted via several adaptation paths (native ACP, the Vercel
+    # AI-SDK harness, the Omnigent meta-harness, ...) — ``vendor`` names WHAT
+    # runs, ``path`` names HOW it is hosted.
+    path: str = ""
+    # The adaptation path hosting this agent ("acp" | "ai-sdk" | "omnigent").
+    # Together with ``vendor`` this forms the qualified spec "<path>:<vendor>"
+    # (e.g. "omnigent:pi", "acp:mimo") accepted by resolve_agent. A bare vendor
+    # name resolves iff exactly one agent carries it; otherwise the error lists
+    # the qualified choices. Empty metadata = resolvable by exact name/alias
+    # only (fully backwards compatible).
 
 
 # Agent registry — all supported agents
 AGENTS: dict[str, AgentConfig] = {
     "claude-agent-acp": AgentConfig(
         name="claude-agent-acp",
+        vendor="claude",
+        path="acp",
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
@@ -467,6 +481,8 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
+        vendor="pi",
+        path="acp",
         description="Pi agent via ACP",
         skill_paths=["$HOME/.pi/agent/skills", "$HOME/.agents/skills"],
         install_cmd=(
@@ -491,6 +507,8 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "openclaw": AgentConfig(
         name="openclaw",
+        vendor="openclaw",
+        path="acp",
         description="OpenClaw agent via ACP shim — model set at runtime via --model",
         skill_paths=["$HOME/.claude/skills", "$WORKSPACE/skills"],
         install_cmd=(
@@ -511,6 +529,8 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "codex-acp": AgentConfig(
         name="codex-acp",
+        vendor="codex",
+        path="acp",
         description="OpenAI Codex agent via ACP",
         skill_paths=["$HOME/.agents/skills"],
         # Pinned for reproducibility: an unpinned @agentclientprotocol install
@@ -559,6 +579,8 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "gemini": AgentConfig(
         name="gemini",
+        vendor="gemini",
+        path="acp",
         description="Google Gemini CLI via ACP",
         skill_paths=["$HOME/.gemini/skills"],
         install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
@@ -607,6 +629,8 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "opencode": AgentConfig(
         name="opencode",
+        vendor="opencode",
+        path="acp",
         description="OpenCode via ACP — open-source coding agent (TypeScript)",
         skill_paths=["$HOME/.opencode/skills"],
         home_dirs=[".opencode"],
@@ -635,6 +659,8 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "mimo": AgentConfig(
         name="mimo",
+        vendor="mimo",
+        path="acp",
         description="MiMo Code via ACP — Xiaomi's OpenCode fork (TypeScript)",
         skill_paths=["$HOME/.mimocode/skills"],
         home_dirs=[".mimocode", ".config/mimocode"],
@@ -687,6 +713,8 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "harvey-lab-harness": AgentConfig(
         name="harvey-lab-harness",
+        vendor="harvey-lab",
+        path="acp",
         description="Harvey LAB harness — runs the original Harvey LAB agent loop "
         "(6 tools: bash, read, write, edit, glob, grep) via ACP shim",
         install_cmd=(
@@ -720,6 +748,8 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "deepagents": AgentConfig(
         name="deepagents",
+        vendor="deepagents",
+        path="acp",
         description="deepagents harness — runs LangChain's create_deep_agent loop "
         "(planning, sub-agents, filesystem + shell tools) via ACP shim, driving "
         "deepseek-v4-pro through the OpenAI-compatible provider",
@@ -775,6 +805,8 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "openhands": AgentConfig(
         name="openhands",
+        vendor="openhands",
+        path="acp",
         description="OpenHands agent via ACP (multi-model, Python-based)",
         skill_paths=["$HOME/.agents/skills", "$WORKSPACE/.agents/skills"],
         home_dirs=[".openhands"],
@@ -1047,13 +1079,48 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
+        vendor=config.vendor,
+        path=config.path,
     )
+
+
+def _resolve_by_vendor(name: str) -> AgentConfig | None:
+    """Resolve a path-qualified spec or bare vendor id via vendor/path metadata.
+
+    ``"<path>:<vendor>"`` (e.g. ``"omnigent:pi"``, ``"acp:mimo"``) returns the
+    unique agent hosted by that adaptation path; a bare vendor id (``"pi"``)
+    returns the agent iff exactly one carries that vendor, and raises a KeyError
+    listing the qualified choices when several paths host it. Returns ``None``
+    when the metadata matches nothing (callers fall through to the normal
+    unknown-agent error). Exact registry names and aliases are checked BEFORE
+    this, so verbatim names — including ``acpx:`` runtime keys — always win.
+    """
+    if ":" in name:
+        path_ns, _, vendor = name.partition(":")
+        if not path_ns or not vendor:
+            return None
+        matches = [
+            c for c in AGENTS.values() if c.path == path_ns and c.vendor == vendor
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    matches = [c for c in AGENTS.values() if c.vendor == name]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        choices = ", ".join(sorted(f"{c.path}:{c.vendor}" for c in matches))
+        raise KeyError(
+            f"Ambiguous agent: {name!r} is hosted via several paths — "
+            f"pick one of: {choices}"
+        )
+    return None
 
 
 def resolve_agent(spec: str) -> AgentConfig:
     """Resolve an agent spec to an AgentConfig.
 
-    Supports: bare name, alias, protocol/name, acpx/name.
+    Supports: bare name, alias, protocol/name, acpx/name, "<path>:<vendor>"
+    qualified specs (e.g. "omnigent:pi"), and bare vendor ids when unambiguous.
     Raises KeyError with suggestions for unknown agents.
     """
     protocol, name = parse_agent_spec(spec)
@@ -1070,6 +1137,16 @@ def resolve_agent(spec: str) -> AgentConfig:
         return AGENTS[name]
 
     if name not in AGENTS:
+        # Path-qualified spec "<path>:<vendor>" (e.g. "omnigent:pi", "acp:mimo")
+        # or a bare vendor id ("pi") — resolve via the vendor/path metadata.
+        # Exact names and aliases (checked above / in parse_agent_spec) always
+        # win, so this only fires for names that are not registered verbatim.
+        resolved = _resolve_by_vendor(name)
+        if resolved is not None:
+            if protocol == "acpx":
+                return _acpx_wrap(resolved)
+            return resolved
+
         from difflib import get_close_matches
 
         # Breadcrumb: if agent plugin packages failed to load at import time
@@ -1182,6 +1259,8 @@ def register_agent(
     disallow_web_tools_setup_cmd: str = "",
     disallow_web_tools_owned_paths: list[str] | None = None,
     disallow_web_tools_launch_suffix: str = "",
+    vendor: str = "",
+    path: str = "",
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -1221,6 +1300,8 @@ def register_agent(
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
+        vendor=vendor,
+        path=path,
     )
     AGENTS[name] = config
     AGENT_INSTALLERS[name] = install_cmd

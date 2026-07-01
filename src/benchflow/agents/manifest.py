@@ -70,6 +70,10 @@ _FIELD_MAP = {
     "default_model": "default_model",
     "skill_paths": "skill_paths",
     "home_dirs": "home_dirs",
+    # Identity metadata for path-qualified resolution ("<path>:<vendor>", e.g.
+    # "omnigent:pi") — plain data, so a manifest may declare it.
+    "vendor": "vendor",
+    "path": "path",
 }
 
 # AgentConfig fields the contract deliberately does NOT carry: logic/credential

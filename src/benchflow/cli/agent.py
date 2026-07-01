@@ -47,6 +47,7 @@ def register_agent(app: typer.Typer) -> None:
 
         table = Table(title="Registered Agents")
         table.add_column("Name", style="cyan")
+        table.add_column("Path:Vendor", style="magenta")
         table.add_column("Aliases", style="dim")
         table.add_column("Description")
         table.add_column("Protocol", style="green")
@@ -54,8 +55,16 @@ def register_agent(app: typer.Typer) -> None:
 
         for a in list_agents():
             aliases = ", ".join(sorted(reverse_aliases.get(a.name, [])))
+            # Qualified spec ("acp:pi", "omnigent:pi") — the same vendor agent
+            # hosted via different adaptation paths shares the Vendor part.
+            qualified = f"{a.path}:{a.vendor}" if a.path and a.vendor else ""
             table.add_row(
-                a.name, aliases, a.description, a.protocol, _format_requires(a)
+                a.name,
+                qualified,
+                aliases,
+                a.description,
+                a.protocol,
+                _format_requires(a),
             )
 
         console.print(table)
