@@ -1213,3 +1213,41 @@ from benchflow.agents.manifest import (  # noqa: E402
 )
 
 _register_env_manifest_agents()
+
+
+# --- Agent plugin packages (entry-point autoload) ------------------------------
+# Out-of-core agent packages (benchflow-ai/agents: omnigent, mimo-acp,
+# mini-swe-acp, ...) register their agents as an import side effect. Without
+# discovery, `bench eval run --agent omnigent-pi` only works if something in the
+# process happened to `import omnigent` first — in practice a hand-planted
+# sitecustomize/.pth hack. Standard plugin pattern instead: any installed
+# distribution may declare
+#
+#     [project.entry-points."benchflow.agents"]
+#     omnigent = "omnigent"
+#
+# and its module is imported here (after the core + manifest registries are
+# built, so `register_agent` overwrite-by-name semantics apply). `pip install
+# benchflow <agent-pkg>` is then sufficient for `--agent <name>` to resolve.
+# Guarded per-plugin: a broken plugin logs a warning, never breaks the CLI.
+def _load_agent_plugin_packages() -> None:
+    import logging
+    from importlib.metadata import entry_points
+
+    try:
+        eps = entry_points(group="benchflow.agents")
+    except Exception:  # pragma: no cover - metadata backend quirks
+        return
+    for ep in eps:
+        try:
+            ep.load()
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "benchflow.agents plugin %r failed to load (agents from it will "
+                "be unavailable): %s",
+                ep.name,
+                exc,
+            )
+
+
+_load_agent_plugin_packages()
