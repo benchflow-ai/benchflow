@@ -452,7 +452,7 @@ async def _poll_host_health(
     process: HostLiteLLMProcess, deadline_s: float = _HEALTH_DEADLINE_SEC
 ) -> None:
     last_error = ""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     start = loop.time()
     while loop.time() - start < deadline_s:
         if process.process.poll() is not None:

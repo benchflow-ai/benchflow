@@ -379,13 +379,13 @@ def _create_adapter(
     if model_id.startswith("gemini"):
         mod = importlib.import_module("harness.adapters.google")
         return mod.GoogleAdapter(**kwargs)
-    # Default to the OpenAI adapter for gpt/o-series AND every other model id.
-    # Under BenchFlow every provider is served through the OpenAI-compatible
-    # LiteLLM proxy (the adapter reads OPENAI_BASE_URL/OPENAI_API_KEY), so any
-    # non-anthropic/gemini id — deepseek-v4-flash, qwen, the ``benchflow-*``
-    # proxy alias, ... — speaks the OpenAI chat API. Previously this raised, so a
-    # deepseek (or any non-gpt) model ended the turn with zero LLM calls
-    # (suspected_api_error).
+    # Default to the OpenAI adapter for gpt/o-series AND every id not special-cased
+    # above. BenchFlow serves those remaining providers over the proxy's
+    # OpenAI-compatible chat surface (the adapter reads OPENAI_BASE_URL/
+    # OPENAI_API_KEY), so any non-anthropic/gemini id — deepseek-v4-flash, qwen, the
+    # ``benchflow-*`` proxy alias, ... — speaks the OpenAI chat API here. Previously
+    # this raised, so a deepseek (or any non-gpt) model ended the turn with zero LLM
+    # calls (suspected_api_error).
     mod = importlib.import_module("harness.adapters.openai")
     return mod.OpenAIAdapter(**kwargs)
 
