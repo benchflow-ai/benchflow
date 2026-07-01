@@ -40,7 +40,7 @@ class AgentSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str
+    name: str | None = None  # optional seat-label override; default = agent-model
     agent: str | None = None  # prebuilt registry name (XOR manifest)
     manifest: str | None = None  # path to a BYOA agent manifest.toml (XOR agent)
     model: str | None = None  # omit → AgentConfig.default_model
@@ -52,8 +52,9 @@ class AgentSpec(BaseModel):
     @model_validator(mode="after")
     def _exactly_one_source(self) -> AgentSpec:
         if bool(self.agent) == bool(self.manifest):
+            ident = self.name or self.agent or self.manifest
             raise ValueError(
-                f"agent {self.name!r}: set exactly one of `agent:` or `manifest:`"
+                f"agent {ident!r}: set exactly one of `agent:` or `manifest:`"
             )
         return self
 

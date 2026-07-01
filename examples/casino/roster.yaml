@@ -16,9 +16,11 @@
 #  deprecated `arena run` alias today; folding them onto `eval run` is the next step.)
 
 agents:
+  # No `name:` → the seat/player id is <agent>-<model> (e.g. codex-acp-gpt-5.5),
+  # so the floor + viewer show which agent + model each player is.
   # subscription seats (oauth) → ACP trajectory only
-  - { name: codex,  agent: codex-acp,        model: gpt-5.5,           count: 2, instructions: prompts/aggressive.md }
-  - { name: claude, agent: claude-agent-acp, model: claude-sonnet-4-6, count: 2, instructions: prompts/cautious.md }
+  - { agent: codex-acp,        model: gpt-5.5,           count: 2, instructions: prompts/aggressive.md }
+  - { agent: claude-agent-acp, model: claude-sonnet-4-6, count: 2, instructions: prompts/cautious.md }
   # proxy seat (API key → per-seat LiteLLM proxy) → raw + ACP trajectory.
   # deepagents is in the seat image; openhands would need adding to install-node-agents.sh.
-  - { name: deepseek, agent: deepagents,     model: deepseek/deepseek-v4-pro,    instructions: prompts/aggressive.md }
+  - { agent: deepagents,       model: deepseek/deepseek-v4-pro,    instructions: prompts/aggressive.md }

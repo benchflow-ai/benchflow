@@ -31,6 +31,29 @@ def test_run_level_keys_rejected_with_migration_hint(tmp_path, key):
         Roster.from_yaml(p)
 
 
+def test_seat_id_defaults_to_agent_dash_model(tmp_path):
+    # No `name:` → the player id is <agent>-<model> (provider prefix stripped),
+    # so the floor/viewer identify agent + model. count appends -0..-(n-1).
+    p = _write(
+        tmp_path,
+        """
+        agents:
+          - { agent: codex-acp, model: gpt-5.5, count: 2 }
+          - { agent: deepagents, model: deepseek/deepseek-v4-pro }
+        """,
+    )
+    ids = [s.seat_id for s in Roster.from_yaml(p).seats()]
+    assert ids == ["codex-acp-gpt-5.5-0", "codex-acp-gpt-5.5-1", "deepagents-deepseek-v4-pro"]
+
+
+def test_explicit_name_overrides_agent_model_id(tmp_path):
+    p = _write(tmp_path, """
+        agents:
+          - { name: hero, agent: codex-acp, model: gpt-5.5 }
+    """)
+    assert [s.seat_id for s in Roster.from_yaml(p).seats()] == ["hero"]
+
+
 def test_roster_is_a_pure_agents_list(tmp_path):
     p = _write(
         tmp_path,

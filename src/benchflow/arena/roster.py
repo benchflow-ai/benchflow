@@ -11,14 +11,24 @@ fans an entry into `name-0..name-(n-1)` seats.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
+from benchflow.agents.registry import AgentConfig
 from benchflow.arena.agents_manifest import AgentSpec, Seat, resolve_spec
 
 __all__ = ["Roster"]
+
+
+def _agent_model_id(cfg: AgentConfig, model: str | None) -> str:
+    """The default seat/player id: ``<agent>-<model>`` (provider prefix stripped,
+    sanitized to a safe id). Player names must identify agent + model."""
+    m = (model or cfg.default_model or "model").split("/")[-1]
+    raw = f"{cfg.name}-{m}"
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-")
 
 # Keys that USED to live in the old agents.yaml but are now standard
 # `bench eval run` flags — reject them with a migration hint, not a bare
@@ -66,15 +76,21 @@ class Roster(BaseModel):
         return self._base_dir / spec.instructions
 
     def seats(self) -> list[Seat]:
-        """Resolve + fan out every entry into runnable seats (ids must be unique)."""
+        """Resolve + fan out every entry into runnable seats (ids must be unique).
+
+        The seat id is the player name shown in the floor/viewer, so it defaults to
+        ``<agent>-<model>`` (e.g. ``codex-acp-gpt-5.5``) — set ``name:`` only to
+        override it.
+        """
         out: list[Seat] = []
         seen: set[str] = set()
         for spec in self.agents:
             cfg = resolve_spec(spec, self._base_dir)
+            base = spec.name or _agent_model_id(cfg, spec.model)
             ids = (
-                [spec.name]
+                [base]
                 if spec.count == 1
-                else [f"{spec.name}-{i}" for i in range(spec.count)]
+                else [f"{base}-{i}" for i in range(spec.count)]
             )
             for sid in ids:
                 if sid in seen:
