@@ -105,7 +105,7 @@ async function openRun(seat){
     const follow = body.scrollTop+body.clientHeight >= body.scrollHeight-48;
     body.innerHTML=t.map(x=>{
       if(x.type==='tool_call')
-        return '<div class="turn"><div class="r">casino &middot; '+esc(x.kind||'play')+'</div><div class="tool">'+esc(toolText(x))+'</div></div>';
+        return '<div class="turn"><div class="r">casino &middot; '+esc(x.title||x.kind||'play')+'</div><div class="tool">'+esc(toolText(x))+'</div></div>';
       const role=x.type==='user_message'?'table rules':x.type==='agent_message'?'says':x.type==='agent_thought'?'thinks':esc(x.type);
       return '<div class="turn"><div class="r">'+role+'</div><div class="think">'+esc(x.text||x.content||'')+'</div></div>';
     }).join('');
