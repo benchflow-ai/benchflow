@@ -394,7 +394,8 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(
             rf"(?<![A-Za-z0-9_-])({_ESCQ}authorization{_ESCQ}\s*[:=]\s*{_ESCQ})"
-            rf"(?!(?:Bearer|Token|Basic|ApiKey)\b){_SECVAL}",
+            rf"(?!(?:Bearer|Token|Basic|ApiKey)\b|[rRuUbBfF]{{1,3}}[\"'])"
+            rf"{_SECVAL}",
             re.IGNORECASE,
         ),
         r"\1***REDACTED***",
