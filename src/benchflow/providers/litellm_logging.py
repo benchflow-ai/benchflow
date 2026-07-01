@@ -114,6 +114,23 @@ def _usage_from_response(response: Any) -> Any:
     return None
 
 
+# litellm ``CallTypes`` for the OpenAI Responses API. The proxy serves it under
+# ``/v1/responses`` (routed natively by litellm 1.89), so a Responses call is
+# captured by this callback just like chat/completions + messages — it must only
+# be LABELLED with the right wire path (else a codex/Responses turn is recorded
+# as ``/v1/chat/completions``, misleading trajectory review + replay).
+_RESPONSES_CALL_TYPES = frozenset({"responses", "aresponses", "_aresponses_websocket"})
+
+
+def _request_path_for_call_type(call_type):
+    # Map a litellm call_type to the OpenAI-compatible wire path we proxied.
+    if call_type == "anthropic_messages":
+        return "/v1/messages"
+    if call_type in _RESPONSES_CALL_TYPES:
+        return "/v1/responses"
+    return "/v1/chat/completions"
+
+
 class BenchFlowLiteLLMLogger(CustomLogger):
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
@@ -156,7 +173,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             },
             "request": {
                 "method": "POST",
-                "path": "/v1/messages" if kwargs.get("call_type") == "anthropic_messages" else "/v1/chat/completions",
+                "path": _request_path_for_call_type(kwargs.get("call_type")),
                 "body": request_body,
             },
             "start_time": _iso(start_time),
