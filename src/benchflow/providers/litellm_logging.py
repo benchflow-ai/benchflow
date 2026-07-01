@@ -209,6 +209,18 @@ class BenchFlowLiteLLMLogger(CustomLogger):
     async def async_pre_call_hook(
         self, user_api_key_dict, cache, data, call_type
     ):
+        if not isinstance(data, dict):
+            return None
+
+        cleaned = data
+
+        # Chat-completions backends reject the Responses-compatible ``input``
+        # mirror when ``messages`` is already present. Copy before changing so
+        # LiteLLM callers do not observe in-place mutation.
+        if data.get("messages") is not None and data.get("input") is not None:
+            cleaned = dict(cleaned)
+            cleaned.pop("input", None)
+
         # Drop non-"function" tools before they reach a chat-only backend. A
         # responses-API client (codex) sends tools the Responses wire allows but
         # chat completions does not, e.g. a {"type": "namespace"} tool. When the
@@ -217,7 +229,7 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         # request ("unknown variant namespace, expected function"). The dropped
         # tools cannot be represented on the chat wire anyway; the function tools
         # (shell, file IO, ...) survive untouched.
-        tools = data.get("tools") if isinstance(data, dict) else None
+        tools = cleaned.get("tools")
         if isinstance(tools, list):
             kept = [
                 t
@@ -225,8 +237,12 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 if not isinstance(t, dict) or t.get("type", "function") == "function"
             ]
             if len(kept) != len(tools):
-                data["tools"] = kept
-        return data
+                if cleaned is data:
+                    cleaned = dict(data)
+                cleaned["tools"] = kept
+        if cleaned is data:
+            return None
+        return cleaned
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         record = self._base_record(kwargs, start_time, end_time)
