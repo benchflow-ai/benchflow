@@ -55,12 +55,12 @@ def test_eval_run_agents_threads_floor_flags(tmp_path, monkeypatch):
     r = runner.invoke(app, [
         "eval", "run", "--agents", str(_roster(tmp_path)),
         "--environment-manifest", "benchmarks/casinobench/environment.toml",
-        "--game", "six-deck-blackjack-s17", "--multiplayer",
+        "--game", "six-deck-blackjack-s17", "--service-env", "CASINO_MULTIPLAYER=1",
         "--url-env", "CASINO_URL", "--seat-env", "CASINOBENCH_SEAT_ID",
         "--standings-path", "/_admin/standings", "--events-path", "/_admin/events",
     ])
     assert r.exit_code == 0, r.output
-    assert captured["multiplayer"] is True
+    assert captured["service_env"] == ["CASINO_MULTIPLAYER=1"]
     assert captured["game"] == "six-deck-blackjack-s17"
     assert captured["url_env"] == "CASINO_URL"
     assert captured["seat_env"] == "CASINOBENCH_SEAT_ID"

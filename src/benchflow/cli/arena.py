@@ -31,7 +31,7 @@ def run_floor_from_cli(
     seat_env: str | None = None,
     standings_path: str | None = None,
     events_path: str | None = None,
-    multiplayer: bool = False,
+    service_env: list[str] | None = None,
     deadline_s: int = 1200,
 ) -> None:
     """Shared entry for `eval run --agents` and the `arena run` alias."""
@@ -54,9 +54,10 @@ def run_floor_from_cli(
         f"{', '.join(s.seat_id for s in seats)}"
     )
     try:
+        svc_env = dict(kv.split("=", 1) for kv in (service_env or []) if "=" in kv) or None
         summary = asyncio.run(run_native_floor(
             roster, environment_manifest=environment_manifest, config=cfg, game=game,
-            service_env={"CASINO_MULTIPLAYER": "1"} if multiplayer else None,
+            service_env=svc_env,
         ))
     except (SystemExit, RuntimeError) as exc:
         print_error(str(exc))

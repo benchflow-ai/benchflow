@@ -93,8 +93,12 @@ async def bootstrap_shared_env(
     await env.provision({"task_id": game})
     await env.readiness()
 
-    port = manifest.services[0].port if manifest.services else 9001
-    service_url = f"http://localhost:{port}"
+    if not manifest.services:
+        raise ValueError(
+            "the concurrent floor requires the manifest to declare an in-sandbox "
+            "service ([[environment.services]]); none found"
+        )
+    service_url = f"http://localhost:{manifest.services[0].port}"
 
     async def teardown() -> None:
         with contextlib.suppress(Exception):

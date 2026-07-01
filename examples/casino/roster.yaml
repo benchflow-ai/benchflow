@@ -9,11 +9,14 @@
 #     --tasks-dir            benchmarks/casinobench/tasks/blackjack \
 #     --sandbox docker --drive auto-loop \
 #     --url-env CASINO_URL --seat-env CASINOBENCH_SEAT_ID \
-#     --standings-path /_admin/standings --multiplayer \
-#     --out out/floor/blackjack
+#     --standings-path /_admin/standings --events-path /_admin/events \
+#     --service-env CASINO_MULTIPLAYER=1 \
+#     --jobs-dir out/floor/blackjack
 #
-# (the --url-env/--seat-env/--standings-path/--multiplayer flags are on the
-#  deprecated `arena run` alias today; folding them onto `eval run` is the next step.)
+# The floor flags (--url-env/--seat-env/--standings-path/--events-path/--service-env)
+# are GENERAL: --service-env KEY=VALUE (repeatable) passes benchmark-specific env to
+# the in-sandbox service — casino uses CASINO_MULTIPLAYER=1; another env-0 benchmark
+# passes its own. No casino literal lives in benchflow.
 
 agents:
   # No `name:` → the seat/player id is <agent>-<model> (e.g. codex-acp-gpt-5.5),

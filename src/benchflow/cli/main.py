@@ -315,11 +315,12 @@ def eval_run(
         typer.Option("--events-path", help="Floor: service path → event log snapshot (events.jsonl).",
                      rich_help_panel="Multi-agent floor"),
     ] = None,
-    multiplayer: Annotated[
-        bool,
-        typer.Option("--multiplayer", help="Floor: start the service in multiplayer mode (CASINO_MULTIPLAYER=1).",
+    service_env: Annotated[
+        list[str] | None,
+        typer.Option("--service-env", help="Floor: extra KEY=VALUE env for the in-sandbox "
+                     "service (repeatable), e.g. --service-env CASINO_MULTIPLAYER=1.",
                      rich_help_panel="Multi-agent floor"),
-    ] = False,
+    ] = None,
     reasoning_effort: Annotated[
         str | None,
         typer.Option(
@@ -567,7 +568,7 @@ def eval_run(
             seat_env=seat_env,
             standings_path=standings_path,
             events_path=events_path,
-            multiplayer=multiplayer,
+            service_env=service_env,
         )
         return
 
