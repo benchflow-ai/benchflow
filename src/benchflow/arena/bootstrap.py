@@ -128,6 +128,20 @@ async def _attach_reward(sandbox: Any, summary: dict, service_url: str, cfg: Flo
             (Path(cfg.out) / "floor.json").write_text(json.dumps(summary, indent=2))
 
 
+async def _snapshot_events(sandbox: Any, service_url: str, cfg: FloorConfig) -> None:
+    """Opt-in: snapshot the service event log IN-SANDBOX → events.jsonl (for the
+    town viewer's animated board). The service is on the sandbox's localhost, so
+    this reads it via sandbox.exec, not a host client."""
+    path = getattr(cfg, "events_path", None)
+    if not path:
+        return
+    with contextlib.suppress(Exception):
+        data = await _read_service_json(sandbox, service_url, path)
+        jsonl = data.get("jsonl") if isinstance(data, dict) else None
+        if jsonl:
+            (Path(cfg.out) / "events.jsonl").write_text(jsonl)
+
+
 async def run_native_floor(
     roster: Roster,
     *,
@@ -146,6 +160,7 @@ async def run_native_floor(
             roster, sandbox=sandbox, service_url=service_url, config=config,
         )
         await _attach_reward(sandbox, summary, service_url, config)
+        await _snapshot_events(sandbox, service_url, config)
         return summary
     finally:
         await teardown()
