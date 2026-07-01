@@ -376,17 +376,18 @@ def _create_adapter(
     if model_id.startswith("claude"):
         mod = importlib.import_module("harness.adapters.anthropic")
         return mod.AnthropicAdapter(**kwargs)
-    elif model_id.startswith(("gpt", "o1", "o3", "o4")):
-        mod = importlib.import_module("harness.adapters.openai")
-        return mod.OpenAIAdapter(**kwargs)
-    elif model_id.startswith("gemini"):
+    if model_id.startswith("gemini"):
         mod = importlib.import_module("harness.adapters.google")
         return mod.GoogleAdapter(**kwargs)
-    else:
-        raise ValueError(
-            f"Can't determine provider for model: {model}. "
-            "Model name should start with claude, gpt, o1/o3/o4, or gemini."
-        )
+    # Default to the OpenAI adapter for gpt/o-series AND every other model id.
+    # Under BenchFlow every provider is served through the OpenAI-compatible
+    # LiteLLM proxy (the adapter reads OPENAI_BASE_URL/OPENAI_API_KEY), so any
+    # non-anthropic/gemini id — deepseek-v4-flash, qwen, the ``benchflow-*``
+    # proxy alias, ... — speaks the OpenAI chat API. Previously this raised, so a
+    # deepseek (or any non-gpt) model ended the turn with zero LLM calls
+    # (suspected_api_error).
+    mod = importlib.import_module("harness.adapters.openai")
+    return mod.OpenAIAdapter(**kwargs)
 
 
 def _run_harvey_lab_agent(

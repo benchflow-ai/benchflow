@@ -671,46 +671,58 @@ def main():
 
         elif method == "session/set_model":
             model = params.get("modelId", "")
-            if model:
-                # The SDK strips provider prefixes before set_model and passes
-                # the original provider name via BENCHFLOW_PROVIDER_NAME env var.
-                #
-                # Openclaw natively supports google-vertex/ and anthropic/ prefixes
-                # (via the google plugin enabled at startup). Custom providers like
-                # zai/ and other custom providers need explicit registration via openclaw.json.
-                provider_name = os.environ.get("BENCHFLOW_PROVIDER_NAME", "")
+            # A provider-resolution / config-write failure here must NOT crash the
+            # shim: an unhandled exception exits rc=1, which benchflow sees as the
+            # ACP transport dying mid-set_model ("Process closed stdout (rc=1)") —
+            # the observed openclaw-on-docker failure. Catch, log the real cause,
+            # and still ACK so the run proceeds with the model config that exists.
+            try:
+                if model:
+                    # The SDK strips provider prefixes before set_model and passes
+                    # the original provider name via BENCHFLOW_PROVIDER_NAME env var.
+                    #
+                    # Openclaw natively supports google-vertex/ and anthropic/ prefixes
+                    # (via the google plugin enabled at startup). Custom providers like
+                    # zai/ and other custom providers need explicit registration via openclaw.json.
+                    provider_name = os.environ.get("BENCHFLOW_PROVIDER_NAME", "")
 
-                # Native Vertex providers — openclaw handles these via google plugin
-                if provider_name in ("google-vertex", "anthropic-vertex"):
-                    # Reconstruct the full model name openclaw expects
-                    if "/" not in model:
-                        model = f"{provider_name}/{model}"
-                # Custom providers — register in openclaw.json
-                elif provider_name:
-                    _provider_name = _find_and_setup_provider(model)
-                    if _provider_name and "/" not in model:
-                        model = f"{_provider_name}/{model}"
-                # No provider env var — resolve the bare id: registry-specific
-                # setup, then the generic BENCHFLOW_PROVIDER_* env fallback,
-                # then prefix heuristics (see _resolve_bare_model_prefix).
-                elif "/" not in model:
-                    model = f"{_resolve_bare_model_prefix(model)}/{model}"
+                    # Native Vertex providers — openclaw handles these via google plugin
+                    if provider_name in ("google-vertex", "anthropic-vertex"):
+                        # Reconstruct the full model name openclaw expects
+                        if "/" not in model:
+                            model = f"{provider_name}/{model}"
+                    # Custom providers — register in openclaw.json
+                    elif provider_name:
+                        _provider_name = _find_and_setup_provider(model)
+                        if _provider_name and "/" not in model:
+                            model = f"{_provider_name}/{model}"
+                    # No provider env var — resolve the bare id: registry-specific
+                    # setup, then the generic BENCHFLOW_PROVIDER_* env fallback,
+                    # then prefix heuristics (see _resolve_bare_model_prefix).
+                    elif "/" not in model:
+                        model = f"{_resolve_bare_model_prefix(model)}/{model}"
 
-                subprocess.run(
-                    [_OPENCLAW_BIN, "config", "set", "agents.defaults.model", model],
-                    capture_output=True,
-                    timeout=10,
-                )
-
-            # Apply model generation parameters from env vars
-            for env_key, config_path in _PARAM_MAP.items():
-                val = os.environ.get(env_key)
-                if val:
                     subprocess.run(
-                        [_OPENCLAW_BIN, "config", "set", config_path, val],
+                        [_OPENCLAW_BIN, "config", "set", "agents.defaults.model", model],
                         capture_output=True,
                         timeout=10,
                     )
+
+                # Apply model generation parameters from env vars
+                for env_key, config_path in _PARAM_MAP.items():
+                    val = os.environ.get(env_key)
+                    if val:
+                        subprocess.run(
+                            [_OPENCLAW_BIN, "config", "set", config_path, val],
+                            capture_output=True,
+                            timeout=10,
+                        )
+            except Exception as exc:
+                print(
+                    f"[openclaw-acp-shim] set_model setup failed, continuing: {exc!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
 

@@ -639,7 +639,7 @@ AGENTS: dict[str, AgentConfig] = {
         skill_paths=["$HOME/.mimocode/skills"],
         home_dirs=[".mimocode", ".config/mimocode"],
         install_cmd=(
-            _js_agent_install("mimo", "@mimo-ai/cli@0.1.0")
+            _js_agent_install("mimo", "@mimo-ai/cli@0.1.4")
             + " && "
             + _opencode_family_proxy_wrapper_install(
                 "mimo", ".config/mimocode/mimocode.json"
