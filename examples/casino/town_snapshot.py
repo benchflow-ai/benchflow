@@ -13,9 +13,8 @@ builds it from ``/_admin/events`` via ``to_viewer_data`` and writes it (plus
 polls everything same-origin through the tunnel.
 
 Run inside casinobench's env (for the casinobench imports):
-    cd /home/liu.10379/casinobench && uv run python \
-        /home/liu.10379/benchflow/examples/casino/town_snapshot.py \
-        http://127.0.0.1:9100 /home/liu.10379/benchflow/out/casino-floor/all-games <serve_dir>
+    cd "$CASINOBENCH_DIR" && uv run python path/to/town_snapshot.py \
+        <world_url> <run_dir> <serve_dir>
 """
 
 from __future__ import annotations

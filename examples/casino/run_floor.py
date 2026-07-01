@@ -43,7 +43,7 @@ from benchflow.trajectories._capture import TrajectoryWriter, make_trajectory_si
 
 HERE = Path(__file__).resolve().parent
 AGENT_ENV_DIR = HERE / "agent_env"
-CASINOBENCH = Path(os.environ.get("CASINOBENCH_DIR", "/home/liu.10379/casinobench"))
+CASINOBENCH = Path(os.environ.get("CASINOBENCH_DIR", Path.home() / "casinobench"))
 BRIDGE = _docker_host_address()  # the host gateway agent containers can reach
 
 # roster: (agent, model, label, count) → seats <label>-<i>. 10 agents using only the
