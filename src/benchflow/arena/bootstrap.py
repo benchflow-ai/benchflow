@@ -61,7 +61,11 @@ async def bootstrap_shared_env(
     ``_sandbox``/``_env`` are injection seams for unit tests (no docker needed).
     ``game`` is the ``task_selection`` value (e.g. the casino game id).
     """
-    from benchflow.environment.manifest import load_manifest, resolve_manifest_image
+    from benchflow.environment.manifest import (
+        load_manifest,
+        resolve_manifest_image,
+        resolve_manifest_runtime_env,
+    )
     from benchflow.environment.manifest_env import ManifestEnvironment
 
     manifest = load_manifest(environment_manifest)
@@ -73,8 +77,15 @@ async def bootstrap_shared_env(
                 f"{environment_manifest}: no runnable `image` in the manifest "
                 "(set [environment].image to the prebuilt base)."
             )
+        # Resolve the manifest's task_selection (game → CASINOBENCH_GAME) + forward_env,
+        # then add the floor's service_env — all into the sandbox persistent env so the
+        # in-sandbox `casino-service` start sees them.
+        sandbox_env = {
+            **resolve_manifest_runtime_env(manifest, task_id=game or ""),
+            **(service_env or {}),
+        }
         sandbox = _make_sandbox(
-            image, Path(environment_manifest).resolve().parent, environment, service_env
+            image, Path(environment_manifest).resolve().parent, environment, sandbox_env
         )
         await sandbox.start(force_build=False)
 
