@@ -705,6 +705,13 @@ def test_redaction_preserves_json_when_code_mentions_token_label():
     assert "***REDACTED***" not in redacted
 
 
+def test_redaction_does_not_corrupt_python_authorization_fstrings():
+    """A Python f-string prefix after an Authorization key is syntax, not a secret."""
+    raw = "headers={'Authorization': f'Bearer {token}'}"
+
+    assert redact_trajectory_text(raw) == raw
+
+
 @pytest.mark.parametrize(
     "raw",
     [

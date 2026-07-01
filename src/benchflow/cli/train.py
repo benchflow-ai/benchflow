@@ -71,6 +71,17 @@ def register_train(app: typer.Typer) -> None:
                 help="Restrict conversion to rows selected by canonical-selection.json",
             ),
         ] = None,
+        redact: Annotated[
+            bool,
+            typer.Option(
+                "--redact/--no-redact",
+                help=(
+                    "Redact secrets while exporting trainer JSONL. Use --no-redact "
+                    "only for private local SFT data when preserving exact tool-call "
+                    "argument tokens is required."
+                ),
+            ),
+        ] = True,
     ) -> None:
         """Convert BenchFlow rollout artifacts into trainer-ready data."""
         _ensure_prime_sft(format_name)
@@ -85,6 +96,7 @@ def register_train(app: typer.Typer) -> None:
                 expected_rows=expected_rows,
                 manifest=manifest,
                 canonical_selection=canonical_selection,
+                redact=redact,
             )
         except ValueError as exc:
             print_error(str(exc))

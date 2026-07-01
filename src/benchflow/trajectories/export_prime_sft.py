@@ -99,13 +99,15 @@ class PrimeSftTrajectoryJsonlError(ValueError):
     """Raised when an LLM trajectory JSONL file is not parseable."""
 
 
-def _json_line(record: dict[str, Any]) -> str:
+def _json_line(record: dict[str, Any], *, redact: bool = True) -> str:
     # Redact secrets in the record's string values BEFORE serializing so the
     # emitted SFT row is always valid JSON; redacting the serialized text could
     # split a backslash escape next to a secret and corrupt the line.
-    redacted = redact_trajectory_obj(scrub_non_finite(record))
-    redacted = _sanitize_prime_sft_row_tool_call_arguments(redacted)
-    return dumps_finite(redacted, default=str)
+    clean = scrub_non_finite(record)
+    if redact:
+        clean = redact_trajectory_obj(clean)
+    clean = _sanitize_prime_sft_row_tool_call_arguments(clean, redact=redact)
+    return dumps_finite(clean, default=str)
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:
@@ -245,7 +247,7 @@ def _normalize_role(role: Any) -> str:
     return str(role or "user")
 
 
-def _json_tool_call_arguments(arguments: Any) -> str:
+def _json_tool_call_arguments(arguments: Any, *, redact: bool = True) -> str:
     if isinstance(arguments, str):
         try:
             parsed = json.loads(arguments)
@@ -254,16 +256,24 @@ def _json_tool_call_arguments(arguments: Any) -> str:
         else:
             if not isinstance(parsed, dict):
                 parsed = {"_non_object_json_arguments": parsed}
+            else:
+                clean = redact_trajectory_obj(parsed) if redact else parsed
+                if clean == parsed:
+                    return arguments
+                return dumps_finite(clean, sort_keys=False, default=str)
     elif isinstance(arguments, dict):
         parsed = arguments
     elif arguments is None:
         parsed = {}
     else:
         parsed = {"_non_object_arguments": arguments}
-    return dumps_finite(redact_trajectory_obj(parsed), sort_keys=True, default=str)
+    clean = redact_trajectory_obj(parsed) if redact else parsed
+    return dumps_finite(clean, sort_keys=False, default=str)
 
 
-def _normalize_tool_call(call: dict[str, Any], index: int = 0) -> dict[str, Any]:
+def _normalize_tool_call(
+    call: dict[str, Any], index: int = 0, *, redact: bool = True
+) -> dict[str, Any]:
     function = call.get("function")
     if not isinstance(function, dict):
         function = {}
@@ -274,12 +284,14 @@ def _normalize_tool_call(call: dict[str, Any], index: int = 0) -> dict[str, Any]
         "type": "function",
         "function": {
             "name": str(name),
-            "arguments": _json_tool_call_arguments(arguments),
+            "arguments": _json_tool_call_arguments(arguments, redact=redact),
         },
     }
 
 
-def _normalize_message(message: dict[str, Any], index: int) -> dict[str, Any]:
+def _normalize_message(
+    message: dict[str, Any], index: int, *, redact: bool = True
+) -> dict[str, Any]:
     message_type = message.get("type")
     if message_type == "function_call":
         return {
@@ -296,6 +308,7 @@ def _normalize_message(message: dict[str, Any], index: int) -> dict[str, Any]:
                         },
                     },
                     index,
+                    redact=redact,
                 )
             ],
         }
@@ -318,7 +331,7 @@ def _normalize_message(message: dict[str, Any], index: int) -> dict[str, Any]:
         tool_calls = [message["function_call"]]
     if isinstance(tool_calls, list) and tool_calls:
         out["tool_calls"] = [
-            _normalize_tool_call(call, i)
+            _normalize_tool_call(call, i, redact=redact)
             for i, call in enumerate(tool_calls)
             if isinstance(call, dict)
         ]
@@ -361,7 +374,9 @@ def prime_sft_last_user_training_window(
     return None
 
 
-def _messages_from_chat_request(body: dict[str, Any]) -> list[dict[str, Any]]:
+def _messages_from_chat_request(
+    body: dict[str, Any], *, redact: bool = True
+) -> list[dict[str, Any]]:
     messages = body.get("messages")
     if not isinstance(messages, list):
         return []
@@ -372,11 +387,13 @@ def _messages_from_chat_request(body: dict[str, Any]) -> list[dict[str, Any]]:
         message = cast(dict[str, Any], message)
         if message.get("type") == "reasoning":
             continue
-        normalized.append(_normalize_message(message, idx))
+        normalized.append(_normalize_message(message, idx, redact=redact))
     return normalized
 
 
-def _messages_from_responses_request(body: dict[str, Any]) -> list[dict[str, Any]]:
+def _messages_from_responses_request(
+    body: dict[str, Any], *, redact: bool = True
+) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     instructions = body.get("instructions")
     if instructions:
@@ -390,7 +407,7 @@ def _messages_from_responses_request(body: dict[str, Any]) -> list[dict[str, Any
                 continue
             item = cast(dict[str, Any], item)
             if item.get("type") != "reasoning":
-                messages.append(_normalize_message(item, idx))
+                messages.append(_normalize_message(item, idx, redact=redact))
     return messages
 
 
@@ -420,7 +437,9 @@ def _tool_defs_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
     return tools
 
 
-def _assistant_from_anthropic_content(content: Any) -> dict[str, Any] | None:
+def _assistant_from_anthropic_content(
+    content: Any, *, redact: bool = True
+) -> dict[str, Any] | None:
     """Build an assistant row from Anthropic ``/v1/messages`` content blocks.
 
     Anthropic responses carry a list of typed blocks: ``text`` blocks hold the
@@ -450,33 +469,38 @@ def _assistant_from_anthropic_content(content: Any) -> dict[str, Any] | None:
     }
     if raw_tool_calls:
         message["tool_calls"] = [
-            _normalize_tool_call(call, i) for i, call in enumerate(raw_tool_calls)
+            _normalize_tool_call(call, i, redact=redact)
+            for i, call in enumerate(raw_tool_calls)
         ]
     return message
 
 
-def _assistant_from_chat_response(body: dict[str, Any]) -> dict[str, Any] | None:
+def _assistant_from_chat_response(
+    body: dict[str, Any], *, redact: bool = True
+) -> dict[str, Any] | None:
     choices = body.get("choices")
     if isinstance(choices, list) and choices:
         first = choices[0]
         if isinstance(first, dict) and isinstance(first.get("message"), dict):
-            return _normalize_message(first["message"], 0)
+            return _normalize_message(first["message"], 0, redact=redact)
     message = body.get("message")
     if isinstance(message, dict):
-        return _normalize_message(message, 0)
+        return _normalize_message(message, 0, redact=redact)
     content = body.get("content")
     if content:
-        assistant = _assistant_from_anthropic_content(content)
+        assistant = _assistant_from_anthropic_content(content, redact=redact)
         if assistant is not None:
             return assistant
         return {"role": "assistant", "content": _content_to_text(content)}
-    assistant = _assistant_from_responses_response(body)
+    assistant = _assistant_from_responses_response(body, redact=redact)
     if assistant is not None:
         return assistant
     return None
 
 
-def _assistant_from_responses_response(body: dict[str, Any]) -> dict[str, Any] | None:
+def _assistant_from_responses_response(
+    body: dict[str, Any], *, redact: bool = True
+) -> dict[str, Any] | None:
     output = body.get("output")
     if not isinstance(output, list):
         return None
@@ -507,13 +531,16 @@ def _assistant_from_responses_response(body: dict[str, Any]) -> dict[str, Any] |
     }
     if tool_calls:
         message["tool_calls"] = [
-            _normalize_tool_call(call, i) for i, call in enumerate(tool_calls)
+            _normalize_tool_call(call, i, redact=redact)
+            for i, call in enumerate(tool_calls)
         ]
     return message
 
 
 def _exchange_to_messages_and_tools(
     exchange: dict[str, Any],
+    *,
+    redact: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     request = (
         cast(dict[str, Any], exchange.get("request"))
@@ -537,11 +564,11 @@ def _exchange_to_messages_and_tools(
     )
 
     if "messages" in request_body:
-        messages = _messages_from_chat_request(request_body)
-        assistant = _assistant_from_chat_response(response_body)
+        messages = _messages_from_chat_request(request_body, redact=redact)
+        assistant = _assistant_from_chat_response(response_body, redact=redact)
     else:
-        messages = _messages_from_responses_request(request_body)
-        assistant = _assistant_from_responses_response(response_body)
+        messages = _messages_from_responses_request(request_body, redact=redact)
+        assistant = _assistant_from_responses_response(response_body, redact=redact)
 
     if assistant is None:
         return [], [], "no_assistant"
@@ -602,7 +629,9 @@ def _row_messages(row: dict[str, Any], row_num: int) -> list[Any]:
     )
 
 
-def _sanitize_message_tool_call_arguments(messages: list[Any]) -> list[Any]:
+def _sanitize_message_tool_call_arguments(
+    messages: list[Any], *, redact: bool = True
+) -> list[Any]:
     sanitized: list[Any] = []
     for message in messages:
         if not isinstance(message, dict):
@@ -612,7 +641,9 @@ def _sanitize_message_tool_call_arguments(messages: list[Any]) -> list[Any]:
         tool_calls = out.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
             out["tool_calls"] = [
-                _normalize_tool_call(cast(dict[str, Any], tool_call), idx)
+                _normalize_tool_call(
+                    cast(dict[str, Any], tool_call), idx, redact=redact
+                )
                 for idx, tool_call in enumerate(tool_calls)
                 if isinstance(tool_call, dict)
             ]
@@ -620,17 +651,21 @@ def _sanitize_message_tool_call_arguments(messages: list[Any]) -> list[Any]:
     return sanitized
 
 
-def _sanitize_prime_sft_row_tool_call_arguments(row: dict[str, Any]) -> dict[str, Any]:
+def _sanitize_prime_sft_row_tool_call_arguments(
+    row: dict[str, Any], *, redact: bool = True
+) -> dict[str, Any]:
     out = dict(row)
     messages = out.get("messages")
     if isinstance(messages, list):
-        out["messages"] = _sanitize_message_tool_call_arguments(messages)
+        out["messages"] = _sanitize_message_tool_call_arguments(messages, redact=redact)
     prompt = out.get("prompt")
     if isinstance(prompt, list):
-        out["prompt"] = _sanitize_message_tool_call_arguments(prompt)
+        out["prompt"] = _sanitize_message_tool_call_arguments(prompt, redact=redact)
     completion = out.get("completion")
     if isinstance(completion, list):
-        out["completion"] = _sanitize_message_tool_call_arguments(completion)
+        out["completion"] = _sanitize_message_tool_call_arguments(
+            completion, redact=redact
+        )
     return out
 
 
@@ -725,9 +760,10 @@ def _canonicalize_existing_prime_sft_row(
     row_num: int,
     *,
     sanitize_tool_call_arguments: bool = False,
+    redact: bool = True,
 ) -> tuple[dict[str, Any], dict[str, int]]:
     out = (
-        _sanitize_prime_sft_row_tool_call_arguments(row)
+        _sanitize_prime_sft_row_tool_call_arguments(row, redact=redact)
         if sanitize_tool_call_arguments
         else dict(row)
     )
@@ -894,7 +930,10 @@ def validate_prime_sft_jsonl(
 
 
 def _iter_prime_sft_jsonl_rows(
-    path: Path, *, sanitize_tool_call_arguments: bool = False
+    path: Path,
+    *,
+    sanitize_tool_call_arguments: bool = False,
+    redact: bool = True,
 ) -> Iterator[tuple[int, dict[str, Any], dict[str, int]]]:
     with path.open("r", encoding="utf-8") as handle:
         for row_num, line in enumerate(handle, start=1):
@@ -910,6 +949,7 @@ def _iter_prime_sft_jsonl_rows(
                 row,
                 row_num,
                 sanitize_tool_call_arguments=sanitize_tool_call_arguments,
+                redact=redact,
             )
             yield row_num, row, repair_stats
 
@@ -1020,10 +1060,11 @@ def _existing_prime_sft_jsonl_stats(
     path: Path,
     *,
     min_reward: float | None,
+    redact: bool = True,
 ) -> PrimeSftExportStats:
     stats = PrimeSftExportStats(sources=[str(path)])
     for row_num, row, repair_stats in _iter_prime_sft_jsonl_rows(
-        path, sanitize_tool_call_arguments=True
+        path, sanitize_tool_call_arguments=True, redact=redact
     ):
         stats.tool_call_ids_rewritten += repair_stats["tool_call_ids_rewritten"]
         stats.tool_messages_merged += repair_stats["tool_messages_merged"]
@@ -1048,11 +1089,12 @@ def _copy_existing_prime_sft_jsonl(
     out: Path,
     *,
     min_reward: float | None,
+    redact: bool = True,
 ) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as handle:
         for row_num, row, _ in _iter_prime_sft_jsonl_rows(
-            source, sanitize_tool_call_arguments=True
+            source, sanitize_tool_call_arguments=True, redact=redact
         ):
             if _benchflow_row_training_skip_reason(row) is not None:
                 continue
@@ -1066,14 +1108,18 @@ def _copy_existing_prime_sft_jsonl(
                 source=source,
             )
             validate_prime_sft_row(compact, row_num)
-            handle.write(_json_line(compact) + "\n")
+            handle.write(_json_line(compact, redact=redact) + "\n")
 
 
 def normalize_prime_sft_exchange(
     exchange: dict[str, Any],
+    *,
+    redact: bool = True,
 ) -> tuple[PrimeSftExchangeData | None, str | None]:
     """Normalize one raw LLM exchange through the Prime-SFT validator path."""
-    messages, tool_defs, skip_reason = _exchange_to_messages_and_tools(exchange)
+    messages, tool_defs, skip_reason = _exchange_to_messages_and_tools(
+        exchange, redact=redact
+    )
     if skip_reason:
         return None, skip_reason
     if _has_tool_calls(messages) and not tool_defs:
@@ -1092,8 +1138,9 @@ def _row_from_exchange(
     result: dict[str, Any] | None,
     reward: float | None,
     exchange_idx: int,
+    redact: bool = True,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    normalized, skip_reason = normalize_prime_sft_exchange(exchange)
+    normalized, skip_reason = normalize_prime_sft_exchange(exchange, redact=redact)
     if skip_reason:
         return None, skip_reason
     if normalized is None:
@@ -1127,6 +1174,7 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
     min_reward: float | None = None,
     row_mode: PrimeSftRowMode = "rollout",
     canonical_selection: str | Path | None = None,
+    redact: bool = True,
 ) -> tuple[list[dict[str, Any]], PrimeSftExportStats]:
     stats = PrimeSftExportStats()
     rows: list[dict[str, Any]] = []
@@ -1174,6 +1222,7 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
                 result=result,
                 reward=reward,
                 exchange_idx=idx,
+                redact=redact,
             )
             if skip_reason == "no_assistant":
                 stats.skipped_no_assistant += 1
@@ -1217,6 +1266,7 @@ def export_prime_sft_jsonl(
     expected_rows: int | None = None,
     manifest: str | Path | None = None,
     canonical_selection: str | Path | None = None,
+    redact: bool = True,
 ) -> PrimeSftExportStats:
     """Export BenchFlow rollouts to a Prime-RL SFT JSONL file.
 
@@ -1232,7 +1282,9 @@ def export_prime_sft_jsonl(
     if source_path.is_file() and source_path.suffix == ".jsonl":
         if source_path.resolve() == out_path.resolve():
             raise ValueError("--out must differ from the source JSONL path")
-        stats = _existing_prime_sft_jsonl_stats(source_path, min_reward=min_reward)
+        stats = _existing_prime_sft_jsonl_stats(
+            source_path, min_reward=min_reward, redact=redact
+        )
         if expected_rows is not None and stats.rows_written != expected_rows:
             raise ValueError(
                 f"row count {stats.rows_written} != expected {expected_rows}"
@@ -1241,6 +1293,7 @@ def export_prime_sft_jsonl(
             source_path,
             out_path,
             min_reward=min_reward,
+            redact=redact,
         )
         if manifest_path is not None:
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1254,6 +1307,7 @@ def export_prime_sft_jsonl(
         min_reward=min_reward,
         row_mode=row_mode,
         canonical_selection=canonical_selection,
+        redact=redact,
     )
     if expected_rows is not None and len(rows) != expected_rows:
         raise ValueError(f"row count {len(rows)} != expected {expected_rows}")
@@ -1261,7 +1315,7 @@ def export_prime_sft_jsonl(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as handle:
         for row in rows:
-            handle.write(_json_line(row) + "\n")
+            handle.write(_json_line(row, redact=redact) + "\n")
 
     if manifest_path is not None:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)

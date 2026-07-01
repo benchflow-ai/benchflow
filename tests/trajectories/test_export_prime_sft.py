@@ -690,6 +690,148 @@ def test_export_repairs_legacy_results_tool_call_ids(tmp_path: Path) -> None:
     assert manifest_payload["tool_messages_merged"] == 1
 
 
+def test_export_preserves_valid_tool_call_argument_strings_during_repair(
+    tmp_path: Path,
+) -> None:
+    """SFT conversion must not rewrite valid argument text into a new token view."""
+    source = tmp_path / "results.jsonl"
+    out = tmp_path / "prime-sft.jsonl"
+    raw_arguments = (
+        '{"security_risk":"LOW","summary":"List files",'
+        '"command":"find /app -maxdepth 1","timeout":10}'
+    )
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "Inspect the app."}],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "fc_legacy_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": raw_arguments,
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_runtime_1",
+                        "content": "ok",
+                    },
+                    {"role": "assistant", "content": "Done."},
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "reward": 1.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stats = export_prime_sft_jsonl(source, out, expected_rows=1)
+
+    row = json.loads(out.read_text())
+    tool_call = row["messages"][1]["tool_calls"][0]
+    assert stats.tool_call_ids_rewritten == 1
+    assert tool_call["id"] == "call_runtime_1"
+    assert tool_call["function"]["arguments"] == raw_arguments
+    assert validate_prime_sft_jsonl(out, expected_rows=1) == {
+        "ok": True,
+        "rows": 1,
+        "rows_with_tool_calls": 1,
+    }
+
+
+def test_export_no_redact_preserves_private_tool_call_argument_strings(
+    tmp_path: Path,
+) -> None:
+    """Private SFT conversion can keep executable tool arguments byte-for-byte."""
+    source = tmp_path / "results.jsonl"
+    out = tmp_path / "prime-sft.jsonl"
+    raw_arguments = json.dumps(
+        {
+            "security_risk": "MEDIUM",
+            "summary": "Use auth header",
+            "command": (
+                "python3 - <<'PY'\n"
+                "headers={'Authorization': f'Bearer {token}'}\n"
+                "print('password=password123')\n"
+                "PY"
+            ),
+            "timeout": 10,
+        },
+        separators=(",", ":"),
+    )
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "Inspect the app."}],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "fc_legacy_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": raw_arguments,
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_runtime_1",
+                        "content": "ok",
+                    },
+                    {"role": "assistant", "content": "Done."},
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "reward": 1.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stats = export_prime_sft_jsonl(source, out, expected_rows=1, redact=False)
+
+    row = json.loads(out.read_text())
+    tool_call = row["messages"][1]["tool_calls"][0]
+    assert stats.tool_call_ids_rewritten == 1
+    assert tool_call["id"] == "call_runtime_1"
+    assert tool_call["function"]["arguments"] == raw_arguments
+    assert validate_prime_sft_jsonl(out, expected_rows=1) == {
+        "ok": True,
+        "rows": 1,
+        "rows_with_tool_calls": 1,
+    }
+
+
 def test_validate_rejects_tool_calls_without_tool_defs(tmp_path: Path) -> None:
     """Guards PR #828 review: tool-using rows must carry tool_defs/tools."""
     path = tmp_path / "missing-tools.jsonl"

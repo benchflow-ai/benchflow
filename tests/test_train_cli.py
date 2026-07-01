@@ -204,6 +204,70 @@ def test_train_convert_accepts_results_jsonl_cli(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
 
 
+def test_train_convert_no_redact_preserves_tool_argument_tokens(tmp_path: Path) -> None:
+    """Private SFT conversion should not mutate valid tool-call argument strings."""
+    source = tmp_path / "results.jsonl"
+    raw_arguments = json.dumps(
+        {
+            "command": "headers={'Authorization': f'Bearer {token}'}",
+            "summary": "use runtime token",
+        }
+    )
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "do it"}],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": raw_arguments,
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "tool_defs": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "reward": 1.0,
+            }
+        )
+        + "\n"
+    )
+    out = tmp_path / "prime-sft.jsonl"
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "convert",
+            str(source),
+            "--out",
+            str(out),
+            "--expected-rows",
+            "1",
+            "--no-redact",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = json.loads(out.read_text())
+    assert row["messages"][1]["tool_calls"][0]["function"]["arguments"] == raw_arguments
+
+
 def test_train_convert_sanitizes_malformed_tool_call_arguments(
     tmp_path: Path,
 ) -> None:
