@@ -287,8 +287,39 @@ def eval_run(
     ] = None,
     drive: Annotated[
         str,
-        typer.Option("--drive", help="Multi-agent floor drive: auto-loop | service-rounds."),
+        typer.Option("--drive", help="Multi-agent floor drive: auto-loop | service-rounds.",
+                     rich_help_panel="Multi-agent floor"),
     ] = "auto-loop",
+    game: Annotated[
+        str | None,
+        typer.Option("--game", help="Floor: task_selection value (e.g. game id); overrides the tasks-dir name.",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
+    url_env: Annotated[
+        str | None,
+        typer.Option("--url-env", help="Floor: env var the in-sandbox CLI reads for the service URL (e.g. CASINO_URL).",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
+    seat_env: Annotated[
+        str | None,
+        typer.Option("--seat-env", help="Floor: env var that identifies each seat (e.g. CASINOBENCH_SEAT_ID).",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
+    standings_path: Annotated[
+        str | None,
+        typer.Option("--standings-path", help="Floor: service path → final {seat: score} for the reward vector.",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
+    events_path: Annotated[
+        str | None,
+        typer.Option("--events-path", help="Floor: service path → event log snapshot (events.jsonl).",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
+    multiplayer: Annotated[
+        bool,
+        typer.Option("--multiplayer", help="Floor: start the service in multiplayer mode (CASINO_MULTIPLAYER=1).",
+                     rich_help_panel="Multi-agent floor"),
+    ] = False,
     reasoning_effort: Annotated[
         str | None,
         typer.Option(
@@ -528,10 +559,15 @@ def eval_run(
             agents=agents,
             environment_manifest=environment_manifest,
             out=Path(jobs_dir or "out/native-floor"),
-            game=(tasks_dir.name if tasks_dir is not None else None),
+            game=(game or (tasks_dir.name if tasks_dir is not None else None)),
             sandbox=(environment or "docker"),
             drive=drive,
             prompt=("\n".join(prompt) if prompt else None),
+            url_env=url_env,
+            seat_env=seat_env,
+            standings_path=standings_path,
+            events_path=events_path,
+            multiplayer=multiplayer,
         )
         return
 

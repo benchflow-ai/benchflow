@@ -44,3 +44,25 @@ def test_arena_run_is_deprecated_alias(tmp_path):
     # The old `arena run` still works (hidden alias) and requires the manifest.
     r = runner.invoke(app, ["arena", "run", "--agents", str(_roster(tmp_path))])
     assert r.exit_code != 0  # missing required --environment-manifest
+
+
+def test_eval_run_agents_threads_floor_flags(tmp_path, monkeypatch):
+    # The floor-shape flags fold onto the standard `eval run` and reach the runner.
+    from benchflow.cli import arena as arena_mod
+
+    captured = {}
+    monkeypatch.setattr(arena_mod, "run_floor_from_cli", lambda **kw: captured.update(kw))
+    r = runner.invoke(app, [
+        "eval", "run", "--agents", str(_roster(tmp_path)),
+        "--environment-manifest", "benchmarks/casinobench/environment.toml",
+        "--game", "six-deck-blackjack-s17", "--multiplayer",
+        "--url-env", "CASINO_URL", "--seat-env", "CASINOBENCH_SEAT_ID",
+        "--standings-path", "/_admin/standings", "--events-path", "/_admin/events",
+    ])
+    assert r.exit_code == 0, r.output
+    assert captured["multiplayer"] is True
+    assert captured["game"] == "six-deck-blackjack-s17"
+    assert captured["url_env"] == "CASINO_URL"
+    assert captured["seat_env"] == "CASINOBENCH_SEAT_ID"
+    assert captured["standings_path"] == "/_admin/standings"
+    assert captured["events_path"] == "/_admin/events"
