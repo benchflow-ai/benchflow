@@ -420,9 +420,41 @@ def _write_runtime_files(
     return config_path, callback_path, patch_path
 
 
-async def _poll_host_health(process: HostLiteLLMProcess) -> None:
+# How long to wait for the *host* per-run LiteLLM proxy to become healthy.
+# litellm's cold start runs tens of seconds, and when many runs launch in parallel
+# (max-parallel sweeps) the proxies cold-start simultaneously and contend for CPU,
+# pushing well past a fixed ~30s budget — the old ``range(120)`` x 0.25s. That
+# surfaced as "LiteLLM did not become healthy: All connection attempts failed" for
+# otherwise-fine agents on Docker under load. Use a generous, time-based, env-tunable
+# deadline so a slow-but-fine proxy is not killed; a genuine crash still fails fast
+# via the process-exit check below.
+#
+# Scope: this deadline covers only ``_poll_host_health``. The in-sandbox proxy
+# pollers (``_wait_for_sandbox_state`` / ``_poll_sandbox_health``) keep their own
+# ``range(120)`` loop, where each iteration is bounded by a ``sandbox.exec`` round
+# trip rather than a fixed 0.25s sleep — so they already wait far longer than 30s
+# and are deliberately not governed by this budget.
+def _health_deadline_sec() -> float:
+    # Parse defensively: a malformed BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC must not
+    # crash ``import benchflow``. Floor at one poll cycle so a 0/negative value still
+    # checks process liveness and attempts health once instead of raising immediately.
+    try:
+        deadline = float(os.environ.get("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "180"))
+    except (TypeError, ValueError):
+        deadline = 180.0
+    return max(deadline, 1.0)
+
+
+_HEALTH_DEADLINE_SEC = _health_deadline_sec()
+
+
+async def _poll_host_health(
+    process: HostLiteLLMProcess, deadline_s: float = _HEALTH_DEADLINE_SEC
+) -> None:
     last_error = ""
-    for _ in range(120):
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while loop.time() - start < deadline_s:
         if process.process.poll() is not None:
             raise RuntimeError(
                 "LiteLLM exited before becoming healthy.\n" + process.log_tail()
@@ -437,7 +469,8 @@ async def _poll_host_health(process: HostLiteLLMProcess) -> None:
             last_error = str(exc)
         await asyncio.sleep(0.25)
     raise RuntimeError(
-        f"LiteLLM did not become healthy: {last_error}\n{process.log_tail()}"
+        f"LiteLLM did not become healthy after {deadline_s:.0f}s: "
+        f"{last_error}\n{process.log_tail()}"
     )
 
 
