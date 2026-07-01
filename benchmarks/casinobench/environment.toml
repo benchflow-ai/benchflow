@@ -27,8 +27,11 @@ key = "CASINOBENCH_GAME"
 timeout_sec = 60
 
 # Forward the per-task game/seed into the service process.
+# BENCHFLOW_SEED is deliberately NOT forwarded: a seat with the world seed can
+# compute the deterministic roulette spin from (seed, table_id, hand) and bet the
+# winning number. The multiplayer World now draws a secret random seed of its own.
 [environment.forward_env]
-keys = ["CASINOBENCH_GAME", "CASINOBENCH_HANDS", "BENCHFLOW_SEED"]
+keys = ["CASINOBENCH_GAME", "CASINOBENCH_HANDS"]
 
 [[environment.services]]
 name = "casino"
