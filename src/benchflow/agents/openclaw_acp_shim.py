@@ -674,8 +674,9 @@ def main():
             # A provider-resolution / config-write failure here must NOT crash the
             # shim: an unhandled exception exits rc=1, which benchflow sees as the
             # ACP transport dying mid-set_model ("Process closed stdout (rc=1)") —
-            # the observed openclaw-on-docker failure. Catch, log the real cause,
-            # and still ACK so the run proceeds with the model config that exists.
+            # the observed openclaw-on-docker failure. Catch, surface the real cause
+            # on the trajectory (agent_thought) and stderr, and still ACK so the run
+            # proceeds with the model config that exists.
             try:
                 if model:
                     # The SDK strips provider prefixes before set_model and passes
@@ -711,6 +712,7 @@ def main():
                             model,
                         ],
                         capture_output=True,
+                        check=True,
                         timeout=10,
                     )
 
@@ -721,13 +723,29 @@ def main():
                         subprocess.run(
                             [_OPENCLAW_BIN, "config", "set", config_path, val],
                             capture_output=True,
+                            check=True,
                             timeout=10,
                         )
             except Exception as exc:
-                print(
-                    f"[openclaw-acp-shim] set_model setup failed, continuing: {exc!r}",
-                    file=sys.stderr,
-                    flush=True,
+                diag = (
+                    f"[openclaw-acp-shim] set_model setup failed, continuing: {exc!r}"
+                )
+                print(diag, file=sys.stderr, flush=True)
+                # Surface the real cause on the trajectory too: without this, a
+                # set_model config failure is indistinguishable downstream from a
+                # genuine provider outage (both read as an opaque suspected_api_error).
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "agent_thought",
+                                "text": diag[:_DIAG_TRUNCATE],
+                            },
+                        },
+                    }
                 )
 
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})

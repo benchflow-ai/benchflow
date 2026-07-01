@@ -884,3 +884,66 @@ async def test_callback_records_unpriced_cost_as_null(tmp_path, monkeypatch):
     assert usage["n_input_tokens"] == 1000
     assert usage["cost_usd"] is None
     assert usage["price_source"] is None
+
+
+def test_poll_host_health_fails_fast_when_process_exited():
+    # PR #871's extended deadline leans on the process-exit check: a crashed proxy
+    # must fail fast, not wait out the full budget.
+    import asyncio
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from benchflow.providers.litellm_runtime import _poll_host_health
+
+    process = MagicMock()
+    process.process.poll.return_value = 1  # already exited
+    process.log_tail.return_value = "(tail)"
+
+    with pytest.raises(RuntimeError, match="exited before becoming healthy"):
+        asyncio.run(_poll_host_health(process, deadline_s=30.0))
+    process.process.poll.assert_called()  # checked liveness, did not wait out 30s
+
+
+def test_poll_host_health_bails_at_deadline_when_never_healthy(monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    import benchflow.providers.litellm_runtime as rt
+
+    class _FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            raise ConnectionError("refused")
+
+    monkeypatch.setattr(rt.httpx, "AsyncClient", _FailingClient)
+    process = MagicMock()
+    process.process.poll.return_value = None  # alive but never healthy
+    process.endpoint.local_base_url = "http://127.0.0.1:9/"
+    process.log_tail.return_value = "(tail)"
+
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        asyncio.run(rt._poll_host_health(process, deadline_s=0.3))
+
+
+def test_health_deadline_env_parse_is_defensive(monkeypatch):
+    # A malformed BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC must not crash import; a
+    # 0/negative value is floored so the poll still runs at least once.
+    import benchflow.providers.litellm_runtime as rt
+
+    monkeypatch.setenv("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "not-a-number")
+    assert rt._health_deadline_sec() == 180.0
+    monkeypatch.setenv("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "0")
+    assert rt._health_deadline_sec() >= 1.0
+    monkeypatch.setenv("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "240")
+    assert rt._health_deadline_sec() == 240.0
