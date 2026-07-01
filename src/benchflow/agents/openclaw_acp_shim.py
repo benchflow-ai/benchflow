@@ -703,7 +703,13 @@ def main():
                         model = f"{_resolve_bare_model_prefix(model)}/{model}"
 
                     subprocess.run(
-                        [_OPENCLAW_BIN, "config", "set", "agents.defaults.model", model],
+                        [
+                            _OPENCLAW_BIN,
+                            "config",
+                            "set",
+                            "agents.defaults.model",
+                            model,
+                        ],
                         capture_output=True,
                         timeout=10,
                     )
