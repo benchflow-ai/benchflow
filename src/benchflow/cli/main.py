@@ -45,6 +45,7 @@ from benchflow.cli._shared import (
 )
 from benchflow.cli.adopt import register_adopt_deprecated, register_eval_adopt
 from benchflow.cli.agent import register_agent
+from benchflow.cli.arena import register_arena
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.environment import register_environment
 from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_eval
@@ -275,6 +276,53 @@ def eval_run(
         typer.Option("--agent", help="Agent name"),
     ] = None,
     model: ModelOption = None,
+    agents: Annotated[
+        Path | None,
+        typer.Option(
+            "--agents",
+            help=(
+                "Roster file for a CONCURRENT multi-agent floor — the plural of "
+                "--agent (mutually exclusive with it). N seats share ONE task + its "
+                "ONE in-sandbox service; per-seat acp + raw trajectories."
+            ),
+        ),
+    ] = None,
+    drive: Annotated[
+        str,
+        typer.Option("--drive", help="Multi-agent floor drive: auto-loop | service-rounds.",
+                     rich_help_panel="Multi-agent floor"),
+    ] = "auto-loop",
+    game: Annotated[
+        str | None,
+        typer.Option("--game", help="Floor: task_selection value (e.g. game id); overrides the tasks-dir name.",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
+    url_env: Annotated[
+        str | None,
+        typer.Option("--url-env", help="Floor: env var the in-sandbox CLI reads for the service URL (e.g. CASINO_URL).",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
+    seat_env: Annotated[
+        str | None,
+        typer.Option("--seat-env", help="Floor: env var that identifies each seat (e.g. CASINOBENCH_SEAT_ID).",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
+    standings_path: Annotated[
+        str | None,
+        typer.Option("--standings-path", help="Floor: service path → final {seat: score} for the reward vector.",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
+    events_path: Annotated[
+        str | None,
+        typer.Option("--events-path", help="Floor: service path → event log snapshot (events.jsonl).",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
+    service_env: Annotated[
+        list[str] | None,
+        typer.Option("--service-env", help="Floor: extra KEY=VALUE env for the in-sandbox "
+                     "service (repeatable), e.g. --service-env CASINO_MULTIPLAYER=1.",
+                     rich_help_panel="Multi-agent floor"),
+    ] = None,
     reasoning_effort: Annotated[
         str | None,
         typer.Option(
@@ -589,6 +637,33 @@ def eval_run(
     Sandbox: docker, daytona, or modal.
     """
     _apply_dotenv_to_process_env()
+
+    # Multi-agent floor: --agents is the plural of --agent. N seats share the SAME
+    # task + its ONE in-sandbox service concurrently (per-seat acp + raw traj).
+    if agents is not None:
+        from benchflow.cli.arena import run_floor_from_cli
+
+        if agent is not None:
+            print_error("--agents (multi-agent floor) is mutually exclusive with --agent.")
+            raise typer.Exit(1)
+        if environment_manifest is None:
+            print_error("--agents requires --environment-manifest (the in-sandbox service).")
+            raise typer.Exit(1)
+        run_floor_from_cli(
+            agents=agents,
+            environment_manifest=environment_manifest,
+            out=Path(jobs_dir or "out/native-floor"),
+            game=(game or (tasks_dir.name if tasks_dir is not None else None)),
+            sandbox=(environment or "docker"),
+            drive=drive,
+            prompt=("\n".join(prompt) if prompt else None),
+            url_env=url_env,
+            seat_env=seat_env,
+            standings_path=standings_path,
+            events_path=events_path,
+            service_env=service_env,
+        )
+        return
 
     request = EvalCreateRequest(
         config_file=config_file,
@@ -1220,6 +1295,7 @@ register_adopt_deprecated(app)
 register_sandbox(app)
 register_environment(app)
 register_monitor(app)
+register_arena(app)
 
 
 if __name__ == "__main__":

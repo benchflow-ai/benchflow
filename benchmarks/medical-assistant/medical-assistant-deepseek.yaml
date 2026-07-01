@@ -1,0 +1,12 @@
+# Job config — run the medical-assistant benchmark with deepseek-v4-pro,
+# every node's LLM routed through BenchFlow's LiteLLM proxy, in a Docker sandbox.
+#
+#   bench eval run --config benchmarks/medical-assistant/medical-assistant-deepseek.yaml
+# or:
+#   python benchmarks/medical-assistant/run_medical_assistant.py
+
+tasks_dir: benchmarks/medical-assistant/tasks
+agent: medical-assistant
+model: deepseek/deepseek-v4-pro
+environment: docker          # each rollout runs in its own Docker sandbox
+concurrency: 2
