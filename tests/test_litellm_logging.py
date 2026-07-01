@@ -195,3 +195,49 @@ def test_responses_api_record_becomes_exchange_with_usage():
     )
     assert usage["usage_source"] == "provider_response"
     assert usage["total_tokens"] == 16
+
+
+def test_responses_call_types_stay_in_sync_with_litellm():
+    # Solid-for-all-model-paths guard: the callback's hardcoded responses call_type
+    # set must equal litellm's actual Responses-API family. If litellm adds/renames
+    # a responses call_type, this fails loudly — otherwise that wire would silently
+    # regress to /v1/chat/completions in every codex/Responses trajectory.
+    from litellm.types.utils import CallTypes
+
+    namespace: dict = {}
+    exec(callback_module_source(), namespace)
+    hardcoded = set(namespace["_RESPONSES_CALL_TYPES"])
+    litellm_responses = {c.value for c in CallTypes if "response" in c.value.lower()}
+    assert hardcoded == litellm_responses, (
+        f"responses call_type drift: litellm={litellm_responses} callback={hardcoded}"
+    )
+
+
+def test_callback_labels_every_agent_wire_correctly():
+    # Solid-for-all-agents spec: each agent family's litellm call_type maps to its
+    # true wire path. Verified empirically against real trajectories — chat agents
+    # (pi-acp/openhands/opencode/mimo/ai-sdk/omnigent-pi/omnigent-openai-agents) ->
+    # chat; claude (claude-agent-acp/omnigent-claude) -> messages; codex on a
+    # Responses-capable provider -> responses. A strict refinement of the original
+    # mapping: only the responses family moved out of the chat default.
+    namespace: dict = {}
+    exec(callback_module_source(), namespace)
+    path_for = namespace["_request_path_for_call_type"]
+
+    for ct in ("completion", "acompletion"):
+        assert path_for(ct) == "/v1/chat/completions", ct
+    assert path_for("anthropic_messages") == "/v1/messages"
+    for ct in ("responses", "aresponses", "_aresponses_websocket"):
+        assert path_for(ct) == "/v1/responses", ct
+
+    # Non-generation / unknown call_types must fall back to the historical default
+    # (chat), never crash or misroute — no regression for any current agent.
+    for ct in ("embedding", "atext_completion", "moderation", None, "future_unknown"):
+        assert path_for(ct) == "/v1/chat/completions", ct
+
+    # Deferred gap (out of scope for the Responses PR): Google GenerateContent
+    # (gemini / omnigent-antigravity) still falls back to the chat default — the
+    # proxy does not serve that wire yet. Documented so the gemini follow-up
+    # updates this deliberately.
+    assert path_for("generate_content") == "/v1/chat/completions"
+    assert path_for("agenerate_content") == "/v1/chat/completions"
