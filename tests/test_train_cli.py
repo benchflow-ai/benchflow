@@ -1250,7 +1250,12 @@ def test_train_run_sft_prime_rl_mobile300_compat_profile(
     assert "if not torch.all(valid_sample_mask):" not in sitecustomize_text
     assert "_flash_attn_varlen_forward" in sitecustomize_text
     assert "flash-attn import stub enabled for SDPA" in sitecustomize_text
+    assert "def benchflow_setup_dataloader" in sitecustomize_text
     assert shim["name"] == "prime_rl_sft_compatibility"
+    assert (
+        "pretokenized rows bypass Prime-RL stack/cat packing and train one original "
+        "row per micro-batch"
+    ) in shim["guards"]
     assert manifest["extra"]["prime_rl_sft_compat_profile"]["name"] == (
         "env0-mobile300-pr828"
     )
@@ -1360,6 +1365,101 @@ def test_prime_rl_sft_flash_attn_stub_imports_and_fails_closed(tmp_path: Path) -
     assert "['flash-attn']" in completed.stdout
     assert "model.attn=sdpa" in completed.stdout
     assert "called unexpectedly" in completed.stdout
+
+
+def test_prime_rl_pretokenized_shim_uses_rowwise_dataloader(tmp_path: Path) -> None:
+    """Pretokenized rows bypass Prime-RL packers so exposure matches the old trainer."""
+    import benchflow.training.backends.prime_rl as prime_rl
+
+    fake_sft = tmp_path / "fake" / "prime_rl" / "trainer" / "sft"
+    fake_sft.mkdir(parents=True)
+    for package_dir in [
+        fake_sft.parent.parent,
+        fake_sft.parent,
+        fake_sft,
+    ]:
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (fake_sft / "data.py").write_text(
+        "\n".join(
+            [
+                "class SFTDataset:",
+                "    def _process(self, example):",
+                "        return {'native': True, 'example': example}",
+                "",
+                "class StatefulDataLoader:",
+                "    def __init__(self, dataset, batch_size, collate_fn):",
+                "        self.dataset = dataset",
+                "        self.batch_size = batch_size",
+                "        self.collate_fn = collate_fn",
+                "",
+                "def setup_dataloader(dataset, config):",
+                "    return ('native', dataset, config)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    plan = prime_rl._write_prime_rl_sft_compat_shim(
+        tmp_path,
+        sample_mean=False,
+        pretokenized_data=True,
+        stub_flash_attn=False,
+    )
+    env = os.environ.copy()
+    env.update(plan.env)
+    env["PYTHONPATH"] = os.pathsep.join(
+        (plan.env["PYTHONPATH"], str(tmp_path / "fake"))
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "\n".join(
+                [
+                    "import json",
+                    "import prime_rl.trainer.sft.data as data",
+                    "row = {",
+                    "    'benchflow_custom_trainer_pretokenized': True,",
+                    "    'benchflow_input_ids': [1, 2, 3],",
+                    "    'benchflow_target_ids': [2, 3, 4],",
+                    "    'benchflow_loss_mask': [True, False, True],",
+                    "    'benchflow_position_ids': [0, 1, 2],",
+                    "}",
+                    "processed = data.SFTDataset()._process(row)",
+                    "loader = data.setup_dataloader('dataset', 'config')",
+                    "native = data.SFTDataset()._process({'messages': []})",
+                    "print(json.dumps({",
+                    "    'processed': processed,",
+                    "    'loader_class': type(loader).__name__,",
+                    "    'loader_batch_size': loader.batch_size,",
+                    "    'loader_collate_callable': callable(loader.collate_fn),",
+                    "    'native': native,",
+                    "}, sort_keys=True))",
+                ]
+            ),
+        ],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "BenchFlow Prime-RL pretokenized SFT data shim enabled" in completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload == {
+        "loader_batch_size": 1,
+        "loader_class": "StatefulDataLoader",
+        "loader_collate_callable": True,
+        "native": {"example": {"messages": []}, "native": True},
+        "processed": {
+            "input_ids": [1, 2, 3],
+            "loss_mask": [True, False, True],
+            "position_ids": [0, 1, 2],
+            "target_ids": [2, 3, 4],
+        },
+    }
 
 
 def test_prime_rl_custom_trainer_pretokenized_row_masks_last_assistant_only() -> None:
