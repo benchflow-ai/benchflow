@@ -160,11 +160,28 @@ class MCPServerConfig(TaskConfigModel):
     url: str | None = None
     command: str | None = None
     args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    tools: list[str] | None = None
+    include_tags: list[str] | None = None
+    exclude_tags: list[str] | None = None
 
     @field_validator("transport", mode="before")
     @classmethod
     def normalize_transport(cls, value: Any) -> Any:
         return "streamable-http" if value == "http" else value
+
+    @field_validator("tools", "include_tags", "exclude_tags")
+    @classmethod
+    def validate_non_empty_filter_entries(
+        cls, value: list[str] | None
+    ) -> list[str] | None:
+        if value is None:
+            return None
+        normalized = [item.strip() for item in value if item.strip()]
+        if not normalized:
+            raise ValueError("MCP tool filters must contain at least one entry")
+        return normalized
 
     @model_validator(mode="after")
     def validate_transport_fields(self) -> MCPServerConfig:
@@ -400,6 +417,45 @@ class HealthcheckConfig(TaskConfigModel):
     retries: int = 3
 
 
+class SetupCommandConfig(TaskConfigModel):
+    """Command to run after sandbox startup and before agent installation."""
+
+    command: str = Field(min_length=1)
+    timeout_sec: float = Field(default=600.0, gt=0, allow_inf_nan=False)
+    cwd: str | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    user: str | int | None = None
+    service: str = "main"
+
+    @field_validator("command")
+    @classmethod
+    def validate_command(cls, value: str) -> str:
+        command = value.strip()
+        if not command:
+            raise ValueError("setup command must be non-empty")
+        return command
+
+    @field_validator("cwd")
+    @classmethod
+    def validate_cwd(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cwd = value.strip()
+        if not cwd:
+            raise ValueError("setup command cwd must be non-empty when provided")
+        if not cwd.startswith("/"):
+            raise ValueError("setup command cwd must be an absolute path")
+        return cwd
+
+    @field_validator("service")
+    @classmethod
+    def validate_service(cls, value: str) -> str:
+        service = value.strip()
+        if not service:
+            raise ValueError("setup command service must be non-empty")
+        return service
+
+
 class TpuSpec(TaskConfigModel):
     """Specification for a TPU slice attached to an environment."""
 
@@ -477,6 +533,13 @@ class SandboxConfig(TaskConfigModel):
     workdir: str | None = Field(
         default=None,
         description="Default working directory for command execution.",
+    )
+    setup_commands: list[SetupCommandConfig] = Field(
+        default_factory=list,
+        description=(
+            "Commands run after sandbox services start and before the agent is "
+            "installed. Useful for benchmark-native workspace/database seeding."
+        ),
     )
     bugswarm_image_tag: str | None = Field(
         default=None,

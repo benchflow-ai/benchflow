@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import shlex
 import shutil
@@ -65,6 +66,7 @@ from benchflow._types import Role, Scene, Turn
 # defined in this module.
 from benchflow._utils.scoring import classify_error as classify_error
 from benchflow.acp.types import McpServerSpec
+from benchflow.agents.credentials import upload_credential
 from benchflow.contracts import (
     AgentProtocolError,
     AskUserRequest,
@@ -234,10 +236,125 @@ def _task_mcp_specs(task: Any) -> list[McpServerSpec]:
             type=_MCP_TRANSPORT_TO_ACP_TYPE.get(config.transport, config.transport),
             command=config.command,
             args=list(config.args),
+            env=dict(config.env),
             url=config.url,
+            headers=dict(config.headers),
+            tools=list(config.tools) if config.tools is not None else None,
+            include_tags=list(config.include_tags)
+            if config.include_tags is not None
+            else None,
+            exclude_tags=list(config.exclude_tags)
+            if config.exclude_tags is not None
+            else None,
         )
         for config in configs
     ]
+
+
+def _task_mcp_specs_for_agent(agent: str, task: Any) -> list[McpServerSpec]:
+    """Return MCP specs to pass over ACP for this agent.
+
+    OpenHands' ACP server currently converts ACP MCP objects into FastMCP config
+    by dumping the Pydantic objects. That path preserves ACP ``headers`` as a
+    list and drops BenchFlow's tool-filter metadata, which FastMCP rejects for
+    transformed MCP servers. OpenHands has a native ``~/.openhands/mcp.json``
+    path that uses the exact dict-shaped FastMCP schema, so BenchFlow installs
+    task MCP servers there instead of sending them via ``session/new``.
+    """
+
+    if agent == "openhands":
+        return []
+    return _task_mcp_specs(task)
+
+
+def _openhands_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return OpenHands/FastMCP ``mcp.json`` content for task MCP servers."""
+
+    servers: dict[str, dict[str, Any]] = {}
+    for spec in _task_mcp_specs(task):
+        filters: dict[str, list[str]] = {}
+        if spec.tools is not None:
+            filters["tools"] = list(spec.tools)
+        if spec.include_tags is not None:
+            filters["include_tags"] = list(spec.include_tags)
+        if spec.exclude_tags is not None:
+            filters["exclude_tags"] = list(spec.exclude_tags)
+
+        if spec.type == "stdio":
+            server = {
+                "command": spec.command,
+                "args": list(spec.args),
+                "env": dict(spec.env),
+                "transport": "stdio",
+                "enabled": True,
+                **filters,
+            }
+        else:
+            server = {
+                "url": spec.url,
+                "transport": "sse" if spec.type == "sse" else "http",
+                "headers": dict(spec.headers),
+                "enabled": True,
+                **filters,
+            }
+        servers[spec.name] = server
+    return {"mcpServers": servers}
+
+
+async def _install_openhands_mcp_config(
+    env: Any,
+    task: Any,
+    *,
+    cred_home: str,
+    owner: str | None,
+) -> None:
+    config = _openhands_mcp_config(task)
+    if not config["mcpServers"]:
+        return
+    await upload_credential(
+        env,
+        f"{cred_home}/.openhands/mcp.json",
+        json.dumps(config, indent=2, sort_keys=True) + "\n",
+        owner=owner,
+    )
+
+
+async def _run_environment_setup_commands(env: Any, task: Any) -> None:
+    """Run task-authored setup commands after sandbox start, before agent install."""
+
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    commands = list(getattr(env_config, "setup_commands", []) or [])
+    if not commands:
+        return
+
+    from benchflow.task.env import resolve_env_vars
+
+    for index, command_config in enumerate(commands, start=1):
+        logger.info(
+            "Running environment setup command %d/%d on service %s",
+            index,
+            len(commands),
+            command_config.service,
+        )
+        env_vars = resolve_env_vars(command_config.env) if command_config.env else None
+        result = await env.exec(
+            command_config.command,
+            cwd=command_config.cwd,
+            env=env_vars,
+            timeout_sec=round(command_config.timeout_sec),
+            user=command_config.user,
+            service=command_config.service,
+        )
+        if getattr(result, "return_code", 0) != 0:
+            stdout = (getattr(result, "stdout", "") or "").strip()
+            stderr = (getattr(result, "stderr", "") or "").strip()
+            detail = "\n".join(part for part in (stdout, stderr) if part)
+            if len(detail) > 4000:
+                detail = detail[:4000] + "\n... truncated ..."
+            raise RuntimeError(
+                f"environment setup command {index} failed with exit code "
+                f"{result.return_code}: {detail}"
+            )
 
 
 class Rollout:
@@ -662,6 +779,8 @@ class Rollout:
                 len(probe.checked),
             )
 
+        await _run_environment_setup_commands(self._env, self._task)
+
         self._phase = "started"
 
     # Phase 3: INSTALL AGENT
@@ -735,6 +854,13 @@ class Rollout:
             cfg.primary_model,
             cred_home,
         )
+        if agent_name == "openhands":
+            await _install_openhands_mcp_config(
+                self._env,
+                self._task,
+                cred_home=cred_home,
+                owner=cfg.sandbox_user,
+            )
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
             await self._planes.upload_subscription_auth(
                 self._env, agent_name, cred_home
@@ -843,7 +969,9 @@ class Rollout:
                 environment=cfg.environment,
                 agent_cwd=self._agent_cwd,
                 reasoning_effort=cfg.primary_reasoning_effort,
-                mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
+                mcp_servers=_task_mcp_specs_for_agent(
+                    cfg.primary_agent, getattr(self, "_task", None)
+                ),
             )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
@@ -1786,6 +1914,13 @@ class Rollout:
                 role.model,
                 cred_home,
             )
+            if role.agent == "openhands":
+                await _install_openhands_mcp_config(
+                    self._env,
+                    self._task,
+                    cred_home=cred_home,
+                    owner=cfg.sandbox_user,
+                )
             if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
                 await self._planes.upload_subscription_auth(
                     self._env, role.agent, cred_home
@@ -1838,7 +1973,9 @@ class Rollout:
                 environment=cfg.environment,
                 agent_cwd=self._agent_cwd,
                 reasoning_effort=role.reasoning_effort,
-                mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
+                mcp_servers=_task_mcp_specs_for_agent(
+                    role.agent, getattr(self, "_task", None)
+                ),
             )
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)

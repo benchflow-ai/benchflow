@@ -246,6 +246,59 @@ REPO_ID = "google/auto"
     assert cfg.solution.timeout_sec == 1800.0
 
 
+def test_task_config_accepts_mcp_tool_filter_surface():
+    """Guards cd8e250b MCP Atlas adapter work against MCP schema shrinkage."""
+    cfg = TaskConfig.model_validate_toml(
+        """
+version = "1.0"
+
+[[environment.mcp_servers]]
+name = "atlas"
+transport = "streamable-http"
+url = "http://localhost:18765/mcp"
+headers = { x_run = "smoke" }
+tools = ["search", "fetch"]
+include_tags = ["safe"]
+exclude_tags = ["admin"]
+"""
+    )
+
+    (server,) = cfg.environment.mcp_servers
+    assert server.name == "atlas"
+    assert server.transport == "streamable-http"
+    assert server.headers == {"x_run": "smoke"}
+    assert server.tools == ["search", "fetch"]
+    assert server.include_tags == ["safe"]
+    assert server.exclude_tags == ["admin"]
+
+
+def test_task_config_accepts_environment_setup_commands():
+    """Guards cd8e250b Toolathlon adapter work against setup-hook schema loss."""
+    cfg = TaskConfig.model_validate_toml(
+        """
+version = "1.0"
+
+[environment]
+workdir = "/workspace/agent_workspace"
+
+[[environment.setup_commands]]
+command = "python preprocess.py"
+cwd = "/workspace"
+timeout_sec = 120
+service = "main"
+[environment.setup_commands.env]
+FOO = "${FOO:-bar}"
+"""
+    )
+
+    (command,) = cfg.environment.setup_commands
+    assert command.command == "python preprocess.py"
+    assert command.cwd == "/workspace"
+    assert command.timeout_sec == 120
+    assert command.service == "main"
+    assert command.env == {"FOO": "${FOO:-bar}"}
+
+
 def test_task_config_accepts_skillsbench_solution_inline_env_shorthand():
     """Guards commit a8eefb4 SkillsBench tasks-extra/diff-transformer_impl."""
     cfg = TaskConfig.model_validate_toml(

@@ -788,6 +788,7 @@ class Evaluation:
             ensure_tasks,
             resolve_source_with_metadata,
         )
+        from benchflow.adapters.source import adapt_resolved_source_if_needed
 
         # New two-field format: source.repo + source.path
         source_provenance = None
@@ -808,6 +809,7 @@ class Evaluation:
                 path=src.get("path"),
                 ref=src.get("ref"),
             )
+            resolved = adapt_resolved_source_if_needed(resolved)
             tasks_dir = resolved.path
             source_provenance = resolved.provenance
         elif "tasks_dir" in raw:
