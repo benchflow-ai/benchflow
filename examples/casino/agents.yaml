@@ -1,0 +1,49 @@
+# Native concurrent multi-agent casino floor — `benchflow arena run --agents`.
+#
+# N agents play ONE shared casinobench World CONCURRENTLY in ONE shared sandbox,
+# each in /work/<seat>, each with its own ACP + (proxy seats only) raw-LLM
+# trajectory. Paths (image_dir, instructions) are relative to THIS file.
+#
+#   set -a; . ~/sb-run.env; set +a        # DEEPSEEK_API_KEY for the proxy seat
+#   uv run benchflow arena run --agents examples/casino/agents.yaml
+
+sandbox:
+  image_dir: agent_env            # the shared casino-agent-seat image (Dockerfile dir)
+  name: casinoseat
+
+services:
+  url_env: CASINO_URL             # the var the in-sandbox `casino` CLI reads for the service
+  seat_env: CASINOBENCH_SEAT_ID   # the var that identifies this seat/player
+  command: "uv run casino-service --host 0.0.0.0 --port {port}"
+  cwd: ~/casinobench              # your casinobench checkout
+  port: 9100
+  health: /health
+  standings_path: /_admin/standings   # → per-seat reward vector in floor.json
+  events_path: /_admin/events         # → events.jsonl for the town viewer's board
+  env: { CASINO_MULTIPLAYER: "1", CASINOBENCH_GAMES: "", CASINOBENCH_HANDS: "1" }
+
+out: out/native-floor/casino
+drive: auto-loop                  # the agent owns its observe→act loop (multi-round in one prompt)
+deadline_s: 1200
+idle_timeout_s: 300
+
+prompt: |
+  Play the casino games and win as many chips as you can, using the `casino`
+  command (your seat is already configured):
+
+    casino lobby                       — open games and your bankroll
+    casino rules <game_id>             — a game's rules
+    casino join <game_id>              — take a seat at a game
+    casino observe                     — {request_id, observation, legal_actions, done}
+    casino act <request_id> '<json>'   — play ONE of the legal actions
+
+  Play through the `casino` CLI. Begin with `casino lobby`.
+
+agents:
+  # subscription seats (codex/claude oauth) → ACP trajectory only
+  - { name: codex, agent: codex-acp, model: gpt-5.5, count: 2, instructions: prompts/aggressive.md }
+  - { name: claude, agent: claude-agent-acp, model: claude-sonnet-4-6, count: 2, instructions: prompts/cautious.md }
+  # proxy seat (API key fronted by a per-seat LiteLLM proxy) → raw + ACP trajectory.
+  # openhands routes its LLM through the proxy (LLM_BASE_URL/LLM_API_KEY), so this
+  # seat is the one with a raw llm_trajectory.jsonl. Provider-qualified model.
+  - { name: openhands, agent: openhands, model: deepseek/deepseek-v4-pro, instructions: prompts/aggressive.md }

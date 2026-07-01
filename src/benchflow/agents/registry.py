@@ -215,6 +215,7 @@ _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text(
 _DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text()
 
 
+
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
     py = (
@@ -419,6 +420,11 @@ class AgentConfig:
     disallow_web_tools_launch_suffix: str = ""
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
+    instruction_filename: str = "AGENTS.md"
+    # The conventional per-agent instruction file this agent reads from its cwd
+    # (claude-agent-acp → CLAUDE.md, gemini → GEMINI.md, everything else →
+    # AGENTS.md). The concurrent-floor runner writes each seat's `instructions:`
+    # body into <cwd>/<instruction_filename> before launch.
 
 
 # Agent registry — all supported agents
@@ -438,6 +444,7 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
+        instruction_filename="CLAUDE.md",
         requires_env=["ANTHROPIC_API_KEY"],
         api_protocol="anthropic-messages",
         env_mapping={
@@ -564,6 +571,7 @@ AGENTS: dict[str, AgentConfig] = {
         install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
         launch_cmd=_js_agent_launch("gemini", "--acp --yolo"),
         protocol="acp",
+        instruction_filename="GEMINI.md",
         # The Gemini CLI reads GEMINI_API_KEY natively. GOOGLE_API_KEY is
         # accepted as an alias: auto_inherit_env mirrors it both ways so users
         # can set either one. Advertise GEMINI_API_KEY here so `agent show`
@@ -1047,6 +1055,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
+        instruction_filename=config.instruction_filename,
     )
 
 
@@ -1182,6 +1191,7 @@ def register_agent(
     disallow_web_tools_setup_cmd: str = "",
     disallow_web_tools_owned_paths: list[str] | None = None,
     disallow_web_tools_launch_suffix: str = "",
+    instruction_filename: str = "AGENTS.md",
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -1221,6 +1231,7 @@ def register_agent(
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
+        instruction_filename=instruction_filename,
     )
     AGENTS[name] = config
     AGENT_INSTALLERS[name] = install_cmd

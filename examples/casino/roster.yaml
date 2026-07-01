@@ -1,0 +1,26 @@
+# Pure roster — the file form of repeated --agent/--model (the A/M axis only).
+# Task / service / sandbox / out / drive come from the standard `bench eval run`
+# flags, NOT this file. `instructions:` paths are relative to this file.
+#
+#   set -a; . ~/sb-run.env; set +a
+#   bench eval run \
+#     --agents               examples/casino/roster.yaml \
+#     --environment-manifest benchmarks/casinobench/environment.toml \
+#     --tasks-dir            benchmarks/casinobench/tasks/blackjack \
+#     --sandbox docker --drive auto-loop \
+#     --url-env CASINO_URL --seat-env CASINOBENCH_SEAT_ID \
+#     --standings-path /_admin/standings --multiplayer \
+#     --out out/floor/blackjack
+#
+# (the --url-env/--seat-env/--standings-path/--multiplayer flags are on the
+#  deprecated `arena run` alias today; folding them onto `eval run` is the next step.)
+
+agents:
+  # No `name:` → the seat/player id is <agent>-<model> (e.g. codex-acp-gpt-5.5),
+  # so the floor + viewer show which agent + model each player is.
+  # subscription seats (oauth) → ACP trajectory only
+  - { agent: codex-acp,        model: gpt-5.5,           count: 2, instructions: prompts/aggressive.md }
+  - { agent: claude-agent-acp, model: claude-sonnet-4-6, count: 2, instructions: prompts/cautious.md }
+  # proxy seat (API key → per-seat LiteLLM proxy) → raw + ACP trajectory.
+  # deepagents is in the seat image; openhands would need adding to install-node-agents.sh.
+  - { agent: deepagents,       model: deepseek/deepseek-v4-pro,    instructions: prompts/aggressive.md }
