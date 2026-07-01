@@ -1110,6 +1110,21 @@ def resolve_agent(spec: str) -> AgentConfig:
         if shorthand is not None:
             return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
 
+        # Miss-driven manifest auto-load (#876 Phase 2a): fetch DECLARATIVE
+        # manifest agents from the pinned agents source (data only — their
+        # install/launch strings run in the sandbox, same trust as task
+        # sources) and retry. One-shot per process; local names always win.
+        from benchflow.agents import remote_manifests
+
+        if remote_manifests.autoload_remote_manifest_agents():
+            name = AGENT_ALIASES.get(name, name)
+            if name in AGENTS:
+                config = AGENTS[name]
+                return _acpx_wrap(config) if protocol == "acpx" else config
+            shorthand = _resolve_namespace_shorthand(name)
+            if shorthand is not None:
+                return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
+
         from difflib import get_close_matches
 
         # Breadcrumb: if agent plugin packages failed to load at import time
@@ -1123,6 +1138,8 @@ def resolve_agent(spec: str) -> AgentConfig:
                 f" Note: agent plugin(s) failed to load at startup: {failed} "
                 "(see the startup warning for details)."
             )
+        if remote_manifests.last_source_description:
+            plugin_hint += f" ({remote_manifests.last_source_description} consulted)"
         close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
         if close:
             raise KeyError(
