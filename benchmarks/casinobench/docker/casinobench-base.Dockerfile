@@ -36,4 +36,13 @@ RUN pip install --no-cache-dir "/opt/casinobench-engine[service]" && \
     casino --help >/dev/null && \
     echo "casino-service + casino cli ok"
 
+# Reinstall env_0_casino from the (patched) build-context copy so the `casino` CLI
+# carries the cwd-based seat fallback: in the shared-sandbox floor each seat runs
+# in /work/<seat>, so cwd IS the seat id even when the agent runtime doesn't
+# propagate CASINOBENCH_SEAT_ID to its casino subprocess.
+COPY casino-pkg /opt/casino-pkg-patched
+RUN pip install --no-cache-dir --no-deps --force-reinstall /opt/casino-pkg-patched && \
+    python -c "import inspect, env_0_casino.cli as c; assert 'seat identity' in inspect.getsource(c._seat), 'cwd-seat patch missing'" && \
+    echo "casino cli cwd-seat fallback ok"
+
 WORKDIR /app

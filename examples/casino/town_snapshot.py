@@ -124,7 +124,12 @@ async function refreshSeats(){
     const live=SEATS.slice().sort().join(',');
     if(BOARD_ROSTER===null)
       BOARD_ROSTER=(typeof RUN!=='undefined'&&RUN.players)?RUN.players.slice().sort().join(','):live;
-    if(BOARD_ROSTER && live && live!==BOARD_ROSTER){ location.reload(); return; } // new run -> reseat
+    if(BOARD_ROSTER && live && live!==BOARD_ROSTER){   // a genuinely new run -> reseat
+      // reload at most ONCE per distinct roster so a stale/mismatched state.json
+      // can never spin an infinite reload loop (belt-and-suspenders).
+      if(sessionStorage.getItem('bfRoster')!==live){ sessionStorage.setItem('bfRoster',live); location.reload(); }
+      return;
+    }
     if(RD_SEAT) openRun(RD_SEAT);
   }catch(e){}
 }
