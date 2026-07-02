@@ -12,10 +12,12 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import logging
 import re
 import shlex
 import shutil
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +26,18 @@ import yaml
 
 from benchflow._utils.benchmark_repos import ResolvedSource
 
-_ADAPTER_VERSION = "2026-07-01.6"
+_ADAPTER_VERSION = "2026-07-02.3"
 _NOOP_EXCLUDE_TAG = "__benchflow_exclude_no_tools__"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _TOKEN_PLACEHOLDER_RE = re.compile(r"\$\{token\.([A-Za-z0-9_]+)\}")
+_MISSING_CONFIG_REF_RE = re.compile(
+    r"configs/(?:gcp-service_account\.keys\.json|google_credentials\.json)"
+)
 _TOOLATHLON_UVX_PACKAGE_PINS = {
     "office-word-mcp-server": "office-word-mcp-server==1.1.11",
 }
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -137,7 +144,9 @@ def _detect_adapter(ctx: _SourceContext) -> str | None:
 
 
 def _adapted_output_dir(ctx: _SourceContext, adapter_name: str) -> Path:
-    key = "|".join([adapter_name, _ADAPTER_VERSION, ctx.repo, ctx.resolved_sha, ctx.source_path])
+    key = "|".join(
+        [adapter_name, _ADAPTER_VERSION, ctx.repo, ctx.resolved_sha, ctx.source_path]
+    )
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
     repo_slug = _safe_name(ctx.repo.replace("/", "__"))
     return Path.cwd() / ".cache" / "source-adapters" / adapter_name / f"{repo_slug}__{digest}"
@@ -177,6 +186,10 @@ def _write_text(path: Path, value: str) -> None:
 def _write_toml(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(tomli_w.dumps(payload))
+
+
+def _adapter_resource_text(name: str) -> str:
+    return resources.files("benchflow.adapters.resources").joinpath(name).read_text()
 
 
 def _mcp_atlas_csv(ctx: _SourceContext) -> Path | None:
@@ -274,13 +287,19 @@ def _materialize_mcp_atlas(ctx: _SourceContext, output_dir: Path) -> None:
             "        python /mcp_bridge.py\n",
         )
         _write_text(task_dir / "environment" / "enabled_tools.txt", "\n".join(tools) + "\n")
-        _write_text(task_dir / "environment" / "mcp_bridge.py", _MCP_ATLAS_BRIDGE_SCRIPT)
+        _write_text(
+            task_dir / "environment" / "mcp_bridge.py",
+            _adapter_resource_text("mcp_atlas_bridge.py"),
+        )
         _write_text(
             task_dir / "tests" / "claims.json",
             json.dumps({"prompt": prompt, "claims": claims}, indent=2, ensure_ascii=False)
             + "\n",
         )
-        _write_text(task_dir / "tests" / "mcp_atlas_judge.py", _MCP_ATLAS_JUDGE_SCRIPT)
+        _write_text(
+            task_dir / "tests" / "mcp_atlas_judge.py",
+            _adapter_resource_text("mcp_atlas_judge.py"),
+        )
         _write_text(
             task_dir / "tests" / "test.sh",
             "#!/usr/bin/env bash\n"
@@ -334,8 +353,15 @@ def _materialize_toolathlon(
     if tasks_root is None:
         raise ValueError(f"{variant} source does not contain tasks/finalpool task dirs")
 
+    skipped: list[dict[str, str]] = []
     for upstream_task in sorted(tasks_root.iterdir()):
         if not (upstream_task / "task_config.json").is_file():
+            continue
+        unsupported_reason = _toolathlon_unsupported_reason(
+            ctx, upstream_task, variant=variant
+        )
+        if unsupported_reason is not None:
+            skipped.append({"task_id": upstream_task.name, "reason": unsupported_reason})
             continue
         task_name = upstream_task.name
         task_dir = output_dir / _safe_name(task_name)
@@ -373,6 +399,53 @@ def _materialize_toolathlon(
             task_dir / "tests" / "test.sh",
             _toolathlon_test_sh(task_name=task_name, variant=variant),
         )
+    if skipped:
+        logger.warning(
+            "Skipped %d unsupported %s tasks while adapting %s",
+            len(skipped),
+            "Toolathlon-GYM" if variant == "gym" else "Toolathlon",
+            ctx.repo,
+        )
+        _write_text(
+            output_dir / ".benchflow-source-adapter-skipped.json",
+            json.dumps({"skipped": skipped}, indent=2, sort_keys=True) + "\n",
+        )
+
+
+def _toolathlon_unsupported_reason(
+    ctx: _SourceContext, task_dir: Path, *, variant: str
+) -> str | None:
+    if variant != "official":
+        return None
+    missing = sorted(
+        {
+            ref
+            for ref in _toolathlon_referenced_config_paths(task_dir)
+            if not (ctx.repo_root / ref).exists()
+        }
+    )
+    if not missing:
+        return None
+    return "references missing repo config: " + ", ".join(missing)
+
+
+def _toolathlon_referenced_config_paths(task_dir: Path) -> set[str]:
+    refs: set[str] = set()
+    for root_name in ("preprocess", "evaluation"):
+        root = task_dir / root_name
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file() or path.stat().st_size > 1_000_000:
+                continue
+            if path.suffix not in {".py", ".json", ".md", ".txt", ".yaml", ".yml"}:
+                continue
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                continue
+            refs.update(_MISSING_CONFIG_REF_RE.findall(text))
+    return refs
 
 
 def _toolathlon_instruction(task_dir: Path) -> str:
@@ -653,7 +726,7 @@ RUN rm -rf /tmp/toolathlon-src \\
     && git clone {repo_url} /tmp/toolathlon-src \\
     && cd /tmp/toolathlon-src \\
     && git checkout {ctx.resolved_sha} \\
-    && rsync -a --delete --exclude .git /tmp/toolathlon-src/ /workspace/ \\
+    && rsync -a --exclude .git /tmp/toolathlon-src/ /workspace/ \\
     && rm -rf /tmp/toolathlon-src
 RUN if [ -f /workspace/configs/global_configs_example.py ] && [ ! -f /workspace/configs/global_configs.py ]; then \\
         cp /workspace/configs/global_configs_example.py /workspace/configs/global_configs.py; \\
@@ -767,241 +840,3 @@ _TOOLATHLON_GYM_COMPOSE = """services:
       timeout: 5s
       retries: 10
 """
-
-
-_MCP_ATLAS_BRIDGE_SCRIPT = r'''#!/usr/bin/env python3
-from __future__ import annotations
-
-import asyncio
-import json
-import os
-from pathlib import Path
-from typing import Any
-
-import httpx
-from fastmcp import FastMCP
-from fastmcp.tools import FunctionTool
-
-
-UPSTREAM_URL = os.environ.get("MCP_ATLAS_UPSTREAM_URL", "http://127.0.0.1:1984").rstrip("/")
-ENABLED_TOOLS_FILE = os.environ.get("MCP_ENABLED_TOOLS_FILE", "/enabled_tools.txt")
-HOST = os.environ.get("MCP_ATLAS_BRIDGE_HOST", "0.0.0.0")
-PORT = int(os.environ.get("MCP_ATLAS_BRIDGE_PORT", "18765"))
-
-
-def load_enabled_tools() -> set[str]:
-    path = Path(ENABLED_TOOLS_FILE)
-    if not path.is_file():
-        return set()
-    return {line.strip() for line in path.read_text().splitlines() if line.strip()}
-
-
-async def fetch_upstream_tools() -> list[dict[str, Any]]:
-    last_error: Exception | None = None
-    async with httpx.AsyncClient(timeout=30) as client:
-        for _ in range(180):
-            try:
-                response = await client.post(f"{UPSTREAM_URL}/list-tools")
-                response.raise_for_status()
-                payload = response.json()
-                if isinstance(payload, list):
-                    return [item for item in payload if isinstance(item, dict)]
-                raise RuntimeError(f"unexpected /list-tools payload: {type(payload).__name__}")
-            except Exception as exc:
-                last_error = exc
-                await asyncio.sleep(1)
-    raise RuntimeError(f"MCP Atlas upstream never became ready: {last_error}")
-
-
-def tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
-    schema = (
-        tool.get("inputSchema")
-        or tool.get("input_schema")
-        or tool.get("parameters")
-        or {"type": "object", "properties": {}}
-    )
-    if not isinstance(schema, dict):
-        return {"type": "object", "properties": {}}
-    schema = dict(schema)
-    schema.setdefault("type", "object")
-    schema.setdefault("properties", {})
-    return schema
-
-
-def content_to_text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts: list[str] = []
-        for item in value:
-            text = content_to_text(item)
-            if text:
-                parts.append(text)
-        return "\n".join(parts)
-    if isinstance(value, dict):
-        kind = value.get("type")
-        if kind == "text" and isinstance(value.get("text"), str):
-            return value["text"]
-        if isinstance(value.get("text"), str):
-            return value["text"]
-        return json.dumps(value, ensure_ascii=False)
-    if value is None:
-        return ""
-    return str(value)
-
-
-def make_proxy(tool_name: str):
-    async def proxy(**kwargs: Any) -> str:
-        async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(
-                f"{UPSTREAM_URL}/call-tool",
-                json={"tool_name": tool_name, "tool_args": kwargs},
-            )
-            response.raise_for_status()
-            return content_to_text(response.json())
-
-    proxy.__name__ = "call_" + "".join(ch if ch.isalnum() else "_" for ch in tool_name)
-    return proxy
-
-
-async def build_server() -> FastMCP:
-    enabled_tools = load_enabled_tools()
-    upstream_tools = await fetch_upstream_tools()
-    server = FastMCP("mcp-atlas-bridge")
-    registered = 0
-    for tool in upstream_tools:
-        name = tool.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        if enabled_tools and name not in enabled_tools:
-            continue
-        server.add_tool(
-            FunctionTool(
-                name=name,
-                description=str(tool.get("description") or ""),
-                parameters=tool_schema(tool),
-                fn=make_proxy(name),
-                run_in_thread=False,
-            )
-        )
-        registered += 1
-    if registered == 0:
-        raise RuntimeError(
-            f"MCP Atlas bridge registered zero tools from {len(upstream_tools)} upstream tools"
-        )
-    print(f"MCP Atlas bridge registered {registered} tools on port {PORT}", flush=True)
-    return server
-
-
-if __name__ == "__main__":
-    mcp = asyncio.run(build_server())
-    mcp.run(transport="streamable-http", host=HOST, port=PORT, path="/mcp")
-'''
-
-
-_MCP_ATLAS_JUDGE_SCRIPT = r'''#!/usr/bin/env python3
-import json
-import os
-import sys
-import urllib.error
-import urllib.request
-from pathlib import Path
-
-
-def collect_text(value):
-    chunks = []
-    if isinstance(value, str):
-        chunks.append(value)
-    elif isinstance(value, list):
-        for item in value:
-            chunks.extend(collect_text(item))
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            if key.lower() in {"text", "content", "message", "output"}:
-                chunks.extend(collect_text(item))
-            elif isinstance(item, (dict, list)):
-                chunks.extend(collect_text(item))
-    return chunks
-
-
-def read_final_answer():
-    path = Path("/logs/agent/acp_trajectory.jsonl")
-    if not path.exists():
-        return ""
-    texts = []
-    for line in path.read_text(errors="replace").splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        texts.extend(collect_text(event))
-    return "\n".join(texts[-20:])[-12000:]
-
-
-def write_reward(reward, details):
-    out = Path("/logs/verifier")
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "reward.txt").write_text(f"{reward}\n")
-    (out / "reward.json").write_text(
-        json.dumps({"reward": reward, "details": details}, indent=2)
-    )
-
-
-def judge(payload, answer):
-    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    if not api_key:
-        return 0.0, {"error": "OPENROUTER_API_KEY is not set"}
-    model = os.environ.get("MCP_ATLAS_JUDGE_MODEL", "qwen/qwen-plus")
-    claims = payload.get("claims") or []
-    prompt = (
-        "You are grading whether an agent answer satisfies factual claims for a tool-use task.\n"
-        "Return only JSON with keys reward (0 or 1) and justification.\n\n"
-        f"Task prompt:\n{payload.get('prompt','')}\n\n"
-        f"Required claims:\n{json.dumps(claims, indent=2)}\n\n"
-        f"Agent answer/transcript excerpt:\n{answer}\n"
-    )
-    body = json.dumps(
-        {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
-        }
-    ).encode()
-    req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        return 0.0, {"error": f"judge HTTP {e.code}: {e.read().decode(errors='replace')[:500]}"}
-    except Exception as e:
-        return 0.0, {"error": f"judge failed: {e}"}
-    content = data["choices"][0]["message"]["content"]
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        parsed = {"reward": 0, "justification": content[:1000]}
-    reward = 1.0 if float(parsed.get("reward", 0)) >= 0.5 else 0.0
-    return reward, {"judge": parsed, "model": model}
-
-
-def main():
-    payload = json.loads(Path(sys.argv[1]).read_text())
-    answer = read_final_answer()
-    if not answer.strip():
-        write_reward(0.0, {"error": "empty agent answer/transcript"})
-        return
-    reward, details = judge(payload, answer)
-    write_reward(reward, details)
-
-
-if __name__ == "__main__":
-    main()
-'''

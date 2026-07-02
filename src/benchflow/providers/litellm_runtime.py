@@ -661,7 +661,9 @@ async def _upload_runtime_files_to_sandbox(
     return paths
 
 
-async def _ensure_sandbox_litellm(sandbox: Any, *, venv_dir: str) -> str:
+async def _ensure_sandbox_litellm(
+    sandbox: Any, *, venv_dir: str, install_timeout_sec: int = 600
+) -> str:
     vq = shlex.quote(venv_dir)
     # Prefer uv to bootstrap the venv: many sandbox base images ship a python3
     # without ensurepip and marked externally-managed (PEP 668), where both
@@ -696,7 +698,7 @@ import litellm
 print(litellm.__version__ if hasattr(litellm, "__version__") else "ok")
 PY
 """
-    result = await sandbox.exec(command, timeout_sec=600)
+    result = await sandbox.exec(command, timeout_sec=install_timeout_sec)
     if result.return_code != 0:
         raise RuntimeError(_exec_details("install LiteLLM in sandbox", result))
     return f"{venv_dir}/bin/python"
@@ -779,6 +781,7 @@ async def _start_sandbox_litellm(
     agent_env: dict[str, str],
     session_id: str,
     agent_name: str,
+    install_timeout_sec: int = 600,
 ) -> SandboxLiteLLMProcess:
     token = uuid4().hex[:16]
     runtime_dir = f"{LITELLM_SANDBOX_ROOT}/{token}"
@@ -788,7 +791,9 @@ async def _start_sandbox_litellm(
         runtime_dir=runtime_dir,
         config=config,
     )
-    python = await _ensure_sandbox_litellm(sandbox, venv_dir=paths["venv"])
+    python = await _ensure_sandbox_litellm(
+        sandbox, venv_dir=paths["venv"], install_timeout_sec=install_timeout_sec
+    )
     env = dict(agent_env)
     env.update(
         {
@@ -1152,6 +1157,7 @@ async def ensure_litellm_runtime(
     session_id: str = "",
     usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
     sandbox: Any | None = None,
+    sandbox_setup_timeout: int = 120,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1240,6 +1246,7 @@ async def ensure_litellm_runtime(
                 agent_env=agent_env,
                 session_id=session_id,
                 agent_name=agent,
+                install_timeout_sec=max(600, int(sandbox_setup_timeout)),
             )
         else:
             server = await _start_host_litellm(

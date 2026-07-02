@@ -404,21 +404,28 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
-    acp_model_config_id: str = ""
     # ACP session config option id used for model selection when an agent
     # exposes model as a session option instead of implementing set_model.
-    acp_effort_config_id: str = ""
+    acp_model_config_id: str = ""
     # ACP session config option id used for reasoning/thinking effort.
-    disallow_web_tools_setup_cmd: str = ""
+    acp_effort_config_id: str = ""
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
     # target home so settings land in the same home the agent will run from.
-    disallow_web_tools_owned_paths: list[str] = field(default_factory=list)
+    disallow_web_tools_setup_cmd: str = ""
     # Directories under $HOME that disallow_web_tools_setup_cmd may create and
     # that must remain writable by the sandbox user after the root-run setup.
-    disallow_web_tools_launch_suffix: str = ""
+    disallow_web_tools_owned_paths: list[str] = field(default_factory=list)
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
+    disallow_web_tools_launch_suffix: str = ""
+    # How task-declared MCP servers are delivered to the agent:
+    # "acp" sends them in session/new; "native-config" writes an agent-specific
+    # config file before launch (for agents whose ACP server drops/reformats
+    # MCP fields).
+    task_mcp_transport: str = "acp"
+    # Native-config target path, relative to $HOME unless absolute.
+    task_mcp_config_path: str = ""
 
 
 # Agent registry — all supported agents
@@ -849,6 +856,8 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
         },
         supports_acp_set_model=False,
+        task_mcp_transport="native-config",
+        task_mcp_config_path=".openhands/mcp.json",
         disallow_web_tools_setup_cmd=(
             'mkdir -p "$BENCHFLOW_AGENT_HOME/.openhands" && '
             "printf '[agent]\\nenable_browsing = false\\n' "
@@ -1047,6 +1056,8 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
+        task_mcp_transport=config.task_mcp_transport,
+        task_mcp_config_path=config.task_mcp_config_path,
     )
 
 

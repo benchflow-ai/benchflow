@@ -18,10 +18,12 @@ import pytest
 from benchflow.acp.client import ACPClient
 from benchflow.acp.transport import Transport
 from benchflow.acp.types import McpServerSpec
+from benchflow.agents.registry import AGENTS, AgentConfig
 from benchflow.rollout import (
     Role,
     Rollout,
     RolloutConfig,
+    _install_native_task_mcp_config,
     _openhands_mcp_config,
     _task_mcp_specs,
     _task_mcp_specs_for_agent,
@@ -205,6 +207,49 @@ def test_openhands_mcp_servers_are_not_sent_over_acp() -> None:
     assert len(_task_mcp_specs_for_agent("claude-agent-acp", task)) == 1
 
 
+def test_native_config_mcp_routing_is_registry_driven() -> None:
+    """Guards PR #878's rollout-kernel cleanup against agent-name branching."""
+    task = _task_with_mcp(
+        MCPServerConfig(name="h", transport="streamable-http", url="http://x/mcp")
+    )
+    native_cfg = AgentConfig(
+        name="custom-native",
+        install_cmd=":",
+        launch_cmd="custom-native",
+        task_mcp_transport="native-config",
+        task_mcp_config_path=".custom/mcp.json",
+    )
+    acp_cfg = AgentConfig(name="custom-acp", install_cmd=":", launch_cmd="custom-acp")
+
+    assert _task_mcp_specs_for_agent("custom-native", task, native_cfg) == []
+    assert len(_task_mcp_specs_for_agent("custom-acp", task, acp_cfg)) == 1
+
+
+@pytest.mark.asyncio
+async def test_native_task_mcp_config_installer_uses_registry_path() -> None:
+    """Native task-MCP config is installed via AgentConfig, not an OpenHands branch."""
+    task = _task_with_mcp(
+        MCPServerConfig(name="h", transport="streamable-http", url="http://x/mcp")
+    )
+    agent_cfg = AgentConfig(
+        name="custom-native",
+        install_cmd=":",
+        launch_cmd="custom-native",
+        task_mcp_transport="native-config",
+        task_mcp_config_path=".custom/mcp.json",
+    )
+    env = MagicMock()
+    env.exec = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    await _install_native_task_mcp_config(
+        env, task, agent_cfg=agent_cfg, cred_home="/home/agent", owner="agent"
+    )
+
+    uploaded_path = env.upload_file.await_args.args[1]
+    assert uploaded_path == "/home/agent/.custom/mcp.json"
+
+
 def test_task_mcp_specs_handles_absent_config() -> None:
     """No task, or a task with no MCP servers, yields an empty spec list."""
     assert _task_mcp_specs(None) == []
@@ -346,7 +391,7 @@ async def test_connect_as_omits_openhands_mcp_servers_from_acp(tmp_path) -> None
     trial._rollout_dir = tmp_path
     trial._timing = {}
     trial._agent_cwd = "/app"
-    trial._agent_cfg = MagicMock()
+    trial._agent_cfg = AGENTS["openhands"]
     trial._agent_launch = "openhands"
     trial._phase = "installed"
     trial._disallow_web_tools = False
@@ -356,7 +401,7 @@ async def test_connect_as_omits_openhands_mcp_servers_from_acp(tmp_path) -> None
     trial._planes = _fake_planes()
     trial._planes.agent_launch.return_value = "openhands"
     trial._planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
-    trial._planes.install_agent = AsyncMock()
+    trial._planes.install_agent = AsyncMock(return_value=AGENTS["openhands"])
     trial._planes.write_credential_files = AsyncMock()
     trial._planes.upload_subscription_auth = AsyncMock()
     trial._planes.apply_web_tool_policy = AsyncMock()

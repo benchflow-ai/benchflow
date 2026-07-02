@@ -149,6 +149,8 @@ params:
     task_toml = (generated / "task.toml").read_text()
     test_sh = (generated / "tests" / "test.sh").read_text()
     assert "lockon0927/toolathlon-task-image" in dockerfile
+    assert "rsync -a --delete" not in dockerfile
+    assert "rsync -a --exclude .git /tmp/toolathlon-src/ /workspace/" in dockerfile
     assert "global_configs_example.py" in dockerfile
     assert "global_configs.py" in dockerfile
     assert "cp \"$(command -v uv)\" /usr/local/bin/uv" in dockerfile
@@ -224,3 +226,58 @@ params:
     setup_command = task.config.environment.setup_commands[0].command
     assert 'chmod -R go-rwx "$private"' in setup_command
     assert "postgres:" in (generated / "environment" / "docker-compose.yaml").read_text()
+
+
+def test_toolathlon_adapter_skips_tasks_with_missing_repo_configs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Guards PR #878 against materializing Toolathlon tasks missing credentials."""
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "Toolathlon"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "global_preparation").mkdir()
+    (repo / "configs" / "mcp_servers").mkdir(parents=True)
+    (repo / "configs" / "users_data.json").write_text("{}")
+    (repo / "configs" / "mcp_servers" / "filesystem.yaml").write_text(
+        """
+type: stdio
+name: filesystem
+params:
+  command: npx
+  args:
+    - "-y"
+    - "@modelcontextprotocol/server-filesystem"
+    - "${agent_workspace}"
+"""
+    )
+    task_dir = repo / "tasks" / "finalpool" / "ab-testing"
+    (task_dir / "docs").mkdir(parents=True)
+    (task_dir / "preprocess").mkdir()
+    (task_dir / "docs" / "agent_system_prompt.md").write_text(
+        "Workspace: !!<<<<||||workspace_dir||||>>>>!!\n"
+    )
+    (task_dir / "docs" / "task.md").write_text("Do the task.\n")
+    (task_dir / "task_config.json").write_text(
+        json.dumps({"needed_mcp_servers": ["filesystem"], "needed_local_tools": []})
+    )
+    (task_dir / "preprocess" / "main.py").write_text(
+        "open('configs/gcp-service_account.keys.json').read()\n"
+    )
+
+    adapted = adapt_resolved_source_if_needed(
+        _resolved(repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool")
+    )
+
+    assert not (adapted.path / "ab-testing").exists()
+    skipped = json.loads(
+        (adapted.path / ".benchflow-source-adapter-skipped.json").read_text()
+    )
+    assert skipped == {
+        "skipped": [
+            {
+                "reason": "references missing repo config: "
+                "configs/gcp-service_account.keys.json",
+                "task_id": "ab-testing",
+            }
+        ]
+    }

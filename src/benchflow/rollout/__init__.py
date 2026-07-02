@@ -67,6 +67,7 @@ from benchflow._types import Role, Scene, Turn
 from benchflow._utils.scoring import classify_error as classify_error
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
+from benchflow.agents.registry import AGENTS
 from benchflow.contracts import (
     AgentProtocolError,
     AskUserRequest,
@@ -252,24 +253,30 @@ def _task_mcp_specs(task: Any) -> list[McpServerSpec]:
     ]
 
 
-def _task_mcp_specs_for_agent(agent: str, task: Any) -> list[McpServerSpec]:
+def _agent_uses_native_task_mcp_config(agent: str, agent_cfg: Any | None = None) -> bool:
+    if agent_cfg is None:
+        agent_base = agent.split()[0]
+        agent_cfg = AGENTS.get(agent_base)
+    return getattr(agent_cfg, "task_mcp_transport", "acp") == "native-config"
+
+
+def _task_mcp_specs_for_agent(
+    agent: str, task: Any, agent_cfg: Any | None = None
+) -> list[McpServerSpec]:
     """Return MCP specs to pass over ACP for this agent.
 
-    OpenHands' ACP server currently converts ACP MCP objects into FastMCP config
-    by dumping the Pydantic objects. That path preserves ACP ``headers`` as a
-    list and drops BenchFlow's tool-filter metadata, which FastMCP rejects for
-    transformed MCP servers. OpenHands has a native ``~/.openhands/mcp.json``
-    path that uses the exact dict-shaped FastMCP schema, so BenchFlow installs
-    task MCP servers there instead of sending them via ``session/new``.
+    Agents may declare a native task-MCP config path in their registry entry.
+    Those agents load task MCP servers from that file, so BenchFlow must not
+    also send the same servers over ACP ``session/new``.
     """
 
-    if agent == "openhands":
+    if _agent_uses_native_task_mcp_config(agent, agent_cfg):
         return []
     return _task_mcp_specs(task)
 
 
-def _openhands_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
-    """Return OpenHands/FastMCP ``mcp.json`` content for task MCP servers."""
+def _fastmcp_task_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return FastMCP ``mcp.json`` content for task MCP servers."""
 
     servers: dict[str, dict[str, Any]] = {}
     for spec in _task_mcp_specs(task):
@@ -304,19 +311,32 @@ def _openhands_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
     return {"mcpServers": servers}
 
 
-async def _install_openhands_mcp_config(
+def _openhands_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    """Compatibility wrapper for tests and older imports."""
+
+    return _fastmcp_task_mcp_config(task)
+
+
+async def _install_native_task_mcp_config(
     env: Any,
     task: Any,
     *,
+    agent_cfg: Any | None,
     cred_home: str,
     owner: str | None,
 ) -> None:
-    config = _openhands_mcp_config(task)
+    if getattr(agent_cfg, "task_mcp_transport", "acp") != "native-config":
+        return
+    config_path = getattr(agent_cfg, "task_mcp_config_path", "")
+    if not config_path:
+        return
+    config = _fastmcp_task_mcp_config(task)
     if not config["mcpServers"]:
         return
+    target = config_path if config_path.startswith("/") else f"{cred_home}/{config_path}"
     await upload_credential(
         env,
-        f"{cred_home}/.openhands/mcp.json",
+        target,
         json.dumps(config, indent=2, sort_keys=True) + "\n",
         owner=owner,
     )
@@ -857,13 +877,13 @@ class Rollout:
             cfg.primary_model,
             cred_home,
         )
-        if agent_name == "openhands":
-            await _install_openhands_mcp_config(
-                self._env,
-                self._task,
-                cred_home=cred_home,
-                owner=cfg.sandbox_user,
-            )
+        await _install_native_task_mcp_config(
+            self._env,
+            self._task,
+            agent_cfg=self._agent_cfg,
+            cred_home=cred_home,
+            owner=cfg.sandbox_user,
+        )
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
             await self._planes.upload_subscription_auth(
                 self._env, agent_name, cred_home
@@ -935,6 +955,7 @@ class Rollout:
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
+            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
         )
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
@@ -973,7 +994,9 @@ class Rollout:
                 agent_cwd=self._agent_cwd,
                 reasoning_effort=cfg.primary_reasoning_effort,
                 mcp_servers=_task_mcp_specs_for_agent(
-                    cfg.primary_agent, getattr(self, "_task", None)
+                    cfg.primary_agent,
+                    getattr(self, "_task", None),
+                    getattr(self, "_agent_cfg", None),
                 ),
             )
         self._native_usage_checkpoint = None
@@ -1889,6 +1912,7 @@ class Rollout:
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
+            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
@@ -1917,13 +1941,13 @@ class Rollout:
                 role.model,
                 cred_home,
             )
-            if role.agent == "openhands":
-                await _install_openhands_mcp_config(
-                    self._env,
-                    self._task,
-                    cred_home=cred_home,
-                    owner=cfg.sandbox_user,
-                )
+            await _install_native_task_mcp_config(
+                self._env,
+                getattr(self, "_task", None),
+                agent_cfg=agent_cfg,
+                cred_home=cred_home,
+                owner=cfg.sandbox_user,
+            )
             if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
                 await self._planes.upload_subscription_auth(
                     self._env, role.agent, cred_home
@@ -1977,7 +2001,7 @@ class Rollout:
                 agent_cwd=self._agent_cwd,
                 reasoning_effort=role.reasoning_effort,
                 mcp_servers=_task_mcp_specs_for_agent(
-                    role.agent, getattr(self, "_task", None)
+                    role.agent, getattr(self, "_task", None), agent_cfg
                 ),
             )
         self._reapply_ask_user_handler()
