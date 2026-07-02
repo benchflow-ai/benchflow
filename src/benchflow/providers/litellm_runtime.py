@@ -1060,6 +1060,24 @@ def _wire_litellm_agent_env(
             LITELLM_MASTER_KEY_ENV: master_key,
         }
     )
+    # Generic model-via-env: an agent whose registration maps
+    # BENCHFLOW_PROVIDER_MODEL into an agent-native env var AND declares
+    # supports_acp_set_model=False states, in data, that launch/env config owns
+    # model selection. Set the via-env flag so the ACP layer
+    # (_model_selection_owned_by_env) skips driving set_model AND any
+    # capability-advertised model config option — several agents (qwen-code,
+    # kilo, dimcode, ...) validate foreign model ids against their own catalog
+    # and reject the gateway alias with -32603. This generalizes the hardcoded
+    # codex-acp/openhands/claude-agent-acp branches below to every agent that
+    # declares the env-owned-model shape (e.g. the benchflow-ai/agents
+    # manifests), instead of growing the special-case list per agent.
+    _cfg = AGENTS.get(agent)
+    if (
+        _cfg is not None
+        and not _cfg.supports_acp_set_model
+        and _cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
+    ):
+        updated[LITELLM_MODEL_VIA_ENV] = "1"
     if agent == "codex-acp":
         updated["OPENAI_BASE_URL"] = openai_base_url
         updated["OPENAI_API_KEY"] = master_key
