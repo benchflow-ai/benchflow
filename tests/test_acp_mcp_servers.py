@@ -96,12 +96,24 @@ def _task_with_mcp(*configs: MCPServerConfig) -> SimpleNamespace:
 def test_task_mcp_specs_maps_each_transport() -> None:
     """streamable-http → http; stdio/sse pass through; fields carried across."""
     task = _task_with_mcp(
-        MCPServerConfig(name="pw", transport="stdio", command="npx", args=["-y", "x"]),
+        MCPServerConfig(
+            name="pw",
+            transport="stdio",
+            command="npx",
+            args=["-y", "x"],
+            cwd="/workspace",
+        ),
         MCPServerConfig(name="r", transport="sse", url="http://x/sse"),
         MCPServerConfig(name="h", transport="streamable-http", url="http://x/mcp"),
     )
     assert [spec.to_new_session_param() for spec in _task_mcp_specs(task)] == [
-        {"name": "pw", "command": "npx", "args": ["-y", "x"], "env": []},
+        {
+            "name": "pw",
+            "command": "npx",
+            "args": ["-y", "x"],
+            "env": [],
+            "cwd": "/workspace",
+        },
         {"type": "sse", "name": "r", "url": "http://x/sse", "headers": []},
         {"type": "http", "name": "h", "url": "http://x/mcp", "headers": []},
     ]
@@ -155,6 +167,7 @@ def test_openhands_mcp_config_uses_fastmcp_shape() -> None:
             transport="stdio",
             command="python",
             args=["server.py"],
+            cwd="/workspace/agent_workspace",
             env={"TOKEN": "abc"},
             exclude_tags=["unsafe"],
         ),
@@ -172,6 +185,7 @@ def test_openhands_mcp_config_uses_fastmcp_shape() -> None:
             "local": {
                 "command": "python",
                 "args": ["server.py"],
+                "cwd": "/workspace/agent_workspace",
                 "env": {"TOKEN": "abc"},
                 "transport": "stdio",
                 "enabled": True,

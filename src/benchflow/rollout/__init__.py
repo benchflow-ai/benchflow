@@ -236,6 +236,7 @@ def _task_mcp_specs(task: Any) -> list[McpServerSpec]:
             type=_MCP_TRANSPORT_TO_ACP_TYPE.get(config.transport, config.transport),
             command=config.command,
             args=list(config.args),
+            cwd=config.cwd,
             env=dict(config.env),
             url=config.url,
             headers=dict(config.headers),
@@ -289,6 +290,8 @@ def _openhands_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
                 "enabled": True,
                 **filters,
             }
+            if spec.cwd is not None:
+                server["cwd"] = spec.cwd
         else:
             server = {
                 "url": spec.url,

@@ -150,6 +150,7 @@ class McpServerSpec(BaseModel):
     type: str = "stdio"
     command: str | None = None
     args: list[str] = Field(default_factory=list)
+    cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
     url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
@@ -183,13 +184,16 @@ class McpServerSpec(BaseModel):
         """
         meta = self._meta_param()
         if self.type == "stdio":
-            return {
+            payload = {
                 "name": self.name,
                 "command": self.command,
                 "args": list(self.args),
                 "env": self._mapping_to_name_value(self.env),
                 **meta,
             }
+            if self.cwd is not None:
+                payload["cwd"] = self.cwd
+            return payload
         return {
             "type": self.type,
             "name": self.name,

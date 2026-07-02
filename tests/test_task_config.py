@@ -272,6 +272,25 @@ exclude_tags = ["admin"]
     assert server.exclude_tags == ["admin"]
 
 
+def test_task_config_accepts_mcp_stdio_cwd():
+    """Guards PR #878 Toolathlon MCP cwd propagation."""
+    cfg = TaskConfig.model_validate_toml(
+        """
+version = "1.0"
+
+[[environment.mcp_servers]]
+name = "word"
+transport = "stdio"
+command = "uvx"
+args = ["--from", "office-word-mcp-server", "word_mcp_server"]
+cwd = "/workspace/agent_workspace"
+"""
+    )
+
+    (server,) = cfg.environment.mcp_servers
+    assert server.cwd == "/workspace/agent_workspace"
+
+
 def test_task_config_accepts_environment_setup_commands():
     """Guards cd8e250b Toolathlon adapter work against setup-hook schema loss."""
     cfg = TaskConfig.model_validate_toml(

@@ -24,10 +24,13 @@ import yaml
 
 from benchflow._utils.benchmark_repos import ResolvedSource
 
-_ADAPTER_VERSION = "2026-07-01.3"
+_ADAPTER_VERSION = "2026-07-01.6"
 _NOOP_EXCLUDE_TAG = "__benchflow_exclude_no_tools__"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _TOKEN_PLACEHOLDER_RE = re.compile(r"\$\{token\.([A-Za-z0-9_]+)\}")
+_TOOLATHLON_UVX_PACKAGE_PINS = {
+    "office-word-mcp-server": "office-word-mcp-server==1.1.11",
+}
 
 
 @dataclass(frozen=True)
@@ -426,7 +429,7 @@ def _toolathlon_task_toml(
 
 
 def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
-    python_cmd = "/opt/venv/bin/python3" if variant == "gym" else "uv run python"
+    python_cmd = "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
     task_path = f"/workspace/tasks/finalpool/{task_name}"
     return "\n".join(
         [
@@ -448,29 +451,46 @@ def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
             "runpy.run_module('preprocess.main', run_name='__main__')",
             "PY",
             "fi",
+            'for private in "$TASK_DIR/groundtruth_workspace" "$TASK_DIR/evaluation"; do',
+            '  if [ -e "$private" ]; then',
+            '    chown -R root:root "$private"',
+            '    chmod -R go-rwx "$private"',
+            "  fi",
+            "done",
             "chmod -R a+rwX /workspace/agent_workspace",
         ]
     )
 
 
 def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
-    python_cmd = "/opt/venv/bin/python3" if variant == "gym" else "uv run python"
+    python_cmd = "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
     task_path = f"/workspace/tasks/finalpool/{task_name}"
+    interpreter_check = []
+    if variant == "official":
+        interpreter_check = [
+            'if [ ! -x /usr/local/bin/uv ]; then',
+            '  echo "BenchFlow Toolathlon verifier setup error: /usr/local/bin/uv is missing" >&2',
+            "  exit 127",
+            "fi",
+        ]
     return "\n".join(
         [
             "#!/usr/bin/env bash",
             "set -u",
+            *interpreter_check,
             "mkdir -p /logs/verifier",
             "cd /workspace",
             f"TASK_DIR={shlex.quote(task_path)}",
             "AGENT_WORKSPACE=/workspace/agent_workspace",
             'GROUNDTRUTH="$TASK_DIR/groundtruth_workspace"',
             "RES_LOG=/logs/verifier/toolathlon_result.json",
+            "EVAL_LOG=/logs/verifier/toolathlon_evaluator.log",
             "printf '{}' > \"$RES_LOG\"",
-            "if TASK_DIR=\"$TASK_DIR\" AGENT_WORKSPACE=\"$AGENT_WORKSPACE\" "
+            "set +e",
+            "TASK_DIR=\"$TASK_DIR\" AGENT_WORKSPACE=\"$AGENT_WORKSPACE\" "
             "GROUNDTRUTH=\"$GROUNDTRUTH\" RES_LOG=\"$RES_LOG\" "
             "PYTHONPATH=\"$TASK_DIR:/workspace:${PYTHONPATH:-}\" "
-            f"{python_cmd} - <<'PY'",
+            f"{python_cmd} - <<'PY' > \"$EVAL_LOG\" 2>&1",
             "import os, runpy, sys",
             "task_dir = os.environ['TASK_DIR']",
             "sys.path.insert(0, task_dir)",
@@ -483,9 +503,15 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
             "]",
             "runpy.run_module('evaluation.main', run_name='__main__')",
             "PY",
-            "then",
+            "status=$?",
+            "set -u",
+            "cat \"$EVAL_LOG\"",
+            "if [ \"$status\" -eq 0 ]; then",
             "  printf '{\"reward\": 1.0}\\n' > /logs/verifier/reward.json",
             "  printf '1.0\\n' > /logs/verifier/reward.txt",
+            "elif grep -q 'Traceback (most recent call last):' \"$EVAL_LOG\"; then",
+            '  echo "BenchFlow Toolathlon verifier setup error: evaluator crashed" >&2',
+            "  exit \"$status\"",
             "else",
             "  printf '{\"reward\": 0.0}\\n' > /logs/verifier/reward.json",
             "  printf '0.0\\n' > /logs/verifier/reward.txt",
@@ -520,6 +546,15 @@ def _toolathlon_mcp_server(
         for key, value in (params.get("env") or {}).items()
     }
     env = _normalize_toolathlon_env(env, variant=variant)
+    cwd = params.get("cwd")
+    cwd = _replace_toolathlon_placeholders(str(cwd), variant=variant) if cwd else None
+    if variant == "official" and command in {"uv", "uvx"}:
+        command = f"/usr/local/bin/{command}"
+        if args:
+            args = [
+                _TOOLATHLON_UVX_PACKAGE_PINS.get(arg, arg)
+                for arg in args
+            ]
     payload: dict[str, Any] = {
         "name": str(data.get("name") or server_name),
         "transport": "stdio",
@@ -527,6 +562,8 @@ def _toolathlon_mcp_server(
         "args": args,
         "exclude_tags": [_NOOP_EXCLUDE_TAG],
     }
+    if cwd:
+        payload["cwd"] = cwd
     if env:
         payload["env"] = env
     return payload
@@ -610,14 +647,22 @@ def _toolathlon_dockerfile(ctx: _SourceContext, *, variant: str) -> str:
     repo_url = f"https://github.com/{ctx.repo}.git"
     if variant == "official":
         return f"""FROM lockon0927/toolathlon-task-image:1016beta
+ENV PATH="/usr/local/bin:/root/.local/bin:$PATH"
 WORKDIR /workspace
 RUN rm -rf /tmp/toolathlon-src \\
     && git clone {repo_url} /tmp/toolathlon-src \\
     && cd /tmp/toolathlon-src \\
     && git checkout {ctx.resolved_sha} \\
     && rsync -a --delete --exclude .git /tmp/toolathlon-src/ /workspace/ \\
-    && rm -rf /tmp/toolathlon-src \\
-    && chmod -R a+rwX /workspace/local_servers
+    && rm -rf /tmp/toolathlon-src
+RUN if [ -f /workspace/configs/global_configs_example.py ] && [ ! -f /workspace/configs/global_configs.py ]; then \\
+        cp /workspace/configs/global_configs_example.py /workspace/configs/global_configs.py; \\
+    fi
+RUN if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/install.sh | sh; fi \\
+    && cp "$(command -v uv)" /usr/local/bin/uv \\
+    && if command -v uvx >/dev/null 2>&1; then cp "$(command -v uvx)" /usr/local/bin/uvx; else ln -sf /usr/local/bin/uv /usr/local/bin/uvx; fi \\
+    && chmod 755 /usr/local/bin/uv /usr/local/bin/uvx
+RUN [ ! -e /workspace/utils/local_servers ] || chmod -R a+rwX /workspace/utils/local_servers
 CMD ["/bin/bash"]
 """
     return f"""FROM ubuntu:22.04
@@ -628,8 +673,11 @@ RUN apt-get update && apt-get install -y \\
     libatspi2.0-0 libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 \\
     libxrandr2 libgbm1 libxcb1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2 \\
     && rm -rf /var/lib/apt/lists/*
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \\
+    && cp /root/.local/bin/uv /usr/local/bin/uv \\
+    && cp /root/.local/bin/uvx /usr/local/bin/uvx \\
+    && chmod 755 /usr/local/bin/uv /usr/local/bin/uvx
+ENV PATH="/usr/local/bin:/root/.local/bin:$PATH"
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \\
     && apt-get install -y nodejs \\
     && rm -rf /var/lib/apt/lists/* \\

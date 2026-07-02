@@ -98,6 +98,19 @@ params:
   cwd: "${agent_workspace}"
 """
     )
+    (mcp_dir / "word.yaml").write_text(
+        """
+type: stdio
+name: word
+params:
+  command: uvx
+  args:
+    - "--from"
+    - "office-word-mcp-server"
+    - "word_mcp_server"
+  cwd: "${agent_workspace}"
+"""
+    )
     task_dir = repo / "tasks" / "finalpool" / "arrange-workspace"
     (task_dir / "docs").mkdir(parents=True)
     (task_dir / "docs" / "agent_system_prompt.md").write_text(
@@ -105,7 +118,9 @@ params:
     )
     (task_dir / "docs" / "task.md").write_text("Arrange the workspace.\n")
     (task_dir / "task_config.json").write_text(
-        json.dumps({"needed_mcp_servers": ["filesystem"], "needed_local_tools": []})
+        json.dumps(
+            {"needed_mcp_servers": ["filesystem", "word"], "needed_local_tools": []}
+        )
     )
 
     adapted = adapt_resolved_source_if_needed(
@@ -121,15 +136,30 @@ params:
     assert task.config.environment.mcp_servers[0].exclude_tags == [
         "__benchflow_exclude_no_tools__"
     ]
-    assert "lockon0927/toolathlon-task-image" in (
-        generated / "environment" / "Dockerfile"
-    ).read_text()
-    assert "chmod -R a+rwX /workspace/local_servers" in (
-        generated / "environment" / "Dockerfile"
-    ).read_text()
-    assert "chmod -R a+rwX /workspace/agent_workspace" in (
-        generated / "task.toml"
-    ).read_text()
+    word = task.config.environment.mcp_servers[1]
+    assert word.command == "/usr/local/bin/uvx"
+    assert word.args == [
+        "--from",
+        "office-word-mcp-server==1.1.11",
+        "word_mcp_server",
+    ]
+    assert word.cwd == "/workspace/agent_workspace"
+    setup_command = task.config.environment.setup_commands[0].command
+    dockerfile = (generated / "environment" / "Dockerfile").read_text()
+    task_toml = (generated / "task.toml").read_text()
+    test_sh = (generated / "tests" / "test.sh").read_text()
+    assert "lockon0927/toolathlon-task-image" in dockerfile
+    assert "global_configs_example.py" in dockerfile
+    assert "global_configs.py" in dockerfile
+    assert "cp \"$(command -v uv)\" /usr/local/bin/uv" in dockerfile
+    assert "chmod -R a+rwX /workspace/utils/local_servers" in dockerfile
+    assert "chmod -R a+rwX /workspace/agent_workspace" in task_toml
+    assert 'chmod -R go-rwx "$private"' in setup_command
+    assert "BenchFlow Toolathlon verifier setup error" in test_sh
+    assert "toolathlon_evaluator.log" in test_sh
+    assert "evaluator crashed" in test_sh
+    assert "Traceback (most recent call last):" in test_sh
+    assert "/usr/local/bin/uv run python" in test_sh
 
 
 def test_toolathlon_gym_adapter_normalizes_postgres_env(
@@ -191,4 +221,6 @@ params:
     assert "chmod -R a+rwX /workspace/agent_workspace" in (
         generated / "task.toml"
     ).read_text()
+    setup_command = task.config.environment.setup_commands[0].command
+    assert 'chmod -R go-rwx "$private"' in setup_command
     assert "postgres:" in (generated / "environment" / "docker-compose.yaml").read_text()
