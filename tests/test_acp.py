@@ -1643,6 +1643,53 @@ class TestDiagnosticRegistry:
         for diag_cls in DIAGNOSTIC_REGISTRY:
             assert empty[diag_cls.field] is None
 
+    def test_diagnostic_reason_constants_share_scoring_source(self) -> None:
+        """Guards the fix from PR #858 against diagnostic reasons drifting off the shared scoring source."""
+        from typing import get_args, get_type_hints
+
+        from benchflow._utils.scoring import IDLE_TIMEOUT
+        from benchflow.diagnostics import (
+            DIAGNOSTIC_REASON_IDLE_TIMEOUT,
+            DIAGNOSTIC_REASON_SANDBOX_STARTUP_FAILED,
+            DIAGNOSTIC_REASON_TRANSPORT_CLOSED,
+            DIAGNOSTIC_REASON_WALL_CLOCK_TIMEOUT,
+            AgentPromptTimeoutDiagnostic,
+            DiagnosticReason,
+            IdleTimeoutDiagnostic,
+            SandboxStartupDiagnostic,
+            TransportClosedDiagnostic,
+        )
+
+        assert IDLE_TIMEOUT == DIAGNOSTIC_REASON_IDLE_TIMEOUT
+        assert set(get_args(DiagnosticReason)) == {
+            DIAGNOSTIC_REASON_IDLE_TIMEOUT,
+            DIAGNOSTIC_REASON_WALL_CLOCK_TIMEOUT,
+            DIAGNOSTIC_REASON_SANDBOX_STARTUP_FAILED,
+            DIAGNOSTIC_REASON_TRANSPORT_CLOSED,
+        }
+
+        reason_hints = {
+            diag_cls.__name__: get_type_hints(diag_cls)["reason"]
+            for diag_cls in (
+                IdleTimeoutDiagnostic,
+                AgentPromptTimeoutDiagnostic,
+                SandboxStartupDiagnostic,
+                TransportClosedDiagnostic,
+            )
+        }
+        assert get_args(reason_hints["IdleTimeoutDiagnostic"]) == (
+            DIAGNOSTIC_REASON_IDLE_TIMEOUT,
+        )
+        assert get_args(reason_hints["AgentPromptTimeoutDiagnostic"]) == (
+            DIAGNOSTIC_REASON_WALL_CLOCK_TIMEOUT,
+        )
+        assert get_args(reason_hints["SandboxStartupDiagnostic"]) == (
+            DIAGNOSTIC_REASON_SANDBOX_STARTUP_FAILED,
+        )
+        assert get_args(reason_hints["TransportClosedDiagnostic"]) == (
+            DIAGNOSTIC_REASON_TRANSPORT_CLOSED,
+        )
+
     def test_summary_warning_uses_registry_metadata(self) -> None:
         """Summary warning text comes from the registry's
         ``summary_description``, not a per-call f-string in evaluation.py."""

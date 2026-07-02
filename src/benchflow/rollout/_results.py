@@ -44,7 +44,7 @@ from benchflow.skill_policy import (
 )
 from benchflow.trajectories._capture import TrajectoryWriter
 from benchflow.trajectories.metrics import count_skill_invocations
-from benchflow.usage_tracking import UsageTrackingConfig
+from benchflow.usage_tracking import UsageTrackingConfig, normalize_usage_source
 
 logger = logging.getLogger(__name__)
 
@@ -332,7 +332,7 @@ def _build_rollout_result(
         n_cache_creation_tokens=n_cache_creation_tokens,
         total_tokens=total_tokens,
         cost_usd=cost_usd,
-        usage_source=usage_source,
+        usage_source=normalize_usage_source(usage_source),
         price_source=price_source,
         usage_details=usage_details,
         error=error,
