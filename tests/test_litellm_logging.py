@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -9,6 +10,50 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
+
+
+def test_pre_call_hook_drops_non_function_tools_for_chat_backend():
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {"type": "function", "function": {"name": "shell"}},
+            {"type": "namespace", "namespace": {"name": "codex"}},
+        ],
+    }
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    # The Responses-only {"type": "namespace"} tool is stripped; the function
+    # tool a chat-completions backend accepts survives.
+    assert cleaned is not None
+    assert [t["type"] for t in cleaned["tools"]] == ["function"]
+    # The caller's dict is not mutated in place.
+    assert [t["type"] for t in data["tools"]] == ["function", "namespace"]
+
+
+def test_pre_call_hook_strips_responses_input_mirror_when_messages_present():
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {"messages": [{"role": "user", "content": "hi"}], "input": "hi"}
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    assert cleaned is not None
+    assert "input" not in cleaned
+    assert "input" in data  # no in-place mutation
+
+
+def test_pre_call_hook_is_noop_for_pure_function_tools():
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "shell"}}],
+    }
+
+    # Nothing to strip -> returns None so LiteLLM keeps the original payload.
+    assert (
+        asyncio.run(logger.async_pre_call_hook(None, None, data, "completion")) is None
+    )
 
 
 def test_callback_module_source_exposes_proxy_handler_instance():
