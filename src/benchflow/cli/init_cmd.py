@@ -76,12 +76,26 @@ def register_init(app: typer.Typer) -> None:
         """Guided first-run setup: model → agent → tasks → sandbox → creds → smoke."""
         home = benchflow_home()
 
+        if full_smoke and not smoke_task:
+            typer.echo("--full-smoke requires --smoke-task <task-name>.", err=True)
+            raise typer.Exit(2)
+
         model = model or typer.prompt("Model (provider/model)")
         resolved = onboarding.resolve_provider(model)
-        if not resolved:
-            typer.echo(f"No registered provider recognizes {model!r}.", err=True)
-            raise typer.Exit(1)
-        prov_name, prov_cfg = resolved
+        if resolved:
+            prov_name, prov_cfg = resolved
+            auth_type, auth_env = prov_cfg.auth_type, prov_cfg.auth_env
+        else:
+            # Well-known model families (claude-*, gpt-*, gemini-*) run via
+            # their inferred key even without a registered provider endpoint.
+            from benchflow.agents.registry import infer_env_key_for_model
+
+            inferred = infer_env_key_for_model(model)
+            if not inferred:
+                typer.echo(f"No registered provider recognizes {model!r}.", err=True)
+                raise typer.Exit(1)
+            prov_name, prov_cfg = None, None
+            auth_type, auth_env = "api_key", inferred
 
         offered = onboarding.compatible_agents(model)
         if not agent:
@@ -92,9 +106,9 @@ def register_init(app: typer.Typer) -> None:
             )
         if agent not in offered:
             typer.echo(
-                f"Agent {agent!r} cannot route {model!r} ({prov_name} wire protocol"
-                " mismatch) — the run would reject it. Compatible agents:\n  "
-                + ", ".join(offered),
+                f"Agent {agent!r} cannot route {model!r} ({prov_name or 'provider'}"
+                " wire protocol mismatch) — the run would reject it. Compatible"
+                " agents:\n  " + ", ".join(offered),
                 err=True,
             )
             raise typer.Exit(1)
@@ -104,20 +118,31 @@ def register_init(app: typer.Typer) -> None:
         )
         sandbox = sandbox or typer.prompt("Sandbox", default="docker")
 
-        # Credentials: reuse an already-set env var, else store the given/prompted
-        # key in the private env file future runs auto-load.
-        if prov_cfg.auth_type == "api_key" and prov_cfg.auth_env:
+        # Credentials: subscription login > already-set env var > given/prompted
+        # key stored in the private env file future runs auto-load.
+        if auth_type == "api_key" and auth_env:
+            from benchflow.agents.env import check_subscription_auth
+
             if api_key:
-                onboarding.write_env_file(home / ".env", {prov_cfg.auth_env: api_key})
-                os.environ.setdefault(prov_cfg.auth_env, api_key)
-            elif os.environ.get(prov_cfg.auth_env):
+                onboarding.write_env_file(home / ".env", {auth_env: api_key})
+                os.environ.setdefault(auth_env, api_key)
+            elif check_subscription_auth(agent, auth_env):
                 typer.echo(
-                    f"Using {prov_cfg.auth_env} already set in your environment."
+                    f"Using {agent}'s host subscription login (no {auth_env} needed)."
                 )
+            elif os.environ.get(auth_env):
+                typer.echo(f"Using {auth_env} already set in your environment.")
             else:
-                key = typer.prompt(f"{prov_cfg.auth_env}", hide_input=True)
-                onboarding.write_env_file(home / ".env", {prov_cfg.auth_env: key})
-                os.environ.setdefault(prov_cfg.auth_env, key)
+                key = typer.prompt(f"{auth_env}", hide_input=True)
+                onboarding.write_env_file(home / ".env", {auth_env: key})
+                os.environ.setdefault(auth_env, key)
+        elif api_key:
+            typer.echo(
+                f"--api-key is not used by provider {prov_name!r} (auth:"
+                f" {auth_type}) — configure {auth_type} credentials instead.",
+                err=True,
+            )
+            raise typer.Exit(1)
 
         prefs = {
             "agent": agent,
@@ -141,8 +166,20 @@ def register_init(app: typer.Typer) -> None:
                 oracle = subprocess.run(argv)
                 mark = "✅" if oracle.returncode == 0 else "❌"
                 typer.echo(f"  {mark} oracle sandbox run (rc={oracle.returncode})")
+                if oracle.returncode != 0:
+                    typer.echo(
+                        "\nSetup saved, but the stage-1 oracle smoke failed —"
+                        " the sandbox plumbing is broken independent of your"
+                        " credentials.",
+                        err=True,
+                    )
+                    raise typer.Exit(1)
             typer.echo("\nSmoke test:")
             env = dict(os.environ)
+            if api_key and auth_env:
+                # Verify the key that was just SAVED, not whatever happened to
+                # be exported before init ran.
+                env[auth_env] = api_key
             if not _echo_results(onboarding.run_doctor(model, sandbox, env)):
                 typer.echo(
                     "\nSetup saved, but the smoke test failed — fix the ❌ rows"

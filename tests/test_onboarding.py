@@ -185,3 +185,138 @@ class TestCommandAssembly:
         assert argv[4] == "oracle"
         assert "--include" in argv and "citation-check" in argv
         assert "--model" not in argv  # oracle needs no model
+
+
+class TestEnvFileRobustness:
+    """Hand-edited dotenv dialects and corrupt files must never break the CLI
+    (the autoload callback runs on EVERY subcommand — including the ones
+    needed to fix the file)."""
+
+    def test_export_prefix_and_single_quotes_parse(self, tmp_path):
+        path = tmp_path / ".env"
+        path.write_text("export DEEPSEEK_API_KEY=sk-abc\nZAI_API_KEY='sk-z'\n")
+        assert onboarding.read_env_file(path) == {
+            "DEEPSEEK_API_KEY": "sk-abc",
+            "ZAI_API_KEY": "sk-z",
+        }
+
+    def test_malformed_lines_are_skipped_not_fatal(self, tmp_path, monkeypatch):
+        path = tmp_path / ".env"
+        path.write_text('=oops\n  =also bad\nGOOD_KEY="v"\nBAD KEY=x\n')
+        monkeypatch.delenv("GOOD_KEY", raising=False)
+        applied = onboarding.load_env_file(path)  # must not raise OSError
+        assert applied == ["GOOD_KEY"]
+        monkeypatch.delenv("GOOD_KEY")
+
+    def test_unreadable_file_warns_not_crashes(self, tmp_path):
+        path = tmp_path / ".env"
+        path.write_text("A=1")
+        path.chmod(0o000)
+        try:
+            assert onboarding.load_env_file(path) == []  # degraded, no raise
+        finally:
+            path.chmod(0o600)
+
+
+class TestModelPingProviderClasses:
+    """The ping must use the SAME endpoint join as the run path — no URL
+    guessing — and be honest for provider classes it cannot exercise."""
+
+    def _capture(self, status=200, body=None):
+        import httpx
+
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            seen["headers"] = dict(request.headers)
+            return httpx.Response(status, json=body or {"choices": [{}]})
+
+        return httpx.MockTransport(handler), seen
+
+    def test_zai_versioned_base_gets_no_extra_v1(self):
+        transport, seen = self._capture()
+        result = onboarding.model_ping(
+            "zai/glm-5", env={"ZAI_API_KEY": "sk-z"}, transport=transport
+        )
+        assert result.ok, result.detail
+        assert seen["url"] == "https://api.z.ai/api/paas/v4/chat/completions"
+
+    def test_anthropic_only_provider_pings_messages_with_x_api_key(self):
+        transport, seen = self._capture(body={"content": [], "type": "message"})
+        result = onboarding.model_ping(
+            "azure-foundry-anthropic/claude-opus-4-6",
+            env={"AZURE_API_KEY": "sk-az", "AZURE_RESOURCE": "myres"},
+            transport=transport,
+        )
+        assert result.ok, result.detail
+        assert seen["url"] == (
+            "https://myres.services.ai.azure.com/anthropic/v1/messages"
+        )
+        assert seen["headers"].get("x-api-key") == "sk-az"
+
+    def test_adc_provider_is_honestly_skipped_not_failed(self):
+        result = onboarding.model_ping("google-vertex/gemini-3-pro", env={})
+        assert result.ok
+        assert "skipped" in result.detail
+
+    def test_200_with_non_completion_body_fails(self):
+        import httpx
+
+        transport = httpx.MockTransport(
+            lambda req: httpx.Response(200, text="<html>login page</html>")
+        )
+        result = onboarding.model_ping(
+            "deepseek/deepseek-v4-flash",
+            env={"DEEPSEEK_API_KEY": "sk"},
+            transport=transport,
+        )
+        assert not result.ok
+        assert "not a completion" in result.detail
+
+    def test_error_detail_strips_terminal_escapes(self):
+        import httpx
+
+        transport = httpx.MockTransport(
+            lambda req: httpx.Response(500, text="bad \x1b]0;pwned\x07 thing")
+        )
+        result = onboarding.model_ping(
+            "deepseek/deepseek-v4-flash",
+            env={"DEEPSEEK_API_KEY": "sk"},
+            transport=transport,
+        )
+        assert not result.ok
+        assert "\x1b" not in result.detail and "\x07" not in result.detail
+
+
+class TestDoctorHardening:
+    def test_unknown_sandbox_is_a_failing_row_not_silence(self):
+        results = onboarding.run_doctor(
+            model="deepseek/deepseek-v4-flash",
+            sandbox="dokcer",  # typo
+            env={"DEEPSEEK_API_KEY": "sk"},
+            skip_ping=True,
+        )
+        row = next(r for r in results if r.name == "sandbox")
+        assert not row.ok
+        assert "dokcer" in row.detail
+
+    def test_litellm_route_row_reports_resolution(self):
+        results = onboarding.run_doctor(
+            model="deepseek/deepseek-v4-flash",
+            sandbox="docker",
+            env={"DEEPSEEK_API_KEY": "sk"},
+            skip_ping=True,
+        )
+        row = next(r for r in results if r.name.startswith("litellm route"))
+        assert row.ok  # deepseek resolves without network
+
+    def test_unregistered_model_with_inferable_key_checks_that_key(self):
+        results = onboarding.run_doctor(
+            model="claude-opus-4-6",
+            sandbox="docker",
+            env={},
+            skip_ping=True,
+        )
+        row = next(r for r in results if "ANTHROPIC_API_KEY" in r.name)
+        assert not row.ok  # key absent -> honest red row, not "no provider"

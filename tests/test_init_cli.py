@@ -167,3 +167,114 @@ def test_full_smoke_runs_credential_free_oracle_stage(tmp_path, monkeypatch):
         argv[:5] == ["bench", "eval", "run", "--agent", "oracle"] for argv in calls
     ), result.output
     assert any("citation-check" in argv for argv in calls for argv in [argv])
+
+
+def test_full_smoke_oracle_failure_fails_init(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+
+    def failing_run(argv, **kwargs):
+        class R:
+            returncode = 1
+
+        return R()
+
+    monkeypatch.setattr("subprocess.run", failing_run)
+    result = runner.invoke(
+        app,
+        [*_init_args(tmp_path)[:-1], "--full-smoke", "--smoke-task", "citation-check"],
+    )
+    assert result.exit_code == 1
+    assert "oracle" in result.output
+
+
+def test_full_smoke_without_task_errors_loudly(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    result = runner.invoke(app, [*_init_args(tmp_path), "--full-smoke"])
+    assert result.exit_code == 2
+    assert "--smoke-task" in result.output
+
+
+def test_api_key_flag_rejected_for_non_api_key_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--model",
+            "google-vertex/gemini-3-pro",
+            "--agent",
+            "pi-acp",
+            "--dataset",
+            "skillsbench",
+            "--sandbox",
+            "docker",
+            "--api-key",
+            "sk-x",
+            "--skip-smoke",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "adc" in result.output.lower()
+
+
+def test_smoke_verifies_the_key_just_provided(tmp_path, monkeypatch):
+    """--api-key must be what the checks verify, even if a different key is
+    already exported (verify what was saved, not what happened to be set)."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-stale-exported")
+    seen = {}
+
+    def fake_doctor(model, sandbox, env, **kw):
+        seen["key"] = env.get("DEEPSEEK_API_KEY")
+        from benchflow.onboarding import CheckResult
+
+        return [CheckResult("stub", True, "")]
+
+    monkeypatch.setattr("benchflow.onboarding.run_doctor", fake_doctor)
+    result = runner.invoke(app, _init_args(tmp_path)[:-1])  # drop --skip-smoke
+    assert result.exit_code == 0, result.output
+    assert seen["key"] == "sk-test-123"
+
+
+def test_bare_model_with_inferable_key_completes(tmp_path, monkeypatch):
+    """No registered provider, but a well-known key family (claude-*): the
+    wizard proceeds, stores the key under the inferred env var, and skips the
+    endpoint ping honestly."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--model",
+            "claude-opus-4-6",
+            "--agent",
+            "claude-agent-acp",
+            "--dataset",
+            "skillsbench",
+            "--sandbox",
+            "docker",
+            "--api-key",
+            "sk-ant-x",
+            "--skip-smoke",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    from benchflow import onboarding
+
+    assert onboarding.read_env_file(tmp_path / ".env") == {
+        "ANTHROPIC_API_KEY": "sk-ant-x"
+    }
+
+
+def test_subscription_login_skips_key_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "benchflow.agents.env.check_subscription_auth", lambda agent, key: True
+    )
+    # no --api-key, no env key, no stdin: would block on the hidden prompt
+    # unless the subscription path answers first.
+    result = runner.invoke(app, _init_args(tmp_path)[:-3] + ["--skip-smoke"])
+    assert result.exit_code == 0, result.output
+    assert "subscription" in result.output.lower()

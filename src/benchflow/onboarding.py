@@ -29,17 +29,38 @@ def write_env_file(path: str | Path, updates: dict[str, str]) -> None:
 
 
 def read_env_file(path: str | Path) -> dict[str, str]:
-    """Parse a KEY="value" env file; missing file reads as empty."""
+    """Parse a dotenv-style file; missing/unreadable file reads as empty.
+
+    Tolerates the dialects people hand-paste: ``export KEY=...`` prefixes and
+    single- or double-quoted values. Malformed lines (empty or whitespace
+    keys) are skipped — never fatal, because the CLI auto-loads this file on
+    every invocation, including the ones needed to repair it.
+    """
     path = Path(path)
-    if not path.exists():
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        import sys
+
+        print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
         return {}
     values: dict[str, str] = {}
-    for line in path.read_text().splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
         key, _, raw = line.partition("=")
-        values[key.strip()] = raw.strip().strip('"')
+        key = key.strip()
+        if not key or any(c.isspace() for c in key):
+            continue
+        value = raw.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key] = value
     return values
 
 
@@ -132,12 +153,21 @@ class CheckResult:
     detail: str = ""
 
 
+def _sanitize(text: str) -> str:
+    """Strip control characters so server-supplied text cannot inject
+    terminal escape sequences through doctor/smoke output."""
+    return "".join(ch for ch in text if ch.isprintable() or ch in " \t")
+
+
 def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
     """Verify key + model id + endpoint with ONE max_tokens=1 completion.
 
     GET /models is not used: it can 200 while the actual route is broken
     (wrong model id, upstream 5xx) — a 1-token completion is the cheapest
-    request that exercises the full path.
+    request that exercises the full path. The endpoint is joined exactly the
+    way the run path does (resolve_base_url per protocol + one path segment);
+    no URL guessing. Provider classes the ping cannot exercise (ADC, AWS
+    SigV4) are skipped honestly instead of reported as failures.
     """
     import httpx
 
@@ -148,31 +178,69 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
         return CheckResult("model ping", False, f"no registered provider for {model!r}")
     prov_name, cfg = resolved
     name = f"model ping ({prov_name})"
+    if cfg.auth_type != "api_key":
+        return CheckResult(
+            name,
+            True,
+            f"skipped — {cfg.auth_type} auth is exercised at run time",
+        )
     key = env.get(cfg.auth_env or "", "")
-    if cfg.auth_type == "api_key" and not key:
+    if not key:
         return CheckResult(name, False, f"{cfg.auth_env} is not set")
+
+    endpoints = cfg.all_endpoints
+    bare_model = strip_provider_prefix(model)
+    if "openai-completions" in endpoints:
+        protocol = "openai-completions"
+        path, ok_field = "/chat/completions", "choices"
+        headers = {"Authorization": f"Bearer {key}"}
+        payload = {
+            "model": bare_model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+        }
+    elif "anthropic-messages" in endpoints:
+        protocol = "anthropic-messages"
+        path, ok_field = "/v1/messages", "content"
+        # x-api-key is the Anthropic wire header; Azure's Anthropic surface
+        # accepts api-key too — send both.
+        headers = {"x-api-key": key, "api-key": key}
+        payload = {
+            "model": bare_model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+        }
+    else:
+        return CheckResult(
+            name,
+            True,
+            f"skipped — no pingable endpoint ({sorted(endpoints)})",
+        )
     try:
-        base = resolve_base_url(cfg, env).rstrip("/")
+        base = resolve_base_url(cfg, env, protocol=protocol).rstrip("/")
     except KeyError as exc:
-        return CheckResult(name, False, str(exc))
-    url = f"{base}/chat/completions"
-    if not base.endswith("/v1") and "/v1/" not in base:
-        url = f"{base}/v1/chat/completions"
-    payload = {
-        "model": strip_provider_prefix(model),
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 1,
-    }
+        return CheckResult(name, False, _sanitize(str(exc)))
+    url = f"{base}{path}"
     try:
         with httpx.Client(transport=transport, timeout=30) as client:
-            resp = client.post(
-                url, json=payload, headers={"Authorization": f"Bearer {key}"}
-            )
+            resp = client.post(url, json=payload, headers=headers)
     except httpx.HTTPError as exc:
-        return CheckResult(name, False, f"request failed: {exc}")
+        return CheckResult(name, False, _sanitize(f"request failed: {exc}"))
     if resp.status_code == 200:
-        return CheckResult(name, True, f"1-token completion OK ({url})")
-    return CheckResult(name, False, f"HTTP {resp.status_code}: {resp.text[:200]}")
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and ok_field in body:
+            return CheckResult(name, True, f"1-token completion OK ({url})")
+        return CheckResult(
+            name,
+            False,
+            _sanitize(f"200 but not a completion response: {resp.text[:200]}"),
+        )
+    return CheckResult(
+        name, False, _sanitize(f"HTTP {resp.status_code}: {resp.text[:200]}")
+    )
 
 
 def run_doctor(
@@ -204,6 +272,17 @@ def run_doctor(
                 "set" if has else "DAYTONA_API_KEY is not set",
             )
         )
+    else:
+        from benchflow.sandbox.providers import SANDBOX_PROVIDERS
+
+        results.append(
+            CheckResult(
+                "sandbox",
+                sandbox in SANDBOX_PROVIDERS,
+                f"unknown sandbox {sandbox!r} (expected one of"
+                f" {', '.join(SANDBOX_PROVIDERS)})",
+            )
+        )
     resolved = resolve_provider(model)
     if resolved:
         _, cfg = resolved
@@ -217,9 +296,37 @@ def run_doctor(
                 )
             )
     else:
+        # No registered provider endpoint, but well-known model families
+        # (claude-*, gpt-*, gemini-*) still run via their inferred key — check
+        # its presence instead of failing a setup the run path supports.
+        from benchflow.agents.registry import infer_env_key_for_model
+
+        inferred = infer_env_key_for_model(model)
+        if inferred:
+            has = bool(env.get(inferred))
+            results.append(
+                CheckResult(
+                    f"provider key ({inferred})",
+                    has,
+                    "set" if has else f"{inferred} is not set",
+                )
+            )
+        else:
+            results.append(
+                CheckResult("provider", False, f"no registered provider for {model!r}")
+            )
+    # LiteLLM route resolution is pure (no network) and catches the
+    # env/route errors the proxy would hit at run time — a doctor-green ping
+    # alone does not prove the proxy lane resolves.
+    try:
+        from benchflow.providers.litellm_config import resolve_litellm_route
+
+        route = resolve_litellm_route(model, env)
         results.append(
-            CheckResult("provider", False, f"no registered provider for {model!r}")
+            CheckResult("litellm route", True, f"resolves (alias {route.model_alias})")
         )
+    except Exception as exc:
+        results.append(CheckResult("litellm route", False, _sanitize(str(exc))))
     if not skip_ping:
         results.append(model_ping(model, env, transport=ping_transport))
     return results
