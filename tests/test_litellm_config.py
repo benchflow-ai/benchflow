@@ -181,6 +181,10 @@ def test_proxy_config_registers_plain_and_openai_aliases():
     assert config["router_settings"] == {
         "num_retries": 0,
         "disable_cooldowns": True,
+        # transient-5xx-only exception to the no-retry rule (#830 honored:
+        # deterministic classes keep zero retries) — absorbs upstream 500s that
+        # some agents (MiMo) silently swallow into zero-event turns.
+        "retry_policy": {"InternalServerErrorRetries": 2},
     }
 
 
