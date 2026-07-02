@@ -253,7 +253,9 @@ def _task_mcp_specs(task: Any) -> list[McpServerSpec]:
     ]
 
 
-def _agent_uses_native_task_mcp_config(agent: str, agent_cfg: Any | None = None) -> bool:
+def _agent_uses_native_task_mcp_config(
+    agent: str, agent_cfg: Any | None = None
+) -> bool:
     if agent_cfg is None:
         agent_base = agent.split()[0]
         agent_cfg = AGENTS.get(agent_base)
@@ -333,7 +335,9 @@ async def _install_native_task_mcp_config(
     config = _fastmcp_task_mcp_config(task)
     if not config["mcpServers"]:
         return
-    target = config_path if config_path.startswith("/") else f"{cred_home}/{config_path}"
+    target = (
+        config_path if config_path.startswith("/") else f"{cred_home}/{config_path}"
+    )
     await upload_credential(
         env,
         target,

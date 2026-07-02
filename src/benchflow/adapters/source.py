@@ -149,7 +149,13 @@ def _adapted_output_dir(ctx: _SourceContext, adapter_name: str) -> Path:
     )
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
     repo_slug = _safe_name(ctx.repo.replace("/", "__"))
-    return Path.cwd() / ".cache" / "source-adapters" / adapter_name / f"{repo_slug}__{digest}"
+    return (
+        Path.cwd()
+        / ".cache"
+        / "source-adapters"
+        / adapter_name
+        / f"{repo_slug}__{digest}"
+    )
 
 
 def _marker_matches(path: Path, expected: dict[str, Any]) -> bool:
@@ -207,7 +213,9 @@ def _mcp_atlas_csv(ctx: _SourceContext) -> Path | None:
 def _materialize_mcp_atlas(ctx: _SourceContext, output_dir: Path) -> None:
     csv_path = _mcp_atlas_csv(ctx)
     if csv_path is None:
-        raise ValueError("MCP Atlas source is missing services/mcp_eval/sample_tasks.csv")
+        raise ValueError(
+            "MCP Atlas source is missing services/mcp_eval/sample_tasks.csv"
+        )
 
     with csv_path.open(newline="") as f:
         rows = list(csv.DictReader(f))
@@ -286,14 +294,18 @@ def _materialize_mcp_atlas(ctx: _SourceContext, output_dir: Path) -> None:
             "        trap 'kill ${upstream_pid} 2>/dev/null || true' EXIT\n"
             "        python /mcp_bridge.py\n",
         )
-        _write_text(task_dir / "environment" / "enabled_tools.txt", "\n".join(tools) + "\n")
+        _write_text(
+            task_dir / "environment" / "enabled_tools.txt", "\n".join(tools) + "\n"
+        )
         _write_text(
             task_dir / "environment" / "mcp_bridge.py",
             _adapter_resource_text("mcp_atlas_bridge.py"),
         )
         _write_text(
             task_dir / "tests" / "claims.json",
-            json.dumps({"prompt": prompt, "claims": claims}, indent=2, ensure_ascii=False)
+            json.dumps(
+                {"prompt": prompt, "claims": claims}, indent=2, ensure_ascii=False
+            )
             + "\n",
         )
         _write_text(
@@ -361,7 +373,9 @@ def _materialize_toolathlon(
             ctx, upstream_task, variant=variant
         )
         if unsupported_reason is not None:
-            skipped.append({"task_id": upstream_task.name, "reason": unsupported_reason})
+            skipped.append(
+                {"task_id": upstream_task.name, "reason": unsupported_reason}
+            )
             continue
         task_name = upstream_task.name
         task_dir = output_dir / _safe_name(task_name)
@@ -473,7 +487,9 @@ def _toolathlon_task_toml(
         "mcp_servers": mcp_servers,
         "setup_commands": [
             {
-                "command": _toolathlon_setup_command(task_name=task_name, variant=variant),
+                "command": _toolathlon_setup_command(
+                    task_name=task_name, variant=variant
+                ),
                 "cwd": "/workspace",
                 "timeout_sec": 600.0,
             }
@@ -502,7 +518,9 @@ def _toolathlon_task_toml(
 
 
 def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
-    python_cmd = "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
+    python_cmd = (
+        "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
+    )
     task_path = f"/workspace/tasks/finalpool/{task_name}"
     return "\n".join(
         [
@@ -513,8 +531,8 @@ def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
             '  cp -a "$TASK_DIR/initial_workspace/." /workspace/agent_workspace/',
             "fi",
             'if [ -f "$TASK_DIR/preprocess/main.py" ]; then',
-            "  TASK_DIR=\"$TASK_DIR\" AGENT_WORKSPACE=/workspace/agent_workspace "
-            "PYTHONPATH=\"$TASK_DIR:/workspace:${PYTHONPATH:-}\" "
+            '  TASK_DIR="$TASK_DIR" AGENT_WORKSPACE=/workspace/agent_workspace '
+            'PYTHONPATH="$TASK_DIR:/workspace:${PYTHONPATH:-}" '
             f"{python_cmd} - <<'PY'",
             "import os, runpy, sys",
             "task_dir = os.environ['TASK_DIR']",
@@ -536,12 +554,14 @@ def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
 
 
 def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
-    python_cmd = "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
+    python_cmd = (
+        "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
+    )
     task_path = f"/workspace/tasks/finalpool/{task_name}"
     interpreter_check = []
     if variant == "official":
         interpreter_check = [
-            'if [ ! -x /usr/local/bin/uv ]; then',
+            "if [ ! -x /usr/local/bin/uv ]; then",
             '  echo "BenchFlow Toolathlon verifier setup error: /usr/local/bin/uv is missing" >&2',
             "  exit 127",
             "fi",
@@ -560,9 +580,9 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
             "EVAL_LOG=/logs/verifier/toolathlon_evaluator.log",
             "printf '{}' > \"$RES_LOG\"",
             "set +e",
-            "TASK_DIR=\"$TASK_DIR\" AGENT_WORKSPACE=\"$AGENT_WORKSPACE\" "
-            "GROUNDTRUTH=\"$GROUNDTRUTH\" RES_LOG=\"$RES_LOG\" "
-            "PYTHONPATH=\"$TASK_DIR:/workspace:${PYTHONPATH:-}\" "
+            'TASK_DIR="$TASK_DIR" AGENT_WORKSPACE="$AGENT_WORKSPACE" '
+            'GROUNDTRUTH="$GROUNDTRUTH" RES_LOG="$RES_LOG" '
+            'PYTHONPATH="$TASK_DIR:/workspace:${PYTHONPATH:-}" '
             f"{python_cmd} - <<'PY' > \"$EVAL_LOG\" 2>&1",
             "import os, runpy, sys",
             "task_dir = os.environ['TASK_DIR']",
@@ -578,13 +598,13 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
             "PY",
             "status=$?",
             "set -u",
-            "cat \"$EVAL_LOG\"",
-            "if [ \"$status\" -eq 0 ]; then",
+            'cat "$EVAL_LOG"',
+            'if [ "$status" -eq 0 ]; then',
             "  printf '{\"reward\": 1.0}\\n' > /logs/verifier/reward.json",
             "  printf '1.0\\n' > /logs/verifier/reward.txt",
             "elif grep -q 'Traceback (most recent call last):' \"$EVAL_LOG\"; then",
             '  echo "BenchFlow Toolathlon verifier setup error: evaluator crashed" >&2',
-            "  exit \"$status\"",
+            '  exit "$status"',
             "else",
             "  printf '{\"reward\": 0.0}\\n' > /logs/verifier/reward.json",
             "  printf '0.0\\n' > /logs/verifier/reward.txt",
@@ -609,7 +629,9 @@ def _toolathlon_mcp_server(
     config_path = _toolathlon_mcp_config_path(ctx, server_name)
     data = yaml.safe_load(config_path.read_text())
     params = data.get("params") or {}
-    command = _replace_toolathlon_placeholders(str(params.get("command", "")), variant=variant)
+    command = _replace_toolathlon_placeholders(
+        str(params.get("command", "")), variant=variant
+    )
     args = [
         _replace_toolathlon_placeholders(str(arg), variant=variant)
         for arg in params.get("args", [])
@@ -624,10 +646,7 @@ def _toolathlon_mcp_server(
     if variant == "official" and command in {"uv", "uvx"}:
         command = f"/usr/local/bin/{command}"
         if args:
-            args = [
-                _TOOLATHLON_UVX_PACKAGE_PINS.get(arg, arg)
-                for arg in args
-            ]
+            args = [_TOOLATHLON_UVX_PACKAGE_PINS.get(arg, arg) for arg in args]
     payload: dict[str, Any] = {
         "name": str(data.get("name") or server_name),
         "transport": "stdio",
@@ -699,7 +718,9 @@ def _toolathlon_mcp_config_path(ctx: _SourceContext, server_name: str) -> Path:
 
 
 def _replace_toolathlon_placeholders(value: str, *, variant: str) -> str:
-    local_servers = "/opt/local_servers" if variant == "gym" else "/workspace/local_servers"
+    local_servers = (
+        "/opt/local_servers" if variant == "gym" else "/workspace/local_servers"
+    )
     replacements = {
         "${local_servers_paths}": local_servers,
         "${agent_workspace}": "/workspace/agent_workspace",

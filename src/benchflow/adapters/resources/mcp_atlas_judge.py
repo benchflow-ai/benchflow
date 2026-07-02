@@ -16,7 +16,9 @@ def collect_text(value):
             chunks.extend(collect_text(item))
     elif isinstance(value, dict):
         for key, item in value.items():
-            if key.lower() in {"text", "content", "message", "output"} or isinstance(item, (dict, list)):
+            if key.lower() in {"text", "content", "message", "output"} or isinstance(
+                item, (dict, list)
+            ):
                 chunks.extend(collect_text(item))
     return chunks
 

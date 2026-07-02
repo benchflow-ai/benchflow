@@ -7,7 +7,9 @@ from benchflow.adapters.source import adapt_resolved_source_if_needed
 from benchflow.task import Task
 
 
-def _resolved(root: Path, *, repo: str, path: str, sha: str = "abc123") -> ResolvedSource:
+def _resolved(
+    root: Path, *, repo: str, path: str, sha: str = "abc123"
+) -> ResolvedSource:
     source_root = root / path if path else root
     return ResolvedSource(
         path=source_root,
@@ -67,7 +69,7 @@ def test_mcp_atlas_source_adapter_materializes_native_tasks(
     bridge = (task_dir / "environment" / "mcp_bridge.py").read_text()
     assert "fastmcp==3.4.2" in dockerfile
     assert "COPY mcp_bridge.py /mcp_bridge.py" in dockerfile
-    assert "ENABLED_SERVERS: \"fetch,search\"" in compose
+    assert 'ENABLED_SERVERS: "fetch,search"' in compose
     assert "python /mcp_bridge.py" in compose
     assert "MCP Atlas bridge registered" in bridge
     assert adapted.provenance["adapter"]["name"] == "mcp-atlas"
@@ -124,7 +126,9 @@ params:
     )
 
     adapted = adapt_resolved_source_if_needed(
-        _resolved(repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool", sha="d" * 40)
+        _resolved(
+            repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool", sha="d" * 40
+        )
     )
 
     generated = adapted.path / "arrange-workspace"
@@ -153,7 +157,7 @@ params:
     assert "rsync -a --exclude .git /tmp/toolathlon-src/ /workspace/" in dockerfile
     assert "global_configs_example.py" in dockerfile
     assert "global_configs.py" in dockerfile
-    assert "cp \"$(command -v uv)\" /usr/local/bin/uv" in dockerfile
+    assert 'cp "$(command -v uv)" /usr/local/bin/uv' in dockerfile
     assert "chmod -R a+rwX /workspace/utils/local_servers" in dockerfile
     assert "chmod -R a+rwX /workspace/agent_workspace" in task_toml
     assert 'chmod -R go-rwx "$private"' in setup_command
@@ -217,15 +221,19 @@ params:
     assert env["PG_USER"] == "eigent"
     assert env["PG_PASSWORD"] == "camel"
     assert env["PG_DATABASE"] == "toolathlon_gym"
-    assert "chmod -R a+rwX /opt/local_servers" in (
-        generated / "environment" / "Dockerfile"
-    ).read_text()
-    assert "chmod -R a+rwX /workspace/agent_workspace" in (
-        generated / "task.toml"
-    ).read_text()
+    assert (
+        "chmod -R a+rwX /opt/local_servers"
+        in (generated / "environment" / "Dockerfile").read_text()
+    )
+    assert (
+        "chmod -R a+rwX /workspace/agent_workspace"
+        in (generated / "task.toml").read_text()
+    )
     setup_command = task.config.environment.setup_commands[0].command
     assert 'chmod -R go-rwx "$private"' in setup_command
-    assert "postgres:" in (generated / "environment" / "docker-compose.yaml").read_text()
+    assert (
+        "postgres:" in (generated / "environment" / "docker-compose.yaml").read_text()
+    )
 
 
 def test_toolathlon_adapter_skips_tasks_with_missing_repo_configs(
