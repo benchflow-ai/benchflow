@@ -31,11 +31,11 @@ def _make_sandbox(
     ``service_env`` (e.g. ``CASINO_MULTIPLAYER=1``) goes into the sandbox's
     persistent env, so it reaches EVERY exec — including ManifestEnvironment's
     ``nohup casino-service`` start, which is how the service comes up in floor
-    (multiplayer) mode."""
-    from benchflow.sandbox.docker import DockerSandbox
+    (multiplayer) mode. ``environment`` selects docker (local) vs daytona (remote);
+    both sandboxes share the same constructor shape."""
     from benchflow.task.config import SandboxConfig
 
-    return DockerSandbox(
+    kwargs = dict(
         environment_dir=manifest_dir,
         environment_name="native-floor",
         session_id="native-floor",
@@ -44,6 +44,13 @@ def _make_sandbox(
             docker_image=image, allow_internet=True, env=dict(service_env or {})
         ),
     )
+    if environment == "daytona":
+        from benchflow.sandbox.daytona import DaytonaSandbox
+
+        return DaytonaSandbox(**kwargs)
+    from benchflow.sandbox.docker import DockerSandbox
+
+    return DockerSandbox(**kwargs)
 
 
 async def bootstrap_shared_env(
