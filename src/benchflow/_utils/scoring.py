@@ -119,7 +119,7 @@ def classify_error(error: str | None) -> str | None:
     lower = error.lower()
     if "agent idle for" in lower:
         return IDLE_TIMEOUT
-    if "install failed" in error:
+    if "install failed" in lower:
         return INSTALL_FAILED
     if "closed stdout" in lower:
         return PIPE_CLOSED
@@ -129,7 +129,7 @@ def classify_error(error: str | None) -> str | None:
         return SUSPECTED_API_ERROR
     if "provider api error" in lower:
         return API_ERROR
-    if "ACP error" in error or "was rejected as invalid" in error:
+    if "acp error" in lower or "was rejected as invalid" in lower:
         if any(m in lower for m in _PROVIDER_AUTH_MARKERS):
             return PROVIDER_AUTH
         if any(m in lower for m in _PROVIDER_RATE_LIMIT_MARKERS):
