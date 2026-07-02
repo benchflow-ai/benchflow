@@ -103,6 +103,53 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
 
 
+@pytest.mark.parametrize("model", ["gemini/gemini-2.5-flash", "gemini-2.5-flash"])
+def test_gemini_native_route_honors_explicit_base_url(model):
+    """Guards the fix from PR #881 for issue #672."""
+    route = resolve_litellm_route(
+        model,
+        {
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://gemini-proxy.example.test/v1",
+            "GEMINI_API_KEY": "sk-gemini",
+        },
+    )
+
+    assert route.upstream_model == "gemini/gemini-2.5-flash"
+    assert route.provider_name == "native"
+    assert route.litellm_params["api_base"] == "https://gemini-proxy.example.test/v1"
+    assert route.litellm_params["api_key"] == "os.environ/GEMINI_API_KEY"
+    assert route.required_env == ("GEMINI_API_KEY",)
+
+
+def test_gemini_native_route_honors_generic_proxy_key():
+    """Guards the fix from PR #881 for issue #672."""
+    route = resolve_litellm_route(
+        "gemini/gemini-2.5-flash",
+        {
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://gemini-proxy.example.test/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "sk-proxy",
+            "GEMINI_API_KEY": "sk-gemini",
+        },
+    )
+
+    assert route.litellm_params["api_base"] == "https://gemini-proxy.example.test/v1"
+    assert route.litellm_params["api_key"] == "os.environ/BENCHFLOW_PROVIDER_API_KEY"
+    assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)
+
+
+def test_gemini_native_route_without_explicit_base_url_is_unchanged():
+    """Guards the fix from PR #881 for issue #672."""
+    route = resolve_litellm_route(
+        "gemini/gemini-2.5-flash",
+        {"GEMINI_API_KEY": "sk-gemini"},
+    )
+
+    assert route.upstream_model == "gemini/gemini-2.5-flash"
+    assert "api_base" not in route.litellm_params
+    assert route.litellm_params["api_key"] == "os.environ/GEMINI_API_KEY"
+    assert route.required_env == ("GEMINI_API_KEY",)
+
+
 def test_openrouter_route_uses_openai_compatible_endpoint():
     route = resolve_litellm_route(
         "openrouter/qwen/qwen3.5-397b-a17b",
