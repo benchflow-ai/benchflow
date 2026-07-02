@@ -1050,10 +1050,46 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
     )
 
 
+# Namespace shorthand — harbor-style "<ns>:<id>" agent specs (design: #876).
+# The namespace names the adaptation path; resolution is a deterministic
+# name-candidate mapping onto the existing flat names (the naming law: the
+# native/ACP path owns bare names, every other path prefixes "<path>-"). No new
+# config fields, no ambiguity machinery — exact registered names and aliases
+# always win (checked before this), so "acpx:" runtime keys are unaffected.
+# Phase 2 (#876) keys the registry-backed agent auto-fetch on these same
+# namespaces (mirroring harbor's `--agent acp:<id>[@version]`).
+def _resolve_namespace_shorthand(name: str) -> AgentConfig | None:
+    """Resolve "<ns>:<id>" (e.g. "omnigent:pi", "acp:mimo", "ai-sdk:codex").
+
+    Candidates per namespace: ``acp:<id>`` tries the bare id then ``<id>-acp``
+    (so ``acp:mimo`` → ``mimo``, ``acp:pi`` → ``pi-acp``, ``acp:claude`` →
+    alias ``claude`` → ``claude-agent-acp``); ``ai-sdk:<id>`` /
+    ``omnigent:<id>`` try the ``<ns>-<id>`` prefix form. Every candidate goes
+    through AGENT_ALIASES, so alias-only names resolve too. Returns ``None``
+    when nothing matches (callers fall through to the unknown-agent error).
+    """
+    ns, sep, ident = name.partition(":")
+    if not sep or not ident:
+        return None
+    if ns == "acp":
+        candidates = [ident, f"{ident}-acp"]
+    elif ns in ("ai-sdk", "omnigent"):
+        candidates = [f"{ns}-{ident}"]
+    else:
+        return None
+    for candidate in candidates:
+        candidate = AGENT_ALIASES.get(candidate, candidate)
+        if candidate in AGENTS:
+            return AGENTS[candidate]
+    return None
+
+
 def resolve_agent(spec: str) -> AgentConfig:
     """Resolve an agent spec to an AgentConfig.
 
-    Supports: bare name, alias, protocol/name, acpx/name.
+    Supports: bare name, alias, protocol/name, acpx/name, and the namespace
+    shorthand "<ns>:<id>" for ns in {acp, ai-sdk, omnigent} — e.g.
+    "omnigent:pi" → omnigent-pi, "acp:pi" → pi-acp (see #876).
     Raises KeyError with suggestions for unknown agents.
     """
     protocol, name = parse_agent_spec(spec)
@@ -1070,6 +1106,25 @@ def resolve_agent(spec: str) -> AgentConfig:
         return AGENTS[name]
 
     if name not in AGENTS:
+        shorthand = _resolve_namespace_shorthand(name)
+        if shorthand is not None:
+            return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
+
+        # Miss-driven manifest auto-load (#876 Phase 2a): fetch DECLARATIVE
+        # manifest agents from the pinned agents source (data only — their
+        # install/launch strings run in the sandbox, same trust as task
+        # sources) and retry. One-shot per process; local names always win.
+        from benchflow.agents import remote_manifests
+
+        if remote_manifests.autoload_remote_manifest_agents():
+            name = AGENT_ALIASES.get(name, name)
+            if name in AGENTS:
+                config = AGENTS[name]
+                return _acpx_wrap(config) if protocol == "acpx" else config
+            shorthand = _resolve_namespace_shorthand(name)
+            if shorthand is not None:
+                return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
+
         from difflib import get_close_matches
 
         # Breadcrumb: if agent plugin packages failed to load at import time
@@ -1083,6 +1138,8 @@ def resolve_agent(spec: str) -> AgentConfig:
                 f" Note: agent plugin(s) failed to load at startup: {failed} "
                 "(see the startup warning for details)."
             )
+        if remote_manifests.last_source_description:
+            plugin_hint += f" ({remote_manifests.last_source_description} consulted)"
         close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
         if close:
             raise KeyError(
