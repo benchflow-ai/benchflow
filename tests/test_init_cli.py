@@ -139,3 +139,31 @@ def test_startup_autoloads_saved_env_file(tmp_path, monkeypatch):
     # (same init args minus --api-key: the saved key must be found)
     assert result.exit_code == 0, result.output
     assert "already set" in result.output
+
+
+def test_full_smoke_runs_credential_free_oracle_stage(tmp_path, monkeypatch):
+    """--full-smoke executes the stage-1 oracle eval (sandbox plumbing proof)
+    before the credential checks; the exact argv is the assembled smoke
+    command."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    result = runner.invoke(
+        app,
+        [*_init_args(tmp_path)[:-1], "--full-smoke", "--smoke-task", "citation-check"],
+    )
+    # doctor checks still run (docker/key/ping will fail here — that's fine,
+    # exit code reflects them); the oracle stage must have been invoked first.
+    assert any(
+        argv[:5] == ["bench", "eval", "run", "--agent", "oracle"] for argv in calls
+    ), result.output
+    assert any("citation-check" in argv for argv in calls for argv in [argv])

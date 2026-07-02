@@ -63,6 +63,15 @@ def register_init(app: typer.Typer) -> None:
         skip_smoke: bool = typer.Option(
             False, "--skip-smoke", help="Skip the post-setup smoke test."
         ),
+        full_smoke: bool = typer.Option(
+            False,
+            "--full-smoke",
+            help="Also run the credential-free oracle agent on one task in the"
+            " chosen sandbox (a real eval — takes minutes).",
+        ),
+        smoke_task: str = typer.Option(
+            None, "--smoke-task", help="Task name for --full-smoke's oracle run."
+        ),
     ) -> None:
         """Guided first-run setup: model → agent → tasks → sandbox → creds → smoke."""
         home = benchflow_home()
@@ -120,6 +129,18 @@ def register_init(app: typer.Typer) -> None:
         onboarding.save_prefs(home / "config.toml", prefs)
 
         if not skip_smoke:
+            if full_smoke and smoke_task:
+                # Stage 1 (Harbor's oracle pattern): prove install + sandbox
+                # plumbing with NO credentials involved.
+                import subprocess
+
+                argv = onboarding.smoke_argv(prefs, task=smoke_task)
+                typer.echo(
+                    f"\nStage-1 smoke (oracle, no credentials): {' '.join(argv)}"
+                )
+                oracle = subprocess.run(argv)
+                mark = "✅" if oracle.returncode == 0 else "❌"
+                typer.echo(f"  {mark} oracle sandbox run (rc={oracle.returncode})")
             typer.echo("\nSmoke test:")
             env = dict(os.environ)
             if not _echo_results(onboarding.run_doctor(model, sandbox, env)):
