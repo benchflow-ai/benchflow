@@ -52,6 +52,17 @@ if TYPE_CHECKING:
 _SandboxParams = Any
 
 
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 class _DaytonaDinD(_DaytonaStrategy):
     """Docker-in-Docker compose strategy for multi-container tasks.
 
@@ -65,7 +76,9 @@ class _DaytonaDinD(_DaytonaStrategy):
                       +-- ...
     """
 
-    _DOCKER_DAEMON_TIMEOUT_SEC = 60
+    _DOCKER_DAEMON_TIMEOUT_SEC = _positive_int_env(
+        "BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180
+    )
     _COMPOSE_DIR = "/benchflow/compose"
     _ENVIRONMENT_DIR = "/benchflow/environment"
     _LOGS_DIR = "/benchflow/logs"

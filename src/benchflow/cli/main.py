@@ -670,11 +670,13 @@ def eval_run(
         import subprocess
 
         from benchflow._utils.benchmark_repos import resolve_source_with_metadata
+        from benchflow.adapters.source import adapt_resolved_source_if_needed
 
         try:
             resolved = resolve_source_with_metadata(
                 source_repo, path=source_path, ref=source_ref
             )
+            resolved = adapt_resolved_source_if_needed(resolved)
         except (subprocess.CalledProcessError, OSError, ValueError, RuntimeError) as e:
             # A clone failure (missing/private repo, bad --source-ref, auth,
             # network) otherwise escapes as a raw traceback — unlike the sibling

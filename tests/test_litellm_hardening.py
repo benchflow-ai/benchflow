@@ -292,6 +292,7 @@ class _FakeSandbox:
     ):
         self.uploaded: dict[str, str] = {}
         self.exec_calls: list[str] = []
+        self.exec_timeouts: list[int | None] = []
         self.fail_launch = fail_launch
         self.fail_preflight = fail_preflight
         self.log_content = log_content
@@ -302,6 +303,7 @@ class _FakeSandbox:
 
     async def exec(self, command: str, timeout_sec: int | None = None) -> _ExecResult:
         self.exec_calls.append(command)
+        self.exec_timeouts.append(timeout_sec)
         if "stat -c %s" in command:
             return _ExecResult(0, stdout=str(len(self.log_content)))
         if "urllib.request" in command:
@@ -363,6 +365,36 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
 
     assert proc.base_url == "http://127.0.0.1:45999"
     assert await proc.is_running() is True
+
+
+@pytest.mark.asyncio
+async def test_sandbox_litellm_install_uses_configured_setup_timeout():
+    """Guards PR #878 against the hardcoded 600s LiteLLM install timeout."""
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    sandbox = _FakeSandbox()
+
+    await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env={
+            "MINIMAX_API_KEY": "k",
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        },
+        session_id="s",
+        agent_name="openhands",
+        install_timeout_sec=901,
+    )
+
+    install_index = next(
+        index
+        for index, command in enumerate(sandbox.exec_calls)
+        if "pip install" in command and "litellm" in command
+    )
+    assert sandbox.exec_timeouts[install_index] == 901
 
 
 @pytest.mark.asyncio

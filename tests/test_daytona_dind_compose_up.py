@@ -16,6 +16,7 @@ import pytest
 
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.daytona import _DaytonaDinD
+from benchflow.sandbox.daytona_dind import _positive_int_env
 
 
 def _strategy(build_timeout_sec: float):
@@ -88,6 +89,22 @@ async def test_non_race_error_is_not_retried(monkeypatch):
     with pytest.raises(RuntimeError, match="docker compose up failed"):
         await strategy._compose_up_with_retry(env)
     assert len(attempts) == 1  # non-race errors fail immediately, no retry
+
+
+def test_docker_daemon_timeout_env_accepts_only_positive_ints(monkeypatch):
+    """Guards the 2026-07-01 native-adapter hardening change."""
+
+    monkeypatch.delenv("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", raising=False)
+    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180) == 180
+
+    monkeypatch.setenv("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", "240")
+    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180) == 240
+
+    monkeypatch.setenv("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", "0")
+    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180) == 180
+
+    monkeypatch.setenv("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", "not-int")
+    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180) == 180
 
 
 class AsyncNoop:
