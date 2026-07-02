@@ -15,12 +15,13 @@
 # resolve_manifest_image returns it as None).
 [environment]
 name = "casinobench"
-# Published, versioned base image (the casinobench repo's publish-base-image CI
-# builds + pushes this on each release tag). --sandbox daytona pulls this tag from
-# the registry via Image.base(); --sandbox docker uses the same tag built locally
-# (docker/casinobench-base.Dockerfile → `docker build -t <this tag> …`), so there
-# is no drift between "built locally" and "what Daytona pulls".
-image = "ghcr.io/benchflow-ai/casinobench-base:2.0.1"
+# Published, versioned base image. The casinobench publish-base-image CI builds it
+# on each release tag and pushes to BOTH the env0 ACR (this tag — the registry
+# Daytona is authed to pull) and ghcr (for org-authed consumers). --sandbox daytona
+# pulls this ACR tag via Image.base(); --sandbox docker uses the same tag built
+# locally (docker build -t <this tag> …), so there's no drift between "built
+# locally" and "what Daytona pulls".
+image = "env0acrdd8632.azurecr.io/casinobench-base:2.0.1"
 owns_lifecycle = false                    # the framework starts the service below
 isolation = "per_task"
 
