@@ -1,6 +1,6 @@
 """Onboarding logic behind ``bench init`` / ``bench doctor``.
 
-Pure functions the CLI wizard is thin glue over: a private env file for
+The logic the CLI wizard is thin glue over: a private env file for
 credentials (secrets live in env vars, per the provider registry's
 ``auth_env`` contract), TOML preferences, provider/agent compatibility
 filtering, and the health checks the post-init smoke test and ``bench
@@ -10,22 +10,61 @@ doctor`` share.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from benchflow.agents.providers import ProviderConfig
+
+
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    """One dotenv line -> (key, value), or None for comments/malformed."""
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        return None
+    if line.startswith("export "):
+        line = line[len("export ") :].lstrip()
+    key, _, raw = line.partition("=")
+    key = key.strip()
+    if not key or any(c.isspace() for c in key):
+        return None
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return key, value
 
 
 def write_env_file(path: str | Path, updates: dict[str, str]) -> None:
-    """Merge *updates* into the env file at *path* (created 0600).
+    """Merge *updates* into the env file at *path* (created, mode forced 0600).
 
-    Existing keys not in *updates* are preserved; the file never widens its
-    permissions once created.
+    The merge is line-preserving: keys already present are replaced in place,
+    new keys are appended, and everything the parser does not understand —
+    comments, malformed lines — is kept verbatim, so a hand-edited file
+    survives the next init. An undecodable file raises OSError instead of
+    being clobbered.
     """
     path = Path(path)
-    merged = read_env_file(path)
-    merged.update(updates)
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        lines = []
+    except UnicodeDecodeError as exc:
+        raise OSError(
+            f"refusing to rewrite {path}: not valid UTF-8 ({exc}); fix or"
+            " delete it first"
+        ) from exc
+    remaining = dict(updates)
+    out: list[str] = []
+    for line in lines:
+        parsed = _parse_env_line(line)
+        if parsed and parsed[0] in remaining:
+            out.append(f'{parsed[0]}="{remaining.pop(parsed[0])}"')
+        else:
+            out.append(line)
+    out.extend(f'{k}="{v}"' for k, v in remaining.items())
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = "".join(f'{k}="{v}"\n' for k, v in merged.items())
     path.touch(mode=0o600, exist_ok=True)
     path.chmod(0o600)
-    path.write_text(body)
+    path.write_text("\n".join(out) + "\n")
 
 
 def read_env_file(path: str | Path) -> dict[str, str]:
@@ -33,34 +72,25 @@ def read_env_file(path: str | Path) -> dict[str, str]:
 
     Tolerates the dialects people hand-paste: ``export KEY=...`` prefixes and
     single- or double-quoted values. Malformed lines (empty or whitespace
-    keys) are skipped — never fatal, because the CLI auto-loads this file on
-    every invocation, including the ones needed to repair it.
+    keys) and undecodable bytes are skipped/degraded — never fatal, because
+    the CLI auto-loads this file on every invocation, including the ones
+    needed to repair it.
     """
     path = Path(path)
     try:
         text = path.read_text()
     except FileNotFoundError:
         return {}
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         import sys
 
         print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
         return {}
     values: dict[str, str] = {}
     for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].lstrip()
-        key, _, raw = line.partition("=")
-        key = key.strip()
-        if not key or any(c.isspace() for c in key):
-            continue
-        value = raw.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        values[key] = value
+        parsed = _parse_env_line(line)
+        if parsed:
+            values[parsed[0]] = parsed[1]
     return values
 
 
@@ -99,11 +129,13 @@ def load_prefs(path: str | Path) -> dict:
     return tomllib.loads(path.read_text())
 
 
-def resolve_provider(model: str):
+def resolve_provider(model: str) -> tuple[str, ProviderConfig] | None:
     """Map a model id ("provider/model" or bare) to (provider_name, config).
 
     Returns None when no registered provider claims the model — the wizard
-    treats that as "custom endpoint" territory rather than an error.
+    then falls back to the model's inferred well-known key
+    (claude-*/gpt-*/gemini-* via infer_env_key_for_model), or errors if none
+    can be inferred.
     """
     from benchflow.agents.providers import PROVIDERS, find_provider_for_bare_model
 
@@ -121,8 +153,9 @@ def compatible_agents(model: str) -> list[str]:
     (env._provider_supports_agent_protocol), so the wizard never offers an
     agent the run would immediately reject — e.g. anthropic-messages or
     openai-responses agents on an openai-completions-only provider. Agents
-    that bypass provider routing entirely (oracle has no model; gemini speaks
-    its provider's native wire) are never offered.
+    that bypass provider routing entirely are never offered (gemini speaks
+    its provider's native wire; oracle is not a registered agent — special-
+    cased in rollout — and is listed defensively).
     """
     from benchflow.agents.env import _provider_supports_agent_protocol
     from benchflow.agents.registry import AGENTS
@@ -146,11 +179,17 @@ from dataclasses import dataclass  # noqa: E402
 
 @dataclass(frozen=True)
 class CheckResult:
-    """One doctor/smoke row: what was checked, verdict, human detail."""
+    """One doctor/smoke row: what was checked, verdict, human detail.
+
+    ``skipped=True`` marks a check that could not be exercised (e.g. run-time
+    auth) — it never fails a doctor run (``ok`` stays True) but is rendered
+    distinctly and counted in the summary so green does not over-certify.
+    """
 
     name: str
     ok: bool
     detail: str = ""
+    skipped: bool = False
 
 
 def _sanitize(text: str) -> str:
@@ -164,10 +203,12 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
 
     GET /models is not used: it can 200 while the actual route is broken
     (wrong model id, upstream 5xx) — a 1-token completion is the cheapest
-    request that exercises the full path. The endpoint is joined exactly the
-    way the run path does (resolve_base_url per protocol + one path segment);
-    no URL guessing. Provider classes the ping cannot exercise (ADC, AWS
-    SigV4) are skipped honestly instead of reported as failures.
+    request that exercises the full path. The endpoint uses the same
+    resolve_base_url + path-segment join as the run path, but prefers the
+    openai-completions endpoint when a provider has several — it validates
+    the key/route, not necessarily the endpoint the chosen agent will use.
+    Provider classes the ping cannot exercise (ADC, Bedrock bearer auth) are
+    skipped honestly instead of reported as failures.
     """
     import httpx
 
@@ -183,6 +224,7 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
             name,
             True,
             f"skipped — {cfg.auth_type} auth is exercised at run time",
+            skipped=True,
         )
     key = env.get(cfg.auth_env or "", "")
     if not key:
@@ -202,9 +244,14 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
     elif "anthropic-messages" in endpoints:
         protocol = "anthropic-messages"
         path, ok_field = "/v1/messages", "content"
-        # x-api-key is the Anthropic wire header; Azure's Anthropic surface
-        # accepts api-key too — send both.
-        headers = {"x-api-key": key, "api-key": key}
+        # x-api-key is the Anthropic wire header (anthropic-version is
+        # required by that wire contract); Azure's Anthropic surface accepts
+        # api-key too — send both key headers.
+        headers = {
+            "x-api-key": key,
+            "api-key": key,
+            "anthropic-version": "2023-06-01",
+        }
         payload = {
             "model": bare_model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -215,6 +262,7 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
             name,
             True,
             f"skipped — no pingable endpoint ({sorted(endpoints)})",
+            skipped=True,
         )
     try:
         base = resolve_base_url(cfg, env, protocol=protocol).rstrip("/")
@@ -249,8 +297,15 @@ def run_doctor(
     env: dict[str, str],
     ping_transport=None,
     skip_ping: bool = False,
+    agent: str | None = None,
 ) -> list[CheckResult]:
-    """The shared check set behind `bench doctor` and the init smoke stage."""
+    """The shared check set behind `bench doctor` and the init smoke stage.
+
+    When *agent* is given and a host subscription login covers the model's
+    key (check_subscription_auth), the key/route/ping rows are skipped — a
+    subscription setup must not be failed by checks that only understand API
+    keys.
+    """
     import shutil
 
     results: list[CheckResult] = []
@@ -275,46 +330,59 @@ def run_doctor(
     else:
         from benchflow.sandbox.providers import SANDBOX_PROVIDERS
 
+        known = sandbox in SANDBOX_PROVIDERS
         results.append(
             CheckResult(
                 "sandbox",
-                sandbox in SANDBOX_PROVIDERS,
-                f"unknown sandbox {sandbox!r} (expected one of"
+                known,
+                f"{sandbox} (no init-time checks for this provider)"
+                if known
+                else f"unknown sandbox {sandbox!r} (expected one of"
                 f" {', '.join(SANDBOX_PROVIDERS)})",
             )
         )
     resolved = resolve_provider(model)
+    auth_env: str | None = None
     if resolved:
         _, cfg = resolved
-        if cfg.auth_type == "api_key" and cfg.auth_env:
-            has = bool(env.get(cfg.auth_env))
-            results.append(
-                CheckResult(
-                    f"provider key ({cfg.auth_env})",
-                    has,
-                    "set" if has else f"{cfg.auth_env} is not set",
-                )
-            )
+        if cfg.auth_type == "api_key":
+            auth_env = cfg.auth_env
     else:
         # No registered provider endpoint, but well-known model families
-        # (claude-*, gpt-*, gemini-*) still run via their inferred key — check
-        # its presence instead of failing a setup the run path supports.
+        # (claude-*, gpt-*, gemini-*) still run via their inferred key.
         from benchflow.agents.registry import infer_env_key_for_model
 
-        inferred = infer_env_key_for_model(model)
-        if inferred:
-            has = bool(env.get(inferred))
-            results.append(
-                CheckResult(
-                    f"provider key ({inferred})",
-                    has,
-                    "set" if has else f"{inferred} is not set",
-                )
-            )
-        else:
+        auth_env = infer_env_key_for_model(model)
+        if not auth_env:
             results.append(
                 CheckResult("provider", False, f"no registered provider for {model!r}")
             )
+            return results
+
+    if agent and auth_env and not env.get(auth_env):
+        from benchflow.agents.env import check_subscription_auth
+
+        if check_subscription_auth(agent, auth_env):
+            results.append(
+                CheckResult(
+                    f"provider auth ({agent})",
+                    True,
+                    "skipped — host subscription login covers this model;"
+                    " key/route/ping checks do not apply",
+                    skipped=True,
+                )
+            )
+            return results
+
+    if auth_env:
+        has = bool(env.get(auth_env))
+        results.append(
+            CheckResult(
+                f"provider key ({auth_env})",
+                has,
+                "set" if has else f"{auth_env} is not set",
+            )
+        )
     # LiteLLM route resolution is pure (no network) and catches the
     # env/route errors the proxy would hit at run time — a doctor-green ping
     # alone does not prove the proxy lane resolves.
@@ -326,7 +394,11 @@ def run_doctor(
             CheckResult("litellm route", True, f"resolves (alias {route.model_alias})")
         )
     except Exception as exc:
-        results.append(CheckResult("litellm route", False, _sanitize(str(exc))))
+        results.append(
+            CheckResult(
+                "litellm route", False, _sanitize(f"{type(exc).__name__}: {exc}")
+            )
+        )
     if not skip_ping:
         results.append(model_ping(model, env, transport=ping_transport))
     return results

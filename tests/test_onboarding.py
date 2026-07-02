@@ -320,3 +320,91 @@ class TestDoctorHardening:
         )
         row = next(r for r in results if "ANTHROPIC_API_KEY" in r.name)
         assert not row.ok  # key absent -> honest red row, not "no provider"
+
+
+class TestEnvFileDataSafety:
+    def test_undecodable_file_degrades_never_crashes(self, tmp_path):
+        """One stray latin-1 byte must not brick every CLI command (the
+        autoload callback runs on ALL subcommands, including the repair
+        paths)."""
+        path = tmp_path / ".env"
+        path.write_bytes(b"NOTE=caf\xe9\nGOOD=1\n")
+        assert onboarding.load_env_file(path) == []  # degraded, no raise
+
+    def test_rewrite_preserves_comments_and_unparsed_lines(self, tmp_path):
+        """write_env_file must not destroy what the parser skips — a hand
+        commented file survives the next `bench init` verbatim."""
+        path = tmp_path / ".env"
+        path.write_text("# my deepseek key\nA=1\nnot a kv line\n")
+        onboarding.write_env_file(path, {"B": "2", "A": "changed"})
+        text = path.read_text()
+        assert "# my deepseek key" in text
+        assert "not a kv line" in text
+        assert onboarding.read_env_file(path) == {"A": "changed", "B": "2"}
+
+    def test_rewrite_refuses_to_clobber_undecodable_file(self, tmp_path):
+        path = tmp_path / ".env"
+        path.write_bytes(b"\xff\xfe binary junk")
+        import pytest
+
+        with pytest.raises(OSError):
+            onboarding.write_env_file(path, {"A": "1"})
+        assert path.read_bytes() == b"\xff\xfe binary junk"  # untouched
+
+    def test_rewrite_retightens_widened_permissions(self, tmp_path):
+        path = tmp_path / ".env"
+        onboarding.write_env_file(path, {"A": "1"})
+        path.chmod(0o644)
+        onboarding.write_env_file(path, {"B": "2"})
+        assert (path.stat().st_mode & 0o777) == 0o600
+
+
+class TestSubscriptionAwareDoctor:
+    def test_subscription_login_skips_key_route_and_ping_rows(self, monkeypatch):
+        """A subscription-onboarded setup (host login files, no API key) must
+        not be failed by its own smoke test: key/route/ping rows are skipped,
+        not red."""
+        monkeypatch.setattr(
+            "benchflow.agents.env.check_subscription_auth", lambda a, k: True
+        )
+        results = onboarding.run_doctor(
+            model="claude-opus-4-6",
+            sandbox="docker",
+            env={},
+            agent="claude-agent-acp",
+        )
+        assert all(r.ok for r in results if r.name != "docker")
+        skipped = [r for r in results if r.skipped]
+        assert any("subscription" in r.detail for r in skipped)
+
+    def test_skipped_rows_carry_the_skipped_flag(self):
+        result = onboarding.model_ping("google-vertex/gemini-3-pro", env={})
+        assert result.ok and result.skipped
+
+    def test_modal_sandbox_row_is_sane(self):
+        results = onboarding.run_doctor(
+            model="deepseek/deepseek-v4-flash",
+            sandbox="modal",
+            env={"DEEPSEEK_API_KEY": "sk"},
+            skip_ping=True,
+        )
+        row = next(r for r in results if r.name == "sandbox")
+        assert row.ok
+        assert "unknown" not in row.detail
+
+    def test_route_row_failure_names_the_exception_type(self, monkeypatch):
+        def boom(model, env):
+            raise ValueError("boom")
+
+        monkeypatch.setattr(
+            "benchflow.providers.litellm_config.resolve_litellm_route", boom
+        )
+        results = onboarding.run_doctor(
+            model="deepseek/deepseek-v4-flash",
+            sandbox="docker",
+            env={"DEEPSEEK_API_KEY": "sk"},
+            skip_ping=True,
+        )
+        row = next(r for r in results if r.name.startswith("litellm route"))
+        assert not row.ok
+        assert "ValueError" in row.detail

@@ -21,7 +21,7 @@ def _init_args(home, extra=()):
         "--agent",
         "pi-acp",
         "--dataset",
-        "skillsbench",
+        "skillsbench@1.1",
         "--sandbox",
         "docker",
         "--api-key",
@@ -61,7 +61,7 @@ def test_incompatible_agent_for_model_is_rejected(tmp_path, monkeypatch):
             "--agent",
             "codex-acp",  # openai-responses wire: the run path would reject it
             "--dataset",
-            "skillsbench",
+            "skillsbench@1.1",
             "--sandbox",
             "docker",
             "--api-key",
@@ -112,7 +112,7 @@ def test_interactive_wizard_prompts_and_completes(tmp_path, monkeypatch):
         [
             "deepseek/deepseek-v4-flash",  # model
             "pi-acp",  # agent
-            "skillsbench",  # task set
+            "skillsbench@1.1",  # task set
             "docker",  # sandbox
             "sk-wizard-key",  # hidden api key
         ]
@@ -138,7 +138,7 @@ def test_startup_autoloads_saved_env_file(tmp_path, monkeypatch):
     result = runner.invoke(app, [*_init_args(tmp_path)[:-3], "--skip-smoke"])
     # (same init args minus --api-key: the saved key must be found)
     assert result.exit_code == 0, result.output
-    assert "already set" in result.output
+    assert "Using DEEPSEEK_API_KEY" in result.output
 
 
 def test_full_smoke_runs_credential_free_oracle_stage(tmp_path, monkeypatch):
@@ -156,17 +156,24 @@ def test_full_smoke_runs_credential_free_oracle_stage(tmp_path, monkeypatch):
 
         return R()
 
+    from benchflow.onboarding import CheckResult
+
     monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "benchflow.onboarding.run_doctor",
+        lambda *a, **k: [CheckResult("stub", True, "")],
+    )
     result = runner.invoke(
         app,
         [*_init_args(tmp_path)[:-1], "--full-smoke", "--smoke-task", "citation-check"],
     )
+    assert result.exit_code == 0, result.output
     # doctor checks still run (docker/key/ping will fail here — that's fine,
     # exit code reflects them); the oracle stage must have been invoked first.
     assert any(
         argv[:5] == ["bench", "eval", "run", "--agent", "oracle"] for argv in calls
     ), result.output
-    assert any("citation-check" in argv for argv in calls for argv in [argv])
+    assert any("citation-check" in argv for argv in calls)
 
 
 def test_full_smoke_oracle_failure_fails_init(tmp_path, monkeypatch):
@@ -205,7 +212,7 @@ def test_api_key_flag_rejected_for_non_api_key_provider(tmp_path, monkeypatch):
             "--agent",
             "pi-acp",
             "--dataset",
-            "skillsbench",
+            "skillsbench@1.1",
             "--sandbox",
             "docker",
             "--api-key",
@@ -251,7 +258,7 @@ def test_bare_model_with_inferable_key_completes(tmp_path, monkeypatch):
             "--agent",
             "claude-agent-acp",
             "--dataset",
-            "skillsbench",
+            "skillsbench@1.1",
             "--sandbox",
             "docker",
             "--api-key",
@@ -275,6 +282,91 @@ def test_subscription_login_skips_key_prompt(tmp_path, monkeypatch):
     )
     # no --api-key, no env key, no stdin: would block on the hidden prompt
     # unless the subscription path answers first.
-    result = runner.invoke(app, _init_args(tmp_path)[:-3] + ["--skip-smoke"])
+    result = runner.invoke(app, [*_init_args(tmp_path)[:-3], "--skip-smoke"])
     assert result.exit_code == 0, result.output
     assert "subscription" in result.output.lower()
+
+
+def test_default_dataset_produces_a_parseable_spec(tmp_path, monkeypatch):
+    """The wizard's whole job is handing over a command that RUNS: a
+    registry-style dataset must carry a version (name@version) or init must
+    reject it — bare 'skillsbench' fails bench eval run's dataset parsing."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--agent",
+            "pi-acp",
+            "--dataset",
+            "skillsbench",  # version-less registry name
+            "--sandbox",
+            "docker",
+            "--api-key",
+            "sk-x",
+            "--skip-smoke",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "@" in result.output  # points at name@version
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--agent",
+            "pi-acp",
+            "--dataset",
+            "skillsbench@1.1",
+            "--sandbox",
+            "docker",
+            "--api-key",
+            "sk-x",
+            "--skip-smoke",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "-d skillsbench@1.1" in result.output
+    from benchflow._utils.dataset_registry import parse_dataset_spec
+
+    parse_dataset_spec("skillsbench@1.1")  # the emitted value must parse
+
+
+def test_doctor_survives_corrupt_and_partial_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text('model = "unterminated')
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    assert "bench init" in result.output
+
+    (tmp_path / "config.toml").write_text('agent = "pi-acp"\n')  # missing keys
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    assert "bench init" in result.output
+
+
+def test_full_smoke_missing_bench_binary_fails_cleanly(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+
+    def gone(argv, **kw):
+        raise FileNotFoundError(2, "No such file", "bench")
+
+    monkeypatch.setattr("subprocess.run", gone)
+    result = runner.invoke(
+        app,
+        [*_init_args(tmp_path)[:-1], "--full-smoke", "--smoke-task", "t1"],
+    )
+    assert result.exit_code == 1
+    assert "PATH" in result.output  # clear message, not a traceback
+
+
+def test_stale_exported_key_shadow_is_warned(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-stale-exported")
+    result = runner.invoke(app, _init_args(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert "shadow" in result.output.lower()

@@ -26,10 +26,15 @@ def benchflow_home() -> Path:
 def _echo_results(results: list[onboarding.CheckResult]) -> bool:
     all_ok = True
     for r in results:
-        mark = "✅" if r.ok else "❌"
+        mark = "○" if r.skipped else ("✅" if r.ok else "❌")
         typer.echo(f"  {mark} {r.name}: {r.detail}")
         all_ok &= r.ok
     return all_ok
+
+
+def _skip_note(results: list[onboarding.CheckResult]) -> str:
+    n = sum(1 for r in results if r.skipped)
+    return f" ({n} check(s) skipped — not verifiable before run time)" if n else ""
 
 
 def _osc52_copy(text: str) -> None:
@@ -53,11 +58,16 @@ def register_init(app: typer.Typer) -> None:
             None,
             "--dataset",
             "-d",
-            help="Dataset name (e.g. skillsbench) or a tasks dir path.",
+            help="Dataset spec (e.g. skillsbench@1.1) or a tasks dir path.",
         ),
-        sandbox: str = typer.Option(None, "--sandbox", help="docker | daytona"),
+        sandbox: str = typer.Option(
+            None, "--sandbox", help="Sandbox provider (docker, daytona, ...)"
+        ),
         api_key: str = typer.Option(
-            None, "--api-key", help="Provider API key to store (else prompted/hidden)."
+            None,
+            "--api-key",
+            help="Provider API key to store (falls back to subscription"
+            " login, then env var, then a hidden prompt).",
         ),
         skill_mode: str = typer.Option("with-skill", "--skill-mode"),
         skip_smoke: bool = typer.Option(
@@ -114,28 +124,63 @@ def register_init(app: typer.Typer) -> None:
             raise typer.Exit(1)
 
         dataset = dataset or typer.prompt(
-            "Task set (dataset name or tasks dir)", default="skillsbench"
+            "Task set (dataset spec or tasks dir)", default="skillsbench@1.1"
         )
+        if "/" not in dataset and not dataset.startswith("."):
+            # Registry-style name: must parse as <name>@<version> or the
+            # printed command will not run.
+            from benchflow._utils.dataset_registry import parse_dataset_spec
+
+            try:
+                parse_dataset_spec(dataset)
+            except Exception as exc:
+                typer.echo(
+                    f"Dataset {dataset!r} is not a valid spec: {exc}\n"
+                    "Use <name>@<version> (e.g. skillsbench@1.1) or a tasks"
+                    " dir path.",
+                    err=True,
+                )
+                raise typer.Exit(1) from exc
         sandbox = sandbox or typer.prompt("Sandbox", default="docker")
 
-        # Credentials: subscription login > already-set env var > given/prompted
-        # key stored in the private env file future runs auto-load.
+        # Credentials: explicit --api-key > subscription login > already-set
+        # env var > hidden prompt; stored keys land in the private env file
+        # future runs auto-load.
         if auth_type == "api_key" and auth_env:
             from benchflow.agents.env import check_subscription_auth
 
-            if api_key:
-                onboarding.write_env_file(home / ".env", {auth_env: api_key})
-                os.environ.setdefault(auth_env, api_key)
-            elif check_subscription_auth(agent, auth_env):
+            try:
+                if api_key:
+                    exported = os.environ.get(auth_env)
+                    if exported and exported != api_key:
+                        typer.echo(
+                            f"warning: {auth_env} is exported with a different"
+                            " value — the exported variable will shadow the"
+                            " saved key at run time.",
+                            err=True,
+                        )
+                    onboarding.write_env_file(home / ".env", {auth_env: api_key})
+                    os.environ.setdefault(auth_env, api_key)
+                elif check_subscription_auth(agent, auth_env):
+                    typer.echo(
+                        f"Using {agent}'s host subscription login"
+                        f" (no {auth_env} needed)."
+                    )
+                elif os.environ.get(auth_env):
+                    typer.echo(
+                        f"Using {auth_env} from your environment (or saved setup)."
+                    )
+                else:
+                    key = typer.prompt(f"{auth_env}", hide_input=True)
+                    onboarding.write_env_file(home / ".env", {auth_env: key})
+                    if not os.environ.get(auth_env):
+                        os.environ[auth_env] = key
+            except OSError as exc:
                 typer.echo(
-                    f"Using {agent}'s host subscription login (no {auth_env} needed)."
+                    f"Could not save credentials to {home / '.env'}: {exc}",
+                    err=True,
                 )
-            elif os.environ.get(auth_env):
-                typer.echo(f"Using {auth_env} already set in your environment.")
-            else:
-                key = typer.prompt(f"{auth_env}", hide_input=True)
-                onboarding.write_env_file(home / ".env", {auth_env: key})
-                os.environ.setdefault(auth_env, key)
+                raise typer.Exit(1) from exc
         elif api_key:
             typer.echo(
                 f"--api-key is not used by provider {prov_name!r} (auth:"
@@ -163,7 +208,16 @@ def register_init(app: typer.Typer) -> None:
                 typer.echo(
                     f"\nStage-1 smoke (oracle, no credentials): {' '.join(argv)}"
                 )
-                oracle = subprocess.run(argv)
+                try:
+                    oracle = subprocess.run(argv)
+                except FileNotFoundError as exc:
+                    typer.echo(
+                        "Cannot run the oracle smoke: `bench` is not on PATH"
+                        f" ({exc}). Add your install's bin directory to PATH"
+                        " and re-run, or use `bench doctor`.",
+                        err=True,
+                    )
+                    raise typer.Exit(1) from exc
                 mark = "✅" if oracle.returncode == 0 else "❌"
                 typer.echo(f"  {mark} oracle sandbox run (rc={oracle.returncode})")
                 if oracle.returncode != 0:
@@ -180,7 +234,8 @@ def register_init(app: typer.Typer) -> None:
                 # Verify the key that was just SAVED, not whatever happened to
                 # be exported before init ran.
                 env[auth_env] = api_key
-            if not _echo_results(onboarding.run_doctor(model, sandbox, env)):
+            results = onboarding.run_doctor(model, sandbox, env, agent=agent)
+            if not _echo_results(results):
                 typer.echo(
                     "\nSetup saved, but the smoke test failed — fix the ❌ rows"
                     " above and re-check with `bench doctor`.",
@@ -195,16 +250,27 @@ def register_init(app: typer.Typer) -> None:
 
     @app.command("doctor", rich_help_panel="Core")
     def doctor() -> None:
-        """Re-validate the saved setup: sandbox, provider key, model ping."""
+        """Re-validate the saved setup: sandbox, provider key, LiteLLM route,
+        model ping."""
         home = benchflow_home()
-        prefs = onboarding.load_prefs(home / "config.toml")
-        if not prefs:
-            typer.echo("No saved setup found — run `bench init` first.", err=True)
+        try:
+            prefs = onboarding.load_prefs(home / "config.toml")
+        except Exception:
+            prefs = None  # corrupt TOML — same remediation as missing keys
+        if not prefs or not {"model", "sandbox"} <= prefs.keys():
+            typer.echo(
+                "Saved setup is missing or incomplete — run `bench init` first.",
+                err=True,
+            )
             raise typer.Exit(1)
         onboarding.load_env_file(home / ".env")
         results = onboarding.run_doctor(
-            prefs["model"], prefs["sandbox"], dict(os.environ)
+            prefs["model"],
+            prefs["sandbox"],
+            dict(os.environ),
+            agent=prefs.get("agent"),
         )
         ok = _echo_results(results)
-        typer.echo("\nAll checks passed." if ok else "\nSome checks failed.")
+        note = _skip_note(results)
+        typer.echo(f"\nAll checks passed.{note}" if ok else "\nSome checks failed.")
         raise typer.Exit(0 if ok else 1)
