@@ -190,6 +190,11 @@ class TestClassifyError:
         """'install' alone should NOT match — only 'install failed'."""
         assert classify_error("installing dependencies") == "other"
 
+    def test_error_classification_is_case_insensitive_for_core_markers(self):
+        """Guards the fix from PR #880 for issue #541."""
+        assert classify_error("Agent Install failed (rc=1)") == "install_failure"
+        assert classify_error("acp error -32000: connection refused") == "acp_error"
+
 
 class TestClassifyResultOutcome:
     @pytest.mark.parametrize(
