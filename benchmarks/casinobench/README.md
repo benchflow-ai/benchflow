@@ -39,14 +39,14 @@ docker build -t casino-agent-seat:latest examples/casino/agent_env \
 
 # 3. casinobench-base: extends the seat image with the engine + service extra so
 #    `casino-service` actually runs. This is the manifest's run `image`.
-docker build -t casinobench-base:latest examples/casino/agent_env \
+docker build -t ghcr.io/benchflow-ai/casinobench-base:2.0.1 examples/casino/agent_env \
   -f benchmarks/casinobench/docker/casinobench-base.Dockerfile
 ```
 
 Verify the service is real (not the broken `--no-deps` stub):
 
 ```bash
-docker run --rm casinobench-base:latest casino-service --help   # exits 0
+docker run --rm ghcr.io/benchflow-ai/casinobench-base:2.0.1 casino-service --help   # exits 0
 ```
 
 ## Run it
@@ -71,7 +71,7 @@ claude-agent-acp --model claude-haiku-4-5`.
 
 ## How a trial flows
 
-1. The Environment plane reads `environment.toml`, runs `casinobench-base:latest`,
+1. The Environment plane reads `environment.toml`, runs `ghcr.io/benchflow-ai/casinobench-base:2.0.1`,
    forwards `CASINOBENCH_GAME` / `CASINOBENCH_HANDS` / `BENCHFLOW_SEED`, starts
    `casino-service` on `:9001`, and health-gates it on `/health`.
 2. The agent plays via the `casino` CLI (`lobby` → `join` → `observe`/`act` …).
