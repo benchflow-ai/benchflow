@@ -15,6 +15,8 @@ from typing import Any
 import tomli_w
 import yaml
 
+from benchflow.adapters import _toolathlon_services
+
 logger = logging.getLogger(__name__)
 
 _NOOP_EXCLUDE_TAG = "__benchflow_exclude_no_tools__"
@@ -182,6 +184,11 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
         credential_refs = _toolathlon_credential_refs_for_task(
             upstream_task, task_config, variant=variant
         )
+        services = (
+            _toolathlon_services.required_services(upstream_task)
+            if variant == "official"
+            else set()
+        )
         mcp_servers = []
         for server_name in task_config.get("needed_mcp_servers", []):
             try:
@@ -210,6 +217,7 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
                 mcp_servers=mcp_servers,
                 variant=variant,
                 credential_refs=credential_refs,
+                services=services,
             ),
         )
         _write_text(
@@ -226,6 +234,8 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
                 db_dst = task_dir / "environment" / "db" / "init.sql.gz"
                 db_dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(db_src, db_dst)
+        elif services:
+            _toolathlon_services.apply_service_sidecars(task_dir, services)
         _write_text(
             task_dir / "tests" / "test.sh",
             _toolathlon_test_sh(task_name=task_name, variant=variant),
@@ -280,7 +290,9 @@ def _toolathlon_task_toml(
     mcp_servers: list[dict[str, Any]],
     variant: str,
     credential_refs: set[str],
+    services: set[str] | None = None,
 ) -> dict[str, Any]:
+    services = services or set()
     benchmark_name = "toolathlon-gym" if variant == "gym" else "toolathlon"
     setup_commands: list[dict[str, Any]] = []
     setup_commands.append(
@@ -301,6 +313,16 @@ def _toolathlon_task_toml(
                 "env": _toolathlon_credential_setup_env(credential_refs),
             }
         )
+    if _toolathlon_services.POSTE in services:
+        # Point the task's localhost mail configs at the poste sidecar before
+        # preprocess (which seeds mailboxes) runs.
+        setup_commands.append(
+            {
+                "command": _toolathlon_services.poste_config_rewrite_command(task_name),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+            }
+        )
     setup_commands.append(
         {
             "command": _toolathlon_setup_command(task_name=task_name, variant=variant),
@@ -308,10 +330,12 @@ def _toolathlon_task_toml(
             "timeout_sec": 600.0,
         }
     )
+    # Service tasks run a DinD compose with sidecar containers alongside main —
+    # give the sandbox extra memory/disk for the second image + running service.
     environment: dict[str, Any] = {
         "cpus": 4,
-        "memory_mb": 8192,
-        "storage_mb": 10240,
+        "memory_mb": 12288 if services else 8192,
+        "storage_mb": 24576 if services else 10240,
         "workdir": "/workspace/agent_workspace",
         "mcp_servers": mcp_servers,
         "setup_commands": setup_commands,

@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 from benchflow._utils.benchmark_repos import ResolvedSource
 from benchflow.adapters.source import adapt_resolved_source_if_needed
 from benchflow.task import Task
@@ -186,6 +188,88 @@ params:
     assert "ModuleNotFoundError|ImportError|PermissionError" in test_sh
     assert "Traceback (most recent call last):" not in test_sh
     assert "/usr/local/bin/uv run python" in test_sh
+
+
+def _write_toolathlon_repo_skeleton(repo: Path) -> Path:
+    """Minimal upstream Toolathlon layout; returns tasks/finalpool."""
+    (repo / ".git").mkdir(parents=True)
+    (repo / "global_preparation").mkdir()
+    (repo / "configs").mkdir()
+    (repo / "configs" / "users_data.json").write_text("{}")
+    mcp_dir = repo / "configs" / "mcp_servers"
+    mcp_dir.mkdir()
+    (mcp_dir / "emails.yaml").write_text(
+        "type: stdio\nname: emails\nparams:\n  command: uvx\n"
+        '  args: ["emails-mcp", "${token.emails_config_file}"]\n'
+        '  cwd: "${agent_workspace}"\n'
+    )
+    return repo / "tasks" / "finalpool"
+
+
+def _write_toolathlon_task(finalpool: Path, name: str, servers: list[str]) -> Path:
+    task_dir = finalpool / name
+    (task_dir / "docs").mkdir(parents=True)
+    (task_dir / "docs" / "agent_system_prompt.md").write_text("Workspace.\n")
+    (task_dir / "docs" / "task.md").write_text(f"Do {name}.\n")
+    (task_dir / "task_config.json").write_text(
+        json.dumps({"needed_mcp_servers": servers, "needed_local_tools": []})
+    )
+    return task_dir
+
+
+def test_toolathlon_email_task_gets_poste_sidecar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An email task materializes a poste sidecar compose + a pre-preprocess
+    config rewrite; a non-email task stays single-container."""
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "Toolathlon"
+    finalpool = _write_toolathlon_repo_skeleton(repo)
+    email_task = _write_toolathlon_task(finalpool, "apply-phd-email", ["emails"])
+    (email_task / "email_config.json").write_text(
+        json.dumps(
+            {"imap_server": "localhost", "imap_port": 1143, "smtp_port": 1587}
+        )
+    )
+    _write_toolathlon_task(finalpool, "find-alita-paper", ["filesystem"])
+
+    adapted = adapt_resolved_source_if_needed(
+        _resolved(
+            repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool", sha="e" * 40
+        )
+    )
+
+    # Email task: compose with a poste sidecar + gated main.
+    email = adapted.path / "apply-phd-email"
+    compose = yaml.safe_load(
+        (email / "environment" / "docker-compose.yaml").read_text()
+    )
+    assert compose["services"]["poste"]["image"].endswith("analogic/poste.io:2.5.5")
+    assert (
+        compose["services"]["main"]["depends_on"]["poste"]["condition"]
+        == "service_healthy"
+    )
+    poste_dir = email / "environment" / "poste"
+    assert (poste_dir / "entry.sh").exists()
+    assert (poste_dir / "plaintext_fix.sh").exists()
+    # Vendored roster is materialized, not the (empty) upstream users_data.json.
+    assert len((poste_dir / "pairs.tsv").read_text().splitlines()) > 100
+
+    task = Task(email)
+    # Extra headroom for the DinD compose + sidecar image.
+    assert task.config.environment.memory_mb == 12288
+    commands = [c.command for c in task.config.environment.setup_commands]
+    rewrite_idx = next(
+        i for i, c in enumerate(commands) if "poste" in c and "imap_server" in c
+    )
+    preprocess_idx = next(
+        i for i, c in enumerate(commands) if "preprocess.main" in c
+    )
+    assert rewrite_idx < preprocess_idx  # rewrite runs before preprocess seeds
+
+    # Non-email task: single container, no compose.
+    other = adapted.path / "find-alita-paper"
+    assert not (other / "environment" / "docker-compose.yaml").exists()
 
 
 def test_toolathlon_gym_adapter_normalizes_postgres_env(
