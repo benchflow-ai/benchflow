@@ -428,3 +428,56 @@ def smoke_argv(prefs: dict, task: str) -> list[str]:
     """Stage-1 smoke: the credential-free oracle agent on ONE task — proves
     install + sandbox plumbing before any API key is involved."""
     return [*_run_args(prefs, agent="oracle", model=None), "--include", task]
+
+
+def detect_key(
+    auth_env: str, agent: str | None = None, cwd: str | Path | None = None
+) -> tuple[str | None, str | None]:
+    """Find credentials for *auth_env* without asking the user.
+
+    Precedence: host subscription login (needs *agent*) > the process
+    environment (which already includes the saved ~/.benchflow/.env via the
+    startup autoload) > a ``./.env`` in the working folder. Returns
+    ``(source, value)`` — value is None for subscription (nothing to store)
+    and ``(None, None)`` when everything misses (the wizard then prompts).
+    """
+    import os
+
+    if agent:
+        from benchflow.agents.env import check_subscription_auth
+
+        if check_subscription_auth(agent, auth_env):
+            return "subscription", None
+    if os.environ.get(auth_env):
+        return "environment", os.environ[auth_env]
+    cwd_env = Path(cwd or ".") / ".env"
+    value = read_env_file(cwd_env).get(auth_env)
+    if value:
+        return "./.env", value
+    return None, None
+
+
+def dataset_choices() -> list[tuple[str, str]]:
+    """(spec, description) picker entries from the dataset registry, newest
+    version first within each name; empty when the registry is unreachable
+    (the wizard then falls back to free-form entry)."""
+    from benchflow._utils import dataset_registry as dr
+
+    try:
+        entries = dr.load_registry(dr.DEFAULT_REGISTRY_SOURCE)
+    except Exception:
+        return []
+
+    def _vkey(e):
+        try:
+            return tuple(int(p) for p in str(e.get("version", "")).split("."))
+        except ValueError:
+            return ()
+
+    ordered = sorted(entries, key=_vkey, reverse=True)
+    ordered.sort(key=lambda e: str(e.get("name", "")))
+    return [
+        (f"{e['name']}@{e['version']}", str(e.get("description", ""))[:80])
+        for e in ordered
+        if e.get("name") and e.get("version")
+    ]

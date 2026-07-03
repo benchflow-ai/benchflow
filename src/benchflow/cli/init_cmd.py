@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 
+import click
 import typer
 
 from benchflow import onboarding
@@ -35,6 +36,20 @@ def _echo_results(results: list[onboarding.CheckResult]) -> bool:
 def _skip_note(results: list[onboarding.CheckResult]) -> str:
     n = sum(1 for r in results if r.skipped)
     return f" ({n} check(s) skipped — not verifiable before run time)" if n else ""
+
+
+def _choose(title: str, options: list[tuple[str, str]], default: int | None = 1) -> int:
+    """Numbered menu: print options, return the chosen 1-based index.
+
+    Enter accepts the default. Selection beats free-form typing for
+    discoverability (the Hermes-style wizard pattern); free-text escape
+    hatches are modeled as an explicit "other" option by the caller.
+    """
+    typer.echo(f"\n{title}")
+    for i, (label, desc) in enumerate(options, 1):
+        suffix = f"  — {desc}" if desc else ""
+        typer.echo(f"  {i}) {label}{suffix}")
+    return typer.prompt("Select", type=click.IntRange(1, len(options)), default=default)
 
 
 def _osc52_copy(text: str) -> None:
@@ -90,7 +105,44 @@ def register_init(app: typer.Typer) -> None:
             typer.echo("--full-smoke requires --smoke-task <task-name>.", err=True)
             raise typer.Exit(2)
 
-        model = model or typer.prompt("Model (provider/model)")
+        if not model:
+            from benchflow.agents.providers import PROVIDERS
+
+            names = sorted(PROVIDERS)
+            options = [
+                (n, ", ".join(PROVIDERS[n].model_prefixes) or PROVIDERS[n].api_protocol)
+                for n in names
+            ]
+            options.append(("other", "type a full model id yourself"))
+            default = names.index("deepseek") + 1 if "deepseek" in names else 1
+            pick = _choose("Provider:", options, default=default)
+            if pick == len(options):  # other
+                model = typer.prompt("Model id (provider/model or bare)")
+            else:
+                prov = PROVIDERS[names[pick - 1]]
+                catalog = [
+                    str(m.get("id") or m.get("name"))
+                    for m in (prov.models or [])
+                    if m.get("id") or m.get("name")
+                ]
+                if catalog:
+                    mp = _choose(
+                        f"Model ({names[pick - 1]}):",
+                        [(m, "") for m in catalog] + [("other", "type a model id")],
+                    )
+                    bare = (
+                        catalog[mp - 1]
+                        if mp <= len(catalog)
+                        else typer.prompt("Model id")
+                    )
+                else:
+                    hint = (
+                        f" (e.g. {prov.model_prefixes[0]}-...)"
+                        if prov.model_prefixes
+                        else ""
+                    )
+                    bare = typer.prompt(f"Model id{hint}")
+                model = bare if "/" in bare else f"{names[pick - 1]}/{bare}"
         resolved = onboarding.resolve_provider(model)
         if resolved:
             prov_name, prov_cfg = resolved
@@ -109,11 +161,13 @@ def register_init(app: typer.Typer) -> None:
 
         offered = onboarding.compatible_agents(model)
         if not agent:
-            typer.echo(f"Agents able to route {model} ({len(offered)}):")
-            typer.echo("  " + ", ".join(offered))
-            agent = typer.prompt(
-                "Agent", default="pi-acp" if "pi-acp" in offered else offered[0]
+            default = offered.index("pi-acp") + 1 if "pi-acp" in offered else 1
+            pick = _choose(
+                f"Agent (able to route {model}):",
+                [(a, "") for a in offered],
+                default=default,
             )
+            agent = offered[pick - 1]
         if agent not in offered:
             typer.echo(
                 f"Agent {agent!r} cannot route {model!r} ({prov_name or 'provider'}"
@@ -123,9 +177,21 @@ def register_init(app: typer.Typer) -> None:
             )
             raise typer.Exit(1)
 
-        dataset = dataset or typer.prompt(
-            "Task set (dataset spec or tasks dir)", default="skillsbench@1.1"
-        )
+        if not dataset:
+            choices = onboarding.dataset_choices()
+            if choices:
+                opts = choices + [("a local tasks dir", "path to your own tasks")]
+                pick = _choose("Task set:", opts, default=1)
+                dataset = (
+                    typer.prompt("Tasks dir path")
+                    if pick == len(opts)
+                    else choices[pick - 1][0]
+                )
+            else:
+                dataset = typer.prompt(
+                    "Task set (dataset spec or tasks dir; registry unreachable)",
+                    default="skillsbench@1.1",
+                )
         if "/" not in dataset and not dataset.startswith("."):
             # Registry-style name: must parse as <name>@<version> or the
             # printed command will not run.
@@ -141,14 +207,17 @@ def register_init(app: typer.Typer) -> None:
                     err=True,
                 )
                 raise typer.Exit(1) from exc
-        sandbox = sandbox or typer.prompt("Sandbox", default="docker")
+        if not sandbox:
+            from benchflow.sandbox.providers import SANDBOX_PROVIDERS
 
-        # Credentials: explicit --api-key > subscription login > already-set
-        # env var > hidden prompt; stored keys land in the private env file
-        # future runs auto-load.
+            pick = _choose("Sandbox:", [(s, "") for s in SANDBOX_PROVIDERS])
+            sandbox = SANDBOX_PROVIDERS[pick - 1]
+
+        # Credentials: explicit --api-key > auto-detection (subscription
+        # login, then the environment incl. the saved setup, then ./.env in
+        # the working folder) > hidden prompt as the last resort. Stored keys
+        # land in the private env file future runs auto-load.
         if auth_type == "api_key" and auth_env:
-            from benchflow.agents.env import check_subscription_auth
-
             try:
                 if api_key:
                     exported = os.environ.get(auth_env)
@@ -161,20 +230,30 @@ def register_init(app: typer.Typer) -> None:
                         )
                     onboarding.write_env_file(home / ".env", {auth_env: api_key})
                     os.environ.setdefault(auth_env, api_key)
-                elif check_subscription_auth(agent, auth_env):
-                    typer.echo(
-                        f"Using {agent}'s host subscription login"
-                        f" (no {auth_env} needed)."
-                    )
-                elif os.environ.get(auth_env):
-                    typer.echo(
-                        f"Using {auth_env} from your environment (or saved setup)."
-                    )
                 else:
-                    key = typer.prompt(f"{auth_env}", hide_input=True)
-                    onboarding.write_env_file(home / ".env", {auth_env: key})
-                    if not os.environ.get(auth_env):
-                        os.environ[auth_env] = key
+                    source, value = onboarding.detect_key(auth_env, agent=agent)
+                    if source == "subscription":
+                        typer.echo(
+                            f"✓ Using {agent}'s host subscription login"
+                            f" (no {auth_env} needed)."
+                        )
+                    elif source == "environment":
+                        typer.echo(
+                            f"✓ {auth_env} found in your environment (or saved"
+                            " setup) — using it."
+                        )
+                    elif source == "./.env":
+                        typer.echo(
+                            f"✓ {auth_env} found in ./.env — saving it to your"
+                            " bench setup."
+                        )
+                        onboarding.write_env_file(home / ".env", {auth_env: value})
+                        os.environ.setdefault(auth_env, value)
+                    else:
+                        key = typer.prompt(f"{auth_env}", hide_input=True)
+                        onboarding.write_env_file(home / ".env", {auth_env: key})
+                        if not os.environ.get(auth_env):
+                            os.environ[auth_env] = key
             except OSError as exc:
                 typer.echo(
                     f"Could not save credentials to {home / '.env'}: {exc}",

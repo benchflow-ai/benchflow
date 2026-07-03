@@ -408,3 +408,57 @@ class TestSubscriptionAwareDoctor:
         row = next(r for r in results if r.name.startswith("litellm route"))
         assert not row.ok
         assert "ValueError" in row.detail
+
+
+class TestDetectKey:
+    """After the model is chosen the wizard must find credentials itself:
+    subscription login, then the process environment (which includes the
+    saved ~/.benchflow/.env), then a ./.env in the working folder — prompting
+    only when all three miss."""
+
+    def test_subscription_wins(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "benchflow.agents.env.check_subscription_auth", lambda a, k: True
+        )
+        monkeypatch.setenv("PROBE_KEY", "from-env")
+        source, value = onboarding.detect_key(
+            "PROBE_KEY", agent="claude-agent-acp", cwd=tmp_path
+        )
+        assert source == "subscription" and value is None
+
+    def test_process_env_beats_cwd_dotenv(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PROBE_KEY", "from-env")
+        (tmp_path / ".env").write_text('PROBE_KEY="from-cwd"\n')
+        source, value = onboarding.detect_key("PROBE_KEY", cwd=tmp_path)
+        assert source == "environment" and value == "from-env"
+
+    def test_cwd_dotenv_passes_through(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("PROBE_KEY", raising=False)
+        (tmp_path / ".env").write_text('PROBE_KEY="from-cwd"\n')
+        source, value = onboarding.detect_key("PROBE_KEY", cwd=tmp_path)
+        assert source == "./.env" and value == "from-cwd"
+
+    def test_nothing_found(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("PROBE_KEY", raising=False)
+        assert onboarding.detect_key("PROBE_KEY", cwd=tmp_path) == (None, None)
+
+
+class TestDatasetChoices:
+    def test_newest_version_first_per_name(self, monkeypatch):
+        entries = [
+            {"name": "skillsbench", "version": "1.0", "description": "old"},
+            {"name": "skillsbench", "version": "1.1", "description": "new"},
+        ]
+        monkeypatch.setattr(
+            "benchflow._utils.dataset_registry.load_registry", lambda src: entries
+        )
+        choices = onboarding.dataset_choices()
+        assert choices[0][0] == "skillsbench@1.1"
+        assert "skillsbench@1.0" in [c[0] for c in choices]
+
+    def test_registry_unreachable_degrades_to_empty(self, monkeypatch):
+        def boom(src):
+            raise OSError("offline")
+
+        monkeypatch.setattr("benchflow._utils.dataset_registry.load_registry", boom)
+        assert onboarding.dataset_choices() == []

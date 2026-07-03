@@ -104,17 +104,24 @@ def test_doctor_reports_rows_and_fails_on_broken_setup(tmp_path, monkeypatch):
 
 
 def test_interactive_wizard_prompts_and_completes(tmp_path, monkeypatch):
-    """No flags: the wizard prompts for model → agent → dataset → sandbox →
-    hidden key, then persists and prints the final command."""
+    """No flags: the wizard walks numbered menus (provider → model → agent →
+    dataset → sandbox), auto-detects credentials, and only prompts for the
+    key when nothing is found."""
     monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)  # no ./.env here -> key prompt is the fallback
+    monkeypatch.setattr(
+        "benchflow.onboarding.dataset_choices",
+        lambda: [("skillsbench@1.1", "87-task benchmark")],
+    )
     answers = "\n".join(
         [
-            "deepseek/deepseek-v4-flash",  # model
-            "pi-acp",  # agent
-            "skillsbench@1.1",  # task set
-            "docker",  # sandbox
-            "sk-wizard-key",  # hidden api key
+            "",  # provider menu -> default (deepseek)
+            "deepseek-v4-flash",  # model id (deepseek has no catalog)
+            "",  # agent menu -> default (pi-acp)
+            "",  # dataset menu -> default (skillsbench@1.1)
+            "",  # sandbox menu -> default (docker)
+            "sk-wizard-key",  # hidden api key (nothing auto-detected)
         ]
     )
     result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
@@ -138,7 +145,7 @@ def test_startup_autoloads_saved_env_file(tmp_path, monkeypatch):
     result = runner.invoke(app, [*_init_args(tmp_path)[:-3], "--skip-smoke"])
     # (same init args minus --api-key: the saved key must be found)
     assert result.exit_code == 0, result.output
-    assert "Using DEEPSEEK_API_KEY" in result.output
+    assert "DEEPSEEK_API_KEY found in your environment" in result.output
 
 
 def test_full_smoke_runs_credential_free_oracle_stage(tmp_path, monkeypatch):
@@ -370,3 +377,41 @@ def test_stale_exported_key_shadow_is_warned(tmp_path, monkeypatch):
     result = runner.invoke(app, _init_args(tmp_path))
     assert result.exit_code == 0, result.output
     assert "shadow" in result.output.lower()
+
+
+def test_wizard_is_selection_driven_with_auto_key_detection(tmp_path, monkeypatch):
+    """Hermes-style UX: every step is a numbered menu (or Enter for the
+    default) — and the key is auto-detected from ./.env in the working
+    folder, so the user never types it."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text('DEEPSEEK_API_KEY="sk-from-folder"\n')
+    monkeypatch.setattr(
+        "benchflow.onboarding.dataset_choices",
+        lambda: [("skillsbench@1.1", "87-task benchmark")],
+    )
+    answers = "\n".join(
+        [
+            "",  # provider menu -> Enter = default (deepseek)
+            "deepseek-v4-flash",  # model (free text w/ hint; deepseek has no catalog)
+            "",  # agent menu -> Enter = default (pi-acp)
+            "",  # dataset menu -> Enter = default (skillsbench@1.1)
+            "",  # sandbox menu -> Enter = default (docker)
+        ]
+    )
+    result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
+    assert result.exit_code == 0, result.output
+    assert "./.env" in result.output  # told the user where the key came from
+    from benchflow import onboarding
+
+    # passed through into the saved setup for future runs
+    assert onboarding.read_env_file(tmp_path / "home" / ".env") == {
+        "DEEPSEEK_API_KEY": "sk-from-folder"
+    }
+    assert (
+        "bench eval run --agent pi-acp --model deepseek/deepseek-v4-flash"
+        in result.output
+    )
+    # menus were shown, not free-text demands
+    assert "1)" in result.output
