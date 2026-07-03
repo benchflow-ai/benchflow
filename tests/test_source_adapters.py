@@ -525,6 +525,10 @@ def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None
     # Unset secrets fall back to their example defaults, not the literal env ref.
     assert tokens["huggingface_token"] == "XX"
     assert tokens["github_read_only"] == "1"
+    # Upstream preprocess/eval read tokens via ATTRIBUTE access (addict.Dict);
+    # the generated dict must support it (a plain dict would AttributeError).
+    assert tokens.github_token == "gho_xyz"
+    assert tokens.gcp_project_id == "proj-123"
 
 
 def test_toolathlon_container_launch_resolves_tokens(tmp_path: Path) -> None:

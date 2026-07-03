@@ -202,9 +202,25 @@ def _write_config() -> int:
     for key, env_var, default in _GLOBAL_TOKENS:
         value = os.environ.get(env_var) if env_var else None
         tokens[key] = value if value not in (None, "") else default
-    lines = ["all_token_key_session = {"]
+    # Upstream code reads this via ATTRIBUTE access
+    # (``all_token_key_session.github_token``) because upstream builds it with
+    # ``addict.Dict``. Emit a self-contained attribute-accessible dict so the
+    # generated file needs no third-party import in either the preprocess env or
+    # the launcher; missing keys return None (addict returns an empty Dict, but
+    # nothing here relies on that).
+    lines = [
+        "class _TokenDict(dict):",
+        "    def __getattr__(self, name):",
+        "        try:",
+        "            return self[name]",
+        "        except KeyError:",
+        "            return None",
+        "",
+        "",
+        "all_token_key_session = _TokenDict({",
+    ]
     lines += [f"    {key!r}: {value!r}," for key, value in tokens.items()]
-    lines.append("}")
+    lines.append("})")
     target = _workspace() / "configs" / "token_key_session.py"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(lines) + "\n")
