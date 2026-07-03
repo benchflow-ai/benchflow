@@ -833,6 +833,7 @@ def test_other_agent_offers_static_catalog_and_fetches_one_manifest(
         for store, val in zip(
             (registry.AGENTS, registry.AGENT_INSTALLERS, registry.AGENT_LAUNCH),
             saved,
+            strict=True,
         ):
             if val is not None:
                 store[target] = val
