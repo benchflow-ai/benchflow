@@ -179,6 +179,16 @@ class TestCommandAssembly:
         prefs = {**self.PREFS, "dataset": "/data/my-tasks"}
         assert " --tasks-dir /data/my-tasks " in onboarding.final_command(prefs) + " "
 
+    def test_final_command_shell_quotes_task_paths_with_spaces(self):
+        """Guards PR #883: printed eval commands are copy-pasteable."""
+        import shlex
+
+        prefs = {**self.PREFS, "dataset": "/data/my tasks"}
+        cmd = onboarding.final_command(prefs)
+        parts = shlex.split(cmd)
+        assert "--tasks-dir '/data/my tasks'" in cmd
+        assert parts[parts.index("--tasks-dir") + 1] == "/data/my tasks"
+
     def test_oracle_smoke_argv_swaps_agent_and_pins_one_task(self):
         argv = onboarding.smoke_argv(self.PREFS, task="citation-check")
         assert argv[:4] == ["bench", "eval", "run", "--agent"]
@@ -254,6 +264,21 @@ class TestModelPingProviderClasses:
             "https://myres.services.ai.azure.com/anthropic/v1/messages"
         )
         assert seen["headers"].get("x-api-key") == "sk-az"
+
+    def test_azure_openai_ping_uses_api_key_header(self):
+        """Guards PR #883: Azure OpenAI smoke pings use api-key auth."""
+        transport, seen = self._capture()
+        result = onboarding.model_ping(
+            "azure-foundry-openai/gpt-5.5",
+            env={"AZURE_API_KEY": "sk-az", "AZURE_RESOURCE": "myres"},
+            transport=transport,
+        )
+        assert result.ok, result.detail
+        assert seen["url"] == (
+            "https://myres.openai.azure.com/openai/v1/chat/completions"
+        )
+        assert seen["headers"].get("api-key") == "sk-az"
+        assert "authorization" not in seen["headers"]
 
     def test_adc_provider_is_honestly_skipped_not_failed(self):
         result = onboarding.model_ping("google-vertex/gemini-3-pro", env={})
@@ -412,9 +437,9 @@ class TestSubscriptionAwareDoctor:
 
 class TestDetectKey:
     """After the model is chosen the wizard must find credentials itself:
-    subscription login, then the process environment (which includes the
-    saved ~/.benchflow/.env), then a ./.env in the working folder — prompting
-    only when all three miss."""
+    ./.env in the working folder, then the process environment (which includes
+    the saved ~/.benchflow/.env), then subscription login — prompting only when
+    all three miss."""
 
     def test_exported_key_beats_subscription_matching_the_run_path(
         self, monkeypatch, tmp_path
@@ -442,11 +467,14 @@ class TestDetectKey:
         )
         assert source == "subscription" and value is None
 
-    def test_process_env_beats_cwd_dotenv(self, monkeypatch, tmp_path):
+    def test_cwd_dotenv_beats_process_env_matching_the_run_path(
+        self, monkeypatch, tmp_path
+    ):
+        """Guards PR #883: detect_key follows resolve_agent_env source order."""
         monkeypatch.setenv("PROBE_KEY", "from-env")
         (tmp_path / ".env").write_text('PROBE_KEY="from-cwd"\n')
         source, value = onboarding.detect_key("PROBE_KEY", cwd=tmp_path)
-        assert source == "environment" and value == "from-env"
+        assert source == "./.env" and value == "from-cwd"
 
     def test_cwd_dotenv_passes_through(self, monkeypatch, tmp_path):
         monkeypatch.delenv("PROBE_KEY", raising=False)
@@ -522,7 +550,11 @@ class TestAgentPaths:
 class TestDetectKeySources:
     def test_all_sources_listed_in_run_path_order(self, monkeypatch, tmp_path):
         """The auth menu needs every detected source, ordered the way the run
-        path would use them: environment, subscription, ./.env."""
+        path would use them: ./.env, environment, subscription.
+
+        Guards PR #883 against validating one key while the final run uses
+        another.
+        """
         monkeypatch.setattr(
             "benchflow.agents.env.check_subscription_auth", lambda a, k: True
         )
@@ -531,7 +563,7 @@ class TestDetectKeySources:
         sources = onboarding.detect_key_sources(
             "PROBE_KEY", agent="claude-agent-acp", cwd=tmp_path
         )
-        assert [s for s, _ in sources] == ["environment", "subscription", "./.env"]
+        assert [s for s, _ in sources] == ["./.env", "environment", "subscription"]
 
 
 class TestOfflineCatalogCache:

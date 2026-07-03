@@ -202,6 +202,44 @@ def _sanitize(text: str) -> str:
     return "".join(ch for ch in text if ch.isprintable() or ch in " \t")
 
 
+def shell_join(argv: list[str]) -> str:
+    """Render argv as a copy-pasteable shell command."""
+    import shlex
+
+    return shlex.join(argv)
+
+
+def normalize_dataset_input(
+    dataset: str,
+    *,
+    local_tasks_dir: bool = False,
+    cwd: str | Path | None = None,
+) -> str:
+    """Normalize task-dir values without changing valid registry specs."""
+    if "/" in dataset or dataset.startswith("."):
+        return dataset
+    if local_tasks_dir or (Path(cwd or ".") / dataset).is_dir():
+        return f"./{dataset}"
+    return dataset
+
+
+def _ping_headers(prov_name: str, protocol: str, key: str) -> dict[str, str]:
+    if protocol == "openai-completions":
+        if prov_name.startswith("azure-foundry-"):
+            return {"api-key": key}
+        return {"Authorization": f"Bearer {key}"}
+    if protocol == "anthropic-messages":
+        # x-api-key is the Anthropic wire header (anthropic-version is
+        # required by that wire contract); Azure's Anthropic surface accepts
+        # api-key too, so send both key headers.
+        return {
+            "x-api-key": key,
+            "api-key": key,
+            "anthropic-version": "2023-06-01",
+        }
+    return {}
+
+
 def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
     """Verify key + model id + endpoint with ONE max_tokens=1 completion.
 
@@ -239,7 +277,7 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
     if "openai-completions" in endpoints:
         protocol = "openai-completions"
         path, ok_field = "/chat/completions", "choices"
-        headers = {"Authorization": f"Bearer {key}"}
+        headers = _ping_headers(prov_name, protocol, key)
         payload = {
             "model": bare_model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -248,14 +286,7 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
     elif "anthropic-messages" in endpoints:
         protocol = "anthropic-messages"
         path, ok_field = "/v1/messages", "content"
-        # x-api-key is the Anthropic wire header (anthropic-version is
-        # required by that wire contract); Azure's Anthropic surface accepts
-        # api-key too — send both key headers.
-        headers = {
-            "x-api-key": key,
-            "api-key": key,
-            "anthropic-version": "2023-06-01",
-        }
+        headers = _ping_headers(prov_name, protocol, key)
         payload = {
             "model": bare_model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -425,7 +456,7 @@ def _run_args(prefs: dict, *, agent: str, model: str | None) -> list[str]:
 
 def final_command(prefs: dict) -> str:
     """The ready-to-run command the wizard prints (and copies) at the end."""
-    return " ".join(_run_args(prefs, agent=prefs["agent"], model=prefs["model"]))
+    return shell_join(_run_args(prefs, agent=prefs["agent"], model=prefs["model"]))
 
 
 def smoke_argv(prefs: dict, task: str) -> list[str]:
@@ -440,16 +471,19 @@ def detect_key_sources(
     """Every credential source found for *auth_env*, in run-path order.
 
     Order matches what the RUN would actually use (resolve_agent_env
-    inherits an exported key and uses_native_subscription_auth then defers
-    to it): the process environment (which already includes the saved
-    ~/.benchflow/.env via the startup autoload), then host subscription
-    login (needs *agent*; value None — nothing to store), then a ``./.env``
-    in the working folder. The wizard's auth menu shows all of them; the
-    non-interactive path takes the first.
+    inherits a local .env first, then the process environment, and only uses
+    host subscription auth when no key source is present): ``./.env`` in the
+    working folder, then the process environment (which already includes the
+    saved ~/.benchflow/.env via startup autoload), then host subscription
+    login (needs *agent*; value None — nothing to store). The wizard's auth
+    menu shows all of them; the non-interactive path takes the first.
     """
     import os
 
     sources: list[tuple[str, str | None]] = []
+    value = read_env_file(Path(cwd or ".") / ".env").get(auth_env)
+    if value:
+        sources.append(("./.env", value))
     if os.environ.get(auth_env):
         sources.append(("environment", os.environ[auth_env]))
     if agent:
@@ -457,9 +491,6 @@ def detect_key_sources(
 
         if check_subscription_auth(agent, auth_env):
             sources.append(("subscription", None))
-    value = read_env_file(Path(cwd or ".") / ".env").get(auth_env)
-    if value:
-        sources.append(("./.env", value))
     return sources
 
 

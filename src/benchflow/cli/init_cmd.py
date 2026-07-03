@@ -323,9 +323,9 @@ def register_init(app: typer.Typer) -> None:
                 pick = _choose("Task set:", opts, default=1)
                 if pick == len(opts):
                     d = typer.prompt("Tasks dir path")
-                    # bare relative names must route to --tasks-dir, not the
-                    # registry-spec validation below
-                    dataset = d if "/" in d or d.startswith(".") else f"./{d}"
+                    dataset = onboarding.normalize_dataset_input(
+                        d, local_tasks_dir=True
+                    )
                 else:
                     dataset = choices[pick - 1][0]
             else:
@@ -333,6 +333,7 @@ def register_init(app: typer.Typer) -> None:
                     "Task set (dataset spec or tasks dir; registry unreachable)",
                     default="skillsbench@1.1",
                 )
+        dataset = onboarding.normalize_dataset_input(dataset)
         if "/" not in dataset and not dataset.startswith("."):
             # Registry-style name: must parse as <name>@<version> or the
             # printed command will not run.
@@ -356,9 +357,9 @@ def register_init(app: typer.Typer) -> None:
             sandbox = SANDBOX_PROVIDERS[pick - 1]
         _step("sandbox", sandbox)
 
-        # Credentials: explicit --api-key > auto-detection (subscription
-        # login, then the environment incl. the saved setup, then ./.env in
-        # the working folder) > hidden prompt as the last resort. Stored keys
+        # Credentials: explicit --api-key > auto-detection (./.env in the
+        # working folder, then the environment incl. the saved setup, then
+        # subscription login) > hidden prompt as the last resort. Stored keys
         # land in the private env file future runs auto-load.
         if auth_type == "api_key" and auth_env:
             try:
@@ -399,7 +400,8 @@ def register_init(app: typer.Typer) -> None:
 
                 argv = onboarding.smoke_argv(prefs, task=smoke_task)
                 typer.echo(
-                    f"\nStage-1 smoke (oracle, no credentials): {' '.join(argv)}"
+                    "\nStage-1 smoke (oracle, no credentials): "
+                    f"{onboarding.shell_join(argv)}"
                 )
                 try:
                     oracle = subprocess.run(argv)

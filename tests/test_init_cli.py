@@ -372,6 +372,54 @@ def test_full_smoke_missing_bench_binary_fails_cleanly(tmp_path, monkeypatch):
     assert "PATH" in result.output  # clear message, not a traceback
 
 
+def test_full_smoke_prints_shell_quoted_command(tmp_path, monkeypatch):
+    """Guards PR #883: stage-1 smoke output is copy-pasteable."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path / "home"))
+    tasks_dir = tmp_path / "my tasks"
+    tasks_dir.mkdir()
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    from benchflow.onboarding import CheckResult
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "benchflow.onboarding.run_doctor",
+        lambda *a, **k: [CheckResult("stub", True, "")],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--agent",
+            "pi-acp",
+            "--dataset",
+            str(tasks_dir),
+            "--sandbox",
+            "docker",
+            "--api-key",
+            "sk-x",
+            "--full-smoke",
+            "--smoke-task",
+            "citation-check",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert f"--tasks-dir '{tasks_dir}'" in result.output
+    assert calls[0][calls[0].index("--tasks-dir") + 1] == str(tasks_dir)
+
+
 def test_stale_exported_key_shadow_is_warned(tmp_path, monkeypatch):
     monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-stale-exported")
@@ -465,6 +513,69 @@ def test_local_tasks_dir_bare_name_is_normalized_not_rejected(tmp_path, monkeypa
     result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
     assert result.exit_code == 0, result.output
     assert "--tasks-dir ./mytasks" in result.output
+
+
+def test_flagged_local_tasks_dir_bare_name_is_normalized(tmp_path, monkeypatch):
+    """Guards PR #883: fully flagged local task dirs mirror the prompt path."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mytasks").mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--agent",
+            "pi-acp",
+            "--dataset",
+            "mytasks",
+            "--sandbox",
+            "docker",
+            "--api-key",
+            "sk-x",
+            "--skip-smoke",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "--tasks-dir ./mytasks" in result.output
+
+
+def test_auto_key_detection_prefers_cwd_dotenv_over_exported_key(
+    tmp_path, monkeypatch
+):
+    """Guards PR #883: init validates the key the final run will use."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-exported")
+    (tmp_path / ".env").write_text('DEEPSEEK_API_KEY="sk-from-cwd"\n')
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--agent",
+            "pi-acp",
+            "--dataset",
+            "skillsbench@1.1",
+            "--sandbox",
+            "docker",
+            "--skip-smoke",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    from benchflow import onboarding
+
+    assert onboarding.read_env_file(tmp_path / "home" / ".env") == {
+        "DEEPSEEK_API_KEY": "sk-from-cwd"
+    }
+    assert str(tmp_path / ".env") in result.output
+    assert "shadow" in result.output.lower()
 
 
 def test_provider_labels_show_the_matched_protocol(tmp_path, monkeypatch):
