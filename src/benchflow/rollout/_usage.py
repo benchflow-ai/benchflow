@@ -28,6 +28,7 @@ class ProviderFailure:
 
 
 _PROVIDER_FAILURES: dict[int, ProviderFailure] = {
+    400: ProviderFailure(400, "provider rejected request"),
     401: ProviderFailure(401, "provider auth failed"),
     403: ProviderFailure(403, "provider auth failed"),
     429: ProviderFailure(429, "provider rate limited"),

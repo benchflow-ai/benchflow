@@ -305,8 +305,8 @@ class ACPClient:
         """
         server_params = [spec.to_new_session_param() for spec in mcp_servers or []]
         # Validate through model_validate (not the constructor) so the SDK's
-        # discriminated mcp_servers union coerces each per-transport dict — the
-        # constructor's static type rejects the dict list.
+        # discriminated mcp_servers union coerces each per-transport dict and
+        # catches invalid task-authored MCP wire shapes before the agent sees them.
         params = NewSessionParams.model_validate(
             {"cwd": cwd, "mcpServers": server_params}
         )

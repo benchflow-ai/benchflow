@@ -292,6 +292,7 @@ class _FakeSandbox:
     ):
         self.uploaded: dict[str, str] = {}
         self.exec_calls: list[str] = []
+        self.exec_timeouts: list[int | None] = []
         self.fail_launch = fail_launch
         self.fail_preflight = fail_preflight
         self.log_content = log_content
@@ -302,6 +303,7 @@ class _FakeSandbox:
 
     async def exec(self, command: str, timeout_sec: int | None = None) -> _ExecResult:
         self.exec_calls.append(command)
+        self.exec_timeouts.append(timeout_sec)
         if "stat -c %s" in command:
             return _ExecResult(0, stdout=str(len(self.log_content)))
         if "urllib.request" in command:
@@ -363,6 +365,36 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
 
     assert proc.base_url == "http://127.0.0.1:45999"
     assert await proc.is_running() is True
+
+
+@pytest.mark.asyncio
+async def test_sandbox_litellm_install_uses_configured_setup_timeout():
+    """Guards PR #878 against the hardcoded 600s LiteLLM install timeout."""
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    sandbox = _FakeSandbox()
+
+    await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env={
+            "MINIMAX_API_KEY": "k",
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        },
+        session_id="s",
+        agent_name="openhands",
+        install_timeout_sec=901,
+    )
+
+    install_index = next(
+        index
+        for index, command in enumerate(sandbox.exec_calls)
+        if "pip install" in command and "litellm" in command
+    )
+    assert sandbox.exec_timeouts[install_index] == 901
 
 
 @pytest.mark.asyncio
@@ -884,3 +916,66 @@ async def test_callback_records_unpriced_cost_as_null(tmp_path, monkeypatch):
     assert usage["n_input_tokens"] == 1000
     assert usage["cost_usd"] is None
     assert usage["price_source"] is None
+
+
+def test_poll_host_health_fails_fast_when_process_exited():
+    # PR #871's extended deadline leans on the process-exit check: a crashed proxy
+    # must fail fast, not wait out the full budget.
+    import asyncio
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from benchflow.providers.litellm_runtime import _poll_host_health
+
+    process = MagicMock()
+    process.process.poll.return_value = 1  # already exited
+    process.log_tail.return_value = "(tail)"
+
+    with pytest.raises(RuntimeError, match="exited before becoming healthy"):
+        asyncio.run(_poll_host_health(process, deadline_s=30.0))
+    process.process.poll.assert_called()  # checked liveness, did not wait out 30s
+
+
+def test_poll_host_health_bails_at_deadline_when_never_healthy(monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    import benchflow.providers.litellm_runtime as rt
+
+    class _FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            raise ConnectionError("refused")
+
+    monkeypatch.setattr(rt.httpx, "AsyncClient", _FailingClient)
+    process = MagicMock()
+    process.process.poll.return_value = None  # alive but never healthy
+    process.endpoint.local_base_url = "http://127.0.0.1:9/"
+    process.log_tail.return_value = "(tail)"
+
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        asyncio.run(rt._poll_host_health(process, deadline_s=0.3))
+
+
+def test_health_deadline_env_parse_is_defensive(monkeypatch):
+    # A malformed BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC must not crash import; a
+    # 0/negative value is floored so the poll still runs at least once.
+    import benchflow.providers.litellm_runtime as rt
+
+    monkeypatch.setenv("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "not-a-number")
+    assert rt._health_deadline_sec() == 180.0
+    monkeypatch.setenv("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "0")
+    assert rt._health_deadline_sec() >= 1.0
+    monkeypatch.setenv("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "240")
+    assert rt._health_deadline_sec() == 240.0

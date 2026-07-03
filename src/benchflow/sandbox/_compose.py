@@ -12,8 +12,11 @@ COMPOSE_NO_NETWORK_PATH = COMPOSE_DIR / "docker-compose-no-network.yaml"
 
 # Back-off delays for retrying a `compose up` that hit a daemon-side network
 # create/attach race. Shared by the host docker.py path and the Daytona DinD
-# path so a fresh-daemon race is retried identically on both.
-COMPOSE_UP_RETRY_DELAYS_SEC = (2.0, 5.0)
+# path so a fresh-daemon race is retried identically on both. Extended past the
+# original (2.0, 5.0): under max-parallel sweeps many `compose up` calls race on
+# the daemon's network create/attach at once, and two short retries were not
+# enough (observed "network <project>_default not found" surviving both).
+COMPOSE_UP_RETRY_DELAYS_SEC = (2.0, 5.0, 10.0, 20.0)
 # Daemon-side create/attach race seen on Docker 29.x: `compose up` prints
 # "Network ... Created" but the container create/start that follows fails with
 # "network <project>_default not found". Older daemons emit the same race

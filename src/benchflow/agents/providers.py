@@ -206,6 +206,16 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="GITHUB_TOKEN",
     ),
+    # OpenRouter exposes hosted models through an OpenAI-compatible endpoint.
+    # Keep qwen-dashscope as the owner for bare qwen* models; callers choose
+    # OpenRouter explicitly with openrouter/<provider>/<model>.
+    "openrouter": ProviderConfig(
+        name="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="OPENROUTER_API_KEY",
+    ),
     # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(

@@ -8,6 +8,7 @@ only wires the call.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
@@ -161,6 +162,41 @@ def register_tasks(app: typer.Typer) -> None:
                 # render verbatim instead of being parsed as styling (#379).
                 console.print(f"  [yellow]→[/yellow] {escape(issue)}")
             raise typer.Exit(1)
+
+    @tasks_app.command("overlap")
+    def tasks_overlap(
+        left_manifest: Annotated[
+            Path,
+            typer.Argument(help="Left task manifest JSON"),
+        ],
+        right_manifest: Annotated[
+            Path,
+            typer.Argument(help="Right task manifest JSON"),
+        ],
+        output: Annotated[
+            Path | None,
+            typer.Option("--out", "-o", help="Optional JSON output path"),
+        ] = None,
+    ) -> None:
+        """Compare two task manifests for exact task-id and digest overlap."""
+        from benchflow.eval_artifacts import task_overlap
+
+        try:
+            result = task_overlap(left_manifest, right_manifest)
+        except (OSError, ValueError) as exc:
+            print_error(str(exc))
+            raise typer.Exit(1) from None
+        if output is not None:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+            console.print(f"[green]Wrote:[/green] {escape(str(output))}")
+        console.print(
+            "Task-id overlap: "
+            f"{result['task_id_overlap_count']} "
+            f"({result['left_count']} left, {result['right_count']} right)"
+        )
+        console.print(f"Digest overlap: {result['digest_overlap_count']}")
+        console.print(f"[dim]{escape(result['caveat'])}[/dim]")
 
     @tasks_app.command("migrate")
     def tasks_migrate(

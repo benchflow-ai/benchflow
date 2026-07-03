@@ -166,6 +166,10 @@ def test_worker_sharded_summary_includes_numeric_score_ratios(tmp_path) -> None:
     )
 
     summary = json.loads((tmp_path / "summary.json").read_text())
+    advertised_summary = json.loads(
+        (tmp_path / "worker-sharded" / "summary.json").read_text()
+    )
     assert result.score == pytest.approx(1 / 3)
     assert summary["score_ratio"] == pytest.approx(1 / 3)
     assert summary["score_excl_errors_ratio"] == pytest.approx(1 / 2)
+    assert advertised_summary == summary

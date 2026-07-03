@@ -52,6 +52,7 @@ from benchflow._utils.scoring import (
     PIPE_CLOSED,
     PROVIDER_AUTH,
     PROVIDER_RATE_LIMIT,
+    PROVIDER_REJECTED,
     SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
@@ -195,7 +196,12 @@ class RetryConfig:
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
     exclude_categories: set[str] = field(
-        default_factory=lambda: {"timeout", PROVIDER_AUTH, PROVIDER_RATE_LIMIT}
+        default_factory=lambda: {
+            "timeout",
+            PROVIDER_AUTH,
+            PROVIDER_RATE_LIMIT,
+            PROVIDER_REJECTED,
+        }
     )
 
     @classmethod
@@ -482,6 +488,7 @@ class EvaluationConfig:
     skip_agent_install: bool = False
     agent_idle_timeout: int | None = 600
     context_root: str | None = None
+    base_image_override: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
     skill_mode: str = SKILL_MODE_NO_SKILL
@@ -781,6 +788,7 @@ class Evaluation:
             ensure_tasks,
             resolve_source_with_metadata,
         )
+        from benchflow.adapters.source import adapt_resolved_source_if_needed
 
         # New two-field format: source.repo + source.path
         source_provenance = None
@@ -801,6 +809,7 @@ class Evaluation:
                 path=src.get("path"),
                 ref=src.get("ref"),
             )
+            resolved = adapt_resolved_source_if_needed(resolved)
             tasks_dir = resolved.path
             source_provenance = resolved.provenance
         elif "tasks_dir" in raw:
@@ -857,6 +866,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            context_root=raw.get("context_root"),
+            base_image_override=raw.get("base_image_override"),
             exclude_tasks=exclude,
             include_tasks=include,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -951,6 +962,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            context_root=raw.get("context_root"),
+            base_image_override=raw.get("base_image_override"),
             include_tasks=include,
             exclude_tasks=exclude,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -1060,7 +1073,7 @@ class Evaluation:
         for task, (_mt, r) in best.items():
             if r.get("verifier_error"):
                 logger.info(
-                    f"Skipping verifier-errored task on resume: {task} "
+                    f"Reusing completed verifier-errored task on resume: {task} "
                     f"({truncate_end(r['verifier_error'], 80)})"
                 )
             completed[task] = r
@@ -1210,6 +1223,7 @@ class Evaluation:
             skip_agent_install=cfg.skip_agent_install,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
+            base_image_override=cfg.base_image_override,
             skill_mode=skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -1256,6 +1270,7 @@ class Evaluation:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
+            base_image_override=cfg.base_image_override,
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -1860,6 +1875,12 @@ class Evaluation:
             write_job_adp_jsonl(job_dir)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Job-level ADP aggregation failed: %s", e)
+        try:
+            from benchflow.trajectories.results import write_job_results_jsonl
+
+            write_job_results_jsonl(job_dir)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Job-level results.jsonl aggregation failed: %s", e)
 
         # Per-diagnostic summary warnings — driven by the registry so a
         # new diagnostic class adds its warning automatically (issue #503).

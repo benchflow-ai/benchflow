@@ -443,8 +443,9 @@ class TestDockerComposeUpNetworkRaceRetry:
 
     @pytest.mark.asyncio
     async def test_compose_up_retry_is_bounded(self, monkeypatch):
-        """A persistent race signature re-raises after the configured backoffs."""
+        """A persistent network-race signature re-raises after exactly the configured backoffs (bounded, not infinite)."""
         from benchflow.sandbox import docker as docker_module
+        from benchflow.sandbox._compose import COMPOSE_UP_RETRY_DELAYS_SEC
         from benchflow.sandbox.docker import DockerSandbox
 
         sandbox = DockerSandbox.__new__(DockerSandbox)
@@ -471,8 +472,16 @@ class TestDockerComposeUpNetworkRaceRetry:
         with pytest.raises(RuntimeError, match="not found"):
             await sandbox._run_docker_compose_up()
 
-        assert calls == [["up", "--detach", "--wait"]] * 3
-        assert sleeps == [2.0, 5.0]
+        assert calls == [["up", "--detach", "--wait"]] * (
+            len(COMPOSE_UP_RETRY_DELAYS_SEC) + 1
+        )
+        assert sleeps == list(COMPOSE_UP_RETRY_DELAYS_SEC)
+        # Concrete anti-revert guard: the assertions above derive from the constant
+        # and would move with it, so a silent truncation back to the old two short
+        # delays (2.0, 5.0) — the regression this bound exists to prevent — must
+        # trip here independently.
+        assert COMPOSE_UP_RETRY_DELAYS_SEC[-1] >= 10.0
+        assert len(COMPOSE_UP_RETRY_DELAYS_SEC) >= 4
 
     def test_network_race_signature_matching(self):
         """The race matcher stays anchored to the daemon network-not-found error."""

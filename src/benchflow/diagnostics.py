@@ -25,7 +25,19 @@ exceptions without pulling Daytona/Modal SDKs.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
+
+DIAGNOSTIC_REASON_IDLE_TIMEOUT = "idle_timeout"
+DIAGNOSTIC_REASON_WALL_CLOCK_TIMEOUT = "wall_clock_timeout"
+DIAGNOSTIC_REASON_SANDBOX_STARTUP_FAILED = "sandbox_startup_failed"
+DIAGNOSTIC_REASON_TRANSPORT_CLOSED = "transport_closed"
+
+DiagnosticReason = Literal[
+    "idle_timeout",
+    "wall_clock_timeout",
+    "sandbox_startup_failed",
+    "transport_closed",
+]
 
 # Diagnostic value objects
 
@@ -112,7 +124,7 @@ class Diagnostic:
 class IdleTimeoutDiagnostic(Diagnostic):
     """Agent went silent — no tool call, message, or thought arrived in time."""
 
-    reason: str = "idle_timeout"
+    reason: Literal["idle_timeout"] = DIAGNOSTIC_REASON_IDLE_TIMEOUT
     idle_timeout_sec: int = 0
     idle_duration_sec: int = 0
     wall_clock_elapsed_sec: int = 0
@@ -138,7 +150,7 @@ class IdleTimeoutDiagnostic(Diagnostic):
 class AgentPromptTimeoutDiagnostic(Diagnostic):
     """BenchFlow hit the prompt wall-clock budget and wrote timeout evidence."""
 
-    reason: str = "wall_clock_timeout"
+    reason: Literal["wall_clock_timeout"] = DIAGNOSTIC_REASON_WALL_CLOCK_TIMEOUT
     timeout_sec: float = 0.0
     n_tool_calls: int = 0
     pending_tool_call_ids: list[str] = field(default_factory=list)
@@ -163,7 +175,7 @@ class AgentPromptTimeoutDiagnostic(Diagnostic):
 class SandboxStartupDiagnostic(Diagnostic):
     """Sandbox creation failed before the rollout ever ran."""
 
-    reason: str = "sandbox_startup_failed"
+    reason: Literal["sandbox_startup_failed"] = DIAGNOSTIC_REASON_SANDBOX_STARTUP_FAILED
     sandbox_id: str | None = None
     sandbox_state: str | None = None
     attempts: int = 0
@@ -190,7 +202,7 @@ class TransportClosedDiagnostic(Diagnostic):
     reconstruct from the stringified ``ConnectionError`` (issue #504).
     """
 
-    reason: str = "transport_closed"
+    reason: Literal["transport_closed"] = DIAGNOSTIC_REASON_TRANSPORT_CLOSED
     raw_message: str = ""
     process_exit_code: int | None = None
     process_pid: int | None = None

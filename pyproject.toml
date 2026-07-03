@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.6.3"
+version = "0.6.4"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -45,6 +45,11 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "ruff>=0.7.0",
     "ty>=0.0.1a1",
+]
+train = [
+    # Used by the Prime-RL SFT wrapper for local token-window staging before
+    # handing JSONL rows to Prime-RL.
+    "transformers==5.6.2",
 ]
 sandbox-daytona = [
     # >=0.183: list() returns an auto-paginating Iterator[Sandbox] (the older
@@ -197,4 +202,4 @@ required-version = ">=0.8.4"
 # `[tool.benchflow.dependency-cooldown.override-rationale]`. The CI gate fails
 # missing/stale rationales and stale overrides once their package cutoff ages
 # past the cooldown window, so they cannot become a permanent package allowlist.
-exclude-newer = "2026-06-20T00:00:00Z"
+exclude-newer = "2026-06-26T00:00:00Z"

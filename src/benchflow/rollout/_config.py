@@ -108,6 +108,7 @@ class RolloutConfig:
     jobs_dir: str | Path = "jobs"
     concurrency: int = 1
     context_root: str | Path | None = None
+    base_image_override: str | None = None
     pre_agent_hooks: list | None = None
     # Environment plane — when set, Rollout provisions a manifest-declared
     # stateful environment, gates on readiness before the agent runs, and
@@ -178,6 +179,13 @@ class RolloutConfig:
             self.task_path = Path(self.task_path)
         if self.context_root is not None and not isinstance(self.context_root, Path):
             self.context_root = Path(self.context_root)
+        if self.base_image_override is not None:
+            base_image = self.base_image_override.strip()
+            if not base_image or any(char.isspace() for char in base_image):
+                raise ValueError(
+                    "base_image_override must be a non-empty image reference"
+                )
+            self.base_image_override = base_image
         if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
             self.skills_dir = Path(self.skills_dir)
         self.skill_mode = normalize_skill_mode(self.skill_mode)

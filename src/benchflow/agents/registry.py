@@ -404,21 +404,28 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
-    acp_model_config_id: str = ""
     # ACP session config option id used for model selection when an agent
     # exposes model as a session option instead of implementing set_model.
-    acp_effort_config_id: str = ""
+    acp_model_config_id: str = ""
     # ACP session config option id used for reasoning/thinking effort.
-    disallow_web_tools_setup_cmd: str = ""
+    acp_effort_config_id: str = ""
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
     # target home so settings land in the same home the agent will run from.
-    disallow_web_tools_owned_paths: list[str] = field(default_factory=list)
+    disallow_web_tools_setup_cmd: str = ""
     # Directories under $HOME that disallow_web_tools_setup_cmd may create and
     # that must remain writable by the sandbox user after the root-run setup.
-    disallow_web_tools_launch_suffix: str = ""
+    disallow_web_tools_owned_paths: list[str] = field(default_factory=list)
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
+    disallow_web_tools_launch_suffix: str = ""
+    # How task-declared MCP servers are delivered to the agent:
+    # "acp" sends them in session/new; "native-config" writes an agent-specific
+    # config file before launch (for agents whose ACP server drops/reformats
+    # MCP fields).
+    task_mcp_transport: str = "acp"
+    # Native-config target path, relative to $HOME unless absolute.
+    task_mcp_config_path: str = ""
 
 
 # Agent registry — all supported agents
@@ -524,8 +531,22 @@ AGENTS: dict[str, AgentConfig] = {
         install_cmd=_js_agent_install(
             "codex-acp", "@agentclientprotocol/codex-acp@0.0.45"
         ),
-        launch_cmd=_js_agent_launch(
-            "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+        # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
+        # ONLY when the key is set (so subscription/host-auth mode is untouched),
+        # instead of relying on core's credential_files writer. This makes the
+        # decoupled manifest self-contained — like mimo/opencode — and is
+        # byte-identical to the former credential_files template
+        # ({"OPENAI_API_KEY": "<key>"}) and keeps the old 0600 secret mode.
+        # `exec` so signals/PID reach codex.
+        launch_cmd=(
+            'h="${BENCHFLOW_AGENT_HOME:-$HOME}"; '
+            'if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && '
+            'printf \'{"OPENAI_API_KEY": "%s"}\' "$OPENAI_API_KEY" '
+            '> "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; '
+            "fi; exec "
+            + _js_agent_launch(
+                "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+            )
         ),
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
@@ -534,13 +555,6 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
         },
-        credential_files=[
-            CredentialFile(
-                path="{home}/.codex/auth.json",
-                env_source="OPENAI_API_KEY",
-                template='{{"OPENAI_API_KEY": "{value}"}}',
-            ),
-        ],
         subscription_auth=SubscriptionAuth(
             replaces_env="OPENAI_API_KEY",
             detect_file="~/.codex/auth.json",
@@ -632,7 +646,7 @@ AGENTS: dict[str, AgentConfig] = {
         skill_paths=["$HOME/.mimocode/skills"],
         home_dirs=[".mimocode", ".config/mimocode"],
         install_cmd=(
-            _js_agent_install("mimo", "@mimo-ai/cli@0.1.0")
+            _js_agent_install("mimo", "@mimo-ai/cli@0.1.4")
             + " && "
             + _opencode_family_proxy_wrapper_install(
                 "mimo", ".config/mimocode/mimocode.json"
@@ -842,6 +856,8 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
         },
         supports_acp_set_model=False,
+        task_mcp_transport="native-config",
+        task_mcp_config_path=".openhands/mcp.json",
         disallow_web_tools_setup_cmd=(
             'mkdir -p "$BENCHFLOW_AGENT_HOME/.openhands" && '
             "printf '[agent]\\nenable_browsing = false\\n' "
@@ -1040,13 +1056,51 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
+        task_mcp_transport=config.task_mcp_transport,
+        task_mcp_config_path=config.task_mcp_config_path,
     )
+
+
+# Namespace shorthand — harbor-style "<ns>:<id>" agent specs (design: #876).
+# The namespace names the adaptation path; resolution is a deterministic
+# name-candidate mapping onto the existing flat names (the naming law: the
+# native/ACP path owns bare names, every other path prefixes "<path>-"). No new
+# config fields, no ambiguity machinery — exact registered names and aliases
+# always win (checked before this), so "acpx:" runtime keys are unaffected.
+# Phase 2 (#876) keys the registry-backed agent auto-fetch on these same
+# namespaces (mirroring harbor's `--agent acp:<id>[@version]`).
+def _resolve_namespace_shorthand(name: str) -> AgentConfig | None:
+    """Resolve "<ns>:<id>" (e.g. "omnigent:pi", "acp:mimo", "ai-sdk:codex").
+
+    Candidates per namespace: ``acp:<id>`` tries the bare id then ``<id>-acp``
+    (so ``acp:mimo`` → ``mimo``, ``acp:pi`` → ``pi-acp``, ``acp:claude`` →
+    alias ``claude`` → ``claude-agent-acp``); ``ai-sdk:<id>`` /
+    ``omnigent:<id>`` try the ``<ns>-<id>`` prefix form. Every candidate goes
+    through AGENT_ALIASES, so alias-only names resolve too. Returns ``None``
+    when nothing matches (callers fall through to the unknown-agent error).
+    """
+    ns, sep, ident = name.partition(":")
+    if not sep or not ident:
+        return None
+    if ns == "acp":
+        candidates = [ident, f"{ident}-acp"]
+    elif ns in ("ai-sdk", "omnigent"):
+        candidates = [f"{ns}-{ident}"]
+    else:
+        return None
+    for candidate in candidates:
+        candidate = AGENT_ALIASES.get(candidate, candidate)
+        if candidate in AGENTS:
+            return AGENTS[candidate]
+    return None
 
 
 def resolve_agent(spec: str) -> AgentConfig:
     """Resolve an agent spec to an AgentConfig.
 
-    Supports: bare name, alias, protocol/name, acpx/name.
+    Supports: bare name, alias, protocol/name, acpx/name, and the namespace
+    shorthand "<ns>:<id>" for ns in {acp, ai-sdk, omnigent} — e.g.
+    "omnigent:pi" → omnigent-pi, "acp:pi" → pi-acp (see #876).
     Raises KeyError with suggestions for unknown agents.
     """
     protocol, name = parse_agent_spec(spec)
@@ -1063,13 +1117,48 @@ def resolve_agent(spec: str) -> AgentConfig:
         return AGENTS[name]
 
     if name not in AGENTS:
+        shorthand = _resolve_namespace_shorthand(name)
+        if shorthand is not None:
+            return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
+
+        # Miss-driven manifest auto-load (#876 Phase 2a): fetch DECLARATIVE
+        # manifest agents from the pinned agents source (data only — their
+        # install/launch strings run in the sandbox, same trust as task
+        # sources) and retry. One-shot per process; local names always win.
+        from benchflow.agents import remote_manifests
+
+        if remote_manifests.autoload_remote_manifest_agents():
+            name = AGENT_ALIASES.get(name, name)
+            if name in AGENTS:
+                config = AGENTS[name]
+                return _acpx_wrap(config) if protocol == "acpx" else config
+            shorthand = _resolve_namespace_shorthand(name)
+            if shorthand is not None:
+                return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
+
         from difflib import get_close_matches
 
+        # Breadcrumb: if agent plugin packages failed to load at import time
+        # (see FAILED_AGENT_PLUGINS / _load_agent_plugin_packages), the missing
+        # name is very likely one of theirs — connect the two events here, at
+        # the point the user actually sees a failure.
+        plugin_hint = ""
+        if FAILED_AGENT_PLUGINS:
+            failed = ", ".join(sorted(FAILED_AGENT_PLUGINS))
+            plugin_hint = (
+                f" Note: agent plugin(s) failed to load at startup: {failed} "
+                "(see the startup warning for details)."
+            )
+        if remote_manifests.last_source_description:
+            plugin_hint += f" ({remote_manifests.last_source_description} consulted)"
         close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
         if close:
-            raise KeyError(f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?")
+            raise KeyError(
+                f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?{plugin_hint}"
+            )
         raise KeyError(
-            f"Unknown agent: {name!r}. Available: {', '.join(sorted(AGENTS.keys()))}"
+            f"Unknown agent: {name!r}. Available: "
+            f"{', '.join(sorted(AGENTS.keys()))}{plugin_hint}"
         )
 
     config = AGENTS[name]
@@ -1097,6 +1186,20 @@ def resolve_agent_key(spec: str) -> str:
     try:
         config = resolve_agent(spec)
     except KeyError:
+        # The raw-command fallback bypasses resolve_agent's error entirely (the
+        # spec is later exec'd verbatim in the sandbox), so surface the failed-
+        # plugin breadcrumb HERE too — otherwise a plugin load failure manifests
+        # only as a deep, minutes-later "command not found" in the rollout.
+        if FAILED_AGENT_PLUGINS:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Agent spec %r is not a registered agent and will be treated as "
+                "a raw command; note that agent plugin(s) failed to load at "
+                "startup: %s",
+                spec,
+                ", ".join(sorted(FAILED_AGENT_PLUGINS)),
+            )
         return spec
     if config.name not in AGENTS:
         AGENTS[config.name] = config
@@ -1191,3 +1294,85 @@ def register_agent(
     AGENT_INSTALLERS[name] = install_cmd
     AGENT_LAUNCH[name] = launch_cmd
     return config
+
+
+# --- Opt-in dual-source registry (agent-decoupling decision #7) ---------------
+# Merge agents declared as <dir>/manifest.toml files under $BENCHFLOW_AGENTS_DIR
+# into the registry. A NO-OP when the env var is unset, so a default import of
+# core is byte-for-byte unchanged; the manifest path only activates on explicit
+# opt-in. The import is deferred to here (end of module) on purpose: manifest.py
+# imports AgentConfig from this module, so a top-level import would be circular,
+# and the merge must run after AGENTS / AGENT_ALIASES / AGENT_INSTALLERS /
+# AGENT_LAUNCH are fully built above.
+from benchflow.agents.manifest import (  # noqa: E402
+    register_env_manifest_agents as _register_env_manifest_agents,
+)
+
+_register_env_manifest_agents()
+
+
+# --- Agent plugin packages (entry-point autoload) ------------------------------
+# Out-of-core agent packages (e.g. the benchflow-ai/agents packages) register
+# their agents either as an import side effect or via a zero-arg ``register()``.
+# Without discovery, `bench eval run --agent omnigent-pi` only works if
+# something in the process happened to import/call them first — in practice a
+# hand-planted sitecustomize/.pth hack. Standard plugin pattern instead: any
+# installed distribution may declare
+#
+#     [project.entry-points."benchflow.agents"]
+#     my-agents = "my_agents"                          # module: import registers
+#     # ...or:  my-agents = "my_agents.register:register"  (callable: invoked)
+#
+# and it is loaded here (after the core + manifest registries are built, so
+# `register_agent` overwrite-by-name semantics apply — though a plugin may still
+# choose not to overwrite, e.g. acp-registry skips names built-ins already own).
+# A module-style value registers by import; a callable-style value is
+# additionally invoked with no arguments. Installing the plugin distribution
+# alongside benchflow (PyPI, git-subdirectory URL, or path) is then sufficient
+# for `--agent <registered-name>` to resolve — note the DIST name, entry-point
+# name, and registered AGENT name may all differ (installing dist `mimo-acp`
+# registers agent `mimo`).
+#
+# Failure handling: each plugin is guarded (a broken plugin logs a warning with
+# traceback and is skipped — siblings still load, the CLI never crashes), and a
+# failed metadata scan disables discovery with a warning. Failures are recorded
+# in FAILED_AGENT_PLUGINS so the eventual "Unknown agent" / raw-command-fallback
+# paths can point back at the real cause.
+
+# entry-point name -> "ExcType: message" for plugins that failed to load; the
+# sentinel key "<entry-point-scan>" means discovery itself failed.
+FAILED_AGENT_PLUGINS: dict[str, str] = {}
+
+
+def _load_agent_plugin_packages() -> None:
+    import logging
+    from importlib.metadata import entry_points
+
+    try:
+        eps = entry_points(group="benchflow.agents")
+    except Exception as exc:  # pragma: no cover - metadata backend quirks
+        FAILED_AGENT_PLUGINS["<entry-point-scan>"] = f"{type(exc).__name__}: {exc}"
+        logging.getLogger(__name__).warning(
+            "benchflow.agents entry-point scan failed; ALL agent plugins are "
+            "disabled: %s",
+            exc,
+            exc_info=True,
+        )
+        return
+    for ep in eps:
+        try:
+            loaded = ep.load()
+            if callable(loaded):
+                loaded()
+        except Exception as exc:
+            FAILED_AGENT_PLUGINS[ep.name] = f"{type(exc).__name__}: {exc}"
+            logging.getLogger(__name__).warning(
+                "benchflow.agents plugin %r failed to load (some or all of its "
+                "agents may be unavailable or partially registered): %s",
+                ep.name,
+                exc,
+                exc_info=True,
+            )
+
+
+_load_agent_plugin_packages()

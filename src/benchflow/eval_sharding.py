@@ -129,6 +129,7 @@ def _config_payload(
         "sandbox_setup_timeout": config.sandbox_setup_timeout,
         "agent_idle_timeout": config.agent_idle_timeout,
         "context_root": config.context_root,
+        "base_image_override": config.base_image_override,
         "exclude_tasks": sorted(config.exclude_tasks),
         "include_tasks": sorted(shard.task_names),
         "skill_mode": config.skill_mode,
@@ -289,7 +290,11 @@ def _aggregate_result(
         "shards": shard_results,
     }
     jobs_dir.mkdir(parents=True, exist_ok=True)
-    (jobs_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    summary_text = json.dumps(summary, indent=2)
+    (jobs_dir / "summary.json").write_text(summary_text)
+    aggregate_job_dir = jobs_dir / result.job_name
+    aggregate_job_dir.mkdir(parents=True, exist_ok=True)
+    (aggregate_job_dir / "summary.json").write_text(summary_text)
     return result
 
 

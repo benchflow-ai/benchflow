@@ -1424,6 +1424,48 @@ def test_check_results_cli_accepts_single_rollout_artifact_root(
     assert findings["total"] == 1
 
 
+def test_check_results_audits_summaryless_run_root_with_result_diagnostics(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #824: summary-less failed run roots still surface result diagnostics."""
+    run_root = tmp_path / "2026-05-25__11-51-47"
+    task_dir = run_root / "weighted-gdp-calc__775466b0"
+    task_dir.mkdir(parents=True)
+    source = _source("weighted-gdp-calc")
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "weighted-gdp-calc",
+                "agent": "opencode",
+                "model": "test-model",
+                "rewards": {"reward": None},
+                "error": "ACP transport closed",
+                "error_category": "pipe_closed",
+                "transport_error_info": {
+                    "reason": "transport_closed",
+                    "transport_diagnosis": "remote_session_killed",
+                    "sandbox_reachable": True,
+                    "sandbox_probe_rc": 0,
+                },
+                "verifier_error": None,
+                "source": source,
+            }
+        )
+    )
+    _write_config(task_dir, source, agent="opencode")
+    (run_root / "weighted-gdp-calc__80d7cd55").mkdir()
+
+    assert result_checker.discover_agent_dirs(run_root, None) == [run_root]
+
+    findings = check_agent(run_root)
+
+    assert findings["total"] == 1
+    assert findings["ok"] is False
+    assert any("summary.json not found" in issue for issue in findings["issues"])
+    assert any("lost ACP transport" in issue for issue in findings["issues"])
+    assert "no result.json files" not in findings["issues"]
+
+
 def test_check_results_cli_requires_expected_identity_for_artifact_root(
     tmp_path: Path,
 ) -> None:

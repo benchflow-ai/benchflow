@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import shlex
 import shutil
@@ -65,6 +66,8 @@ from benchflow._types import Role, Scene, Turn
 # defined in this module.
 from benchflow._utils.scoring import classify_error as classify_error
 from benchflow.acp.types import McpServerSpec
+from benchflow.agents.credentials import upload_credential
+from benchflow.agents.registry import AGENTS
 from benchflow.contracts import (
     AgentProtocolError,
     AskUserRequest,
@@ -234,10 +237,151 @@ def _task_mcp_specs(task: Any) -> list[McpServerSpec]:
             type=_MCP_TRANSPORT_TO_ACP_TYPE.get(config.transport, config.transport),
             command=config.command,
             args=list(config.args),
+            cwd=config.cwd,
+            env=dict(config.env),
             url=config.url,
+            headers=dict(config.headers),
+            tools=list(config.tools) if config.tools is not None else None,
+            include_tags=list(config.include_tags)
+            if config.include_tags is not None
+            else None,
+            exclude_tags=list(config.exclude_tags)
+            if config.exclude_tags is not None
+            else None,
         )
         for config in configs
     ]
+
+
+def _agent_uses_native_task_mcp_config(
+    agent: str, agent_cfg: Any | None = None
+) -> bool:
+    if agent_cfg is None:
+        agent_base = agent.split()[0]
+        agent_cfg = AGENTS.get(agent_base)
+    return getattr(agent_cfg, "task_mcp_transport", "acp") == "native-config"
+
+
+def _task_mcp_specs_for_agent(
+    agent: str, task: Any, agent_cfg: Any | None = None
+) -> list[McpServerSpec]:
+    """Return MCP specs to pass over ACP for this agent.
+
+    Agents may declare a native task-MCP config path in their registry entry.
+    Those agents load task MCP servers from that file, so BenchFlow must not
+    also send the same servers over ACP ``session/new``.
+    """
+
+    if _agent_uses_native_task_mcp_config(agent, agent_cfg):
+        return []
+    return _task_mcp_specs(task)
+
+
+def _fastmcp_task_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return FastMCP ``mcp.json`` content for task MCP servers."""
+
+    servers: dict[str, dict[str, Any]] = {}
+    for spec in _task_mcp_specs(task):
+        filters: dict[str, list[str]] = {}
+        if spec.tools is not None:
+            filters["tools"] = list(spec.tools)
+        if spec.include_tags is not None:
+            filters["include_tags"] = list(spec.include_tags)
+        if spec.exclude_tags is not None:
+            filters["exclude_tags"] = list(spec.exclude_tags)
+
+        if spec.type == "stdio":
+            server = {
+                "command": spec.command,
+                "args": list(spec.args),
+                "env": dict(spec.env),
+                "transport": "stdio",
+                "enabled": True,
+                **filters,
+            }
+            if spec.cwd is not None:
+                server["cwd"] = spec.cwd
+        else:
+            server = {
+                "url": spec.url,
+                "transport": "sse" if spec.type == "sse" else "http",
+                "headers": dict(spec.headers),
+                "enabled": True,
+                **filters,
+            }
+        servers[spec.name] = server
+    return {"mcpServers": servers}
+
+
+def _openhands_mcp_config(task: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    """Compatibility wrapper for tests and older imports."""
+
+    return _fastmcp_task_mcp_config(task)
+
+
+async def _install_native_task_mcp_config(
+    env: Any,
+    task: Any,
+    *,
+    agent_cfg: Any | None,
+    cred_home: str,
+    owner: str | None,
+) -> None:
+    if getattr(agent_cfg, "task_mcp_transport", "acp") != "native-config":
+        return
+    config_path = getattr(agent_cfg, "task_mcp_config_path", "")
+    if not config_path:
+        return
+    config = _fastmcp_task_mcp_config(task)
+    if not config["mcpServers"]:
+        return
+    target = (
+        config_path if config_path.startswith("/") else f"{cred_home}/{config_path}"
+    )
+    await upload_credential(
+        env,
+        target,
+        json.dumps(config, indent=2, sort_keys=True) + "\n",
+        owner=owner,
+    )
+
+
+async def _run_environment_setup_commands(env: Any, task: Any) -> None:
+    """Run task-authored setup commands after sandbox start, before agent install."""
+
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    commands = list(getattr(env_config, "setup_commands", []) or [])
+    if not commands:
+        return
+
+    from benchflow.task.env import resolve_env_vars
+
+    for index, command_config in enumerate(commands, start=1):
+        logger.info(
+            "Running environment setup command %d/%d on service %s",
+            index,
+            len(commands),
+            command_config.service,
+        )
+        env_vars = resolve_env_vars(command_config.env) if command_config.env else None
+        result = await env.exec(
+            command_config.command,
+            cwd=command_config.cwd,
+            env=env_vars,
+            timeout_sec=round(command_config.timeout_sec),
+            user=command_config.user,
+            service=command_config.service,
+        )
+        if getattr(result, "return_code", 0) != 0:
+            stdout = (getattr(result, "stdout", "") or "").strip()
+            stderr = (getattr(result, "stderr", "") or "").strip()
+            detail = "\n".join(part for part in (stdout, stderr) if part)
+            if len(detail) > 4000:
+                detail = detail[:4000] + "\n... truncated ..."
+            raise RuntimeError(
+                f"environment setup command {index} failed with exit code "
+                f"{result.return_code}: {detail}"
+            )
 
 
 class Rollout:
@@ -308,6 +452,7 @@ class Rollout:
         # Populated by connect()
         self._acp_client: Any = None
         self._session: Any = None
+        self._is_session_factory: bool = False
         # ``_session_adapter`` carries the Agent-plane :class:`Session` contract
         # over the live ACP client (architecture.md, "The four contracts").
         # The kernel registers ``on_ask_user`` handlers through it so the live
@@ -520,7 +665,11 @@ class Rollout:
         # (_inject_skills writes into environment/_deps/, stage_dockerfile
         # rewrites COPY paths — neither should modify the source tree)
         effective_task_path = cfg.task_path
-        if cfg.context_root or task_skill_policy.needs_task_copy:
+        if (
+            cfg.context_root
+            or cfg.base_image_override
+            or task_skill_policy.needs_task_copy
+        ):
             tmp = Path(tempfile.mkdtemp(prefix="benchflow-task-"))
             shutil.copytree(cfg.task_path, tmp / cfg.task_path.name, dirs_exist_ok=True)
             effective_task_path = tmp / cfg.task_path.name
@@ -528,6 +677,10 @@ class Rollout:
             if task_skill_policy.strip_bundled_dir_from_copy:
                 strip_task_bundled_skills(effective_task_path)
 
+        if cfg.base_image_override:
+            self._planes.override_dockerfile_base_image(
+                effective_task_path, cfg.base_image_override
+            )
         if cfg.context_root:
             self._planes.stage_dockerfile_deps(
                 effective_task_path, Path(cfg.context_root)
@@ -593,6 +746,7 @@ class Rollout:
             timeout=self._timeout,
             started_at=self._started_at,
             agent_env=self._agent_env,
+            base_image_override=cfg.base_image_override,
             usage_tracking=cfg.usage_tracking.with_env_defaults(),
             concurrency=cfg.concurrency,
             agent_idle_timeout=cfg.agent_idle_timeout,
@@ -651,6 +805,8 @@ class Rollout:
                 self._config.environment_manifest.name,
                 len(probe.checked),
             )
+
+        await _run_environment_setup_commands(self._env, self._task)
 
         self._phase = "started"
 
@@ -725,6 +881,13 @@ class Rollout:
             cfg.primary_model,
             cred_home,
         )
+        await _install_native_task_mcp_config(
+            self._env,
+            self._task,
+            agent_cfg=self._agent_cfg,
+            cred_home=cred_home,
+            owner=cfg.sandbox_user,
+        )
         if self._agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
             await self._planes.upload_subscription_auth(
                 self._env, agent_name, cred_home
@@ -760,6 +923,24 @@ class Rollout:
 
     # Phase 3b: CONNECT (ACP session — re-entrant)
 
+    def _session_factory_entrypoint(self, agent_name: str) -> str | None:
+        """Return the ``session_factory`` "module:callable" if *agent_name* is a
+        non-ACP session-factory agent, else None — the connect/drive dispatch key.
+
+        A session-factory agent declares ``protocol="session-factory"`` + a
+        ``session_factory`` entrypoint (e.g. omnigent's ``omnigent run`` CLI,
+        which has no ACP server); everything else connects over ACP. Resolution
+        failures degrade to ACP (None) rather than raising."""
+        from benchflow.agents.registry import resolve_agent
+
+        try:
+            cfg = resolve_agent(agent_name)
+        except Exception:
+            return None
+        if cfg.protocol == "session-factory" and cfg.session_factory:
+            return cfg.session_factory
+        return None
+
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         cfg = self._config
@@ -778,25 +959,50 @@ class Rollout:
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
+            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
         )
-        (
-            self._acp_client,
-            self._session,
-            self._session_adapter,
-            self._agent_name,
-        ) = await self._planes.connect_acp(
-            env=self._env,
-            agent=cfg.primary_agent,
-            agent_launch=self._agent_launch,
-            agent_env=self._agent_env,
-            sandbox_user=cfg.sandbox_user,
-            model=cfg.primary_model,
-            rollout_dir=rollout_dir,
-            environment=cfg.environment,
-            agent_cwd=self._agent_cwd,
-            reasoning_effort=cfg.primary_reasoning_effort,
-            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
-        )
+        sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
+        self._is_session_factory = sf_entrypoint is not None
+        if sf_entrypoint is not None:
+            (
+                self._acp_client,
+                self._session,
+                self._session_adapter,
+                self._agent_name,
+            ) = await self._planes.connect_session_factory(
+                env=self._env,
+                agent=cfg.primary_agent,
+                session_factory=sf_entrypoint,
+                agent_env=self._agent_env,
+                sandbox_user=cfg.sandbox_user,
+                model=cfg.primary_model,
+                rollout_dir=rollout_dir,
+                timeout=self._timeout,
+                agent_cwd=self._agent_cwd,
+            )
+        else:
+            (
+                self._acp_client,
+                self._session,
+                self._session_adapter,
+                self._agent_name,
+            ) = await self._planes.connect_acp(
+                env=self._env,
+                agent=cfg.primary_agent,
+                agent_launch=self._agent_launch,
+                agent_env=self._agent_env,
+                sandbox_user=cfg.sandbox_user,
+                model=cfg.primary_model,
+                rollout_dir=rollout_dir,
+                environment=cfg.environment,
+                agent_cwd=self._agent_cwd,
+                reasoning_effort=cfg.primary_reasoning_effort,
+                mcp_servers=_task_mcp_specs_for_agent(
+                    cfg.primary_agent,
+                    getattr(self, "_task", None),
+                    getattr(self, "_agent_cfg", None),
+                ),
+            )
         self._native_usage_checkpoint = None
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
@@ -825,15 +1031,19 @@ class Rollout:
 
     async def disconnect(self) -> None:
         """Close the ACP client and clean up agent process, keeping the environment alive."""
-        self._capture_partial_acp_trajectory()
+        if getattr(self, "_is_session_factory", False):
+            self._capture_partial_session_factory_trajectory()
+        else:
+            self._capture_partial_acp_trajectory()
         if self._acp_client:
             try:
                 await self._acp_client.close()
             except Exception as e:
                 logger.warning(f"ACP client close failed: {e}")
             self._acp_client = None
-            self._session = None
-            self._session_adapter = None
+        self._session = None
+        self._session_adapter = None
+        self._is_session_factory = False
         # Kill any lingering agent processes to prevent context bleed between scenes
         agent_pattern = _agent_process_kill_pattern(self._agent_launch)
         if self._env and agent_pattern:
@@ -865,19 +1075,32 @@ class Rollout:
         self._reapply_ask_user_handler()
 
     def _reapply_ask_user_handler(self) -> None:
-        """Re-bind any registered ``on_ask_user`` handler to the live adapter.
+        """Re-bind any registered ``on_ask_user`` handler to the live surface.
 
-        ``getattr`` defaults guard ``Rollout`` instances built via
-        ``__new__`` in tests that pre-date the on_ask_user field — they
-        skip ``__init__`` and only set the attributes their scenarios use.
+        For an ACP agent that surface is the ``ACPSessionAdapter``; for a
+        session-factory agent (``adapter is None``) it is the live ``Session``
+        itself, which implements ``on_ask_user`` directly (protocol.py). The
+        earlier ``adapter is None -> return`` guard silently dropped the handler
+        for every session-factory agent — they return ``adapter=None`` from
+        connect — so the agent-initiated branch hook never reached them (#825).
+
+        ``getattr`` defaults guard ``Rollout`` instances built via ``__new__``
+        in tests that pre-date the on_ask_user field — they skip ``__init__``
+        and only set the attributes their scenarios use.
         """
-        adapter = getattr(self, "_session_adapter", None)
-        if adapter is None:
-            return
         # No-op when the caller never touched on_ask_user — leaves the
         # default auto-approve path alone and avoids redundant client calls
         # from the connect()/_reconnect_for_role() hot paths.
         if not getattr(self, "_ask_user_handler_set", False):
+            return
+        adapter = getattr(self, "_session_adapter", None)
+        if adapter is None:
+            # Session-factory path: no adapter, bind onto the live Session.
+            if getattr(self, "_is_session_factory", False):
+                session = getattr(self, "_session", None)
+                handler = getattr(self, "_ask_user_handler", None)
+                if session is not None and handler is not None:
+                    session.on_ask_user(handler)
             return
         handler = getattr(self, "_ask_user_handler", None)
         if handler is None:
@@ -959,6 +1182,38 @@ class Rollout:
             self._n_tool_calls += new_tools
         self._session_tool_count = len(session.tool_calls)
 
+    def _capture_partial_session_factory_trajectory(self) -> None:
+        """Session-factory analogue of :meth:`_capture_partial_acp_trajectory`.
+
+        A session-factory agent has no ACP client; its live trajectory lives
+        directly on ``self._session.steps`` (the protocol-conformant Session).
+        On the disconnect/cleanup path — where :meth:`execute` may have raised
+        before its normal extend — append the session's uncaptured tail to
+        ``self._trajectory``. ``_session_traj_count`` is the pointer to events
+        already extended from this session, so a partial scene's steps land on
+        top of prior scenes' (already-captured) events. Mirrors the
+        terminal-vs-partial source labelling of the ACP path (#825).
+        """
+        session = getattr(self, "_session", None)
+        if session is None:
+            return
+        try:
+            captured = list(session.steps)
+        except Exception as e:
+            logger.warning(f"Partial session-factory trajectory capture failed: {e}")
+            return
+        delta = captured[getattr(self, "_session_traj_count", 0) :]
+        if not delta:
+            return
+        self._trajectory.extend(delta)
+        self._session_traj_count = len(captured)
+        if getattr(self, "_terminal_timeout", False):
+            # Clean wall-clock terminal timeout: the captured tail is complete.
+            self._trajectory_source = "acp"
+        else:
+            self._partial_trajectory = True
+            self._trajectory_source = "partial_acp"
+
     # Phase 3c: EXECUTE
 
     async def execute(
@@ -977,7 +1232,10 @@ class Rollout:
         continuation Step lands on the child node itself.
         """
         effective_prompts = prompts or self._resolved_prompts
-        if self._acp_client is None:
+        # Protocol-agnostic "connected?" guard: ACP connect sets _acp_client;
+        # a session-factory connect sets _session (no ACP client). Connected iff
+        # at least one is present; both None means connect() never ran.
+        if self._acp_client is None and self._session is None:
             raise RuntimeError("Rollout.connect() must run before execute()")
         prev_session_tools = self._session_tool_count
         t0 = datetime.now()
@@ -994,13 +1252,24 @@ class Rollout:
         )
 
         try:
-            trajectory, n_tool_calls = await self._planes.execute_prompts(
-                self._acp_client,
-                self._session,
-                effective_prompts,
-                timeout,
-                idle_timeout=idle_timeout,
-            )
+            if getattr(self, "_is_session_factory", False):
+                (
+                    trajectory,
+                    n_tool_calls,
+                ) = await self._planes.execute_prompts_session_factory(
+                    self._session,
+                    effective_prompts,
+                    timeout,
+                    idle_timeout=idle_timeout,
+                )
+            else:
+                trajectory, n_tool_calls = await self._planes.execute_prompts(
+                    self._acp_client,
+                    self._session,
+                    effective_prompts,
+                    timeout,
+                    idle_timeout=idle_timeout,
+                )
         except AgentPromptTimeoutError as e:
             self._diagnostics.set(e.diagnostic)
             self._commit_acp_execution(
@@ -1647,6 +1916,7 @@ class Rollout:
             session_id=getattr(self, "_rollout_name", "") or "",
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
+            sandbox_setup_timeout=cfg.sandbox_setup_timeout,
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
@@ -1675,6 +1945,13 @@ class Rollout:
                 role.model,
                 cred_home,
             )
+            await _install_native_task_mcp_config(
+                self._env,
+                getattr(self, "_task", None),
+                agent_cfg=agent_cfg,
+                cred_home=cred_home,
+                owner=cfg.sandbox_user,
+            )
             if agent_env.get("_BENCHFLOW_SUBSCRIPTION_AUTH"):
                 await self._planes.upload_subscription_auth(
                     self._env, role.agent, cred_home
@@ -1689,24 +1966,48 @@ class Rollout:
 
         self._agent_launch = agent_launch
 
-        (
-            self._acp_client,
-            self._session,
-            self._session_adapter,
-            self._agent_name,
-        ) = await self._planes.connect_acp(
-            env=self._env,
-            agent=role.agent,
-            agent_launch=agent_launch,
-            agent_env=agent_env,
-            sandbox_user=cfg.sandbox_user,
-            model=role.model,
-            rollout_dir=rollout_dir,
-            environment=cfg.environment,
-            agent_cwd=self._agent_cwd,
-            reasoning_effort=role.reasoning_effort,
-            mcp_servers=_task_mcp_specs(getattr(self, "_task", None)),
-        )
+        sf_entrypoint = self._session_factory_entrypoint(role.agent)
+        self._is_session_factory = sf_entrypoint is not None
+        if sf_entrypoint is not None:
+            (
+                self._acp_client,
+                self._session,
+                self._session_adapter,
+                self._agent_name,
+            ) = await self._planes.connect_session_factory(
+                env=self._env,
+                agent=role.agent,
+                session_factory=sf_entrypoint,
+                agent_env=agent_env,
+                sandbox_user=cfg.sandbox_user,
+                model=role.model,
+                rollout_dir=rollout_dir,
+                timeout=(
+                    role.timeout_sec if role.timeout_sec is not None else self._timeout
+                ),
+                agent_cwd=self._agent_cwd,
+            )
+        else:
+            (
+                self._acp_client,
+                self._session,
+                self._session_adapter,
+                self._agent_name,
+            ) = await self._planes.connect_acp(
+                env=self._env,
+                agent=role.agent,
+                agent_launch=agent_launch,
+                agent_env=agent_env,
+                sandbox_user=cfg.sandbox_user,
+                model=role.model,
+                rollout_dir=rollout_dir,
+                environment=cfg.environment,
+                agent_cwd=self._agent_cwd,
+                reasoning_effort=role.reasoning_effort,
+                mcp_servers=_task_mcp_specs_for_agent(
+                    role.agent, getattr(self, "_task", None), agent_cfg
+                ),
+            )
         self._reapply_ask_user_handler()
         self._attach_trajectory_writer(rollout_dir)
         self._active_role = role

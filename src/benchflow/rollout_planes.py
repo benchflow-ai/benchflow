@@ -45,6 +45,7 @@ from benchflow.sandbox.setup import (
     _create_environment,
     _inject_skills_into_dockerfile,
     _patch_docker_dind,
+    override_dockerfile_base_image,
     stage_dockerfile_deps,
 )
 
@@ -82,6 +83,9 @@ class DefaultRolloutPlanes:
 
     def stage_dockerfile_deps(self, task_path: Path, context_root: Path) -> None:
         stage_dockerfile_deps(task_path, context_root)
+
+    def override_dockerfile_base_image(self, task_path: Path, base_image: str) -> int:
+        return override_dockerfile_base_image(task_path, base_image)
 
     def inject_skills_into_dockerfile(
         self, task_path: Path, skills_dir: Path, *, sandbox_dir: str = "/skills"
@@ -183,6 +187,20 @@ class DefaultRolloutPlanes:
 
     async def execute_prompts(self, *args: Any, **kwargs: Any) -> Any:
         return await execute_prompts(*args, **kwargs)
+
+    async def connect_session_factory(self, *args: Any, **kwargs: Any) -> Any:
+        from benchflow.rollout.session_factory_runtime import (
+            connect_session_factory,
+        )
+
+        return await connect_session_factory(*args, **kwargs)
+
+    async def execute_prompts_session_factory(self, *args: Any, **kwargs: Any) -> Any:
+        from benchflow.rollout.session_factory_runtime import (
+            execute_prompts_session_factory,
+        )
+
+        return await execute_prompts_session_factory(*args, **kwargs)
 
     async def harden_before_verify(self, *args: Any, **kwargs: Any) -> None:
         from benchflow.sandbox.lockdown import harden_before_verify as _harden

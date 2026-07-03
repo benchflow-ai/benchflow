@@ -442,6 +442,99 @@ def test_r_outcome_only_demotion_clears_deterministic_reject() -> None:
     assert any("R-OUTCOME" in q for q in slot.grade["quarantines"])
 
 
+def test_infra_realness_and_outcome_rejects_demote_to_quarantine() -> None:
+    # Expanded e2e hard tasks can produce infra/agent idle-timeouts with complete
+    # artifacts but no valid agent attempt. C-ATTRIB owns that as
+    # experiment-fidelity, so the slot should be visible as a quarantine rather
+    # than a code-regression blocker.
+    import rubric_checks as rc
+
+    original = rc.grade_rollout
+    rc.grade_rollout = lambda rollout: {  # type: ignore[assignment]
+        "deterministic_reject": True,
+        "gates": [
+            {"id": "R-REAL", "status": "fail", "enforcement": "deterministic"},
+            {"id": "R-OUTCOME", "status": "fail", "enforcement": "deterministic"},
+            {"id": "R-ARTIFACT", "status": "pass", "enforcement": "deterministic"},
+            {"id": "R-TELEMETRY", "status": "pass", "enforcement": "deterministic"},
+            {
+                "id": "C-ATTRIB",
+                "status": "quarantine",
+                "detail": "experiment-fidelity: infra error category=idle_timeout",
+                "enforcement": "quarantine",
+            },
+        ],
+        "quarantines": [
+            "C-ATTRIB: experiment-fidelity: infra error category=idle_timeout"
+        ],
+    }
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout = Path(tmp) / "r"
+            rollout.mkdir()
+            (rollout / "result.json").write_text("{}")
+            slot = pack_mod.Slot(
+                cell=pack_mod.normalize_cell(_cell("weighted-gdp-calc", "openclaw"))
+            )
+            slot.rollouts = [rollout]
+            pack_mod._classify_one(slot, None)
+    finally:
+        rc.grade_rollout = original
+
+    assert slot.status == "healthy"
+    assert slot.grade["deterministic_reject"] is False
+    assert any("R-REAL" in q for q in slot.grade["quarantines"])
+    assert any("R-OUTCOME" in q for q in slot.grade["quarantines"])
+
+
+def test_sandbox_setup_telemetry_reject_demotes_to_quarantine() -> None:
+    # Docker registry / compose startup failures happen before the agent can
+    # produce usage telemetry. When C-ATTRIB classifies that as sandbox setup
+    # experiment-fidelity, it is a rerunnable infra quarantine rather than a
+    # code-regression blocker.
+    import rubric_checks as rc
+
+    original = rc.grade_rollout
+    rc.grade_rollout = lambda rollout: {  # type: ignore[assignment]
+        "deterministic_reject": True,
+        "gates": [
+            {"id": "R-REAL", "status": "fail", "enforcement": "deterministic"},
+            {"id": "R-OUTCOME", "status": "fail", "enforcement": "deterministic"},
+            {
+                "id": "R-TELEMETRY",
+                "status": "fail",
+                "enforcement": "deterministic",
+            },
+            {"id": "R-ARTIFACT", "status": "pass", "enforcement": "deterministic"},
+            {
+                "id": "C-ATTRIB",
+                "status": "quarantine",
+                "detail": "experiment-fidelity: infra error category=sandbox_setup",
+                "enforcement": "quarantine",
+            },
+        ],
+        "quarantines": [
+            "C-ATTRIB: experiment-fidelity: infra error category=sandbox_setup"
+        ],
+    }
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout = Path(tmp) / "r"
+            rollout.mkdir()
+            (rollout / "result.json").write_text("{}")
+            slot = pack_mod.Slot(
+                cell=pack_mod.normalize_cell(_cell("jpg-ocr-stat", "pi-acp"))
+            )
+            slot.rollouts = [rollout]
+            pack_mod._classify_one(slot, None)
+    finally:
+        rc.grade_rollout = original
+
+    assert slot.status == "healthy"
+    assert slot.grade["deterministic_reject"] is False
+    assert any("R-TELEMETRY" in q for q in slot.grade["quarantines"])
+
+
 # ------------------------------------------------------------------
 # Full review-pack/ layout on disk + the CLI verdict contract.
 # ------------------------------------------------------------------

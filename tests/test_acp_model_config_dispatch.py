@@ -171,3 +171,43 @@ async def test_effort_without_effort_config_id_fails_closed(tmp_path):
         )
 
     mock_acp.close.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_env_owned_model_skips_advertised_model_option(tmp_path):
+    """A manifest-shaped agent (supports_acp_set_model=False + a
+    BENCHFLOW_PROVIDER_MODEL env mapping) with the via-env flag set must get NO
+    ACP model configuration — several registry agents (qwen-code, kilo,
+    dimcode) advertise a ``model`` config option but validate values against
+    their own catalog and reject the gateway alias with -32603."""
+    from benchflow.agents.registry import AGENT_INSTALLERS, AGENT_LAUNCH, AGENTS
+    from benchflow.agents.registry import AgentConfig as _AC
+
+    AGENTS["env-owned-probe"] = _AC(
+        name="env-owned-probe",
+        install_cmd="true",
+        launch_cmd="true",
+        supports_acp_set_model=False,
+        env_mapping={"BENCHFLOW_PROVIDER_MODEL": "OPENAI_MODEL"},
+    )
+    try:
+        opt = MagicMock()
+        opt.id = "model"
+        mock_acp = _make_mocks(config_options=[opt])
+        await _connect(
+            mock_acp,
+            agent="env-owned-probe",
+            model="deepseek/deepseek-v4-flash",
+            tmp_path=tmp_path,
+            agent_env={
+                LITELLM_MODEL_VIA_ENV: "1",
+                LITELLM_MODEL_ALIAS_ENV: "benchflow-deepseek-deepseek-v4-flash",
+                "OPENAI_MODEL": "benchflow-deepseek-deepseek-v4-flash",
+            },
+        )
+        mock_acp.set_config_option.assert_not_awaited()
+        mock_acp.set_model.assert_not_awaited()
+    finally:
+        AGENTS.pop("env-owned-probe", None)
+        AGENT_INSTALLERS.pop("env-owned-probe", None)
+        AGENT_LAUNCH.pop("env-owned-probe", None)

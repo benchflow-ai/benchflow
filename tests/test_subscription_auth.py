@@ -465,7 +465,12 @@ class TestUploadSubscriptionAuth:
 
     @pytest.mark.asyncio
     async def test_openai_key_wins_over_codex_auth_json_file_write(self):
-        """Guards PR #587: API-key auth keeps the existing Codex file shape."""
+        """Guards PR #587's "OPENAI_API_KEY wins over CODEX_AUTH_JSON" semantic
+        under the decouple relocation: when OPENAI_API_KEY is present, core
+        ``write_credential_files`` uploads NOTHING for codex — the inline
+        CODEX_AUTH_JSON subscription file is suppressed (the key wins), and the
+        API-key auth.json is now self-written by codex's ``launch_cmd`` rather
+        than core (see tests/test_codex_self_write_auth.py)."""
         from benchflow.agents.credentials import write_credential_files
 
         env = _FakeEnv()
@@ -481,9 +486,11 @@ class TestUploadSubscriptionAuth:
             "/home/agent",
         )
 
-        assert len(env.uploads) == 1
-        assert env.uploads[0][1] == "/home/agent/.codex/auth.json"
-        assert env.uploads[0][2] == '{"OPENAI_API_KEY": "sk-test"}'
+        # OPENAI_API_KEY present -> CODEX_AUTH_JSON path is skipped (key wins) and
+        # the generic credential_files loop is empty (relocated to the launcher).
+        assert env.uploads == []
+        # the auth.json write now lives in the launcher, conditional on the key.
+        assert ".codex/auth.json" in AGENTS["codex-acp"].launch_cmd
 
     @pytest.mark.asyncio
     async def test_subscription_auth_chowns_uploaded_home_file(

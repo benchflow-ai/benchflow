@@ -238,6 +238,30 @@ def test_write_redacts_secrets(tmp_path):
     assert "***REDACTED***" in content
 
 
+def test_write_preserves_json_when_secret_named_boolean_appears_in_text(tmp_path):
+    events = [
+        {
+            "type": "tool_call",
+            "tool_call_id": "tc1",
+            "kind": "execute",
+            "title": "check",
+            "status": "completed",
+            "content": [{"text": '{"leaked_credentials": false, "leaked_kind": null}'}],
+        }
+    ]
+
+    write_rollout_atif_json(
+        tmp_path,
+        session_id="s",
+        agent_name="a",
+        prompts=None,
+        trajectory=events,
+    )
+
+    parsed = json.loads((tmp_path / "trainer" / "atif.json").read_text())
+    assert parsed["steps"][0]["observation"]["results"][0]["content"]
+
+
 def test_write_scrubs_non_finite_cost(tmp_path):
     write_rollout_atif_json(
         tmp_path,
