@@ -69,6 +69,18 @@ def _isatty() -> bool:
     return sys.stdin.isatty()
 
 
+def _warn_shadow(auth_env: str, value: str) -> None:
+    """The shell export wins over anything init saves — say so."""
+    exported = os.environ.get(auth_env)
+    if exported and exported != value:
+        typer.echo(
+            f"warning: {auth_env} is exported in your shell with a different"
+            " value — the exported variable will shadow this choice at run"
+            " time unless you unset it.",
+            err=True,
+        )
+
+
 def _fingerprint(value: str | None) -> str:
     return f"…{value[-4:]}" if value and len(value) > 4 else "…"
 
@@ -112,14 +124,26 @@ def _wizard_auth_step(home: Path, agent: str, auth_env: str) -> None:
         typer.echo(f"✓ Using {label}.")
     if use is None:
         key = typer.prompt(f"{auth_env}", hide_input=True)
+        _warn_shadow(auth_env, key)
         onboarding.write_env_file(home / ".env", {auth_env: key})
-        if not os.environ.get(auth_env):
-            os.environ[auth_env] = key
+        os.environ[auth_env] = key  # the explicit choice wins in-process
     elif use[0] == "./.env":
+        _warn_shadow(auth_env, use[1])
         onboarding.write_env_file(home / ".env", {auth_env: use[1]})
-        os.environ.setdefault(auth_env, use[1])
+        os.environ[auth_env] = use[1]  # the explicit choice wins in-process
         typer.echo(f"✓ {auth_env} ({_fingerprint(use[1])}) saved to {home / '.env'}.")
     elif use[0] == "subscription":
+        if os.environ.get(auth_env):
+            # Honor the choice for this process (so the smoke verifies the
+            # subscription setup, not the declined key) and warn that the
+            # shell export will shadow it at run time.
+            typer.echo(
+                f"warning: {auth_env} is exported in your shell — it will"
+                " shadow the subscription login at run time unless you unset"
+                " it.",
+                err=True,
+            )
+            os.environ.pop(auth_env, None)
         typer.echo(f"✓ Using {agent}'s subscription login (no {auth_env} needed).")
 
 
@@ -182,7 +206,21 @@ def register_init(app: typer.Typer) -> None:
         # adaptation path, then that path's agents (the full catalog — core +
         # remote manifests + installed plugins), then the provider menu
         # narrows to what the chosen agent can route.
+        if agent:
+            # Same resolution as `bench eval run`: aliases + the miss-driven
+            # catalog autoload — a flags invocation must reach every agent
+            # the menus offer.
+            from benchflow.agents.registry import resolve_agent
+
+            try:
+                agent = resolve_agent(agent).name
+            except KeyError:
+                typer.echo(
+                    f"Unknown agent {agent!r} — see `bench agent list`.", err=True
+                )
+                raise typer.Exit(1) from None
         if not agent:
+            console.print("[dim]│ loading the agent catalog…[/]")
             paths = onboarding.agent_paths()
             path_names = list(paths)
             ppick = _choose(
@@ -320,14 +358,7 @@ def register_init(app: typer.Typer) -> None:
         if auth_type == "api_key" and auth_env:
             try:
                 if api_key:
-                    exported = os.environ.get(auth_env)
-                    if exported and exported != api_key:
-                        typer.echo(
-                            f"warning: {auth_env} is exported with a different"
-                            " value — the exported variable will shadow the"
-                            " saved key at run time.",
-                            err=True,
-                        )
+                    _warn_shadow(auth_env, api_key)
                     onboarding.write_env_file(home / ".env", {auth_env: api_key})
                     os.environ.setdefault(auth_env, api_key)
                 else:

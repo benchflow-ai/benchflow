@@ -65,9 +65,24 @@ def _source_root(spec: str) -> Path:
     if local.is_dir():
         return local
     repo, _, ref = spec.partition("@")
-    from benchflow._utils.benchmark_repos import resolve_source
+    from benchflow._utils import benchmark_repos
 
-    return resolve_source(repo, ref=ref or None)
+    try:
+        return benchmark_repos.resolve_source(repo, ref=ref or None)
+    except Exception:
+        # Offline (or the refresh fetch failed): the cached clone is the
+        # catalog of record — a user who saw the full catalog online must
+        # not silently lose it, so fall back before giving up.
+        org, _, name = repo.partition("/")
+        cached = benchmark_repos._cache_dir() / org / name
+        if cached.is_dir():
+            logger.warning(
+                "could not refresh agents source %s; using the cached catalog at %s",
+                spec,
+                cached,
+            )
+            return cached
+        raise
 
 
 def _gap_fill(

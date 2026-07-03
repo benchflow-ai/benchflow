@@ -529,3 +529,114 @@ def test_interactive_auth_menu_lists_subscription_as_a_choice(tmp_path, monkeypa
     assert result.exit_code == 0, result.output
     assert "subscription" in result.output.lower()  # listed as an option
     assert "…-key" in result.output or "…" in result.output  # key fingerprinted
+
+
+def _manifest_source(tmp_path, monkeypatch, name="probe-flag-agent"):
+    from benchflow.agents import remote_manifests
+
+    d = tmp_path / "src" / name
+    d.mkdir(parents=True)
+    (d / "manifest.toml").write_text(
+        f'contract_version = "1.0"\nname = "{name}"\nprotocol = "acp"\n'
+        'install_cmd = "true"\nlaunch_cmd = "true"\n'
+    )
+    monkeypatch.setenv(remote_manifests.AGENTS_SOURCE_ENV, str(tmp_path / "src"))
+    remote_manifests._reset_for_tests()
+    return name
+
+
+def test_agent_flag_reaches_catalog_agents_via_autoload(tmp_path, monkeypatch):
+    """--agent naming a catalog-only agent must work like `bench run` does
+    (the miss path autoloads) — not exit with a bogus protocol mismatch."""
+    name = _manifest_source(tmp_path, monkeypatch)
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path / "home"))
+    try:
+        result = runner.invoke(
+            app,
+            [
+                "init",
+                "--agent",
+                name,
+                "--model",
+                "deepseek/deepseek-v4-flash",
+                "--dataset",
+                "skillsbench@1.1",
+                "--sandbox",
+                "docker",
+                "--api-key",
+                "sk-x",
+                "--skip-smoke",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+    finally:
+        from benchflow.agents import registry, remote_manifests
+
+        remote_manifests._reset_for_tests()
+        registry.AGENTS.pop(name, None)
+        registry.AGENT_INSTALLERS.pop(name, None)
+        registry.AGENT_LAUNCH.pop(name, None)
+
+
+def test_unknown_agent_flag_says_unknown_not_protocol_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--agent",
+            "definitely-not-an-agent-9000",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--dataset",
+            "skillsbench@1.1",
+            "--sandbox",
+            "docker",
+            "--api-key",
+            "sk-x",
+            "--skip-smoke",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Unknown agent" in result.output
+    assert "protocol mismatch" not in result.output
+
+
+def test_subscription_pick_is_honored_by_the_smoke(tmp_path, monkeypatch):
+    """Choosing the subscription login while a key is exported must make the
+    smoke verify the SUBSCRIPTION setup (key rows skipped) and warn that the
+    shell export will shadow it at run time."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-exported")
+    monkeypatch.setattr(
+        "benchflow.agents.env.check_subscription_auth", lambda a, k: True
+    )
+    monkeypatch.setattr("benchflow.cli.init_cmd._isatty", lambda: True)
+    seen = {}
+
+    def fake_doctor(model, sandbox, env, **kw):
+        seen["key_in_env"] = "DEEPSEEK_API_KEY" in env
+        from benchflow.onboarding import CheckResult
+
+        return [CheckResult("stub", True, "")]
+
+    monkeypatch.setattr("benchflow.onboarding.run_doctor", fake_doctor)
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--agent",
+            "pi-acp",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--dataset",
+            "skillsbench@1.1",
+            "--sandbox",
+            "docker",
+        ],
+        input="2\n",  # credentials menu: 1=env key, 2=subscription
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["key_in_env"] is False  # the declined key is NOT verified
+    assert "shadow" in result.output.lower()  # told about the shell export

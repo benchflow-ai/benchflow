@@ -532,3 +532,26 @@ class TestDetectKeySources:
             "PROBE_KEY", agent="claude-agent-acp", cwd=tmp_path
         )
         assert [s for s, _ in sources] == ["environment", "subscription", "./.env"]
+
+
+class TestOfflineCatalogCache:
+    def test_source_root_falls_back_to_warm_cache_when_fetch_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """A user who saw the full catalog online must not silently lose it
+        offline — the cached clone is the catalog of record."""
+        from benchflow._utils import benchmark_repos
+        from benchflow.agents import remote_manifests
+
+        cache = tmp_path / ".cache" / "datasets" / "benchflow-ai" / "agents"
+        cache.mkdir(parents=True)
+        monkeypatch.setattr(
+            benchmark_repos, "_cache_dir", lambda: tmp_path / ".cache" / "datasets"
+        )
+
+        def offline(repo, path=None, ref=None):
+            raise OSError("network down")
+
+        monkeypatch.setattr(benchmark_repos, "resolve_source", offline)
+        root = remote_manifests._source_root("benchflow-ai/agents@main")
+        assert root == cache
