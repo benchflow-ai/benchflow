@@ -1,5 +1,8 @@
 import csv
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from benchflow._utils.benchmark_repos import ResolvedSource
@@ -381,9 +384,67 @@ params:
     )
     calendar = Task(adapted.path / "calendar-only")
     assert calendar.config.metadata["required_credential_files"] == [
-        "configs/google_credentials.json"
+        "configs/gcp-oauth.keys.json",
+        "configs/google_credentials.json",
     ]
     calendar_server = calendar.config.environment.mcp_servers[0]
-    assert calendar_server.env["HOME"] == "/workspace/.mcp-home"
+    assert "HOME" not in calendar_server.env
+    assert (
+        calendar_server.env["CALENDAR_OAUTH_PATH"]
+        == "/workspace/configs/gcp-oauth.keys.json"
+    )
+    assert calendar_server.env["CALENDAR_CREDENTIALS_PATH"] == (
+        "/workspace/agent_workspace/.toolathlon/calendar_credentials.json"
+    )
+    workspace = tmp_path / "workspace"
+    (workspace / "configs").mkdir(parents=True)
+    google_payload = {
+        "client_id": "client",
+        "client_secret": "secret",
+        "refresh_token": "refresh",
+    }
+    oauth_payload = {"installed": {"client_id": "oauth-client"}}
+    (workspace / "configs" / "google_credentials.json").write_text(
+        json.dumps(google_payload)
+    )
+    (workspace / "configs" / "gcp-oauth.keys.json").write_text(
+        json.dumps(oauth_payload)
+    )
+    calendar_command = calendar.config.environment.setup_commands[0].command.replace(
+        "/usr/local/bin/uv run python", sys.executable
+    )
+    result = subprocess.run(
+        calendar_command,
+        cwd=workspace,
+        env={"PATH": os.environ["PATH"]},
+        shell=True,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        json.loads(
+            (
+                workspace
+                / "agent_workspace"
+                / ".toolathlon"
+                / "google_credentials.json"
+            ).read_text()
+        )
+        == google_payload
+    )
+    assert (
+        json.loads(
+            (
+                workspace
+                / "agent_workspace"
+                / ".toolathlon"
+                / "calendar_credentials.json"
+            ).read_text()
+        )
+        == google_payload
+    )
+    assert not (workspace / ".mcp-home").exists()
     forms = Task(adapted.path / "forms-only")
     assert "required_credential_files" not in forms.config.metadata

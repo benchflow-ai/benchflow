@@ -26,36 +26,13 @@ import yaml
 
 from benchflow._utils.benchmark_repos import ResolvedSource
 
-_ADAPTER_VERSION = "2026-07-02.7"
+_ADAPTER_VERSION = "2026-07-02.8"
 _NOOP_EXCLUDE_TAG = "__benchflow_exclude_no_tools__"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _TOKEN_PLACEHOLDER_RE = re.compile(r"\$\{token\.([A-Za-z0-9_]+)\}")
-_TOOLATHLON_CREDENTIAL_REF_RE = re.compile(
-    r"configs/(?:gcp-service_account\.keys\.json|google_credentials\.json)"
-)
 _TOOLATHLON_UVX_PACKAGE_PINS = {
     "office-word-mcp-server": "office-word-mcp-server==1.1.11",
 }
-_TOOLATHLON_CREDENTIAL_FILE_ENVS = {
-    "configs/gcp-service_account.keys.json": (
-        "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON",
-        "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64",
-    ),
-    "configs/google_credentials.json": (
-        "TOOLATHLON_GOOGLE_CREDENTIALS_JSON",
-        "TOOLATHLON_GOOGLE_CREDENTIALS_JSON_B64",
-    ),
-}
-_TOOLATHLON_TOKEN_DEFAULTS = {
-    "gcp_service_account_path": "/workspace/configs/gcp-service_account.keys.json",
-    "google_oauth2_credentials_path": "/workspace/configs/google_credentials.json",
-    "google_oauth2_token_path": "/workspace/agent_workspace/.toolathlon/google_credentials.json",
-}
-_TOOLATHLON_GOOGLE_OAUTH_MCP_SERVERS = {
-    "google_calendar",
-    "google_sheet",
-}
-_TOOLATHLON_MCP_HOME = "/workspace/.mcp-home"
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +45,69 @@ class _SourceContext:
     source_path: str
     source_root: Path
     resolved_sha: str
+
+
+@dataclass(frozen=True)
+class _ToolathlonCredentialSpec:
+    path: str
+    env: str
+    b64_env: str
+    trigger_servers: tuple[str, ...] = ()
+    token_defaults: tuple[tuple[str, str], ...] = ()
+    copy_paths: tuple[str, ...] = ()
+
+
+_TOOLATHLON_CREDENTIAL_SPECS = (
+    _ToolathlonCredentialSpec(
+        path="configs/gcp-service_account.keys.json",
+        env="TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON",
+        b64_env="TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64",
+        trigger_servers=("google-cloud",),
+        token_defaults=(
+            (
+                "gcp_service_account_path",
+                "/workspace/configs/gcp-service_account.keys.json",
+            ),
+        ),
+    ),
+    _ToolathlonCredentialSpec(
+        path="configs/google_credentials.json",
+        env="TOOLATHLON_GOOGLE_CREDENTIALS_JSON",
+        b64_env="TOOLATHLON_GOOGLE_CREDENTIALS_JSON_B64",
+        trigger_servers=("google_calendar", "google_sheet"),
+        token_defaults=(
+            (
+                "google_oauth2_credentials_path",
+                "/workspace/configs/google_credentials.json",
+            ),
+            (
+                "google_oauth2_token_path",
+                "/workspace/agent_workspace/.toolathlon/google_credentials.json",
+            ),
+        ),
+        copy_paths=(
+            "agent_workspace/.toolathlon/google_credentials.json",
+            "agent_workspace/.toolathlon/calendar_credentials.json",
+        ),
+    ),
+    _ToolathlonCredentialSpec(
+        path="configs/gcp-oauth.keys.json",
+        env="TOOLATHLON_GCP_OAUTH_KEYS_JSON",
+        b64_env="TOOLATHLON_GCP_OAUTH_KEYS_JSON_B64",
+        trigger_servers=("google_calendar",),
+    ),
+)
+_TOOLATHLON_CREDENTIALS_BY_PATH = {
+    spec.path: spec for spec in _TOOLATHLON_CREDENTIAL_SPECS
+}
+_TOOLATHLON_CREDENTIAL_REF_RE = re.compile(
+    "|".join(re.escape(spec.path) for spec in _TOOLATHLON_CREDENTIAL_SPECS)
+)
+_TOOLATHLON_TOKEN_DEFAULTS = {
+    token: value
+    for spec in _TOOLATHLON_CREDENTIAL_SPECS
+    for token, value in spec.token_defaults
+}
 
 
 def adapt_resolved_source_if_needed(resolved: ResolvedSource) -> ResolvedSource:
@@ -456,10 +496,9 @@ def _toolathlon_credential_refs_for_task(
         return set()
     refs = set(_toolathlon_referenced_config_paths(task_dir))
     servers = set(task_config.get("needed_mcp_servers", []))
-    if "google-cloud" in servers:
-        refs.add("configs/gcp-service_account.keys.json")
-    if servers & _TOOLATHLON_GOOGLE_OAUTH_MCP_SERVERS:
-        refs.add("configs/google_credentials.json")
+    for spec in _TOOLATHLON_CREDENTIAL_SPECS:
+        if servers & set(spec.trigger_servers):
+            refs.add(spec.path)
     return refs
 
 
@@ -539,7 +578,8 @@ def _toolathlon_task_toml(
 def _toolathlon_required_credential_envs(credential_refs: set[str]) -> list[str]:
     envs: list[str] = []
     for ref in sorted(credential_refs):
-        envs.extend(_TOOLATHLON_CREDENTIAL_FILE_ENVS.get(ref, ()))
+        spec = _TOOLATHLON_CREDENTIALS_BY_PATH[ref]
+        envs.extend((spec.env, spec.b64_env))
     return envs
 
 
@@ -548,10 +588,8 @@ def _toolathlon_credential_env_options(
 ) -> list[dict[str, str]]:
     options: list[dict[str, str]] = []
     for ref in sorted(credential_refs):
-        envs = _TOOLATHLON_CREDENTIAL_FILE_ENVS.get(ref)
-        if envs is None:
-            continue
-        options.append({"file": ref, "env": envs[0], "base64_env": envs[1]})
+        spec = _TOOLATHLON_CREDENTIALS_BY_PATH[ref]
+        options.append({"file": ref, "env": spec.env, "base64_env": spec.b64_env})
     return options
 
 
@@ -565,12 +603,13 @@ def _toolathlon_credential_setup_env(credential_refs: set[str]) -> dict[str, str
 def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | None:
     specs = [
         {
-            "path": ref,
-            "json_env": envs[0],
-            "b64_env": envs[1],
+            "path": spec.path,
+            "json_env": spec.env,
+            "b64_env": spec.b64_env,
+            "copy_paths": list(spec.copy_paths),
         }
         for ref in sorted(credential_refs)
-        if (envs := _TOOLATHLON_CREDENTIAL_FILE_ENVS.get(ref)) is not None
+        for spec in (_TOOLATHLON_CREDENTIALS_BY_PATH[ref],)
     ]
     if not specs:
         return None
@@ -585,25 +624,27 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
             "missing = []",
             "for spec in specs:",
             "    target = workspace / spec['path']",
+            "    payload = None",
             "    if target.exists():",
-            "        continue",
-            "    raw = os.environ.get(spec['json_env']) or ''",
-            "    b64 = os.environ.get(spec['b64_env']) or ''",
-            "    if raw:",
-            "        payload = raw.encode()",
-            "    elif b64:",
-            "        try:",
-            "            payload = base64.b64decode(b64)",
-            "        except Exception as exc:",
-            "            sys.stderr.write(",
-            "                f\"BenchFlow Toolathlon credential setup error: invalid base64 for {spec['path']}: {exc}\\n\"",
-            "            )",
-            "            sys.exit(66)",
+            "        payload = target.read_bytes()",
             "    else:",
-            "        missing.append(",
-            "            f\"{spec['path']} ({spec['json_env']} or {spec['b64_env']})\"",
-            "        )",
-            "        continue",
+            "        raw = os.environ.get(spec['json_env']) or ''",
+            "        b64 = os.environ.get(spec['b64_env']) or ''",
+            "        if raw:",
+            "            payload = raw.encode()",
+            "        elif b64:",
+            "            try:",
+            "                payload = base64.b64decode(b64)",
+            "            except Exception as exc:",
+            "                sys.stderr.write(",
+            "                    f\"BenchFlow Toolathlon credential setup error: invalid base64 for {spec['path']}: {exc}\\n\"",
+            "                )",
+            "                sys.exit(66)",
+            "        else:",
+            "            missing.append(",
+            "                f\"{spec['path']} ({spec['json_env']} or {spec['b64_env']})\"",
+            "            )",
+            "            continue",
             "    try:",
             "        json.loads(payload.decode())",
             "    except Exception as exc:",
@@ -611,18 +652,15 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
             "            f\"BenchFlow Toolathlon credential setup error: invalid JSON for {spec['path']}: {exc}\\n\"",
             "        )",
             "        sys.exit(66)",
-            "    target.parent.mkdir(parents=True, exist_ok=True)",
-            "    target.write_bytes(payload)",
-            "    target.chmod(0o644)",
-            "    if spec['path'] == 'configs/google_credentials.json':",
-            "        for rel in (",
-            "            '.mcp-home/.calendar-mcp/credentials.json',",
-            "            'agent_workspace/.toolathlon/google_credentials.json',",
-            "        ):",
-            "            copy = workspace / rel",
-            "            copy.parent.mkdir(parents=True, exist_ok=True)",
-            "            copy.write_bytes(payload)",
-            "            copy.chmod(0o644)",
+            "    if not target.exists():",
+            "        target.parent.mkdir(parents=True, exist_ok=True)",
+            "        target.write_bytes(payload)",
+            "        target.chmod(0o644)",
+            "    for rel in spec.get('copy_paths', []):",
+            "        copy = workspace / rel",
+            "        copy.parent.mkdir(parents=True, exist_ok=True)",
+            "        copy.write_bytes(payload)",
+            "        copy.chmod(0o644)",
             "if missing:",
             "    sys.stderr.write(",
             "        'BenchFlow Toolathlon credential setup error: missing '",
@@ -761,7 +799,10 @@ def _toolathlon_mcp_server(
     env = _normalize_toolathlon_env(env, variant=variant)
     if variant == "official" and (data.get("name") or server_name) == "google_calendar":
         env = dict(env)
-        env["HOME"] = _TOOLATHLON_MCP_HOME
+        env["CALENDAR_OAUTH_PATH"] = "/workspace/configs/gcp-oauth.keys.json"
+        env["CALENDAR_CREDENTIALS_PATH"] = (
+            "/workspace/agent_workspace/.toolathlon/calendar_credentials.json"
+        )
     cwd = params.get("cwd")
     cwd = _replace_toolathlon_placeholders(str(cwd), variant=variant) if cwd else None
     if variant == "official" and command in {"uv", "uvx"}:
