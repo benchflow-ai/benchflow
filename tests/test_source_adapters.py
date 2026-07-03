@@ -185,7 +185,58 @@ params:
     assert "evaluator environment failure" in test_sh
     assert "ModuleNotFoundError|ImportError|PermissionError" in test_sh
     assert "Traceback (most recent call last):" not in test_sh
+    assert "ast.walk" in setup_command
+    assert "ast.walk" in test_sh
     assert "/usr/local/bin/uv run python" in test_sh
+
+
+def _run_toolathlon_setup_script(
+    tmp_path: Path, preprocess_source: str
+) -> subprocess.CompletedProcess:
+    from benchflow.adapters._toolathlon import _toolathlon_setup_command
+
+    workspace = tmp_path / "workspace"
+    task_dir = workspace / "tasks" / "finalpool" / "demo"
+    preprocess_dir = task_dir / "preprocess"
+    preprocess_dir.mkdir(parents=True)
+    (workspace / "agent_workspace").mkdir(parents=True)
+    for package in (
+        workspace / "tasks",
+        workspace / "tasks" / "finalpool",
+        task_dir,
+        preprocess_dir,
+    ):
+        (package / "__init__.py").write_text("")
+    (preprocess_dir / "main.py").write_text(preprocess_source)
+
+    script = _toolathlon_setup_command(task_name="demo", variant="gym")
+    script = script.replace("/workspace", str(workspace))
+    script = script.replace("/opt/venv/bin/python3", sys.executable)
+    script_path = tmp_path / "setup.sh"
+    script_path.write_text(script)
+
+    return subprocess.run(
+        ["bash", str(script_path)],
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+
+def test_toolathlon_preprocess_ignores_launch_time_in_comments(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #887: launch_time comments do not receive the CLI flag."""
+    result = _run_toolathlon_setup_script(
+        tmp_path,
+        "import argparse\n"
+        "# launch_time is documented here but not accepted by this script.\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--agent_workspace', required=True)\n"
+        "parser.parse_args()\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "unrecognized arguments: --launch_time" not in result.stderr
 
 
 def _run_toolathlon_verifier_script(
@@ -248,6 +299,29 @@ def test_toolathlon_verifier_escalates_import_failure(tmp_path: Path) -> None:
     assert "ModuleNotFoundError" in result.stdout
     assert "evaluator environment failure" in result.stderr
     assert not (tmp_path / "logs" / "verifier" / "reward.txt").exists()
+
+
+def test_toolathlon_verifier_ignores_launch_time_in_comments(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #887: launch_time comments do not downgrade verifier reward."""
+    result = _run_toolathlon_verifier_script(
+        tmp_path,
+        "import argparse\n"
+        "# launch_time is documented here but not accepted by this evaluator.\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--agent_workspace', required=True)\n"
+        "parser.add_argument('--groundtruth_workspace', required=True)\n"
+        "parser.add_argument('--res_log_file', required=True)\n"
+        "parser.parse_args()\n",
+    )
+    assert result.returncode == 0, result.stderr
+    logs = tmp_path / "logs" / "verifier"
+    assert json.loads((logs / "reward.json").read_text()) == {"reward": 1.0}
+    assert (
+        "unrecognized arguments: --launch_time"
+        not in (logs / "toolathlon_evaluator.log").read_text()
+    )
 
 
 def test_toolathlon_gym_adapter_normalizes_postgres_env(
@@ -599,6 +673,13 @@ def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None
     # Unset secrets fall back to their example defaults, not the literal env ref.
     assert tokens["huggingface_token"] == "XX"
     assert tokens["github_read_only"] == "1"
+    assert (
+        tokens["kubeconfig_path"]
+        == "/workspace/deployment/k8s/configs/cluster1-config.yaml"
+    )
+    assert (
+        tokens["emails_config_file"] == "/workspace/configs/example_email_config.json"
+    )
     # Upstream preprocess/eval read tokens via ATTRIBUTE access (addict.Dict);
     # the generated dict must support it (a plain dict would AttributeError).
     assert tokens.github_token == "gho_xyz"

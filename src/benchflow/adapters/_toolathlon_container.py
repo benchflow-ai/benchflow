@@ -194,8 +194,8 @@ _GLOBAL_TOKENS: tuple[tuple[str, str | None, object], ...] = (
     ("woocommerce_api_key", None, "ck_woocommerce_token_PE0613bf053"),
     ("woocommerce_api_secret", None, "cs_woocommerce_token_PE0613bf053"),
     ("woocommerce_site_url", None, "http://localhost:10003/store100"),
-    ("kubeconfig_path", None, "deployment/k8s/configs/cluster1-config.yaml"),
-    ("emails_config_file", None, "configs/example_email_config.json"),
+    ("kubeconfig_path", None, "/workspace/deployment/k8s/configs/cluster1-config.yaml"),
+    ("emails_config_file", None, "/workspace/configs/example_email_config.json"),
 )
 
 

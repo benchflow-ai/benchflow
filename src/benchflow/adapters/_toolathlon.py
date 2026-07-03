@@ -22,6 +22,21 @@ _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _TOOLATHLON_UVX_PACKAGE_PINS = {
     "office-word-mcp-server": "office-word-mcp-server==1.1.11",
 }
+_TOOLATHLON_LAUNCH_TIME_DETECTOR_LINES = (
+    "def _declares_launch_time(path):",
+    "    tree = ast.parse(open(path, encoding='utf-8').read(), filename=path)",
+    "    for node in ast.walk(tree):",
+    "        if not isinstance(node, ast.Call):",
+    "            continue",
+    "        if not isinstance(node.func, ast.Attribute):",
+    "            continue",
+    "        if node.func.attr != 'add_argument':",
+    "            continue",
+    "        for arg in node.args:",
+    "            if isinstance(arg, ast.Constant) and arg.value == '--launch_time':",
+    "                return True",
+    "    return False",
+)
 
 
 @dataclass(frozen=True)
@@ -517,13 +532,14 @@ def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
             '  TASK_DIR="$TASK_DIR" AGENT_WORKSPACE=/workspace/agent_workspace '
             'PYTHONPATH="/workspace:${PYTHONPATH:-}" '
             f"{python_cmd} - <<'PY'",
-            "import os, runpy, sys",
+            "import ast, os, runpy, sys",
             "sys.path.insert(0, '/workspace')",
             "argv = ['preprocess.main', '--agent_workspace', os.environ['AGENT_WORKSPACE']]",
-            # Only pass --launch_time to scripts that declare it; argparse errors
-            # on unknown args for the ones that don't.
-            "src = open(os.environ['TASK_DIR'] + '/preprocess/main.py').read()",
-            "if 'launch_time' in src:",
+            *_TOOLATHLON_LAUNCH_TIME_DETECTOR_LINES,
+            # Only pass --launch_time to scripts that declare that exact CLI
+            # option; argparse errors on unknown args for scripts that merely
+            # mention launch_time in comments or unrelated code.
+            "if _declares_launch_time(os.environ['TASK_DIR'] + '/preprocess/main.py'):",
             "    lt = open('/workspace/.toolathlon/launch_time.txt').read().strip()",
             "    argv += ['--launch_time', lt]",
             "sys.argv = argv",
@@ -575,7 +591,7 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
             'GROUNDTRUTH="$GROUNDTRUTH" RES_LOG="$RES_LOG" '
             'PYTHONPATH="/workspace:${PYTHONPATH:-}" '
             f"{python_cmd} - <<'PY' > \"$EVAL_LOG\" 2>&1",
-            "import os, runpy, sys",
+            "import ast, os, runpy, sys",
             "sys.path.insert(0, '/workspace')",
             "argv = [",
             "    'evaluation.main',",
@@ -583,9 +599,9 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
             "    '--groundtruth_workspace', os.environ['GROUNDTRUTH'],",
             "    '--res_log_file', os.environ['RES_LOG'],",
             "]",
-            "src = open(os.environ['TASK_DIR'] + '/evaluation/main.py').read()",
+            *_TOOLATHLON_LAUNCH_TIME_DETECTOR_LINES,
             "lt_path = '/workspace/.toolathlon/launch_time.txt'",
-            "if 'launch_time' in src and os.path.exists(lt_path):",
+            "if _declares_launch_time(os.environ['TASK_DIR'] + '/evaluation/main.py') and os.path.exists(lt_path):",
             "    argv += ['--launch_time', open(lt_path).read().strip()]",
             "sys.argv = argv",
             f"runpy.run_module({eval_module!r}, run_name='__main__')",
