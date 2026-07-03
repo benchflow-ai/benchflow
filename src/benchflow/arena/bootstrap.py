@@ -35,20 +35,21 @@ def _make_sandbox(
     both sandboxes share the same constructor shape."""
     from benchflow.task.config import SandboxConfig
 
+    cfg = SandboxConfig(
+        docker_image=image, allow_internet=True, env=dict(service_env or {})
+    )
+    # Daytona runs the whole floor (N ACP agents + proxy-seat LiteLLM + the service)
+    # in ONE remote sandbox whose 1cpu/2GB default OOM-kills the agents mid-play;
+    # size it up (daytona caps at 4 cpu/sandbox). Docker inherits the HOST's memory,
+    # so an explicit cap there only over-constrains it — leave it unset for docker.
+    if environment == "daytona":
+        cfg.cpus, cfg.memory_mb = 4, 8192
     kwargs = dict(
         environment_dir=manifest_dir,
         environment_name="native-floor",
         session_id="native-floor",
         rollout_paths=None,
-        task_env_config=SandboxConfig(
-            docker_image=image, allow_internet=True, env=dict(service_env or {}),
-            # The shared floor packs N ACP agents + (proxy seats') in-sandbox LiteLLM
-            # + the service into ONE sandbox. The 1cpu/2GB default OOM-kills their
-            # transports on daytona (docker survives on the host's resources). Size
-            # for a multi-agent floor; harmless headroom for docker.
-            cpus=4, memory_mb=8192,  # daytona caps at 4 cpu/sandbox; 8GB >> the
-            # 2GB default that OOM-killed the agents mid-play.
-        ),
+        task_env_config=cfg,
     )
     if environment == "daytona":
         from benchflow.sandbox.daytona import DaytonaSandbox
