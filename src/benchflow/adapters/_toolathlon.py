@@ -64,9 +64,11 @@ _TOOLATHLON_CREDENTIAL_REF_RE = re.compile(
     "|".join(re.escape(spec.path) for spec in _TOOLATHLON_CREDENTIAL_SPECS)
 )
 
-# Secret ``token.X`` values baked into the container-side global
+# ``token.X`` values baked into the container-side global
 # ``token_key_session.py`` (see ``_toolathlon_container._GLOBAL_TOKENS``),
-# resolved host-side from BenchFlow's environment/.env at setup time.
+# resolved host-side from BenchFlow's environment/.env at setup time. Most are
+# secrets; a few (Snowflake warehouse/schema, the Notion source/eval page URLs)
+# are non-secret per-deployment config carried through the same channel.
 _TOOLATHLON_TOKEN_SECRET_ENVS = (
     "TOOLATHLON_GCP_PROJECT_ID",
     "TOOLATHLON_MAPS_API_KEY",
@@ -76,6 +78,8 @@ _TOOLATHLON_TOKEN_SECRET_ENVS = (
     "TOOLATHLON_WANDB_API_KEY",
     "TOOLATHLON_NOTION_KEY",
     "TOOLATHLON_NOTION_KEY_EVAL",
+    "TOOLATHLON_NOTION_SOURCE_PAGE_URL",
+    "TOOLATHLON_NOTION_EVAL_PAGE_URL",
     "TOOLATHLON_GOOGLE_CLIENT_ID",
     "TOOLATHLON_GOOGLE_CLIENT_SECRET",
     "TOOLATHLON_GOOGLE_REFRESH_TOKEN",

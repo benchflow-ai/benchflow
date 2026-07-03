@@ -175,6 +175,8 @@ _GLOBAL_TOKENS: tuple[tuple[str, str | None, object], ...] = (
     ("wandb_api_key", "TOOLATHLON_WANDB_API_KEY", "XX"),
     ("notion_integration_key", "TOOLATHLON_NOTION_KEY", "XX"),
     ("notion_integration_key_eval", "TOOLATHLON_NOTION_KEY_EVAL", "XX"),
+    ("source_notion_page_url", "TOOLATHLON_NOTION_SOURCE_PAGE_URL", "XX"),
+    ("eval_notion_page_url", "TOOLATHLON_NOTION_EVAL_PAGE_URL", "XX"),
     ("snowflake_account", "TOOLATHLON_SNOWFLAKE_ACCOUNT", "XX"),
     ("snowflake_warehouse", "TOOLATHLON_SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
     ("snowflake_role", "TOOLATHLON_SNOWFLAKE_ROLE", "ACCOUNTADMIN"),

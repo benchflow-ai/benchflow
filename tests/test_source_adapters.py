@@ -512,6 +512,9 @@ def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None
             "TOOLATHLON_GCP_PROJECT_ID": "proj-123",
             "TOOLATHLON_MAPS_API_KEY": "maps-abc",
             "TOOLATHLON_GITHUB_TOKEN": "gho_xyz",
+            "TOOLATHLON_NOTION_KEY": "ntn_main",
+            "TOOLATHLON_NOTION_SOURCE_PAGE_URL": "https://www.notion.so/src111",
+            "TOOLATHLON_NOTION_EVAL_PAGE_URL": "https://www.notion.so/eval222",
         },
     )
     assert result.returncode == 0, result.stderr
@@ -522,6 +525,12 @@ def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None
     assert tokens["gcp_project_id"] == "proj-123"
     assert tokens["google_cloud_console_api_key"] == "maps-abc"
     assert tokens["github_token"] == "gho_xyz"
+    # Notion preprocess reads the page URLs off the global config; without them
+    # baked in, ``notion_remove_and_duplicate`` gets ``None`` and every notion
+    # task's setup crashes.
+    assert tokens["notion_integration_key"] == "ntn_main"
+    assert tokens["source_notion_page_url"] == "https://www.notion.so/src111"
+    assert tokens["eval_notion_page_url"] == "https://www.notion.so/eval222"
     # Unset secrets fall back to their example defaults, not the literal env ref.
     assert tokens["huggingface_token"] == "XX"
     assert tokens["github_read_only"] == "1"
