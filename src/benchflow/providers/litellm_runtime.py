@@ -57,7 +57,8 @@ logger = logging.getLogger(__name__)
 LITELLM_VERSION_SPEC = "litellm[proxy]==1.89.0"
 LITELLM_SANDBOX_ROOT = "/tmp/benchflow-litellm"
 _CALLBACK_MODULE = "benchflow_litellm_callback"
-_PATCH_MODULE = "benchflow_litellm_bedrock_patch"
+_BEDROCK_PATCH_MODULE = "benchflow_litellm_bedrock_patch"
+_RETRY_PATCH_MODULE = "benchflow_litellm_retry_patch"
 
 # The proxy is an internal single-route gateway — it must never register the
 # FastAPI Swagger docs route. litellm's `_get_docs_url()` honours an inherited
@@ -409,13 +410,18 @@ def _write_runtime_files(
 ) -> tuple[Path, Path, Path]:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     callback_path = runtime_dir / f"{_CALLBACK_MODULE}.py"
-    patch_path = runtime_dir / f"{_PATCH_MODULE}.py"
+    patch_path = runtime_dir / f"{_BEDROCK_PATCH_MODULE}.py"
+    retry_patch_path = runtime_dir / f"{_RETRY_PATCH_MODULE}.py"
     sitecustomize_path = runtime_dir / "sitecustomize.py"
     config_path = runtime_dir / "config.yaml"
     callback_path.write_text(callback_module_source())
     patch_source = Path(__file__).with_name("litellm_bedrock_patch.py").read_text()
     patch_path.write_text(patch_source)
-    sitecustomize_path.write_text(f"import {_PATCH_MODULE}\n")
+    retry_patch_source = Path(__file__).with_name("litellm_retry_patch.py").read_text()
+    retry_patch_path.write_text(retry_patch_source)
+    sitecustomize_path.write_text(
+        f"import {_BEDROCK_PATCH_MODULE}\nimport {_RETRY_PATCH_MODULE}\n"
+    )
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     return config_path, callback_path, patch_path
 
@@ -626,7 +632,8 @@ async def _upload_runtime_files_to_sandbox(
     paths = {
         "config": f"{runtime_dir}/config.yaml",
         "callback": f"{runtime_dir}/{_CALLBACK_MODULE}.py",
-        "patch": f"{runtime_dir}/{_PATCH_MODULE}.py",
+        "patch": f"{runtime_dir}/{_BEDROCK_PATCH_MODULE}.py",
+        "retry_patch": f"{runtime_dir}/{_RETRY_PATCH_MODULE}.py",
         "sitecustomize": f"{runtime_dir}/sitecustomize.py",
         "launcher": f"{runtime_dir}/launcher.py",
         "stdout": f"{runtime_dir}/stdout.log",
@@ -652,7 +659,16 @@ async def _upload_runtime_files_to_sandbox(
         ".py",
     )
     await _upload_text(
-        sandbox, f"import {_PATCH_MODULE}\n", paths["sitecustomize"], ".py"
+        sandbox,
+        Path(__file__).with_name("litellm_retry_patch.py").read_text(),
+        paths["retry_patch"],
+        ".py",
+    )
+    await _upload_text(
+        sandbox,
+        f"import {_BEDROCK_PATCH_MODULE}\nimport {_RETRY_PATCH_MODULE}\n",
+        paths["sitecustomize"],
+        ".py",
     )
     await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
     await _upload_text(
