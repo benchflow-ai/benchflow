@@ -117,6 +117,10 @@ def _launch(argv: list[str]) -> int:
     for key, value in list(resolved_env.items()):
         if "${" in value:
             resolved_env[key] = _resolve(value, variables)
+    # FastMCP may spawn this launcher without inheriting PATH; guarantee a sane
+    # default so the wrapped server (uvx / npx / node) is still resolvable.
+    if not resolved_env.get("PATH"):
+        resolved_env["PATH"] = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
     os.execvpe(resolved_argv[0], resolved_argv, resolved_env)
     return 0  # unreachable when exec succeeds
 

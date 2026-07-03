@@ -146,7 +146,7 @@ params:
     # The real server is wrapped in the container launcher so ${token.X} in
     # argv/env resolves at spawn time against the per-task token file.
     word = task.config.environment.mcp_servers[1]
-    assert word.command == "python3"
+    assert word.command == "/usr/bin/python3"
     assert word.args == [
         "/workspace/.toolathlon/toolathlon_container.py",
         "launch",
@@ -397,7 +397,7 @@ params:
         "configs/google_credentials.json"
     ]
     sheet_server = sheet.config.environment.mcp_servers[0]
-    assert sheet_server.command == "python3"
+    assert sheet_server.command == "/usr/bin/python3"
     assert sheet_server.args[:3] == [
         "/workspace/.toolathlon/toolathlon_container.py",
         "launch",

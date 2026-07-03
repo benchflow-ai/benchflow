@@ -116,7 +116,9 @@ _TOOLATHLON_CONTAINER_MODULE_PATH = "/workspace/.toolathlon/toolathlon_container
 
 
 def _toolathlon_container_python(variant: str) -> str:
-    return "/opt/venv/bin/python3" if variant == "gym" else "python3"
+    # Absolute so FastMCP can spawn the launcher even if it does not inherit
+    # PATH into the MCP server subprocess environment.
+    return "/opt/venv/bin/python3" if variant == "gym" else "/usr/bin/python3"
 
 
 def _toolathlon_container_module_source() -> str:
