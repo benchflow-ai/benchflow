@@ -26,11 +26,11 @@ import yaml
 
 from benchflow._utils.benchmark_repos import ResolvedSource
 
-_ADAPTER_VERSION = "2026-07-02.6"
+_ADAPTER_VERSION = "2026-07-02.7"
 _NOOP_EXCLUDE_TAG = "__benchflow_exclude_no_tools__"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _TOKEN_PLACEHOLDER_RE = re.compile(r"\$\{token\.([A-Za-z0-9_]+)\}")
-_MISSING_CONFIG_REF_RE = re.compile(
+_TOOLATHLON_CREDENTIAL_REF_RE = re.compile(
     r"configs/(?:gcp-service_account\.keys\.json|google_credentials\.json)"
 )
 _TOOLATHLON_UVX_PACKAGE_PINS = {
@@ -49,13 +49,13 @@ _TOOLATHLON_CREDENTIAL_FILE_ENVS = {
 _TOOLATHLON_TOKEN_DEFAULTS = {
     "gcp_service_account_path": "/workspace/configs/gcp-service_account.keys.json",
     "google_oauth2_credentials_path": "/workspace/configs/google_credentials.json",
-    "google_oauth2_token_path": "/workspace/configs/google_credentials.json",
+    "google_oauth2_token_path": "/workspace/agent_workspace/.toolathlon/google_credentials.json",
 }
 _TOOLATHLON_GOOGLE_OAUTH_MCP_SERVERS = {
     "google_calendar",
-    "google_forms",
     "google_sheet",
 }
+_TOOLATHLON_MCP_HOME = "/workspace/.mcp-home"
 
 logger = logging.getLogger(__name__)
 
@@ -445,7 +445,7 @@ def _toolathlon_referenced_config_paths(task_dir: Path) -> set[str]:
                 text = path.read_text(errors="replace")
             except OSError:
                 continue
-            refs.update(_MISSING_CONFIG_REF_RE.findall(text))
+            refs.update(_TOOLATHLON_CREDENTIAL_REF_RE.findall(text))
     return refs
 
 
@@ -581,9 +581,10 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
             f"SPECS={shlex.quote(specs_json)} /usr/local/bin/uv run python - <<'PY'",
             "import base64, json, os, pathlib, sys",
             "specs = json.loads(os.environ['SPECS'])",
+            "workspace = pathlib.Path.cwd()",
             "missing = []",
             "for spec in specs:",
-            "    target = pathlib.Path('/workspace') / spec['path']",
+            "    target = workspace / spec['path']",
             "    if target.exists():",
             "        continue",
             "    raw = os.environ.get(spec['json_env']) or ''",
@@ -591,25 +592,37 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
             "    if raw:",
             "        payload = raw.encode()",
             "    elif b64:",
-            "        payload = base64.b64decode(b64)",
+            "        try:",
+            "            payload = base64.b64decode(b64)",
+            "        except Exception as exc:",
+            "            sys.stderr.write(",
+            "                f\"BenchFlow Toolathlon credential setup error: invalid base64 for {spec['path']}: {exc}\\n\"",
+            "            )",
+            "            sys.exit(66)",
             "    else:",
             "        missing.append(",
             "            f\"{spec['path']} ({spec['json_env']} or {spec['b64_env']})\"",
             "        )",
             "        continue",
+            "    try:",
+            "        json.loads(payload.decode())",
+            "    except Exception as exc:",
+            "        sys.stderr.write(",
+            "            f\"BenchFlow Toolathlon credential setup error: invalid JSON for {spec['path']}: {exc}\\n\"",
+            "        )",
+            "        sys.exit(66)",
             "    target.parent.mkdir(parents=True, exist_ok=True)",
             "    target.write_bytes(payload)",
-            "    target.chmod(0o600)",
+            "    target.chmod(0o644)",
             "    if spec['path'] == 'configs/google_credentials.json':",
-            "        for home in ('/root', '/home/agent', '/home/openhands'):",
-            "            home_path = pathlib.Path(home)",
-            "            if not home_path.exists():",
-            "                continue",
-            "            for leaf in ('.calendar-mcp', '.gmail-mcp'):",
-            "                copy = home_path / leaf / 'credentials.json'",
-            "                copy.parent.mkdir(parents=True, exist_ok=True)",
-            "                copy.write_bytes(payload)",
-            "                copy.chmod(0o600)",
+            "        for rel in (",
+            "            '.mcp-home/.calendar-mcp/credentials.json',",
+            "            'agent_workspace/.toolathlon/google_credentials.json',",
+            "        ):",
+            "            copy = workspace / rel",
+            "            copy.parent.mkdir(parents=True, exist_ok=True)",
+            "            copy.write_bytes(payload)",
+            "            copy.chmod(0o644)",
             "if missing:",
             "    sys.stderr.write(",
             "        'BenchFlow Toolathlon credential setup error: missing '",
@@ -746,6 +759,9 @@ def _toolathlon_mcp_server(
         for key, value in (params.get("env") or {}).items()
     }
     env = _normalize_toolathlon_env(env, variant=variant)
+    if variant == "official" and (data.get("name") or server_name) == "google_calendar":
+        env = dict(env)
+        env["HOME"] = _TOOLATHLON_MCP_HOME
     cwd = params.get("cwd")
     cwd = _replace_toolathlon_placeholders(str(cwd), variant=variant) if cwd else None
     if variant == "official" and command in {"uv", "uvx"}:

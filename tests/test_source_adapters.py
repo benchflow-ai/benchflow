@@ -271,6 +271,32 @@ params:
     TOKEN_PATH: "${token.google_oauth2_token_path}"
 """
     )
+    (repo / "configs" / "mcp_servers" / "google_calendar.yaml").write_text(
+        """
+type: stdio
+name: google_calendar
+params:
+  command: npx
+  args:
+    - "-y"
+    - "@gongrzhe/server-calendar-autoauth-mcp"
+  cwd: "${agent_workspace}"
+"""
+    )
+    (repo / "configs" / "mcp_servers" / "google_forms.yaml").write_text(
+        """
+type: stdio
+name: google_forms
+params:
+  command: node
+  args:
+    - "${local_servers_paths}/google-forms-mcp/build/index.js"
+  env:
+    GOOGLE_CLIENT_ID: "${token.google_client_id}"
+    GOOGLE_CLIENT_SECRET: "${token.google_client_secret}"
+    GOOGLE_REFRESH_TOKEN: "${token.google_refresh_token}"
+"""
+    )
     task_dir = repo / "tasks" / "finalpool" / "ab-testing"
     (task_dir / "docs").mkdir(parents=True)
     (task_dir / "preprocess").mkdir()
@@ -292,6 +318,26 @@ params:
     (sheet_task / "docs" / "task.md").write_text("Update the sheet.\n")
     (sheet_task / "task_config.json").write_text(
         json.dumps({"needed_mcp_servers": ["google_sheet"], "needed_local_tools": []})
+    )
+    calendar_task = repo / "tasks" / "finalpool" / "calendar-only"
+    (calendar_task / "docs").mkdir(parents=True)
+    (calendar_task / "docs" / "agent_system_prompt.md").write_text(
+        "Workspace: !!<<<<||||workspace_dir||||>>>>!!\n"
+    )
+    (calendar_task / "docs" / "task.md").write_text("Update the calendar.\n")
+    (calendar_task / "task_config.json").write_text(
+        json.dumps(
+            {"needed_mcp_servers": ["google_calendar"], "needed_local_tools": []}
+        )
+    )
+    forms_task = repo / "tasks" / "finalpool" / "forms-only"
+    (forms_task / "docs").mkdir(parents=True)
+    (forms_task / "docs" / "agent_system_prompt.md").write_text(
+        "Workspace: !!<<<<||||workspace_dir||||>>>>!!\n"
+    )
+    (forms_task / "docs" / "task.md").write_text("Update the form.\n")
+    (forms_task / "task_config.json").write_text(
+        json.dumps({"needed_mcp_servers": ["google_forms"], "needed_local_tools": []})
     )
 
     adapted = adapt_resolved_source_if_needed(
@@ -319,6 +365,9 @@ params:
     }
     assert "BenchFlow Toolathlon credential setup error" in credential_setup.command
     assert "configs/gcp-service_account.keys.json" in credential_setup.command
+    assert "target.chmod(0o644)" in credential_setup.command
+    assert "/home/agent" not in credential_setup.command
+    assert ".gmail-mcp" not in credential_setup.command
     sheet = Task(adapted.path / "sheet-only")
     assert sheet.config.metadata["required_credential_files"] == [
         "configs/google_credentials.json"
@@ -327,3 +376,14 @@ params:
     assert sheet_server.env["CREDENTIALS_PATH"] == (
         "/workspace/configs/google_credentials.json"
     )
+    assert sheet_server.env["TOKEN_PATH"] == (
+        "/workspace/agent_workspace/.toolathlon/google_credentials.json"
+    )
+    calendar = Task(adapted.path / "calendar-only")
+    assert calendar.config.metadata["required_credential_files"] == [
+        "configs/google_credentials.json"
+    ]
+    calendar_server = calendar.config.environment.mcp_servers[0]
+    assert calendar_server.env["HOME"] == "/workspace/.mcp-home"
+    forms = Task(adapted.path / "forms-only")
+    assert "required_credential_files" not in forms.config.metadata
