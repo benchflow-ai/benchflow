@@ -193,7 +193,8 @@ required-version = ">=0.8.4"
 #
 # Security exception: a freshly-published CVE fix (younger than the cap) is
 # allowed via a per-package override in `exclude-newer-package` below, with a
-# comment recording why. The CI gate fails stale overrides once their package
-# cutoff ages past the cooldown window, so they cannot become a permanent
-# package allowlist.
+# matching machine-checkable rationale in
+# `[tool.benchflow.dependency-cooldown.override-rationale]`. The CI gate fails
+# missing/stale rationales and stale overrides once their package cutoff ages
+# past the cooldown window, so they cannot become a permanent package allowlist.
 exclude-newer = "2026-06-20T00:00:00Z"

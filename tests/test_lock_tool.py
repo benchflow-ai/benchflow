@@ -16,6 +16,7 @@ from tools.lock import (
     COOLDOWN_DAYS,
     LockError,
     compute_cooldown_cutoff,
+    find_cooldown_override_rationale_issues,
     find_cooldown_violations,
     find_expired_cooldown_overrides,
     main,
@@ -150,6 +151,54 @@ def test_expired_cooldown_overrides_rejects_invalid_timestamp() -> None:
         match=r"\[tool\.uv\.exclude-newer-package\] 'bad-pkg' must be an ISO timestamp",
     ):
         find_expired_cooldown_overrides({"bad-pkg": "not-a-date"}, now=_NOW)
+
+
+def test_override_rationale_gate_accepts_normalized_matching_entry() -> None:
+    """Guards PR #788: cooldown overrides require machine-checkable rationale."""
+    issues = find_cooldown_override_rationale_issues(
+        {"Fresh_Pkg": "2026-06-14T00:00:00Z"},
+        {"fresh-pkg": "GHSA fix published inside the cooldown window."},
+    )
+    assert issues == []
+
+
+def test_override_rationale_gate_rejects_missing_or_empty_rationale() -> None:
+    """Guards PR #788 against bare package allowlist overrides."""
+    issues = find_cooldown_override_rationale_issues(
+        {
+            "missing-rationale": "2026-06-14T00:00:00Z",
+            "empty-rationale": "2026-06-14T00:00:00Z",
+        },
+        {"empty-rationale": "  "},
+    )
+    assert issues == [
+        "'empty-rationale' override rationale must be a non-empty string.",
+        "'missing-rationale' has [tool.uv.exclude-newer-package] but no "
+        "[tool.benchflow.dependency-cooldown.override-rationale] entry.",
+    ]
+
+
+def test_override_rationale_gate_rejects_stale_rationale_entries() -> None:
+    """Guards PR #788 so rationale entries expire with their overrides."""
+    issues = find_cooldown_override_rationale_issues(
+        {},
+        {"old-pkg": "no longer has an override"},
+    )
+    assert issues == [
+        "'old-pkg' has an override rationale but no matching "
+        "[tool.uv.exclude-newer-package] entry."
+    ]
+
+
+def test_override_rationale_gate_rejects_non_table() -> None:
+    """Guards PR #788 against unclear pyproject policy shapes."""
+    issues = find_cooldown_override_rationale_issues(
+        {"fresh-pkg": "2026-06-14T00:00:00Z"},
+        "fresh-pkg: security fix",
+    )
+    assert issues == [
+        "[tool.benchflow.dependency-cooldown.override-rationale] must be a TOML table."
+    ]
 
 
 def test_main_wraps_pyproject_read_oserror(tmp_path, capsys) -> None:

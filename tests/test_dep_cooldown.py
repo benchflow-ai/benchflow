@@ -13,8 +13,9 @@ Two layers, both evaluated against *today*:
    trust and no network calls.
 
 A genuinely urgent (e.g. security) fix younger than the window is allowed only
-via an explicit, commented `[tool.uv.exclude-newer-package]` override, which
-exempts that package from layer 2.
+via `[tool.uv.exclude-newer-package]` plus a matching structured rationale in
+`[tool.benchflow.dependency-cooldown.override-rationale]`, which exempts that
+package from layer 2.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from pathlib import Path
 
 from tools.lock import (
     COOLDOWN_DAYS,
+    find_cooldown_override_rationale_issues,
     find_cooldown_violations,
     find_expired_cooldown_overrides,
 )
@@ -63,7 +65,24 @@ def test_locked_packages_respect_cooldown() -> None:
         f"uv.lock resolves packages younger than the {COOLDOWN_DAYS}-day cooldown "
         "without a documented [tool.uv.exclude-newer-package] override:\n"
         + "\n".join(f"  {n} {v} (uploaded {ts:%Y-%m-%d})" for n, v, ts in violations)
-        + "\nRe-lock with `python tools/lock.py`, or add a commented override."
+        + "\nRe-lock with `python tools/lock.py`, or add an override with rationale."
+    )
+
+
+def test_exclude_newer_package_overrides_have_rationales() -> None:
+    cfg = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    tool = cfg.get("tool", {})
+    uv = tool.get("uv", {})
+    benchflow = tool.get("benchflow", {})
+    cooldown = benchflow.get("dependency-cooldown", {})
+    overrides = uv.get("exclude-newer-package", {})
+    rationales = cooldown.get("override-rationale", {})
+    issues = find_cooldown_override_rationale_issues(overrides, rationales)
+    assert not issues, (
+        "[tool.uv.exclude-newer-package] overrides must carry a non-empty "
+        "machine-checkable rationale in "
+        "[tool.benchflow.dependency-cooldown.override-rationale]:\n"
+        + "\n".join(f"  {issue}" for issue in issues)
     )
 
 

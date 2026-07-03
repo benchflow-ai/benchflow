@@ -20,7 +20,8 @@ the cooldown invariant holds by construction.
     python tools/lock.py --check    # print the cutoff it would write; change nothing
 
 A genuinely urgent fix younger than the cutoff stays a per-package exception in
-`[tool.uv.exclude-newer-package]`; this helper never touches that table.
+`[tool.uv.exclude-newer-package]`; each override must have a matching rationale
+in `[tool.benchflow.dependency-cooldown.override-rationale]`.
 """
 
 from __future__ import annotations
@@ -189,6 +190,55 @@ def find_expired_cooldown_overrides(
             expired.append((package, str(raw_cutoff), cutoff))
     expired.sort(key=lambda item: normalize_package_name(item[0]))
     return expired
+
+
+def find_cooldown_override_rationale_issues(
+    overrides: Mapping[str, object],
+    rationales: object,
+) -> list[str]:
+    """Return policy issues for per-package overrides without rationale.
+
+    TOML parsers intentionally discard comments, so the dependency-cooldown
+    escape hatch records rationale in a structured table instead of relying on
+    adjacent comments that CI cannot see.
+    """
+    if rationales is None:
+        rationales = {}
+    if not isinstance(rationales, Mapping):
+        return [
+            "[tool.benchflow.dependency-cooldown.override-rationale] "
+            "must be a TOML table."
+        ]
+
+    normalized_overrides = {normalize_package_name(name): name for name in overrides}
+    normalized_rationales = {
+        normalize_package_name(str(name)): (str(name), value)
+        for name, value in rationales.items()
+    }
+    issues: list[str] = []
+
+    for normalized, package in sorted(normalized_overrides.items()):
+        rationale = normalized_rationales.get(normalized)
+        if rationale is None:
+            issues.append(
+                f"{package!r} has [tool.uv.exclude-newer-package] but no "
+                "[tool.benchflow.dependency-cooldown.override-rationale] entry."
+            )
+            continue
+        rationale_name, value = rationale
+        if not isinstance(value, str) or not value.strip():
+            issues.append(
+                f"{rationale_name!r} override rationale must be a non-empty string."
+            )
+
+    for normalized, (rationale_name, _) in sorted(normalized_rationales.items()):
+        if normalized not in normalized_overrides:
+            issues.append(
+                f"{rationale_name!r} has an override rationale but no matching "
+                "[tool.uv.exclude-newer-package] entry."
+            )
+
+    return issues
 
 
 def _read_pyproject(path: Path) -> str:
