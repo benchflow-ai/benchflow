@@ -416,11 +416,27 @@ class TestDetectKey:
     saved ~/.benchflow/.env), then a ./.env in the working folder — prompting
     only when all three miss."""
 
-    def test_subscription_wins(self, monkeypatch, tmp_path):
+    def test_exported_key_beats_subscription_matching_the_run_path(
+        self, monkeypatch, tmp_path
+    ):
+        """resolve_agent_env inherits an exported key into the agent env and
+        uses_native_subscription_auth then returns False — so at RUN time an
+        exported key wins over a subscription login. detect_key must report
+        the same order or init announces an auth source the run won't use."""
         monkeypatch.setattr(
             "benchflow.agents.env.check_subscription_auth", lambda a, k: True
         )
         monkeypatch.setenv("PROBE_KEY", "from-env")
+        source, value = onboarding.detect_key(
+            "PROBE_KEY", agent="claude-agent-acp", cwd=tmp_path
+        )
+        assert source == "environment" and value == "from-env"
+
+    def test_subscription_wins_when_no_key_is_set(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "benchflow.agents.env.check_subscription_auth", lambda a, k: True
+        )
+        monkeypatch.delenv("PROBE_KEY", raising=False)
         source, value = onboarding.detect_key(
             "PROBE_KEY", agent="claude-agent-acp", cwd=tmp_path
         )
@@ -462,3 +478,11 @@ class TestDatasetChoices:
 
         monkeypatch.setattr("benchflow._utils.dataset_registry.load_registry", boom)
         assert onboarding.dataset_choices() == []
+
+    def test_malformed_registry_entries_degrade_not_crash(self, monkeypatch):
+        monkeypatch.setattr(
+            "benchflow._utils.dataset_registry.load_registry",
+            lambda src: ["not-a-dict", {"name": "ok", "version": "1.0"}],
+        )
+        # must not raise; the well-formed entry may or may not survive
+        assert isinstance(onboarding.dataset_choices(), list)

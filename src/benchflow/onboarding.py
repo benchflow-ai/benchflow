@@ -439,21 +439,23 @@ def detect_key(
 ) -> tuple[str | None, str | None]:
     """Find credentials for *auth_env* without asking the user.
 
-    Precedence: host subscription login (needs *agent*) > the process
-    environment (which already includes the saved ~/.benchflow/.env via the
-    startup autoload) > a ``./.env`` in the working folder. Returns
-    ``(source, value)`` — value is None for subscription (nothing to store)
-    and ``(None, None)`` when everything misses (the wizard then prompts).
+    Precedence matches the RUN path (resolve_agent_env inherits an exported
+    key and uses_native_subscription_auth then defers to it): the process
+    environment first (which already includes the saved ~/.benchflow/.env
+    via the startup autoload), then host subscription login (needs *agent*),
+    then a ``./.env`` in the working folder. Returns ``(source, value)`` —
+    value is None for subscription (nothing to store) and ``(None, None)``
+    when everything misses (the wizard then prompts).
     """
     import os
 
+    if os.environ.get(auth_env):
+        return "environment", os.environ[auth_env]
     if agent:
         from benchflow.agents.env import check_subscription_auth
 
         if check_subscription_auth(agent, auth_env):
             return "subscription", None
-    if os.environ.get(auth_env):
-        return "environment", os.environ[auth_env]
     cwd_env = Path(cwd or ".") / ".env"
     value = read_env_file(cwd_env).get(auth_env)
     if value:
@@ -468,7 +470,11 @@ def dataset_choices() -> list[tuple[str, str]]:
     from benchflow._utils import dataset_registry as dr
 
     try:
-        entries = dr.load_registry(dr.DEFAULT_REGISTRY_SOURCE)
+        entries = [
+            e
+            for e in dr.load_registry(dr.DEFAULT_REGISTRY_SOURCE)
+            if isinstance(e, dict)
+        ]
     except Exception:
         return []
 

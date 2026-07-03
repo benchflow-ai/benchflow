@@ -184,11 +184,13 @@ def register_init(app: typer.Typer) -> None:
             if choices:
                 opts = choices + [("a local tasks dir", "path to your own tasks")]
                 pick = _choose("Task set:", opts, default=1)
-                dataset = (
-                    typer.prompt("Tasks dir path")
-                    if pick == len(opts)
-                    else choices[pick - 1][0]
-                )
+                if pick == len(opts):
+                    d = typer.prompt("Tasks dir path")
+                    # bare relative names must route to --tasks-dir, not the
+                    # registry-spec validation below
+                    dataset = d if "/" in d or d.startswith(".") else f"./{d}"
+                else:
+                    dataset = choices[pick - 1][0]
             else:
                 dataset = typer.prompt(
                     "Task set (dataset spec or tasks dir; registry unreachable)",
@@ -245,12 +247,23 @@ def register_init(app: typer.Typer) -> None:
                             " setup) — using it."
                         )
                     elif source == "./.env":
-                        typer.echo(
-                            f"✓ {auth_env} found in ./.env — saving it to your"
-                            " bench setup."
-                        )
-                        onboarding.write_env_file(home / ".env", {auth_env: value})
-                        os.environ.setdefault(auth_env, value)
+                        src = Path.cwd() / ".env"
+                        tail = value[-4:] if len(value) > 4 else "****"
+                        if sys.stdin.isatty() and not typer.confirm(
+                            f"Use {auth_env}=…{tail} from {src} and save it"
+                            f" to {home / '.env'}?",
+                            default=True,
+                        ):
+                            key = typer.prompt(f"{auth_env}", hide_input=True)
+                            onboarding.write_env_file(home / ".env", {auth_env: key})
+                            os.environ.setdefault(auth_env, key)
+                        else:
+                            typer.echo(
+                                f"✓ {auth_env} (…{tail}) from {src} — saved"
+                                f" to {home / '.env'}."
+                            )
+                            onboarding.write_env_file(home / ".env", {auth_env: value})
+                            os.environ.setdefault(auth_env, value)
                     else:
                         key = typer.prompt(f"{auth_env}", hide_input=True)
                         onboarding.write_env_file(home / ".env", {auth_env: key})

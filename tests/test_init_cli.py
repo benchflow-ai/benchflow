@@ -402,7 +402,9 @@ def test_wizard_is_selection_driven_with_auto_key_detection(tmp_path, monkeypatc
     )
     result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
     assert result.exit_code == 0, result.output
-    assert "./.env" in result.output  # told the user where the key came from
+    # told the user the absolute source, a key fingerprint, and the destination
+    assert str(tmp_path / ".env") in result.output
+    assert "…" in result.output and "saved" in result.output
     from benchflow import onboarding
 
     # passed through into the saved setup for future runs
@@ -434,3 +436,29 @@ def test_provider_menu_is_filtered_by_chosen_agent(tmp_path, monkeypatch):
     menu = menu.split("Select", 1)[0]
     assert "openai" in menu
     assert "deepseek" not in menu
+
+
+def test_local_tasks_dir_bare_name_is_normalized_not_rejected(tmp_path, monkeypatch):
+    """Picking 'a local tasks dir' and answering a bare relative name must
+    produce a --tasks-dir command, not a registry-spec rejection."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mytasks").mkdir()
+    monkeypatch.setattr(
+        "benchflow.onboarding.dataset_choices",
+        lambda: [("skillsbench@1.1", "")],
+    )
+    answers = "\n".join(
+        [
+            "",  # agent -> pi-acp
+            "",  # provider -> deepseek
+            "deepseek-v4-flash",
+            "2",  # dataset menu: "a local tasks dir"
+            "mytasks",  # bare relative name
+            "",  # sandbox -> docker
+            "sk-k",  # key prompt
+        ]
+    )
+    result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
+    assert result.exit_code == 0, result.output
+    assert "--tasks-dir ./mytasks" in result.output
