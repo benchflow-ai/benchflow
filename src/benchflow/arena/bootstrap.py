@@ -46,7 +46,8 @@ def _make_sandbox(
             # + the service into ONE sandbox. The 1cpu/2GB default OOM-kills their
             # transports on daytona (docker survives on the host's resources). Size
             # for a multi-agent floor; harmless headroom for docker.
-            cpus=8, memory_mb=16384,
+            cpus=4, memory_mb=8192,  # daytona caps at 4 cpu/sandbox; 8GB >> the
+            # 2GB default that OOM-killed the agents mid-play.
         ),
     )
     if environment == "daytona":
