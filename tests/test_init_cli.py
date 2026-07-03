@@ -543,9 +543,7 @@ def test_flagged_local_tasks_dir_bare_name_is_normalized(tmp_path, monkeypatch):
     assert "--tasks-dir ./mytasks" in result.output
 
 
-def test_auto_key_detection_prefers_cwd_dotenv_over_exported_key(
-    tmp_path, monkeypatch
-):
+def test_auto_key_detection_prefers_cwd_dotenv_over_exported_key(tmp_path, monkeypatch):
     """Guards PR #883: init validates the key the final run will use."""
     monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
