@@ -408,6 +408,13 @@ class DaytonaProcess(LiveProcess):
                 f.write("  ServerAliveInterval 15\n")
                 f.write("  ServerAliveCountMax 8\n")
                 f.write("  TCPKeepAlive yes\n")
+                # Connect resilience: 5 seats open SSH sessions concurrently at
+                # startup; the initial handshake occasionally races (agent not yet
+                # listening → stdout closes → a connect-time drop the ACP retry then
+                # recovers). Retry the SSH connect and give it a real timeout so the
+                # first attempt is more likely to land — fewer retries, cleaner logs.
+                f.write("  ConnectTimeout 30\n")
+                f.write("  ConnectionAttempts 3\n")
             os.chmod(path, 0o600)
         except Exception:
             with contextlib.suppress(Exception):
