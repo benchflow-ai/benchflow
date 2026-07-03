@@ -236,10 +236,10 @@ params:
     )
 
 
-def test_toolathlon_adapter_skips_tasks_with_missing_repo_configs(
+def test_toolathlon_adapter_materializes_tasks_with_missing_repo_configs(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Guards PR #878 against materializing Toolathlon tasks missing credentials."""
+    """Guards PR #878 against dropping Toolathlon credential-backed tasks."""
     monkeypatch.chdir(tmp_path)
     repo = tmp_path / "Toolathlon"
     (repo / ".git").mkdir(parents=True)
@@ -258,6 +258,19 @@ params:
     - "${agent_workspace}"
 """
     )
+    (repo / "configs" / "mcp_servers" / "google_sheet.yaml").write_text(
+        """
+type: stdio
+name: google_sheet
+params:
+  command: uvx
+  args:
+    - "mcp-google-sheets"
+  env:
+    CREDENTIALS_PATH: "${token.google_oauth2_credentials_path}"
+    TOKEN_PATH: "${token.google_oauth2_token_path}"
+"""
+    )
     task_dir = repo / "tasks" / "finalpool" / "ab-testing"
     (task_dir / "docs").mkdir(parents=True)
     (task_dir / "preprocess").mkdir()
@@ -271,21 +284,46 @@ params:
     (task_dir / "preprocess" / "main.py").write_text(
         "open('configs/gcp-service_account.keys.json').read()\n"
     )
+    sheet_task = repo / "tasks" / "finalpool" / "sheet-only"
+    (sheet_task / "docs").mkdir(parents=True)
+    (sheet_task / "docs" / "agent_system_prompt.md").write_text(
+        "Workspace: !!<<<<||||workspace_dir||||>>>>!!\n"
+    )
+    (sheet_task / "docs" / "task.md").write_text("Update the sheet.\n")
+    (sheet_task / "task_config.json").write_text(
+        json.dumps({"needed_mcp_servers": ["google_sheet"], "needed_local_tools": []})
+    )
 
     adapted = adapt_resolved_source_if_needed(
         _resolved(repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool")
     )
 
-    assert not (adapted.path / "ab-testing").exists()
-    skipped = json.loads(
-        (adapted.path / ".benchflow-source-adapter-skipped.json").read_text()
-    )
-    assert skipped == {
-        "skipped": [
-            {
-                "reason": "references missing repo config: "
-                "configs/gcp-service_account.keys.json",
-                "task_id": "ab-testing",
-            }
-        ]
+    generated = adapted.path / "ab-testing"
+    task = Task(generated)
+    assert task.config.metadata["required_credential_files"] == [
+        "configs/gcp-service_account.keys.json"
+    ]
+    assert task.config.metadata["credential_env_options"] == [
+        {
+            "file": "configs/gcp-service_account.keys.json",
+            "env": "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON",
+            "base64_env": "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64",
+        }
+    ]
+    assert not (adapted.path / ".benchflow-source-adapter-skipped.json").exists()
+    assert len(task.config.environment.setup_commands) == 2
+    credential_setup = task.config.environment.setup_commands[0]
+    assert credential_setup.env == {
+        "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON": "${TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON:-}",
+        "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64": "${TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64:-}",
     }
+    assert "BenchFlow Toolathlon credential setup error" in credential_setup.command
+    assert "configs/gcp-service_account.keys.json" in credential_setup.command
+    sheet = Task(adapted.path / "sheet-only")
+    assert sheet.config.metadata["required_credential_files"] == [
+        "configs/google_credentials.json"
+    ]
+    sheet_server = sheet.config.environment.mcp_servers[0]
+    assert sheet_server.env["CREDENTIALS_PATH"] == (
+        "/workspace/configs/google_credentials.json"
+    )

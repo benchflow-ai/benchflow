@@ -26,7 +26,7 @@ import yaml
 
 from benchflow._utils.benchmark_repos import ResolvedSource
 
-_ADAPTER_VERSION = "2026-07-02.3"
+_ADAPTER_VERSION = "2026-07-02.6"
 _NOOP_EXCLUDE_TAG = "__benchflow_exclude_no_tools__"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _TOKEN_PLACEHOLDER_RE = re.compile(r"\$\{token\.([A-Za-z0-9_]+)\}")
@@ -35,6 +35,26 @@ _MISSING_CONFIG_REF_RE = re.compile(
 )
 _TOOLATHLON_UVX_PACKAGE_PINS = {
     "office-word-mcp-server": "office-word-mcp-server==1.1.11",
+}
+_TOOLATHLON_CREDENTIAL_FILE_ENVS = {
+    "configs/gcp-service_account.keys.json": (
+        "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON",
+        "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64",
+    ),
+    "configs/google_credentials.json": (
+        "TOOLATHLON_GOOGLE_CREDENTIALS_JSON",
+        "TOOLATHLON_GOOGLE_CREDENTIALS_JSON_B64",
+    ),
+}
+_TOOLATHLON_TOKEN_DEFAULTS = {
+    "gcp_service_account_path": "/workspace/configs/gcp-service_account.keys.json",
+    "google_oauth2_credentials_path": "/workspace/configs/google_credentials.json",
+    "google_oauth2_token_path": "/workspace/configs/google_credentials.json",
+}
+_TOOLATHLON_GOOGLE_OAUTH_MCP_SERVERS = {
+    "google_calendar",
+    "google_forms",
+    "google_sheet",
 }
 
 logger = logging.getLogger(__name__)
@@ -365,21 +385,15 @@ def _materialize_toolathlon(
     if tasks_root is None:
         raise ValueError(f"{variant} source does not contain tasks/finalpool task dirs")
 
-    skipped: list[dict[str, str]] = []
     for upstream_task in sorted(tasks_root.iterdir()):
         if not (upstream_task / "task_config.json").is_file():
-            continue
-        unsupported_reason = _toolathlon_unsupported_reason(
-            ctx, upstream_task, variant=variant
-        )
-        if unsupported_reason is not None:
-            skipped.append(
-                {"task_id": upstream_task.name, "reason": unsupported_reason}
-            )
             continue
         task_name = upstream_task.name
         task_dir = output_dir / _safe_name(task_name)
         task_config = json.loads((upstream_task / "task_config.json").read_text())
+        credential_refs = _toolathlon_credential_refs_for_task(
+            upstream_task, task_config, variant=variant
+        )
         mcp_servers = [
             _toolathlon_mcp_server(ctx, server_name, variant=variant)
             for server_name in task_config.get("needed_mcp_servers", [])
@@ -393,6 +407,7 @@ def _materialize_toolathlon(
                 task_name=task_name,
                 mcp_servers=mcp_servers,
                 variant=variant,
+                credential_refs=credential_refs,
             ),
         )
         _write_text(
@@ -413,34 +428,6 @@ def _materialize_toolathlon(
             task_dir / "tests" / "test.sh",
             _toolathlon_test_sh(task_name=task_name, variant=variant),
         )
-    if skipped:
-        logger.warning(
-            "Skipped %d unsupported %s tasks while adapting %s",
-            len(skipped),
-            "Toolathlon-GYM" if variant == "gym" else "Toolathlon",
-            ctx.repo,
-        )
-        _write_text(
-            output_dir / ".benchflow-source-adapter-skipped.json",
-            json.dumps({"skipped": skipped}, indent=2, sort_keys=True) + "\n",
-        )
-
-
-def _toolathlon_unsupported_reason(
-    ctx: _SourceContext, task_dir: Path, *, variant: str
-) -> str | None:
-    if variant != "official":
-        return None
-    missing = sorted(
-        {
-            ref
-            for ref in _toolathlon_referenced_config_paths(task_dir)
-            if not (ctx.repo_root / ref).exists()
-        }
-    )
-    if not missing:
-        return None
-    return "references missing repo config: " + ", ".join(missing)
 
 
 def _toolathlon_referenced_config_paths(task_dir: Path) -> set[str]:
@@ -462,6 +449,20 @@ def _toolathlon_referenced_config_paths(task_dir: Path) -> set[str]:
     return refs
 
 
+def _toolathlon_credential_refs_for_task(
+    task_dir: Path, task_config: dict[str, Any], *, variant: str
+) -> set[str]:
+    if variant != "official":
+        return set()
+    refs = set(_toolathlon_referenced_config_paths(task_dir))
+    servers = set(task_config.get("needed_mcp_servers", []))
+    if "google-cloud" in servers:
+        refs.add("configs/gcp-service_account.keys.json")
+    if servers & _TOOLATHLON_GOOGLE_OAUTH_MCP_SERVERS:
+        refs.add("configs/google_credentials.json")
+    return refs
+
+
 def _toolathlon_instruction(task_dir: Path) -> str:
     system_prompt = (task_dir / "docs" / "agent_system_prompt.md").read_text()
     prompt = (task_dir / "docs" / "task.md").read_text()
@@ -477,26 +478,49 @@ def _toolathlon_task_toml(
     task_name: str,
     mcp_servers: list[dict[str, Any]],
     variant: str,
+    credential_refs: set[str],
 ) -> dict[str, Any]:
     benchmark_name = "toolathlon-gym" if variant == "gym" else "toolathlon"
+    setup_commands: list[dict[str, Any]] = []
+    credential_command = _toolathlon_credential_setup_command(credential_refs)
+    if credential_command:
+        setup_commands.append(
+            {
+                "command": credential_command,
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+                "env": _toolathlon_credential_setup_env(credential_refs),
+            }
+        )
+    setup_commands.append(
+        {
+            "command": _toolathlon_setup_command(task_name=task_name, variant=variant),
+            "cwd": "/workspace",
+            "timeout_sec": 600.0,
+        }
+    )
     environment: dict[str, Any] = {
         "cpus": 4,
         "memory_mb": 8192,
         "storage_mb": 10240,
         "workdir": "/workspace/agent_workspace",
         "mcp_servers": mcp_servers,
-        "setup_commands": [
-            {
-                "command": _toolathlon_setup_command(
-                    task_name=task_name, variant=variant
-                ),
-                "cwd": "/workspace",
-                "timeout_sec": 600.0,
-            }
-        ],
+        "setup_commands": setup_commands,
     }
     if variant == "gym":
         environment["env"] = _TOOLATHLON_GYM_ENV
+
+    metadata: dict[str, Any] = {
+        "benchmark": benchmark_name,
+        "upstream_task_id": task_name,
+        "upstream_repo": ctx.repo,
+        "upstream_sha": ctx.resolved_sha,
+    }
+    if credential_refs:
+        metadata["required_credential_files"] = sorted(credential_refs)
+        metadata["credential_env_options"] = _toolathlon_credential_env_options(
+            credential_refs
+        )
 
     return {
         "schema_version": "1.3",
@@ -505,16 +529,97 @@ def _toolathlon_task_toml(
             "description": f"{benchmark_name} task adapted from upstream source",
             "keywords": [benchmark_name, "mcp"],
         },
-        "metadata": {
-            "benchmark": benchmark_name,
-            "upstream_task_id": task_name,
-            "upstream_repo": ctx.repo,
-            "upstream_sha": ctx.resolved_sha,
-        },
+        "metadata": metadata,
         "agent": {"timeout_sec": 1800.0},
         "verifier": {"timeout_sec": 900.0},
         "environment": environment,
     }
+
+
+def _toolathlon_required_credential_envs(credential_refs: set[str]) -> list[str]:
+    envs: list[str] = []
+    for ref in sorted(credential_refs):
+        envs.extend(_TOOLATHLON_CREDENTIAL_FILE_ENVS.get(ref, ()))
+    return envs
+
+
+def _toolathlon_credential_env_options(
+    credential_refs: set[str],
+) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    for ref in sorted(credential_refs):
+        envs = _TOOLATHLON_CREDENTIAL_FILE_ENVS.get(ref)
+        if envs is None:
+            continue
+        options.append({"file": ref, "env": envs[0], "base64_env": envs[1]})
+    return options
+
+
+def _toolathlon_credential_setup_env(credential_refs: set[str]) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for name in _toolathlon_required_credential_envs(credential_refs):
+        env[name] = f"${{{name}:-}}"
+    return env
+
+
+def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | None:
+    specs = [
+        {
+            "path": ref,
+            "json_env": envs[0],
+            "b64_env": envs[1],
+        }
+        for ref in sorted(credential_refs)
+        if (envs := _TOOLATHLON_CREDENTIAL_FILE_ENVS.get(ref)) is not None
+    ]
+    if not specs:
+        return None
+    specs_json = json.dumps(specs, sort_keys=True)
+    return "\n".join(
+        [
+            "set -e",
+            f"SPECS={shlex.quote(specs_json)} /usr/local/bin/uv run python - <<'PY'",
+            "import base64, json, os, pathlib, sys",
+            "specs = json.loads(os.environ['SPECS'])",
+            "missing = []",
+            "for spec in specs:",
+            "    target = pathlib.Path('/workspace') / spec['path']",
+            "    if target.exists():",
+            "        continue",
+            "    raw = os.environ.get(spec['json_env']) or ''",
+            "    b64 = os.environ.get(spec['b64_env']) or ''",
+            "    if raw:",
+            "        payload = raw.encode()",
+            "    elif b64:",
+            "        payload = base64.b64decode(b64)",
+            "    else:",
+            "        missing.append(",
+            "            f\"{spec['path']} ({spec['json_env']} or {spec['b64_env']})\"",
+            "        )",
+            "        continue",
+            "    target.parent.mkdir(parents=True, exist_ok=True)",
+            "    target.write_bytes(payload)",
+            "    target.chmod(0o600)",
+            "    if spec['path'] == 'configs/google_credentials.json':",
+            "        for home in ('/root', '/home/agent', '/home/openhands'):",
+            "            home_path = pathlib.Path(home)",
+            "            if not home_path.exists():",
+            "                continue",
+            "            for leaf in ('.calendar-mcp', '.gmail-mcp'):",
+            "                copy = home_path / leaf / 'credentials.json'",
+            "                copy.parent.mkdir(parents=True, exist_ok=True)",
+            "                copy.write_bytes(payload)",
+            "                copy.chmod(0o600)",
+            "if missing:",
+            "    sys.stderr.write(",
+            "        'BenchFlow Toolathlon credential setup error: missing '",
+            "        + ', '.join(missing)",
+            "        + '\\n'",
+            "    )",
+            "    sys.exit(66)",
+            "PY",
+        ]
+    )
 
 
 def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
@@ -731,7 +836,10 @@ def _replace_toolathlon_placeholders(value: str, *, variant: str) -> str:
         value = value.replace(old, new)
 
     def token_replacement(match: re.Match[str]) -> str:
-        name = match.group(1).upper()
+        token_name = match.group(1)
+        if variant == "official" and token_name in _TOOLATHLON_TOKEN_DEFAULTS:
+            return _TOOLATHLON_TOKEN_DEFAULTS[token_name]
+        name = token_name.upper()
         return f"${{TOOLATHLON_{name}}}"
 
     return _TOKEN_PLACEHOLDER_RE.sub(token_replacement, value)
