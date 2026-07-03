@@ -783,9 +783,15 @@ def test_other_agent_offers_static_catalog_and_fetches_one_manifest(
     # hermetic single-manifest source
     from benchflow import onboarding
 
-    # first still-unregistered catalog entry (suite order may have
-    # registered some via earlier autoload tests)
-    target = onboarding.catalog_choices()[0][0]
+    # Deterministic target regardless of suite order: earlier tests (e.g.
+    # manifest parity) may have registered the WHOLE catalog — evict one
+    # entry for the duration of this test and restore it afterwards.
+    target = onboarding.CATALOG_AGENTS[0]
+    saved = (
+        registry.AGENTS.pop(target, None),
+        registry.AGENT_INSTALLERS.pop(target, None),
+        registry.AGENT_LAUNCH.pop(target, None),
+    )
     d = tmp_path / "src" / "acp" / target
     d.mkdir(parents=True)
     (d / "manifest.toml").write_text(
@@ -824,6 +830,12 @@ def test_other_agent_offers_static_catalog_and_fetches_one_manifest(
         registry.AGENTS.pop(target, None)
         registry.AGENT_INSTALLERS.pop(target, None)
         registry.AGENT_LAUNCH.pop(target, None)
+        for store, val in zip(
+            (registry.AGENTS, registry.AGENT_INSTALLERS, registry.AGENT_LAUNCH),
+            saved,
+        ):
+            if val is not None:
+                store[target] = val
 
 
 def test_subscription_status_announced_right_after_agent_choice(tmp_path, monkeypatch):
