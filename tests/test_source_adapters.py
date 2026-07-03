@@ -481,6 +481,7 @@ params:
     forms = Task(adapted.path / "forms-only")
     assert "required_credential_files" not in forms.config.metadata
 
+
 def _run_container_helper(
     workspace: Path, argv: list[str], env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess:
@@ -500,6 +501,7 @@ def _run_container_helper(
         capture_output=True,
         timeout=30,
     )
+
 
 def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None:
     (tmp_path / "configs").mkdir()
@@ -523,6 +525,7 @@ def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None
     # Unset secrets fall back to their example defaults, not the literal env ref.
     assert tokens["huggingface_token"] == "XX"
     assert tokens["github_read_only"] == "1"
+
 
 def test_toolathlon_container_launch_resolves_tokens(tmp_path: Path) -> None:
     (tmp_path / "configs").mkdir()
@@ -564,6 +567,7 @@ def test_toolathlon_container_launch_resolves_tokens(tmp_path: Path) -> None:
     assert "--dataset=demo_ds" in out  # per-task override wins
     assert "--folder=FID-999" in out  # runtime file value
 
+
 def test_toolathlon_container_launch_resolves_env(tmp_path: Path) -> None:
     (tmp_path / "configs").mkdir()
     (tmp_path / "configs" / "token_key_session.py").write_text(
@@ -579,6 +583,7 @@ def test_toolathlon_container_launch_resolves_env(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "GITHUB_TOKEN=gho_secret" in result.stdout
+
 
 def test_toolathlon_container_launch_ensures_dirs(tmp_path: Path) -> None:
     (tmp_path / "configs").mkdir()
@@ -598,7 +603,10 @@ def test_toolathlon_container_launch_ensures_dirs(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert storage.is_dir()
 
-def test_toolathlon_arxiv_server_declares_ensure_dirs(tmp_path: Path, monkeypatch) -> None:
+
+def test_toolathlon_arxiv_server_declares_ensure_dirs(
+    tmp_path: Path, monkeypatch
+) -> None:
     """The arxiv_local server's --storage-path is passed to the launcher as a
     directory to pre-create, so the evaluator's listdir cannot crash."""
     monkeypatch.chdir(tmp_path)
@@ -625,7 +633,9 @@ params:
     )
     task_dir = repo / "tasks" / "finalpool" / "find-alita-paper"
     (task_dir / "docs").mkdir(parents=True)
-    (task_dir / "docs" / "agent_system_prompt.md").write_text("W: !!<<<<||||workspace_dir||||>>>>!!\n")
+    (task_dir / "docs" / "agent_system_prompt.md").write_text(
+        "W: !!<<<<||||workspace_dir||||>>>>!!\n"
+    )
     (task_dir / "docs" / "task.md").write_text("Find the paper.\n")
     (task_dir / "task_config.json").write_text(
         json.dumps({"needed_mcp_servers": ["arxiv_local"], "needed_local_tools": []})
