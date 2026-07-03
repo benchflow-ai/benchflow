@@ -172,6 +172,10 @@ async def _run_seat(
                 agent=agent_cfg.name, agent_env=agent_env, model=seat.spec.model,
                 runtime=None, environment=cfg.environment,
                 session_id=f"floor-{seat.seat_id}",
+                # daytona/modal are sandbox-local: the proxy must run INSIDE the
+                # shared sandbox (the remote agent reaches it on localhost), so it
+                # needs the sandbox handle. Ignored for docker (host proxy + bridge).
+                sandbox=sandbox,
             )
             agent_env = {**agent_env, **provider_env}
 
