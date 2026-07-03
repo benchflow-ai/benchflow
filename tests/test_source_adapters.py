@@ -1,5 +1,8 @@
 import csv
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from benchflow._utils.benchmark_repos import ResolvedSource
@@ -236,10 +239,10 @@ params:
     )
 
 
-def test_toolathlon_adapter_skips_tasks_with_missing_repo_configs(
+def test_toolathlon_adapter_materializes_tasks_with_missing_repo_configs(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Guards PR #878 against materializing Toolathlon tasks missing credentials."""
+    """Guards PR #878 against dropping Toolathlon credential-backed tasks."""
     monkeypatch.chdir(tmp_path)
     repo = tmp_path / "Toolathlon"
     (repo / ".git").mkdir(parents=True)
@@ -258,6 +261,45 @@ params:
     - "${agent_workspace}"
 """
     )
+    (repo / "configs" / "mcp_servers" / "google_sheet.yaml").write_text(
+        """
+type: stdio
+name: google_sheet
+params:
+  command: uvx
+  args:
+    - "mcp-google-sheets"
+  env:
+    CREDENTIALS_PATH: "${token.google_oauth2_credentials_path}"
+    TOKEN_PATH: "${token.google_oauth2_token_path}"
+"""
+    )
+    (repo / "configs" / "mcp_servers" / "google_calendar.yaml").write_text(
+        """
+type: stdio
+name: google_calendar
+params:
+  command: npx
+  args:
+    - "-y"
+    - "@gongrzhe/server-calendar-autoauth-mcp"
+  cwd: "${agent_workspace}"
+"""
+    )
+    (repo / "configs" / "mcp_servers" / "google_forms.yaml").write_text(
+        """
+type: stdio
+name: google_forms
+params:
+  command: node
+  args:
+    - "${local_servers_paths}/google-forms-mcp/build/index.js"
+  env:
+    GOOGLE_CLIENT_ID: "${token.google_client_id}"
+    GOOGLE_CLIENT_SECRET: "${token.google_client_secret}"
+    GOOGLE_REFRESH_TOKEN: "${token.google_refresh_token}"
+"""
+    )
     task_dir = repo / "tasks" / "finalpool" / "ab-testing"
     (task_dir / "docs").mkdir(parents=True)
     (task_dir / "preprocess").mkdir()
@@ -271,21 +313,138 @@ params:
     (task_dir / "preprocess" / "main.py").write_text(
         "open('configs/gcp-service_account.keys.json').read()\n"
     )
+    sheet_task = repo / "tasks" / "finalpool" / "sheet-only"
+    (sheet_task / "docs").mkdir(parents=True)
+    (sheet_task / "docs" / "agent_system_prompt.md").write_text(
+        "Workspace: !!<<<<||||workspace_dir||||>>>>!!\n"
+    )
+    (sheet_task / "docs" / "task.md").write_text("Update the sheet.\n")
+    (sheet_task / "task_config.json").write_text(
+        json.dumps({"needed_mcp_servers": ["google_sheet"], "needed_local_tools": []})
+    )
+    calendar_task = repo / "tasks" / "finalpool" / "calendar-only"
+    (calendar_task / "docs").mkdir(parents=True)
+    (calendar_task / "docs" / "agent_system_prompt.md").write_text(
+        "Workspace: !!<<<<||||workspace_dir||||>>>>!!\n"
+    )
+    (calendar_task / "docs" / "task.md").write_text("Update the calendar.\n")
+    (calendar_task / "task_config.json").write_text(
+        json.dumps(
+            {"needed_mcp_servers": ["google_calendar"], "needed_local_tools": []}
+        )
+    )
+    forms_task = repo / "tasks" / "finalpool" / "forms-only"
+    (forms_task / "docs").mkdir(parents=True)
+    (forms_task / "docs" / "agent_system_prompt.md").write_text(
+        "Workspace: !!<<<<||||workspace_dir||||>>>>!!\n"
+    )
+    (forms_task / "docs" / "task.md").write_text("Update the form.\n")
+    (forms_task / "task_config.json").write_text(
+        json.dumps({"needed_mcp_servers": ["google_forms"], "needed_local_tools": []})
+    )
 
     adapted = adapt_resolved_source_if_needed(
         _resolved(repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool")
     )
 
-    assert not (adapted.path / "ab-testing").exists()
-    skipped = json.loads(
-        (adapted.path / ".benchflow-source-adapter-skipped.json").read_text()
-    )
-    assert skipped == {
-        "skipped": [
-            {
-                "reason": "references missing repo config: "
-                "configs/gcp-service_account.keys.json",
-                "task_id": "ab-testing",
-            }
-        ]
+    generated = adapted.path / "ab-testing"
+    task = Task(generated)
+    assert task.config.metadata["required_credential_files"] == [
+        "configs/gcp-service_account.keys.json"
+    ]
+    assert task.config.metadata["credential_env_options"] == [
+        {
+            "file": "configs/gcp-service_account.keys.json",
+            "env": "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON",
+            "base64_env": "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64",
+        }
+    ]
+    assert not (adapted.path / ".benchflow-source-adapter-skipped.json").exists()
+    assert len(task.config.environment.setup_commands) == 2
+    credential_setup = task.config.environment.setup_commands[0]
+    assert credential_setup.env == {
+        "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON": "${TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON:-}",
+        "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64": "${TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64:-}",
     }
+    assert "BenchFlow Toolathlon credential setup error" in credential_setup.command
+    assert "configs/gcp-service_account.keys.json" in credential_setup.command
+    assert "target.chmod(0o644)" in credential_setup.command
+    assert "/home/agent" not in credential_setup.command
+    assert ".gmail-mcp" not in credential_setup.command
+    sheet = Task(adapted.path / "sheet-only")
+    assert sheet.config.metadata["required_credential_files"] == [
+        "configs/google_credentials.json"
+    ]
+    sheet_server = sheet.config.environment.mcp_servers[0]
+    assert sheet_server.env["CREDENTIALS_PATH"] == (
+        "/workspace/configs/google_credentials.json"
+    )
+    assert sheet_server.env["TOKEN_PATH"] == (
+        "/workspace/agent_workspace/.toolathlon/google_credentials.json"
+    )
+    calendar = Task(adapted.path / "calendar-only")
+    assert calendar.config.metadata["required_credential_files"] == [
+        "configs/gcp-oauth.keys.json",
+        "configs/google_credentials.json",
+    ]
+    calendar_server = calendar.config.environment.mcp_servers[0]
+    assert "HOME" not in calendar_server.env
+    assert (
+        calendar_server.env["CALENDAR_OAUTH_PATH"]
+        == "/workspace/configs/gcp-oauth.keys.json"
+    )
+    assert calendar_server.env["CALENDAR_CREDENTIALS_PATH"] == (
+        "/workspace/agent_workspace/.toolathlon/calendar_credentials.json"
+    )
+    workspace = tmp_path / "workspace"
+    (workspace / "configs").mkdir(parents=True)
+    google_payload = {
+        "client_id": "client",
+        "client_secret": "secret",
+        "refresh_token": "refresh",
+    }
+    oauth_payload = {"installed": {"client_id": "oauth-client"}}
+    (workspace / "configs" / "google_credentials.json").write_text(
+        json.dumps(google_payload)
+    )
+    (workspace / "configs" / "gcp-oauth.keys.json").write_text(
+        json.dumps(oauth_payload)
+    )
+    calendar_command = calendar.config.environment.setup_commands[0].command.replace(
+        "/usr/local/bin/uv run python", sys.executable
+    )
+    result = subprocess.run(
+        calendar_command,
+        cwd=workspace,
+        env={"PATH": os.environ["PATH"]},
+        shell=True,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        json.loads(
+            (
+                workspace
+                / "agent_workspace"
+                / ".toolathlon"
+                / "google_credentials.json"
+            ).read_text()
+        )
+        == google_payload
+    )
+    assert (
+        json.loads(
+            (
+                workspace
+                / "agent_workspace"
+                / ".toolathlon"
+                / "calendar_credentials.json"
+            ).read_text()
+        )
+        == google_payload
+    )
+    assert not (workspace / ".mcp-home").exists()
+    forms = Task(adapted.path / "forms-only")
+    assert "required_credential_files" not in forms.config.metadata
