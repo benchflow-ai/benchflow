@@ -308,6 +308,44 @@ class TestResolveAgentEnvSubscription:
             },
         )
 
+    def test_anthropic_subscription_gate_is_registry_driven(self, monkeypatch):
+        """Any agent declaring ANTHROPIC subscription_auth gets the OAuth split.
+
+        The gate used to hardcode claude-agent-acp; decoupled Claude-CLI
+        agents (e.g. omnigent claude-*) opt in by declaring subscription_auth
+        in their registration. Agents without it must never skip the proxy.
+        """
+        from benchflow.agents.env import uses_native_subscription_auth
+        from benchflow.agents.registry import AGENTS, AgentConfig, SubscriptionAuth
+
+        cfg = AgentConfig(
+            name="fake-claude-cli",
+            install_cmd="",
+            launch_cmd="",
+            subscription_auth=SubscriptionAuth(
+                replaces_env="ANTHROPIC_API_KEY",
+                detect_file="~/.claude/.credentials.json",
+            ),
+        )
+        monkeypatch.setitem(AGENTS, "fake-claude-cli", cfg)
+
+        oauth_env = {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}
+        assert uses_native_subscription_auth(
+            "fake-claude-cli", "claude-haiku-4-5-20251001", oauth_env
+        )
+        # API key present → stays on the LiteLLM path.
+        assert not uses_native_subscription_auth(
+            "fake-claude-cli",
+            "claude-haiku-4-5-20251001",
+            {**oauth_env, "ANTHROPIC_API_KEY": "sk-ant"},
+        )
+        # No ANTHROPIC subscription_auth declared → never skips the proxy.
+        cfg_plain = AgentConfig(name="fake-plain-acp", install_cmd="", launch_cmd="")
+        monkeypatch.setitem(AGENTS, "fake-plain-acp", cfg_plain)
+        assert not uses_native_subscription_auth(
+            "fake-plain-acp", "claude-haiku-4-5-20251001", oauth_env
+        )
+
     def test_codex_api_key_auth_alias(self, monkeypatch, tmp_path):
         """Guards PR #296: CODEX_API_KEY works for native Codex auth."""
         for k in ("CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
