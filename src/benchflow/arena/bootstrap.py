@@ -41,7 +41,12 @@ def _make_sandbox(
         session_id="native-floor",
         rollout_paths=None,
         task_env_config=SandboxConfig(
-            docker_image=image, allow_internet=True, env=dict(service_env or {})
+            docker_image=image, allow_internet=True, env=dict(service_env or {}),
+            # The shared floor packs N ACP agents + (proxy seats') in-sandbox LiteLLM
+            # + the service into ONE sandbox. The 1cpu/2GB default OOM-kills their
+            # transports on daytona (docker survives on the host's resources). Size
+            # for a multi-agent floor; harmless headroom for docker.
+            cpus=8, memory_mb=16384,
         ),
     )
     if environment == "daytona":
