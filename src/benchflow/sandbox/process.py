@@ -398,6 +398,16 @@ class DaytonaProcess(LiveProcess):
                 f.write("  StrictHostKeyChecking no\n")
                 f.write("  UserKnownHostsFile /dev/null\n")
                 f.write("  LogLevel ERROR\n")
+                # Keepalive: the ACP agent's stdio rides this long-lived SSH
+                # session, which goes SILENT during think-gaps (LLM calls) — with
+                # no traffic the gateway/NAT idle-drops it and the agent's stdout
+                # hits EOF ("Process closed stdout / remote session killed"),
+                # killing the seat mid-play on daytona while docker (a local pipe)
+                # is fine. Probe every 15s and tolerate ~2min of silence so a
+                # concurrent multi-agent floor survives its think-gaps.
+                f.write("  ServerAliveInterval 15\n")
+                f.write("  ServerAliveCountMax 8\n")
+                f.write("  TCPKeepAlive yes\n")
             os.chmod(path, 0o600)
         except Exception:
             with contextlib.suppress(Exception):
