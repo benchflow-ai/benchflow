@@ -516,35 +516,26 @@ class TestDatasetChoices:
         assert isinstance(onboarding.dataset_choices(), list)
 
 
-class TestAgentPaths:
-    def test_full_universe_loads_and_classifies_by_path(self, tmp_path, monkeypatch):
-        """The wizard must offer ALL three adaptation paths — core built-ins
-        plus the remote manifest catalog (auto-loaded on demand) plus any
-        installed plugin packages — grouped by the naming law."""
+class TestAcpAgents:
+    def test_lists_local_acp_agents_without_network(self, monkeypatch):
+        """acp_agents must NOT trigger the manifest autoload (no repo clone to
+        populate a menu) and must exclude the ai-sdk-*/omnigent-* paths."""
         from benchflow.agents import remote_manifests
 
-        (tmp_path / "probe-manifest").mkdir()
-        (tmp_path / "probe-manifest" / "manifest.toml").write_text(
-            'contract_version = "1.0"\nname = "probe-manifest"\n'
-            'protocol = "acp"\ninstall_cmd = "true"\nlaunch_cmd = "true"\n'
+        called = []
+        monkeypatch.setattr(
+            remote_manifests,
+            "autoload_remote_manifest_agents",
+            lambda: called.append(1),
         )
-        monkeypatch.setenv(remote_manifests.AGENTS_SOURCE_ENV, str(tmp_path))
-        remote_manifests._reset_for_tests()
-        try:
-            paths = onboarding.agent_paths()
-            assert "probe-manifest" in paths["acp"]  # manifest catalog loaded
-            assert "pi-acp" in paths["acp"]  # core
-            assert all(a.startswith("ai-sdk") for a in paths.get("ai-sdk", []))
-            assert all(a.startswith("omnigent-") for a in paths.get("omnigent", []))
-            assert "oracle" not in paths["acp"] and "gemini" not in paths["acp"]
-        finally:
-            remote_manifests._reset_for_tests()
-            from benchflow.agents import registry
-
-            for n in ("probe-manifest",):
-                registry.AGENTS.pop(n, None)
-                registry.AGENT_INSTALLERS.pop(n, None)
-                registry.AGENT_LAUNCH.pop(n, None)
+        names = onboarding.acp_agents()
+        assert called == []  # zero network
+        assert "pi-acp" in names
+        assert not any(
+            n == "ai-sdk" or n.startswith("ai-sdk-") or n.startswith("omnigent-")
+            for n in names
+        )
+        assert "oracle" not in names and "gemini" not in names
 
 
 class TestDetectKeySources:

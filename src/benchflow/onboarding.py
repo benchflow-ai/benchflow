@@ -549,24 +549,24 @@ def compatible_providers(agent: str) -> list[str]:
     ]
 
 
-def agent_paths() -> dict[str, list[str]]:
-    """Every offerable agent across the three adaptation paths, grouped by
-    the naming law (ai-sdk-* / omnigent-* / everything else = ACP-native).
+def acp_agents() -> list[str]:
+    """Locally-registered ACP-native agents for the wizard menu — NO network.
 
-    Triggers the miss-driven remote-manifest auto-load first so the wizard
-    offers the full catalog (core + benchflow-ai/agents manifests + installed
-    plugin packages), not just the built-ins; offline it degrades to
-    whatever is already registered.
+    Only what is already in the registry (core built-ins + any installed
+    plugin packages), minus the other adaptation paths (ai-sdk-* / omnigent-*)
+    which the wizard does not list. The full benchflow-ai/agents manifest
+    catalog is fetched lazily — only when an agent is actually resolved for a
+    run (resolve_agent's miss path), not to populate a menu — so a bare
+    ``bench init`` never clones the repo. Names not shown here stay reachable
+    via ``--agent <name>`` and the menu's "other" escape, both of which
+    resolve (and lazily fetch) on demand.
     """
-    from benchflow.agents import remote_manifests
-
-    remote_manifests.autoload_remote_manifest_agents()
-    paths: dict[str, list[str]] = {"acp": [], "ai-sdk": [], "omnigent": []}
-    for name in compatible_agents():
-        if name == "ai-sdk" or name.startswith("ai-sdk-"):
-            paths["ai-sdk"].append(name)
-        elif name.startswith("omnigent-"):
-            paths["omnigent"].append(name)
-        else:
-            paths["acp"].append(name)
-    return {k: v for k, v in paths.items() if v}
+    return [
+        name
+        for name in compatible_agents()
+        if not (
+            name == "ai-sdk"
+            or name.startswith("ai-sdk-")
+            or name.startswith("omnigent-")
+        )
+    ]

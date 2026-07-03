@@ -116,7 +116,6 @@ def test_interactive_wizard_prompts_and_completes(tmp_path, monkeypatch):
     )
     answers = "\n".join(
         [
-            "",  # path menu -> default (acp)
             "",  # agent menu -> default (pi-acp)
             "",  # provider menu (filtered) -> default (deepseek)
             "deepseek-v4-flash",  # model id (deepseek has no catalog)
@@ -442,7 +441,6 @@ def test_wizard_is_selection_driven_with_auto_key_detection(tmp_path, monkeypatc
     )
     answers = "\n".join(
         [
-            "",  # path menu -> Enter = default (acp)
             "",  # agent menu -> Enter = default (pi-acp)
             "",  # provider menu (filtered to pi-acp-routable) -> Enter = deepseek
             "deepseek-v4-flash",  # model (free text w/ hint; deepseek has no catalog)
@@ -500,7 +498,6 @@ def test_local_tasks_dir_bare_name_is_normalized_not_rejected(tmp_path, monkeypa
     )
     answers = "\n".join(
         [
-            "",  # path -> acp
             "",  # agent -> pi-acp
             "",  # provider -> deepseek
             "deepseek-v4-flash",
@@ -591,24 +588,6 @@ def test_provider_labels_show_the_matched_protocol(tmp_path, monkeypatch):
     assert "BYO" in menu  # vllm: no canonical URL, caller supplies semantics
 
 
-def test_agent_menu_offers_all_paths_via_path_menu(tmp_path, monkeypatch):
-    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        "benchflow.onboarding.agent_paths",
-        lambda: {
-            "acp": ["pi-acp", "opencode"],
-            "ai-sdk": ["ai-sdk"],
-            "omnigent": ["omnigent-pi"],
-        },
-    )
-    result = runner.invoke(app, ["init", "--skip-smoke"], input="3\n")
-    # path menu listed all three paths with counts, then omnigent's agents
-    assert "acp" in result.output and "ai-sdk" in result.output
-    assert "omnigent (1" in result.output or "omnigent  — 1" in result.output
-    assert "omnigent-pi" in result.output
-
-
 def test_interactive_auth_menu_lists_subscription_as_a_choice(tmp_path, monkeypatch):
     """OpenClaw-style auth step: when a subscription login AND a key are both
     available, the user chooses — subscription is a listed option, not a
@@ -622,7 +601,6 @@ def test_interactive_auth_menu_lists_subscription_as_a_choice(tmp_path, monkeypa
     monkeypatch.setattr("benchflow.cli.init_cmd._isatty", lambda: True)
     answers = "\n".join(
         [
-            "",  # path -> acp
             "",  # agent -> pi-acp
             "",  # provider -> deepseek
             "deepseek-v4-flash",

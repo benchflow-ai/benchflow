@@ -207,36 +207,31 @@ def register_init(app: typer.Typer) -> None:
 
         console.print("[bold cyan]◇ bench init[/] [dim]— first-run setup[/]")
 
-        # Agent first (the thing the user came to benchmark): pick the
-        # adaptation path, then that path's agents (the full catalog — core +
-        # remote manifests + installed plugins), then the provider menu
-        # narrows to what the chosen agent can route.
-        if agent:
-            # Same resolution as `bench eval run`: aliases + the miss-driven
-            # catalog autoload — a flags invocation must reach every agent
-            # the menus offer.
-            from benchflow.agents.registry import resolve_agent
-
-            try:
-                agent = resolve_agent(agent).name
-            except KeyError:
-                typer.echo(
-                    f"Unknown agent {agent!r} — see `bench agent list`.", err=True
-                )
-                raise typer.Exit(1) from None
+        # Agent first (the thing the user came to benchmark). The menu lists
+        # locally-registered ACP agents only — populating it never touches the
+        # network. "other" (and the --agent flag) reach the full catalog, and
+        # the repo is cloned lazily there, only when an agent is actually
+        # resolved for a run.
         if not agent:
-            console.print("[dim]│ loading the agent catalog…[/]")
-            paths = onboarding.agent_paths()
-            path_names = list(paths)
-            ppick = _choose(
-                "Agent path:",
-                [(p, f"{len(paths[p])} agents") for p in path_names],
-                default=path_names.index("acp") + 1 if "acp" in path_names else 1,
-            )
-            agents = paths[path_names[ppick - 1]]
+            agents = onboarding.acp_agents()
             default = agents.index("pi-acp") + 1 if "pi-acp" in agents else 1
-            pick = _choose("Agent:", [(a, "") for a in agents], default=default)
-            agent = agents[pick - 1]
+            options = [(a, "") for a in agents]
+            options.append(("other", "type any agent name (fetched on demand)"))
+            pick = _choose("Agent:", options, default=default)
+            agent = (
+                typer.prompt("Agent name") if pick == len(options) else agents[pick - 1]
+            )
+        # Resolve like `bench eval run` does: aliases + the miss-driven catalog
+        # autoload (the only place the agents repo is cloned). A menu pick is
+        # already local, so this is a no-op for it; a typed/flagged catalog
+        # name resolves here.
+        from benchflow.agents.registry import resolve_agent
+
+        try:
+            agent = resolve_agent(agent).name
+        except KeyError:
+            typer.echo(f"Unknown agent {agent!r} — see `bench agent list`.", err=True)
+            raise typer.Exit(1) from None
         _step("agent", agent)
 
         if not model:
