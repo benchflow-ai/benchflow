@@ -128,10 +128,15 @@ def _wizard_auth_step(home: Path, agent: str, auth_env: str) -> None:
         onboarding.write_env_file(home / ".env", {auth_env: key})
         os.environ[auth_env] = key  # the explicit choice wins in-process
     elif use[0] == "./.env":
-        _warn_shadow(auth_env, use[1])
-        onboarding.write_env_file(home / ".env", {auth_env: use[1]})
-        os.environ[auth_env] = use[1]  # the explicit choice wins in-process
-        typer.echo(f"✓ {auth_env} ({_fingerprint(use[1])}) saved to {home / '.env'}.")
+        value = use[1] or ""  # detect_key_sources only lists ./.env with a value
+        _warn_shadow(auth_env, value)
+        onboarding.write_env_file(home / ".env", {auth_env: value})
+        os.environ[auth_env] = value  # the explicit choice wins in-process
+        typer.echo(f"✓ {auth_env} ({_fingerprint(value)}) saved to {home / '.env'}.")
+    elif use[0] == "environment":
+        typer.echo(
+            f"✓ Using {auth_env} from your environment ({_fingerprint(use[1])})."
+        )
     elif use[0] == "subscription":
         if os.environ.get(auth_env):
             # Honor the choice for this process (so the smoke verifies the
