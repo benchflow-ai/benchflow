@@ -29,7 +29,6 @@ from benchflow._utils.benchmark_repos import ResolvedSource
 _ADAPTER_VERSION = "2026-07-02.8"
 _NOOP_EXCLUDE_TAG = "__benchflow_exclude_no_tools__"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
-_TOKEN_PLACEHOLDER_RE = re.compile(r"\$\{token\.([A-Za-z0-9_]+)\}")
 _TOOLATHLON_UVX_PACKAGE_PINS = {
     "office-word-mcp-server": "office-word-mcp-server==1.1.11",
 }
@@ -53,7 +52,6 @@ class _ToolathlonCredentialSpec:
     env: str
     b64_env: str
     trigger_servers: tuple[str, ...] = ()
-    token_defaults: tuple[tuple[str, str], ...] = ()
     copy_paths: tuple[str, ...] = ()
 
 
@@ -63,28 +61,12 @@ _TOOLATHLON_CREDENTIAL_SPECS = (
         env="TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON",
         b64_env="TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64",
         trigger_servers=("google-cloud",),
-        token_defaults=(
-            (
-                "gcp_service_account_path",
-                "/workspace/configs/gcp-service_account.keys.json",
-            ),
-        ),
     ),
     _ToolathlonCredentialSpec(
         path="configs/google_credentials.json",
         env="TOOLATHLON_GOOGLE_CREDENTIALS_JSON",
         b64_env="TOOLATHLON_GOOGLE_CREDENTIALS_JSON_B64",
         trigger_servers=("google_calendar", "google_sheet"),
-        token_defaults=(
-            (
-                "google_oauth2_credentials_path",
-                "/workspace/configs/google_credentials.json",
-            ),
-            (
-                "google_oauth2_token_path",
-                "/workspace/agent_workspace/.toolathlon/google_credentials.json",
-            ),
-        ),
         copy_paths=(
             "agent_workspace/.toolathlon/google_credentials.json",
             "agent_workspace/.toolathlon/calendar_credentials.json",
@@ -103,11 +85,46 @@ _TOOLATHLON_CREDENTIALS_BY_PATH = {
 _TOOLATHLON_CREDENTIAL_REF_RE = re.compile(
     "|".join(re.escape(spec.path) for spec in _TOOLATHLON_CREDENTIAL_SPECS)
 )
-_TOOLATHLON_TOKEN_DEFAULTS = {
-    token: value
-    for spec in _TOOLATHLON_CREDENTIAL_SPECS
-    for token, value in spec.token_defaults
-}
+# Secret ``token.X`` values injected into the container-side global
+# ``token_key_session.py``. Names mirror ``_toolathlon_container._GLOBAL_TOKENS``;
+# values are resolved host-side from BenchFlow's environment/.env at setup time.
+_TOOLATHLON_TOKEN_SECRET_ENVS = (
+    "TOOLATHLON_GCP_PROJECT_ID",
+    "TOOLATHLON_MAPS_API_KEY",
+    "TOOLATHLON_SERPER_API_KEY",
+    "TOOLATHLON_GITHUB_TOKEN",
+    "TOOLATHLON_HF_TOKEN",
+    "TOOLATHLON_WANDB_API_KEY",
+    "TOOLATHLON_NOTION_KEY",
+    "TOOLATHLON_NOTION_KEY_EVAL",
+    "TOOLATHLON_GOOGLE_CLIENT_ID",
+    "TOOLATHLON_GOOGLE_CLIENT_SECRET",
+    "TOOLATHLON_GOOGLE_REFRESH_TOKEN",
+    "TOOLATHLON_SNOWFLAKE_ACCOUNT",
+    "TOOLATHLON_SNOWFLAKE_USER",
+    "TOOLATHLON_SNOWFLAKE_ROLE",
+    "TOOLATHLON_SNOWFLAKE_WAREHOUSE",
+    "TOOLATHLON_SNOWFLAKE_DATABASE",
+    "TOOLATHLON_SNOWFLAKE_SCHEMA",
+)
+
+# Where the container-side helper (``_toolathlon_container.py``) is staged inside
+# every Toolathlon sandbox, and the interpreter used to run it per variant. The
+# helper is dependency-free, so the base ``python3`` is enough for the official
+# image; the gym image ships its venv interpreter.
+_TOOLATHLON_CONTAINER_MODULE_PATH = "/workspace/.toolathlon/toolathlon_container.py"
+
+
+def _toolathlon_container_python(variant: str) -> str:
+    return "/opt/venv/bin/python3" if variant == "gym" else "python3"
+
+
+def _toolathlon_container_module_source() -> str:
+    return (
+        resources.files("benchflow.adapters")
+        .joinpath("_toolathlon_container.py")
+        .read_text()
+    )
 
 
 def adapt_resolved_source_if_needed(resolved: ResolvedSource) -> ResolvedSource:
@@ -434,10 +451,24 @@ def _materialize_toolathlon(
         credential_refs = _toolathlon_credential_refs_for_task(
             upstream_task, task_config, variant=variant
         )
-        mcp_servers = [
-            _toolathlon_mcp_server(ctx, server_name, variant=variant)
-            for server_name in task_config.get("needed_mcp_servers", [])
-        ]
+        mcp_servers = []
+        for server_name in task_config.get("needed_mcp_servers", []):
+            try:
+                mcp_servers.append(
+                    _toolathlon_mcp_server(
+                        ctx, server_name, variant=variant, task_name=task_name
+                    )
+                )
+            except FileNotFoundError:
+                # ``task_config`` may name a local harness tool (e.g.
+                # ``web_search``) rather than an MCP server — upstream resolves
+                # those from its agent-tool registry, so no configs/mcp_servers
+                # yaml exists. Drop it instead of failing the adaptation.
+                logger.warning(
+                    "Toolathlon task %s: no MCP config for %r; dropping server",
+                    task_name,
+                    server_name,
+                )
 
         _write_text(task_dir / "instruction.md", _toolathlon_instruction(upstream_task))
         _write_toml(
@@ -521,6 +552,14 @@ def _toolathlon_task_toml(
 ) -> dict[str, Any]:
     benchmark_name = "toolathlon-gym" if variant == "gym" else "toolathlon"
     setup_commands: list[dict[str, Any]] = []
+    setup_commands.append(
+        {
+            "command": _toolathlon_token_setup_command(variant),
+            "cwd": "/workspace",
+            "timeout_sec": 60.0,
+            "env": _toolathlon_token_setup_env(),
+        }
+    )
     credential_command = _toolathlon_credential_setup_command(credential_refs)
     if credential_command:
         setup_commands.append(
@@ -673,6 +712,50 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
     )
 
 
+def _toolathlon_token_setup_env() -> dict[str, str]:
+    """Env for the token-setup command: the container helper (base64) plus the
+    secret token values, resolved host-side from BenchFlow's environment/.env."""
+    import base64
+
+    module_b64 = base64.b64encode(
+        _toolathlon_container_module_source().encode()
+    ).decode()
+    env: dict[str, str] = {"TOOLATHLON_CONTAINER_MODULE_B64": module_b64}
+    for name in _TOOLATHLON_TOKEN_SECRET_ENVS:
+        env[name] = f"${{{name}:-}}"
+    return env
+
+
+def _toolathlon_token_setup_command(variant: str) -> str:
+    """Stage the container helper and generate the global token_key_session.py.
+
+    The helper is decoded from ``TOOLATHLON_CONTAINER_MODULE_B64`` and its
+    ``write-config`` mode bakes the injected secret tokens into
+    ``/workspace/configs/token_key_session.py`` (gitignored upstream, so absent
+    from the image). MCP servers later resolve ``${token.X}`` against it via the
+    same helper's ``launch`` mode.
+    """
+    python_cmd = _toolathlon_container_python(variant)
+    module_path = shlex.quote(_TOOLATHLON_CONTAINER_MODULE_PATH)
+    return "\n".join(
+        [
+            "set -e",
+            "mkdir -p /workspace/.toolathlon",
+            f"{python_cmd} - <<'PY'",
+            "import base64, os, pathlib",
+            f"target = pathlib.Path({_TOOLATHLON_CONTAINER_MODULE_PATH!r})",
+            "target.write_bytes(",
+            "    base64.b64decode(os.environ['TOOLATHLON_CONTAINER_MODULE_B64'])",
+            ")",
+            "target.chmod(0o755)",
+            "PY",
+            "chmod -R a+rX /workspace/.toolathlon",
+            f"{python_cmd} {module_path} write-config",
+            "chmod 0644 /workspace/configs/token_key_session.py",
+        ]
+    )
+
+
 def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
     python_cmd = (
         "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
@@ -780,11 +863,15 @@ _TOOLATHLON_SERVER_ALIASES = {
 
 
 def _toolathlon_mcp_server(
-    ctx: _SourceContext, server_name: str, *, variant: str
+    ctx: _SourceContext, server_name: str, *, variant: str, task_name: str
 ) -> dict[str, Any]:
     config_path = _toolathlon_mcp_config_path(ctx, server_name)
     data = yaml.safe_load(config_path.read_text())
     params = data.get("params") or {}
+    # Static path placeholders (``${agent_workspace}`` …) resolve to fixed
+    # in-container paths now; ``${token.X}`` are left intact and resolved at
+    # spawn time by the container launcher, which is the only layer that sees
+    # per-task and runtime-computed token values.
     command = _replace_toolathlon_placeholders(
         str(params.get("command", "")), variant=variant
     )
@@ -805,21 +892,25 @@ def _toolathlon_mcp_server(
         )
     cwd = params.get("cwd")
     cwd = _replace_toolathlon_placeholders(str(cwd), variant=variant) if cwd else None
-    if variant == "official" and command in {"uv", "uvx"}:
+    if command in {"uv", "uvx"}:
         command = f"/usr/local/bin/{command}"
         if args:
             args = [_TOOLATHLON_UVX_PACKAGE_PINS.get(arg, arg) for arg in args]
+    # Wrap the real server in the container launcher so ``${token.X}`` in argv
+    # and env resolve at spawn time. ``TOOLATHLON_TASK_DIR`` tells the launcher
+    # which task's token_key_session.py overrides the global one.
+    env = dict(env)
+    env["TOOLATHLON_TASK_DIR"] = f"/workspace/tasks/finalpool/{task_name}"
     payload: dict[str, Any] = {
         "name": str(data.get("name") or server_name),
         "transport": "stdio",
-        "command": command,
-        "args": args,
+        "command": _toolathlon_container_python(variant),
+        "args": [_TOOLATHLON_CONTAINER_MODULE_PATH, "launch", command, *args],
+        "env": env,
         "exclude_tags": [_NOOP_EXCLUDE_TAG],
     }
     if cwd:
         payload["cwd"] = cwd
-    if env:
-        payload["env"] = env
     return payload
 
 
@@ -880,6 +971,13 @@ def _toolathlon_mcp_config_path(ctx: _SourceContext, server_name: str) -> Path:
 
 
 def _replace_toolathlon_placeholders(value: str, *, variant: str) -> str:
+    """Resolve static path placeholders to fixed in-container paths.
+
+    ``${token.X}`` placeholders are intentionally left untouched: they are
+    resolved at MCP spawn time by the container launcher (see
+    ``_toolathlon_container.py``), which is the only layer that can see per-task
+    and runtime-computed token values.
+    """
     local_servers = (
         "/opt/local_servers" if variant == "gym" else "/workspace/local_servers"
     )
@@ -891,15 +989,7 @@ def _replace_toolathlon_placeholders(value: str, *, variant: str) -> str:
     }
     for old, new in replacements.items():
         value = value.replace(old, new)
-
-    def token_replacement(match: re.Match[str]) -> str:
-        token_name = match.group(1)
-        if variant == "official" and token_name in _TOOLATHLON_TOKEN_DEFAULTS:
-            return _TOOLATHLON_TOKEN_DEFAULTS[token_name]
-        name = token_name.upper()
-        return f"${{TOOLATHLON_{name}}}"
-
-    return _TOKEN_PLACEHOLDER_RE.sub(token_replacement, value)
+    return value
 
 
 def _toolathlon_dockerfile(ctx: _SourceContext, *, variant: str) -> str:

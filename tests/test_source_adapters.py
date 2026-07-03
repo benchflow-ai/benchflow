@@ -143,15 +143,29 @@ params:
     assert task.config.environment.mcp_servers[0].exclude_tags == [
         "__benchflow_exclude_no_tools__"
     ]
+    # The real server is wrapped in the container launcher so ${token.X} in
+    # argv/env resolves at spawn time against the per-task token file.
     word = task.config.environment.mcp_servers[1]
-    assert word.command == "/usr/local/bin/uvx"
+    assert word.command == "python3"
     assert word.args == [
+        "/workspace/.toolathlon/toolathlon_container.py",
+        "launch",
+        "/usr/local/bin/uvx",
         "--from",
         "office-word-mcp-server==1.1.11",
         "word_mcp_server",
     ]
     assert word.cwd == "/workspace/agent_workspace"
-    setup_command = task.config.environment.setup_commands[0].command
+    assert (
+        word.env["TOOLATHLON_TASK_DIR"]
+        == "/workspace/tasks/finalpool/arrange-workspace"
+    )
+    # First setup command stages the container helper and writes the global
+    # token_key_session.py; the preprocess command runs last.
+    token_setup = task.config.environment.setup_commands[0].command
+    assert "toolathlon_container.py write-config" in token_setup
+    assert "TOOLATHLON_CONTAINER_MODULE_B64" in token_setup
+    setup_command = task.config.environment.setup_commands[-1].command
     dockerfile = (generated / "environment" / "Dockerfile").read_text()
     task_toml = (generated / "task.toml").read_text()
     test_sh = (generated / "tests" / "test.sh").read_text()
@@ -232,7 +246,7 @@ params:
         "chmod -R a+rwX /workspace/agent_workspace"
         in (generated / "task.toml").read_text()
     )
-    setup_command = task.config.environment.setup_commands[0].command
+    setup_command = task.config.environment.setup_commands[-1].command
     assert 'chmod -R go-rwx "$private"' in setup_command
     assert (
         "postgres:" in (generated / "environment" / "docker-compose.yaml").read_text()
@@ -360,8 +374,13 @@ params:
         }
     ]
     assert not (adapted.path / ".benchflow-source-adapter-skipped.json").exists()
-    assert len(task.config.environment.setup_commands) == 2
-    credential_setup = task.config.environment.setup_commands[0]
+    # setup_commands: [token-setup, credential-inject, preprocess].
+    assert len(task.config.environment.setup_commands) == 3
+    assert (
+        "toolathlon_container.py write-config"
+        in task.config.environment.setup_commands[0].command
+    )
+    credential_setup = task.config.environment.setup_commands[1]
     assert credential_setup.env == {
         "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON": "${TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON:-}",
         "TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64": "${TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64:-}",
@@ -371,16 +390,26 @@ params:
     assert "target.chmod(0o644)" in credential_setup.command
     assert "/home/agent" not in credential_setup.command
     assert ".gmail-mcp" not in credential_setup.command
+    # ${token.X} env stays literal at materialization; the launcher resolves it
+    # at spawn time against the container's token_key_session files.
     sheet = Task(adapted.path / "sheet-only")
     assert sheet.config.metadata["required_credential_files"] == [
         "configs/google_credentials.json"
     ]
     sheet_server = sheet.config.environment.mcp_servers[0]
+    assert sheet_server.command == "python3"
+    assert sheet_server.args[:3] == [
+        "/workspace/.toolathlon/toolathlon_container.py",
+        "launch",
+        "/usr/local/bin/uvx",
+    ]
     assert sheet_server.env["CREDENTIALS_PATH"] == (
-        "/workspace/configs/google_credentials.json"
+        "${token.google_oauth2_credentials_path}"
     )
-    assert sheet_server.env["TOKEN_PATH"] == (
-        "/workspace/agent_workspace/.toolathlon/google_credentials.json"
+    assert sheet_server.env["TOKEN_PATH"] == "${token.google_oauth2_token_path}"
+    assert (
+        sheet_server.env["TOOLATHLON_TASK_DIR"]
+        == "/workspace/tasks/finalpool/sheet-only"
     )
     calendar = Task(adapted.path / "calendar-only")
     assert calendar.config.metadata["required_credential_files"] == [
@@ -410,7 +439,7 @@ params:
     (workspace / "configs" / "gcp-oauth.keys.json").write_text(
         json.dumps(oauth_payload)
     )
-    calendar_command = calendar.config.environment.setup_commands[0].command.replace(
+    calendar_command = calendar.config.environment.setup_commands[1].command.replace(
         "/usr/local/bin/uv run python", sys.executable
     )
     result = subprocess.run(
@@ -448,3 +477,102 @@ params:
     assert not (workspace / ".mcp-home").exists()
     forms = Task(adapted.path / "forms-only")
     assert "required_credential_files" not in forms.config.metadata
+
+def _run_container_helper(
+    workspace: Path, argv: list[str], env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
+    module = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "benchflow"
+        / "adapters"
+        / "_toolathlon_container.py"
+    )
+    full_env = {"PATH": os.environ["PATH"], "TOOLATHLON_WORKSPACE": str(workspace)}
+    full_env.update(env or {})
+    return subprocess.run(
+        [sys.executable, str(module), *argv],
+        env=full_env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None:
+    (tmp_path / "configs").mkdir()
+    result = _run_container_helper(
+        tmp_path,
+        ["write-config"],
+        {
+            "TOOLATHLON_GCP_PROJECT_ID": "proj-123",
+            "TOOLATHLON_MAPS_API_KEY": "maps-abc",
+            "TOOLATHLON_GITHUB_TOKEN": "gho_xyz",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    generated = (tmp_path / "configs" / "token_key_session.py").read_text()
+    ns: dict[str, object] = {}
+    exec(generated, ns)
+    tokens = ns["all_token_key_session"]
+    assert tokens["gcp_project_id"] == "proj-123"
+    assert tokens["google_cloud_console_api_key"] == "maps-abc"
+    assert tokens["github_token"] == "gho_xyz"
+    # Unset secrets fall back to their example defaults, not the literal env ref.
+    assert tokens["huggingface_token"] == "XX"
+    assert tokens["github_read_only"] == "1"
+
+def test_toolathlon_container_launch_resolves_tokens(tmp_path: Path) -> None:
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "token_key_session.py").write_text(
+        "all_token_key_session = {"
+        "'gcp_project_id': 'global-proj',"
+        "'google_cloud_allowed_bigquery_datasets': 'null'}\n"
+    )
+    task_dir = tmp_path / "tasks" / "finalpool" / "demo"
+    task_dir.mkdir(parents=True)
+    # Per-task file overrides the global dataset and derives a value from a file
+    # written by "preprocess" — exactly the runtime-token case.
+    (task_dir / "files").mkdir()
+    (task_dir / "files" / "folder_id.txt").write_text("FID-999")
+    (task_dir / "token_key_session.py").write_text(
+        "import os\n"
+        "from addict import Dict\n"
+        "_here = os.path.dirname(__file__)\n"
+        "with open(os.path.join(_here, 'files', 'folder_id.txt')) as f:\n"
+        "    _fid = f.read().strip()\n"
+        "all_token_key_session = Dict("
+        "google_cloud_allowed_bigquery_datasets='demo_ds',"
+        "google_sheets_folder_id=_fid)\n"
+    )
+    result = _run_container_helper(
+        tmp_path,
+        [
+            "launch",
+            "/bin/echo",
+            "--project=${token.gcp_project_id}",
+            "--dataset=${token.google_cloud_allowed_bigquery_datasets}",
+            "--folder=${token.google_sheets_folder_id}",
+        ],
+        {"TOOLATHLON_TASK_DIR": str(task_dir)},
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout.strip()
+    assert "--project=global-proj" in out  # from global
+    assert "--dataset=demo_ds" in out  # per-task override wins
+    assert "--folder=FID-999" in out  # runtime file value
+
+def test_toolathlon_container_launch_resolves_env(tmp_path: Path) -> None:
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "token_key_session.py").write_text(
+        "all_token_key_session = {'github_token': 'gho_secret'}\n"
+    )
+    result = _run_container_helper(
+        tmp_path,
+        ["launch", "/usr/bin/env"],
+        {
+            "TOOLATHLON_TASK_DIR": str(tmp_path),
+            "GITHUB_TOKEN": "${token.github_token}",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert "GITHUB_TOKEN=gho_secret" in result.stdout
