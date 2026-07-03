@@ -220,7 +220,13 @@ async def _run_seat(
     finally:
         if runtime is not None:
             await asyncio.sleep(1.0)  # let the proxy callback flush before stop
-            await stop_provider_runtime(runtime)
+            # Best-effort: stopping a proxy runs a sandbox exec, which can error
+            # during concurrent teardown (esp. on daytona, if another seat's failure
+            # is already reaping the shared sandbox). This is a `finally`, so an
+            # unhandled error here propagates out of the seat and crashes the whole
+            # floor's gather — the seat's result is already computed, so suppress it.
+            with contextlib.suppress(Exception):
+                await stop_provider_runtime(runtime)
     # per-seat raw llm trajectory — only when a proxy actually started
     rt_traj = getattr(getattr(runtime, "server", None), "trajectory", None)
     if rt_traj is not None and getattr(rt_traj, "exchanges", None):
