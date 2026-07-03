@@ -32,6 +32,21 @@ _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _TOOLATHLON_UVX_PACKAGE_PINS = {
     "office-word-mcp-server": "office-word-mcp-server==1.1.11",
 }
+# MCP server flags whose value is a working DIRECTORY the server (and the task's
+# evaluator) expect to exist. Upstream servers create these lazily on first use,
+# so an agent that never exercises the server — or reaches the goal by another
+# path — leaves the directory absent, and evaluators that ``os.listdir`` it
+# crash (a verifier error rather than a clean pass/fail). The launcher
+# ``mkdir -p``s these before the server starts. Explicit allow-list, not a
+# heuristic: every entry is known to take a directory (never a file) value.
+_TOOLATHLON_MCP_DIR_ARG_FLAGS = frozenset(
+    {
+        "--storage-path",
+        "--attachment_download_path",
+        "--attachment_upload_path",
+        "--email_export_path",
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -903,6 +918,15 @@ def _toolathlon_mcp_server(
     # which task's token_key_session.py overrides the global one.
     env = dict(env)
     env["TOOLATHLON_TASK_DIR"] = f"/workspace/tasks/finalpool/{task_name}"
+    ensure_dirs = [
+        args[i + 1]
+        for i, arg in enumerate(args[:-1])
+        if arg in _TOOLATHLON_MCP_DIR_ARG_FLAGS
+    ]
+    if ensure_dirs:
+        # ``:``-joined for the Linux container launcher (not os.pathsep, which
+        # would follow the host running the adapter).
+        env["TOOLATHLON_ENSURE_DIRS"] = ":".join(ensure_dirs)
     payload: dict[str, Any] = {
         "name": str(data.get("name") or server_name),
         "transport": "stdio",

@@ -117,6 +117,12 @@ def _launch(argv: list[str]) -> int:
     for key, value in list(resolved_env.items()):
         if "${" in value:
             resolved_env[key] = _resolve(value, variables)
+    # Create directories the server declares (e.g. arxiv --storage-path, emails
+    # attachment dirs) so servers that create them lazily — and evaluators that
+    # list them — do not fail when the agent never exercises that path.
+    for directory in resolved_env.get("TOOLATHLON_ENSURE_DIRS", "").split(":"):
+        if directory:
+            Path(directory).mkdir(parents=True, exist_ok=True)
     # FastMCP may spawn this launcher without inheriting PATH; guarantee a sane
     # default so the wrapped server (uvx / npx / node) is still resolvable.
     if not resolved_env.get("PATH"):
