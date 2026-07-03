@@ -486,3 +486,49 @@ class TestDatasetChoices:
         )
         # must not raise; the well-formed entry may or may not survive
         assert isinstance(onboarding.dataset_choices(), list)
+
+
+class TestAgentPaths:
+    def test_full_universe_loads_and_classifies_by_path(self, tmp_path, monkeypatch):
+        """The wizard must offer ALL three adaptation paths — core built-ins
+        plus the remote manifest catalog (auto-loaded on demand) plus any
+        installed plugin packages — grouped by the naming law."""
+        from benchflow.agents import remote_manifests
+
+        (tmp_path / "probe-manifest").mkdir()
+        (tmp_path / "probe-manifest" / "manifest.toml").write_text(
+            'contract_version = "1.0"\nname = "probe-manifest"\n'
+            'protocol = "acp"\ninstall_cmd = "true"\nlaunch_cmd = "true"\n'
+        )
+        monkeypatch.setenv(remote_manifests.AGENTS_SOURCE_ENV, str(tmp_path))
+        remote_manifests._reset_for_tests()
+        try:
+            paths = onboarding.agent_paths()
+            assert "probe-manifest" in paths["acp"]  # manifest catalog loaded
+            assert "pi-acp" in paths["acp"]  # core
+            assert all(a.startswith("ai-sdk") for a in paths.get("ai-sdk", []))
+            assert all(a.startswith("omnigent-") for a in paths.get("omnigent", []))
+            assert "oracle" not in paths["acp"] and "gemini" not in paths["acp"]
+        finally:
+            remote_manifests._reset_for_tests()
+            from benchflow.agents import registry
+
+            for n in ("probe-manifest",):
+                registry.AGENTS.pop(n, None)
+                registry.AGENT_INSTALLERS.pop(n, None)
+                registry.AGENT_LAUNCH.pop(n, None)
+
+
+class TestDetectKeySources:
+    def test_all_sources_listed_in_run_path_order(self, monkeypatch, tmp_path):
+        """The auth menu needs every detected source, ordered the way the run
+        path would use them: environment, subscription, ./.env."""
+        monkeypatch.setattr(
+            "benchflow.agents.env.check_subscription_auth", lambda a, k: True
+        )
+        monkeypatch.setenv("PROBE_KEY", "from-env")
+        (tmp_path / ".env").write_text('PROBE_KEY="from-cwd"\n')
+        sources = onboarding.detect_key_sources(
+            "PROBE_KEY", agent="claude-agent-acp", cwd=tmp_path
+        )
+        assert [s for s, _ in sources] == ["environment", "subscription", "./.env"]

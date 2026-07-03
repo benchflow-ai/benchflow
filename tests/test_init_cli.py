@@ -116,6 +116,7 @@ def test_interactive_wizard_prompts_and_completes(tmp_path, monkeypatch):
     )
     answers = "\n".join(
         [
+            "",  # path menu -> default (acp)
             "",  # agent menu -> default (pi-acp)
             "",  # provider menu (filtered) -> default (deepseek)
             "deepseek-v4-flash",  # model id (deepseek has no catalog)
@@ -145,7 +146,7 @@ def test_startup_autoloads_saved_env_file(tmp_path, monkeypatch):
     result = runner.invoke(app, [*_init_args(tmp_path)[:-3], "--skip-smoke"])
     # (same init args minus --api-key: the saved key must be found)
     assert result.exit_code == 0, result.output
-    assert "DEEPSEEK_API_KEY found in your environment" in result.output
+    assert "DEEPSEEK_API_KEY from your environment" in result.output
 
 
 def test_full_smoke_runs_credential_free_oracle_stage(tmp_path, monkeypatch):
@@ -393,6 +394,7 @@ def test_wizard_is_selection_driven_with_auto_key_detection(tmp_path, monkeypatc
     )
     answers = "\n".join(
         [
+            "",  # path menu -> Enter = default (acp)
             "",  # agent menu -> Enter = default (pi-acp)
             "",  # provider menu (filtered to pi-acp-routable) -> Enter = deepseek
             "deepseek-v4-flash",  # model (free text w/ hint; deepseek has no catalog)
@@ -450,6 +452,7 @@ def test_local_tasks_dir_bare_name_is_normalized_not_rejected(tmp_path, monkeypa
     )
     answers = "\n".join(
         [
+            "",  # path -> acp
             "",  # agent -> pi-acp
             "",  # provider -> deepseek
             "deepseek-v4-flash",
@@ -462,3 +465,67 @@ def test_local_tasks_dir_bare_name_is_normalized_not_rejected(tmp_path, monkeypa
     result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
     assert result.exit_code == 0, result.output
     assert "--tasks-dir ./mytasks" in result.output
+
+
+def test_provider_labels_show_the_matched_protocol(tmp_path, monkeypatch):
+    """A provider's label must show the endpoint the CHOSEN agent will use —
+    aws-bedrock's primary wire is openai-responses, but next to
+    claude-agent-acp it serves anthropic-messages and must say so."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["init", "--skip-smoke", "--agent", "claude-agent-acp"], input="\n"
+    )
+    menu = result.output.split("Provider", 1)[-1].split("Select", 1)[0]
+    assert "openai-responses" not in menu
+    assert "anthropic-messages" in menu
+    assert "BYO" in menu  # vllm: no canonical URL, caller supplies semantics
+
+
+def test_agent_menu_offers_all_paths_via_path_menu(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "benchflow.onboarding.agent_paths",
+        lambda: {
+            "acp": ["pi-acp", "opencode"],
+            "ai-sdk": ["ai-sdk"],
+            "omnigent": ["omnigent-pi"],
+        },
+    )
+    result = runner.invoke(app, ["init", "--skip-smoke"], input="3\n")
+    # path menu listed all three paths with counts, then omnigent's agents
+    assert "acp" in result.output and "ai-sdk" in result.output
+    assert "omnigent (1" in result.output or "omnigent  — 1" in result.output
+    assert "omnigent-pi" in result.output
+
+
+def test_interactive_auth_menu_lists_subscription_as_a_choice(tmp_path, monkeypatch):
+    """OpenClaw-style auth step: when a subscription login AND a key are both
+    available, the user chooses — subscription is a listed option, not a
+    silent auto-decision."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-exported-key")
+    monkeypatch.setattr(
+        "benchflow.agents.env.check_subscription_auth", lambda a, k: True
+    )
+    monkeypatch.setattr("benchflow.cli.init_cmd._isatty", lambda: True)
+    answers = "\n".join(
+        [
+            "",  # path -> acp
+            "",  # agent -> pi-acp
+            "",  # provider -> deepseek
+            "deepseek-v4-flash",
+            "",  # dataset (registry stubbed below)
+            "",  # sandbox -> docker
+            "2",  # auth menu: pick the subscription login
+        ]
+    )
+    monkeypatch.setattr(
+        "benchflow.onboarding.dataset_choices", lambda: [("skillsbench@1.1", "")]
+    )
+    result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
+    assert result.exit_code == 0, result.output
+    assert "subscription" in result.output.lower()  # listed as an option
+    assert "…-key" in result.output or "…" in result.output  # key fingerprinted

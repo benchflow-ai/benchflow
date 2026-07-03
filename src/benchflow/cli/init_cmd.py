@@ -16,6 +16,7 @@ import click
 import typer
 
 from benchflow import onboarding
+from benchflow.cli._shared import console
 
 BENCHFLOW_HOME_ENV = "BENCHFLOW_HOME"
 
@@ -42,14 +43,84 @@ def _choose(title: str, options: list[tuple[str, str]], default: int | None = 1)
     """Numbered menu: print options, return the chosen 1-based index.
 
     Enter accepts the default. Selection beats free-form typing for
-    discoverability (the Hermes-style wizard pattern); free-text escape
-    hatches are modeled as an explicit "other" option by the caller.
+    discoverability; the ◆/│ step visuals follow the OpenClaw/clack wizard
+    look (rich degrades to plain text on non-tty). Free-text escape hatches
+    are modeled as an explicit "other" option by the caller.
     """
-    typer.echo(f"\n{title}")
+    from rich.markup import escape
+
+    console.print(f"\n[bold cyan]◆[/] [bold]{escape(title)}[/]")
     for i, (label, desc) in enumerate(options, 1):
-        suffix = f"  — {desc}" if desc else ""
-        typer.echo(f"  {i}) {label}{suffix}")
+        suffix = f"  [dim]— {escape(desc)}[/]" if desc else ""
+        console.print(f"[dim]│[/]  [cyan]{i})[/] {escape(label)}{suffix}")
     return typer.prompt("Select", type=click.IntRange(1, len(options)), default=default)
+
+
+def _step(label: str, value: str) -> None:
+    """Confirmed-step rail line (the wizard's running summary)."""
+    from rich.markup import escape
+
+    console.print(f"[dim]│[/] [green]●[/] {escape(label)}  [bold]{escape(value)}[/]")
+
+
+def _isatty() -> bool:
+    """Interactive-session check (module-level seam so tests can drive the
+    tty-only menus through CliRunner, which swaps sys.stdin)."""
+    return sys.stdin.isatty()
+
+
+def _fingerprint(value: str | None) -> str:
+    return f"…{value[-4:]}" if value and len(value) > 4 else "…"
+
+
+def _auth_option(source: str, value: str | None, agent: str, auth_env: str):
+    if source == "subscription":
+        return (
+            f"{agent}'s subscription login",
+            f"host login detected — no {auth_env} needed",
+        )
+    if source == "environment":
+        return (
+            f"{auth_env} from your environment ({_fingerprint(value)})",
+            "exported variable or saved setup",
+        )
+    return (
+        f"{auth_env} from {Path.cwd() / '.env'} ({_fingerprint(value)})",
+        "will be saved to your bench setup",
+    )
+
+
+def _wizard_auth_step(home: Path, agent: str, auth_env: str) -> None:
+    """OpenClaw-style auth step: every detected credential source is a listed
+    choice (subscription login included), manual entry is the escape hatch.
+
+    Interactive (tty): a menu, defaulting to what the run path would use.
+    Non-interactive: the run-path-preferred source is taken automatically —
+    CI never blocks on stdin.
+    """
+    sources = onboarding.detect_key_sources(auth_env, agent=agent)
+    use: tuple[str, str | None] | None = None
+    if sources and _isatty():
+        options = [_auth_option(s, v, agent, auth_env) for s, v in sources]
+        options.append(("enter an API key", "typed hidden, stored for future runs"))
+        pick = _choose("Credentials:", options, default=1)
+        if pick <= len(sources):
+            use = sources[pick - 1]
+    elif sources:
+        use = sources[0]
+        label, _ = _auth_option(use[0], use[1], agent, auth_env)
+        typer.echo(f"✓ Using {label}.")
+    if use is None:
+        key = typer.prompt(f"{auth_env}", hide_input=True)
+        onboarding.write_env_file(home / ".env", {auth_env: key})
+        if not os.environ.get(auth_env):
+            os.environ[auth_env] = key
+    elif use[0] == "./.env":
+        onboarding.write_env_file(home / ".env", {auth_env: use[1]})
+        os.environ.setdefault(auth_env, use[1])
+        typer.echo(f"✓ {auth_env} ({_fingerprint(use[1])}) saved to {home / '.env'}.")
+    elif use[0] == "subscription":
+        typer.echo(f"✓ Using {agent}'s subscription login (no {auth_env} needed).")
 
 
 def _osc52_copy(text: str) -> None:
@@ -105,22 +176,44 @@ def register_init(app: typer.Typer) -> None:
             typer.echo("--full-smoke requires --smoke-task <task-name>.", err=True)
             raise typer.Exit(2)
 
-        # Agent first (the thing the user came to benchmark), then the
-        # provider menu narrows to what that agent can route.
+        console.print("[bold cyan]◇ bench init[/] [dim]— first-run setup[/]")
+
+        # Agent first (the thing the user came to benchmark): pick the
+        # adaptation path, then that path's agents (the full catalog — core +
+        # remote manifests + installed plugins), then the provider menu
+        # narrows to what the chosen agent can route.
         if not agent:
-            agents = onboarding.compatible_agents()
+            paths = onboarding.agent_paths()
+            path_names = list(paths)
+            ppick = _choose(
+                "Agent path:",
+                [(p, f"{len(paths[p])} agents") for p in path_names],
+                default=path_names.index("acp") + 1 if "acp" in path_names else 1,
+            )
+            agents = paths[path_names[ppick - 1]]
             default = agents.index("pi-acp") + 1 if "pi-acp" in agents else 1
             pick = _choose("Agent:", [(a, "") for a in agents], default=default)
             agent = agents[pick - 1]
+        _step("agent", agent)
 
         if not model:
             from benchflow.agents.providers import PROVIDERS
+            from benchflow.agents.registry import AGENTS as _AGENTS
 
             names = onboarding.compatible_providers(agent)
-            options = [
-                (n, ", ".join(PROVIDERS[n].model_prefixes) or PROVIDERS[n].api_protocol)
-                for n in names
-            ]
+            _acfg = _AGENTS.get(agent)
+            _aproto = (_acfg.api_protocol or "") if _acfg else ""
+
+            def _label(n: str) -> str:
+                cfg = PROVIDERS[n]
+                if cfg.model_prefixes:
+                    return ", ".join(cfg.model_prefixes)
+                if not cfg.base_url:
+                    return "BYO base URL"
+                # the endpoint this AGENT will use, not the provider's primary
+                return _aproto if _aproto in cfg.all_endpoints else cfg.api_protocol
+
+            options = [(n, _label(n)) for n in names]
             options.append(("other", "type a full model id yourself"))
             default = names.index("deepseek") + 1 if "deepseek" in names else 1
             pick = _choose(f"Provider (routable by {agent}):", options, default=default)
@@ -151,6 +244,7 @@ def register_init(app: typer.Typer) -> None:
                     )
                     bare = typer.prompt(f"Model id{hint}")
                 model = bare if "/" in bare else f"{names[pick - 1]}/{bare}"
+        _step("model", model)
         resolved = onboarding.resolve_provider(model)
         if resolved:
             prov_name, prov_cfg = resolved
@@ -182,7 +276,7 @@ def register_init(app: typer.Typer) -> None:
         if not dataset:
             choices = onboarding.dataset_choices()
             if choices:
-                opts = choices + [("a local tasks dir", "path to your own tasks")]
+                opts = [*choices, ("a local tasks dir", "path to your own tasks")]
                 pick = _choose("Task set:", opts, default=1)
                 if pick == len(opts):
                     d = typer.prompt("Tasks dir path")
@@ -211,11 +305,13 @@ def register_init(app: typer.Typer) -> None:
                     err=True,
                 )
                 raise typer.Exit(1) from exc
+        _step("task set", dataset)
         if not sandbox:
             from benchflow.sandbox.providers import SANDBOX_PROVIDERS
 
             pick = _choose("Sandbox:", [(s, "") for s in SANDBOX_PROVIDERS])
             sandbox = SANDBOX_PROVIDERS[pick - 1]
+        _step("sandbox", sandbox)
 
         # Credentials: explicit --api-key > auto-detection (subscription
         # login, then the environment incl. the saved setup, then ./.env in
@@ -235,40 +331,7 @@ def register_init(app: typer.Typer) -> None:
                     onboarding.write_env_file(home / ".env", {auth_env: api_key})
                     os.environ.setdefault(auth_env, api_key)
                 else:
-                    source, value = onboarding.detect_key(auth_env, agent=agent)
-                    if source == "subscription":
-                        typer.echo(
-                            f"✓ Using {agent}'s host subscription login"
-                            f" (no {auth_env} needed)."
-                        )
-                    elif source == "environment":
-                        typer.echo(
-                            f"✓ {auth_env} found in your environment (or saved"
-                            " setup) — using it."
-                        )
-                    elif source == "./.env":
-                        src = Path.cwd() / ".env"
-                        tail = value[-4:] if len(value) > 4 else "****"
-                        if sys.stdin.isatty() and not typer.confirm(
-                            f"Use {auth_env}=…{tail} from {src} and save it"
-                            f" to {home / '.env'}?",
-                            default=True,
-                        ):
-                            key = typer.prompt(f"{auth_env}", hide_input=True)
-                            onboarding.write_env_file(home / ".env", {auth_env: key})
-                            os.environ.setdefault(auth_env, key)
-                        else:
-                            typer.echo(
-                                f"✓ {auth_env} (…{tail}) from {src} — saved"
-                                f" to {home / '.env'}."
-                            )
-                            onboarding.write_env_file(home / ".env", {auth_env: value})
-                            os.environ.setdefault(auth_env, value)
-                    else:
-                        key = typer.prompt(f"{auth_env}", hide_input=True)
-                        onboarding.write_env_file(home / ".env", {auth_env: key})
-                        if not os.environ.get(auth_env):
-                            os.environ[auth_env] = key
+                    _wizard_auth_step(home, agent, auth_env)
             except OSError as exc:
                 typer.echo(
                     f"Could not save credentials to {home / '.env'}: {exc}",
@@ -338,7 +401,7 @@ def register_init(app: typer.Typer) -> None:
                 raise typer.Exit(1)
 
         cmd = onboarding.final_command(prefs)
-        typer.echo("\nReady. Run your first eval with:\n")
+        console.print("\n[bold green]◆ Ready.[/] Run your first eval with:\n")
         typer.echo(f"  {cmd}\n")
         _osc52_copy(cmd)
 

@@ -434,33 +434,41 @@ def smoke_argv(prefs: dict, task: str) -> list[str]:
     return [*_run_args(prefs, agent="oracle", model=None), "--include", task]
 
 
-def detect_key(
+def detect_key_sources(
     auth_env: str, agent: str | None = None, cwd: str | Path | None = None
-) -> tuple[str | None, str | None]:
-    """Find credentials for *auth_env* without asking the user.
+) -> list[tuple[str, str | None]]:
+    """Every credential source found for *auth_env*, in run-path order.
 
-    Precedence matches the RUN path (resolve_agent_env inherits an exported
-    key and uses_native_subscription_auth then defers to it): the process
-    environment first (which already includes the saved ~/.benchflow/.env
-    via the startup autoload), then host subscription login (needs *agent*),
-    then a ``./.env`` in the working folder. Returns ``(source, value)`` —
-    value is None for subscription (nothing to store) and ``(None, None)``
-    when everything misses (the wizard then prompts).
+    Order matches what the RUN would actually use (resolve_agent_env
+    inherits an exported key and uses_native_subscription_auth then defers
+    to it): the process environment (which already includes the saved
+    ~/.benchflow/.env via the startup autoload), then host subscription
+    login (needs *agent*; value None — nothing to store), then a ``./.env``
+    in the working folder. The wizard's auth menu shows all of them; the
+    non-interactive path takes the first.
     """
     import os
 
+    sources: list[tuple[str, str | None]] = []
     if os.environ.get(auth_env):
-        return "environment", os.environ[auth_env]
+        sources.append(("environment", os.environ[auth_env]))
     if agent:
         from benchflow.agents.env import check_subscription_auth
 
         if check_subscription_auth(agent, auth_env):
-            return "subscription", None
-    cwd_env = Path(cwd or ".") / ".env"
-    value = read_env_file(cwd_env).get(auth_env)
+            sources.append(("subscription", None))
+    value = read_env_file(Path(cwd or ".") / ".env").get(auth_env)
     if value:
-        return "./.env", value
-    return None, None
+        sources.append(("./.env", value))
+    return sources
+
+
+def detect_key(
+    auth_env: str, agent: str | None = None, cwd: str | Path | None = None
+) -> tuple[str | None, str | None]:
+    """First (run-path-preferred) credential source, or ``(None, None)``."""
+    sources = detect_key_sources(auth_env, agent=agent, cwd=cwd)
+    return sources[0] if sources else (None, None)
 
 
 def dataset_choices() -> list[tuple[str, str]]:
@@ -508,3 +516,26 @@ def compatible_providers(agent: str) -> list[str]:
         for name in sorted(PROVIDERS)
         if _provider_supports_agent_protocol(PROVIDERS[name], protocol)
     ]
+
+
+def agent_paths() -> dict[str, list[str]]:
+    """Every offerable agent across the three adaptation paths, grouped by
+    the naming law (ai-sdk-* / omnigent-* / everything else = ACP-native).
+
+    Triggers the miss-driven remote-manifest auto-load first so the wizard
+    offers the full catalog (core + benchflow-ai/agents manifests + installed
+    plugin packages), not just the built-ins; offline it degrades to
+    whatever is already registered.
+    """
+    from benchflow.agents import remote_manifests
+
+    remote_manifests.autoload_remote_manifest_agents()
+    paths: dict[str, list[str]] = {"acp": [], "ai-sdk": [], "omnigent": []}
+    for name in compatible_agents():
+        if name == "ai-sdk" or name.startswith("ai-sdk-"):
+            paths["ai-sdk"].append(name)
+        elif name.startswith("omnigent-"):
+            paths["omnigent"].append(name)
+        else:
+            paths["acp"].append(name)
+    return {k: v for k, v in paths.items() if v}
