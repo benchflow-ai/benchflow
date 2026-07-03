@@ -801,3 +801,93 @@ def test_other_agent_opens_full_catalog_menus_not_a_typed_prompt(tmp_path, monke
     assert result.exit_code == 0, result.output
     assert "omnigent (1" in result.output or "omnigent  — 1" in result.output
     assert "--agent omnigent-pi" in result.output
+
+
+def test_gemini_flags_path_works_via_inferred_key(tmp_path, monkeypatch):
+    """gemini is menu-excluded (native wire) but --agent gemini with a
+    gemini-* model must work via the inferred GEMINI_API_KEY — not die with a
+    bogus 'wire protocol mismatch'."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--agent",
+            "gemini",
+            "--model",
+            "gemini-3-pro",
+            "--dataset",
+            "skillsbench@1.1",
+            "--sandbox",
+            "docker",
+            "--api-key",
+            "sk-fake",
+            "--skip-smoke",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "--agent gemini --model gemini-3-pro" in result.output
+    from benchflow import onboarding
+
+    assert onboarding.read_env_file(tmp_path / ".env") == {"GEMINI_API_KEY": "sk-fake"}
+
+
+def test_gemini_with_wrong_family_model_gets_clear_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--agent",
+            "gemini",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--dataset",
+            "skillsbench@1.1",
+            "--sandbox",
+            "docker",
+            "--api-key",
+            "sk-fake",
+            "--skip-smoke",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "gemini" in result.output and "gemini-*" in result.output
+    assert "protocol mismatch" not in result.output  # no misleading diagnosis
+
+
+def test_gemini_interactive_gets_native_provider_menu(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["init", "--skip-smoke", "--agent", "gemini"], input="\n"
+    )
+    menu = result.output.split("Provider", 1)[-1].split("Select", 1)[0]
+    assert "google" in menu and "GEMINI_API_KEY" in menu
+    assert "deepseek" not in menu  # not the 21-provider lie
+
+
+def test_codex_provider_default_is_openai_not_bedrock(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["init", "--skip-smoke", "--agent", "codex-acp"], input="\n"
+    )
+    # the Select prompt default index must point at openai
+    menu = result.output.split("Provider", 1)[-1]
+    import re
+
+    m = re.search(r"(\d+)\) openai ", menu)
+    d = re.search(r"Select \[(\d+)\]", menu)
+    assert m and d and m.group(1) == d.group(1), menu[:400]
+
+
+def test_provider_label_not_a_duplicate_of_the_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["init", "--skip-smoke", "--agent", "deepagents"], input="\n"
+    )
+    menu = result.output.split("Provider", 1)[-1].split("Select", 1)[0]
+    assert "deepseek  — deepseek" not in menu  # no information-free labels

@@ -525,8 +525,13 @@ def dataset_choices() -> list[tuple[str, str]]:
 
     ordered = sorted(entries, key=_vkey, reverse=True)
     ordered.sort(key=lambda e: str(e.get("name", "")))
+    import textwrap
+
     return [
-        (f"{e['name']}@{e['version']}", str(e.get("description", ""))[:80])
+        (
+            f"{e['name']}@{e['version']}",
+            textwrap.shorten(str(e.get("description", "")), width=80, placeholder="…"),
+        )
         for e in ordered
         if e.get("name") and e.get("version")
     ]

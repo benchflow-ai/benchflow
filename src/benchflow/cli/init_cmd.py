@@ -259,50 +259,59 @@ def register_init(app: typer.Typer) -> None:
 
             def _label(n: str) -> str:
                 cfg = PROVIDERS[n]
-                if cfg.model_prefixes:
-                    return ", ".join(cfg.model_prefixes)
+                # a lone prefix equal to the provider name adds nothing
+                prefixes = [p for p in cfg.model_prefixes if p != n]
+                if prefixes:
+                    return ", ".join(prefixes)
                 if not cfg.base_url:
                     return "BYO base URL"
                 # the endpoint this AGENT will use, not the provider's primary
                 return _aproto if _aproto in cfg.all_endpoints else cfg.api_protocol
 
-            # Anthropic-native agents (claude-agent-acp & co) have no registry
-            # endpoint — the run path serves them via the subscription login /
-            # ANTHROPIC_API_KEY inferred-key path. Offer that as a first-class
-            # entry (listed first + default) or the subscription option can
-            # never be reached from the menus.
-            native_anthropic = bool(
-                _acfg
-                and (
-                    (
-                        _acfg.subscription_auth
-                        and _acfg.subscription_auth.replaces_env == "ANTHROPIC_API_KEY"
-                    )
-                    or _aproto == "anthropic-messages"
+            # Some agents have no registry endpoint but a first-class run
+            # path via a well-known inferred key: anthropic-native agents
+            # (subscription login / ANTHROPIC_API_KEY) and gemini (Google's
+            # native wire / GEMINI_API_KEY). Offer that as a synthetic entry,
+            # listed first + default, or those auth paths can never be
+            # reached from the menus.
+            synthetic = None  # (label, desc, default model)
+            if _acfg and (
+                (
+                    _acfg.subscription_auth
+                    and _acfg.subscription_auth.replaces_env == "ANTHROPIC_API_KEY"
                 )
-            )
+                or _aproto == "anthropic-messages"
+            ):
+                synthetic = (
+                    "anthropic",
+                    "claude-* via subscription login or ANTHROPIC_API_KEY",
+                    "claude-sonnet-4-6",
+                )
+            elif agent == "gemini":
+                # gemini never routes through the provider registry — the
+                # 21-provider list would be a lie for it.
+                synthetic = ("google", "gemini-* via GEMINI_API_KEY", "gemini-3-pro")
+                names = []
             options = [(n, _label(n)) for n in names]
-            if native_anthropic:
-                options.insert(
-                    0,
-                    (
-                        "anthropic",
-                        "claude-* via subscription login or ANTHROPIC_API_KEY",
-                    ),
-                )
+            if synthetic:
+                options.insert(0, (synthetic[0], synthetic[1]))
             options.append(("other", "type a full model id yourself"))
-            if native_anthropic:
+            if synthetic:
                 default = 1
+            elif "deepseek" in names:
+                default = names.index("deepseek") + 1
+            elif "openai" in names:
+                default = names.index("openai") + 1
             else:
-                default = names.index("deepseek") + 1 if "deepseek" in names else 1
+                default = 1
             pick = _choose(f"Provider (routable by {agent}):", options, default=default)
-            if native_anthropic and pick == 1:
-                model = typer.prompt("Model id", default="claude-sonnet-4-6")
+            if synthetic and pick == 1:
+                model = typer.prompt("Model id", default=synthetic[2])
             elif pick == len(options):  # other
                 model = typer.prompt("Model id (provider/model or bare)")
             else:
-                if native_anthropic:
-                    pick -= 1  # past the synthetic anthropic entry
+                if synthetic:
+                    pick -= 1  # past the synthetic entry
                 prov = PROVIDERS[names[pick - 1]]
                 catalog = [
                     str(m.get("id") or m.get("name"))
@@ -345,8 +354,21 @@ def register_init(app: typer.Typer) -> None:
             auth_type, auth_env = "api_key", inferred
 
         # Consistency gate (also covers flag combinations): the run path
-        # would reject a protocol mismatch, so init must too.
-        offered = onboarding.compatible_agents(model)
+        # would reject a protocol mismatch, so init must too. Native-wire
+        # agents (gemini) never route through the provider registry — for
+        # them the check is the model FAMILY, not the wire protocol.
+        if agent == "gemini":
+            from benchflow.agents.registry import infer_env_key_for_model
+
+            if infer_env_key_for_model(model) != "GEMINI_API_KEY":
+                typer.echo(
+                    f"Agent 'gemini' runs gemini-* models only; {model!r} is not one.",
+                    err=True,
+                )
+                raise typer.Exit(1)
+            offered = [agent]
+        else:
+            offered = onboarding.compatible_agents(model)
         if agent not in offered:
             typer.echo(
                 f"Agent {agent!r} cannot route {model!r} ({prov_name or 'provider'}"

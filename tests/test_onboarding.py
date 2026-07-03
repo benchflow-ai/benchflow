@@ -578,3 +578,48 @@ class TestOfflineCatalogCache:
         monkeypatch.setattr(benchmark_repos, "resolve_source", offline)
         root = remote_manifests._source_root("benchflow-ai/agents@main")
         assert root == cache
+
+
+class TestE2EFixCluster:
+    def test_cache_dir_never_falls_back_to_cwd(self, tmp_path, monkeypatch):
+        """Outside a git checkout the dataset/catalog cache must land in the
+        user cache dir, never pollute the working directory (e2e found a
+        169MB clone dumped into a user's cwd)."""
+        from benchflow._utils import benchmark_repos
+
+        monkeypatch.chdir(tmp_path)  # no .git anywhere above tmp
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+        cache = benchmark_repos._cache_dir()
+        assert not str(cache).startswith(str(tmp_path / ".cache"))
+        assert cache == tmp_path / "xdg" / "benchflow" / "datasets"
+
+    def test_cache_dir_in_repo_checkout_unchanged(self, tmp_path, monkeypatch):
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+        from benchflow._utils import benchmark_repos
+
+        assert benchmark_repos._cache_dir() == tmp_path / ".cache" / "datasets"
+
+    def test_mimo_code_alias_is_builtin_and_local(self):
+        """mimo-code must resolve to the LOCAL canonical mimo without any
+        catalog fetch (the catalog's mimo-acp manifest claims the alias and
+        was silently winning)."""
+        from benchflow.agents.registry import AGENT_ALIASES
+
+        assert AGENT_ALIASES.get("mimo-code") == "mimo"
+
+    def test_dataset_descriptions_truncate_on_word_boundary(self, monkeypatch):
+        entries = [
+            {
+                "name": "skillsbench",
+                "version": "1.1",
+                "description": "word " * 40,  # 200 chars
+            }
+        ]
+        monkeypatch.setattr(
+            "benchflow._utils.dataset_registry.load_registry", lambda src: entries
+        )
+        spec, desc = onboarding.dataset_choices()[0]
+        assert len(desc) <= 80
+        assert desc.endswith("…")
+        assert not desc.rstrip("…").endswith("wor")  # no mid-word cut

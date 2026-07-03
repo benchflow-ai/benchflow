@@ -939,6 +939,9 @@ def infer_env_key_for_model(model: str) -> str | None:
 
 
 AGENT_ALIASES: dict[str, str] = {
+    # mimo-code is the well-known vendor alias for the canonical mimo agent
+    # (the catalog's mimo-acp variant also claims it; local canonical wins).
+    "mimo-code": "mimo",
     "claude": "claude-agent-acp",
     "codex": "codex-acp",
     "gemini": "gemini",
