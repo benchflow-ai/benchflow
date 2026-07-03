@@ -47,7 +47,15 @@ def _make_sandbox(
     if environment == "daytona":
         from benchflow.sandbox.daytona import DaytonaSandbox
 
-        return DaytonaSandbox(**kwargs)
+        # Keep the shared floor sandbox alive for the whole run: the defaults (0)
+        # let Daytona stop+delete it during agent think-gaps mid-play, killing every
+        # ACP session ("remote container killed / idle sleep"). Match the normal
+        # rollout's 24h keep-alive; teardown() deletes it explicitly when done.
+        return DaytonaSandbox(
+            **kwargs,
+            auto_stop_interval_mins=1440,
+            auto_delete_interval_mins=1440,
+        )
     from benchflow.sandbox.docker import DockerSandbox
 
     return DockerSandbox(**kwargs)
