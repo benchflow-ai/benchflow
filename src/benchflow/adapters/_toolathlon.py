@@ -475,24 +475,38 @@ def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
         "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
     )
     task_path = f"/workspace/tasks/finalpool/{task_name}"
+    # Run preprocess as the full ``tasks.finalpool.<task>.preprocess.main`` module
+    # from /workspace — exactly as upstream does — so ``from ..utils`` relative
+    # imports resolve (running it as a bare ``preprocess.main`` breaks them).
+    preprocess_module = f"tasks.finalpool.{task_name}.preprocess.main"
     return "\n".join(
         [
             "set -e",
-            "mkdir -p /workspace/agent_workspace",
+            "mkdir -p /workspace/agent_workspace /workspace/.toolathlon",
             f"TASK_DIR={shlex.quote(task_path)}",
+            # A single launch_time shared by preprocess and the verifier, matching
+            # upstream's ``datetime.now().strftime('%Y-%m-%d %H:%M:%S %A')``.
+            "if [ ! -f /workspace/.toolathlon/launch_time.txt ]; then",
+            "  date -u '+%Y-%m-%d %H:%M:%S %A' > /workspace/.toolathlon/launch_time.txt",
+            "fi",
             'if [ -d "$TASK_DIR/initial_workspace" ]; then',
             '  cp -a "$TASK_DIR/initial_workspace/." /workspace/agent_workspace/',
             "fi",
             'if [ -f "$TASK_DIR/preprocess/main.py" ]; then',
             '  TASK_DIR="$TASK_DIR" AGENT_WORKSPACE=/workspace/agent_workspace '
-            'PYTHONPATH="$TASK_DIR:/workspace:${PYTHONPATH:-}" '
+            'PYTHONPATH="/workspace:${PYTHONPATH:-}" '
             f"{python_cmd} - <<'PY'",
             "import os, runpy, sys",
-            "task_dir = os.environ['TASK_DIR']",
-            "sys.path.insert(0, task_dir)",
             "sys.path.insert(0, '/workspace')",
-            "sys.argv = ['preprocess.main', '--agent_workspace', os.environ['AGENT_WORKSPACE']]",
-            "runpy.run_module('preprocess.main', run_name='__main__')",
+            "argv = ['preprocess.main', '--agent_workspace', os.environ['AGENT_WORKSPACE']]",
+            # Only pass --launch_time to scripts that declare it; argparse errors
+            # on unknown args for the ones that don't.
+            "src = open(os.environ['TASK_DIR'] + '/preprocess/main.py').read()",
+            "if 'launch_time' in src:",
+            "    lt = open('/workspace/.toolathlon/launch_time.txt').read().strip()",
+            "    argv += ['--launch_time', lt]",
+            "sys.argv = argv",
+            f"runpy.run_module({preprocess_module!r}, run_name='__main__')",
             "PY",
             "fi",
             'for private in "$TASK_DIR/groundtruth_workspace" "$TASK_DIR/evaluation"; do',
@@ -510,6 +524,9 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
     python_cmd = (
         "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
     )
+    # Full module path from /workspace (as upstream) so ``from ..`` relative
+    # imports in evaluators resolve.
+    eval_module = f"tasks.finalpool.{task_name}.evaluation.main"
     task_path = f"/workspace/tasks/finalpool/{task_name}"
     interpreter_check = []
     if variant == "official":
@@ -535,19 +552,22 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
             "set +e",
             'TASK_DIR="$TASK_DIR" AGENT_WORKSPACE="$AGENT_WORKSPACE" '
             'GROUNDTRUTH="$GROUNDTRUTH" RES_LOG="$RES_LOG" '
-            'PYTHONPATH="$TASK_DIR:/workspace:${PYTHONPATH:-}" '
+            'PYTHONPATH="/workspace:${PYTHONPATH:-}" '
             f"{python_cmd} - <<'PY' > \"$EVAL_LOG\" 2>&1",
             "import os, runpy, sys",
-            "task_dir = os.environ['TASK_DIR']",
-            "sys.path.insert(0, task_dir)",
             "sys.path.insert(0, '/workspace')",
-            "sys.argv = [",
+            "argv = [",
             "    'evaluation.main',",
             "    '--agent_workspace', os.environ['AGENT_WORKSPACE'],",
             "    '--groundtruth_workspace', os.environ['GROUNDTRUTH'],",
             "    '--res_log_file', os.environ['RES_LOG'],",
             "]",
-            "runpy.run_module('evaluation.main', run_name='__main__')",
+            "src = open(os.environ['TASK_DIR'] + '/evaluation/main.py').read()",
+            "lt_path = '/workspace/.toolathlon/launch_time.txt'",
+            "if 'launch_time' in src and os.path.exists(lt_path):",
+            "    argv += ['--launch_time', open(lt_path).read().strip()]",
+            "sys.argv = argv",
+            f"runpy.run_module({eval_module!r}, run_name='__main__')",
             "PY",
             "status=$?",
             "set -u",
