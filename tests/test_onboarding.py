@@ -619,7 +619,7 @@ class TestE2EFixCluster:
         monkeypatch.setattr(
             "benchflow._utils.dataset_registry.load_registry", lambda src: entries
         )
-        spec, desc = onboarding.dataset_choices()[0]
+        _spec, desc = onboarding.dataset_choices()[0]
         assert len(desc) <= 80
         assert desc.endswith("…")
         assert not desc.rstrip("…").endswith("wor")  # no mid-word cut
