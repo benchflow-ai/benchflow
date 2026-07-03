@@ -216,11 +216,26 @@ def register_init(app: typer.Typer) -> None:
             agents = onboarding.acp_agents()
             default = agents.index("pi-acp") + 1 if "pi-acp" in agents else 1
             options = [(a, "") for a in agents]
-            options.append(("other", "type any agent name (fetched on demand)"))
-            pick = _choose("Agent:", options, default=default)
-            agent = (
-                typer.prompt("Agent name") if pick == len(options) else agents[pick - 1]
+            options.append(
+                ("other", "browse the full catalog (acp / ai-sdk / omnigent)")
             )
+            pick = _choose("Agent:", options, default=default)
+            if pick == len(options):
+                # Browse, don't type: fetch the full catalog HERE (the one
+                # lazy point) and offer path -> agent menus.
+                console.print("[dim]│ fetching the agent catalog…[/]")
+                paths = onboarding.catalog_paths()
+                path_names = list(paths)
+                ppick = _choose(
+                    "Agent path:",
+                    [(p, f"{len(paths[p])} agents") for p in path_names],
+                    default=path_names.index("acp") + 1 if "acp" in path_names else 1,
+                )
+                cat_agents = paths[path_names[ppick - 1]]
+                apick = _choose("Agent:", [(a, "") for a in cat_agents], default=1)
+                agent = cat_agents[apick - 1]
+            else:
+                agent = agents[pick - 1]
         # Resolve like `bench eval run` does: aliases + the miss-driven catalog
         # autoload (the only place the agents repo is cloned). A menu pick is
         # already local, so this is a no-op for it; a typed/flagged catalog
@@ -251,13 +266,43 @@ def register_init(app: typer.Typer) -> None:
                 # the endpoint this AGENT will use, not the provider's primary
                 return _aproto if _aproto in cfg.all_endpoints else cfg.api_protocol
 
+            # Anthropic-native agents (claude-agent-acp & co) have no registry
+            # endpoint — the run path serves them via the subscription login /
+            # ANTHROPIC_API_KEY inferred-key path. Offer that as a first-class
+            # entry (listed first + default) or the subscription option can
+            # never be reached from the menus.
+            native_anthropic = bool(
+                _acfg
+                and (
+                    (
+                        _acfg.subscription_auth
+                        and _acfg.subscription_auth.replaces_env == "ANTHROPIC_API_KEY"
+                    )
+                    or _aproto == "anthropic-messages"
+                )
+            )
             options = [(n, _label(n)) for n in names]
+            if native_anthropic:
+                options.insert(
+                    0,
+                    (
+                        "anthropic",
+                        "claude-* via subscription login or ANTHROPIC_API_KEY",
+                    ),
+                )
             options.append(("other", "type a full model id yourself"))
-            default = names.index("deepseek") + 1 if "deepseek" in names else 1
+            if native_anthropic:
+                default = 1
+            else:
+                default = names.index("deepseek") + 1 if "deepseek" in names else 1
             pick = _choose(f"Provider (routable by {agent}):", options, default=default)
-            if pick == len(options):  # other
+            if native_anthropic and pick == 1:
+                model = typer.prompt("Model id", default="claude-sonnet-4-6")
+            elif pick == len(options):  # other
                 model = typer.prompt("Model id (provider/model or bare)")
             else:
+                if native_anthropic:
+                    pick -= 1  # past the synthetic anthropic entry
                 prov = PROVIDERS[names[pick - 1]]
                 catalog = [
                     str(m.get("id") or m.get("name"))

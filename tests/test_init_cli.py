@@ -727,3 +727,77 @@ def test_subscription_pick_is_honored_by_the_smoke(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert seen["key_in_env"] is False  # the declined key is NOT verified
     assert "shadow" in result.output.lower()  # told about the shell export
+
+
+def test_claude_agent_gets_native_anthropic_provider_and_subscription(
+    tmp_path, monkeypatch
+):
+    """An anthropic-native agent (claude-agent-acp) must offer 'anthropic'
+    in the provider menu — the registry has no such endpoint, but the run
+    path supports it via subscription login / ANTHROPIC_API_KEY — and picking
+    it must surface the subscription login in the credentials menu."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "benchflow.agents.env.check_subscription_auth", lambda a, k: True
+    )
+    monkeypatch.setattr("benchflow.cli.init_cmd._isatty", lambda: True)
+    monkeypatch.setattr(
+        "benchflow.onboarding.dataset_choices", lambda: [("skillsbench@1.1", "")]
+    )
+    answers = "\n".join(
+        [
+            "1",  # provider menu: anthropic (native) listed first for this agent
+            "",  # model id -> default (claude-sonnet-4-6)
+            "",  # dataset -> default
+            "",  # sandbox -> docker
+            "1",  # credentials menu: subscription login (listed!)
+        ]
+    )
+    result = runner.invoke(
+        app,
+        ["init", "--skip-smoke", "--agent", "claude-agent-acp"],
+        input=answers + "\n",
+    )
+    assert result.exit_code == 0, result.output
+    menu = result.output.split("Provider", 1)[-1]
+    assert "anthropic" in menu.split("Select", 1)[0]
+    assert "subscription login" in result.output
+    assert "--model claude-sonnet-4-6" in result.output
+
+
+def test_other_agent_opens_full_catalog_menus_not_a_typed_prompt(tmp_path, monkeypatch):
+    """'other' in the agent menu browses the full 3-path catalog (fetched
+    lazily at that point) — path menu, then agents — instead of demanding a
+    typed name."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "benchflow.onboarding.catalog_paths",
+        lambda: {
+            "acp": ["pi-acp", "qwen-code"],
+            "ai-sdk": ["ai-sdk"],
+            "omnigent": ["omnigent-pi"],
+        },
+    )
+    monkeypatch.setattr(
+        "benchflow.onboarding.dataset_choices", lambda: [("skillsbench@1.1", "")]
+    )
+    n_local = len(__import__("benchflow.onboarding", fromlist=["x"]).acp_agents())
+    answers = "\n".join(
+        [
+            str(n_local + 1),  # agent menu: "other" (last option)
+            "3",  # path menu: omnigent
+            "1",  # agent: omnigent-pi
+            "",  # provider -> default
+            "deepseek-v4-flash",
+            "",  # dataset
+            "",  # sandbox
+            "sk-k",  # key
+        ]
+    )
+    result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
+    assert result.exit_code == 0, result.output
+    assert "omnigent (1" in result.output or "omnigent  — 1" in result.output
+    assert "--agent omnigent-pi" in result.output

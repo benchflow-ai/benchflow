@@ -549,6 +549,29 @@ def compatible_providers(agent: str) -> list[str]:
     ]
 
 
+def catalog_paths() -> dict[str, list[str]]:
+    """The FULL agent catalog grouped by adaptation path (naming law).
+
+    Fetches the remote manifest catalog on demand — callers invoke this only
+    when the user explicitly asks to browse beyond the local registry (the
+    agent menu's "other"), never to render the default menu, so a bare
+    ``bench init`` does no network work. Offline it degrades to whatever is
+    registered locally.
+    """
+    from benchflow.agents import remote_manifests
+
+    remote_manifests.autoload_remote_manifest_agents()
+    paths: dict[str, list[str]] = {"acp": [], "ai-sdk": [], "omnigent": []}
+    for name in compatible_agents():
+        if name == "ai-sdk" or name.startswith("ai-sdk-"):
+            paths["ai-sdk"].append(name)
+        elif name.startswith("omnigent-"):
+            paths["omnigent"].append(name)
+        else:
+            paths["acp"].append(name)
+    return {k: v for k, v in paths.items() if v}
+
+
 def acp_agents() -> list[str]:
     """Locally-registered ACP-native agents for the wizard menu — NO network.
 
