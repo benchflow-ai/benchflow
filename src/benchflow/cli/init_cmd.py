@@ -20,6 +20,12 @@ from benchflow.cli._shared import console
 
 BENCHFLOW_HOME_ENV = "BENCHFLOW_HOME"
 
+# Concrete login commands for subscription-capable agents (wizard guidance).
+_LOGIN_HINTS = {
+    "claude-agent-acp": "claude setup-token",
+    "codex-acp": "codex login",
+}
+
 
 def benchflow_home() -> Path:
     return Path(os.environ.get(BENCHFLOW_HOME_ENV) or Path.home() / ".benchflow")
@@ -217,23 +223,25 @@ def register_init(app: typer.Typer) -> None:
             default = agents.index("pi-acp") + 1 if "pi-acp" in agents else 1
             options = [(a, "") for a in agents]
             options.append(
-                ("other", "browse the full catalog (acp / ai-sdk / omnigent)")
+                ("other", "browse the agent catalog (fetched per agent, on demand)")
             )
             pick = _choose("Agent:", options, default=default)
             if pick == len(options):
-                # Browse, don't type: fetch the full catalog HERE (the one
-                # lazy point) and offer path -> agent menus.
-                console.print("[dim]│ fetching the agent catalog…[/]")
-                paths = onboarding.catalog_paths()
-                path_names = list(paths)
-                ppick = _choose(
-                    "Agent path:",
-                    [(p, f"{len(paths[p])} agents") for p in path_names],
-                    default=path_names.index("acp") + 1 if "acp" in path_names else 1,
-                )
-                cat_agents = paths[path_names[ppick - 1]]
-                apick = _choose("Agent:", [(a, "") for a in cat_agents], default=1)
-                agent = cat_agents[apick - 1]
+                # Browse the STATIC catalog list (zero network); only the
+                # selected agent's manifest is fetched — never the full repo.
+                cat = onboarding.catalog_choices()
+                apick = _choose("Catalog agent:", cat, default=1)
+                agent = cat[apick - 1][0]
+                console.print(f"[dim]│ fetching {agent} manifest…[/]")
+                from benchflow.agents import remote_manifests
+
+                if not remote_manifests.fetch_one(agent):
+                    typer.echo(
+                        f"Could not fetch the manifest for {agent!r} — check"
+                        " your network or BENCHFLOW_AGENTS_SOURCE.",
+                        err=True,
+                    )
+                    raise typer.Exit(1)
             else:
                 agent = agents[pick - 1]
         # Resolve like `bench eval run` does: aliases + the miss-driven catalog
@@ -248,6 +256,31 @@ def register_init(app: typer.Typer) -> None:
             typer.echo(f"Unknown agent {agent!r} — see `bench agent list`.", err=True)
             raise typer.Exit(1) from None
         _step("agent", agent)
+
+        # Subscription-capable agents: say IMMEDIATELY whether a local login
+        # was found, or guide the user to log in — don't make them discover
+        # it at the credentials step.
+        from benchflow.agents.registry import AGENTS as _AG
+
+        _cfg_sub = _AG.get(agent)
+        _sa = _cfg_sub.subscription_auth if _cfg_sub else None
+        if _sa:
+            from benchflow.agents.env import check_subscription_auth
+
+            # plain echo: these lines must survive narrow terminals and
+            # scripted greps unwrapped
+            if check_subscription_auth(agent, _sa.replaces_env):
+                typer.echo(
+                    f"✓ subscription login found ({_sa.detect_file}) — no"
+                    f" {_sa.replaces_env} needed."
+                )
+            else:
+                hint = _LOGIN_HINTS.get(agent, "log in with the vendor CLI")
+                typer.echo(
+                    f"○ no subscription login found ({_sa.detect_file}) — run"
+                    f" `{hint}` to use your subscription, or continue with an"
+                    f" {_sa.replaces_env}."
+                )
 
         if not model:
             from benchflow.agents.providers import PROVIDERS

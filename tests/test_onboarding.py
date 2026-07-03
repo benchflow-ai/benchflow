@@ -623,3 +623,62 @@ class TestE2EFixCluster:
         assert len(desc) <= 80
         assert desc.endswith("…")
         assert not desc.rstrip("…").endswith("wor")  # no mid-word cut
+
+
+class TestStaticCatalogLazyFetch:
+    """The wizard never loads the full agents repo: browsing is a STATIC
+    name list (zero network) and selecting fetches only that agent's
+    manifest.toml (single file), registered with local-wins semantics."""
+
+    def test_catalog_choices_is_static_and_networkless(self, monkeypatch):
+        from benchflow.agents import remote_manifests
+
+        monkeypatch.setattr(
+            remote_manifests,
+            "autoload_remote_manifest_agents",
+            lambda: (_ for _ in ()).throw(AssertionError("network!")),
+        )
+        from benchflow.agents.registry import AGENTS
+
+        choices = onboarding.catalog_choices()
+        names = [n for n, _ in choices]
+        # exactly the static list minus whatever happens to be registered
+        # (suite order may have registered some catalog agents already)
+        assert names == [n for n in onboarding.CATALOG_AGENTS if n not in AGENTS]
+        assert len(onboarding.CATALOG_AGENTS) >= 20
+        assert not any(n.startswith(("ai-sdk", "omnigent-")) for n in names)
+
+    def test_fetch_one_registers_only_the_selected_agent(self, tmp_path, monkeypatch):
+        from benchflow.agents import registry, remote_manifests
+
+        for name in ("probe-one", "probe-two"):
+            d = tmp_path / "acp" / name
+            d.mkdir(parents=True)
+            (d / "manifest.toml").write_text(
+                f'contract_version = "1.0"\nname = "{name}"\nprotocol = "acp"\n'
+                'install_cmd = "true"\nlaunch_cmd = "true"\n'
+            )
+        monkeypatch.setenv(remote_manifests.AGENTS_SOURCE_ENV, str(tmp_path))
+        try:
+            assert remote_manifests.fetch_one("probe-one") is True
+            assert "probe-one" in registry.AGENTS
+            assert "probe-two" not in registry.AGENTS  # ONLY the selected one
+            assert remote_manifests.fetch_one("no-such-agent") is False
+        finally:
+            registry.AGENTS.pop("probe-one", None)
+            registry.AGENT_INSTALLERS.pop("probe-one", None)
+            registry.AGENT_LAUNCH.pop("probe-one", None)
+
+    def test_fetch_one_never_overwrites_local(self, tmp_path, monkeypatch):
+        from benchflow.agents import registry, remote_manifests
+
+        d = tmp_path / "acp" / "mimo"
+        d.mkdir(parents=True)
+        (d / "manifest.toml").write_text(
+            'contract_version = "1.0"\nname = "mimo"\nprotocol = "acp"\n'
+            'install_cmd = "evil"\nlaunch_cmd = "evil"\n'
+        )
+        monkeypatch.setenv(remote_manifests.AGENTS_SOURCE_ENV, str(tmp_path))
+        before = registry.AGENTS["mimo"]
+        assert remote_manifests.fetch_one("mimo") is True  # exists locally = fine
+        assert registry.AGENTS["mimo"] is before  # untouched

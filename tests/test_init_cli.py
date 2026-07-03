@@ -667,6 +667,10 @@ def test_agent_flag_reaches_catalog_agents_via_autoload(tmp_path, monkeypatch):
 
 def test_unknown_agent_flag_says_unknown_not_protocol_mismatch(tmp_path, monkeypatch):
     monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    from benchflow.agents import remote_manifests
+
+    monkeypatch.setenv(remote_manifests.AGENTS_SOURCE_ENV, "off")
+    remote_manifests._reset_for_tests()
     result = runner.invoke(
         app,
         [
@@ -767,40 +771,96 @@ def test_claude_agent_gets_native_anthropic_provider_and_subscription(
     assert "--model claude-sonnet-4-6" in result.output
 
 
-def test_other_agent_opens_full_catalog_menus_not_a_typed_prompt(tmp_path, monkeypatch):
-    """'other' in the agent menu browses the full 3-path catalog (fetched
-    lazily at that point) — path menu, then agents — instead of demanding a
-    typed name."""
-    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+def test_other_agent_offers_static_catalog_and_fetches_one_manifest(
+    tmp_path, monkeypatch
+):
+    """'other' shows a STATIC catalog list (zero network) and selecting an
+    entry fetches ONLY that agent's manifest — never the full repo."""
+    from benchflow.agents import registry, remote_manifests
+
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
+    # hermetic single-manifest source
+    from benchflow import onboarding
+
+    # first still-unregistered catalog entry (suite order may have
+    # registered some via earlier autoload tests)
+    target = onboarding.catalog_choices()[0][0]
+    d = tmp_path / "src" / "acp" / target
+    d.mkdir(parents=True)
+    (d / "manifest.toml").write_text(
+        f'contract_version = "1.0"\nname = "{target}"\nprotocol = "acp"\n'
+        'api_protocol = "openai-completions"\n'
+        'install_cmd = "true"\nlaunch_cmd = "true"\n'
+    )
+    monkeypatch.setenv(remote_manifests.AGENTS_SOURCE_ENV, str(tmp_path / "src"))
+    # full-repo loading must NOT happen
     monkeypatch.setattr(
-        "benchflow.onboarding.catalog_paths",
-        lambda: {
-            "acp": ["pi-acp", "qwen-code"],
-            "ai-sdk": ["ai-sdk"],
-            "omnigent": ["omnigent-pi"],
-        },
+        remote_manifests,
+        "autoload_remote_manifest_agents",
+        lambda: (_ for _ in ()).throw(AssertionError("full catalog load!")),
     )
     monkeypatch.setattr(
         "benchflow.onboarding.dataset_choices", lambda: [("skillsbench@1.1", "")]
     )
-    n_local = len(__import__("benchflow.onboarding", fromlist=["x"]).acp_agents())
+    n_local = len(onboarding.acp_agents())
+    target_idx = [n for n, _ in onboarding.catalog_choices()].index(target) + 1
     answers = "\n".join(
         [
-            str(n_local + 1),  # agent menu: "other" (last option)
-            "3",  # path menu: omnigent
-            "1",  # agent: omnigent-pi
-            "",  # provider -> default
+            str(n_local + 1),  # agent menu: "other" -> static catalog
+            str(target_idx),  # pick it from the static list
+            "",  # provider -> deepseek
             "deepseek-v4-flash",
             "",  # dataset
             "",  # sandbox
             "sk-k",  # key
         ]
     )
-    result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
-    assert result.exit_code == 0, result.output
-    assert "omnigent (1" in result.output or "omnigent  — 1" in result.output
-    assert "--agent omnigent-pi" in result.output
+    try:
+        result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
+        assert result.exit_code == 0, result.output
+        assert f"--agent {target}" in result.output
+    finally:
+        registry.AGENTS.pop(target, None)
+        registry.AGENT_INSTALLERS.pop(target, None)
+        registry.AGENT_LAUNCH.pop(target, None)
+
+
+def test_subscription_status_announced_right_after_agent_choice(tmp_path, monkeypatch):
+    """Choosing a subscription-capable agent immediately reports whether a
+    local login was found — or guides the user to log in."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    # found case
+    monkeypatch.setattr(
+        "benchflow.agents.env.check_subscription_auth", lambda a, k: True
+    )
+    result = runner.invoke(
+        app, ["init", "--skip-smoke", "--agent", "claude-agent-acp"], input="\n"
+    )
+    assert "subscription login found" in result.output.lower()
+    # not-found case -> login guidance
+    monkeypatch.setattr(
+        "benchflow.agents.env.check_subscription_auth", lambda a, k: False
+    )
+    result = runner.invoke(
+        app, ["init", "--skip-smoke", "--agent", "claude-agent-acp"], input="\n"
+    )
+    out = result.output.lower()
+    assert "no" in out and "subscription login" in out
+    assert "claude setup-token" in result.output  # concrete login guidance
+
+
+def test_codex_subscription_guidance_uses_codex_login(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "benchflow.agents.env.check_subscription_auth", lambda a, k: False
+    )
+    result = runner.invoke(
+        app, ["init", "--skip-smoke", "--agent", "codex-acp"], input="\n"
+    )
+    assert "codex login" in result.output
 
 
 def test_gemini_flags_path_works_via_inferred_key(tmp_path, monkeypatch):

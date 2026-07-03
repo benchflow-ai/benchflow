@@ -15,6 +15,15 @@ from benchflow._utils.benchmark_repos import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _cwd_cache(monkeypatch):
+    """These tests pin the clone cache to the (chdir'd) tmp cwd. Production
+    now routes to the user cache outside git checkouts — restore the
+    cwd-rooted behavior here since the subject under test is clone
+    mechanics, not cache placement policy."""
+    monkeypatch.setattr(task_download, "_repo_root", lambda: Path.cwd())
+
+
 def _fake_worktree(cmd):
     repo_root = Path(cmd[2])
     snapshot = Path(cmd[-2])
@@ -47,6 +56,7 @@ def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
         [
             "git",
             "clone",
+            "--quiet",
             "--depth",
             "1",
             "--branch",
@@ -607,6 +617,7 @@ def test_resolve_source_with_sha_ref_fetches_after_clone(tmp_path, monkeypatch):
         [
             "git",
             "clone",
+            "--quiet",
             "--depth",
             "1",
             "https://github.com/org/repo.git",
