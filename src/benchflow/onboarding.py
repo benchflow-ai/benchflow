@@ -146,8 +146,12 @@ def resolve_provider(model: str) -> tuple[str, ProviderConfig] | None:
     return find_provider_for_bare_model(model)
 
 
-def compatible_agents(model: str) -> list[str]:
+def compatible_agents(model: str | None = None) -> list[str]:
     """Registered agent names that can actually route *model*.
+
+    With no model (the agent-first wizard flow) the full registered list is
+    returned, minus the never-routed agents; the protocol filter then applies
+    in the other direction (compatible_providers).
 
     Reuses the same provider-protocol gate the run path enforces
     (env._provider_supports_agent_protocol), so the wizard never offers an
@@ -161,7 +165,7 @@ def compatible_agents(model: str) -> list[str]:
     from benchflow.agents.registry import AGENTS
 
     non_routed = {"oracle", "gemini"}
-    resolved = resolve_provider(model)
+    resolved = resolve_provider(model) if model else None
     names = []
     for name, cfg in sorted(AGENTS.items()):
         if name in non_routed:
@@ -480,4 +484,21 @@ def dataset_choices() -> list[tuple[str, str]]:
         (f"{e['name']}@{e['version']}", str(e.get("description", ""))[:80])
         for e in ordered
         if e.get("name") and e.get("version")
+    ]
+
+
+def compatible_providers(agent: str) -> list[str]:
+    """Registered provider names the chosen agent can route — the same
+    protocol gate as compatible_agents, applied in the other direction for
+    the agent-first wizard flow."""
+    from benchflow.agents.env import _provider_supports_agent_protocol
+    from benchflow.agents.providers import PROVIDERS
+    from benchflow.agents.registry import AGENTS
+
+    cfg = AGENTS.get(agent)
+    protocol = (cfg.api_protocol or "") if cfg else ""
+    return [
+        name
+        for name in sorted(PROVIDERS)
+        if _provider_supports_agent_protocol(PROVIDERS[name], protocol)
     ]

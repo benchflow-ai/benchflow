@@ -116,9 +116,9 @@ def test_interactive_wizard_prompts_and_completes(tmp_path, monkeypatch):
     )
     answers = "\n".join(
         [
-            "",  # provider menu -> default (deepseek)
-            "deepseek-v4-flash",  # model id (deepseek has no catalog)
             "",  # agent menu -> default (pi-acp)
+            "",  # provider menu (filtered) -> default (deepseek)
+            "deepseek-v4-flash",  # model id (deepseek has no catalog)
             "",  # dataset menu -> default (skillsbench@1.1)
             "",  # sandbox menu -> default (docker)
             "sk-wizard-key",  # hidden api key (nothing auto-detected)
@@ -393,9 +393,9 @@ def test_wizard_is_selection_driven_with_auto_key_detection(tmp_path, monkeypatc
     )
     answers = "\n".join(
         [
-            "",  # provider menu -> Enter = default (deepseek)
-            "deepseek-v4-flash",  # model (free text w/ hint; deepseek has no catalog)
             "",  # agent menu -> Enter = default (pi-acp)
+            "",  # provider menu (filtered to pi-acp-routable) -> Enter = deepseek
+            "deepseek-v4-flash",  # model (free text w/ hint; deepseek has no catalog)
             "",  # dataset menu -> Enter = default (skillsbench@1.1)
             "",  # sandbox menu -> Enter = default (docker)
         ]
@@ -415,3 +415,22 @@ def test_wizard_is_selection_driven_with_auto_key_detection(tmp_path, monkeypatc
     )
     # menus were shown, not free-text demands
     assert "1)" in result.output
+
+
+def test_provider_menu_is_filtered_by_chosen_agent(tmp_path, monkeypatch):
+    """Agent comes first; the provider menu then only offers providers that
+    agent can route (codex-acp speaks openai-responses -> deepseek, which is
+    completions-only, must not be offered)."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    # pick codex-acp by name from the agent menu, then abort at the provider
+    # menu with an out-of-range answer + EOF; the menu text is what we assert.
+    result = runner.invoke(
+        app,
+        ["init", "--skip-smoke", "--agent", "codex-acp"],
+        input="\n",  # provider menu: Enter default, then model prompt EOFs
+    )
+    menu = result.output.split("Provider", 1)[-1]
+    menu = menu.split("Select", 1)[0]
+    assert "openai" in menu
+    assert "deepseek" not in menu

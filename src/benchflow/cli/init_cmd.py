@@ -105,17 +105,25 @@ def register_init(app: typer.Typer) -> None:
             typer.echo("--full-smoke requires --smoke-task <task-name>.", err=True)
             raise typer.Exit(2)
 
+        # Agent first (the thing the user came to benchmark), then the
+        # provider menu narrows to what that agent can route.
+        if not agent:
+            agents = onboarding.compatible_agents()
+            default = agents.index("pi-acp") + 1 if "pi-acp" in agents else 1
+            pick = _choose("Agent:", [(a, "") for a in agents], default=default)
+            agent = agents[pick - 1]
+
         if not model:
             from benchflow.agents.providers import PROVIDERS
 
-            names = sorted(PROVIDERS)
+            names = onboarding.compatible_providers(agent)
             options = [
                 (n, ", ".join(PROVIDERS[n].model_prefixes) or PROVIDERS[n].api_protocol)
                 for n in names
             ]
             options.append(("other", "type a full model id yourself"))
             default = names.index("deepseek") + 1 if "deepseek" in names else 1
-            pick = _choose("Provider:", options, default=default)
+            pick = _choose(f"Provider (routable by {agent}):", options, default=default)
             if pick == len(options):  # other
                 model = typer.prompt("Model id (provider/model or bare)")
             else:
@@ -159,15 +167,9 @@ def register_init(app: typer.Typer) -> None:
             prov_name, prov_cfg = None, None
             auth_type, auth_env = "api_key", inferred
 
+        # Consistency gate (also covers flag combinations): the run path
+        # would reject a protocol mismatch, so init must too.
         offered = onboarding.compatible_agents(model)
-        if not agent:
-            default = offered.index("pi-acp") + 1 if "pi-acp" in offered else 1
-            pick = _choose(
-                f"Agent (able to route {model}):",
-                [(a, "") for a in offered],
-                default=default,
-            )
-            agent = offered[pick - 1]
         if agent not in offered:
             typer.echo(
                 f"Agent {agent!r} cannot route {model!r} ({prov_name or 'provider'}"
