@@ -267,7 +267,7 @@ class TestCircuitBreaker:
 
 
 class TestSubscriptionAuthExemption:
-    """Native-subscription runs (no proxy, no usage channel) must not be
+    """Guards the fix from PR #886: native-subscription runs must not be
     zero-signal-flagged: zero tokens + zero tool calls is the expected shape
     of a healthy run for flat-telemetry agents (e.g. omnigent sessions), and
     the heuristic was nulling verifier-granted rewards there."""

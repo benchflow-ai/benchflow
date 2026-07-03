@@ -309,7 +309,7 @@ class TestResolveAgentEnvSubscription:
         )
 
     def test_anthropic_subscription_gate_is_registry_driven(self, monkeypatch):
-        """Any agent declaring ANTHROPIC subscription_auth gets the OAuth split.
+        """Guards the fix from PR #886: ANTHROPIC subscription auth is registry-driven.
 
         The gate used to hardcode claude-agent-acp; decoupled Claude-CLI
         agents (e.g. omnigent claude-*) opt in by declaring subscription_auth
