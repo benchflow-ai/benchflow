@@ -390,7 +390,9 @@ params:
     }
     assert "BenchFlow Toolathlon credential setup error" in credential_setup.command
     assert "configs/gcp-service_account.keys.json" in credential_setup.command
-    assert "target.chmod(0o644)" in credential_setup.command
+    # JSON creds keep 0644; the mode is data-driven off the spec now.
+    assert "target.chmod(mode)" in credential_setup.command
+    assert '"file_mode": 420' in credential_setup.command  # 0o644
     assert "/home/agent" not in credential_setup.command
     assert ".gmail-mcp" not in credential_setup.command
     # ${token.X} env stays literal at materialization; the launcher resolves it
@@ -538,6 +540,19 @@ def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None
     # the generated dict must support it (a plain dict would AttributeError).
     assert tokens.github_token == "gho_xyz"
     assert tokens.gcp_project_id == "proj-123"
+
+
+def test_toolathlon_credential_setup_pem_key_skips_json_and_locks_mode() -> None:
+    from benchflow.adapters._toolathlon import _toolathlon_credential_setup_command
+
+    cmd = _toolathlon_credential_setup_command({"configs/snowflake_rsa_key.p8"})
+    assert cmd is not None
+    # The Snowflake private key is PEM, not JSON: written verbatim (no json.loads
+    # gate, which would reject it) and locked to 0600 (== 384) as a private key.
+    assert '"content_format": "pem"' in cmd
+    assert '"file_mode": 384' in cmd
+    assert "TOOLATHLON_SNOWFLAKE_RSA_KEY_B64" in cmd
+    assert "if spec['content_format'] == 'json':" in cmd
 
 
 def test_toolathlon_container_launch_resolves_tokens(tmp_path: Path) -> None:

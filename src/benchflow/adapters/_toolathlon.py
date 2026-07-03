@@ -31,6 +31,11 @@ class _ToolathlonCredentialSpec:
     b64_env: str
     trigger_servers: tuple[str, ...] = ()
     copy_paths: tuple[str, ...] = ()
+    # "json" payloads are validated as JSON before writing; "pem" ones (e.g. a
+    # Snowflake private key) are opaque bytes written verbatim.
+    content_format: str = "json"
+    # Private keys must not be world-readable; JSON creds keep 0644.
+    file_mode: int = 0o644
 
 
 _TOOLATHLON_CREDENTIAL_SPECS = (
@@ -55,6 +60,14 @@ _TOOLATHLON_CREDENTIAL_SPECS = (
         env="TOOLATHLON_GCP_OAUTH_KEYS_JSON",
         b64_env="TOOLATHLON_GCP_OAUTH_KEYS_JSON_B64",
         trigger_servers=("google_calendar",),
+    ),
+    _ToolathlonCredentialSpec(
+        path="configs/snowflake_rsa_key.p8",
+        env="TOOLATHLON_SNOWFLAKE_RSA_KEY",
+        b64_env="TOOLATHLON_SNOWFLAKE_RSA_KEY_B64",
+        trigger_servers=("snowflake",),
+        content_format="pem",
+        file_mode=0o600,
     ),
 )
 _TOOLATHLON_CREDENTIALS_BY_PATH = {
@@ -361,9 +374,11 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
     specs = [
         {
             "path": spec.path,
-            "json_env": spec.env,
+            "raw_env": spec.env,
             "b64_env": spec.b64_env,
             "copy_paths": list(spec.copy_paths),
+            "content_format": spec.content_format,
+            "file_mode": spec.file_mode,
         }
         for ref in sorted(credential_refs)
         for spec in (_TOOLATHLON_CREDENTIALS_BY_PATH[ref],)
@@ -385,7 +400,7 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
             "    if target.exists():",
             "        payload = target.read_bytes()",
             "    else:",
-            "        raw = os.environ.get(spec['json_env']) or ''",
+            "        raw = os.environ.get(spec['raw_env']) or ''",
             "        b64 = os.environ.get(spec['b64_env']) or ''",
             "        if raw:",
             "            payload = raw.encode()",
@@ -399,25 +414,27 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
             "                sys.exit(66)",
             "        else:",
             "            missing.append(",
-            "                f\"{spec['path']} ({spec['json_env']} or {spec['b64_env']})\"",
+            "                f\"{spec['path']} ({spec['raw_env']} or {spec['b64_env']})\"",
             "            )",
             "            continue",
-            "    try:",
-            "        json.loads(payload.decode())",
-            "    except Exception as exc:",
-            "        sys.stderr.write(",
-            "            f\"BenchFlow Toolathlon credential setup error: invalid JSON for {spec['path']}: {exc}\\n\"",
-            "        )",
-            "        sys.exit(66)",
+            "    if spec['content_format'] == 'json':",
+            "        try:",
+            "            json.loads(payload.decode())",
+            "        except Exception as exc:",
+            "            sys.stderr.write(",
+            "                f\"BenchFlow Toolathlon credential setup error: invalid JSON for {spec['path']}: {exc}\\n\"",
+            "            )",
+            "            sys.exit(66)",
+            "    mode = spec['file_mode']",
             "    if not target.exists():",
             "        target.parent.mkdir(parents=True, exist_ok=True)",
             "        target.write_bytes(payload)",
-            "        target.chmod(0o644)",
+            "        target.chmod(mode)",
             "    for rel in spec.get('copy_paths', []):",
             "        copy = workspace / rel",
             "        copy.parent.mkdir(parents=True, exist_ok=True)",
             "        copy.write_bytes(payload)",
-            "        copy.chmod(0o644)",
+            "        copy.chmod(mode)",
             "if missing:",
             "    sys.stderr.write(",
             "        'BenchFlow Toolathlon credential setup error: missing '",
