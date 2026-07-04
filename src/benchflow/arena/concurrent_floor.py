@@ -66,6 +66,14 @@ class FloorConfig:
     standings_path: str | None = None  # in-sandbox path → {seat: score} for reward
     events_path: str | None = None  # in-sandbox path → service event log
     environment: str = "docker"
+    # Nudge-on-event: an ACP agent acts only when its own loop polls or the
+    # harness opens a new prompt turn — this is the harness's push channel.
+    # After a seat's prompt ends with wall-clock left, re-prompt it with just
+    # the pending turn/event digest; the agent stays free to play, switch
+    # games, or stop. Two ignored nudges (no tool calls) end the seat honestly.
+    nudge: bool = True
+    nudge_max: int = 6
+    nudge_poll_s: float = 10.0
 
 
 def _provider_keys() -> dict[str, str]:
@@ -135,6 +143,38 @@ def _seat_env(cfg: FloorConfig, seat: Seat, service_url: str) -> dict[str, str]:
     return env
 
 
+async def _seat_observe(sandbox: Any, service_url: str, seat_id: str) -> dict | None:
+    """The seat's casino view, read FROM INSIDE the sandbox (the service is on
+    the sandbox's localhost). Best-effort: None means 'cannot tell — stop'."""
+    with contextlib.suppress(Exception):
+        res = await sandbox.exec(
+            f"curl -sf '{service_url}/casino/observe?seat_id={seat_id}'",
+            timeout_sec=15,
+        )
+        out = getattr(res, "stdout", None)
+        if out and str(out).strip():
+            return json.loads(out)
+    return None
+
+
+def _nudge_prompt(obs: dict) -> str:
+    """Event digest only — no strategy injection; the agent self-decides."""
+    bits = ["[casino notification]"]
+    if obs.get("events"):
+        bits.append(f"Events since your last look: {json.dumps(obs['events'])}")
+    if obs.get("status") == "your_turn":
+        bits.append(
+            f"It is YOUR TURN (request_id={obs.get('request_id')}).\n"
+            f"Observation: {json.dumps(obs.get('observation'))}\n"
+            f"Legal actions: {json.dumps(obs.get('legal_actions'))}"
+        )
+    bits.append(
+        "You decide: keep playing, switch games, or leave. "
+        "If you are done playing, say so and stop."
+    )
+    return "\n".join(bits)
+
+
 def _render_round(base_prompt: str, obs: Observation, round_no: int) -> str:
     return (
         f"{base_prompt}\n\n[Round {round_no}] It is your turn "
@@ -186,7 +226,7 @@ async def _run_seat(
     (out / "trajectory").mkdir(parents=True, exist_ok=True)
     agent_cfg = seat.config
     runtime = None
-    status, n_tools, n_llm = "ok", 0, 0
+    status, n_tools, n_llm, nudges = "ok", 0, 0, 0
     try:
         await sandbox.exec(f"mkdir -p {shlex.quote(seat.agent_cwd)}", timeout_sec=20)
         await write_agent_instructions(
@@ -232,13 +272,41 @@ async def _run_seat(
                 status, n_tools, traj = await _drive_service_rounds(
                     conn, seat, cfg, client, deadline
                 )
-            else:  # auto-loop
+            else:  # auto-loop (+ nudge-on-event)
                 if not cfg.prompt:
                     raise ValueError("auto-loop drive requires a prompt (--prompt)")
+                deadline = time.monotonic() + cfg.deadline_s
                 traj, n_tools = await prompt_seat(
                     conn, cfg.prompt,
                     timeout=cfg.deadline_s, idle_timeout=cfg.idle_timeout_s,
                 )
+                ignored = 0
+                while (
+                    cfg.nudge
+                    and nudges < cfg.nudge_max
+                    and ignored < 2
+                    and time.monotonic() < deadline
+                ):
+                    obs = await _seat_observe(sandbox, service_url, seat.seat_id)
+                    if obs is None:
+                        break
+                    if obs.get("status") == "your_turn" or obs.get("events"):
+                        nudges += 1
+                        remaining = max(30, int(deadline - time.monotonic()))
+                        t2, n2 = await prompt_seat(
+                            conn, _nudge_prompt(obs),
+                            timeout=remaining, idle_timeout=cfg.idle_timeout_s,
+                        )
+                        if t2:
+                            traj = t2  # session snapshots are cumulative
+                        n_tools += n2
+                        ignored = ignored + 1 if n2 == 0 else 0
+                    elif obs.get("status") in ("waiting", "not_your_turn"):
+                        if cfg.nudge_poll_s <= 0:
+                            break
+                        await asyncio.sleep(cfg.nudge_poll_s)
+                    else:  # lobby/done, no events — the seat chose to stop
+                        break
             if traj:
                 writer.write_final(traj)
         # timeout is non-fatal ("it DID play") — keep it distinct from "error".
@@ -272,6 +340,7 @@ async def _run_seat(
         "protocol": agent_cfg.protocol, "byoa": seat.is_byoa,
         "raw": runtime is not None,  # raw captured iff a proxy ran for this seat
         "status": status, "acp_tool_calls": n_tools, "llm_calls": n_llm,
+        "nudges": nudges,
     }
 
 

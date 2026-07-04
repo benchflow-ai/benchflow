@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import textwrap
+import types
 
 import pytest
 
@@ -263,3 +264,90 @@ async def test_service_rounds_nudges_only_on_your_turn(make_roster, tmp_path, mo
     assert "[Round 1]" in prompts_sent[0] and "[Round 2]" in prompts_sent[1]
     assert "request_id=r1" in prompts_sent[0]  # request_id threaded into the nudge
     assert observed[-1] == "done"
+
+
+# ---- nudge-on-event: the harness is the only push channel to an LLM --------
+
+class _ObsSandbox(_FakeSandbox):
+    """Fake sandbox whose observe-curl execs return a scripted sequence."""
+
+    def __init__(self, observes):
+        super().__init__()
+        self._observes = list(observes)
+
+    async def exec(self, cmd, *, user="root", timeout_sec=30):
+        self.execs.append(cmd)
+        if "/casino/observe" in cmd:
+            obs = self._observes.pop(0) if self._observes else {"status": "lobby", "events": []}
+            return types.SimpleNamespace(stdout=json.dumps(obs), return_code=0)
+        return None
+
+
+@pytest.mark.asyncio
+async def test_auto_loop_nudges_on_your_turn_after_prompt_ends(make_roster, tmp_path, monkeypatch):
+    roster = make_roster("""
+        agents:
+          - { name: solo, agent: codex-acp }
+    """)
+    cfg = FloorConfig(out=str(tmp_path / "out"), drive="auto-loop", prompt="play",
+                      nudge_poll_s=0)
+    _patch_subscription(monkeypatch)
+    prompts = []
+
+    async def fake_connect_seat(cfg_, **kw):
+        return SeatConn(protocol="acp", session=_FakeSession(), client=None, name=cfg_.name)
+
+    async def fake_prompt_seat(conn, prompt, *, timeout, idle_timeout=None):
+        prompts.append(prompt)
+        return [{"type": "tool_call"}], 1
+
+    monkeypatch.setattr(cf, "connect_seat", fake_connect_seat)
+    monkeypatch.setattr(cf, "prompt_seat", fake_prompt_seat)
+    monkeypatch.setattr(cf, "close_seat", lambda conn: _noop())
+    monkeypatch.setattr(cf, "install_agent", lambda *a, **k: _noop())
+
+    sb = _ObsSandbox([
+        {"status": "your_turn", "request_id": "r9", "observation": {"public": {}},
+         "legal_actions": [{"verb": "bet", "args": {}}], "events": []},
+        {"status": "lobby", "done": True, "events": []},
+    ])
+    summary = await cf.run_concurrent_floor(roster, sandbox=sb, service_url="http://s", config=cfg)
+    r = summary["results"][0]
+    assert len(prompts) == 2, prompts          # main prompt + one nudge
+    assert "r9" in prompts[1]                  # nudge carries the pending turn
+    assert r["nudges"] == 1
+    assert r["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_nudges_stop_after_two_ignored(make_roster, tmp_path, monkeypatch):
+    roster = make_roster("""
+        agents:
+          - { name: solo, agent: codex-acp }
+    """)
+    cfg = FloorConfig(out=str(tmp_path / "out"), drive="auto-loop", prompt="play",
+                      nudge_poll_s=0)
+    _patch_subscription(monkeypatch)
+    calls = []
+
+    async def fake_connect_seat(cfg_, **kw):
+        return SeatConn(protocol="acp", session=_FakeSession(), client=None, name=cfg_.name)
+
+    async def fake_prompt_seat(conn, prompt, *, timeout, idle_timeout=None):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return [{"type": "tool_call"}], 1   # the main prompt did play
+        return [], 0                            # every nudge is ignored
+
+    monkeypatch.setattr(cf, "connect_seat", fake_connect_seat)
+    monkeypatch.setattr(cf, "prompt_seat", fake_prompt_seat)
+    monkeypatch.setattr(cf, "close_seat", lambda conn: _noop())
+    monkeypatch.setattr(cf, "install_agent", lambda *a, **k: _noop())
+
+    always_turn = {"status": "your_turn", "request_id": "rX",
+                   "observation": {"public": {}}, "legal_actions": [], "events": []}
+    sb = _ObsSandbox([always_turn] * 10)
+    summary = await cf.run_concurrent_floor(roster, sandbox=sb, service_url="http://s", config=cfg)
+    r = summary["results"][0]
+    assert len(calls) == 3, calls              # main + 2 ignored nudges, then stop
+    assert r["nudges"] == 2

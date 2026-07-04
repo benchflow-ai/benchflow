@@ -158,6 +158,25 @@ async def _attach_reward(sandbox: Any, summary: dict, service_url: str, cfg: Flo
             (Path(cfg.out) / "floor.json").write_text(json.dumps(summary, indent=2))
 
 
+def _count_actions(events_jsonl: str) -> dict[str, dict[str, int]]:
+    """Per-seat REAL casino activity from the service event log — acp tool
+    calls are polls+scripting, not game actions (a seat once showed 77 calls
+    but 1066 applied actions)."""
+    counts: dict[str, dict[str, int]] = {}
+    for line in events_jsonl.splitlines():
+        if not line.strip():
+            continue
+        with contextlib.suppress(Exception):
+            e = json.loads(line)
+            actor = e.get("actor")
+            kind = e.get("type")
+            if not actor or kind not in ("action_applied", "action_timeout"):
+                continue
+            c = counts.setdefault(actor, {"actions": 0, "timeouts": 0})
+            c["actions" if kind == "action_applied" else "timeouts"] += 1
+    return counts
+
+
 async def _snapshot_events(sandbox: Any, service_url: str, cfg: FloorConfig) -> None:
     """Opt-in: snapshot the service event log IN-SANDBOX → events.jsonl (for the
     town viewer's animated board). The service is on the sandbox's localhost, so
@@ -191,6 +210,27 @@ async def run_native_floor(
         )
         await _attach_reward(sandbox, summary, service_url, config)
         await _snapshot_events(sandbox, service_url, config)
+        _attach_activity(summary, config)
+        with contextlib.suppress(Exception):
+            outcomes = await _read_service_json(sandbox, service_url, "/_admin/outcomes")
+            if isinstance(outcomes, dict) and outcomes:
+                summary["outcomes"] = outcomes
+                (Path(config.out) / "floor.json").write_text(json.dumps(summary, indent=2))
         return summary
     finally:
         await teardown()
+
+
+def _attach_activity(summary: dict, cfg: FloorConfig) -> None:
+    """Honest per-seat metrics: merge real casino action counts (from the
+    snapshotted event log) into the floor results + floor.json."""
+    with contextlib.suppress(Exception):
+        ev = Path(cfg.out) / "events.jsonl"
+        if not ev.exists():
+            return
+        counts = _count_actions(ev.read_text())
+        for r in summary.get("results", []):
+            c = counts.get(r.get("seat"), {"actions": 0, "timeouts": 0})
+            r["casino_actions"] = c["actions"]
+            r["casino_timeouts"] = c["timeouts"]
+        (Path(cfg.out) / "floor.json").write_text(json.dumps(summary, indent=2))

@@ -93,3 +93,22 @@ def test_service_env_goes_into_sandbox_persistent_env(tmp_path, monkeypatch):
 
 def _no_popen(*a, **k):
     raise AssertionError("bootstrap must NOT spawn a host subprocess — service is in-sandbox")
+
+
+def test_count_actions_reads_real_casino_actions_per_seat():
+    # floor.json "moves" counted ACP tool calls; the REAL activity metric is
+    # action_applied events per actor (opencode showed 77 calls but 1066 acts).
+    import json
+    from benchflow.arena.bootstrap import _count_actions
+    rows = [
+        {"type": "action_applied", "actor": "a", "seq": 1},
+        {"type": "action_applied", "actor": "a", "seq": 2},
+        {"type": "action_applied", "actor": "b", "seq": 3},
+        {"type": "action_timeout", "actor": "a", "seq": 4},
+        {"type": "settlement", "actor": "", "seq": 5},
+    ]
+    jsonl = "\n".join(json.dumps(r) for r in rows)
+    assert _count_actions(jsonl) == {
+        "a": {"actions": 2, "timeouts": 1},
+        "b": {"actions": 1, "timeouts": 0},
+    }
