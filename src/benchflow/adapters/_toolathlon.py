@@ -308,44 +308,41 @@ def _toolathlon_instruction(task_dir: Path) -> str:
     return system_prompt.rstrip() + "\n\n" + prompt.rstrip() + "\n"
 
 
+_TOOLATHLON_NOTION_OFFICIAL_YAML = f"""type: stdio
+name: notion_official
+params:
+  command: "npx"
+  args:
+    - "mcp-remote@0.1.37"
+    - "https://mcp.notion.com/mcp"
+    - "--static-oauth-client-info"
+    - "@{_TOOLATHLON_NOTION_CLIENT_INFO}"
+  env:
+    MCP_REMOTE_CONFIG_DIR: "{_TOOLATHLON_NOTION_MCP_AUTH_DIR}"
+client_session_timeout_seconds: 100
+cache_tools_list: true
+"""
+
+
 def _toolathlon_notion_mcp_auth_command() -> str:
-    """Unpack the mcp-remote OAuth token and patch ``notion_official.yaml`` so the
-    preprocess page-duplication (which spawns mcp-remote from that yaml, not from
-    benchflow's MCP wiring) pins the version, uses the absolute auth dir, and
-    reuses the pre-registered client — refreshing the token headlessly."""
-    patch = "\n".join(
-        [
-            "/usr/bin/python3 - <<'PY'",
-            "import yaml",
-            "p = '/workspace/configs/mcp_servers/notion_official.yaml'",
-            "try:",
-            "    d = yaml.safe_load(open(p)) or {}",
-            "except FileNotFoundError:",
-            "    raise SystemExit(0)",
-            "params = d.setdefault('params', {})",
-            "args = ['mcp-remote@0.1.37' if a == 'mcp-remote' else a "
-            "for a in (params.get('args') or [])]",
-            "if '--static-oauth-client-info' not in args:",
-            f"    args += ['--static-oauth-client-info', '@{_TOOLATHLON_NOTION_CLIENT_INFO}']",
-            "params['args'] = args",
-            "params.setdefault('env', {})['MCP_REMOTE_CONFIG_DIR'] = "
-            f"'{_TOOLATHLON_NOTION_MCP_AUTH_DIR}'",
-            "yaml.safe_dump(d, open(p, 'w'))",
-            "print('patched notion_official.yaml for headless reuse')",
-            "PY",
-        ]
-    )
+    """Unpack the mcp-remote OAuth token and overwrite ``notion_official.yaml`` so
+    the preprocess page-duplication (which spawns mcp-remote from that yaml, not
+    from benchflow's MCP wiring) pins the version, uses the absolute auth dir, and
+    reuses the pre-registered client — refreshing the token headlessly. The yaml
+    is rewritten wholesale (no in-container yaml parser needed)."""
     return "\n".join(
         [
             "set -e",
             f"mkdir -p {_TOOLATHLON_NOTION_MCP_AUTH_DIR}",
             'if [ -n "${TOOLATHLON_NOTION_MCP_AUTH_B64:-}" ]; then',
             f'  printf %s "$TOOLATHLON_NOTION_MCP_AUTH_B64" | base64 -d '
-            f"| tar xz -C {_TOOLATHLON_NOTION_MCP_AUTH_DIR}",
+            f"| tar xz --warning=no-unknown-keyword -C {_TOOLATHLON_NOTION_MCP_AUTH_DIR}",
             "else",
             '  echo "TOOLATHLON_NOTION_MCP_AUTH_B64 not set; notion page-dup will fail"',
             "fi",
-            patch,
+            "cat > /workspace/configs/mcp_servers/notion_official.yaml <<'NOTION_YAML'",
+            _TOOLATHLON_NOTION_OFFICIAL_YAML.rstrip("\n"),
+            "NOTION_YAML",
         ]
     )
 
