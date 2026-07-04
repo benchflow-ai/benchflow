@@ -1,0 +1,3 @@
+# 1-seat smoke: codex-acp + gpt-5.5
+agents:
+  - { agent: codex-acp, model: gpt-5.5, count: 1, instructions: prompts/aggressive.md }

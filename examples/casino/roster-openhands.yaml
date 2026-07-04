@@ -1,0 +1,3 @@
+# 10 openhands seats on deepseek-v4-flash (API-key/proxy seats → no subscription limit)
+agents:
+  - { agent: openhands, model: deepseek/deepseek-v4-flash, count: 10, instructions: prompts/aggressive.md }
