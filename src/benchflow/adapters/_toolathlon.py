@@ -207,7 +207,10 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
             if variant == "official"
             else set()
         )
-        needs_notion_auth = variant == "official" and "notion_official" in (
+        # Any task using the notion server duplicates its source page in
+        # preprocess via notion_official (mcp-remote OAuth), so it needs the
+        # injected auth even though notion_official isn't in needed_mcp_servers.
+        needs_notion_auth = variant == "official" and "notion" in (
             task_config.get("needed_mcp_servers") or []
         )
         mcp_servers = []
@@ -306,8 +309,32 @@ def _toolathlon_instruction(task_dir: Path) -> str:
 
 
 def _toolathlon_notion_mcp_auth_command() -> str:
-    """Unpack the base64 mcp-remote OAuth token dir into the location the
-    notion_official server reads from (see _TOOLATHLON_NOTION_MCP_AUTH_DIR)."""
+    """Unpack the mcp-remote OAuth token and patch ``notion_official.yaml`` so the
+    preprocess page-duplication (which spawns mcp-remote from that yaml, not from
+    benchflow's MCP wiring) pins the version, uses the absolute auth dir, and
+    reuses the pre-registered client — refreshing the token headlessly."""
+    patch = "\n".join(
+        [
+            "/usr/bin/python3 - <<'PY'",
+            "import yaml",
+            "p = '/workspace/configs/mcp_servers/notion_official.yaml'",
+            "try:",
+            "    d = yaml.safe_load(open(p)) or {}",
+            "except FileNotFoundError:",
+            "    raise SystemExit(0)",
+            "params = d.setdefault('params', {})",
+            "args = ['mcp-remote@0.1.37' if a == 'mcp-remote' else a "
+            "for a in (params.get('args') or [])]",
+            "if '--static-oauth-client-info' not in args:",
+            f"    args += ['--static-oauth-client-info', '@{_TOOLATHLON_NOTION_CLIENT_INFO}']",
+            "params['args'] = args",
+            "params.setdefault('env', {})['MCP_REMOTE_CONFIG_DIR'] = "
+            f"'{_TOOLATHLON_NOTION_MCP_AUTH_DIR}'",
+            "yaml.safe_dump(d, open(p, 'w'))",
+            "print('patched notion_official.yaml for headless reuse')",
+            "PY",
+        ]
+    )
     return "\n".join(
         [
             "set -e",
@@ -318,6 +345,7 @@ def _toolathlon_notion_mcp_auth_command() -> str:
             "else",
             '  echo "TOOLATHLON_NOTION_MCP_AUTH_B64 not set; notion page-dup will fail"',
             "fi",
+            patch,
         ]
     )
 
