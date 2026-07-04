@@ -443,7 +443,7 @@ AGENTS: dict[str, AgentConfig] = {
         # this pin — re-verify them when bumping. runtime.py uses
         # capability-first dispatch for the rest of the family.
         install_cmd=_js_agent_install(
-            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
+            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.55.0"
         ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
@@ -462,6 +462,9 @@ AGENTS: dict[str, AgentConfig] = {
                 HostAuthFile(
                     "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
                 ),
+                # Account state (model entitlements): without it the adapter's
+                # model catalog omits gated models (e.g. fable) and rejects them.
+                HostAuthFile("~/.claude.json", "{home}/.claude.json"),
             ],
         ),
         disallow_web_tools_setup_cmd=_json_settings_merge(
