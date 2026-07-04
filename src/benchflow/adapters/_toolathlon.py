@@ -24,6 +24,14 @@ _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _TOOLATHLON_UVX_PACKAGE_PINS = {
     "office-word-mcp-server": "office-word-mcp-server==1.1.11",
 }
+_TOOLATHLON_NPX_PACKAGE_PINS = {
+    # Pin so mcp-remote's on-disk token path (mcp-remote-<ver>/) matches the
+    # OAuth dir injected by the notion mcp-auth setup command.
+    "mcp-remote": "mcp-remote@0.1.37",
+}
+# Absolute location the notion_official server reads its OAuth token from (the
+# upstream config uses a cwd-relative ./configs/.mcp-auth).
+_TOOLATHLON_NOTION_MCP_AUTH_DIR = "/workspace/configs/.mcp-auth"
 
 
 @dataclass(frozen=True)
@@ -189,6 +197,9 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
             if variant == "official"
             else set()
         )
+        needs_notion_auth = variant == "official" and "notion_official" in (
+            task_config.get("needed_mcp_servers") or []
+        )
         mcp_servers = []
         for server_name in task_config.get("needed_mcp_servers", []):
             try:
@@ -218,6 +229,7 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
                 variant=variant,
                 credential_refs=credential_refs,
                 services=services,
+                needs_notion_auth=needs_notion_auth,
             ),
         )
         _write_text(
@@ -283,6 +295,23 @@ def _toolathlon_instruction(task_dir: Path) -> str:
     return system_prompt.rstrip() + "\n\n" + prompt.rstrip() + "\n"
 
 
+def _toolathlon_notion_mcp_auth_command() -> str:
+    """Unpack the base64 mcp-remote OAuth token dir into the location the
+    notion_official server reads from (see _TOOLATHLON_NOTION_MCP_AUTH_DIR)."""
+    return "\n".join(
+        [
+            "set -e",
+            f"mkdir -p {_TOOLATHLON_NOTION_MCP_AUTH_DIR}",
+            'if [ -n "${TOOLATHLON_NOTION_MCP_AUTH_B64:-}" ]; then',
+            f'  printf %s "$TOOLATHLON_NOTION_MCP_AUTH_B64" | base64 -d '
+            f"| tar xz -C {_TOOLATHLON_NOTION_MCP_AUTH_DIR}",
+            "else",
+            '  echo "TOOLATHLON_NOTION_MCP_AUTH_B64 not set; notion page-dup will fail"',
+            "fi",
+        ]
+    )
+
+
 def _toolathlon_task_toml(
     ctx: Any,
     *,
@@ -291,6 +320,7 @@ def _toolathlon_task_toml(
     variant: str,
     credential_refs: set[str],
     services: set[str] | None = None,
+    needs_notion_auth: bool = False,
 ) -> dict[str, Any]:
     services = services or set()
     benchmark_name = "toolathlon-gym" if variant == "gym" else "toolathlon"
@@ -321,6 +351,21 @@ def _toolathlon_task_toml(
                 "command": _toolathlon_services.poste_config_rewrite_command(task_name),
                 "cwd": "/workspace",
                 "timeout_sec": 60.0,
+            }
+        )
+    if needs_notion_auth:
+        # Unpack the pre-authorized notion_official OAuth token so the in-sandbox
+        # mcp-remote can duplicate the source page during preprocess.
+        setup_commands.append(
+            {
+                "command": _toolathlon_notion_mcp_auth_command(),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+                "env": {
+                    "TOOLATHLON_NOTION_MCP_AUTH_B64": (
+                        "${TOOLATHLON_NOTION_MCP_AUTH_B64}"
+                    )
+                },
             }
         )
     setup_commands.append(
@@ -683,6 +728,13 @@ def _toolathlon_mcp_server(
         command = f"/usr/local/bin/{command}"
         if args:
             args = [_TOOLATHLON_UVX_PACKAGE_PINS.get(arg, arg) for arg in args]
+    if command == "npx" and args:
+        # Pin mcp-remote so its on-disk token path (mcp-remote-<ver>/) matches the
+        # injected OAuth dir, and make the auth dir absolute so it resolves
+        # regardless of the server's cwd (see the notion mcp-auth setup command).
+        args = [_TOOLATHLON_NPX_PACKAGE_PINS.get(arg, arg) for arg in args]
+        if "MCP_REMOTE_CONFIG_DIR" in env:
+            env["MCP_REMOTE_CONFIG_DIR"] = _TOOLATHLON_NOTION_MCP_AUTH_DIR
     # Wrap the real server in the container launcher so ``${token.X}`` in argv
     # and env resolve at spawn time. ``TOOLATHLON_TASK_DIR`` tells the launcher
     # which task's token_key_session.py overrides the global one.
