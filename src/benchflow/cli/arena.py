@@ -41,6 +41,8 @@ def run_floor_from_cli(
 
     roster = Roster.from_yaml(agents)
     seats = roster.seats()
+    if deadline_s <= 0:
+        deadline_s = 86400  # "no deadline" — capped at 24h so a wedged run still ends
     body = prompt
     if body and body.startswith("@"):
         body = Path(body[1:]).read_text()

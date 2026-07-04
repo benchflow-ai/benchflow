@@ -290,6 +290,12 @@ def eval_run(
         typer.Option("--drive", help="Multi-agent floor drive: auto-loop | service-rounds.",
                      rich_help_panel="Multi-agent floor"),
     ] = "auto-loop",
+    deadline: Annotated[
+        int,
+        typer.Option("--deadline", help="Multi-agent floor soft deadline in seconds "
+                     "(seats are cut off after this; 0 = no deadline, capped at 24h).",
+                     rich_help_panel="Multi-agent floor"),
+    ] = 1200,
     game: Annotated[
         str | None,
         typer.Option("--game", help="Floor: task_selection value (e.g. game id); overrides the tasks-dir name.",
@@ -569,6 +575,7 @@ def eval_run(
             standings_path=standings_path,
             events_path=events_path,
             service_env=service_env,
+            deadline_s=deadline,
         )
         return
 
