@@ -32,6 +32,16 @@ _TOOLATHLON_NPX_PACKAGE_PINS = {
 # Absolute location the notion_official server reads its OAuth token from (the
 # upstream config uses a cwd-relative ./configs/.mcp-auth).
 _TOOLATHLON_NOTION_MCP_AUTH_DIR = "/workspace/configs/.mcp-auth"
+# The pre-registered OAuth client info (captured at token-authorization time).
+# Passing it via --static-oauth-client-info stops mcp-remote from dynamically
+# re-registering a new client on each run (which invalidates the stored token
+# and forces an interactive re-auth); with it, mcp-remote refreshes the injected
+# token headlessly. The hash is derived from the fixed server URL, so it is
+# stable as long as the pinned mcp-remote version + notion MCP URL don't change.
+_TOOLATHLON_NOTION_CLIENT_INFO = (
+    f"{_TOOLATHLON_NOTION_MCP_AUTH_DIR}/mcp-remote-0.1.37/"
+    "cb42d1a06ae8db4e5585a26f2e5ca947_client_info.json"
+)
 
 
 @dataclass(frozen=True)
@@ -735,6 +745,11 @@ def _toolathlon_mcp_server(
         args = [_TOOLATHLON_NPX_PACKAGE_PINS.get(arg, arg) for arg in args]
         if "MCP_REMOTE_CONFIG_DIR" in env:
             env["MCP_REMOTE_CONFIG_DIR"] = _TOOLATHLON_NOTION_MCP_AUTH_DIR
+            args = [
+                *args,
+                "--static-oauth-client-info",
+                f"@{_TOOLATHLON_NOTION_CLIENT_INFO}",
+            ]
     # Wrap the real server in the container launcher so ``${token.X}`` in argv
     # and env resolve at spawn time. ``TOOLATHLON_TASK_DIR`` tells the launcher
     # which task's token_key_session.py overrides the global one.
