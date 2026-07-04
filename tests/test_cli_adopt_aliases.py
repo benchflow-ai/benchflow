@@ -81,8 +81,10 @@ def test_agent_help_shows_management_hides_adoption() -> None:
     res = runner.invoke(app, ["agent", "--help"])
     assert res.exit_code == 0
     assert "list" in res.output and "show" in res.output
-    # adoption verbs are hidden on the agent group now
-    for verb in ("create", "run", "verify"):
+    # `run` is the visible headless agent runner (no longer an adoption alias)
+    assert "run" in res.output
+    # remaining adoption verbs are hidden on the agent group
+    for verb in ("create", "verify"):
         assert verb not in res.output, f"deprecated {verb!r} still shown in agent help"
 
 

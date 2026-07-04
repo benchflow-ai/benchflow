@@ -813,7 +813,11 @@ def run_verify_action(
 # groups that still expose them as subcommands. The same action functions back
 # both surfaces.
 ADOPT_VERBS = {"scaffold": "init", "drive": "convert", "verify": "verify"}
-AGENT_ALIAS_VERBS = {"scaffold": "create", "drive": "run", "verify": "verify"}
+# `bench agent run` no longer aliases the adoption driver: the name belongs to
+# the headless agent runner (cli/agent.py). The alias lived its one-release
+# back-compat window; `bench eval adopt <source>` is the canonical spelling
+# (`bench adopt convert` remains as the deprecated group alias).
+AGENT_ALIAS_VERBS = {"scaffold": "create", "verify": "verify"}
 
 # Where each deprecated verb now lives on the flattened canonical command.
 _CANONICAL_HINTS = {
@@ -866,47 +870,48 @@ def register_agent_router(
         _maybe_warn("scaffold")
         run_scaffold_action(name, benchmarks_dir, console=console)
 
-    @agent_app.command(verbs["drive"], hidden=hidden)
-    def adopt_convert(
-        source: Annotated[
-            str, typer.Argument(help="Source benchmark repo or local path")
-        ],
-        name: Annotated[
-            str | None,
-            typer.Option("--name", help="Benchmark slug (default: from source)"),
-        ] = None,
-        model: Annotated[
-            str | None, typer.Option("--model", help="Model for the codex driver")
-        ] = None,
-        dry_run: Annotated[
-            bool,
-            typer.Option("--dry-run", help="Print the launch command, do not run"),
-        ] = False,
-        codex_bin: Annotated[
-            str, typer.Option("--codex-bin", help="Host codex binary")
-        ] = "codex",
-        codex_config: Annotated[
-            list[str] | None,
-            typer.Option(
-                "--codex-config",
-                "-c",
-                help="Codex config override as key=value, passed to codex as "
-                "`-c key=value`; repeatable (e.g. -c service_tier=flex to work "
-                "around host ~/.codex/config.toml drift)",
-            ),
-        ] = None,
-    ) -> None:
-        """Drive the conversion workflow by launching the host codex CLI (deprecated alias)."""
-        _maybe_warn("drive")
-        run_convert_action(
-            source,
-            name,
-            model=model,
-            dry_run=dry_run,
-            codex_bin=codex_bin,
-            codex_config=codex_config,
-            console=console,
-        )
+    if "drive" in verbs:  # retired from the agent group; kept for bench adopt
+        @agent_app.command(verbs["drive"], hidden=hidden)
+        def adopt_convert(
+            source: Annotated[
+                str, typer.Argument(help="Source benchmark repo or local path")
+            ],
+            name: Annotated[
+                str | None,
+                typer.Option("--name", help="Benchmark slug (default: from source)"),
+            ] = None,
+            model: Annotated[
+                str | None, typer.Option("--model", help="Model for the codex driver")
+            ] = None,
+            dry_run: Annotated[
+                bool,
+                typer.Option("--dry-run", help="Print the launch command, do not run"),
+            ] = False,
+            codex_bin: Annotated[
+                str, typer.Option("--codex-bin", help="Host codex binary")
+            ] = "codex",
+            codex_config: Annotated[
+                list[str] | None,
+                typer.Option(
+                    "--codex-config",
+                    "-c",
+                    help="Codex config override as key=value, passed to codex as "
+                    "`-c key=value`; repeatable (e.g. -c service_tier=flex to work "
+                    "around host ~/.codex/config.toml drift)",
+                ),
+            ] = None,
+        ) -> None:
+            """Drive the conversion workflow by launching the host codex CLI (deprecated alias)."""
+            _maybe_warn("drive")
+            run_convert_action(
+                source,
+                name,
+                model=model,
+                dry_run=dry_run,
+                codex_bin=codex_bin,
+                codex_config=codex_config,
+                console=console,
+            )
 
     @agent_app.command(verbs["verify"], hidden=hidden)
     def adopt_verify(

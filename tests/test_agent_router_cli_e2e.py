@@ -308,8 +308,8 @@ def test_cli_run_dry_run_prints_codex_command_with_context_markers(
     runner = CliRunner()
     result = _run(
         runner,
-        "agent",
-        "run",
+        "adopt",
+        "convert",
         "github.com/foo/bar",
         "--name",
         "my-bench",
@@ -317,7 +317,7 @@ def test_cli_run_dry_run_prints_codex_command_with_context_markers(
     )
     assert result.exit_code == 0, result.output
     # Inspect pure stdout: the dry-run command prints to stdout, while the
-    # `bench agent run` deprecation notice goes to stderr. Using stdout keeps the
+    # `bench adopt convert` deprecation notice goes to stderr. Using stdout keeps the
     # verbatim/soft-wrap assertion below independent of whether an earlier test
     # in the process already emitted (and deduped) that once-per-process notice.
     out = click.unstyle(result.stdout)
@@ -358,7 +358,7 @@ def test_cli_run_live_path_fails_closed_without_credentials(
     monkeypatch.setattr(agent_router, "_subprocess_exec", _tripwire)
 
     result = _run(
-        CliRunner(), "agent", "run", "github.com/foo/bar", "--name", "my-bench"
+        CliRunner(), "adopt", "convert", "github.com/foo/bar", "--name", "my-bench"
     )
     assert result.exit_code == 1
     out = click.unstyle(result.output)

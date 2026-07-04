@@ -217,11 +217,16 @@ def test_build_launch_command_no_overrides_by_default() -> None:
 
 
 def test_run_command_dry_run_passes_codex_config(tmp_path: Path) -> None:
-    """`bench agent run -c k=v --dry-run` surfaces the override in the command."""
+    """`bench adopt convert -c k=v --dry-run` surfaces the override in the command.
+
+    (`bench agent run` no longer aliases the adoption driver — the name belongs
+    to the headless agent runner; the deprecated adoption surface is
+    `bench adopt convert`.)
+    """
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["agent", "run", "github.com/foo/bar", "-c", "service_tier=flex", "--dry-run"],
+        ["adopt", "convert", "github.com/foo/bar", "-c", "service_tier=flex", "--dry-run"],
     )
     assert result.exit_code == 0, result.output
     assert "-c service_tier=flex" in result.output
@@ -818,7 +823,7 @@ def test_cli_create_refuses_existing(tmp_path: Path) -> None:
 def test_cli_run_dry_run_prints_command(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
-        app, ["agent", "run", "github.com/foo/bar", "--name", "my-bench", "--dry-run"]
+        app, ["adopt", "convert", "github.com/foo/bar", "--name", "my-bench", "--dry-run"]
     )
     assert result.exit_code == 0, result.output
     out = click.unstyle(result.output)

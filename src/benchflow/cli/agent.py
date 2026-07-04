@@ -1,9 +1,10 @@
-"""``bench agent`` — agent management commands (list / show).
+"""``bench agent`` — agent management commands (list / show / run).
 
-The benchmark-adoption commands now live under ``bench eval adopt`` (see
-:mod:`benchflow.cli.adopt`); the legacy ``bench agent create|run|verify`` are
-registered here as hidden deprecated aliases (one-release window) so existing
-scripts keep working, each emitting a deprecation notice.
+``bench agent run`` is the headless agent runner: one prompt per invocation,
+resumable across invocations via ACP ``session/load`` (claude -p parity). It
+supersedes the retired benchmark-adoption alias that briefly occupied the name
+(canonical adoption spelling: ``bench eval adopt``; the remaining legacy
+aliases ``bench agent create|verify`` stay hidden + deprecated).
 
 Registered onto the top-level app by :func:`register_agent`; ``cli/main.py``
 only wires the call.
@@ -90,4 +91,130 @@ def register_agent(app: typer.Typer) -> None:
         if cfg.subscription_auth:
             console.print(
                 f"  Auth:        subscription via {cfg.subscription_auth.detect_file}"
+            )
+
+    @agent_app.command("run")
+    def agent_run(
+        agent: Annotated[
+            str, typer.Argument(help="Registered agent name (`bench agent list`)")
+        ],
+        prompt_arg: Annotated[
+            str | None,
+            typer.Argument(metavar="[PROMPT]", help="The prompt (or use -p)"),
+        ] = None,
+        prompt_opt: Annotated[
+            str | None, typer.Option("--prompt", "-p", help="The prompt")
+        ] = None,
+        model: Annotated[
+            str, typer.Option("--model", help="Model id for the turn")
+        ] = "",
+        resume: Annotated[
+            str | None,
+            typer.Option(
+                "--resume", "-r", help="Resume a session by id (see json output)"
+            ),
+        ] = None,
+        continue_: Annotated[
+            bool,
+            typer.Option(
+                "--continue",
+                "-c",
+                help="Resume the most recent session in this directory",
+            ),
+        ] = False,
+        launch_cmd: Annotated[
+            str | None,
+            typer.Option(
+                "--launch-cmd", help="Override the agent launch command (host binary)"
+            ),
+        ] = None,
+        output_format: Annotated[
+            str, typer.Option("--output-format", help="text | json")
+        ] = "text",
+    ) -> None:
+        """Run one headless prompt against an agent; resume it later (claude -p parity).
+
+        First run prints a session id; ``--resume <id>`` / ``-c`` continues that
+        conversation in the same working directory via ACP ``session/load``
+        (agents must advertise the ``loadSession`` capability). No task, no
+        sandbox, no verifier — evaluations stay on ``bench eval run``.
+        """
+        import asyncio
+        import json as _json
+        import os
+
+        from benchflow.agents.session_store import SessionStore
+        from benchflow.agents.standalone import ResumeUnsupportedError, run_turn
+
+        prompt = prompt_opt or prompt_arg
+        if not prompt:
+            print_error("a prompt is required (positional or -p/--prompt)")
+            raise typer.Exit(1)
+
+        store = SessionStore(
+            root=os.environ.get("BENCHFLOW_AGENT_SESSIONS_DIR") or None
+        )
+        cwd = os.getcwd()
+
+        if continue_ and not resume:
+            latest = store.latest_for_cwd(cwd)
+            if latest is None:
+                print_error(f"no agent session recorded for {cwd}")
+                raise typer.Exit(1)
+            resume = latest.session_id
+
+        agent_env: dict[str, str] | None = None
+        if not launch_cmd:
+            from benchflow.agents.env import resolve_agent_env
+            from benchflow.agents.registry import AGENT_ALIASES, AGENTS
+
+            canonical = AGENT_ALIASES.get(agent, agent)
+            cfg = AGENTS.get(canonical)
+            if cfg is None:
+                print_error(f"Unknown agent: {agent}")
+                raise typer.Exit(1)
+            agent = canonical
+            launch_cmd = cfg.launch_cmd
+            try:
+                agent_env = resolve_agent_env(
+                    agent, model or cfg.default_model or None, None
+                )
+            except ValueError as exc:
+                print_error(str(exc))
+                raise typer.Exit(1) from exc
+
+        try:
+            result = asyncio.run(
+                run_turn(
+                    agent=agent,
+                    prompt=prompt,
+                    cwd=cwd,
+                    store=store,
+                    model=model,
+                    resume=resume,
+                    launch_cmd=launch_cmd,
+                    agent_env=agent_env,
+                )
+            )
+        except ResumeUnsupportedError as exc:
+            print_error(str(exc))
+            raise typer.Exit(1) from exc
+
+        if output_format == "json":
+            typer.echo(
+                _json.dumps(
+                    {
+                        "result": result.text,
+                        "session_id": result.session_id,
+                        "stop_reason": result.stop_reason,
+                        "agent": agent,
+                        "model": model,
+                    }
+                )
+            )
+        else:
+            typer.echo(result.text)
+            typer.echo(
+                f"session: {result.session_id}  (resume: bench agent run {agent} -r {result.session_id} -p …)",
+                err=True,
             )
