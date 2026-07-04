@@ -1,0 +1,8 @@
+# 10-seat heterogeneous floor: 5 runtimes, 3 providers, both auth modes.
+agents:
+  - { agent: deepagents,       model: deepseek/deepseek-v4-flash, count: 3, instructions: prompts/aggressive.md }
+  - { agent: pi-acp,           model: deepseek/deepseek-v4-pro,   count: 2, instructions: prompts/aggressive.md }
+  - { agent: opencode,         model: deepseek/deepseek-v4-pro,   count: 2, instructions: prompts/aggressive.md }
+  - { agent: openhands,        model: deepseek/deepseek-v4-pro,   count: 1, instructions: prompts/aggressive.md }
+  - { agent: codex-acp,        model: gpt-5.5,                    count: 1, instructions: prompts/aggressive.md }
+  - { agent: claude-agent-acp, model: claude-opus-4-8,            count: 1, instructions: prompts/aggressive.md }
