@@ -37,7 +37,8 @@ from typing import Any
 
 from benchflow.acp.runtime import AgentPromptTimeoutError
 from benchflow.agents.credentials import upload_subscription_auth
-from benchflow.agents.env import uses_native_subscription_auth
+from benchflow.agents.env import check_subscription_auth, uses_native_subscription_auth
+from benchflow.agents.install import install_agent
 from benchflow.arena.agent_driver import close_seat, connect_seat, prompt_seat
 from benchflow.arena.agents_manifest import Seat
 from benchflow.arena.instructions import write_agent_instructions
@@ -92,6 +93,36 @@ class HttpSeatClient:
             timeout=30,
         )
         return r.json()
+
+
+# npm agents install into ONE shared prefix in the shared sandbox: concurrent
+# installs race, and a roster reuses agents across seats — install each agent
+# once per floor, serially.
+_install_lock = asyncio.Lock()
+_installed: set[tuple[int, str]] = set()  # (sandbox identity, agent)
+
+
+async def _install_seat_agent(sandbox: Any, agent: str, out: Path) -> None:
+    key = (id(sandbox), agent)
+    async with _install_lock:
+        if key in _installed:
+            return
+        await install_agent(sandbox, agent, out)
+        _installed.add(key)
+
+
+def _subscription_marker(agent_cfg: Any, agent_env: dict[str, str]) -> dict[str, str]:
+    """The normal rollout's `resolve_agent_env` sets _BENCHFLOW_SUBSCRIPTION_AUTH
+    when a host login file can substitute for the missing provider key; the floor
+    builds its env by hand, so replicate that one decision here."""
+    sa = getattr(agent_cfg, "subscription_auth", None)
+    if (
+        sa
+        and not agent_env.get(sa.replaces_env)
+        and check_subscription_auth(agent_cfg.name, sa.replaces_env)
+    ):
+        return {"_BENCHFLOW_SUBSCRIPTION_AUTH": "1"}
+    return {}
 
 
 def _seat_env(cfg: FloorConfig, seat: Seat, service_url: str) -> dict[str, str]:
@@ -161,10 +192,12 @@ async def _run_seat(
         await write_agent_instructions(
             sandbox, seat.agent_cwd, agent_cfg, roster.instructions_path(seat.spec)
         )
+        await _install_seat_agent(sandbox, agent_cfg.name, out)
         # Decide subscription vs proxy by ACTUAL auth, not capability: a claude/codex
         # seat with an API key wants the proxy (raw+acp); only an oauth-only seat
         # (no key, host login present) goes provider-direct (acp-only).
         agent_env = {**_provider_keys(), **_seat_env(cfg, seat, service_url)}
+        agent_env.update(_subscription_marker(agent_cfg, agent_env))
         if uses_native_subscription_auth(agent_cfg.name, seat.spec.model, agent_env):
             await upload_subscription_auth(sandbox, agent_cfg.name, "/root")
         else:  # API-key seat → its OWN proxy → separate raw llm_trajectory

@@ -44,9 +44,13 @@ def _patch_driver(monkeypatch, traj_by_agent):
     async def fake_close_seat(conn):
         pass
 
+    async def fake_install(sandbox, agent, out):
+        pass
+
     monkeypatch.setattr(cf, "connect_seat", fake_connect_seat)
     monkeypatch.setattr(cf, "prompt_seat", fake_prompt_seat)
     monkeypatch.setattr(cf, "close_seat", fake_close_seat)
+    monkeypatch.setattr(cf, "install_agent", fake_install)
 
 
 def _patch_subscription(monkeypatch):
@@ -195,6 +199,7 @@ async def test_one_bad_seat_does_not_kill_floor(make_roster, tmp_path, monkeypat
     monkeypatch.setattr(cf, "connect_seat", fake_connect_seat)
     monkeypatch.setattr(cf, "prompt_seat", fake_prompt_seat)
     monkeypatch.setattr(cf, "close_seat", lambda conn: _noop())
+    monkeypatch.setattr(cf, "install_agent", lambda *a, **k: _noop())
 
     summary = await cf.run_concurrent_floor(
         roster, sandbox=_FakeSandbox(), service_url="http://s", config=cfg)
