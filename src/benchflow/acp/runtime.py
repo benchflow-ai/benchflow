@@ -20,6 +20,7 @@ Does not own:
 import asyncio
 import contextlib
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -286,6 +287,45 @@ def _session_config_option_ids(session: object | None) -> set[str]:
     return ids
 
 
+def _advertised_option_values(session: object | None, option_id: str) -> list[str]:
+    """The enumerated values a session/new config option advertises."""
+    options = getattr(session, "config_options", None)
+    if not isinstance(options, (list, tuple)):
+        return []
+    for option in options:
+        if isinstance(option, dict) and option.get("id") == option_id:
+            return [
+                v["value"]
+                for v in option.get("options") or []
+                if isinstance(v, dict) and isinstance(v.get("value"), str)
+            ]
+    return []
+
+
+def _match_advertised_model_value(
+    session: object | None, option_id: str, model_id: str
+) -> str:
+    """Resolve ``model_id`` against the option's advertised values.
+
+    Adapters like claude-agent-acp enumerate model ALIASES (``fable``,
+    ``sonnet``, ``opus[1m]``) and reject full ids (``claude-fable-5``) with an
+    opaque Internal error. When the requested id isn't advertised, pick the
+    alias whose base name is a token of the id; otherwise keep the id as-is."""
+    values = _advertised_option_values(session, option_id)
+    if not values or model_id in values:
+        return model_id
+    tokens = set(re.split(r"[-/.]", model_id.lower()))
+    for value in values:
+        base = value.split("[")[0].strip().lower()  # opus[1m] -> opus
+        if base and base in tokens:
+            logger.info(
+                "ACP model %r not in advertised values %r — using alias %r",
+                model_id, values, value,
+            )
+            return value
+    return model_id
+
+
 def _resolve_acp_model_option_id(
     agent_cfg: object | None, session: object | None
 ) -> str | None:
@@ -394,7 +434,9 @@ async def _configure_acp_session(
                 session,
                 agent=agent,
                 config_id=model_option_id,
-                value=acp_model_id,
+                value=_match_advertised_model_value(
+                    session, model_option_id, acp_model_id
+                ),
                 label="model",
             )
         elif not agent_cfg or agent_cfg.supports_acp_set_model:
@@ -453,17 +495,24 @@ async def connect_acp(
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
-    # Resolve agent binary path for non-docker environments
+    # Resolve agent binary path for non-docker environments. Advisory only:
+    # under load a Daytona session command can time out transiently, and the
+    # unresolved launch command still works (the launch fails loudly later if
+    # the binary is truly missing) — so never let this probe kill the connect.
     if environment != "docker":
-        which_result = await env.exec(
-            f"which {agent_launch.split()[0]}", timeout_sec=10
-        )
-        if which_result.return_code == 0 and (which_result.stdout or "").strip():
-            full_path = which_result.stdout.strip()
-            parts = agent_launch.split()
-            parts[0] = full_path
-            agent_launch = " ".join(parts)
-            logger.info(f"Resolved agent path: {agent_launch}")
+        try:
+            which_result = await env.exec(
+                f"which {agent_launch.split()[0]}", timeout_sec=10
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Agent path resolve skipped ({type(e).__name__}): {e}")
+        else:
+            if which_result.return_code == 0 and (which_result.stdout or "").strip():
+                full_path = which_result.stdout.strip()
+                parts = agent_launch.split()
+                parts[0] = full_path
+                agent_launch = " ".join(parts)
+                logger.info(f"Resolved agent path: {agent_launch}")
 
     if sandbox_user:
         agent_launch = build_priv_drop_cmd(agent_launch, sandbox_user)
