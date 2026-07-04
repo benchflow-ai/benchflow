@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -43,11 +44,14 @@ def _make_sandbox(
     # size it up (daytona caps at 4 cpu/sandbox). Docker inherits the HOST's memory,
     # so an explicit cap there only over-constrains it — leave it unset for docker.
     if environment == "daytona":
-        cfg.cpus, cfg.memory_mb = 4, 8192
+        cfg.cpus, cfg.memory_mb = 4, 16384
+    # Unique per-run session: a fixed name makes concurrent floor runs on one
+    # host share a docker-compose project and tear each other down.
+    run_id = f"native-floor-{uuid.uuid4().hex[:8]}"
     kwargs = dict(
         environment_dir=manifest_dir,
-        environment_name="native-floor",
-        session_id="native-floor",
+        environment_name=run_id,
+        session_id=run_id,
         rollout_paths=None,
         task_env_config=cfg,
     )
