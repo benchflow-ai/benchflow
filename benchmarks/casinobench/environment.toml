@@ -21,7 +21,7 @@ name = "casinobench"
 # pulls this ACR tag via Image.base(); --sandbox docker uses the same tag built
 # locally (docker build -t <this tag> …), so there's no drift between "built
 # locally" and "what Daytona pulls".
-image = "ghcr.io/yiminnn/casinobench-base:2.0.4"
+image = "ghcr.io/yiminnn/casinobench-base:2.0.5"
 owns_lifecycle = false                    # the framework starts the service below
 isolation = "per_task"
 
