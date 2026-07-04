@@ -67,3 +67,28 @@ def test_agent_run_resume_continues_the_same_session(tmp_path, monkeypatch):
     third = CliRunner().invoke(app, [*base, "-p", "more", "-c"])
     assert third.exit_code == 0, third.output
     assert json.loads(third.stdout)["session_id"] == sid
+
+
+def test_agent_run_times_out_with_clean_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_AGENT_SESSIONS_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("FAKE_SLEEP", "10")
+    work = tmp_path / "w"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "agent",
+            "run",
+            "fake-agent",
+            "-p",
+            "say hi",
+            "--launch-cmd",
+            f"{sys.executable} {FAKE_AGENT}",
+            "--timeout",
+            "2",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "timed out" in result.output

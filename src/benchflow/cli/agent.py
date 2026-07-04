@@ -131,6 +131,9 @@ def register_agent(app: typer.Typer) -> None:
         output_format: Annotated[
             str, typer.Option("--output-format", help="text | json")
         ] = "text",
+        timeout: Annotated[
+            float, typer.Option("--timeout", help="Turn budget in seconds")
+        ] = 600.0,
     ) -> None:
         """Run one headless prompt against an agent; resume it later (claude -p parity).
 
@@ -185,17 +188,23 @@ def register_agent(app: typer.Typer) -> None:
 
         try:
             result = asyncio.run(
-                run_turn(
-                    agent=agent,
-                    prompt=prompt,
-                    cwd=cwd,
-                    store=store,
-                    model=model,
-                    resume=resume,
-                    launch_cmd=launch_cmd,
-                    agent_env=agent_env,
+                asyncio.wait_for(
+                    run_turn(
+                        agent=agent,
+                        prompt=prompt,
+                        cwd=cwd,
+                        store=store,
+                        model=model,
+                        resume=resume,
+                        launch_cmd=launch_cmd,
+                        agent_env=agent_env,
+                    ),
+                    timeout=timeout,
                 )
             )
+        except TimeoutError as exc:
+            print_error(f"agent turn timed out after {timeout:g}s")
+            raise typer.Exit(1) from exc
         except ResumeUnsupportedError as exc:
             print_error(str(exc))
             raise typer.Exit(1) from exc
