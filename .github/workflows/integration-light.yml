@@ -175,6 +175,7 @@ jobs:
       DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
       GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
       GLM_BASE_URL: ${{ secrets.GLM_BASE_URL }}
+      GLM_MODEL: ${{ secrets.GLM_MODEL }}
       QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
       QWEN_BASE_URL: ${{ secrets.QWEN_BASE_URL }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

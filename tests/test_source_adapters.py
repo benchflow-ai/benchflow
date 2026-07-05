@@ -199,12 +199,19 @@ params:
     assert "ast.walk" in setup_command
     assert "ast.walk" in test_sh
     assert "/usr/local/bin/uv run python" in test_sh
+    assert "toolathlon_container.py write-task-tokens" in setup_command
+    assert setup_command.index("write-task-tokens") < setup_command.index(
+        'chmod -R go-rwx "$private"'
+    )
 
 
 def _run_toolathlon_setup_script(
     tmp_path: Path, preprocess_source: str
 ) -> subprocess.CompletedProcess:
-    from benchflow.adapters._toolathlon import _toolathlon_setup_command
+    from benchflow.adapters._toolathlon import (
+        _toolathlon_container_module_source,
+        _toolathlon_setup_command,
+    )
 
     workspace = tmp_path / "workspace"
     task_dir = workspace / "tasks" / "finalpool" / "demo"
@@ -219,6 +226,10 @@ def _run_toolathlon_setup_script(
     ):
         (package / "__init__.py").write_text("")
     (preprocess_dir / "main.py").write_text(preprocess_source)
+    helper = workspace / ".toolathlon" / "toolathlon_container.py"
+    helper.parent.mkdir()
+    helper.write_text(_toolathlon_container_module_source())
+    helper.chmod(0o755)
 
     script = _toolathlon_setup_command(task_name="demo", variant="gym")
     script = script.replace("/workspace", str(workspace))
@@ -226,10 +237,14 @@ def _run_toolathlon_setup_script(
     script_path = tmp_path / "setup.sh"
     script_path.write_text(script)
 
+    env = os.environ.copy()
+    env["TOOLATHLON_WORKSPACE"] = str(workspace)
+
     return subprocess.run(
         ["bash", str(script_path)],
         text=True,
         capture_output=True,
+        env=env,
         timeout=30,
     )
 
@@ -1082,6 +1097,86 @@ def test_toolathlon_container_launch_resolves_tokens(tmp_path: Path) -> None:
     assert "--project=global-proj" in out  # from global
     assert "--dataset=demo_ds" in out  # per-task override wins
     assert "--folder=FID-999" in out  # runtime file value
+
+
+def test_toolathlon_container_launch_uses_task_token_snapshot(tmp_path: Path) -> None:
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "token_key_session.py").write_text(
+        "all_token_key_session = {'gcp_project_id': 'global-proj'}\n"
+    )
+    task_dir = tmp_path / "tasks" / "finalpool" / "ab-testing"
+    groundtruth = task_dir / "groundtruth_workspace"
+    groundtruth.mkdir(parents=True)
+    (groundtruth / "log_bucket_name.txt").write_text("abtesting_logging_123")
+    (task_dir / "token_key_session.py").write_text(
+        "import os\n"
+        "from addict import Dict\n"
+        "_here = os.path.dirname(__file__)\n"
+        "with open(os.path.join(_here, 'groundtruth_workspace', "
+        "'log_bucket_name.txt')) as f:\n"
+        "    _bucket = f.read().strip()\n"
+        "all_token_key_session = Dict("
+        "google_cloud_allowed_log_buckets=_bucket)\n"
+    )
+
+    result = _run_container_helper(
+        tmp_path,
+        ["write-task-tokens", str(task_dir)],
+    )
+    assert result.returncode == 0, result.stderr
+    (groundtruth / "log_bucket_name.txt").unlink()
+
+    result = _run_container_helper(
+        tmp_path,
+        [
+            "launch",
+            "/bin/echo",
+            "--bucket=${token.google_cloud_allowed_log_buckets}",
+        ],
+        {"TOOLATHLON_TASK_DIR": str(task_dir)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--bucket=abtesting_logging_123" in f"{result.stdout}\n{result.stderr}"
+
+
+def test_toolathlon_container_launch_wraps_google_cloud_mcp(tmp_path: Path) -> None:
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "token_key_session.py").write_text(
+        "all_token_key_session = {}\n"
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_uvx = fake_bin / "uvx"
+    fake_uvx.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+    fake_uvx.chmod(0o755)
+    runtime_dir = tmp_path / "runtime"
+
+    result = _run_container_helper(
+        tmp_path,
+        [
+            "launch",
+            str(fake_uvx),
+            "google-cloud-mcp",
+            "--project-id",
+            "toolathlon-bench",
+            "--allowed-buckets",
+            "promo-assets-for-b*",
+        ],
+        {
+            "TOOLATHLON_TASK_DIR": str(tmp_path),
+            "TOOLATHLON_RUNTIME_DIR": str(runtime_dir),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    out = f"{result.stdout}\n{result.stderr}"
+    assert "--from" in out
+    assert "google-cloud-mcp" in out
+    assert "python" in out
+    assert "google_cloud_mcp_pattern_wrapper.py" in out
+    assert "--allowed-buckets" in out
+    assert "promo-assets-for-b*" in out
+    wrapper = runtime_dir / "google_cloud_mcp_pattern_wrapper.py"
+    assert "_PatternSet" in wrapper.read_text()
 
 
 def test_toolathlon_container_launch_resolves_env(tmp_path: Path) -> None:
