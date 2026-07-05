@@ -38,11 +38,18 @@ See also: ``RolloutConfig`` for configuration dataclass.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import fcntl
+import hashlib
+import io
 import json
 import logging
+import os
+import re
 import shlex
 import shutil
+import tarfile
 import tempfile
 from dataclasses import replace
 from datetime import datetime
@@ -209,6 +216,7 @@ from benchflow.usage_tracking import (
 )
 
 logger = logging.getLogger(__name__)
+_SETUP_COMMAND_LOCK_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 _MCP_TRANSPORT_TO_ACP_TYPE = {
@@ -346,6 +354,142 @@ async def _install_native_task_mcp_config(
     )
 
 
+def _setup_command_lock_path(lock_name: str) -> Path:
+    lock_dir = Path(
+        os.environ.get(
+            "BENCHFLOW_SETUP_LOCK_DIR",
+            str(Path(tempfile.gettempdir()) / "benchflow-setup-locks"),
+        )
+    )
+    safe = _SETUP_COMMAND_LOCK_SAFE_RE.sub("-", lock_name).strip("-._") or "setup"
+    digest = hashlib.sha256(lock_name.encode("utf-8")).hexdigest()[:12]
+    return lock_dir / f"{safe[:80]}-{digest}.lock"
+
+
+@contextlib.asynccontextmanager
+async def _environment_setup_host_lock(lock_name: str):
+    lock_path = _setup_command_lock_path(lock_name)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as lock_file:
+        logger.info("Waiting for environment setup host lock %s", lock_name)
+        await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_EX)
+        logger.info("Acquired environment setup host lock %s", lock_name)
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_UN)
+            logger.info("Released environment setup host lock %s", lock_name)
+
+
+def _directory_to_tar_gz_b64(source_dir: Path) -> str:
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        for path in sorted(source_dir.rglob("*")):
+            tar.add(path, arcname=path.relative_to(source_dir))
+    return base64.b64encode(archive.getvalue()).decode("ascii")
+
+
+def _quote_dotenv_value(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _upsert_dotenv_value(path: Path, key: str, value: str) -> None:
+    lines = path.read_text().splitlines() if path.exists() else []
+    seen = False
+    out: list[str] = []
+    for raw in lines:
+        stripped = raw.strip()
+        prefix = ""
+        candidate = stripped
+        if candidate.startswith("export "):
+            prefix = "export "
+            candidate = candidate[len("export ") :].lstrip()
+        if candidate and not candidate.startswith("#") and "=" in candidate:
+            existing_key = candidate.split("=", 1)[0].strip()
+            if existing_key == key:
+                out.append(f"{prefix}{key}={_quote_dotenv_value(value)}")
+                seen = True
+                continue
+        out.append(raw)
+    if not seen:
+        if out and out[-1].strip():
+            out.append("")
+        out.append("# BenchFlow setup command capture")
+        out.append(f"{key}={_quote_dotenv_value(value)}")
+    path.write_text("\n".join(out) + "\n")
+
+
+async def _capture_setup_command_dir(
+    env: Any,
+    *,
+    source_dir: str,
+    target_env_var: str,
+    target_dotenv_path_env_var: str | None,
+    service: str,
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="benchflow-setup-capture-") as tmp:
+        local_dir = Path(tmp) / "capture"
+        await env.download_dir(source_dir, local_dir, service=service)
+        encoded = await asyncio.to_thread(_directory_to_tar_gz_b64, local_dir)
+    os.environ[target_env_var] = encoded
+    if target_dotenv_path_env_var:
+        dotenv_path = os.environ.get(target_dotenv_path_env_var)
+        if dotenv_path:
+            await asyncio.to_thread(
+                _upsert_dotenv_value, Path(dotenv_path), target_env_var, encoded
+            )
+            logger.info(
+                "Persisted setup command capture env var %s to dotenv file from %s",
+                target_env_var,
+                target_dotenv_path_env_var,
+            )
+    logger.info(
+        "Captured setup command directory %s into host env var %s",
+        source_dir,
+        target_env_var,
+    )
+
+
+async def _run_one_environment_setup_command(
+    env: Any,
+    command_config: Any,
+    *,
+    env_vars: dict[str, str] | None,
+    index: int,
+) -> None:
+    result = await env.exec(
+        command_config.command,
+        cwd=command_config.cwd,
+        env=env_vars,
+        timeout_sec=round(command_config.timeout_sec),
+        user=command_config.user,
+        service=command_config.service,
+    )
+    if getattr(result, "return_code", 0) != 0:
+        stdout = (getattr(result, "stdout", "") or "").strip()
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        detail = "\n".join(part for part in (stdout, stderr) if part)
+        if len(detail) > 4000:
+            detail = detail[:4000] + "\n... truncated ..."
+        raise RuntimeError(
+            f"environment setup command {index} failed with exit code "
+            f"{result.return_code}: {detail}"
+        )
+
+    capture_dir = getattr(command_config, "capture_dir", None)
+    capture_dir_b64_env = getattr(command_config, "capture_dir_b64_env", None)
+    if capture_dir and capture_dir_b64_env:
+        await _capture_setup_command_dir(
+            env,
+            source_dir=capture_dir,
+            target_env_var=capture_dir_b64_env,
+            target_dotenv_path_env_var=getattr(
+                command_config, "capture_dir_b64_env_file_var", None
+            ),
+            service=command_config.service,
+        )
+
+
 async def _run_environment_setup_commands(env: Any, task: Any) -> None:
     """Run task-authored setup commands after sandbox start, before agent install."""
 
@@ -364,23 +508,21 @@ async def _run_environment_setup_commands(env: Any, task: Any) -> None:
             command_config.service,
         )
         env_vars = resolve_env_vars(command_config.env) if command_config.env else None
-        result = await env.exec(
-            command_config.command,
-            cwd=command_config.cwd,
-            env=env_vars,
-            timeout_sec=round(command_config.timeout_sec),
-            user=command_config.user,
-            service=command_config.service,
-        )
-        if getattr(result, "return_code", 0) != 0:
-            stdout = (getattr(result, "stdout", "") or "").strip()
-            stderr = (getattr(result, "stderr", "") or "").strip()
-            detail = "\n".join(part for part in (stdout, stderr) if part)
-            if len(detail) > 4000:
-                detail = detail[:4000] + "\n... truncated ..."
-            raise RuntimeError(
-                f"environment setup command {index} failed with exit code "
-                f"{result.return_code}: {detail}"
+        host_lock = getattr(command_config, "host_lock", None)
+        if host_lock:
+            async with _environment_setup_host_lock(host_lock):
+                await _run_one_environment_setup_command(
+                    env,
+                    command_config,
+                    env_vars=env_vars,
+                    index=index,
+                )
+        else:
+            await _run_one_environment_setup_command(
+                env,
+                command_config,
+                env_vars=env_vars,
+                index=index,
             )
 
 
