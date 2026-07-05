@@ -437,13 +437,22 @@ def _toolathlon_task_toml(
                 },
             }
         )
-    setup_commands.append(
-        {
-            "command": _toolathlon_setup_command(task_name=task_name, variant=variant),
-            "cwd": "/workspace",
-            "timeout_sec": 1800.0,
-        }
-    )
+    final_setup_command: dict[str, Any] = {
+        "command": _toolathlon_setup_command(task_name=task_name, variant=variant),
+        "cwd": "/workspace",
+        "timeout_sec": 3600.0 if needs_notion_auth else 1800.0,
+    }
+    if needs_notion_auth:
+        # Notion OAuth refresh tokens rotate. The upstream in-container lock only
+        # protects one shared auth dir, while Daytona tasks run in separate
+        # sandboxes with separate extracted auth snapshots. Serialize the slow
+        # duplicate/move preprocess on the host and capture the rotated auth dir
+        # after success so the next task starts from the current refresh token.
+        final_setup_command["host_lock"] = "toolathlon-notion-official-mcp"
+        final_setup_command["capture_dir"] = _TOOLATHLON_NOTION_MCP_AUTH_DIR
+        final_setup_command["capture_dir_b64_env"] = "TOOLATHLON_NOTION_MCP_AUTH_B64"
+        final_setup_command["capture_dir_b64_env_file_var"] = "BENCHFLOW_DOTENV_PATH"
+    setup_commands.append(final_setup_command)
     if _toolathlon_services.K8S in services:
         setup_commands.append(
             {
@@ -767,7 +776,7 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
             # ENVIRONMENT (missing module/dependency, permission denied) — which
             # a rerun cannot fix and which should surface, not silently score 0.
             "elif grep -qE "
-            "'ModuleNotFoundError|ImportError|PermissionError: ' \"$EVAL_LOG\"; then",
+            "'^(ModuleNotFoundError|ImportError|PermissionError): ' \"$EVAL_LOG\"; then",
             '  echo "BenchFlow Toolathlon verifier setup error: evaluator environment failure" >&2',
             '  exit "$status"',
             "else",

@@ -53,6 +53,7 @@ from benchflow._utils.scoring import (
     PROVIDER_AUTH,
     PROVIDER_RATE_LIMIT,
     PROVIDER_REJECTED,
+    SANDBOX_SETUP,
     SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
@@ -258,7 +259,7 @@ class RetryConfig:
             return True
         if self.retry_on_idle_timeout and category == IDLE_TIMEOUT:
             return True
-        if self.retry_on_infra and category == INFRA_ERROR:
+        if self.retry_on_infra and category in {INFRA_ERROR, SANDBOX_SETUP}:
             return True
         if category == API_ERROR:
             # Transient-only: rate limit / provider 5xx self-heal on backoff;

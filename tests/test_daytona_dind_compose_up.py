@@ -10,13 +10,21 @@ retry, fails CI.
 from __future__ import annotations
 
 import logging
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.daytona import _DaytonaDinD
-from benchflow.sandbox.daytona_dind import _positive_int_env
+from benchflow.sandbox.daytona_dind import (
+    _is_daytona_sdk_error,
+    _is_sandbox_disappeared_error,
+    _positive_int_env,
+    _raise_if_startup_provider_error,
+    _with_long_exec_heartbeat,
+)
+from benchflow.sandbox.protocol import SandboxStartupError
 
 
 def _strategy(build_timeout_sec: float):
@@ -95,16 +103,73 @@ def test_docker_daemon_timeout_env_accepts_only_positive_ints(monkeypatch):
     """Guards the 2026-07-01 native-adapter hardening change."""
 
     monkeypatch.delenv("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", raising=False)
-    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180) == 180
+    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 600) == 600
 
     monkeypatch.setenv("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", "240")
-    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180) == 240
+    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 600) == 240
 
     monkeypatch.setenv("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", "0")
-    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180) == 180
+    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 600) == 600
 
     monkeypatch.setenv("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", "not-int")
-    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180) == 180
+    assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 600) == 600
+
+
+def test_sandbox_disappeared_marker_is_structured_startup_error():
+    exc = RuntimeError(
+        "Failed to get session command: not found: sandbox container not found: "
+        "failed to inspect sandbox container sb-123: No such container"
+    )
+    assert _is_sandbox_disappeared_error(exc)
+    env = SimpleNamespace(
+        _sandbox=SimpleNamespace(id="sb-123"),
+        task_env_config=SimpleNamespace(build_timeout_sec=2400),
+    )
+    with pytest.raises(SandboxStartupError) as raised:
+        _raise_if_startup_provider_error(env, exc)
+    assert raised.value.diagnostic.sandbox_id == "sb-123"
+    assert raised.value.diagnostic.sandbox_state == "not_found"
+
+
+def test_daytona_sdk_error_during_dind_start_is_structured_startup_error():
+    daytona_error_type = type(
+        "DaytonaError",
+        (Exception,),
+        {"__module__": "daytona.common.errors"},
+    )
+    exc = daytona_error_type("Failed to get session command: ")
+    assert _is_daytona_sdk_error(exc)
+    env = SimpleNamespace(
+        _sandbox=SimpleNamespace(id="sb-456"),
+        task_env_config=SimpleNamespace(build_timeout_sec=1800),
+    )
+    with pytest.raises(SandboxStartupError) as raised:
+        _raise_if_startup_provider_error(env, exc)
+    assert raised.value.diagnostic.sandbox_id == "sb-456"
+    assert "Daytona DinD startup failed" in str(raised.value)
+
+
+def test_long_exec_heartbeat_only_wraps_long_commands():
+    command = "python preprocess.py"
+    assert _with_long_exec_heartbeat(command, 599) == command
+    wrapped = _with_long_exec_heartbeat(command, 600)
+    assert command in wrapped
+    assert "Daytona DinD command still running" in wrapped
+    assert 'exit "$bf_rc"' in wrapped
+
+
+def test_long_exec_heartbeat_returns_promptly_after_fast_command():
+    wrapped = _with_long_exec_heartbeat("printf done", 600)
+    result = subprocess.run(
+        ["bash", "-lc", wrapped],
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=2,
+    )
+
+    assert result.stdout == "done"
+    assert result.stderr == ""
 
 
 @pytest.mark.asyncio

@@ -194,7 +194,7 @@ params:
     # A non-zero evaluator exit is a task fail (reward 0), matching upstream's
     # exit-code scoring; only a broken evaluator ENVIRONMENT escalates.
     assert "evaluator environment failure" in test_sh
-    assert "ModuleNotFoundError|ImportError|PermissionError" in test_sh
+    assert "^(ModuleNotFoundError|ImportError|PermissionError): " in test_sh
     assert "Traceback (most recent call last):" not in test_sh
     assert "/usr/local/bin/uv run python" in test_sh
     assert "toolathlon_container.py write-task-tokens" in setup_command
@@ -277,6 +277,35 @@ def test_toolathlon_email_task_gets_poste_sidecar(tmp_path: Path, monkeypatch) -
     # Non-email task: single container, no compose.
     other = adapted.path / "find-alita-paper"
     assert not (other / "environment" / "docker-compose.yaml").exists()
+
+
+def test_toolathlon_notion_task_gets_extended_preprocess_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Notion page duplication can exceed the generic 30m setup budget."""
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "Toolathlon"
+    finalpool = _write_toolathlon_repo_skeleton(repo)
+    (repo / "configs" / "mcp_servers" / "notion.yaml").write_text(
+        "type: stdio\nname: notion\nparams:\n  command: npx\n"
+        '  args: ["@notionhq/notion-mcp-server", "--page-id", "${token.notion_allowed_page_ids}"]\n'
+    )
+    _write_toolathlon_task(finalpool, "notion-hr", ["notion"])
+
+    adapted = adapt_resolved_source_if_needed(
+        _resolved(
+            repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool", sha="e" * 40
+        )
+    )
+
+    task = Task(adapted.path / "notion-hr")
+    commands = task.config.environment.setup_commands
+    assert any("TOOLATHLON_NOTION_MCP_AUTH_B64" in c.command for c in commands)
+    assert commands[-1].timeout_sec == 3600.0
+    assert commands[-1].host_lock == "toolathlon-notion-official-mcp"
+    assert commands[-1].capture_dir == "/workspace/configs/.mcp-auth"
+    assert commands[-1].capture_dir_b64_env == "TOOLATHLON_NOTION_MCP_AUTH_B64"
+    assert commands[-1].capture_dir_b64_env_file_var == "BENCHFLOW_DOTENV_PATH"
 
 
 def test_toolathlon_fake_mail_records_sender_sent(tmp_path: Path) -> None:
@@ -532,6 +561,12 @@ def test_toolathlon_canvas_task_reseeds_tokens_on_first_boot(
     assert "account_user.workflow_state = 'active'" in seed
     task = Task(adapted.path / "canvas-list-test")
     assert task.config.environment.build_timeout_sec == 2400
+    rewrite = next(
+        c.command
+        for c in task.config.environment.setup_commands
+        if "canvas-rewrite" in c.command
+    )
+    assert "/workspace/utils/app_specific/canvas" in rewrite
 
 
 def test_toolathlon_gym_adapter_normalizes_postgres_env(
