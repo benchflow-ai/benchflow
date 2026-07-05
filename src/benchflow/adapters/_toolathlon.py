@@ -3,22 +3,45 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shlex
 import shutil
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
 import tomli_w
 import yaml
 
+from benchflow.adapters import _toolathlon_services
+
+logger = logging.getLogger(__name__)
+
 _NOOP_EXCLUDE_TAG = "__benchflow_exclude_no_tools__"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
-_TOKEN_PLACEHOLDER_RE = re.compile(r"\$\{token\.([A-Za-z0-9_]+)\}")
 _TOOLATHLON_UVX_PACKAGE_PINS = {
     "office-word-mcp-server": "office-word-mcp-server==1.1.11",
 }
+_TOOLATHLON_NPX_PACKAGE_PINS = {
+    # Pin so mcp-remote's on-disk token path (mcp-remote-<ver>/) matches the
+    # OAuth dir injected by the notion mcp-auth setup command.
+    "mcp-remote": "mcp-remote@0.1.37",
+}
+# Absolute location the notion_official server reads its OAuth token from (the
+# upstream config uses a cwd-relative ./configs/.mcp-auth).
+_TOOLATHLON_NOTION_MCP_AUTH_DIR = "/workspace/configs/.mcp-auth"
+# The pre-registered OAuth client info (captured at token-authorization time).
+# Passing it via --static-oauth-client-info stops mcp-remote from dynamically
+# re-registering a new client on each run (which invalidates the stored token
+# and forces an interactive re-auth); with it, mcp-remote refreshes the injected
+# token headlessly. The hash is derived from the fixed server URL, so it is
+# stable as long as the pinned mcp-remote version + notion MCP URL don't change.
+_TOOLATHLON_NOTION_CLIENT_INFO = (
+    f"{_TOOLATHLON_NOTION_MCP_AUTH_DIR}/mcp-remote-0.1.37/"
+    "cb42d1a06ae8db4e5585a26f2e5ca947_client_info.json"
+)
 
 
 @dataclass(frozen=True)
@@ -27,8 +50,12 @@ class _ToolathlonCredentialSpec:
     env: str
     b64_env: str
     trigger_servers: tuple[str, ...] = ()
-    token_defaults: tuple[tuple[str, str], ...] = ()
     copy_paths: tuple[str, ...] = ()
+    # "json" payloads are validated as JSON before writing; "pem" ones (e.g. a
+    # Snowflake private key) are opaque bytes written verbatim.
+    content_format: str = "json"
+    # Private keys must not be world-readable; JSON creds keep 0644.
+    file_mode: int = 0o644
 
 
 _TOOLATHLON_CREDENTIAL_SPECS = (
@@ -37,28 +64,12 @@ _TOOLATHLON_CREDENTIAL_SPECS = (
         env="TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON",
         b64_env="TOOLATHLON_GCP_SERVICE_ACCOUNT_JSON_B64",
         trigger_servers=("google-cloud",),
-        token_defaults=(
-            (
-                "gcp_service_account_path",
-                "/workspace/configs/gcp-service_account.keys.json",
-            ),
-        ),
     ),
     _ToolathlonCredentialSpec(
         path="configs/google_credentials.json",
         env="TOOLATHLON_GOOGLE_CREDENTIALS_JSON",
         b64_env="TOOLATHLON_GOOGLE_CREDENTIALS_JSON_B64",
         trigger_servers=("google_calendar", "google_sheet"),
-        token_defaults=(
-            (
-                "google_oauth2_credentials_path",
-                "/workspace/configs/google_credentials.json",
-            ),
-            (
-                "google_oauth2_token_path",
-                "/workspace/agent_workspace/.toolathlon/google_credentials.json",
-            ),
-        ),
         copy_paths=(
             "agent_workspace/.toolathlon/google_credentials.json",
             "agent_workspace/.toolathlon/calendar_credentials.json",
@@ -69,6 +80,15 @@ _TOOLATHLON_CREDENTIAL_SPECS = (
         env="TOOLATHLON_GCP_OAUTH_KEYS_JSON",
         b64_env="TOOLATHLON_GCP_OAUTH_KEYS_JSON_B64",
         trigger_servers=("google_calendar",),
+        copy_paths=("/root/.calendar-mcp/gcp-oauth.keys.json", "gcp-oauth.keys.json"),
+    ),
+    _ToolathlonCredentialSpec(
+        path="configs/snowflake_rsa_key.p8",
+        env="TOOLATHLON_SNOWFLAKE_RSA_KEY",
+        b64_env="TOOLATHLON_SNOWFLAKE_RSA_KEY_B64",
+        trigger_servers=("snowflake",),
+        content_format="pem",
+        file_mode=0o600,
     ),
 )
 _TOOLATHLON_CREDENTIALS_BY_PATH = {
@@ -77,11 +97,63 @@ _TOOLATHLON_CREDENTIALS_BY_PATH = {
 _TOOLATHLON_CREDENTIAL_REF_RE = re.compile(
     "|".join(re.escape(spec.path) for spec in _TOOLATHLON_CREDENTIAL_SPECS)
 )
-_TOOLATHLON_TOKEN_DEFAULTS = {
-    token: value
-    for spec in _TOOLATHLON_CREDENTIAL_SPECS
-    for token, value in spec.token_defaults
-}
+
+# ``token.X`` values baked into the container-side global
+# ``token_key_session.py`` (see ``_toolathlon_container._GLOBAL_TOKENS``),
+# resolved host-side from BenchFlow's environment/.env at setup time. Most are
+# secrets; a few (Snowflake warehouse/schema, the Notion source/eval page URLs)
+# are non-secret per-deployment config carried through the same channel.
+_TOOLATHLON_TOKEN_SECRET_ENVS = (
+    "TOOLATHLON_GCP_PROJECT_ID",
+    "TOOLATHLON_MAPS_API_KEY",
+    "TOOLATHLON_SERPER_API_KEY",
+    "TOOLATHLON_GITHUB_TOKEN",
+    "TOOLATHLON_HF_TOKEN",
+    "TOOLATHLON_WANDB_API_KEY",
+    "TOOLATHLON_NOTION_KEY",
+    "TOOLATHLON_NOTION_KEY_EVAL",
+    "TOOLATHLON_NOTION_SOURCE_PAGE_URL",
+    "TOOLATHLON_NOTION_EVAL_PAGE_URL",
+    "TOOLATHLON_GOOGLE_CLIENT_ID",
+    "TOOLATHLON_GOOGLE_CLIENT_SECRET",
+    "TOOLATHLON_GOOGLE_REFRESH_TOKEN",
+    "TOOLATHLON_SNOWFLAKE_ACCOUNT",
+    "TOOLATHLON_SNOWFLAKE_USER",
+    "TOOLATHLON_SNOWFLAKE_ROLE",
+    "TOOLATHLON_SNOWFLAKE_WAREHOUSE",
+    "TOOLATHLON_SNOWFLAKE_DATABASE",
+    "TOOLATHLON_SNOWFLAKE_SCHEMA",
+)
+
+_TOOLATHLON_CONTAINER_MODULE_PATH = "/workspace/.toolathlon/toolathlon_container.py"
+
+# MCP server flags whose value is a working DIRECTORY the server (and the task's
+# evaluator) expect to exist. Upstream servers create these lazily, so an agent
+# that never exercises the server leaves the directory absent and evaluators
+# that ``os.listdir`` it crash. The launcher ``mkdir -p``s these. Explicit
+# allow-list, not a heuristic: every entry takes a directory (never a file).
+_TOOLATHLON_MCP_DIR_ARG_FLAGS = frozenset(
+    {
+        "--storage-path",
+        "--attachment_download_path",
+        "--attachment_upload_path",
+        "--email_export_path",
+    }
+)
+
+
+def _toolathlon_container_python(variant: str) -> str:
+    # Absolute so FastMCP can spawn the launcher even without PATH in the MCP
+    # server subprocess environment.
+    return "/opt/venv/bin/python3" if variant == "gym" else "/usr/bin/python3"
+
+
+def _toolathlon_container_module_source() -> str:
+    return (
+        resources.files("benchflow.adapters")
+        .joinpath("_toolathlon_container.py")
+        .read_text()
+    )
 
 
 def _safe_name(value: str) -> str:
@@ -131,10 +203,35 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
         credential_refs = _toolathlon_credential_refs_for_task(
             upstream_task, task_config, variant=variant
         )
-        mcp_servers = [
-            _toolathlon_mcp_server(ctx, server_name, variant=variant)
-            for server_name in task_config.get("needed_mcp_servers", [])
-        ]
+        services = (
+            _toolathlon_services.required_services(upstream_task)
+            if variant == "official"
+            else set()
+        )
+        # Any task using the notion server duplicates its source page in
+        # preprocess via notion_official (mcp-remote OAuth), so it needs the
+        # injected auth even though notion_official isn't in needed_mcp_servers.
+        needs_notion_auth = variant == "official" and "notion" in (
+            task_config.get("needed_mcp_servers") or []
+        )
+        mcp_servers = []
+        for server_name in task_config.get("needed_mcp_servers", []):
+            try:
+                mcp_servers.append(
+                    _toolathlon_mcp_server(
+                        ctx, server_name, variant=variant, task_name=task_name
+                    )
+                )
+            except FileNotFoundError:
+                # ``task_config`` may name a local harness tool (e.g.
+                # ``web_search``) rather than an MCP server — upstream resolves
+                # those from its agent-tool registry, so no configs/mcp_servers
+                # yaml exists. Drop it instead of failing the adaptation.
+                logger.warning(
+                    "Toolathlon task %s: no MCP config for %r; dropping server",
+                    task_name,
+                    server_name,
+                )
 
         _write_text(task_dir / "instruction.md", _toolathlon_instruction(upstream_task))
         _write_toml(
@@ -145,11 +242,13 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
                 mcp_servers=mcp_servers,
                 variant=variant,
                 credential_refs=credential_refs,
+                services=services,
+                needs_notion_auth=needs_notion_auth,
             ),
         )
         _write_text(
             task_dir / "environment" / "Dockerfile",
-            _toolathlon_dockerfile(ctx, variant=variant),
+            _toolathlon_dockerfile(ctx, variant=variant, services=services),
         )
         if variant == "gym":
             _write_text(
@@ -161,6 +260,10 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
                 db_dst = task_dir / "environment" / "db" / "init.sql.gz"
                 db_dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(db_src, db_dst)
+        elif services:
+            _toolathlon_services.apply_service_sidecars(
+                task_dir, services, source_root=ctx.repo_root
+            )
         _write_text(
             task_dir / "tests" / "test.sh",
             _toolathlon_test_sh(task_name=task_name, variant=variant),
@@ -208,6 +311,45 @@ def _toolathlon_instruction(task_dir: Path) -> str:
     return system_prompt.rstrip() + "\n\n" + prompt.rstrip() + "\n"
 
 
+_TOOLATHLON_NOTION_OFFICIAL_YAML = f"""type: stdio
+name: notion_official
+params:
+  command: "npx"
+  args:
+    - "mcp-remote@0.1.37"
+    - "https://mcp.notion.com/mcp"
+    - "--static-oauth-client-info"
+    - "@{_TOOLATHLON_NOTION_CLIENT_INFO}"
+  env:
+    MCP_REMOTE_CONFIG_DIR: "{_TOOLATHLON_NOTION_MCP_AUTH_DIR}"
+client_session_timeout_seconds: 100
+cache_tools_list: true
+"""
+
+
+def _toolathlon_notion_mcp_auth_command() -> str:
+    """Unpack the mcp-remote OAuth token and overwrite ``notion_official.yaml`` so
+    the preprocess page-duplication (which spawns mcp-remote from that yaml, not
+    from benchflow's MCP wiring) pins the version, uses the absolute auth dir, and
+    reuses the pre-registered client — refreshing the token headlessly. The yaml
+    is rewritten wholesale (no in-container yaml parser needed)."""
+    return "\n".join(
+        [
+            "set -e",
+            f"mkdir -p {_TOOLATHLON_NOTION_MCP_AUTH_DIR}",
+            'if [ -n "${TOOLATHLON_NOTION_MCP_AUTH_B64:-}" ]; then',
+            f'  printf %s "$TOOLATHLON_NOTION_MCP_AUTH_B64" | base64 -d '
+            f"| tar xz --warning=no-unknown-keyword -C {_TOOLATHLON_NOTION_MCP_AUTH_DIR}",
+            "else",
+            '  echo "TOOLATHLON_NOTION_MCP_AUTH_B64 not set; notion page-dup will fail"',
+            "fi",
+            "cat > /workspace/configs/mcp_servers/notion_official.yaml <<'NOTION_YAML'",
+            _TOOLATHLON_NOTION_OFFICIAL_YAML.rstrip("\n"),
+            "NOTION_YAML",
+        ]
+    )
+
+
 def _toolathlon_task_toml(
     ctx: Any,
     *,
@@ -215,9 +357,20 @@ def _toolathlon_task_toml(
     mcp_servers: list[dict[str, Any]],
     variant: str,
     credential_refs: set[str],
+    services: set[str] | None = None,
+    needs_notion_auth: bool = False,
 ) -> dict[str, Any]:
+    services = services or set()
     benchmark_name = "toolathlon-gym" if variant == "gym" else "toolathlon"
     setup_commands: list[dict[str, Any]] = []
+    setup_commands.append(
+        {
+            "command": _toolathlon_token_setup_command(variant),
+            "cwd": "/workspace",
+            "timeout_sec": 60.0,
+            "env": _toolathlon_token_setup_env(),
+        }
+    )
     credential_command = _toolathlon_credential_setup_command(credential_refs)
     if credential_command:
         setup_commands.append(
@@ -228,21 +381,89 @@ def _toolathlon_task_toml(
                 "env": _toolathlon_credential_setup_env(credential_refs),
             }
         )
+    if (
+        _toolathlon_services.POSTE in services
+        and _toolathlon_services.K8S not in services
+    ):
+        # Point the task's localhost mail configs at the poste sidecar before
+        # preprocess (which seeds mailboxes) runs. k8s tasks use host
+        # networking so the poste sidecar is published on upstream localhost
+        # ports instead.
+        setup_commands.append(
+            {
+                "command": _toolathlon_services.poste_config_rewrite_command(task_name),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+            }
+        )
+    if _toolathlon_services.WOO in services:
+        setup_commands.append(
+            {
+                "command": _toolathlon_services.woo_config_rewrite_command(task_name),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+            }
+        )
+    if _toolathlon_services.K8S in services:
+        setup_commands.append(
+            {
+                "command": _toolathlon_services.k8s_runtime_probe_command(),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+            }
+        )
+    if _toolathlon_services.CANVAS in services:
+        setup_commands.append(
+            {
+                "command": _toolathlon_services.canvas_config_rewrite_command(
+                    task_name
+                ),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+            }
+        )
+    if needs_notion_auth:
+        # Unpack the pre-authorized notion_official OAuth token so the in-sandbox
+        # mcp-remote can duplicate the source page during preprocess.
+        setup_commands.append(
+            {
+                "command": _toolathlon_notion_mcp_auth_command(),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+                "env": {
+                    "TOOLATHLON_NOTION_MCP_AUTH_B64": (
+                        "${TOOLATHLON_NOTION_MCP_AUTH_B64}"
+                    )
+                },
+            }
+        )
     setup_commands.append(
         {
             "command": _toolathlon_setup_command(task_name=task_name, variant=variant),
             "cwd": "/workspace",
-            "timeout_sec": 600.0,
+            "timeout_sec": 1800.0,
         }
     )
+    # Service tasks run a DinD compose with sidecar containers alongside main —
+    # give the sandbox extra memory/disk for the second image + running service.
+    needs_k8s = _toolathlon_services.K8S in services
     environment: dict[str, Any] = {
-        "cpus": 4,
-        "memory_mb": 8192,
-        "storage_mb": 10240,
+        "cpus": 6 if needs_k8s else 4,
+        "memory_mb": 16384 if needs_k8s else 12288 if services else 8192,
+        "storage_mb": 49152 if needs_k8s else 24576 if services else 10240,
         "workdir": "/workspace/agent_workspace",
         "mcp_servers": mcp_servers,
         "setup_commands": setup_commands,
     }
+    if services:
+        # Canvas/Woo first-boot provisioning happens during compose up, and k8s
+        # kind bootstrap can pull/build several images. Give compose the same
+        # class of budget as Toolathlon preprocess rather than the default 10m.
+        environment["build_timeout_sec"] = (
+            2400.0
+            if ({_toolathlon_services.CANVAS, _toolathlon_services.WOO} & services)
+            else 1800.0
+        )
     if variant == "gym":
         environment["env"] = _TOOLATHLON_GYM_ENV
 
@@ -301,9 +522,11 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
     specs = [
         {
             "path": spec.path,
-            "json_env": spec.env,
+            "raw_env": spec.env,
             "b64_env": spec.b64_env,
             "copy_paths": list(spec.copy_paths),
+            "content_format": spec.content_format,
+            "file_mode": spec.file_mode,
         }
         for ref in sorted(credential_refs)
         for spec in (_TOOLATHLON_CREDENTIALS_BY_PATH[ref],)
@@ -325,7 +548,7 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
             "    if target.exists():",
             "        payload = target.read_bytes()",
             "    else:",
-            "        raw = os.environ.get(spec['json_env']) or ''",
+            "        raw = os.environ.get(spec['raw_env']) or ''",
             "        b64 = os.environ.get(spec['b64_env']) or ''",
             "        if raw:",
             "            payload = raw.encode()",
@@ -339,25 +562,30 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
             "                sys.exit(66)",
             "        else:",
             "            missing.append(",
-            "                f\"{spec['path']} ({spec['json_env']} or {spec['b64_env']})\"",
+            "                f\"{spec['path']} ({spec['raw_env']} or {spec['b64_env']})\"",
             "            )",
             "            continue",
-            "    try:",
-            "        json.loads(payload.decode())",
-            "    except Exception as exc:",
-            "        sys.stderr.write(",
-            "            f\"BenchFlow Toolathlon credential setup error: invalid JSON for {spec['path']}: {exc}\\n\"",
-            "        )",
-            "        sys.exit(66)",
+            "    if spec['content_format'] == 'json':",
+            "        try:",
+            "            json.loads(payload.decode())",
+            "        except Exception as exc:",
+            "            sys.stderr.write(",
+            "                f\"BenchFlow Toolathlon credential setup error: invalid JSON for {spec['path']}: {exc}\\n\"",
+            "            )",
+            "            sys.exit(66)",
+            "    mode = spec['file_mode']",
             "    if not target.exists():",
             "        target.parent.mkdir(parents=True, exist_ok=True)",
             "        target.write_bytes(payload)",
-            "        target.chmod(0o644)",
+            "        target.chmod(mode)",
             "    for rel in spec.get('copy_paths', []):",
             "        copy = workspace / rel",
-            "        copy.parent.mkdir(parents=True, exist_ok=True)",
-            "        copy.write_bytes(payload)",
-            "        copy.chmod(0o644)",
+            "        try:",
+            "            copy.parent.mkdir(parents=True, exist_ok=True)",
+            "            copy.write_bytes(payload)",
+            "            copy.chmod(mode)",
+            "        except OSError:",
+            "            pass",
             "if missing:",
             "    sys.stderr.write(",
             "        'BenchFlow Toolathlon credential setup error: missing '",
@@ -370,29 +598,87 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
     )
 
 
+def _toolathlon_token_setup_env() -> dict[str, str]:
+    """Env for the token-setup command: the container helper (base64) plus the
+    secret token values, resolved host-side from BenchFlow's environment/.env."""
+    import base64
+
+    module_b64 = base64.b64encode(
+        _toolathlon_container_module_source().encode()
+    ).decode()
+    env: dict[str, str] = {"TOOLATHLON_CONTAINER_MODULE_B64": module_b64}
+    for name in _TOOLATHLON_TOKEN_SECRET_ENVS:
+        env[name] = f"${{{name}:-}}"
+    return env
+
+
+def _toolathlon_token_setup_command(variant: str) -> str:
+    """Stage the container helper and generate the global token_key_session.py.
+
+    The helper is decoded from ``TOOLATHLON_CONTAINER_MODULE_B64`` and its
+    ``write-config`` mode bakes the injected secret tokens into
+    ``/workspace/configs/token_key_session.py`` (gitignored upstream, so absent
+    from the image). MCP servers later resolve ``${token.X}`` against it via the
+    same helper's ``launch`` mode.
+    """
+    python_cmd = _toolathlon_container_python(variant)
+    module_path = shlex.quote(_TOOLATHLON_CONTAINER_MODULE_PATH)
+    return "\n".join(
+        [
+            "set -e",
+            "mkdir -p /workspace/.toolathlon",
+            f"{python_cmd} - <<'PY'",
+            "import base64, os, pathlib",
+            f"target = pathlib.Path({_TOOLATHLON_CONTAINER_MODULE_PATH!r})",
+            "target.write_bytes(",
+            "    base64.b64decode(os.environ['TOOLATHLON_CONTAINER_MODULE_B64'])",
+            ")",
+            "target.chmod(0o755)",
+            "PY",
+            "chmod -R a+rX /workspace/.toolathlon",
+            f"{python_cmd} {module_path} write-config",
+            "chmod 0644 /workspace/configs/token_key_session.py",
+        ]
+    )
+
+
 def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
     python_cmd = (
         "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
     )
     task_path = f"/workspace/tasks/finalpool/{task_name}"
+    # Run preprocess as the full ``tasks.finalpool.<task>.preprocess.main`` module
+    # from /workspace — exactly as upstream does — so ``from ..utils`` relative
+    # imports resolve (running it as a bare ``preprocess.main`` breaks them).
+    preprocess_module = f"tasks.finalpool.{task_name}.preprocess.main"
     return "\n".join(
         [
             "set -e",
-            "mkdir -p /workspace/agent_workspace",
+            "mkdir -p /workspace/agent_workspace /workspace/.toolathlon",
             f"TASK_DIR={shlex.quote(task_path)}",
+            # A single launch_time shared by preprocess and the verifier, matching
+            # upstream's ``datetime.now().strftime('%Y-%m-%d %H:%M:%S %A')``.
+            "if [ ! -f /workspace/.toolathlon/launch_time.txt ]; then",
+            "  date -u '+%Y-%m-%d %H:%M:%S %A' > /workspace/.toolathlon/launch_time.txt",
+            "fi",
             'if [ -d "$TASK_DIR/initial_workspace" ]; then',
             '  cp -a "$TASK_DIR/initial_workspace/." /workspace/agent_workspace/',
             "fi",
             'if [ -f "$TASK_DIR/preprocess/main.py" ]; then',
             '  TASK_DIR="$TASK_DIR" AGENT_WORKSPACE=/workspace/agent_workspace '
-            'PYTHONPATH="$TASK_DIR:/workspace:${PYTHONPATH:-}" '
+            'PYTHONPATH="/workspace:${PYTHONPATH:-}" '
             f"{python_cmd} - <<'PY'",
             "import os, runpy, sys",
-            "task_dir = os.environ['TASK_DIR']",
-            "sys.path.insert(0, task_dir)",
             "sys.path.insert(0, '/workspace')",
-            "sys.argv = ['preprocess.main', '--agent_workspace', os.environ['AGENT_WORKSPACE']]",
-            "runpy.run_module('preprocess.main', run_name='__main__')",
+            "argv = ['preprocess.main', '--agent_workspace', os.environ['AGENT_WORKSPACE']]",
+            # Only pass --launch_time to scripts that declare it; argparse errors
+            # on unknown args for the ones that don't.
+            "src = open(os.environ['TASK_DIR'] + '/preprocess/main.py').read()",
+            "if 'launch_time' in src:",
+            "    lt = open('/workspace/.toolathlon/launch_time.txt').read().strip()",
+            "    argv += ['--launch_time', lt]",
+            "sys.argv = argv",
+            f"runpy.run_module({preprocess_module!r}, run_name='__main__')",
             "PY",
             "fi",
             'for private in "$TASK_DIR/groundtruth_workspace" "$TASK_DIR/evaluation"; do',
@@ -410,6 +696,9 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
     python_cmd = (
         "/opt/venv/bin/python3" if variant == "gym" else "/usr/local/bin/uv run python"
     )
+    # Full module path from /workspace (as upstream) so ``from ..`` relative
+    # imports in evaluators resolve.
+    eval_module = f"tasks.finalpool.{task_name}.evaluation.main"
     task_path = f"/workspace/tasks/finalpool/{task_name}"
     interpreter_check = []
     if variant == "official":
@@ -435,19 +724,22 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
             "set +e",
             'TASK_DIR="$TASK_DIR" AGENT_WORKSPACE="$AGENT_WORKSPACE" '
             'GROUNDTRUTH="$GROUNDTRUTH" RES_LOG="$RES_LOG" '
-            'PYTHONPATH="$TASK_DIR:/workspace:${PYTHONPATH:-}" '
+            'PYTHONPATH="/workspace:${PYTHONPATH:-}" '
             f"{python_cmd} - <<'PY' > \"$EVAL_LOG\" 2>&1",
             "import os, runpy, sys",
-            "task_dir = os.environ['TASK_DIR']",
-            "sys.path.insert(0, task_dir)",
             "sys.path.insert(0, '/workspace')",
-            "sys.argv = [",
+            "argv = [",
             "    'evaluation.main',",
             "    '--agent_workspace', os.environ['AGENT_WORKSPACE'],",
             "    '--groundtruth_workspace', os.environ['GROUNDTRUTH'],",
             "    '--res_log_file', os.environ['RES_LOG'],",
             "]",
-            "runpy.run_module('evaluation.main', run_name='__main__')",
+            "src = open(os.environ['TASK_DIR'] + '/evaluation/main.py').read()",
+            "lt_path = '/workspace/.toolathlon/launch_time.txt'",
+            "if 'launch_time' in src and os.path.exists(lt_path):",
+            "    argv += ['--launch_time', open(lt_path).read().strip()]",
+            "sys.argv = argv",
+            f"runpy.run_module({eval_module!r}, run_name='__main__')",
             "PY",
             "status=$?",
             "set -u",
@@ -455,8 +747,16 @@ def _toolathlon_test_sh(*, task_name: str, variant: str) -> str:
             'if [ "$status" -eq 0 ]; then',
             "  printf '{\"reward\": 1.0}\\n' > /logs/verifier/reward.json",
             "  printf '1.0\\n' > /logs/verifier/reward.txt",
-            "elif grep -q 'Traceback (most recent call last):' \"$EVAL_LOG\"; then",
-            '  echo "BenchFlow Toolathlon verifier setup error: evaluator crashed" >&2',
+            # Upstream evaluators score by exit code: a non-zero exit is a task
+            # FAIL (reward 0), and several signal failure by *raising* (e.g.
+            # ``raise ValueError('Some tests FAILED')``) rather than returning
+            # False. So a traceback alone is not an infra error. Only escalate on
+            # signatures that can't be an agent failure — a broken evaluator
+            # ENVIRONMENT (missing module/dependency, permission denied) — which
+            # a rerun cannot fix and which should surface, not silently score 0.
+            "elif grep -qE "
+            "'ModuleNotFoundError|ImportError|PermissionError: ' \"$EVAL_LOG\"; then",
+            '  echo "BenchFlow Toolathlon verifier setup error: evaluator environment failure" >&2',
             '  exit "$status"',
             "else",
             "  printf '{\"reward\": 0.0}\\n' > /logs/verifier/reward.json",
@@ -477,11 +777,15 @@ _TOOLATHLON_SERVER_ALIASES = {
 
 
 def _toolathlon_mcp_server(
-    ctx: Any, server_name: str, *, variant: str
+    ctx: Any, server_name: str, *, variant: str, task_name: str
 ) -> dict[str, Any]:
     config_path = _toolathlon_mcp_config_path(ctx, server_name)
     data = yaml.safe_load(config_path.read_text())
     params = data.get("params") or {}
+    # Static path placeholders (``${agent_workspace}`` …) resolve to fixed
+    # in-container paths now; ``${token.X}`` are left intact and resolved at
+    # spawn time by the container launcher, the only layer that sees per-task
+    # and runtime-computed token values.
     command = _replace_toolathlon_placeholders(
         str(params.get("command", "")), variant=variant
     )
@@ -502,21 +806,46 @@ def _toolathlon_mcp_server(
         )
     cwd = params.get("cwd")
     cwd = _replace_toolathlon_placeholders(str(cwd), variant=variant) if cwd else None
-    if variant == "official" and command in {"uv", "uvx"}:
+    if command in {"uv", "uvx"}:
         command = f"/usr/local/bin/{command}"
         if args:
             args = [_TOOLATHLON_UVX_PACKAGE_PINS.get(arg, arg) for arg in args]
+    if command == "npx" and args:
+        # Pin mcp-remote so its on-disk token path (mcp-remote-<ver>/) matches the
+        # injected OAuth dir, and make the auth dir absolute so it resolves
+        # regardless of the server's cwd (see the notion mcp-auth setup command).
+        args = [_TOOLATHLON_NPX_PACKAGE_PINS.get(arg, arg) for arg in args]
+        if "MCP_REMOTE_CONFIG_DIR" in env:
+            env["MCP_REMOTE_CONFIG_DIR"] = _TOOLATHLON_NOTION_MCP_AUTH_DIR
+            args = [
+                *args,
+                "--static-oauth-client-info",
+                f"@{_TOOLATHLON_NOTION_CLIENT_INFO}",
+            ]
+    # Wrap the real server in the container launcher so ``${token.X}`` in argv
+    # and env resolve at spawn time. ``TOOLATHLON_TASK_DIR`` tells the launcher
+    # which task's token_key_session.py overrides the global one.
+    env = dict(env)
+    env["TOOLATHLON_TASK_DIR"] = f"/workspace/tasks/finalpool/{task_name}"
+    ensure_dirs = [
+        args[i + 1]
+        for i, arg in enumerate(args[:-1])
+        if arg in _TOOLATHLON_MCP_DIR_ARG_FLAGS
+    ]
+    if ensure_dirs:
+        # ``:``-joined for the Linux container launcher (not os.pathsep, which
+        # would follow the host running the adapter).
+        env["TOOLATHLON_ENSURE_DIRS"] = ":".join(ensure_dirs)
     payload: dict[str, Any] = {
         "name": str(data.get("name") or server_name),
         "transport": "stdio",
-        "command": command,
-        "args": args,
+        "command": _toolathlon_container_python(variant),
+        "args": [_TOOLATHLON_CONTAINER_MODULE_PATH, "launch", command, *args],
+        "env": env,
         "exclude_tags": [_NOOP_EXCLUDE_TAG],
     }
     if cwd:
         payload["cwd"] = cwd
-    if env:
-        payload["env"] = env
     return payload
 
 
@@ -577,6 +906,13 @@ def _toolathlon_mcp_config_path(ctx: Any, server_name: str) -> Path:
 
 
 def _replace_toolathlon_placeholders(value: str, *, variant: str) -> str:
+    """Resolve static path placeholders to fixed in-container paths.
+
+    ``${token.X}`` placeholders are intentionally left untouched: they are
+    resolved at MCP spawn time by the container launcher (see
+    ``_toolathlon_container.py``), the only layer that can see per-task and
+    runtime-computed token values.
+    """
     local_servers = (
         "/opt/local_servers" if variant == "gym" else "/workspace/local_servers"
     )
@@ -588,27 +924,49 @@ def _replace_toolathlon_placeholders(value: str, *, variant: str) -> str:
     }
     for old, new in replacements.items():
         value = value.replace(old, new)
-
-    def token_replacement(match: re.Match[str]) -> str:
-        token_name = match.group(1)
-        if variant == "official" and token_name in _TOOLATHLON_TOKEN_DEFAULTS:
-            return _TOOLATHLON_TOKEN_DEFAULTS[token_name]
-        name = token_name.upper()
-        return f"${{TOOLATHLON_{name}}}"
-
-    return _TOKEN_PLACEHOLDER_RE.sub(token_replacement, value)
+    return value
 
 
-def _toolathlon_dockerfile(ctx: Any, *, variant: str) -> str:
+def _toolathlon_dockerfile(
+    ctx: Any, *, variant: str, services: set[str] | None = None
+) -> str:
+    services = services or set()
     repo_url = f"https://github.com/{ctx.repo}.git"
     if variant == "official":
+        k8s_install = ""
+        if _toolathlon_services.K8S in services:
+            k8s_install = r"""
+RUN apt-get update && apt-get install -y \
+    ca-certificates curl gzip iproute2 procps tar \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+      x86_64) docker_arch="x86_64"; k8s_arch="amd64";; \
+      aarch64|arm64) docker_arch="aarch64"; k8s_arch="arm64";; \
+      *) echo "unsupported architecture: $arch" >&2; exit 1;; \
+    esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-28.3.3.tgz" \
+      | tar -xz -C /tmp; \
+    mv /tmp/docker/docker /usr/local/bin/docker; \
+    rm -rf /tmp/docker; \
+    curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-${k8s_arch}"; \
+    curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.34.1/bin/linux/${k8s_arch}/kubectl"; \
+    curl -fsSL "https://get.helm.sh/helm-v3.15.4-linux-${k8s_arch}.tar.gz" \
+      | tar -xz -C /tmp; \
+    mv "/tmp/linux-${k8s_arch}/helm" /usr/local/bin/helm; \
+    rm -rf "/tmp/linux-${k8s_arch}"; \
+    chmod 755 /usr/local/bin/docker /usr/local/bin/kind /usr/local/bin/kubectl /usr/local/bin/helm
+"""
         return f"""FROM lockon0927/toolathlon-task-image:1016beta
 ENV PATH="/usr/local/bin:/root/.local/bin:$PATH"
 WORKDIR /workspace
 RUN rm -rf /tmp/toolathlon-src \\
-    && git clone {repo_url} /tmp/toolathlon-src \\
+    && git init /tmp/toolathlon-src \\
     && cd /tmp/toolathlon-src \\
-    && git checkout {ctx.resolved_sha} \\
+    && git remote add origin {repo_url} \\
+    && git fetch --depth 1 origin {ctx.resolved_sha} \\
+    && git checkout FETCH_HEAD \\
     && rsync -a --exclude .git /tmp/toolathlon-src/ /workspace/ \\
     && rm -rf /tmp/toolathlon-src
 RUN if [ -f /workspace/configs/global_configs_example.py ] && [ ! -f /workspace/configs/global_configs.py ]; then \\
@@ -618,6 +976,7 @@ RUN if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/ins
     && cp "$(command -v uv)" /usr/local/bin/uv \\
     && if command -v uvx >/dev/null 2>&1; then cp "$(command -v uvx)" /usr/local/bin/uvx; else ln -sf /usr/local/bin/uv /usr/local/bin/uvx; fi \\
     && chmod 755 /usr/local/bin/uv /usr/local/bin/uvx
+{k8s_install.rstrip()}
 RUN [ ! -e /workspace/utils/local_servers ] || chmod -R a+rwX /workspace/utils/local_servers
 CMD ["/bin/bash"]
 """

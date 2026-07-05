@@ -107,6 +107,56 @@ def test_docker_daemon_timeout_env_accepts_only_positive_ints(monkeypatch):
     assert _positive_int_env("BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180) == 180
 
 
+@pytest.mark.asyncio
+async def test_pre_compose_hook_runs_inside_uploaded_environment():
+    strategy, _env = _strategy(3600)
+    captured: list[dict[str, object]] = []
+
+    strategy._compose_env_vars = lambda: {"MAIN_IMAGE_NAME": "bf_task"}  # type: ignore[method-assign]
+
+    async def vm_exec(command, cwd=None, env=None, timeout_sec=None):
+        captured.append(
+            {
+                "command": command,
+                "cwd": cwd,
+                "env": env,
+                "timeout_sec": timeout_sec,
+            }
+        )
+        return ExecResult(stdout="", stderr="", return_code=0)
+
+    strategy._vm_exec = vm_exec  # type: ignore[method-assign]
+
+    await strategy._run_pre_compose_hook()
+
+    assert captured == [
+        {
+            "command": (
+                "if [ -f /benchflow/environment/benchflow-pre-compose.sh ]; then "
+                "chmod +x /benchflow/environment/benchflow-pre-compose.sh && "
+                "/benchflow/environment/benchflow-pre-compose.sh; fi"
+            ),
+            "cwd": "/benchflow/environment",
+            "env": {"MAIN_IMAGE_NAME": "bf_task"},
+            "timeout_sec": 3600,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pre_compose_hook_failure_raises():
+    strategy, _env = _strategy(60)
+    strategy._compose_env_vars = lambda: {}  # type: ignore[method-assign]
+
+    async def vm_exec(command, cwd=None, env=None, timeout_sec=None):
+        return ExecResult(stdout="setup failed", stderr="", return_code=42)
+
+    strategy._vm_exec = vm_exec  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="setup failed"):
+        await strategy._run_pre_compose_hook()
+
+
 class AsyncNoop:
     """A no-op async callable to replace ``asyncio.sleep`` in retry tests."""
 

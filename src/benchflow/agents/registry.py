@@ -202,6 +202,84 @@ def _js_agent_launch(binary: str, args: str = "") -> str:
     return f"{cmd} {args}".rstrip()
 
 
+_MIMO_MANIFEST_INSTALL_CMD = (
+    _NODE_INSTALL
+    + " && "
+    + "mkdir -p /opt/benchflow/js-agents/mimo-acp && "
+    + 'printf \'%s\' \'{"name":"bf-mimo-acp","private":true,"type":"module"}\' '
+    + "> /opt/benchflow/js-agents/mimo-acp/package.json && "
+    + "cd /opt/benchflow/js-agents/mimo-acp && "
+    + "/opt/benchflow/node/bin/npm install @mimo-ai/cli@0.1.4 "
+    + "--no-audit --no-fund >/dev/null 2>&1 && "
+    + "chmod -R a+rX /opt/benchflow && "
+    + "[ -f /opt/benchflow/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo ]"
+)
+_MIMO_MANIFEST_LAUNCHER = r"""
+A="${BENCHFLOW_LITELLM_MODEL_ALIAS:-}"
+B="${OPENAI_BASE_URL:-}"
+K="${OPENAI_API_KEY:-}"
+# Two wirings, both valid: PROXY mode (alias A present — write the custom
+# "openai" provider at the proxy and strip the colliding OPENAI_* env) and
+# DIRECT-provider mode (no alias — leave OPENAI_* intact and write nothing;
+# benchflow delivers the model over ACP set_model as provider/model). The old
+# launcher hard-failed (rc78) on "base URL without alias", which broke every
+# direct-provider run.
+if [ -n "$B" ] && [ -n "$A" ]; then
+  # Canonical config location MiMo Code (OpenCode fork) reads:
+  # {home}/.config/mimocode/mimocode.json (matches benchflow-core's native mimo
+  # agent). Also written to ./mimocode.json (cwd) as a belt-and-suspenders for
+  # the proven-working run, so the routing is not cwd-dependent.
+  CFG_HOME="${HOME:-/root}/.config/mimocode"
+  mkdir -p "$CFG_HOME"
+  CFG_JSON='{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "openai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "BenchFlow Proxy",
+      "options": { "baseURL": "'"$B"'", "apiKey": "'"${K:-benchflow}"'" },
+      "models": { "'"$A"'": { "name": "'"$A"'" } }
+    }
+  },
+  "model": "openai/'"$A"'"
+}'
+  printf '%s\n' "$CFG_JSON" > "$CFG_HOME/mimocode.json"
+  printf '%s\n' "$CFG_JSON" > ./mimocode.json
+  CFG_WRITTEN=yes
+else
+  CFG_WRITTEN=no
+fi
+if [ -n "${BF_PR8_DEBUG:-}" ]; then
+  H=$(printf %s "$B" | sed -E "s#^[a-z]+://([^@]*@)?([^/:?]+).*#\2#")
+  echo "BF_DIAG base_url_set=$([ -n \"$B\" ] && echo yes || echo no) host=${H:-NONE}"
+  echo "BF_DIAG api_key_set=$([ -n \"$K\" ] && echo yes || echo no)"
+  echo "BF_DIAG alias=${A:-NONE}"
+  echo "BF_DIAG cfg_written=$CFG_WRITTEN cfg_cwd=$(pwd)/mimocode.json cfg_home=${HOME}/.config/mimocode/mimocode.json MIMOCODE_CONFIG=${MIMOCODE_CONFIG:-unset}"
+  echo BF_DIAG mimocode_begin
+  for p in ./mimocode.json "${HOME}/.config/mimocode/mimocode.json" "${MIMOCODE_CONFIG:-}"; do
+    if [ -n "$p" ] && [ -f "$p" ]; then
+      sed -E -e 's#("apiKey"[[:space:]]*:[[:space:]]*")[^"]*#\1<REDACTED>#g' \
+             -e 's#://[^@/"]*@#://<REDACTED>@#g' "$p" \
+        | awk -v pfx="BF_DIAG_CFG $p: " '{print pfx $0}'
+    fi
+  done
+  echo BF_DIAG mimocode_end
+fi
+if [ -n "$A" ]; then
+  # Proxy mode only: mimo's built-in openai provider auto-activates from
+  # OPENAI_* env and would conflict with the custom provider written above.
+  # In direct mode the env IS the provider config — leave it intact.
+  unset OPENAI_BASE_URL OPENAI_API_KEY
+fi
+exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo acp
+"""
+_MIMO_MANIFEST_LAUNCH_CMD = (
+    "printf '%s' '"
+    + base64.b64encode(_MIMO_MANIFEST_LAUNCHER.encode()).decode()
+    + "' | base64 -d > /tmp/mimo-acp-launch.sh && sh /tmp/mimo-acp-launch.sh"
+)
+
+
 # Path to the openclaw ACP shim script
 _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
@@ -642,17 +720,12 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "mimo": AgentConfig(
         name="mimo",
-        description="MiMo Code via ACP — Xiaomi's OpenCode fork (TypeScript)",
-        skill_paths=["$HOME/.mimocode/skills"],
-        home_dirs=[".mimocode", ".config/mimocode"],
-        install_cmd=(
-            _js_agent_install("mimo", "@mimo-ai/cli@0.1.4")
-            + " && "
-            + _opencode_family_proxy_wrapper_install(
-                "mimo", ".config/mimocode/mimocode.json"
-            )
+        description=(
+            "MiMo Code (Xiaomi, OpenCode fork) native `mimo acp` ACP server via "
+            "the `mimo` CLI — no server.mjs (mimo is the ACP server)"
         ),
-        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/mimo-proxy acp",
+        install_cmd=_MIMO_MANIFEST_INSTALL_CMD,
+        launch_cmd=_MIMO_MANIFEST_LAUNCH_CMD,
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         # MiMo Code ships a fixed endpoint for its native models.dev "xiaomi"
@@ -671,6 +744,8 @@ AGENTS: dict[str, AgentConfig] = {
                 ),
             ),
         ],
+        install_timeout=1200,
+        api_protocol="openai-completions",
         acp_model_format="provider/model",
         # MiMo Code is an OpenCode fork: `mimo acp` reports agentInfo.name="OpenCode"
         # and uses models.dev "provider/model" ids, so set_model must send e.g.

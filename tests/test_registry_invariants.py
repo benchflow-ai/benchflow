@@ -10,6 +10,7 @@ implicit conventions the SDK relies on (e.g. ``env_mapping`` keys must
 start with ``BENCHFLOW_PROVIDER_``).
 """
 
+import base64
 import re
 import shutil
 import subprocess
@@ -50,6 +51,7 @@ JS_ACP_AGENTS = {
     for name, cfg in AGENTS.items()
     if cfg.protocol == "acp" and "npm install" in cfg.install_cmd
 }
+DIRECT_JS_ACP_AGENTS = {"mimo"}
 
 
 # ── AgentConfig invariants ──────────────────────────────────────────────────
@@ -137,19 +139,30 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
         f"pinned node {pin.group(0)} is below openclaw's >=22.19 floor"
     )
     assert "/opt/benchflow/js-agents" in install_cmd
-    assert "/opt/benchflow/bin" in install_cmd
-    assert "--prefix /opt/benchflow/js-agents" in install_cmd
-    assert "/opt/benchflow/bin" in launch_cmd
-    assert "/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin:$PATH" in install_cmd
-    assert (
-        "exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/" in install_cmd
-    )
-    # The launched program is the isolated bin — directly, or (codex-acp) after a
-    # self-config-writing prefix ending in `; exec <bin>` (writes ~/.codex/auth.json).
-    launched = launch_cmd.rsplit("; exec ", 1)[-1]
-    assert launched.split()[0].startswith("/opt/benchflow/bin/")
-    assert launched.split()[0] not in {"export", "env"}
-    assert not launched.startswith("PATH=")
+    if name in DIRECT_JS_ACP_AGENTS:
+        m = re.search(r"printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d", launch_cmd)
+        assert m, f"{name!r} direct JS ACP launcher is not base64-staged"
+        launcher = base64.b64decode(m.group(1)).decode()
+        assert "/opt/benchflow/js-agents/" in launcher
+        assert "/opt/benchflow/node/bin/node" in launcher
+        assert "/tmp/" in launch_cmd
+    else:
+        assert "/opt/benchflow/bin" in install_cmd
+        assert "--prefix /opt/benchflow/js-agents" in install_cmd
+        assert "/opt/benchflow/bin" in launch_cmd
+        assert (
+            "/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin:$PATH" in install_cmd
+        )
+        assert (
+            "exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/"
+            in install_cmd
+        )
+        # The launched program is the isolated bin — directly, or (codex-acp) after a
+        # self-config-writing prefix ending in `; exec <bin>` (writes ~/.codex/auth.json).
+        launched = launch_cmd.rsplit("; exec ", 1)[-1]
+        assert launched.split()[0].startswith("/opt/benchflow/bin/")
+        assert launched.split()[0] not in {"export", "env"}
+        assert not launched.startswith("PATH=")
 
     forbidden_fragments = [
         'export PATH="/opt/benchflow/node/bin:/opt/benchflow/js-agents/bin:$PATH"',
@@ -254,7 +267,7 @@ def test_gemini_cli_install_is_pinned():
     assert "[ -x /opt/benchflow/js-agents/bin/gemini ] ||" not in install_cmd
 
 
-@pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS))
+@pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS - DIRECT_JS_ACP_AGENTS))
 def test_js_acp_agent_npm_failures_are_visible(name):
     """Npm stderr should reach agent/install-stdout.txt on install failure."""
     install_cmd = AGENTS[name].install_cmd
