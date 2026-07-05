@@ -660,6 +660,39 @@ class TestDaytonaPtyProcessSecretTransport:
         assert secret not in cleanup_call.args[0]
 
     @pytest.mark.asyncio
+    async def test_direct_daytona_pty_runs_without_compose_and_hides_env(self):
+        """Direct Daytona tasks use PTY transport without docker compose."""
+        sandbox, ptys = _make_daytona_pty_sandbox()
+        proc = DaytonaPtyProcess(
+            sandbox=sandbox,
+            compose_cmd_prefix="",
+            compose_cmd_base="",
+        )
+        secret = "bf_direct_pty_provider_key_should_not_be_in_input"
+
+        await proc.start(
+            command="openhands acp --always-approve",
+            env={"OPENAI_API_KEY": secret},
+            cwd="/workspace/agent_workspace",
+        )
+
+        assert ptys
+        assert len(ptys[0].inputs) == 2
+        sent_payload = "\n".join(ptys[0].inputs)
+        assert "docker compose" not in sent_payload
+        assert "cd /workspace/agent_workspace" in sent_payload
+        assert ". /tmp/benchflow_env_" in sent_payload
+        assert "rm -f /tmp/benchflow_env_" in sent_payload
+        assert "exec bash -lc 'openhands acp --always-approve'" in sent_payload
+        assert "--env OPENAI_API_KEY" not in sent_payload
+        assert secret not in sent_payload
+        bootstrap_call = sandbox.process.exec.await_args_list[0]
+        assert bootstrap_call.kwargs["env"] == {"OPENAI_API_KEY": secret}
+        assert secret not in bootstrap_call.args[0]
+
+        await proc.close()
+
+    @pytest.mark.asyncio
     async def test_bootstrapped_env_file_is_removed_when_pty_handoff_fails(self):
         """Guards remote env cleanup when Daytona PTY start fails after bootstrap."""
         sandbox, ptys = _make_daytona_pty_sandbox(

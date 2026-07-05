@@ -21,6 +21,13 @@ invokes it in two roles:
     groundtruth-derived allowlists, per-student Canvas tokens, …), so it is
     where they must be resolved — the host adapter cannot know them.
 
+``write-task-tokens <task-dir>``
+    Snapshot the task-local token file after preprocess but before BenchFlow
+    locks private groundtruth paths. Some upstream task token files compute MCP
+    allowlists by reading groundtruth files; sandboxed agents must not retain
+    direct read access to those files, so ``launch`` consumes this scalar-only
+    snapshot when present.
+
 Kept dependency-free (plain ``python3``, with an ``addict`` shim) so it needs
 neither the upstream venv nor a ``uv`` round-trip on every MCP spawn.
 """
@@ -37,6 +44,56 @@ import types
 from pathlib import Path
 
 _PLACEHOLDER = re.compile(r"\$\{([^}]+)\}")
+_GOOGLE_CLOUD_MCP_NAMES = {"google-cloud-mcp"}
+_GOOGLE_CLOUD_MCP_PATTERN_WRAPPER = r'''#!/usr/bin/env python3
+"""BenchFlow Toolathlon wrapper for google-cloud-mcp wildcard allowlists."""
+
+from __future__ import annotations
+
+import fnmatch
+import sys
+
+
+class _PatternSet(set):
+    def __contains__(self, item: object) -> bool:
+        if super().__contains__(item):
+            return True
+        item_text = str(item)
+        for pattern in self:
+            pattern_text = str(pattern)
+            if any(ch in pattern_text for ch in "*?[]") and fnmatch.fnmatchcase(
+                item_text,
+                pattern_text,
+            ):
+                return True
+        return False
+
+
+def main() -> int | None:
+    import src.server as server
+
+    original_setup_server = server.setup_server
+
+    def setup_server(*args, **kwargs):
+        result = original_setup_server(*args, **kwargs)
+        for attr in (
+            "ALLOWED_BUCKETS",
+            "ALLOWED_DATASETS",
+            "ALLOWED_LOG_BUCKETS",
+            "ALLOWED_INSTANCES",
+        ):
+            value = getattr(server, attr, set())
+            if not isinstance(value, _PatternSet):
+                setattr(server, attr, _PatternSet(value))
+        return result
+
+    server.setup_server = setup_server
+    return server.main()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
 
 
 def _workspace() -> Path:
@@ -93,7 +150,11 @@ def _template_vars(task_dir: Path) -> dict[str, str]:
         "task_dir": str(workspace / "tasks" / "finalpool"),
     }
     tokens = _load_all_token_key_session(workspace / "configs" / "token_key_session.py")
-    tokens.update(_load_all_token_key_session(task_dir / "token_key_session.py"))
+    task_snapshot = workspace / ".toolathlon" / "task_token_key_session.py"
+    if task_snapshot.is_file():
+        tokens.update(_load_all_token_key_session(task_snapshot))
+    else:
+        tokens.update(_load_all_token_key_session(task_dir / "token_key_session.py"))
     k8s_configs = task_dir / "k8s_configs"
     if k8s_configs.is_dir():
         kubeconfigs = sorted(k8s_configs.glob("*-config.yaml"))
@@ -150,6 +211,43 @@ def _run_stdio_server(argv: list[str], env: dict[str, str]) -> int:
         return 130
 
 
+def _google_cloud_mcp_index(argv: list[str]) -> int | None:
+    for index, arg in enumerate(argv):
+        if Path(arg).name in _GOOGLE_CLOUD_MCP_NAMES:
+            return index
+    return None
+
+
+def _write_google_cloud_mcp_pattern_wrapper() -> Path:
+    runtime_dir = Path(
+        os.environ.get(
+            "TOOLATHLON_RUNTIME_DIR",
+            "/tmp/benchflow_toolathlon",
+        )
+    )
+    target = runtime_dir / "google_cloud_mcp_pattern_wrapper.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.is_file() or target.read_text() != _GOOGLE_CLOUD_MCP_PATTERN_WRAPPER:
+        target.write_text(_GOOGLE_CLOUD_MCP_PATTERN_WRAPPER)
+        target.chmod(0o644)
+    return target
+
+
+def _wrap_google_cloud_mcp(argv: list[str]) -> list[str]:
+    index = _google_cloud_mcp_index(argv)
+    if index is None:
+        return argv
+    wrapper = _write_google_cloud_mcp_pattern_wrapper()
+    # Upstream launches this as ``uvx google-cloud-mcp ...``. Keep uvx in
+    # charge of package resolution, but run a small Python wrapper from the same
+    # ephemeral environment so Toolathlon wildcard allowlists such as
+    # ``promo-assets-for-b*`` are honored by google-cloud-mcp's exact-match
+    # access checks.
+    if index == 1 and Path(argv[0]).name == "uvx":
+        return [argv[0], "--from", argv[1], "python", str(wrapper), *argv[2:]]
+    return argv
+
+
 def _launch(argv: list[str]) -> int:
     if not argv:
         sys.stderr.write("toolathlon launch: no command given\n")
@@ -173,6 +271,7 @@ def _launch(argv: list[str]) -> int:
         resolved_env["PATH"] = (
             "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
         )
+    resolved_argv = _wrap_google_cloud_mcp(resolved_argv)
     return _run_stdio_server(resolved_argv, resolved_env)
 
 
@@ -273,6 +372,29 @@ def _write_config() -> int:
     return 0
 
 
+def _write_task_tokens(task_dir: Path) -> int:
+    tokens = _load_all_token_key_session(task_dir / "token_key_session.py")
+    scalar_tokens = {
+        key: value
+        for key, value in tokens.items()
+        if isinstance(value, (str, int, float, bool))
+    }
+    target = _workspace() / ".toolathlon" / "task_token_key_session.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Generated by BenchFlow Toolathlon adapter.",
+        "# Scalar task-local token snapshot for sandboxed MCP launchers.",
+        "all_token_key_session = {",
+    ]
+    lines += [
+        f"    {key!r}: {value!r}," for key, value in sorted(scalar_tokens.items())
+    ]
+    lines.append("}")
+    target.write_text("\n".join(lines) + "\n")
+    target.chmod(0o644)
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         sys.stderr.write("toolathlon_container: expected 'write-config' or 'launch'\n")
@@ -280,6 +402,11 @@ def main(argv: list[str]) -> int:
     mode, rest = argv[0], argv[1:]
     if mode == "write-config":
         return _write_config()
+    if mode == "write-task-tokens":
+        if len(rest) != 1:
+            sys.stderr.write("toolathlon_container: write-task-tokens needs TASK_DIR\n")
+            return 2
+        return _write_task_tokens(Path(rest[0]))
     if mode == "launch":
         return _launch(rest)
     sys.stderr.write(f"toolathlon_container: unknown mode {mode!r}\n")

@@ -1214,6 +1214,44 @@ class TestConnectAcpModelSelection:
         mock_pty.assert_awaited_once_with(mock_env)
         mock_ssh.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_daytona_direct_uses_pty_transport(self, tmp_path):
+        """Direct Daytona tasks also use PTY transport, not SSH pipes."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = MagicMock()
+        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
+
+        with (
+            patch(
+                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_pty,
+            patch(
+                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_ssh,
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="test-agent",
+                agent_launch="test-agent",
+                agent_env={},
+                sandbox_user=None,
+                model=None,
+                rollout_dir=tmp_path,
+                environment="daytona",
+                agent_cwd="/app",
+            )
+
+        mock_pty.assert_awaited_once_with(mock_env)
+        mock_ssh.assert_not_awaited()
+
 
 class TestSandboxStartupDiagnostics:
     """Guards ENG-147: sandbox startup failures must carry structured diagnostics."""
