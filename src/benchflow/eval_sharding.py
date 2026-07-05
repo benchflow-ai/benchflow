@@ -13,6 +13,8 @@ import json
 import math
 import os
 import sys
+import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +23,7 @@ from typing import Any
 from benchflow._utils.scoring import pass_rate, pass_rate_excl_errors
 from benchflow.evaluation import Evaluation, EvaluationConfig, EvaluationResult
 from benchflow.loop_strategies import LoopStrategySpec
+from benchflow.rollout._results import _should_record_env_entry
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,39 @@ def _config_payload(
     }
     payload.update(config.usage_tracking.to_mapping())
     return payload
+
+
+def _redacted_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
+    artifact_payload = dict(config_payload)
+    agent_env = artifact_payload.get("agent_env")
+    if isinstance(agent_env, dict):
+        artifact_payload["agent_env"] = {
+            str(key): str(value)
+            for key, value in agent_env.items()
+            if _should_record_env_entry(str(key), str(value))
+        }
+        artifact_payload["agent_env_keys"] = sorted(str(key) for key in agent_env)
+    return artifact_payload
+
+
+def _worker_payload_artifact(payload: dict[str, Any]) -> dict[str, Any]:
+    artifact_payload = dict(payload)
+    config_payload = artifact_payload.get("config")
+    if isinstance(config_payload, dict):
+        artifact_payload["config"] = _redacted_config_payload(config_payload)
+    return artifact_payload
+
+
+def _write_private_worker_payload(payload: dict[str, Any]) -> Path:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        prefix="benchflow-worker-payload-",
+        suffix=".json",
+        delete=False,
+    ) as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+        return Path(handle.name)
 
 
 def _plan_payload(plan: EvalShardPlan) -> dict[str, Any]:
@@ -336,18 +372,25 @@ async def run_sharded_evaluation(
             "result_path": str(result_path),
             "config": _config_payload(config, shard=shard),
         }
-        payload_path.write_text(json.dumps(payload, indent=2))
+        payload_path.write_text(
+            json.dumps(_worker_payload_artifact(payload), indent=2) + "\n"
+        )
+        private_payload_path = _write_private_worker_payload(payload)
         log_path = shard_dir / "worker.log"
-        worker_tasks.append((shard, payload_path, log_path))
+        worker_tasks.append((shard, private_payload_path, log_path))
 
     async def run_one(offset: int, payload_path: Path, log_path: Path):
         if worker_start_stagger_sec > 0:
             await asyncio.sleep(offset * worker_start_stagger_sec)
-        return await _run_worker_with_retries(
-            payload_path,
-            log_path,
-            max_retries=worker_retries,
-        )
+        try:
+            return await _run_worker_with_retries(
+                payload_path,
+                log_path,
+                max_retries=worker_retries,
+            )
+        finally:
+            with suppress(FileNotFoundError):
+                payload_path.unlink()
 
     started = datetime.now(UTC)
     results_or_errors = await asyncio.gather(
