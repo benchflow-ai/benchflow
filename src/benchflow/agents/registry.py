@@ -721,9 +721,21 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd=f"HARVEY_LABS_ROOT=/opt/harvey-labs /opt/benchflow/harvey-lab-venv/bin/python {_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim",
         protocol="acp",
         requires_env=[],  # inferred from model at runtime (ANTHROPIC_API_KEY, etc.)
-        # env_mapping intentionally empty — Harvey LAB adapters read
-        # provider-specific env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY,
-        # GOOGLE_API_KEY) directly; auto_inherit_env propagates these.
+        # Harvey LAB's Anthropic/Gemini adapters read ANTHROPIC_API_KEY /
+        # GOOGLE_API_KEY directly (auto_inherit_env propagates a host key). But
+        # the OpenAI-compatible adapter — the one that serves every proxied
+        # provider (deepseek, the azure gpt-5.4-mini gateway, the benchflow-*
+        # aliases) — reads OPENAI_BASE_URL/OPENAI_API_KEY, which only exist as
+        # BENCHFLOW_PROVIDER_* on the proxy path. Without this mapping the
+        # adapter had no base URL/key, hit api.openai.com unauthenticated, and
+        # the harness loop ended on turn 0 with zero LLM activity
+        # (suspected_api_error). Mapping them points the adapter at the gateway;
+        # a direct ANTHROPIC/GEMINI run is unaffected (those adapters ignore
+        # OPENAI_*).
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
+        },
     ),
     "deepagents": AgentConfig(
         name="deepagents",

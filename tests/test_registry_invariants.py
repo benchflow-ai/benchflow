@@ -481,3 +481,17 @@ def test_resolve_auth_env_matches_provider_auth_type():
             assert result is None, (
                 f"{name!r} ({cfg.auth_type}): resolve_auth_env should return None, got {result!r}"
             )
+
+
+def test_harvey_maps_provider_env_to_openai_compatible_adapter():
+    """Harvey LAB's OpenAI-compatible adapter reads OPENAI_BASE_URL/OPENAI_API_KEY;
+    on the proxy path those only exist as BENCHFLOW_PROVIDER_*. Without this
+    mapping the adapter had no endpoint/key and the harness loop ended on turn 0
+    with zero LLM activity. Guard the mapping so deepseek / gpt-5.4-mini-gateway /
+    every benchflow-* alias can route.
+    """
+    from benchflow.agents.registry import AGENTS
+
+    em = AGENTS["harvey-lab-harness"].env_mapping
+    assert em.get("BENCHFLOW_PROVIDER_BASE_URL") == "OPENAI_BASE_URL", em
+    assert em.get("BENCHFLOW_PROVIDER_API_KEY") == "OPENAI_API_KEY", em
