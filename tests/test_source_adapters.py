@@ -312,7 +312,9 @@ def test_toolathlon_k8s_task_gets_host_network_runtime(
 
     dockerfile = (generated / "environment" / "Dockerfile").read_text()
     assert "docker-28.3.3.tgz" in dockerfile
-    assert "kind.sigs.k8s.io/dl/v0.20.0" in dockerfile
+    assert "docker.real" in dockerfile
+    assert "Backing Filesystem" in dockerfile
+    assert "kind.sigs.k8s.io/dl/v0.32.0" in dockerfile
     assert "release/v1.34.1/bin/linux" in dockerfile
     assert "helm-v3.15.4-linux" in dockerfile
 
@@ -322,6 +324,9 @@ def test_toolathlon_k8s_task_gets_host_network_runtime(
     assert task.config.environment.storage_mb == 49152
     commands = [c.command for c in task.config.environment.setup_commands]
     assert any("docker info" in c and "helm version" in c for c in commands)
+    preprocess_idx = next(i for i, c in enumerate(commands) if "preprocess.main" in c)
+    kubeconfig_idx = next(i for i, c in enumerate(commands) if "k8s_configs" in c)
+    assert preprocess_idx < kubeconfig_idx
     assert not any("imap_server" in c and "poste-rewrite" in c for c in commands)
 
 
@@ -844,6 +849,31 @@ def test_toolathlon_container_launch_resolves_env(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "GITHUB_TOKEN=gho_secret" in result.stdout
+
+
+def test_toolathlon_container_launch_prefers_generated_kubeconfig(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "token_key_session.py").write_text(
+        "all_token_key_session = {}\n"
+    )
+    task_dir = tmp_path / "tasks" / "finalpool" / "k8s-mysql"
+    (task_dir / "k8s_configs").mkdir(parents=True)
+    generated = task_dir / "k8s_configs" / "cluster-mysql-inst-alpha-config.yaml"
+    generated.write_text("apiVersion: v1\n")
+    (task_dir / "token_key_session.py").write_text(
+        "from addict import Dict\n"
+        "all_token_key_session = Dict("
+        "kubeconfig_path='k8s_configs/cluster-mysql-config.yaml')\n"
+    )
+    result = _run_container_helper(
+        tmp_path,
+        ["launch", "/bin/echo", "KUBECONFIG=${token.kubeconfig_path}"],
+        {"TOOLATHLON_TASK_DIR": str(task_dir)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"KUBECONFIG={generated}" in result.stdout
 
 
 def test_toolathlon_container_launch_ensures_dirs(tmp_path: Path) -> None:
