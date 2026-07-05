@@ -1,8 +1,12 @@
 import csv
+import imaplib
 import json
 import os
+import smtplib
 import subprocess
 import sys
+import time
+from email.mime.text import MIMEText
 from pathlib import Path
 
 import yaml
@@ -240,22 +244,21 @@ def test_toolathlon_email_task_gets_poste_sidecar(tmp_path: Path, monkeypatch) -
         )
     )
 
-    # Email task: compose with a poste sidecar + gated main.
+    # Email task: compose with a lightweight mail sidecar + gated main.
     email = adapted.path / "apply-phd-email"
     compose = yaml.safe_load(
         (email / "environment" / "docker-compose.yaml").read_text()
     )
-    assert compose["services"]["poste"]["image"].endswith("analogic/poste.io:2.5.5")
+    assert compose["services"]["poste"]["image"] == "${MAIN_IMAGE_NAME}"
+    assert compose["services"]["poste"]["hostname"] == "poste"
     assert (
         compose["services"]["main"]["depends_on"]["poste"]["condition"]
         == "service_healthy"
     )
     assert "ports" not in compose["services"]["poste"]
     poste_dir = email / "environment" / "poste"
-    assert (poste_dir / "entry.sh").exists()
-    assert (poste_dir / "plaintext_fix.sh").exists()
-    # Vendored roster is materialized, not the (empty) upstream users_data.json.
-    assert len((poste_dir / "pairs.tsv").read_text().splitlines()) > 100
+    assert (poste_dir / "fake_mail.py").exists()
+    assert "/toolathlon-poste/fake_mail.py" in compose["services"]["poste"]["command"]
 
     task = Task(email)
     # Extra headroom for the DinD compose + sidecar image.
@@ -270,6 +273,107 @@ def test_toolathlon_email_task_gets_poste_sidecar(tmp_path: Path, monkeypatch) -
     # Non-email task: single container, no compose.
     other = adapted.path / "find-alita-paper"
     assert not (other / "environment" / "docker-compose.yaml").exists()
+
+
+def test_toolathlon_fake_mail_records_sender_sent(tmp_path: Path) -> None:
+    """The lightweight mail sidecar preserves the sender Sent-folder contract
+    Toolathlon verifiers use."""
+    root = tmp_path / "mail"
+    ready = tmp_path / "ready"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "benchflow.adapters._toolathlon_fake_mail",
+            "--root",
+            str(root),
+            "--smtp-port",
+            "11587",
+            "--submission-port",
+            "12587",
+            "--imap-port",
+            "11143",
+            "--http-port",
+            "11080",
+            "--ready-file",
+            str(ready),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        for _ in range(50):
+            if ready.exists():
+                break
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate(timeout=1)
+                raise AssertionError(f"fake mail exited: {stdout} {stderr}")
+            time.sleep(0.1)
+        assert ready.exists()
+
+        msg = MIMEText(
+            "Survey: https://docs.google.com/forms/d/abcdefghijk1234567890/edit",
+            "plain",
+        )
+        msg["From"] = "Customer Support Team"
+        msg["To"] = "tyler_perez28@mcp.com"
+        msg["Subject"] = "Survey"
+
+        smtp = smtplib.SMTP("127.0.0.1", 12587, timeout=10)
+        smtp.send_message(msg, from_addr="jason_cruz@mcp.com")
+        smtp.quit()
+
+        imap = imaplib.IMAP4("127.0.0.1", 11143, timeout=10)
+        imap.login("jason_cruz@mcp.com", "anything")
+        assert imap.select("Sent")[0] == "OK"
+        status, nums = imap.search(None, "ALL")
+        assert status == "OK"
+        assert nums and nums[0] == b"1"
+        status, data = imap.fetch(b"1", "(RFC822)")
+        assert status == "OK"
+        assert b"tyler_perez28@mcp.com" in data[0][1]
+        assert b"docs.google.com/forms" in data[0][1]
+        status, _ = imap.append(
+            "Sent",
+            None,
+            None,
+            (
+                b"From: jason_cruz@mcp.com\r\n"
+                b"To: followup@mcp.com\r\n"
+                b"Subject: Follow-up\r\n\r\n"
+                b"Thanks"
+            ),
+        )
+        assert status == "OK"
+        status, nums = imap.search(None, "ALL")
+        assert status == "OK"
+        assert nums and nums[0] == b"1 2"
+        status, data = imap.fetch(b"2", "(RFC822)")
+        assert status == "OK"
+        assert b"followup@mcp.com" in data[0][1]
+        imap.logout()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_compose_build_tags_main_image_for_sidecar_reuse() -> None:
+    """Compose sidecars can reference ${MAIN_IMAGE_NAME} without registry pulls."""
+    compose_path = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "benchflow"
+        / "sandbox"
+        / "_compose_files"
+        / "docker-compose-build.yaml"
+    )
+    compose = yaml.safe_load(compose_path.read_text())
+    assert compose["services"]["main"]["image"] == "${MAIN_IMAGE_NAME}"
 
 
 def test_toolathlon_k8s_task_gets_host_network_runtime(
@@ -828,7 +932,7 @@ def test_toolathlon_container_launch_resolves_tokens(tmp_path: Path) -> None:
         {"TOOLATHLON_TASK_DIR": str(task_dir)},
     )
     assert result.returncode == 0, result.stderr
-    out = result.stdout.strip()
+    out = f"{result.stdout}\n{result.stderr}"
     assert "--project=global-proj" in out  # from global
     assert "--dataset=demo_ds" in out  # per-task override wins
     assert "--folder=FID-999" in out  # runtime file value
@@ -848,7 +952,7 @@ def test_toolathlon_container_launch_resolves_env(tmp_path: Path) -> None:
         },
     )
     assert result.returncode == 0, result.stderr
-    assert "GITHUB_TOKEN=gho_secret" in result.stdout
+    assert "GITHUB_TOKEN=gho_secret" in f"{result.stdout}\n{result.stderr}"
 
 
 def test_toolathlon_container_launch_prefers_generated_kubeconfig(
@@ -873,7 +977,7 @@ def test_toolathlon_container_launch_prefers_generated_kubeconfig(
         {"TOOLATHLON_TASK_DIR": str(task_dir)},
     )
     assert result.returncode == 0, result.stderr
-    assert f"KUBECONFIG={generated}" in result.stdout
+    assert f"KUBECONFIG={generated}" in f"{result.stdout}\n{result.stderr}"
 
 
 def test_toolathlon_container_launch_ensures_dirs(tmp_path: Path) -> None:
@@ -893,6 +997,33 @@ def test_toolathlon_container_launch_ensures_dirs(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert storage.is_dir()
+
+
+def test_toolathlon_container_launch_filters_non_json_stdout(
+    tmp_path: Path,
+) -> None:
+    """Noisy MCP startup logs are moved off stdout before they reach clients."""
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "token_key_session.py").write_text(
+        "all_token_key_session = {}\n"
+    )
+    result = _run_container_helper(
+        tmp_path,
+        [
+            "launch",
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "print('server started'); "
+                'print(\'{"jsonrpc":"2.0","id":1,"result":{}}\')'
+            ),
+        ],
+        {"TOOLATHLON_TASK_DIR": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == '{"jsonrpc":"2.0","id":1,"result":{}}'
+    assert "server started" in result.stderr
 
 
 def test_toolathlon_arxiv_server_declares_ensure_dirs(

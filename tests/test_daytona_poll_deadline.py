@@ -28,6 +28,13 @@ from benchflow.sandbox import daytona as daytona_module
 from benchflow.sandbox.daytona import DaytonaSandbox
 
 
+class _FakeDaytonaError(Exception):
+    pass
+
+
+_FakeDaytonaError.__module__ = "daytona.common.errors"
+
+
 def _install_fake_clock(monkeypatch) -> dict[str, float]:
     """Make the poll loop time-deterministic, independent of wall clock.
 
@@ -80,6 +87,15 @@ def _make_sandbox(process: _FakeProcess) -> DaytonaSandbox:
     sandbox = DaytonaSandbox.__new__(DaytonaSandbox)
     sandbox._sandbox = SimpleNamespace(process=process)
     return sandbox
+
+
+def test_daytona_empty_exit_code_parse_error_is_retryable() -> None:
+    exc = _FakeDaytonaError(
+        "Failed to get session command: failed to convert exit code to int: "
+        'strconv.Atoi: parsing "": invalid syntax'
+    )
+
+    assert daytona_module._is_daytona_transient_retry_error(exc)
 
 
 class TestPollDeadline:

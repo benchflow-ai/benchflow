@@ -31,6 +31,7 @@ import importlib.machinery
 import importlib.util
 import os
 import re
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -114,6 +115,41 @@ def _resolve(value: str, variables: dict[str, str]) -> str:
     )
 
 
+def _looks_like_jsonrpc_stdout(line: bytes) -> bool:
+    """Return True for line-oriented MCP JSON-RPC stdout frames.
+
+    Several upstream Toolathlon MCP servers print human startup logs to stdout
+    before emitting real MCP JSON-RPC. MCP clients read stdout as protocol, so
+    those logs must be moved to stderr. The official servers used here emit
+    compact one-line JSON objects for protocol messages.
+    """
+    stripped = line.lstrip()
+    return stripped.startswith(b"{")
+
+
+def _run_stdio_server(argv: list[str], env: dict[str, str]) -> int:
+    proc = subprocess.Popen(
+        argv,
+        env=env,
+        stdin=sys.stdin,
+        stdout=subprocess.PIPE,
+        stderr=None,
+    )
+    assert proc.stdout is not None
+    try:
+        for line in iter(proc.stdout.readline, b""):
+            if _looks_like_jsonrpc_stdout(line):
+                sys.stdout.buffer.write(line)
+                sys.stdout.buffer.flush()
+            else:
+                sys.stderr.buffer.write(line)
+                sys.stderr.buffer.flush()
+        return proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        return 130
+
+
 def _launch(argv: list[str]) -> int:
     if not argv:
         sys.stderr.write("toolathlon launch: no command given\n")
@@ -137,8 +173,7 @@ def _launch(argv: list[str]) -> int:
         resolved_env["PATH"] = (
             "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
         )
-    os.execvpe(resolved_argv[0], resolved_argv, resolved_env)
-    return 0  # unreachable when exec succeeds
+    return _run_stdio_server(resolved_argv, resolved_env)
 
 
 # --------------------------------------------------------------------------- #
