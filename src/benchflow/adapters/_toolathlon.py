@@ -80,6 +80,7 @@ _TOOLATHLON_CREDENTIAL_SPECS = (
         env="TOOLATHLON_GCP_OAUTH_KEYS_JSON",
         b64_env="TOOLATHLON_GCP_OAUTH_KEYS_JSON_B64",
         trigger_servers=("google_calendar",),
+        copy_paths=("/root/.calendar-mcp/gcp-oauth.keys.json", "gcp-oauth.keys.json"),
     ),
     _ToolathlonCredentialSpec(
         path="configs/snowflake_rsa_key.p8",
@@ -247,7 +248,7 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
         )
         _write_text(
             task_dir / "environment" / "Dockerfile",
-            _toolathlon_dockerfile(ctx, variant=variant),
+            _toolathlon_dockerfile(ctx, variant=variant, services=services),
         )
         if variant == "gym":
             _write_text(
@@ -260,7 +261,9 @@ def materialize_toolathlon(ctx: Any, output_dir: Path, *, variant: str) -> None:
                 db_dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(db_src, db_dst)
         elif services:
-            _toolathlon_services.apply_service_sidecars(task_dir, services)
+            _toolathlon_services.apply_service_sidecars(
+                task_dir, services, source_root=ctx.repo_root
+            )
         _write_text(
             task_dir / "tests" / "test.sh",
             _toolathlon_test_sh(task_name=task_name, variant=variant),
@@ -378,12 +381,43 @@ def _toolathlon_task_toml(
                 "env": _toolathlon_credential_setup_env(credential_refs),
             }
         )
-    if _toolathlon_services.POSTE in services:
+    if (
+        _toolathlon_services.POSTE in services
+        and _toolathlon_services.K8S not in services
+    ):
         # Point the task's localhost mail configs at the poste sidecar before
-        # preprocess (which seeds mailboxes) runs.
+        # preprocess (which seeds mailboxes) runs. k8s tasks use host
+        # networking so the poste sidecar is published on upstream localhost
+        # ports instead.
         setup_commands.append(
             {
                 "command": _toolathlon_services.poste_config_rewrite_command(task_name),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+            }
+        )
+    if _toolathlon_services.WOO in services:
+        setup_commands.append(
+            {
+                "command": _toolathlon_services.woo_config_rewrite_command(task_name),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+            }
+        )
+    if _toolathlon_services.K8S in services:
+        setup_commands.append(
+            {
+                "command": _toolathlon_services.k8s_runtime_probe_command(),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+            }
+        )
+    if _toolathlon_services.CANVAS in services:
+        setup_commands.append(
+            {
+                "command": _toolathlon_services.canvas_config_rewrite_command(
+                    task_name
+                ),
                 "cwd": "/workspace",
                 "timeout_sec": 60.0,
             }
@@ -407,19 +441,29 @@ def _toolathlon_task_toml(
         {
             "command": _toolathlon_setup_command(task_name=task_name, variant=variant),
             "cwd": "/workspace",
-            "timeout_sec": 600.0,
+            "timeout_sec": 1800.0,
         }
     )
     # Service tasks run a DinD compose with sidecar containers alongside main —
     # give the sandbox extra memory/disk for the second image + running service.
+    needs_k8s = _toolathlon_services.K8S in services
     environment: dict[str, Any] = {
-        "cpus": 4,
-        "memory_mb": 12288 if services else 8192,
-        "storage_mb": 24576 if services else 10240,
+        "cpus": 6 if needs_k8s else 4,
+        "memory_mb": 16384 if needs_k8s else 12288 if services else 8192,
+        "storage_mb": 49152 if needs_k8s else 24576 if services else 10240,
         "workdir": "/workspace/agent_workspace",
         "mcp_servers": mcp_servers,
         "setup_commands": setup_commands,
     }
+    if services:
+        # Canvas/Woo first-boot provisioning happens during compose up, and k8s
+        # kind bootstrap can pull/build several images. Give compose the same
+        # class of budget as Toolathlon preprocess rather than the default 10m.
+        environment["build_timeout_sec"] = (
+            2400.0
+            if ({_toolathlon_services.CANVAS, _toolathlon_services.WOO} & services)
+            else 1800.0
+        )
     if variant == "gym":
         environment["env"] = _TOOLATHLON_GYM_ENV
 
@@ -536,9 +580,12 @@ def _toolathlon_credential_setup_command(credential_refs: set[str]) -> str | Non
             "        target.chmod(mode)",
             "    for rel in spec.get('copy_paths', []):",
             "        copy = workspace / rel",
-            "        copy.parent.mkdir(parents=True, exist_ok=True)",
-            "        copy.write_bytes(payload)",
-            "        copy.chmod(mode)",
+            "        try:",
+            "            copy.parent.mkdir(parents=True, exist_ok=True)",
+            "            copy.write_bytes(payload)",
+            "            copy.chmod(mode)",
+            "        except OSError:",
+            "            pass",
             "if missing:",
             "    sys.stderr.write(",
             "        'BenchFlow Toolathlon credential setup error: missing '",
@@ -880,16 +927,46 @@ def _replace_toolathlon_placeholders(value: str, *, variant: str) -> str:
     return value
 
 
-def _toolathlon_dockerfile(ctx: Any, *, variant: str) -> str:
+def _toolathlon_dockerfile(
+    ctx: Any, *, variant: str, services: set[str] | None = None
+) -> str:
+    services = services or set()
     repo_url = f"https://github.com/{ctx.repo}.git"
     if variant == "official":
+        k8s_install = ""
+        if _toolathlon_services.K8S in services:
+            k8s_install = r"""
+RUN apt-get update && apt-get install -y \
+    ca-certificates curl gzip iproute2 procps tar \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+      x86_64) docker_arch="x86_64"; k8s_arch="amd64";; \
+      aarch64|arm64) docker_arch="aarch64"; k8s_arch="arm64";; \
+      *) echo "unsupported architecture: $arch" >&2; exit 1;; \
+    esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-28.3.3.tgz" \
+      | tar -xz -C /tmp; \
+    mv /tmp/docker/docker /usr/local/bin/docker; \
+    rm -rf /tmp/docker; \
+    curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-${k8s_arch}"; \
+    curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.34.1/bin/linux/${k8s_arch}/kubectl"; \
+    curl -fsSL "https://get.helm.sh/helm-v3.15.4-linux-${k8s_arch}.tar.gz" \
+      | tar -xz -C /tmp; \
+    mv "/tmp/linux-${k8s_arch}/helm" /usr/local/bin/helm; \
+    rm -rf "/tmp/linux-${k8s_arch}"; \
+    chmod 755 /usr/local/bin/docker /usr/local/bin/kind /usr/local/bin/kubectl /usr/local/bin/helm
+"""
         return f"""FROM lockon0927/toolathlon-task-image:1016beta
 ENV PATH="/usr/local/bin:/root/.local/bin:$PATH"
 WORKDIR /workspace
 RUN rm -rf /tmp/toolathlon-src \\
-    && git clone {repo_url} /tmp/toolathlon-src \\
+    && git init /tmp/toolathlon-src \\
     && cd /tmp/toolathlon-src \\
-    && git checkout {ctx.resolved_sha} \\
+    && git remote add origin {repo_url} \\
+    && git fetch --depth 1 origin {ctx.resolved_sha} \\
+    && git checkout FETCH_HEAD \\
     && rsync -a --exclude .git /tmp/toolathlon-src/ /workspace/ \\
     && rm -rf /tmp/toolathlon-src
 RUN if [ -f /workspace/configs/global_configs_example.py ] && [ ! -f /workspace/configs/global_configs.py ]; then \\
@@ -899,6 +976,7 @@ RUN if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/ins
     && cp "$(command -v uv)" /usr/local/bin/uv \\
     && if command -v uvx >/dev/null 2>&1; then cp "$(command -v uvx)" /usr/local/bin/uvx; else ln -sf /usr/local/bin/uv /usr/local/bin/uvx; fi \\
     && chmod 755 /usr/local/bin/uv /usr/local/bin/uvx
+{k8s_install.rstrip()}
 RUN [ ! -e /workspace/utils/local_servers ] || chmod -R a+rwX /workspace/utils/local_servers
 CMD ["/bin/bash"]
 """

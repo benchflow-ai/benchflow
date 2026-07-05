@@ -173,6 +173,11 @@ params:
     test_sh = (generated / "tests" / "test.sh").read_text()
     assert "lockon0927/toolathlon-task-image" in dockerfile
     assert "rsync -a --delete" not in dockerfile
+    assert (
+        "git fetch --depth 1 origin dddddddddddddddddddddddddddddddddddddddd"
+        in dockerfile
+    )
+    assert "git checkout FETCH_HEAD" in dockerfile
     assert "rsync -a --exclude .git /tmp/toolathlon-src/ /workspace/" in dockerfile
     assert "global_configs_example.py" in dockerfile
     assert "global_configs.py" in dockerfile
@@ -217,9 +222,7 @@ def _write_toolathlon_task(finalpool: Path, name: str, servers: list[str]) -> Pa
     return task_dir
 
 
-def test_toolathlon_email_task_gets_poste_sidecar(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_toolathlon_email_task_gets_poste_sidecar(tmp_path: Path, monkeypatch) -> None:
     """An email task materializes a poste sidecar compose + a pre-preprocess
     config rewrite; a non-email task stays single-container."""
     monkeypatch.chdir(tmp_path)
@@ -227,9 +230,7 @@ def test_toolathlon_email_task_gets_poste_sidecar(
     finalpool = _write_toolathlon_repo_skeleton(repo)
     email_task = _write_toolathlon_task(finalpool, "apply-phd-email", ["emails"])
     (email_task / "email_config.json").write_text(
-        json.dumps(
-            {"imap_server": "localhost", "imap_port": 1143, "smtp_port": 1587}
-        )
+        json.dumps({"imap_server": "localhost", "imap_port": 1143, "smtp_port": 1587})
     )
     _write_toolathlon_task(finalpool, "find-alita-paper", ["filesystem"])
 
@@ -262,14 +263,161 @@ def test_toolathlon_email_task_gets_poste_sidecar(
     rewrite_idx = next(
         i for i, c in enumerate(commands) if "poste" in c and "imap_server" in c
     )
-    preprocess_idx = next(
-        i for i, c in enumerate(commands) if "preprocess.main" in c
-    )
+    preprocess_idx = next(i for i, c in enumerate(commands) if "preprocess.main" in c)
     assert rewrite_idx < preprocess_idx  # rewrite runs before preprocess seeds
 
     # Non-email task: single container, no compose.
     other = adapted.path / "find-alita-paper"
     assert not (other / "environment" / "docker-compose.yaml").exists()
+
+
+def test_toolathlon_k8s_task_gets_host_network_runtime(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """k8s tasks need Docker-socket + host networking, even with Poste present."""
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "Toolathlon"
+    finalpool = _write_toolathlon_repo_skeleton(repo)
+    (repo / "configs" / "mcp_servers" / "k8s.yaml").write_text(
+        "type: stdio\nname: k8s\nparams:\n  command: npx\n"
+        '  args: ["-y", "mcp-server-kubernetes"]\n'
+        "  env:\n"
+        '    KUBECONFIG_PATH: "${token.kubeconfig_path}"\n'
+    )
+    k8s_task = _write_toolathlon_task(
+        finalpool, "k8s-deployment-cleanup", ["k8s", "emails"]
+    )
+    (k8s_task / "email_config.json").write_text(
+        json.dumps({"imap_server": "localhost", "imap_port": 1143, "smtp_port": 1587})
+    )
+
+    adapted = adapt_resolved_source_if_needed(
+        _resolved(
+            repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool", sha="e" * 40
+        )
+    )
+
+    generated = adapted.path / "k8s-deployment-cleanup"
+    compose = yaml.safe_load(
+        (generated / "environment" / "docker-compose.yaml").read_text()
+    )
+    main = compose["services"]["main"]
+    assert main["network_mode"] == "host"
+    assert "/var/run/docker.sock:/var/run/docker.sock" in main["volumes"]
+    assert main["environment"]["DOCKER_HOST"] == "unix:///var/run/docker.sock"
+    assert main["depends_on"]["poste"]["condition"] == "service_healthy"
+    assert "1143:143" in compose["services"]["poste"]["ports"]
+    assert "1587:587" in compose["services"]["poste"]["ports"]
+
+    dockerfile = (generated / "environment" / "Dockerfile").read_text()
+    assert "docker-28.3.3.tgz" in dockerfile
+    assert "kind.sigs.k8s.io/dl/v0.20.0" in dockerfile
+    assert "release/v1.34.1/bin/linux" in dockerfile
+    assert "helm-v3.15.4-linux" in dockerfile
+
+    task = Task(generated)
+    assert task.config.environment.cpus == 6
+    assert task.config.environment.memory_mb == 16384
+    assert task.config.environment.storage_mb == 49152
+    commands = [c.command for c in task.config.environment.setup_commands]
+    assert any("docker info" in c and "helm version" in c for c in commands)
+    assert not any("imap_server" in c and "poste-rewrite" in c for c in commands)
+
+
+def test_toolathlon_woocommerce_task_gets_first_boot_sidecar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """WooCommerce tasks initialize stock WP/MySQL sidecars instead of needing
+    pre-existing local seed images in the sandbox Docker daemon."""
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "Toolathlon"
+    finalpool = _write_toolathlon_repo_skeleton(repo)
+    (repo / "configs" / "mcp_servers" / "woocommerce.yaml").write_text(
+        "type: stdio\nname: woocommerce\nparams:\n  command: uvx\n"
+        '  args: ["woocommerce-mcp"]\n'
+    )
+    woo_task = _write_toolathlon_task(
+        finalpool, "woocommerce-new-product", ["woocommerce"]
+    )
+    (woo_task / "token_key_session.py").write_text(
+        'woocommerce_site_url = "http://localhost:10003/store97"\n'
+    )
+
+    adapted = adapt_resolved_source_if_needed(
+        _resolved(
+            repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool", sha="e" * 40
+        )
+    )
+
+    generated = adapted.path / "woocommerce-new-product"
+    compose = yaml.safe_load(
+        (generated / "environment" / "docker-compose.yaml").read_text()
+    )
+    assert compose["services"]["woo-db"]["image"] == "mysql:8.0"
+    assert compose["services"]["woo"]["image"] == "wordpress:6.8.2-php8.2-apache"
+    assert "pull_policy" not in compose["services"]["woo-db"]
+    assert "pull_policy" not in compose["services"]["woo"]
+    assert compose["services"]["woo"]["entrypoint"] == [
+        "/bin/bash",
+        "/toolathlon-woo/entry.sh",
+    ]
+    assert "./woo:/toolathlon-woo:ro" in compose["services"]["woo"]["volumes"]
+    assert (generated / "environment" / "woo" / "entry.sh").exists()
+    assert (generated / "environment" / "woo" / "users_data.json").exists()
+    entry = (generated / "environment" / "woo" / "entry.sh").read_text()
+    assert "wp-content/uploads/sites/${site_id}" in entry
+    assert "$site_uploads/$month_path" in entry
+    assert "$site_uploads/wc-logs" in entry
+    assert "$site_uploads/woocommerce_uploads" in entry
+    task = Task(generated)
+    assert task.config.environment.build_timeout_sec == 2400
+    assert any(
+        "woo-rewrite" in c.command for c in task.config.environment.setup_commands
+    )
+
+
+def test_toolathlon_canvas_task_reseeds_tokens_on_first_boot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Canvas sidecars repair predefined API tokens after every fresh boot."""
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "Toolathlon"
+    finalpool = _write_toolathlon_repo_skeleton(repo)
+    (repo / "configs" / "mcp_servers" / "canvas.yaml").write_text(
+        'type: stdio\nname: canvas\nparams:\n  command: uvx\n  args: ["canvas-mcp"]\n'
+    )
+    _write_toolathlon_task(finalpool, "canvas-list-test", ["canvas"])
+
+    adapted = adapt_resolved_source_if_needed(
+        _resolved(
+            repo, repo="hkust-nlp/Toolathlon", path="tasks/finalpool", sha="e" * 40
+        )
+    )
+
+    compose = yaml.safe_load(
+        (
+            adapted.path / "canvas-list-test" / "environment" / "docker-compose.yaml"
+        ).read_text()
+    )
+    canvas = compose["services"]["canvas"]
+    assert canvas["image"] == "lbjay/canvas-docker"
+    assert "pull_policy" not in canvas
+    assert canvas["entrypoint"] == ["/bin/bash", "/toolathlon-canvas/entry.sh"]
+    assert "./canvas:/toolathlon-canvas:ro" in canvas["volumes"]
+    canvas_dir = adapted.path / "canvas-list-test" / "environment" / "canvas"
+    assert "seed_canvas.rb" in {p.name for p in canvas_dir.iterdir()}
+    entry = (canvas_dir / "entry.sh").read_text()
+    seed = (canvas_dir / "seed_canvas.rb").read_text()
+    assert 'rm -f "$CANVAS_DIR"/tmp/pids/server.pid' in entry
+    assert "repairing predefined API tokens" in entry
+    assert "http://localhost:3000/api/v1/accounts/1/courses" in entry
+    assert "mcpcanvasadmintoken2" in entry
+    assert "reset_token(user, 'Predefined API Token'" in seed
+    assert "reset_token(user, 'Admin API Token'" in seed
+    assert "Role.get_built_in_role('AccountAdmin')" in seed
+    assert "account_user.workflow_state = 'active'" in seed
+    task = Task(adapted.path / "canvas-list-test")
+    assert task.config.environment.build_timeout_sec == 2400
 
 
 def test_toolathlon_gym_adapter_normalizes_postgres_env(
