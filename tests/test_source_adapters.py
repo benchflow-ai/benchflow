@@ -250,6 +250,7 @@ def test_toolathlon_email_task_gets_poste_sidecar(tmp_path: Path, monkeypatch) -
         compose["services"]["main"]["depends_on"]["poste"]["condition"]
         == "service_healthy"
     )
+    assert "ports" not in compose["services"]["poste"]
     poste_dir = email / "environment" / "poste"
     assert (poste_dir / "entry.sh").exists()
     assert (poste_dir / "plaintext_fix.sh").exists()

@@ -185,7 +185,7 @@ def _compose_yaml(services: set[str]) -> str:
     if K8S in services:
         blocks.extend(_K8S_MAIN_COMPOSE_BLOCK)
     if POSTE in services:
-        blocks.append(_POSTE_COMPOSE_SERVICE)
+        blocks.append(_poste_compose_service(publish_host_ports=K8S in services))
     if WOO in services:
         blocks.append(_WOO_COMPOSE_SERVICE)
     if CANVAS in services:
@@ -193,10 +193,24 @@ def _compose_yaml(services: set[str]) -> str:
     return "\n".join(blocks) + "\n"
 
 
+def _poste_compose_service(*, publish_host_ports: bool) -> str:
+    """Return the Poste service block for compose-internal or host-network use."""
+    ports = (
+        "\n    ports:\n"
+        '      - "10005:80"\n'
+        '      - "2525:25"\n'
+        '      - "1143:143"\n'
+        '      - "1587:587"'
+    )
+    return _POSTE_COMPOSE_SERVICE_TEMPLATE.format(
+        ports=ports if publish_host_ports else ""
+    )
+
+
 # poste seeds ~503 users + re-applies plaintext auth from entry.sh, then touches
 # /tmp/poste-ready; main gates on that sentinel so preprocess never races an
 # unseeded mailbox. start_period is generous — first-boot seeding takes ~1-2 min.
-_POSTE_COMPOSE_SERVICE = """  poste:
+_POSTE_COMPOSE_SERVICE_TEMPLATE = """  poste:
     image: mirror.gcr.io/analogic/poste.io:2.5.5
     hostname: mcp.com
     cap_add:
@@ -209,12 +223,7 @@ _POSTE_COMPOSE_SERVICE = """  poste:
       DISABLE_RSPAMD: "TRUE"
       DISABLE_P0F: "TRUE"
       HTTPS_FORCE: "0"
-      HTTPS: "OFF"
-    ports:
-      - "10005:80"
-      - "2525:25"
-      - "1143:143"
-      - "1587:587"
+      HTTPS: "OFF"{ports}
     volumes:
       - ./poste:/toolathlon-poste:ro
     entrypoint: ["/bin/bash", "/toolathlon-poste/entry.sh"]
