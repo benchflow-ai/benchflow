@@ -1,5 +1,5 @@
-"""Regression: OpenCode-family agents (opencode + its MiMo fork) support
-LLM-proxy trajectory tracking.
+"""Regression: OpenCode-family proxy-wrapper agents support LLM-proxy trajectory
+tracking.
 
 These agents use acp_model_format="provider/model" and hard-code the OpenAI
 Responses API for the built-in ``openai`` provider id, which the LiteLLM gateway
@@ -18,10 +18,12 @@ import pytest
 
 from benchflow.agents.registry import AGENTS, OPENCODE_PROXY_PROVIDER_ID
 
-# (agent name, proxy wrapper binary, agent config filename)
+# (agent name, proxy wrapper binary, agent config filename). MiMo is an
+# OpenCode fork, but the current agents-manifest path launches it directly via
+# `mimo acp` and writes its proxy config from launch_cmd, not an installed
+# /opt/benchflow/bin/*-proxy wrapper.
 CASES = [
     ("opencode", "opencode-proxy", "opencode.json"),
-    ("mimo", "mimo-proxy", "mimocode.json"),
 ]
 
 
