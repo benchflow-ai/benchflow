@@ -8,12 +8,18 @@ standalone doctor command.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
 
 import click
 import typer
+
+# Line editing (arrows, backspace, history) for every visible prompt:
+# click's prompts read via input(), which only edits when readline is loaded.
+with contextlib.suppress(ImportError):  # pragma: no cover — platform-dependent
+    import readline  # noqa: F401
 
 from benchflow import onboarding
 from benchflow.cli._shared import console
@@ -223,22 +229,47 @@ def register_init(app: typer.Typer) -> None:
             default = agents.index("pi-acp") + 1 if "pi-acp" in agents else 1
             options = [(a, "") for a in agents]
             options.append(
-                ("other", "browse the agent catalog (fetched per agent, on demand)")
+                ("other", "browse the full catalog (acp / ai-sdk / omnigent)")
             )
             pick = _choose("Agent:", options, default=default)
             if pick == len(options):
-                # Browse the STATIC catalog list (zero network); only the
-                # selected agent's manifest is fetched — never the full repo.
-                cat = onboarding.catalog_choices()
-                apick = _choose("Catalog agent:", cat, default=1)
+                # Browse the STATIC catalog (zero network): path menu, then
+                # that path's agents. Only the selected agent is loaded —
+                # acp entries fetch ONE manifest; package paths (ai-sdk /
+                # omnigent) use the installed package or print the exact
+                # install command.
+                path_names = ("acp", "ai-sdk", "omnigent")
+                counts = {p: len(onboarding.path_choices(p)) for p in path_names}
+                ppick = _choose(
+                    "Agent path:",
+                    [(p, f"{counts[p]} agents") for p in path_names],
+                    default=1,
+                )
+                path = path_names[ppick - 1]
+                cat = onboarding.path_choices(path)
+                apick = _choose("Agent:", cat, default=1)
                 agent = cat[apick - 1][0]
-                console.print(f"[dim]│ fetching {agent} manifest…[/]")
-                from benchflow.agents import remote_manifests
+                from benchflow.agents.registry import AGENTS as _AGENTS_NOW
 
-                if not remote_manifests.fetch_one(agent):
+                if agent in _AGENTS_NOW:
+                    pass  # already available (installed package or core)
+                elif path == "acp":
+                    console.print(f"[dim]│ fetching {agent} manifest…[/]")
+                    from benchflow.agents import remote_manifests
+
+                    if not remote_manifests.fetch_one(agent):
+                        typer.echo(
+                            f"Could not fetch the manifest for {agent!r} —"
+                            " check your network or BENCHFLOW_AGENTS_SOURCE.",
+                            err=True,
+                        )
+                        raise typer.Exit(1)
+                else:
+                    hint = onboarding.install_hint(agent)
                     typer.echo(
-                        f"Could not fetch the manifest for {agent!r} — check"
-                        " your network or BENCHFLOW_AGENTS_SOURCE.",
+                        f"{agent!r} comes from a pip package that is not"
+                        " installed. Install it and re-run bench init:\n\n"
+                        f"  {hint}",
                         err=True,
                     )
                     raise typer.Exit(1)

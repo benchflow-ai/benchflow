@@ -590,6 +590,75 @@ CATALOG_AGENTS: tuple[str, ...] = (
 )
 
 
+# Package-path agents (pip-installed, not manifest-fetchable). Static like
+# CATALOG_AGENTS; selecting one that is not installed yields the exact
+# install command (install_hint) instead of a dead end.
+AI_SDK_AGENTS: tuple[str, ...] = (
+    "ai-sdk",
+    "ai-sdk-pi",
+    "ai-sdk-codex",
+    "ai-sdk-claude-code",
+    "ai-sdk-deepagents",
+    "ai-sdk-opencode",
+)
+OMNIGENT_AGENTS: tuple[str, ...] = (
+    "omnigent-pi",
+    "omnigent-claude",
+    "omnigent-openai-agents",
+    "omnigent-codex",
+    "omnigent-goose",
+    "omnigent-qwen",
+    "omnigent-kimi",
+    "omnigent-hermes",
+    "omnigent-copilot",
+    "omnigent-cursor",
+    "omnigent-antigravity",
+    "omnigent-claude-native",
+    "omnigent-codex-native",
+    "omnigent-goose-native",
+    "omnigent-qwen-native",
+    "omnigent-kimi-native",
+    "omnigent-hermes-native",
+    "omnigent-cursor-native",
+    "omnigent-antigravity-native",
+    "omnigent-kiro-native",
+    "omnigent-opencode-native",
+    "omnigent-pi-native",
+)
+_AI_SDK_SUBDIRS = {
+    "ai-sdk": "ai-sdk/acp",
+    "ai-sdk-pi": "ai-sdk/harness-pi",
+    "ai-sdk-codex": "ai-sdk/harness-codex",
+    "ai-sdk-claude-code": "ai-sdk/harness-claude-code",
+    "ai-sdk-deepagents": "ai-sdk/harness-deepagents",
+    "ai-sdk-opencode": "ai-sdk/harness-opencode",
+}
+
+
+def path_choices(path: str) -> list[tuple[str, str]]:
+    """Static (name, desc) entries for one adaptation path's browse menu."""
+    from benchflow.agents.registry import AGENTS
+
+    names = {
+        "acp": CATALOG_AGENTS,
+        "ai-sdk": AI_SDK_AGENTS,
+        "omnigent": OMNIGENT_AGENTS,
+    }[path]
+    return [(n, "" if n not in AGENTS else "installed") for n in names]
+
+
+def install_hint(name: str) -> str | None:
+    """The exact install command for a package-path agent, or None for
+    manifest-path (acp) agents."""
+    base = "https://github.com/benchflow-ai/agents@main"
+    if name.startswith("omnigent-"):
+        return f'uv pip install "omnigent-benchflow @ git+{base}#subdirectory=omnigent"'
+    sub = _AI_SDK_SUBDIRS.get(name)
+    if sub:
+        return f'uv pip install "{name} @ git+{base}#subdirectory={sub}"'
+    return None
+
+
 def catalog_choices() -> list[tuple[str, str]]:
     """Static (name, description) entries for the wizard's catalog browse —
     ACP catalog agents not already registered locally. Zero network."""

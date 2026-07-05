@@ -810,10 +810,11 @@ def test_other_agent_offers_static_catalog_and_fetches_one_manifest(
         "benchflow.onboarding.dataset_choices", lambda: [("skillsbench@1.1", "")]
     )
     n_local = len(onboarding.acp_agents())
-    target_idx = [n for n, _ in onboarding.catalog_choices()].index(target) + 1
+    target_idx = [n for n, _ in onboarding.path_choices("acp")].index(target) + 1
     answers = "\n".join(
         [
-            str(n_local + 1),  # agent menu: "other" -> static catalog
+            str(n_local + 1),  # agent menu: "other" -> path menu
+            "1",  # path menu: acp
             str(target_idx),  # pick it from the static list
             "",  # provider -> deepseek
             "deepseek-v4-flash",
@@ -964,3 +965,60 @@ def test_provider_label_not_a_duplicate_of_the_name(tmp_path, monkeypatch):
     )
     menu = result.output.split("Provider", 1)[-1].split("Select", 1)[0]
     assert "deepseek  — deepseek" not in menu  # no information-free labels
+
+
+def test_prompts_have_line_editing():
+    """Arrows/backspace must work in every prompt: click's input() only gets
+    line editing when readline is loaded — importing the wizard module must
+    load it (guarded for platforms without it)."""
+    import sys
+
+    import benchflow.cli.init_cmd  # noqa: F401
+
+    assert "readline" in sys.modules
+
+
+def test_other_shows_three_paths_then_that_paths_agents(tmp_path, monkeypatch):
+    """'other' -> path menu (acp / ai-sdk / omnigent with counts) -> that
+    path's static agent list. Package paths guide installation instead of
+    dead-ending."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    from benchflow import onboarding
+
+    n_local = len(onboarding.acp_agents())
+    answers = "\n".join(
+        [
+            str(n_local + 1),  # agent menu -> other
+            "3",  # path menu -> omnigent
+            "1",  # first omnigent agent (package not installed here? may be)
+        ]
+    )
+    result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
+    out = result.output
+    assert "acp" in out and "ai-sdk" in out and "omnigent" in out  # path menu
+    assert "omnigent-" in out  # that path's agents listed
+
+
+def test_uninstalled_package_agent_gets_install_guidance(tmp_path, monkeypatch):
+    """Selecting a package-path agent that is not importable prints the exact
+    install command instead of a crash or a dead end."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    from benchflow.agents import registry
+
+    # simulate not-installed: evict ai-sdk-codex if some env registered it
+    saved = registry.AGENTS.pop("ai-sdk-codex", None)
+    try:
+        from benchflow import onboarding
+
+        n_local = len(onboarding.acp_agents())
+        idx = [n for n, _ in onboarding.path_choices("ai-sdk")].index("ai-sdk-codex")
+        answers = "\n".join([str(n_local + 1), "2", str(idx + 1)])
+        result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
+        assert result.exit_code == 1
+        assert "uv pip install" in result.output
+        assert "ai-sdk/harness-codex" in result.output  # the exact subdirectory
+    finally:
+        if saved is not None:
+            registry.AGENTS["ai-sdk-codex"] = saved
