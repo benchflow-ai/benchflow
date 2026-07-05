@@ -691,6 +691,8 @@ def _toolathlon_setup_command(*, task_name: str, variant: str) -> str:
             f"runpy.run_module({preprocess_module!r}, run_name='__main__')",
             "PY",
             "fi",
+            f"{python_cmd} {shlex.quote(_TOOLATHLON_CONTAINER_MODULE_PATH)} "
+            'write-task-tokens "$TASK_DIR"',
             'for private in "$TASK_DIR/groundtruth_workspace" "$TASK_DIR/evaluation"; do',
             '  if [ -e "$private" ]; then',
             '    chown -R root:root "$private"',
