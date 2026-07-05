@@ -93,6 +93,14 @@ def _template_vars(task_dir: Path) -> dict[str, str]:
     }
     tokens = _load_all_token_key_session(workspace / "configs" / "token_key_session.py")
     tokens.update(_load_all_token_key_session(task_dir / "token_key_session.py"))
+    k8s_configs = task_dir / "k8s_configs"
+    if k8s_configs.is_dir():
+        kubeconfigs = sorted(k8s_configs.glob("*-config.yaml"))
+        if len(kubeconfigs) == 1:
+            # Some k8s token files derive an instance suffix through PyYAML.
+            # The launcher intentionally runs dependency-free, so resolve the
+            # token from the kubeconfig that preprocess actually generated.
+            tokens["kubeconfig_path"] = str(kubeconfigs[0])
     for key, value in tokens.items():
         if isinstance(value, (str, int, float, bool)):
             variables[f"token.{key}"] = str(value)

@@ -444,6 +444,16 @@ def _toolathlon_task_toml(
             "timeout_sec": 1800.0,
         }
     )
+    if _toolathlon_services.K8S in services:
+        setup_commands.append(
+            {
+                "command": _toolathlon_services.k8s_config_permissions_command(
+                    task_name
+                ),
+                "cwd": "/workspace",
+                "timeout_sec": 60.0,
+            }
+        )
     # Service tasks run a DinD compose with sidecar containers alongside main —
     # give the sandbox extra memory/disk for the second image + running service.
     needs_k8s = _toolathlon_services.K8S in services
@@ -948,15 +958,31 @@ RUN set -eux; \
     esac; \
     curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-28.3.3.tgz" \
       | tar -xz -C /tmp; \
-    mv /tmp/docker/docker /usr/local/bin/docker; \
+    mv /tmp/docker/docker /usr/local/bin/docker.real; \
     rm -rf /tmp/docker; \
-    curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-${k8s_arch}"; \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ "$1" = "info" ]; then' \
+      '  for arg in "$@"; do' \
+      '    if printf "%s\n" "$arg" | grep -q "{{.Driver}}"; then' \
+      '      echo overlay2' \
+      '      exit 0' \
+      '    fi' \
+      '    if printf "%s\n" "$arg" | grep -q "{{json .DriverStatus"; then' \
+      '      echo '"'"'[["Backing Filesystem","extfs"]]'"'"'' \
+      '      exit 0' \
+      '    fi' \
+      '  done' \
+      'fi' \
+      'exec /usr/local/bin/docker.real "$@"' \
+      > /usr/local/bin/docker; \
+    curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-${k8s_arch}"; \
     curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.34.1/bin/linux/${k8s_arch}/kubectl"; \
     curl -fsSL "https://get.helm.sh/helm-v3.15.4-linux-${k8s_arch}.tar.gz" \
       | tar -xz -C /tmp; \
     mv "/tmp/linux-${k8s_arch}/helm" /usr/local/bin/helm; \
     rm -rf "/tmp/linux-${k8s_arch}"; \
-    chmod 755 /usr/local/bin/docker /usr/local/bin/kind /usr/local/bin/kubectl /usr/local/bin/helm
+    chmod 755 /usr/local/bin/docker /usr/local/bin/docker.real /usr/local/bin/kind /usr/local/bin/kubectl /usr/local/bin/helm
 """
         return f"""FROM lockon0927/toolathlon-task-image:1016beta
 ENV PATH="/usr/local/bin:/root/.local/bin:$PATH"
