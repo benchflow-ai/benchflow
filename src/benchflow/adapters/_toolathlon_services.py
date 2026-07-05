@@ -11,14 +11,13 @@ auto-routes the task to the DinD / Docker compose sandbox strategy
 (``sandbox/daytona.py`` picks ``_DaytonaDinD`` when ``docker-compose.yaml``
 exists), so no run-time flag change is needed.
 
-Implemented: **poste.io** email (24 tasks), **Canvas** (8 tasks),
-**WooCommerce** (9 tasks), and **k8s/kind** (5 tasks). The poste sidecar boots the stock
-``analogic/poste.io`` image, seeds the fixed 503-user roster upstream ships in
-``configs/users_data.json`` (vendored here as ``_toolathlon_poste_users.tsv`` so
-the feature is hermetic), and re-applies poste's plaintext-auth config on every
-boot (poste regenerates that config on start). The task's email ``*_config.json``
-files are rewritten to reach the sidecar by service name, so the ``emails`` MCP
-server, preprocess and verifier all transparently talk to it.
+Implemented: **email** (24 tasks), **Canvas** (8 tasks), **WooCommerce** (9
+tasks), and **k8s/kind** (5 tasks). The email sidecar runs a tiny
+BenchFlow-managed SMTP/IMAP service from the already-built task image; it avoids
+pulling the much larger poste.io appliance inside Daytona's 10 GB DinD sandbox.
+The task's email ``*_config.json`` files are rewritten to reach the sidecar by
+service name, so the ``emails`` MCP server, preprocess and verifier all
+transparently talk to it.
 
 Canvas and WooCommerce boot stock upstream images with task-local first-boot
 seed scripts. k8s tasks run their upstream kind scripts from the main container
@@ -40,9 +39,6 @@ WOO = "woo"
 CANVAS = "canvas"
 K8S = "k8s"
 
-# Pulled via the GCR Docker Hub mirror to dodge anonymous Docker Hub rate limits
-# inside concurrent DinD sandboxes (stock analogic/poste.io, unmodified).
-_POSTE_IMAGE = "mirror.gcr.io/analogic/poste.io:2.5.5"
 _WOO_DB_IMAGE = "mysql:8.0"
 _WOO_WP_IMAGE = "wordpress:6.8.2-php8.2-apache"
 _CANVAS_IMAGE = "lbjay/canvas-docker"
@@ -161,17 +157,12 @@ def _is_localhost_mail_config(data: dict) -> bool:
 def _write_poste_assets(task_dir: Path) -> None:
     """Write the sidecar's boot assets under ``environment/poste/``."""
     poste_dir = task_dir / "environment" / POSTE
-    _write(poste_dir / "pairs.tsv", _poste_users_tsv())
-    _write(poste_dir / "plaintext_fix.sh", _POSTE_PLAINTEXT_FIX)
-    _write(poste_dir / "entry.sh", _POSTE_ENTRY)
-
-
-def _poste_users_tsv() -> str:
-    return (
+    fake_mail = (
         resources.files("benchflow.adapters")
-        .joinpath("_toolathlon_poste_users.tsv")
+        .joinpath("_toolathlon_fake_mail.py")
         .read_text()
     )
+    _write(poste_dir / "fake_mail.py", fake_mail)
 
 
 def _compose_yaml(services: set[str]) -> str:
@@ -207,83 +198,35 @@ def _poste_compose_service(*, publish_host_ports: bool) -> str:
     )
 
 
-# poste seeds ~503 users + re-applies plaintext auth from entry.sh, then touches
-# /tmp/poste-ready; main gates on that sentinel so preprocess never races an
-# unseeded mailbox. start_period is generous — first-boot seeding takes ~1-2 min.
+# The fake mail sidecar runs from ``${MAIN_IMAGE_NAME}``, the image BenchFlow has
+# already built for the task's main container, so email tasks do not pull a
+# second large mail appliance into Daytona's 10 GB DinD VM. It keeps the service
+# name ``poste`` because generated task configs are already rewritten to that
+# hostname.
 _POSTE_COMPOSE_SERVICE_TEMPLATE = """  poste:
-    image: mirror.gcr.io/analogic/poste.io:2.5.5
-    hostname: mcp.com
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-      - NET_BIND_SERVICE
-      - SYS_PTRACE
-    environment:
-      DISABLE_CLAMAV: "TRUE"
-      DISABLE_RSPAMD: "TRUE"
-      DISABLE_P0F: "TRUE"
-      HTTPS_FORCE: "0"
-      HTTPS: "OFF"{ports}
+    image: ${{MAIN_IMAGE_NAME}}
+    hostname: poste{ports}
     volumes:
       - ./poste:/toolathlon-poste:ro
-    entrypoint: ["/bin/bash", "/toolathlon-poste/entry.sh"]
+    command:
+      - /usr/bin/python3
+      - /toolathlon-poste/fake_mail.py
+      - --smtp-port
+      - "25"
+      - --submission-port
+      - "587"
+      - --imap-port
+      - "143"
+      - --http-port
+      - "80"
+      - --ready-file
+      - /tmp/poste-ready
     healthcheck:
       test: ["CMD-SHELL", "test -f /tmp/poste-ready"]
-      interval: 10s
-      timeout: 5s
-      retries: 90
-      start_period: 30s"""
-
-
-# Re-apply poste's plaintext-auth config (poste regenerates dovecot/haraka
-# config on each boot, so this must run every start, not be baked as files).
-# Mirrors upstream deployment/poste/scripts/setup.sh::configure_dovecot.
-_POSTE_PLAINTEXT_FIX = r"""#!/bin/bash
-set +e
-for i in $(seq 1 90); do
-  [ -f /etc/dovecot/conf.d/10-ssl.conf ] && [ -f /opt/haraka-submission/config/auth.ini ] && break
-  sleep 2
-done
-sleep 6
-sed -i 's/ssl = required/ssl = yes/' /etc/dovecot/conf.d/10-ssl.conf
-sed -i 's/auth_allow_cleartext = no/auth_allow_cleartext = yes/' /etc/dovecot/conf.d/10-auth.conf
-sed -i '/disable_plaintext_auth/d' /etc/dovecot/conf.d/10-auth.conf
-sed -i 's/tls_required = true/tls_required = false/' /opt/haraka-smtp/config/auth.ini
-sed -i 's/tls_required = true/tls_required = false/' /opt/haraka-submission/config/auth.ini
-sed -i 's#^auth/poste#\#auth/poste#' /opt/haraka-submission/config/plugins
-printf '127.0.0.1/8\n192.168.0.0/16\n172.16.0.0/12\n10.0.0.0/8\n' > /opt/haraka-submission/config/relay_acl_allow
-doveadm reload 2>/dev/null || kill -HUP "$(pgrep dovecot | head -1)" 2>/dev/null
-kill "$(pgrep -f 'haraka.*smtp')" 2>/dev/null
-kill "$(pgrep -f 'haraka.*submission')" 2>/dev/null
-"""
-
-
-# Runs as the poste entrypoint: launch poste's own /init (PID 1), then in the
-# background wait for the admin console, create the mcp.com domain, seed the
-# roster (uid 8 = mail, matching upstream's `docker exec --user=8`), apply the
-# plaintext-auth fix, and finally signal readiness.
-_POSTE_ENTRY = r"""#!/bin/bash
-run8() { setpriv --reuid=8 --regid=8 --clear-groups "$@"; }
-(
-  for i in $(seq 1 120); do
-    run8 php /opt/admin/bin/console domain:list >/dev/null 2>&1 && break
-    sleep 3
-  done
-  run8 php /opt/admin/bin/console domain:create mcp.com >/dev/null 2>&1
-  n=0
-  while IFS=$'\t' read -r email pass name; do
-    [ -z "$email" ] && continue
-    run8 php /opt/admin/bin/console email:create "$email" "$pass" "$name" >/dev/null 2>&1 &
-    n=$((n + 1))
-    [ $((n % 40)) -eq 0 ] && wait
-  done < /toolathlon-poste/pairs.tsv
-  wait
-  bash /toolathlon-poste/plaintext_fix.sh
-  touch /tmp/poste-ready
-  echo "[poste entry] seeded $n mailboxes, plaintext auth applied, ready"
-) &
-exec /init
-"""
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s"""
 
 
 def _write(path: Path, value: str) -> None:
