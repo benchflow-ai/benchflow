@@ -414,7 +414,15 @@ def uses_native_subscription_auth(
             or check_subscription_auth(agent, required_key)
         )
 
-    if agent == "claude-agent-acp":
+    # Registry-driven Claude-CLI gate: any agent whose subscription_auth
+    # substitutes ANTHROPIC_API_KEY runs the Claude Code CLI and can take
+    # OAuth/subscription auth natively (claude-agent-acp, omnigent claude-*).
+    claude_cfg = AGENTS.get(agent)
+    if (
+        claude_cfg is not None
+        and claude_cfg.subscription_auth is not None
+        and claude_cfg.subscription_auth.replaces_env == "ANTHROPIC_API_KEY"
+    ):
         if agent_env.get("ANTHROPIC_API_KEY"):
             return False
         if model is not None:

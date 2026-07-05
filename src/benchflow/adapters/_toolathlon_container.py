@@ -31,6 +31,7 @@ import importlib.machinery
 import importlib.util
 import os
 import re
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -93,6 +94,14 @@ def _template_vars(task_dir: Path) -> dict[str, str]:
     }
     tokens = _load_all_token_key_session(workspace / "configs" / "token_key_session.py")
     tokens.update(_load_all_token_key_session(task_dir / "token_key_session.py"))
+    k8s_configs = task_dir / "k8s_configs"
+    if k8s_configs.is_dir():
+        kubeconfigs = sorted(k8s_configs.glob("*-config.yaml"))
+        if len(kubeconfigs) == 1:
+            # Some k8s token files derive an instance suffix through PyYAML.
+            # The launcher intentionally runs dependency-free, so resolve the
+            # token from the kubeconfig that preprocess actually generated.
+            tokens["kubeconfig_path"] = str(kubeconfigs[0])
     for key, value in tokens.items():
         if isinstance(value, (str, int, float, bool)):
             variables[f"token.{key}"] = str(value)
@@ -104,6 +113,41 @@ def _resolve(value: str, variables: dict[str, str]) -> str:
         lambda m: variables.get(m.group(1), m.group(0)),
         value,
     )
+
+
+def _looks_like_jsonrpc_stdout(line: bytes) -> bool:
+    """Return True for line-oriented MCP JSON-RPC stdout frames.
+
+    Several upstream Toolathlon MCP servers print human startup logs to stdout
+    before emitting real MCP JSON-RPC. MCP clients read stdout as protocol, so
+    those logs must be moved to stderr. The official servers used here emit
+    compact one-line JSON objects for protocol messages.
+    """
+    stripped = line.lstrip()
+    return stripped.startswith(b"{")
+
+
+def _run_stdio_server(argv: list[str], env: dict[str, str]) -> int:
+    proc = subprocess.Popen(
+        argv,
+        env=env,
+        stdin=sys.stdin,
+        stdout=subprocess.PIPE,
+        stderr=None,
+    )
+    assert proc.stdout is not None
+    try:
+        for line in iter(proc.stdout.readline, b""):
+            if _looks_like_jsonrpc_stdout(line):
+                sys.stdout.buffer.write(line)
+                sys.stdout.buffer.flush()
+            else:
+                sys.stderr.buffer.write(line)
+                sys.stderr.buffer.flush()
+        return proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        return 130
 
 
 def _launch(argv: list[str]) -> int:
@@ -129,8 +173,7 @@ def _launch(argv: list[str]) -> int:
         resolved_env["PATH"] = (
             "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
         )
-    os.execvpe(resolved_argv[0], resolved_argv, resolved_env)
-    return 0  # unreachable when exec succeeds
+    return _run_stdio_server(resolved_argv, resolved_env)
 
 
 # --------------------------------------------------------------------------- #

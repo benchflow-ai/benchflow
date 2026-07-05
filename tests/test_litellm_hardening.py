@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -979,3 +980,51 @@ def test_health_deadline_env_parse_is_defensive(monkeypatch):
     assert rt._health_deadline_sec() >= 1.0
     monkeypatch.setenv("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "240")
     assert rt._health_deadline_sec() == 240.0
+
+
+@pytest.mark.asyncio
+async def test_wait_for_sandbox_state_retries_slow_exec_probe():
+    class _Sandbox:
+        def __init__(self):
+            self.calls = 0
+
+        async def exec(self, _command, timeout_sec):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("Command timed out after 5 seconds")
+            return SimpleNamespace(return_code=0, stdout='{"port": 32123}')
+
+    sandbox = _Sandbox()
+    state = await runtime_mod._wait_for_sandbox_state(
+        sandbox,
+        state_path="/tmp/state.json",
+        stderr_path="/tmp/stderr.log",
+        deadline_s=1.0,
+    )
+
+    assert state["port"] == 32123
+    assert sandbox.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_poll_sandbox_health_retries_slow_exec_probe():
+    class _Sandbox:
+        def __init__(self):
+            self.calls = 0
+
+        async def exec(self, _command, timeout_sec):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("Command timed out after 5 seconds")
+            return SimpleNamespace(return_code=0, stdout="")
+
+    sandbox = _Sandbox()
+    await runtime_mod._poll_sandbox_health(
+        sandbox,
+        python="/venv/bin/python",
+        port=32123,
+        stderr_path="/tmp/stderr.log",
+        deadline_s=1.0,
+    )
+
+    assert sandbox.calls == 2

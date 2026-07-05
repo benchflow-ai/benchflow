@@ -185,6 +185,23 @@ class _DaytonaDinD(_DaytonaStrategy):
             timeout_sec=timeout_sec,
         )
 
+    async def _run_pre_compose_hook(self) -> None:
+        hook = f"{self._ENVIRONMENT_DIR}/benchflow-pre-compose.sh"
+        timeout_sec = max(120, round(self._env.task_env_config.build_timeout_sec))
+        result = await self._vm_exec(
+            f"if [ -f {shlex.quote(hook)} ]; then "
+            f"chmod +x {shlex.quote(hook)} && {shlex.quote(hook)}; "
+            "fi",
+            cwd=self._ENVIRONMENT_DIR,
+            env=self._compose_env_vars(),
+            timeout_sec=timeout_sec,
+        )
+        if result.return_code != 0:
+            raise RuntimeError(
+                "pre-compose hook failed inside DinD sandbox: "
+                f"{result.stdout} {result.stderr}"
+            )
+
     async def _compose_up_with_retry(self, env: DaytonaSandbox) -> None:
         """Run ``compose up -d`` honouring the author's build budget and retrying
         a fresh-daemon network create/attach race (mirrors the host docker path).
@@ -318,6 +335,9 @@ class _DaytonaDinD(_DaytonaStrategy):
 
         # Build and start compose services
         self._use_prebuilt = not force_build and bool(env.task_env_config.docker_image)
+
+        env.logger.debug("Running pre-compose hook inside DinD sandbox if present...")
+        await self._run_pre_compose_hook()
 
         env.logger.debug("Building compose services inside DinD sandbox...")
         result = await self._compose_exec(

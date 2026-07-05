@@ -2162,6 +2162,22 @@ class Rollout:
         # silent API failure.
         if not getattr(self, "_executed_prompts", None):
             return
+        # Native-subscription runs have NO usage channel: the LiteLLM proxy is
+        # deliberately skipped (Harbor-style split) and the CLI authenticates
+        # itself, so zero tokens + zero tool calls is the expected shape of a
+        # HEALTHY run for agents whose trajectory carries no tool telemetry
+        # (e.g. omnigent's flat session events). The zero-signal heuristic is
+        # meaningless there and would null verifier-granted rewards; real
+        # failures still surface via the agent error channels.
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        config = getattr(self, "_config", None)
+        if config is not None and uses_native_subscription_auth(
+            config.agent,
+            config.model,
+            getattr(self, "_agent_env", None) or {},
+        ):
+            return
         # getattr-defensive: tests construct partial Rollout doubles that
         # bypass __init__ (same pattern as _task_skill_policy below).
         usage_metrics = getattr(self, "_usage_metrics", None) or {}
