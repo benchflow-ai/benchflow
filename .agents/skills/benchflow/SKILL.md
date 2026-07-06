@@ -197,8 +197,8 @@ asyncio.run(main())
 ## Setup
 
 ```bash
-# Install benchflow 0.6.0 from PyPI (--prerelease allow is for the pinned LiteLLM rc dep):
-uv tool install --prerelease allow benchflow
+# Install benchflow from PyPI. BenchFlow CLI releases require Python 3.12+.
+uv tool install --python 3.12 --upgrade benchflow
 # (or from source: uv sync --extra dev --locked)
 export GEMINI_API_KEY=...     # or ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.
 export DAYTONA_API_KEY=...    # for cloud sandboxes
