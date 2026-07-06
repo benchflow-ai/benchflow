@@ -65,7 +65,10 @@ def _choose(title: str, options: list[tuple[str, str]], default: int | None = 1)
     for i, (label, desc) in enumerate(options, 1):
         suffix = f"  [dim]— {escape(desc)}[/]" if desc else ""
         console.print(f"[dim]│[/]  [cyan]{i})[/] {escape(label)}{suffix}")
-    return typer.prompt("Select", type=click.IntRange(1, len(options)), default=default)
+    # click.prompt (not typer.prompt): typer's re-prompt loop only catches
+    # its VENDORED click's UsageError, so a real click.IntRange failure
+    # escaped as a traceback. Real click's prompt re-prompts on typos.
+    return click.prompt("Select", type=click.IntRange(1, len(options)), default=default)
 
 
 def _step(label: str, value: str) -> None:
@@ -131,9 +134,7 @@ def _wizard_auth_step(home: Path, agent: str, auth_env: str) -> None:
         if pick <= len(sources):
             use = sources[pick - 1]
     elif sources:
-        use = sources[0]
-        label, _ = _auth_option(use[0], use[1], agent, auth_env)
-        typer.echo(f"✓ Using {label}.")
+        use = sources[0]  # each branch below prints its own line
     if use is None:
         key = typer.prompt(f"{auth_env}", hide_input=True)
         _warn_shadow(auth_env, key)
@@ -144,7 +145,10 @@ def _wizard_auth_step(home: Path, agent: str, auth_env: str) -> None:
         _warn_shadow(auth_env, value)
         onboarding.write_env_file(home / ".env", {auth_env: value})
         os.environ[auth_env] = value  # the explicit choice wins in-process
-        typer.echo(f"✓ {auth_env} ({_fingerprint(value)}) saved to {home / '.env'}.")
+        typer.echo(
+            f"✓ {auth_env} ({_fingerprint(value)}) from {Path.cwd() / '.env'} —"
+            f" saved to {home / '.env'}."
+        )
     elif use[0] == "environment":
         typer.echo(
             f"✓ Using {auth_env} from your environment ({_fingerprint(use[1])})."
@@ -556,7 +560,10 @@ def register_init(app: typer.Typer) -> None:
                 # be exported before init ran.
                 env[auth_env] = api_key
             results = onboarding.run_doctor(model, sandbox, env, agent=agent)
-            if not _echo_results(results):
+            ok = _echo_results(results)
+            if ok and _skip_note(results):
+                typer.echo(f"Smoke passed{_skip_note(results)}.")
+            if not ok:
                 typer.echo(
                     "\nSetup saved, but the smoke test failed — fix the ❌ rows"
                     " above and re-check with `bench doctor`.",

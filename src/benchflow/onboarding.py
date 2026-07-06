@@ -316,11 +316,18 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
     except KeyError as exc:
         return CheckResult(name, False, _sanitize(str(exc)))
     url = f"{base}{path}"
+    import logging
+
+    _httpx_logger = logging.getLogger("httpx")
+    _prev_level = _httpx_logger.level
+    _httpx_logger.setLevel(logging.WARNING)  # keep request logs out of the rows
     try:
         with httpx.Client(transport=transport, timeout=30) as client:
             resp = client.post(url, json=payload, headers=headers)
     except httpx.HTTPError as exc:
         return CheckResult(name, False, _sanitize(f"request failed: {exc}"))
+    finally:
+        _httpx_logger.setLevel(_prev_level)
     if resp.status_code == 200:
         try:
             body = resp.json()

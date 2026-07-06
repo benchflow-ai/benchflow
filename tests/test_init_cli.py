@@ -1022,3 +1022,57 @@ def test_uninstalled_package_agent_gets_install_guidance(tmp_path, monkeypatch):
     finally:
         if saved is not None:
             registry.AGENTS["ai-sdk-codex"] = saved
+
+
+def test_menu_reprompts_on_non_integer_input(tmp_path, monkeypatch):
+    """Typos at a Select menu must re-prompt, not crash: typer.prompt's
+    re-prompt loop catches its VENDORED click's UsageError, so a real
+    click.IntRange BadParameter escaped as a traceback (auth-matrix find)."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    answers = "\n".join(
+        [
+            "not-a-number",  # agent menu: garbage -> must re-prompt
+            "",  # then Enter = default pi-acp
+            "",  # provider -> deepseek
+            "deepseek-v4-flash",
+            "skillsbench@1.1",
+            "docker",
+            "sk-k",
+        ]
+    )
+    # dataset/sandbox prompts appear as menus; feed by index-agnostic strings
+    monkeypatch.setattr(
+        "benchflow.onboarding.dataset_choices", lambda: [("skillsbench@1.1", "")]
+    )
+    answers = "\n".join(["not-a-number", "", "", "deepseek-v4-flash", "", "", "sk-k"])
+    result = runner.invoke(app, ["init", "--skip-smoke"], input=answers + "\n")
+    assert "Traceback" not in result.output
+    assert result.exit_code == 0, result.output
+
+
+def test_init_smoke_prints_skip_note(tmp_path, monkeypatch):
+    """A green smoke with skipped rows must say so (the doctor already
+    does): '(N check(s) skipped — not verifiable before run time)'."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    from benchflow.onboarding import CheckResult
+
+    monkeypatch.setattr(
+        "benchflow.onboarding.run_doctor",
+        lambda *a, **k: [
+            CheckResult("docker", True, "ok"),
+            CheckResult("provider auth", True, "skipped — sub", skipped=True),
+        ],
+    )
+    result = runner.invoke(app, _init_args(tmp_path)[:-1])  # no --skip-smoke
+    assert result.exit_code == 0, result.output
+    assert "check(s) skipped" in result.output
+
+
+def test_non_tty_env_source_announced_exactly_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-exported-key")
+    result = runner.invoke(app, [*_init_args(tmp_path)[:-3], "--skip-smoke"])
+    assert result.exit_code == 0, result.output
+    assert result.output.count("Using DEEPSEEK_API_KEY from your environment") == 1
