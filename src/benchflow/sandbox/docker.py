@@ -237,6 +237,10 @@ class DockerSandbox(BaseSandbox):
         return self.environment_dir / "docker-compose.yaml"
 
     @property
+    def _pre_compose_hook_path(self) -> Path:
+        return self.environment_dir / "benchflow-pre-compose.sh"
+
+    @property
     def _docker_compose_paths(self) -> list[Path]:
         build_or_prebuilt = (
             self._DOCKER_COMPOSE_PREBUILT_PATH
@@ -260,6 +264,14 @@ class DockerSandbox(BaseSandbox):
             paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
 
         return paths
+
+    def _docker_compose_env(self) -> dict[str, str]:
+        env = self._env_vars.to_env_dict(include_os_env=True)
+        if self._compose_task_env:
+            env.update(self._compose_task_env)
+        if self._persistent_env:
+            env.update(self._persistent_env)
+        return env
 
     def _write_mounts_compose_file(self) -> Path:
         compose = {"services": {"main": {"volumes": self._mounts_json}}}
@@ -294,11 +306,7 @@ class DockerSandbox(BaseSandbox):
             full_command.extend(["-f", str(path.resolve().absolute())])
         full_command.extend(command)
 
-        env = self._env_vars.to_env_dict(include_os_env=True)
-        if self._compose_task_env:
-            env.update(self._compose_task_env)
-        if self._persistent_env:
-            env.update(self._persistent_env)
+        env = self._docker_compose_env()
 
         process = await asyncio.create_subprocess_exec(
             *full_command,
@@ -347,6 +355,47 @@ class DockerSandbox(BaseSandbox):
             )
 
         return result
+
+    async def _run_pre_compose_hook(self) -> None:
+        hook = self._pre_compose_hook_path
+        if not hook.is_file():
+            return
+
+        timeout_sec = max(120, round(self.task_env_config.build_timeout_sec))
+        process = await asyncio.create_subprocess_exec(
+            "sh",
+            str(hook.resolve().absolute()),
+            cwd=str(self.environment_dir.resolve().absolute()),
+            env=self._docker_compose_env(),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            stdout_bytes, _ = await asyncio.wait_for(
+                process.communicate(), timeout=timeout_sec
+            )
+        except TimeoutError:
+            process.terminate()
+            try:
+                stdout_bytes, _ = await asyncio.wait_for(
+                    process.communicate(), timeout=5
+                )
+            except TimeoutError:
+                process.kill()
+                stdout_bytes, _ = await process.communicate()
+            output = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
+            raise RuntimeError(
+                f"Pre-compose hook timed out after {timeout_sec} seconds for "
+                f"environment {self.environment_name}. Output: {output}"
+            ) from None
+
+        output = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
+        if process.returncode:
+            raise RuntimeError(
+                f"Pre-compose hook failed for environment {self.environment_name}. "
+                f"Return code: {process.returncode}. Output: {output}"
+            )
 
     async def _run_docker_compose_build(self) -> None:
         max_attempts = len(_DOCKER_BUILD_RETRY_DELAYS_SEC) + 1
@@ -410,6 +459,8 @@ class DockerSandbox(BaseSandbox):
         if build_sem is not None:
             await build_sem.acquire()
         try:
+            await self._run_pre_compose_hook()
+
             if not self._use_prebuilt:
                 lock = self._image_build_locks.setdefault(
                     self.environment_name, asyncio.Lock()

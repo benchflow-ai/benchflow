@@ -173,6 +173,7 @@ def _looks_like_infra_error(error: str) -> bool:
             "connection reset",
             "connection refused",
             "broken pipe",
+            "failed to get session command",
             "sandbox not found",
             "workspace not found",
             "api connection",

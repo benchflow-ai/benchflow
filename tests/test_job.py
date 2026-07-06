@@ -96,6 +96,18 @@ class TestRetryConfig:
             "Sandbox not found. Please start the environment first."
         )
 
+    def test_should_retry_daytona_session_command_failure(self):
+        """Daytona SDK session-command failures are retryable infra errors."""
+        cfg = RetryConfig()
+        assert cfg.should_retry("Failed to get session command: ")
+
+    def test_should_retry_sandbox_startup_failure(self):
+        """Sandbox setup diagnostics are infra failures for retry purposes."""
+        cfg = RetryConfig()
+        assert cfg.should_retry(
+            "Sandbox startup failed: Sandbox disappeared during Daytona DinD startup"
+        )
+
     def test_should_retry_verifier_timeout(self):
         """Guards retry parity for verifier timeout infra failures."""
         cfg = RetryConfig()

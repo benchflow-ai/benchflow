@@ -229,12 +229,20 @@ _DAYTONA_TRANSIENT_RETRY_CLASS_NAMES = frozenset(
         "DaytonaTimeoutError",
     }
 )
+_DAYTONA_EMPTY_EXIT_CODE_MARKERS = (
+    "failed to convert exit code to int",
+    'strconv.Atoi: parsing "": invalid syntax',
+)
 
 
 def _is_daytona_transient_retry_error(exc: BaseException) -> bool:
     if isinstance(exc, (ConnectionError, TimeoutError)):
         return True
     exc_type = type(exc)
+    if exc_type.__module__.startswith("daytona.") and all(
+        marker in str(exc) for marker in _DAYTONA_EMPTY_EXIT_CODE_MARKERS
+    ):
+        return True
     return (
         exc_type.__module__.startswith("daytona.")
         and exc_type.__name__ in _DAYTONA_TRANSIENT_RETRY_CLASS_NAMES
