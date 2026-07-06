@@ -682,3 +682,17 @@ class TestStaticCatalogLazyFetch:
         before = registry.AGENTS["mimo"]
         assert remote_manifests.fetch_one("mimo") is True  # exists locally = fine
         assert registry.AGENTS["mimo"] is before  # untouched
+
+
+class TestPingUnregisteredProvider:
+    def test_inferable_model_ping_is_skipped_not_failed(self):
+        """gemini-3-pro / claude-* run via inferred keys with no registered
+        endpooint to ping — the smoke must skip honestly, not fail a working
+        setup ('no registered provider' was a red row)."""
+        result = onboarding.model_ping("gemini-3-pro", env={"GEMINI_API_KEY": "k"})
+        assert result.ok and result.skipped
+        assert "no registered endpoint" in result.detail
+
+    def test_truly_unknown_model_still_fails(self):
+        result = onboarding.model_ping("no-such-model-9000", env={})
+        assert not result.ok

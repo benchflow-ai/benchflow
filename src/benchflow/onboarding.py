@@ -258,6 +258,18 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
 
     resolved = resolve_provider(model)
     if not resolved:
+        from benchflow.agents.registry import infer_env_key_for_model
+
+        if infer_env_key_for_model(model):
+            # Well-known family (claude-*/gpt-*/gemini-*) with no registered
+            # endpoint: nothing to ping — the run wires it natively.
+            return CheckResult(
+                "model ping",
+                True,
+                "skipped — no registered endpoint to ping for this model"
+                " family; auth is exercised at run time",
+                skipped=True,
+            )
         return CheckResult("model ping", False, f"no registered provider for {model!r}")
     prov_name, cfg = resolved
     name = f"model ping ({prov_name})"
