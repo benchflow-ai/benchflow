@@ -263,8 +263,8 @@ def test_install_docs_use_pypi_not_pinned_rc_wheel() -> None:
 
 
 def test_install_docs_pin_python_312_for_uv_tool_install() -> None:
-    """Guards the issue #898 install-doc fix against Python 3.10/3.11 resolver
-    fallback to the old no-entrypoint benchflow wheel."""
+    """Guards the fix from PR #899 against Python 3.10/3.11 resolver fallback
+    to the old no-entrypoint benchflow wheel."""
     offenders: list[tuple[str, str]] = []
     for rel in _INSTALL_URL_DOCS:
         text = (_REPO_ROOT / rel).read_text()
