@@ -134,23 +134,23 @@ environment:
 **Enforcement**
 
 - `no-network` and `public` are enforced on every sandbox.
-- `allowlist` is enforced on the **`docker`** sandbox: the container joins an
-  internal (no-egress) network and its HTTP(S) traffic is routed through a proxy
-  sidecar that forwards only to `allowed_hosts`. Any other host, a raw-IP
-  connection, or a tool that ignores the proxy has no route off-box (default
-  deny). On sandboxes without per-host egress control (`daytona`, `modal`) an
-  `allowlist` task is **rejected at preflight** rather than run unrestricted —
-  use `docker`, `no-network`, or `public` there. Wider per-sandbox allowlist
-  support is tracked in ENG-219.
+- `allowlist` is enforced on **`docker`** and **`daytona`**. Docker puts the
+  container on an internal network and routes HTTP(S) through a proxy sidecar
+  that forwards only to `allowed_hosts`; anything else has no route off-box
+  (default deny). Daytona enforces exact-host allowlists by resolving hosts to
+  IPv4 `/32` CIDRs at lockdown time and pinning those hosts in `/etc/hosts`.
+  Because Daytona's control is IP-based, wildcard hosts are rejected at
+  preflight, and unresolvable or over-limit allowlists fail closed at lockdown
+  with a clear error. Sandboxes without per-host egress control reject
+  `allowlist` at preflight rather than run unrestricted.
 - **Model access under a restrictive policy.** An agent run still needs the
-  model API. On **`docker`**, a restrictive `network_mode` (`no-network` or
-  `allowlist`) is kept intact and a single always-allow lane to the host-side
-  model proxy is added, so the agent reaches the model without opening the
-  sandbox to the public internet (a `no-network` run becomes model-only egress).
-  Set `allow_model_endpoint: false` on `[environment]` (default `true`) to close
-  that lane for a fully hermetic, no-model run. On the other sandboxes the
-  restrictive policy is instead lifted to `public` for web-disabled agent runs,
-  with the no-web policy enforced at the agent layer.
+  model API. On restrictive `docker`/`daytona` runs, BenchFlow can add the model
+  provider host to the enforced lane so the agent reaches the model without
+  opening general internet access. Set `allow_model_endpoint: false` on
+  `[environment]` (default `true`) to close that lane for a fully hermetic,
+  no-model run. Sandboxes without restrictive-lane support still lift the
+  sandbox policy to `public` for web-disabled agent runs, with the no-web policy
+  enforced at the agent layer.
 
 `allowed_hosts` entries are hostnames only (no scheme, port, or path) and match
 the host exactly or as a parent domain (`example.com` matches `api.example.com`).

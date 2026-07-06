@@ -36,6 +36,61 @@
   pointing to `docker`. `public` and `no-network` stay identical across
   `docker`/`daytona`. (ENG-264)
 
+## 0.6.4 — 2026-06-27
+
+### Added
+- **Environment and config as run-time axes on `bench eval run`.** `--state`
+  binds the environment (S-axis) per run — inline JSON, a registry
+  `name@version` resolved through the environment registry, or a manifest path
+  (takes precedence over `--environment-manifest`). `--config-override` overlays
+  the task config (C-axis) — inline JSON/YAML/TOML or `@file`, deep-merged into
+  each task's resolved config. `--config` also gains a `--run-config` alias.
+  (#790)
+- **Content-addressed environment binding.** Registry environment resolution is
+  content-addressed — `env_hash = sha256(manifest)` — so a `name@version`
+  resolves to an exact, pinned environment that is recorded for replay; the
+  C-axis `--config-override` is likewise persisted with its content hash and the
+  applied patch. Every rollout is attributable to the precise world and config
+  it ran against. (#790)
+- **MLE-bench adapter.** Adds an MLE-bench benchmark adapter, parity fixture, and
+  task plumbing for running and auditing MLE-bench through BenchFlow. (#792)
+- **Agent adapter skill.** Adds the canonical adapter skill under `.agents/skills`
+  for harness-side adapter work. (#793)
+- **Prime-RL SFT export.** Adds `bench train convert prime-sft` support for
+  exporting BenchFlow trajectories into Prime SFT-ready JSONL artifacts. (#828)
+
+### Changed
+- **`bench continue` is now `bench eval continue`.** The command (and its
+  `continue-batch` companion) moved under the `eval` group, where it is now
+  discoverable in `bench eval --help` alongside `run`/`adopt`. The original
+  top-level `bench continue` / `bench continue-batch` remain as hidden,
+  deprecated aliases (they print a deprecation notice) so existing scripts keep
+  working. (#800)
+- **Routable agents always go through the LiteLLM usage proxy.** OpenCode-family
+  and pi-acp model calls now stay on the proxy path so token usage, cost, and
+  trajectory capture are preserved consistently. (#797, #803, #820)
+- **Agent manifest loading is now the additive decoupling path.** The core agent
+  manifest loader and Omnigent/session-factory seam are gated in while preserving
+  existing ACP manifests and byte-identical parity coverage. (#825, #836, #837)
+
+### Fixed
+- Resolved the sharded and run-config paths so the S-axis environment and C-axis
+  config overlay are applied consistently in `bench eval run`. (#804)
+- Added `bench eval run --context-root` plumbing and early validation for missing
+  paths. (#816)
+- Fixed verifier-error resume logging and streaming `claude-agent-acp`
+  trajectory emission so failed or streamed runs retain the expected evidence.
+  (#819, #839)
+- Resolved bare model IDs to their provider, avoided pi-acp context-window retry
+  storms, and kept provider failure causes visible while preserving redaction.
+  (#805, #831, #834, #835)
+- Preserved Codex subscription-auth behavior and auth-file permissions in the
+  launcher path. (#825)
+- Rejected `.git` and `file://` source paths with clear errors. (#822)
+- Hardened experiment-review and integration gates around missing trajectories,
+  summaryless roots, file-editor false positives, and L3 review calibration.
+  (#802, #806, #807, #808, #809, #810, #811, #812, #814, #817, #821, #823, #824)
+
 ## 0.6.3 — 2026-06-16
 
 ### Changed

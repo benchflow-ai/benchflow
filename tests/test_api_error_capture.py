@@ -78,6 +78,18 @@ class TestStatusSubcategory:
         assert _api_error_subcategory(400) == ("rejected_request", False)
         assert _api_error_subcategory(422) == ("rejected_request", False)
 
+    def test_context_length_imported_as_400_is_permanent(self):
+        """Guards issue #830: imported context-window rejects are not retried."""
+        summary = _provider_api_failure_summary_from_runtime(_runtime([400]))
+
+        assert summary is not None
+        assert summary["subcategory"] == "rejected_request"
+        assert summary["transient"] is False
+        assert summary["fingerprint"] == "rejected_request:400"
+        assert not api_error_is_transient(
+            "provider api error [rejected_request/permanent] HTTP 400"
+        )
+
 
 class TestFailureSummary:
     def test_none_without_exchanges(self):
@@ -252,3 +264,39 @@ class TestCircuitBreaker:
         for i in range(10):
             breaker.record(_api_result(f"t{i}"))
         assert not breaker.tripped
+
+
+class TestSubscriptionAuthExemption:
+    """Guards the fix from PR #886: native-subscription runs must not be
+    zero-signal-flagged: zero tokens + zero tool calls is the expected shape
+    of a healthy run for flat-telemetry agents (e.g. omnigent sessions), and
+    the heuristic was nulling verifier-granted rewards there."""
+
+    def _rollout_double(self, agent_env):
+        from benchflow.rollout import Rollout
+
+        r = Rollout.__new__(Rollout)
+        r._error = None
+        r._executed_prompts = ["p"]
+        r._agent_env = agent_env
+        r._config = SimpleNamespace(
+            agent="claude-agent-acp", model="claude-haiku-4-5-20251001"
+        )
+        r._usage_metrics = {}
+        r._n_tool_calls = 0
+        r._api_failure_summary_cached = None
+        r._rewards = {"reward": 1.0}
+        r._diagnostics = SimpleNamespace(set=lambda d: None)
+        return r
+
+    def test_oauth_run_keeps_verifier_reward(self):
+        r = self._rollout_double({"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"})
+        r._maybe_classify_api_error()
+        assert r._rewards == {"reward": 1.0}
+        assert r._error is None
+
+    def test_proxy_run_still_flagged(self):
+        r = self._rollout_double({"BENCHFLOW_PROVIDER_NAME": "litellm"})
+        r._maybe_classify_api_error()
+        assert r._rewards is None
+        assert "suspected provider api error" in (r._error or "")

@@ -39,6 +39,7 @@ async def ensure_litellm_runtime(
     session_id: str = "",
     usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
     sandbox: Any | None = None,
+    sandbox_setup_timeout: int = 120,
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
     from benchflow.providers.litellm_runtime import (
         ensure_litellm_runtime as _ensure_litellm_runtime,
@@ -53,6 +54,7 @@ async def ensure_litellm_runtime(
         session_id=session_id,
         usage_tracking=usage_tracking,
         sandbox=sandbox,
+        sandbox_setup_timeout=sandbox_setup_timeout,
     )
 
 

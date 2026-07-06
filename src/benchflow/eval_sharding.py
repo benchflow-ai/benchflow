@@ -13,6 +13,8 @@ import json
 import math
 import os
 import sys
+import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +23,7 @@ from typing import Any
 from benchflow._utils.scoring import pass_rate, pass_rate_excl_errors
 from benchflow.evaluation import Evaluation, EvaluationConfig, EvaluationResult
 from benchflow.loop_strategies import LoopStrategySpec
+from benchflow.rollout._results import _should_record_env_entry
 
 
 @dataclass(frozen=True)
@@ -103,7 +106,6 @@ def _config_payload(
     config: EvaluationConfig,
     *,
     shard: EvalShard,
-    environment_manifest_path: Path | None,
 ) -> dict[str, Any]:
     if config.loop_strategy is not None and not isinstance(
         config.loop_strategy, LoopStrategySpec
@@ -130,6 +132,7 @@ def _config_payload(
         "sandbox_setup_timeout": config.sandbox_setup_timeout,
         "agent_idle_timeout": config.agent_idle_timeout,
         "context_root": config.context_root,
+        "base_image_override": config.base_image_override,
         "exclude_tasks": sorted(config.exclude_tasks),
         "include_tasks": sorted(shard.task_names),
         "skill_mode": config.skill_mode,
@@ -137,15 +140,58 @@ def _config_payload(
         "self_gen_no_internet": config.self_gen_no_internet,
         "job_mode": config.job_mode,
         "source_provenance": config.source_provenance,
-        "environment_manifest_path": (
-            str(environment_manifest_path) if environment_manifest_path else None
+        # Serialize the already-resolved manifest OBJECT (the S axis), not a
+        # path. The parent resolves --state / --environment-manifest /
+        # name@version into config.environment_manifest before sharding; a
+        # path-only payload dropped that binding entirely for --state runs
+        # (request.environment_manifest is None) and lost any inline tool
+        # subset from resolve_state. model_dump round-trips the filtered
+        # services so the worker boots the exact same world.
+        "environment_manifest": (
+            config.environment_manifest.model_dump(mode="json")
+            if config.environment_manifest is not None
+            else None
         ),
+        "config_override": config.config_override,
         "loop_strategy": (
             config.loop_strategy.to_mapping() if config.loop_strategy else None
         ),
     }
     payload.update(config.usage_tracking.to_mapping())
     return payload
+
+
+def _redacted_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
+    artifact_payload = dict(config_payload)
+    agent_env = artifact_payload.get("agent_env")
+    if isinstance(agent_env, dict):
+        artifact_payload["agent_env"] = {
+            str(key): str(value)
+            for key, value in agent_env.items()
+            if _should_record_env_entry(str(key), str(value))
+        }
+        artifact_payload["agent_env_keys"] = sorted(str(key) for key in agent_env)
+    return artifact_payload
+
+
+def _worker_payload_artifact(payload: dict[str, Any]) -> dict[str, Any]:
+    artifact_payload = dict(payload)
+    config_payload = artifact_payload.get("config")
+    if isinstance(config_payload, dict):
+        artifact_payload["config"] = _redacted_config_payload(config_payload)
+    return artifact_payload
+
+
+def _write_private_worker_payload(payload: dict[str, Any]) -> Path:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        prefix="benchflow-worker-payload-",
+        suffix=".json",
+        delete=False,
+    ) as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+        return Path(handle.name)
 
 
 def _plan_payload(plan: EvalShardPlan) -> dict[str, Any]:
@@ -280,7 +326,11 @@ def _aggregate_result(
         "shards": shard_results,
     }
     jobs_dir.mkdir(parents=True, exist_ok=True)
-    (jobs_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    summary_text = json.dumps(summary, indent=2)
+    (jobs_dir / "summary.json").write_text(summary_text)
+    aggregate_job_dir = jobs_dir / result.job_name
+    aggregate_job_dir.mkdir(parents=True, exist_ok=True)
+    (aggregate_job_dir / "summary.json").write_text(summary_text)
     return result
 
 
@@ -292,7 +342,6 @@ async def run_sharded_evaluation(
     worker_concurrency: int,
     worker_retries: int,
     worker_start_stagger_sec: float,
-    environment_manifest_path: Path | None = None,
 ) -> EvaluationResult:
     """Run a batch as isolated worker subprocesses and aggregate their summaries."""
     discovery = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config)
@@ -321,24 +370,27 @@ async def run_sharded_evaluation(
             "tasks_dir": str(tasks_dir),
             "jobs_dir": str(shard_dir / "jobs"),
             "result_path": str(result_path),
-            "config": _config_payload(
-                config,
-                shard=shard,
-                environment_manifest_path=environment_manifest_path,
-            ),
+            "config": _config_payload(config, shard=shard),
         }
-        payload_path.write_text(json.dumps(payload, indent=2))
+        payload_path.write_text(
+            json.dumps(_worker_payload_artifact(payload), indent=2) + "\n"
+        )
+        private_payload_path = _write_private_worker_payload(payload)
         log_path = shard_dir / "worker.log"
-        worker_tasks.append((shard, payload_path, log_path))
+        worker_tasks.append((shard, private_payload_path, log_path))
 
     async def run_one(offset: int, payload_path: Path, log_path: Path):
         if worker_start_stagger_sec > 0:
             await asyncio.sleep(offset * worker_start_stagger_sec)
-        return await _run_worker_with_retries(
-            payload_path,
-            log_path,
-            max_retries=worker_retries,
-        )
+        try:
+            return await _run_worker_with_retries(
+                payload_path,
+                log_path,
+                max_retries=worker_retries,
+            )
+        finally:
+            with suppress(FileNotFoundError):
+                payload_path.unlink()
 
     started = datetime.now(UTC)
     results_or_errors = await asyncio.gather(

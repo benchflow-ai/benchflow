@@ -56,6 +56,21 @@ def test_opaquetoolsbench_run_script_help_works():
     assert "Run OpaqueToolsBench via BenchFlow" in result.stdout
 
 
+def test_mle_bench_run_script_help_works():
+    """Guards MLE-bench run script invokability by path."""
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "benchmarks/mle-bench/run_mle_bench.py", "--help"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Run MLE-bench via BenchFlow" in result.stdout
+
+
 def test_opaquetoolsbench_converter_emits_oracle_solution(tmp_path):
     """Guards ENG-101: converted tasks can run with oracle evidence."""
     repo = Path(__file__).resolve().parents[1]
@@ -129,6 +144,7 @@ _BENCHMARKS_WITH_DESCRIPTOR_CLI = [
     "harvey-lab",
     "hilbench",
     "continuallearningbench",
+    "mle-bench",
 ]
 
 

@@ -283,9 +283,11 @@ def _append_network_issue(
                 unsupported,
                 path=path,
                 reason=(
-                    "network_mode='allowlist' is enforced only on the 'docker' "
-                    "sandbox (egress proxy); not available on this sandbox — use "
-                    "'docker', 'no-network', or 'public' (ENG-219)"
+                    "network_mode='allowlist' is enforced on sandboxes with "
+                    "per-host egress controls (docker egress proxy, daytona "
+                    "IPv4 allow list when faithfully expressible); not available "
+                    "on this sandbox — use 'docker', 'daytona', 'no-network', or "
+                    "'public' (ENG-219)"
                 ),
                 sandbox=sandbox,
             )

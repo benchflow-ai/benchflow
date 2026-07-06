@@ -47,6 +47,7 @@ except ImportError:  # base install without ``sandbox-daytona`` extras (#358)
 from benchflow._paths import iter_safe_tree
 from benchflow.sandbox._base import BaseSandbox, ExecResult
 from benchflow.sandbox.daytona_dind import _DaytonaDinD
+from benchflow.sandbox.daytona_network_lockdown import pick_daytona_canary
 
 # Re-export the extracted command-wrapping helpers so existing imports of
 # ``benchflow.sandbox.daytona._wrap_daytona_command_with_env_file`` (and the
@@ -104,19 +105,11 @@ __all__ = ["DaytonaSandbox", "SandboxStartupError"]
 #: Raw-TCP egress canary (no DNS) used to verify a block-all policy is actually
 #: enforced on daytona; reachable under block-all => the platform leaked.
 _EGRESS_CANARY_HOST = "1.1.1.1"
-#: Public IPs used as the 'should-be-blocked' enforcement canary. Reachable on
-#: an open network; pick one that is NOT in the task's allow list (a host can
-#: resolve to 1.1.1.1, which would otherwise be allowlisted and falsely abort).
-_CANARY_CANDIDATES = ("1.1.1.1", "8.8.8.8", "9.9.9.9")
 _EGRESS_CANARY_PORT = 443
 
 
 def _pick_canary(cidrs: tuple[str, ...]) -> str:
-    """First canary IP whose /32 is NOT already in the allow list."""
-    for host in _CANARY_CANDIDATES:
-        if f"{host}/32" not in cidrs:
-            return host
-    return _CANARY_CANDIDATES[0]
+    return pick_daytona_canary(cidrs)
 
 
 def _ensure_daytona_anyio_compat() -> None:
@@ -250,12 +243,20 @@ _DAYTONA_TRANSIENT_RETRY_CLASS_NAMES = frozenset(
         "DaytonaTimeoutError",
     }
 )
+_DAYTONA_EMPTY_EXIT_CODE_MARKERS = (
+    "failed to convert exit code to int",
+    'strconv.Atoi: parsing "": invalid syntax',
+)
 
 
 def _is_daytona_transient_retry_error(exc: BaseException) -> bool:
     if isinstance(exc, (ConnectionError, TimeoutError)):
         return True
     exc_type = type(exc)
+    if exc_type.__module__.startswith("daytona.") and all(
+        marker in str(exc) for marker in _DAYTONA_EMPTY_EXIT_CODE_MARKERS
+    ):
+        return True
     return (
         exc_type.__module__.startswith("daytona.")
         and exc_type.__name__ in _DAYTONA_TRANSIENT_RETRY_CLASS_NAMES
@@ -803,73 +804,11 @@ class DaytonaSandbox(BaseSandbox):
     async def relock_network(
         self, extra_allowed_hosts: tuple[str, ...] = ()
     ) -> dict[str, str]:
-        """Apply the task's allowlist as a daytona IPv4 CIDR list, post-install.
+        from benchflow.sandbox.daytona_network_lockdown import relock_daytona_network
 
-        Mirrors docker install-before-lockdown: the sandbox came up open so the
-        agent could install; now resolve the hostname allowlist (+ the model
-        host) to /32 CIDRs and push them via ``update_network_settings``. Fails
-        closed if the policy can't be faithfully expressed as <=10 IPv4 CIDRs
-        (wildcards, unresolvable, or too many IPs) or if a non-allowlisted
-        canary is still reachable after applying it. ``block-all``/``open`` are
-        handled at creation, so this is a no-op for them. Returns ``{}`` — the
-        daytona allowlist is enforced at the network layer, so (unlike docker)
-        the agent needs no HTTP(S)_PROXY env.
-        """
-        from benchflow.sandbox.network_policy import (
-            EffectivePolicy,
-            plan_daytona_allowlist,
-            resolve_network_decision,
+        return await relock_daytona_network(
+            self, extra_allowed_hosts=extra_allowed_hosts
         )
-
-        decision = resolve_network_decision(self.task_env_config, "daytona")
-        if decision.policy is not EffectivePolicy.ALLOWLIST:
-            return {}
-        if self._compose_mode:
-            # DinD: update_network_settings governs the OUTER sandbox, but the
-            # agent runs in inner containers whose egress is ungoverned — the
-            # canary would pass while the agent has open egress. Fail closed.
-            raise SandboxStartupError(
-                "daytona compose/DinD does not support network_mode='allowlist' "
-                "enforcement (settings apply to the outer sandbox only); use the "
-                "'docker' sandbox or 'no-network'"
-            )
-        model_host = extra_allowed_hosts[0] if extra_allowed_hosts else None
-        plan = plan_daytona_allowlist(decision.allowed_hosts, model_host=model_host)
-        if not plan.enforceable:
-            raise SandboxStartupError(
-                f"daytona cannot enforce network_mode='allowlist': {plan.reject_reason}"
-            )
-        # Pin allowlisted hosts in /etc/hosts so the agent resolves them WITHOUT
-        # DNS egress (the sandbox resolvers are not in the allow list) and without
-        # IP-rotation drift — it connects to exactly the IP we allowlisted. TLS
-        # SNI/cert still use the hostname, so HTTPS stays valid.
-        if plan.host_ips:
-            lines = "".join(f"{ip}\t{host}\n" for host, ip in plan.host_ips)
-            await self.exec(
-                f"printf %s {shlex.quote(lines)} >> /etc/hosts",
-                user="root",
-                timeout_sec=20,
-            )
-        sandbox = self._require_sandbox()
-        await sandbox.update_network_settings(network_allow_list=",".join(plan.cidrs))
-        # Fail closed: a non-allowlisted canary must now be UNREACHABLE. If it
-        # still resolves, the platform didn't apply the allow list — refuse to
-        # run an unenforced policy (same posture as the block-all canary).
-        canary = _pick_canary(plan.cidrs)
-        if blockall_enforcement_violation(
-            block_all=True, canary_reachable=await self._egress_reachable(canary)
-        ):
-            raise SandboxStartupError(
-                f"daytona applied a {len(plan.cidrs)}-CIDR allow list but the "
-                f"sandbox could not confirm {canary}:{_EGRESS_CANARY_PORT} is "
-                "blocked (a non-allowlisted host) — the platform did not enforce "
-                "the allow list, or the probe could not run; failing closed"
-            )
-        self.logger.info(
-            "relock_network: ALLOWLIST applied (daytona, %d cidrs)",
-            len(plan.cidrs),
-        )
-        return {}
 
     async def _verify_network_enforcement(self) -> None:
         """Fail closed if a block-all policy resolves but egress still works.

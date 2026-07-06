@@ -182,6 +182,19 @@ bench eval run \
 # From local directory
 bench eval run --tasks-dir ./tasks --agent gemini --model gemini-3.1-flash-lite-preview
 
+# Emit reproducible training/eval artifacts and publish them to Hugging Face
+bench eval run \
+  --tasks-dir ./tasks \
+  --agent openhands \
+  --model openai/gpt-5.4-mini \
+  --sandbox daytona \
+  --task-manifest-out task-manifest.json \
+  --health-summary-out health.json \
+  --canonicalize one-healthy-per-task \
+  --canonical-selection-out canonical-selection.json \
+  --publish-hf benchflow/env0-experiment-trajectories \
+  --hf-prefix experiments/my-run
+
 # From a hosted PrimeIntellect / Verifiers environment
 bench eval run \
   --source-env primeintellect/general-agent \
@@ -202,11 +215,15 @@ bench eval run \
 # Pinned registry dataset: resolves skillsbench@1.1, verifies task digests,
 # and stamps dataset identity into every result.json/config.json
 bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-preview
+
+# Matrix eval over multiple models/trials
+bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config` | — | YAML config file |
+| `--run-config` | — | Explicit alias for the YAML run-config source file; equivalent to `--config` |
 | `--tasks-dir` | — | Local task dir (single native `task.md` package, compatibility split-layout task, or parent of many) |
 | `-d`, `--dataset` | — | Registry dataset to run as `<name>@<version>` (e.g. `skillsbench@1.1`). Resolves the pinned snapshot from the registry, clones tasks at their pinned commit, verifies each task's sha256 content digest, and checks the dataset's `bench_version` range against the installed benchflow. Each `result.json`/`config.json` is stamped with `dataset_name`, `dataset_version`, and the task's `task_digest`. |
 | `--registry` | skillsbench registry | Dataset registry JSON URL or local file. Only valid with `--dataset`. |
@@ -227,7 +244,9 @@ bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-p
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |
 | `--environment-manifest` | — | Path to an Environment-plane manifest (`environment.toml`); applied to every rollout in the batch |
+| `--state` | — | S-axis environment binding; inline JSON, registry `name@version`, or manifest path. Takes precedence over `--environment-manifest` |
 | `--prompt` | task prompt | Prompt to send to the agent; repeatable for multi-prompt runs |
+| `--config-override` | — | C-axis task config overlay; inline JSON/YAML/TOML or `@file`, deep-merged into each task's resolved config |
 | `--concurrency` | `4` | Max concurrent tasks (batch mode only) |
 | `--build-concurrency` | `--concurrency` | Max concurrent docker image builds; set lower (e.g. `8`) when `--concurrency` is high to avoid overwhelming the docker daemon |
 | `--worker-concurrency` | — | Run batch eval through isolated worker subprocesses, each with at most this many concurrent tasks; `--concurrency` remains the aggregate target |
@@ -237,6 +256,8 @@ bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-p
 | `--jobs-dir` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
+| `--context-root` | — | Repo/build-context root used to stage Dockerfile `COPY` sources for monorepo-authored local tasks |
+| `--base-image-override` | — | Rewrite task Dockerfile `FROM` images on the runtime task copy; use for reproducing runs whose base image moved namespaces |
 | `--skills-dir` | — | Advanced custom skills directory; valid only with `--skill-mode with-skill`. Omit it to use each task's `environment/skills`. |
 | `--skill-mode` | `no-skill` | Skill mode: `no-skill`, `with-skill`, or `self-gen` |
 | `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |
@@ -246,6 +267,21 @@ bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-p
 | `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |
 | `--loop-strategy` | — | Wrap each rollout in a loop, e.g. `verify-retry:k=3,feedback=names` or `self-review:k=3` (omit for single-shot) |
 | `--ignore-bench-version` | `false` | With `--dataset`, skip the dataset's `bench_version` compatibility gate |
+| `--task-manifest-out` | — | Write selected task-set manifest JSON with task ids, paths, digests, and source provenance |
+| `--run-config-out` | — | Write a redacted normalized run config JSON |
+| `--health-summary-out` | — | Write trajectory health summary JSON for the completed job |
+| `--expected-tasks` | — | Fail unless the selected task count, and canonical selected count when used, matches this value |
+| `--canonicalize` | `none` | Canonicalization policy: `none` or `one-healthy-per-task` |
+| `--canonical-selection-out` | — | Write canonical rollout-selection JSON |
+| `--canonical-jobs-dir` | — | Materialize selected rollout directories for trainer conversion |
+| `--retry-policy` | `default` | Retry policy label for reproducible eval artifacts: `default` or `unscored-only` |
+| `--retry-attempts` | — | Override retry attempts for the eval run |
+| `--retry-concurrency` | — | Reserved retry concurrency setting recorded in run config |
+| `--publish-hf` | — | Upload final eval artifacts to this Hugging Face dataset repo |
+| `--hf-prefix` | — | Path prefix inside the Hugging Face repo; requires `--publish-hf` |
+| `--hf-public-read-check` | `false` | Verify public Hugging Face reads after upload |
+| `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
+| `--trials` | `1` | Number of trials for `--matrix` |
 
 When mounting skills, the recommended docs default is
 `--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
@@ -294,6 +330,136 @@ bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
 ```
 
+## bench train
+
+Convert scored BenchFlow rollouts into trainer-ready datasets and validate
+trainer rows before handing them to a training framework.
+
+### bench train convert
+
+Convert a rollout directory or jobs directory into Prime-RL SFT JSONL. The
+default format is `prime-sft`, which writes one JSON object per row with
+OpenAI-compatible `messages` plus `tool_defs`.
+
+```bash
+bench train convert jobs/run-001 --out train.jsonl
+bench train convert jobs/run-001 --out train.jsonl --min-reward 1.0
+bench train convert jobs/run-001 --out train.jsonl --canonical-selection canonical-selection.json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out`, `-o` | required | Output JSONL path |
+| `--format` | `prime-sft` | Trainer format |
+| `--min-reward` | — | Only include rows with reward greater than or equal to this value |
+| `--row-mode` | `rollout` | `rollout` writes one row per rollout; `exchange` writes one row per LLM exchange |
+| `--manifest` | — | Optional conversion stats JSON path |
+| `--expected-rows` | — | Fail before writing unless exactly this many rows would be exported |
+| `--canonical-selection` | — | Restrict conversion to rows selected by `canonical-selection.json` |
+
+### bench train validate
+
+Validate Prime-RL SFT JSONL before upload or training. This fails closed on
+malformed tool-call arguments, undeclared tool names, orphan tool outputs, and
+row-count mismatches before Prime-RL can hit the bad row mid-training.
+
+```bash
+bench train validate train.jsonl
+bench train validate train.jsonl --expected-rows 4417
+bench train validate train.jsonl \
+  --source-jobs jobs/run-001 \
+  --require-llm-trajectory \
+  --require-tool-calls
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `prime-sft` | Trainer format |
+| `--expected-rows` | — | Fail unless this many rows are present |
+| `--source-jobs` | — | Source BenchFlow jobs directory to audit alongside trainer JSONL |
+| `--source-canonical-selection` | — | Canonical selection JSON used for this trainer data |
+| `--task-manifest` | — | Task manifest for source rows |
+| `--require-llm-trajectory` | `false` | Fail unless source selected rows have valid `llm_trajectory.jsonl` |
+| `--require-tool-calls` | `false` | Fail unless trainer rows and source rows include tool calls |
+
+### bench train run sft
+
+Launch a supervised fine-tuning job and record BenchFlow launch metadata. The
+first supported backend is `prime-rl`; BenchFlow wraps the native Prime-RL SFT
+entrypoint instead of re-modeling trainer internals.
+
+```bash
+bench train run sft \
+  --backend prime-rl \
+  --config configs/qwen35-env0-sft.toml \
+  --data benchflow/env0-prime-sft \
+  --prime-rl-dir .local/prime-rl \
+  --work-dir train-runs/qwen35-env0-sft \
+  --publish-model benchflow/benchflow-qwen35-9b \
+  --publish-artifacts benchflow/env0-experiment-trajectories \
+  --hf-prefix experiments/env0-mobile-pr828/training \
+  --follow
+```
+
+The wrapper runs:
+
+```bash
+uv run sft @ configs/qwen35-env0-sft.toml \
+  --data.name benchflow/env0-prime-sft \
+  --output-dir train-runs/qwen35-env0-sft/prime-rl-output
+```
+
+BenchFlow writes `<work-dir>/train-run.json`, `<work-dir>/command.txt`, and
+separate Prime-RL stdout/stderr logs under `<work-dir>/prime-rl/`. Secrets are
+not written to the manifest; only the names of recognized credential env vars
+that were present are recorded.
+
+For the Mobile300 PR828 reproduction, use `--compat-profile
+env0-mobile300-pr828`. That profile stages the historical custom-trainer
+pretokenized shifted-label rows, bypasses Prime-RL `stack`/`cat` packing for
+those staged rows so training sees one original trajectory per micro-batch, and
+enables `sample_mean` loss normalization through a run-local `sitecustomize.py`
+shim. The shim leaves Prime-RL package files untouched but fails closed if the
+Prime-RL SFT train loop or data module no longer exposes the expected hooks.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--backend` | `prime-rl` | Training backend. Currently only `prime-rl` is supported |
+| `--config` | required | Prime-RL SFT TOML config. Relative paths are resolved from the current directory first, then from `--prime-rl-dir` when set |
+| `--data` | — | Optional dataset override passed through as `--data.name` |
+| `--output-dir` | `<work-dir>/prime-rl-output` | Prime-RL trainer output directory |
+| `--compat-profile` | — | Named BenchFlow Prime-RL SFT compatibility profile. `env0-mobile300-pr828` expands to the Mobile300 PR828 reproduction settings |
+| `--work-dir` | `train-runs/sft` | BenchFlow training run directory |
+| `--prime-rl-dir` | current directory | Prime-RL checkout to run `uv run sft` from |
+| `--dry-run` | `false` | Pass `--dry-run` through to Prime-RL |
+| `--follow` | `false` | Stream trainer stdout while writing logs |
+| `--uv-no-sync` | `false` | Run Prime-RL as `uv run --no-sync sft ...`, useful after backend post-install steps such as `flash-attn` |
+| `--override` | — | Prime-RL override as `KEY=VALUE`; repeatable, emitted as `--KEY VALUE` |
+| `--target-examples` | — | Derive Prime-RL `max_steps` from target sample exposure and effective `data.batch_size`, rounding up |
+| `--target-micro-steps` | — | Derive Prime-RL `max_steps` from custom-trainer batch-size-1 microsteps, dropping the final partial accumulation |
+| `--sync-scheduler-to-max-steps` / `--no-sync-scheduler-to-max-steps` | `true` | When `--target-examples` or `--target-micro-steps` is set, also derive `scheduler.decay_steps` |
+| `--sync-ckpt-to-max-steps` / `--no-sync-ckpt-to-max-steps` | `false` | When deriving `max_steps`, also derive `ckpt.interval` and `ckpt.keep_interval` |
+| `--pack-function` | — | First-class Prime-RL `data.pack_function` override: `cat` or `stack` |
+| `--loss-mask` | — | First-class Prime-RL `data.loss_mask` override: `assistant`, `all`, or comma-separated roles from `system,user,assistant,tool` |
+| `--loss-normalization` | — | Prime-RL SFT loss normalization. `token_mean` keeps native Prime-RL behavior; `sample_mean` launches a run-local compatibility shim that matches the historical custom trainer's per-row mean loss and requires `data.pack_function=stack` |
+| `--model-attn` | — | First-class Prime-RL `model.attn` override, e.g. `sdpa` |
+| `--renderer-mode` | — | Prime-RL renderer override. `none` emits `--renderer None`, making Prime-RL use tokenizer `apply_chat_template` tokenization |
+| `--tool-defs-mode` | `preserve` | For local JSONL or local dataset dirs, keep tool schemas (`preserve`) or remove `tool_defs`/`tools` from the temporary training copy (`omit`) |
+| `--allow-unsafe-stack-flash-attn` | `false` | Allow Qwen3.5 `stack` packing with flash attention despite the known Prime-RL varlen-kernel risk |
+| `--force` | `false` | Overwrite an existing `<work-dir>/train-run.json` manifest |
+| `--publish-model` | — | Upload trainer output to this Hugging Face model repo |
+| `--model-tag` | — | Path prefix/tag for the model upload |
+| `--model-card` | — | Model card mode; currently accepts `auto` |
+| `--publish-artifacts` | — | Upload BenchFlow train run artifacts to this Hugging Face dataset repo |
+| `--hf-prefix` | — | Path prefix for `--publish-artifacts` |
+| `--hf-public-read-check` | `false` | Verify public Hugging Face reads after upload |
+
+Local JSONL files are packaged automatically into a temporary Hugging Face
+dataset directory under `<work-dir>/prime-rl-dataset`, with source validation
+metadata recorded in the manifest. If `--tool-defs-mode omit` is set,
+BenchFlow validates the source JSONL first and then strips tool schema columns
+only from the temporary training copy.
+
 ## bench skills
 
 ### bench skills list
@@ -332,7 +498,7 @@ bench tasks init my-new-task --dir tasks/
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format` | `task-md` | Task format. New tasks use `task-md`; the legacy scaffold path is retired in v0.6.2. |
+| `--format` | `task-md` | Task format. New tasks use `task-md`; the legacy scaffold path is retired. |
 
 ### bench tasks check
 
@@ -419,6 +585,24 @@ bench tasks digest tasks/                  # one "<name> sha256:<hex>" line per 
 ```
 
 Arguments: `PATH` (a task directory, or a directory of task directories).
+
+### bench tasks overlap
+
+Compare two task manifests, typically one emitted by a training-data collection
+run and one emitted by an evaluation run.
+
+```bash
+bench tasks overlap train-task-manifest.json eval-task-manifest.json
+bench tasks overlap train-task-manifest.json eval-task-manifest.json --out overlap.json
+```
+
+The command reports exact task-id overlap and exact digest overlap. A zero
+overlap result means the task ids/digests are disjoint; it does not prove domain
+or generator-family disjointness.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out`, `-o` | — | Optional JSON output path |
 
 ### bench tasks generate
 
@@ -597,15 +781,17 @@ scenes:
 
 ---
 
-## bench continue
+## bench eval continue
 
 Resume a previous, unfinished (timed-out) `openhands` run to completion via
 record-replay. Standalone — it does not touch the normal run path. See
 [Continuing timed-out runs](../continue-runs.md) for the full guide.
 
 ```bash
-bench continue path/to/original/run-folder --tasks-dir path/to/tasks
+bench eval continue path/to/original/run-folder --tasks-dir path/to/tasks
 ```
+
+The original top-level `bench continue` still works as a hidden, deprecated alias.
 
 Key options: `--model` (override the live-continuation model; defaults to the
 original run's model), `--timeout`, `--output`, `--require-timeout`,
@@ -614,7 +800,7 @@ cut-point — no live model or API key needed), and `--proxy-mode` (replay
 proxy placement: `auto`, `host`, or `sandbox`; default `auto` uses
 sandbox-local replay for Daytona/Modal and host replay for Docker).
 
-### bench continue-batch
+### bench eval continue-batch
 
 Continue all timed-out OpenHands runs found under a directory tree. Discovers
 run folders (`config.json` + `trajectory/llm_trajectory.jsonl`) recursively,
@@ -622,7 +808,7 @@ continues each, and prints a JSON batch summary (exits 1 if any continuation
 failed).
 
 ```bash
-bench continue-batch path/to/jobs-root --tasks-dir path/to/tasks
+bench eval continue-batch path/to/jobs-root --tasks-dir path/to/tasks
 ```
 
 | Flag | Default | Description |

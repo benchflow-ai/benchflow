@@ -243,6 +243,10 @@ class DockerSandbox(BaseSandbox):
         return self.environment_dir / "docker-compose.yaml"
 
     @property
+    def _pre_compose_hook_path(self) -> Path:
+        return self.environment_dir / "benchflow-pre-compose.sh"
+
+    @property
     def _docker_compose_paths(self) -> list[Path]:
         build_or_prebuilt = (
             self._DOCKER_COMPOSE_PREBUILT_PATH
@@ -266,153 +270,30 @@ class DockerSandbox(BaseSandbox):
         return paths
 
     def _network_policy_compose_paths(self) -> list[Path]:
-        """Compose overrides enforcing the task's resolved network policy.
-
-        ``no-network`` detaches the container network; ``allowlist`` confines
-        egress to ``allowed_hosts`` via an internal network + proxy sidecar
-        (see ``_egress.build_egress_override``); ``public`` adds nothing. An
-        allowlist with no writable rollout dir fails closed to no-network.
-        """
-        from benchflow.sandbox._egress import build_egress_override
-        from benchflow.sandbox.network_policy import (
-            EffectivePolicy,
-            resolve_network_decision,
+        from benchflow.sandbox.docker_network_lockdown import (
+            docker_network_policy_compose_paths,
         )
 
-        if not self._network_locked:
-            # Stay open during the install phase; relock_network() applies the
-            # restrictive policy once the agent has been installed.
-            return []
-        decision = resolve_network_decision(self.task_env_config, "docker")
-        if decision.policy is EffectivePolicy.OPEN:
-            return []
-        lane = None
-        if decision.model_lane:
-            from benchflow.providers.litellm_runtime import _docker_host_address
-
-            lane = _docker_host_address()
-        # An allowlist, or a no-network run that keeps only the model lane open, is
-        # enforced by the egress sidecar; both need a writable rollout dir to stage
-        # the proxy compose override.
-        if self.rollout_paths and (
-            decision.policy is EffectivePolicy.ALLOWLIST or lane
-        ):
-            hosts = (
-                tuple(
-                    decision.allowed_hosts
-                    if decision.policy is EffectivePolicy.ALLOWLIST
-                    else ()
-                )
-                + self._extra_allowed_hosts
-            )
-            override = build_egress_override(
-                hosts,
-                out_dir=self.rollout_paths.rollout_dir,
-                model_lane=lane,
-            )
-            return [override]
-        # BLOCK_ALL with no lane, or nowhere to stage the proxy → fail closed.
-        return [self._DOCKER_COMPOSE_NO_NETWORK_PATH]
+        return docker_network_policy_compose_paths(self)
 
     async def relock_network(
         self, extra_allowed_hosts: tuple[str, ...] = ()
     ) -> dict[str, str]:
-        """Apply the task's restrictive network policy to the running container.
+        from benchflow.sandbox.docker_network_lockdown import relock_docker_network
 
-        The container came up open so the agent could install (install-before-
-        lockdown); now drop it off the public bridge. For allowlist / model-lane
-        runs, start the egress sidecar and move the container onto the internal-
-        only network, returning the HTTP(S)_PROXY env the agent must use. ``public``
-        is a no-op. The ``main`` container is never recreated, so the install
-        survives. Returns the proxy env to merge into the agent launch env.
-        """
-        from benchflow.sandbox._egress import (
-            _EGRESS_INTERNAL_NET,
-            _EGRESS_PORT,
-            _EGRESS_SERVICE,
-        )
-        from benchflow.sandbox.network_policy import (
-            EffectivePolicy,
-            resolve_network_decision,
+        return await relock_docker_network(
+            self,
+            compose_project_name=_sanitize_docker_compose_project_name(self.session_id),
+            extra_allowed_hosts=extra_allowed_hosts,
         )
 
-        decision = resolve_network_decision(self.task_env_config, "docker")
-        if decision.policy is EffectivePolicy.OPEN:
-            return {}
-
-        # Gate _network_policy_compose_paths to emit the real override now.
-        self._network_locked = True
-        self._extra_allowed_hosts = tuple(extra_allowed_hosts)
-        cid = await self._main_container_id()
-        if not cid:
-            self.logger.warning("relock_network: no 'main' container; skipping")
-            return {}
-
-        project = _sanitize_docker_compose_project_name(self.session_id)
-        paths = self._network_policy_compose_paths()
-        use_sidecar = bool(paths and paths[0] != self._DOCKER_COMPOSE_NO_NETWORK_PATH)
-
-        if use_sidecar:
-            # Bring up ONLY the egress sidecar (creates the bf_egress_* networks);
-            # --no-deps leaves the already-running 'main' container in place.
-            await self._run_docker_compose_command(
-                ["up", "--detach", "--no-deps", _EGRESS_SERVICE]
-            )
-            await self._docker_cli(
-                ["network", "connect", f"{project}_{_EGRESS_INTERNAL_NET}", cid],
-                check=False,
-            )
-        # Lockdown: detach the container from the public bridge.
-        await self._docker_cli(
-            ["network", "disconnect", f"{project}_default", cid], check=False
-        )
-        # Fail closed: confirm the swap actually took effect. A silently-failed
-        # connect/disconnect could leave the container bypassing the proxy (still
-        # on the public bridge) or stranded (on no network); inspect the real
-        # attachments and refuse to run an unenforced policy.
-        from benchflow.sandbox.network_policy import lockdown_complete
-        from benchflow.sandbox.protocol import SandboxStartupError
-
-        inspect_res = await self._docker_cli(
-            [
-                "inspect",
-                cid,
-                "--format",
-                "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
-            ],
-            check=False,
-        )
-        # Fail closed on an unrunnable inspect: an empty network set would
-        # otherwise read as 'correctly on no networks' on the hermetic path
-        # (internal_net is None), masking a swallowed inspect error.
-        if inspect_res.return_code != 0:
-            raise SandboxStartupError(
-                "relock_network: could not inspect container networks "
-                f"(docker inspect rc={inspect_res.return_code}); failing closed "
-                "rather than running with an unverified network policy"
-            )
-        attached: set[str] = set((inspect_res.stdout or "").split())
-        internal_net = f"{project}_{_EGRESS_INTERNAL_NET}" if use_sidecar else None
-        if not lockdown_complete(attached, f"{project}_default", internal_net):
-            raise SandboxStartupError(
-                f"relock_network: {decision.policy.name} lockdown did not take "
-                f"effect (container networks={sorted(attached)}); refusing to run "
-                "with an unenforced network policy"
-            )
-        self.logger.info(
-            "relock_network: %s applied (sidecar=%s)", decision.policy.name, use_sidecar
-        )
-        if use_sidecar:
-            proxy = f"http://{_EGRESS_SERVICE}:{_EGRESS_PORT}"
-            return {
-                "HTTP_PROXY": proxy,
-                "HTTPS_PROXY": proxy,
-                "http_proxy": proxy,
-                "https_proxy": proxy,
-                "NO_PROXY": "localhost,127.0.0.1",
-                "no_proxy": "localhost,127.0.0.1",
-            }
-        return {}
+    def _docker_compose_env(self) -> dict[str, str]:
+        env = self._env_vars.to_env_dict(include_os_env=True)
+        if self._compose_task_env:
+            env.update(self._compose_task_env)
+        if self._persistent_env:
+            env.update(self._persistent_env)
+        return env
 
     def _write_mounts_compose_file(self) -> Path:
         compose = {"services": {"main": {"volumes": self._mounts_json}}}
@@ -447,11 +328,7 @@ class DockerSandbox(BaseSandbox):
             full_command.extend(["-f", str(path.resolve().absolute())])
         full_command.extend(command)
 
-        env = self._env_vars.to_env_dict(include_os_env=True)
-        if self._compose_task_env:
-            env.update(self._compose_task_env)
-        if self._persistent_env:
-            env.update(self._persistent_env)
+        env = self._docker_compose_env()
 
         process = await asyncio.create_subprocess_exec(
             *full_command,
@@ -500,6 +377,47 @@ class DockerSandbox(BaseSandbox):
             )
 
         return result
+
+    async def _run_pre_compose_hook(self) -> None:
+        hook = self._pre_compose_hook_path
+        if not hook.is_file():
+            return
+
+        timeout_sec = max(120, round(self.task_env_config.build_timeout_sec))
+        process = await asyncio.create_subprocess_exec(
+            "sh",
+            str(hook.resolve().absolute()),
+            cwd=str(self.environment_dir.resolve().absolute()),
+            env=self._docker_compose_env(),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            stdout_bytes, _ = await asyncio.wait_for(
+                process.communicate(), timeout=timeout_sec
+            )
+        except TimeoutError:
+            process.terminate()
+            try:
+                stdout_bytes, _ = await asyncio.wait_for(
+                    process.communicate(), timeout=5
+                )
+            except TimeoutError:
+                process.kill()
+                stdout_bytes, _ = await process.communicate()
+            output = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
+            raise RuntimeError(
+                f"Pre-compose hook timed out after {timeout_sec} seconds for "
+                f"environment {self.environment_name}. Output: {output}"
+            ) from None
+
+        output = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
+        if process.returncode:
+            raise RuntimeError(
+                f"Pre-compose hook failed for environment {self.environment_name}. "
+                f"Return code: {process.returncode}. Output: {output}"
+            )
 
     async def _run_docker_compose_build(self) -> None:
         max_attempts = len(_DOCKER_BUILD_RETRY_DELAYS_SEC) + 1
@@ -563,6 +481,8 @@ class DockerSandbox(BaseSandbox):
         if build_sem is not None:
             await build_sem.acquire()
         try:
+            await self._run_pre_compose_hook()
+
             if not self._use_prebuilt:
                 lock = self._image_build_locks.setdefault(
                     self.environment_name, asyncio.Lock()
@@ -820,6 +740,14 @@ class DockerSandbox(BaseSandbox):
                 f"DockerSandbox.restore cannot consume a {image.provider!r} "
                 f"snapshot (got ref={image.ref!r}); snapshots are not portable "
                 "across providers."
+            )
+        from benchflow.sandbox.network_policy import network_is_restrictive
+
+        if network_is_restrictive(self.task_env_config, "docker"):
+            raise SandboxSnapshotNotSupported(
+                "DockerSandbox.restore is not supported under restrictive "
+                "network policies yet; restoring onto the public compose bridge "
+                "would bypass the active network_mode enforcement."
             )
 
         container_id = await self._main_container_id()

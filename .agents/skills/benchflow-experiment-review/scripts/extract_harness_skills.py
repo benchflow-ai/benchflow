@@ -121,7 +121,13 @@ def walk_dicts(value: Any) -> list[dict[str, Any]]:
 
 def infer_skill_mode(value: Any) -> str:
     text = str(value or "").strip().lower().replace("-", "_")
-    if text in {"with_skill", "with_skills", "with_task_skills", "task_skills", "skills"}:
+    if text in {
+        "with_skill",
+        "with_skills",
+        "with_task_skills",
+        "task_skills",
+        "skills",
+    }:
         return "with_skills"
     if text in {"without_skill", "without_skills", "no_skill", "no_skills", "baseline"}:
         return "without_skills"
@@ -253,8 +259,16 @@ def task_skill_loading_fields(
     catalog_names = catalog_skill_names(extracted.get("skills", []))
     catalog_norm_to_name = {normalize_skill_name(name): name for name in catalog_names}
 
-    loaded = [catalog_norm_to_name[name] for name in sorted(expected_norm) if name in catalog_norm_to_name]
-    missing = [name for name in expected if normalize_skill_name(name) not in catalog_norm_to_name]
+    loaded = [
+        catalog_norm_to_name[name]
+        for name in sorted(expected_norm)
+        if name in catalog_norm_to_name
+    ]
+    missing = [
+        name
+        for name in expected
+        if normalize_skill_name(name) not in catalog_norm_to_name
+    ]
     mode = task_skill_context.get("task_skill_mode", "unknown")
 
     if expected and mode == "without_skills":
@@ -290,7 +304,9 @@ def task_skill_loading_fields(
     }
 
 
-def request_bodies(events: list[dict[str, Any]]) -> list[tuple[int, str, dict[str, Any]]]:
+def request_bodies(
+    events: list[dict[str, Any]],
+) -> list[tuple[int, str, dict[str, Any]]]:
     bodies: list[tuple[int, str, dict[str, Any]]] = []
     for idx, event in enumerate(events):
         request = event.get("request")
@@ -479,7 +495,13 @@ def extract_pi(body: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
-EXTRACTORS = [extract_codex, extract_openhands, extract_gemini, extract_claude_code, extract_pi]
+EXTRACTORS = [
+    extract_codex,
+    extract_openhands,
+    extract_gemini,
+    extract_claude_code,
+    extract_pi,
+]
 
 
 def extract_from_body(body: dict[str, Any]) -> dict[str, Any] | None:
@@ -497,7 +519,12 @@ def bodies_from_text(text: str) -> list[dict[str, Any]]:
             0,
             {
                 "instructions": "",
-                "input": [{"role": "developer", "content": [{"type": "input_text", "text": text}]}],
+                "input": [
+                    {
+                        "role": "developer",
+                        "content": [{"type": "input_text", "text": text}],
+                    }
+                ],
             },
         )
     if "# Available Agent Skills" in text:
@@ -550,16 +577,14 @@ def finalize_result(
         }
     )
     extracted.update(task_loading)
-    extracted["manual_review_required"] = (
-        skill_count == 0
-        or task_loading["task_skills_loading_status"]
-        in {
-            "expected_with_skills_but_no_task_skill_manifest",
-            "missing_expected_task_skills",
-            "partial_unexpected_task_skills_loaded_without_skills",
-            "unexpected_complete_task_skills_loaded_without_skills",
-        }
-    )
+    extracted["manual_review_required"] = skill_count == 0 or task_loading[
+        "task_skills_loading_status"
+    ] in {
+        "expected_with_skills_but_no_task_skill_manifest",
+        "missing_expected_task_skills",
+        "partial_unexpected_task_skills_loaded_without_skills",
+        "unexpected_complete_task_skills_loaded_without_skills",
+    }
     return extracted
 
 
@@ -655,7 +680,9 @@ def main() -> None:
         args.task_path,
     )
     events = read_jsonl(args.trajectory, limit=limit)
-    extracted = extract_from_events(args.trajectory, events, checked_files, task_skill_context)
+    extracted = extract_from_events(
+        args.trajectory, events, checked_files, task_skill_context
+    )
 
     if extracted is None:
         fallback = sibling_acp_path(args.trajectory)

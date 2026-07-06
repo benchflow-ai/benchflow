@@ -94,6 +94,22 @@ class TestEnvMappingField:
         assert env["LLM_API_KEY"] == "ghs_test_token"
         assert env["LLM_MODEL"] == "openai/openai/gpt-4.1-mini"
 
+    def test_openhands_normalizes_openrouter_model(self):
+        env = {"OPENROUTER_API_KEY": "sk-openrouter"}
+        resolve_provider_env(
+            agent="openhands",
+            model="openrouter/qwen/qwen3.5-397b-a17b",
+            agent_env=env,
+        )
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "openrouter"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "qwen/qwen3.5-397b-a17b"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://openrouter.ai/api/v1"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-openrouter"
+        assert env["LLM_BASE_URL"] == "https://openrouter.ai/api/v1"
+        assert env["LLM_API_KEY"] == "sk-openrouter"
+        assert env["LLM_MODEL"] == "openai/qwen/qwen3.5-397b-a17b"
+
     def test_openhands_bedrock_initial_env_marks_registered_provider(self):
         """Guards the LiteLLM runtime refactor: Bedrock is detected before runtime rewrite."""
         env = {
@@ -202,14 +218,17 @@ class TestOpenHandsConfig:
 
 
 class TestAgentCredentialFiles:
-    def test_codex_has_auth_json(self):
+    def test_codex_self_writes_auth_json_in_launcher(self):
+        """codex-acp's OPENAI_API_KEY→auth.json write moved OUT of core's
+        ``credential_files`` (a ``_SHIM_ONLY`` field a data-only manifest can't
+        carry) and INTO its ``launch_cmd``, so the agent is self-contained for
+        the manifest decouple. See tests/test_codex_self_write_auth.py for the
+        byte-identical-template + subscription-no-clobber behavior."""
         cfg = AGENTS["codex-acp"]
-        assert len(cfg.credential_files) == 1
-        cf = cfg.credential_files[0]
-        assert cf.env_source == "OPENAI_API_KEY"
-        assert ".codex/auth.json" in cf.path
-        assert "{home}" in cf.path
-        assert "{value}" in cf.template
+        assert cfg.credential_files == []  # relocated off core
+        assert ".codex/auth.json" in cfg.launch_cmd
+        assert "OPENAI_API_KEY" in cfg.launch_cmd
+        assert "exec " in cfg.launch_cmd  # launcher replaces itself with codex
 
 
 class TestProviderCredentialFiles:

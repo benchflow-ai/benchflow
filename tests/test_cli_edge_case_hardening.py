@@ -23,9 +23,20 @@ runner = CliRunner()
 # ── continue: exit code (H1/H2) + concurrency floor (M4) ──────────────────────
 
 
-def test_continue_exits_1_on_agent_error(tmp_path, monkeypatch):
-    # H1/H2: a failed continuation must report failure to $? (it printed a green
-    # ✓ then a yellow warning and exited 0, so scripts read it as success).
+# Run the exit-code guards through BOTH spellings: the canonical
+# `bench eval continue` and the deprecated top-level `bench continue` alias.
+# Without the canonical case, a broken `eval_app` registration (PR #800) would
+# slip through because the alias path would still pass.
+_CONTINUE_SPELLINGS = pytest.mark.parametrize(
+    "invoke", [["eval", "continue"], ["continue"]], ids=["eval", "alias"]
+)
+
+
+@_CONTINUE_SPELLINGS
+def test_continue_exits_1_on_agent_error(invoke, tmp_path, monkeypatch):
+    """Guards the continue exit-code contract (H1/H2: a failed continuation must
+    report failure to $? — it printed a green ✓ then exited 0). Parametrized over
+    both spellings after PR #800 moved the command under `bench eval continue`."""
     import benchflow.continue_run.orchestrator as orch
 
     async def fake_continue_run(*args, **kwargs):
@@ -39,13 +50,16 @@ def test_continue_exits_1_on_agent_error(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(orch, "continue_run", fake_continue_run)
-    res = runner.invoke(app, ["continue", str(tmp_path)])
+    res = runner.invoke(app, [*invoke, str(tmp_path)])
     assert res.exit_code == 1
     assert "agent error" in res.output
 
 
-def test_continue_exits_0_when_no_error(tmp_path, monkeypatch):
-    # The success path must still exit 0 (guard against over-correcting H1).
+@_CONTINUE_SPELLINGS
+def test_continue_exits_0_when_no_error(invoke, tmp_path, monkeypatch):
+    """Guards the continue success path (must still exit 0, against over-correcting
+    H1), on both the canonical `bench eval continue` and the deprecated alias
+    after PR #800."""
     import benchflow.continue_run.orchestrator as orch
 
     async def fake_continue_run(*args, **kwargs):
@@ -59,15 +73,39 @@ def test_continue_exits_0_when_no_error(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(orch, "continue_run", fake_continue_run)
-    res = runner.invoke(app, ["continue", str(tmp_path)])
+    res = runner.invoke(app, [*invoke, str(tmp_path)])
     assert res.exit_code == 0
 
 
-def test_continue_batch_rejects_zero_concurrency(tmp_path):
-    # M4: --concurrency 0 reached an unguarded asyncio.run -> raw ValueError.
-    res = runner.invoke(app, ["continue-batch", str(tmp_path), "--concurrency", "0"])
+@pytest.mark.parametrize(
+    "invoke", [["eval", "continue-batch"], ["continue-batch"]], ids=["eval", "alias"]
+)
+def test_continue_batch_rejects_zero_concurrency(invoke, tmp_path):
+    """Guards the M4 concurrency floor (--concurrency 0 reached an unguarded
+    asyncio.run -> raw ValueError), on both the canonical `bench eval
+    continue-batch` and the deprecated alias after PR #800."""
+    res = runner.invoke(app, [*invoke, str(tmp_path), "--concurrency", "0"])
     assert res.exit_code != 0
     assert not isinstance(res.exception, ValueError)  # typer rejects it, not a crash
+
+
+def test_continue_is_canonical_under_eval_group(tmp_path):
+    """Guards PR #800: `continue` is canonical under the `eval` group.
+
+    `bench eval continue` is the canonical spelling (visible in `bench eval
+    --help`); the original top-level `bench continue` stays as a hidden,
+    deprecated alias so existing scripts keep working.
+    """
+    eval_help = runner.invoke(app, ["eval", "--help"])
+    assert eval_help.exit_code == 0
+    assert "continue" in eval_help.output  # visible under the eval group
+
+    # Both spellings resolve to the same command and fail the same way on an
+    # empty (config-less) run folder.
+    canonical = runner.invoke(app, ["eval", "continue", str(tmp_path)])
+    alias = runner.invoke(app, ["continue", str(tmp_path)])
+    assert canonical.exit_code == 1
+    assert alias.exit_code == 1
 
 
 # ── agent run: missing codex binary (H3) ─────────────────────────────────────

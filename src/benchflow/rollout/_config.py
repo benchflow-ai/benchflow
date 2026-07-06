@@ -108,11 +108,15 @@ class RolloutConfig:
     jobs_dir: str | Path = "jobs"
     concurrency: int = 1
     context_root: str | Path | None = None
+    base_image_override: str | None = None
     pre_agent_hooks: list | None = None
     # Environment plane — when set, Rollout provisions a manifest-declared
     # stateful environment, gates on readiness before the agent runs, and
     # tears it down in cleanup. None => no separate environment plane (default).
     environment_manifest: EnvironmentManifest | None = None
+    # C-axis overlay (parsed dict) deep-merged into the task's resolved config
+    # at rollout setup. None => no overlay (default).
+    config_override: dict | None = None
     # Abort the prompt if no tool call arrives for this many seconds.
     # Catches agents that hung silently while the local process is alive
     # (e.g. gemini-cli not responding). None disables idle detection.
@@ -175,6 +179,13 @@ class RolloutConfig:
             self.task_path = Path(self.task_path)
         if self.context_root is not None and not isinstance(self.context_root, Path):
             self.context_root = Path(self.context_root)
+        if self.base_image_override is not None:
+            base_image = self.base_image_override.strip()
+            if not base_image or any(char.isspace() for char in base_image):
+                raise ValueError(
+                    "base_image_override must be a non-empty image reference"
+                )
+            self.base_image_override = base_image
         if self.skills_dir is not None and not isinstance(self.skills_dir, Path):
             self.skills_dir = Path(self.skills_dir)
         self.skill_mode = normalize_skill_mode(self.skill_mode)

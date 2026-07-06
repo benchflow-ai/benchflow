@@ -33,7 +33,7 @@ from benchflow._utils.json_safe import scrub_non_finite
 from benchflow.adapters.ors import ORSAdapter
 from benchflow.rewards.protocol import VerifyResult
 from benchflow.trajectories._export_common import aggregate_rollout_jsonl
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.types import redact_trajectory_obj
 
 # Canonical artifact locations (see issue #385).
 ROLLOUT_ARTIFACT_RELPATH = "trainer/verifiers.jsonl"
@@ -92,9 +92,8 @@ def trajectory_to_verifiers_record(
 
 
 def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
-    clean = scrub_non_finite(record)
-    raw = json.dumps(clean, default=str, allow_nan=False)
-    return redact_trajectory_text(raw)
+    clean = redact_trajectory_obj(scrub_non_finite(record))
+    return json.dumps(clean, default=str, allow_nan=False)
 
 
 def _redact_verifiers_record(record: dict[str, Any]) -> dict[str, Any]:

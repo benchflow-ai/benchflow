@@ -171,6 +171,48 @@ async def test_openhands_registered_provider_can_route_via_explicit_proxy(monkey
 
 
 @pytest.mark.asyncio
+async def test_pi_acp_proxy_preserves_provider_model_metadata(monkeypatch):
+    """Guards PR #803: Pi metadata follows the LiteLLM alias in proxy mode."""
+
+    async def fake_start(**kwargs):
+        return FakeLiteLLMServer("http://172.17.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+    provider_models = [
+        {
+            "id": "Qwen/Qwen3-4B",
+            "name": "Qwen/Qwen3-4B",
+            "reasoning": False,
+            "input": ["text"],
+            "contextWindow": 16384,
+            "maxTokens": 1024,
+        }
+    ]
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="pi-acp",
+        agent_env={
+            "BENCHFLOW_PROVIDER_BASE_URL": "http://172.17.0.1:8000/v1",
+            "BENCHFLOW_PROVIDER_API_KEY": "dummy",
+            "BENCHFLOW_PROVIDER_MODELS": json.dumps(provider_models),
+        },
+        model="vllm/Qwen/Qwen3-4B",
+        runtime=None,
+        environment="docker",
+        session_id="run-1",
+        usage_tracking="required",
+    )
+
+    assert provider_runtime is not None
+    assert updated["BENCHFLOW_PROVIDER_MODEL"] == "benchflow-vllm-Qwen-Qwen3-4B"
+    models = json.loads(updated["BENCHFLOW_PROVIDER_MODELS"])
+    alias = next(m for m in models if m["id"] == "benchflow-vllm-Qwen-Qwen3-4B")
+    assert alias["name"] == "benchflow-vllm-Qwen-Qwen3-4B"
+    assert alias["maxTokens"] == 1024
+    assert alias["contextWindow"] == 16384
+
+
+@pytest.mark.asyncio
 async def test_runtime_reuse_and_stop(monkeypatch):
     created = []
 
@@ -267,13 +309,14 @@ async def test_required_usage_skips_litellm_for_claude_subscription(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_usage_tracking_off_leaves_provider_env_untouched(monkeypatch):
-    """Guards the follow-up to PR #613: off must not proxy provider traffic."""
+async def test_usage_tracking_off_still_routes_through_proxy(monkeypatch):
+    """off no longer disables the proxy: routable traffic is still captured and
+    the raw provider key never reaches the agent."""
 
-    async def fail_start(**_kwargs):
-        raise AssertionError("LiteLLM should not start when usage tracking is off")
+    async def fake_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
 
-    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
     env = {"OPENAI_API_KEY": "sk-openai"}
 
     updated, provider_runtime = await ensure_litellm_runtime(
@@ -285,21 +328,30 @@ async def test_usage_tracking_off_leaves_provider_env_untouched(monkeypatch):
         usage_tracking="off",
     )
 
-    assert updated == env
-    assert provider_runtime is None
+    assert provider_runtime is not None
+    # Agent points at the proxy, holding the master key — not the raw provider key.
+    assert updated["OPENAI_BASE_URL"] == "http://127.0.0.1:4000/v1"
+    assert updated["OPENAI_API_KEY"] == provider_runtime.master_key
+    assert "sk-openai" not in updated.values()
 
 
 @pytest.mark.asyncio
-async def test_usage_tracking_off_stops_existing_litellm_runtime():
-    """Guards the follow-up to PR #613: off must clear stale LiteLLM routing."""
+async def test_usage_tracking_off_replaces_stale_litellm_runtime(monkeypatch):
+    """off with a stale runtime stops the old proxy and starts a fresh one
+    (it no longer tears the proxy down and goes direct)."""
 
-    server = FakeLiteLLMServer("http://127.0.0.1:4000", route=None)
+    old_server = FakeLiteLLMServer("http://127.0.0.1:4000", route=None)
     existing = ProviderRuntime(
         kind="litellm",
-        agent_base_url=server.base_url,
-        server=server,
+        agent_base_url=old_server.base_url,
+        server=old_server,
         config_key="old",
     )
+
+    async def fake_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:4001", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
 
     updated, provider_runtime = await ensure_litellm_runtime(
         agent="codex-acp",
@@ -310,36 +362,104 @@ async def test_usage_tracking_off_stops_existing_litellm_runtime():
         usage_tracking="off",
     )
 
-    assert updated == {"OPENAI_API_KEY": "sk-openai"}
-    assert provider_runtime is None
-    assert server.stopped is True
+    assert old_server.stopped is True
+    assert provider_runtime is not None
+    assert updated["OPENAI_BASE_URL"] == "http://127.0.0.1:4001/v1"
 
 
 @pytest.mark.asyncio
-async def test_auto_usage_falls_back_when_litellm_lacks_provider_key(monkeypatch):
-    """Guards the follow-up to PR #613: auto should not fail just to track usage."""
+async def test_openhands_azure_never_bypasses_proxy(monkeypatch):
+    """The bug this PR fixes: a caller-supplied Azure LLM_BASE_URL must never let
+    OpenHands reach Azure directly. The proxy is forced on even under off, the
+    raw Azure key and endpoints are stripped, and LLM_BASE_URL points at the proxy."""
+
+    async def fake_start(**kwargs):
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_start)
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="openhands",
+        agent_env={
+            "AZURE_API_KEY": "azure-secret",
+            "AZURE_API_ENDPOINT": "https://my-resource.openai.azure.com",
+            "AZURE_API_VERSION": "preview",
+            "LLM_BASE_URL": "https://my-resource.openai.azure.com/openai/v1",
+            "OPENAI_BASE_URL": "https://my-resource.openai.azure.com/openai/v1",
+        },
+        model="azure-foundry-openai/gpt-5.5",
+        runtime=None,
+        environment="daytona",
+        session_id="run-1",
+        usage_tracking="off",
+        sandbox=SimpleNamespace(),
+    )
+
+    assert provider_runtime is not None
+    assert updated["LLM_BASE_URL"] == "http://127.0.0.1:45678/v1"
+    assert updated["LLM_API_KEY"] == provider_runtime.master_key
+    assert "AZURE_API_KEY" not in updated
+    assert "OPENAI_BASE_URL" not in updated
+    assert not any("azure.com" in str(v) for v in updated.values())
+
+
+def test_proxy_isolation_guard_blocks_leaked_secret():
+    """The fail-closed guard refuses to run if a raw provider key would survive."""
+
+    with pytest.raises(RuntimeError, match="isolation breached"):
+        runtime_mod._assert_proxy_isolated(
+            "openhands", {"OPENAI_API_KEY": "sk-leak"}, master_key="sk-benchflow-x"
+        )
+
+    # Proxy master key in a provider slot + a non-secret var are fine.
+    runtime_mod._assert_proxy_isolated(
+        "codex-acp",
+        {"OPENAI_API_KEY": "sk-benchflow-x", "AZURE_API_VERSION": "preview"},
+        master_key="sk-benchflow-x",
+    )
+
+
+def test_proxy_docs_disable_env_neutralizes_stray_docs_url(monkeypatch):
+    """A stray DOCS_URL (e.g. baked into a sandbox base image) used to crash the
+    proxy at startup ('Routed paths must start with /'). The proxy launch env
+    must disable Swagger docs so litellm registers no docs route."""
+    from litellm.proxy.utils import _get_docs_url
+
+    # Reproduce the crash trigger: an inherited non-"/" DOCS_URL.
+    monkeypatch.setenv("DOCS_URL", "stray-without-leading-slash")
+    assert _get_docs_url() == "stray-without-leading-slash"  # would crash add_route
+
+    # Applying the proxy launch overrides makes litellm skip the docs route.
+    for key, value in runtime_mod._PROXY_DOCS_DISABLE_ENV.items():
+        monkeypatch.setenv(key, value)
+    assert _get_docs_url() is None
+
+
+@pytest.mark.asyncio
+async def test_auto_usage_fails_closed_when_litellm_lacks_provider_key(monkeypatch):
+    """The proxy is mandatory: missing credentials are fatal, never a silent
+    fall back to direct provider access — even under auto."""
 
     async def fail_start(**_kwargs):
         raise AssertionError("LiteLLM should not start without provider credentials")
 
+    monkeypatch.setattr(runtime_mod, "uses_native_subscription_auth", lambda *_: False)
     monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
 
-    updated, provider_runtime = await ensure_litellm_runtime(
-        agent="codex-acp",
-        agent_env={},
-        model="openai/gpt-4.1-mini",
-        runtime=None,
-        environment="docker",
-        usage_tracking="auto",
-    )
-
-    assert updated == {}
-    assert provider_runtime is None
+    with pytest.raises(RuntimeError, match="requires OPENAI_API_KEY"):
+        await ensure_litellm_runtime(
+            agent="codex-acp",
+            agent_env={},
+            model="openai/gpt-4.1-mini",
+            runtime=None,
+            environment="docker",
+            usage_tracking="auto",
+        )
 
 
 @pytest.mark.asyncio
-async def test_auto_usage_falls_back_when_route_resolution_fails(monkeypatch):
-    """Guards the follow-up to PR #620: auto falls back on route failures."""
+async def test_auto_usage_fails_closed_when_route_resolution_fails(monkeypatch):
+    """Route resolution failure is fatal: BenchFlow never bypasses the proxy."""
 
     def fail_route(*_args, **_kwargs):
         raise ValueError("missing AZURE_RESOURCE")
@@ -349,42 +469,36 @@ async def test_auto_usage_falls_back_when_route_resolution_fails(monkeypatch):
 
     monkeypatch.setattr(runtime_mod, "resolve_litellm_route", fail_route)
     monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
-    env = {"AZURE_API_KEY": "azure-key"}
 
-    updated, provider_runtime = await ensure_litellm_runtime(
-        agent="codex-acp",
-        agent_env=env,
-        model="azure-foundry-openai/gpt-4.1-mini",
-        runtime=None,
-        environment="docker",
-        usage_tracking="auto",
-    )
-
-    assert updated == env
-    assert provider_runtime is None
+    with pytest.raises(RuntimeError, match="cannot resolve"):
+        await ensure_litellm_runtime(
+            agent="codex-acp",
+            agent_env={"AZURE_API_KEY": "azure-key"},
+            model="azure-foundry-openai/gpt-4.1-mini",
+            runtime=None,
+            environment="docker",
+            usage_tracking="auto",
+        )
 
 
 @pytest.mark.asyncio
-async def test_auto_usage_falls_back_when_litellm_start_fails(monkeypatch):
-    """Guards the follow-up to PR #613: auto should survive proxy startup errors."""
+async def test_auto_usage_fails_closed_when_litellm_start_fails(monkeypatch):
+    """Proxy startup failure is fatal under auto too (no direct-provider fallback)."""
 
     async def fail_start(**_kwargs):
         raise RuntimeError("proxy unavailable")
 
     monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
-    env = {"OPENAI_API_KEY": "sk-openai"}
 
-    updated, provider_runtime = await ensure_litellm_runtime(
-        agent="codex-acp",
-        agent_env=env,
-        model="openai/gpt-4.1-mini",
-        runtime=None,
-        environment="docker",
-        usage_tracking="auto",
-    )
-
-    assert updated == env
-    assert provider_runtime is None
+    with pytest.raises(RuntimeError, match="failed to start"):
+        await ensure_litellm_runtime(
+            agent="codex-acp",
+            agent_env={"OPENAI_API_KEY": "sk-openai"},
+            model="openai/gpt-4.1-mini",
+            runtime=None,
+            environment="docker",
+            usage_tracking="auto",
+        )
 
 
 @pytest.mark.asyncio
@@ -462,7 +576,7 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
 
     monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
 
-    with pytest.raises(RuntimeError, match="Token usage tracking is required"):
+    with pytest.raises(RuntimeError, match="failed to start"):
         await ensure_litellm_runtime(
             agent="codex-acp",
             agent_env={"OPENAI_API_KEY": "sk-openai"},

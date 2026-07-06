@@ -44,7 +44,7 @@ from benchflow.skill_policy import (
 )
 from benchflow.trajectories._capture import TrajectoryWriter
 from benchflow.trajectories.metrics import count_skill_invocations
-from benchflow.usage_tracking import UsageTrackingConfig
+from benchflow.usage_tracking import UsageTrackingConfig, normalize_usage_source
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,7 @@ def _write_config(
     timeout: int,
     started_at: datetime,
     agent_env: dict[str, str],
+    base_image_override: str | None = None,
     reasoning_effort: str | None = None,
     usage_tracking: UsageTrackingConfig | None = None,
     concurrency: int | None = None,
@@ -158,6 +159,7 @@ def _write_config(
     dataset: dict[str, Any] | None = None,
     task_digest: str | None = None,
     environment_manifest: EnvironmentManifest | None = None,
+    config_override: dict | None = None,
     loop_strategy: LoopStrategySpec | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
@@ -188,6 +190,7 @@ def _write_config(
         if skip_agent_install
         else effective_install_timeout(agent, sandbox_setup_timeout),
         "context_root": str(context_root) if context_root else None,
+        "base_image_override": base_image_override,
         "timeout_sec": timeout,
         "concurrency": concurrency,
         "agent_idle_timeout_sec": agent_idle_timeout,
@@ -205,6 +208,17 @@ def _write_config(
         config_data["dataset_version"] = dataset.get("version")
     if task_digest is not None:
         config_data["task_digest"] = task_digest
+    # C-axis provenance: persist the bound config overlay + its content hash so
+    # the run records exactly which configuration it ran with (symmetric to
+    # environment_manifest above).
+    if config_override:
+        from benchflow._utils.config_override import overlay_hash
+
+        config_data["config_override"] = {
+            "keys": sorted(config_override),
+            "sha256": overlay_hash(config_override),
+            "patch": config_override,
+        }
     (rollout_dir / "config.json").write_text(json.dumps(config_data, indent=2))
 
 
@@ -318,7 +332,7 @@ def _build_rollout_result(
         n_cache_creation_tokens=n_cache_creation_tokens,
         total_tokens=total_tokens,
         cost_usd=cost_usd,
-        usage_source=usage_source,
+        usage_source=normalize_usage_source(usage_source),
         price_source=price_source,
         usage_details=usage_details,
         error=error,
@@ -365,55 +379,51 @@ def _build_rollout_result(
     # (streaming + final) is scrubbed (#537/#585).
     TrajectoryWriter(traj_dir / "acp_trajectory.jsonl").write_final(trajectory)
     rollout_dir.mkdir(parents=True, exist_ok=True)
-    (rollout_dir / "result.json").write_text(
-        json.dumps(
+    result_data = {
+        "task_name": result.task_name,
+        "rollout_name": result.rollout_name,
+        "rewards": result.rewards,
+        "agent": result.agent,
+        "agent_name": result.agent_name,
+        "model": result.model,
+        **skill_policy.config_metadata(),
+        "n_tool_calls": result.n_tool_calls,
+        "n_skill_invocations": result.n_skill_invocations,
+        "n_prompts": result.n_prompts,
+        "agent_result": agent_result,
+        "final_metrics": final_metrics,
+        "trajectory_summary": trajectory_summary,
+        "usage_tracking": usage_tracking,
+        "error": result.error,
+        "error_category": result.error_category,
+        "verifier_error": result.verifier_error,
+        "verifier_error_category": result.verifier_error_category,
+        "export_error": result.export_error,
+        **diagnostics.to_result_fields(),
+        "partial_trajectory": result.partial_trajectory,
+        "trajectory_source": result.trajectory_source,
+        "started_at": str(result.started_at),
+        "finished_at": str(result.finished_at),
+        "timing": timing,
+        "scenes": _scene_metadata(scenes or []),
+        "loop": loop or loop_block(None),
+        **(
+            {"source": artifact_source_provenance(source_provenance)}
+            if source_provenance is not None
+            else {}
+        ),
+        **(
             {
-                "task_name": result.task_name,
-                "rollout_name": result.rollout_name,
-                "rewards": result.rewards,
-                "agent": result.agent,
-                "agent_name": result.agent_name,
-                "model": result.model,
-                **skill_policy.config_metadata(),
-                "n_tool_calls": result.n_tool_calls,
-                "n_skill_invocations": result.n_skill_invocations,
-                "n_prompts": result.n_prompts,
-                "agent_result": agent_result,
-                "final_metrics": final_metrics,
-                "trajectory_summary": trajectory_summary,
-                "usage_tracking": usage_tracking,
-                "error": result.error,
-                "error_category": result.error_category,
-                "verifier_error": result.verifier_error,
-                "verifier_error_category": result.verifier_error_category,
-                "export_error": result.export_error,
-                **diagnostics.to_result_fields(),
-                "partial_trajectory": result.partial_trajectory,
-                "trajectory_source": result.trajectory_source,
-                "started_at": str(result.started_at),
-                "finished_at": str(result.finished_at),
-                "timing": timing,
-                "scenes": _scene_metadata(scenes or []),
-                "loop": loop or loop_block(None),
-                **(
-                    {"source": artifact_source_provenance(source_provenance)}
-                    if source_provenance is not None
-                    else {}
-                ),
-                **(
-                    {
-                        "dataset_name": dataset.get("name"),
-                        "dataset_version": dataset.get("version"),
-                    }
-                    if dataset is not None
-                    else {}
-                ),
-                **({"task_digest": task_digest} if task_digest is not None else {}),
-                "sandbox_id": sandbox_id,
-            },
-            indent=2,
-        )
-    )
+                "dataset_name": dataset.get("name"),
+                "dataset_version": dataset.get("version"),
+            }
+            if dataset is not None
+            else {}
+        ),
+        **({"task_digest": task_digest} if task_digest is not None else {}),
+        "sandbox_id": sandbox_id,
+    }
+    (rollout_dir / "result.json").write_text(json.dumps(result_data, indent=2))
     (rollout_dir / "timing.json").write_text(json.dumps(timing, indent=2))
     (rollout_dir / "prompts.json").write_text(json.dumps(prompts, indent=2))
     _write_rewards_jsonl(rollout_dir, rewards, finished_at)
@@ -432,7 +442,38 @@ def _build_rollout_result(
         total_cached_tokens=n_cache_read_tokens,
         total_cost_usd=cost_usd,
     )
+    _write_results_jsonl(
+        rollout_dir,
+        task_name=task_name,
+        rollout_name=rollout_name,
+        agent=agent,
+        agent_name=agent_name,
+        model=model,
+        n_tool_calls=n_tool_calls,
+        prompts=prompts,
+        trajectory=trajectory,
+        partial_trajectory=partial_trajectory,
+        rewards=rewards,
+        error=error,
+        verifier_error=verifier_error,
+        export_error=export_error,
+        timing=timing,
+        agent_result=agent_result,
+    )
     return result
+
+
+def _write_results_jsonl(
+    rollout_dir: Path,
+    **kwargs: Any,
+) -> None:
+    """Emit the Verifiers/Prime-RL-shaped rollout result row."""
+    from benchflow.trajectories.results import write_rollout_results_jsonl
+
+    try:
+        write_rollout_results_jsonl(rollout_dir, **kwargs)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("results.jsonl write failed: %s", e)
 
 
 def _write_trainer_artifact(

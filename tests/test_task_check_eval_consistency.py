@@ -36,6 +36,7 @@ FIRST_PARTY_MIXED_TASK_MD_FIXTURES = (
 REAL_SKILLSBENCH_TASK_MD_EXAMPLES = (
     Path("docs/examples/task-md/real-skillsbench/3d-scan-calc"),
     Path("docs/examples/task-md/real-skillsbench/citation-check"),
+    Path("docs/examples/task-md/real-skillsbench/citation-check-network"),
     Path("docs/examples/task-md/real-skillsbench/weighted-gdp-calc"),
 )
 USER_RUNTIME_TASK_MD_EXAMPLES = (

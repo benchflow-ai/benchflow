@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from benchflow.sandbox.process import LiveProcess
 
@@ -33,14 +33,19 @@ class ContainerTransport(Transport):
         self._env = env or {}
         self._cwd = cwd
         self._agent_log_path = agent_log_path
-        self._agent_log_file = None
+        self._agent_log_file: TextIO | None = None
 
     async def start(self) -> None:
         """Start the agent process inside the sandbox."""
         if self._agent_log_path:
             self._agent_log_path.parent.mkdir(parents=True, exist_ok=True)
-            # File handle outlives this method — closed in stop(). noqa: SIM115
-            self._agent_log_file = open(self._agent_log_path, "w")  # noqa: SIM115
+            # Clear any stale log from a previous connect attempt. _connect_acp_session
+            # reuses the same agent/<agent>.txt path across retries (runtime.py), so a
+            # failed attempt that logged a non-protocol warning before raising would
+            # otherwise leave stale text behind when a later JSON-RPC-only retry succeeds
+            # (which never re-opens the file). Unlink rather than truncating so we keep
+            # the lazy-open contract: no empty placeholder for protocol-only runs.
+            self._agent_log_path.unlink(missing_ok=True)
         await self._cp.start(
             command=self._command,
             env=self._env,
@@ -64,7 +69,9 @@ class ContainerTransport(Transport):
             if message is not None:
                 return message
             # Capture non-protocol output (agent debug logs, errors, warnings).
-            if self._agent_log_file:
+            if self._agent_log_path:
+                if self._agent_log_file is None:
+                    self._agent_log_file = self._agent_log_path.open("w")
                 self._agent_log_file.write(text + "\n")
                 self._agent_log_file.flush()
             logger.debug(f"Non-JSON-RPC from container agent: {text[:200]}")

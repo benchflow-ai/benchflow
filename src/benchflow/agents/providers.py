@@ -74,6 +74,11 @@ class ProviderConfig:
     auth_type: str  # "api_key" | "adc" | "aws" | "none"
     auth_env: str | None = None  # env var holding the API key (None for ADC)
     url_params: dict[str, str] = field(default_factory=dict)  # {placeholder: ENV_VAR}
+    # Fallback value per url_params placeholder when its env var is unset, so a
+    # provider can ship a usable default endpoint while still honoring an
+    # explicit override (the env var wins). Empty => the env var is required
+    # (historical behavior).
+    url_param_defaults: dict[str, str] = field(default_factory=dict)
     models: list[dict] = field(default_factory=list)  # model metadata for agents
     # Bare-model-name family tokens this provider owns (e.g. ["deepseek"],
     # ["qwen"]). Used by find_provider_for_bare_model() to route a *prefix-less*
@@ -201,6 +206,16 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="GITHUB_TOKEN",
     ),
+    # OpenRouter exposes hosted models through an OpenAI-compatible endpoint.
+    # Keep qwen-dashscope as the owner for bare qwen* models; callers choose
+    # OpenRouter explicitly with openrouter/<provider>/<model>.
+    "openrouter": ProviderConfig(
+        name="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="OPENROUTER_API_KEY",
+    ),
     # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──
     "vllm": ProviderConfig(
@@ -314,6 +329,10 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="DEEPSEEK_API_KEY",
         url_params={"base_url": "DEEPSEEK_BASE_URL"},
+        # deepseek-v4-pro is served at deepseek's public OpenAI-compatible
+        # endpoint; default to it so bare ids resolve without DEEPSEEK_BASE_URL
+        # (matches the shim default), while DEEPSEEK_BASE_URL still overrides.
+        url_param_defaults={"base_url": "https://api.deepseek.com/v1"},
         model_prefixes=["deepseek"],
     ),
     "xiaomi": ProviderConfig(
@@ -455,7 +474,7 @@ def resolve_base_url(
         return url
     replacements = {}
     for placeholder, env_var in provider.url_params.items():
-        value = env.get(env_var)
+        value = env.get(env_var) or provider.url_param_defaults.get(placeholder)
         if not value:
             raise KeyError(
                 f"Provider {provider.name!r} requires {env_var} for "

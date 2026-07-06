@@ -2,7 +2,7 @@ name: internal-preview-release
 
 on:
   workflow_run:
-    workflows: ["integration-eval"]
+    workflows: ["integration-light"]
     types: [completed]
 
 # PyPI Trusted Publishing uses OIDC, so no PyPI token is stored in GitHub.

@@ -1,0 +1,41 @@
+# Moon Bridge config for the L3 codex equivalence reviewer on DeepSeek-v4-pro.
+#
+# codex (OpenAI's CLI) speaks ONLY the OpenAI Responses API; DeepSeek does not
+# serve it. Moon Bridge (https://github.com/ZhiYi-R/moon-bridge) is a local
+# forwarding proxy that exposes an OpenAI-Responses-compatible endpoint and
+# translates to DeepSeek's /anthropic surface — the integration method from
+# https://github.com/deepseek-ai/awesome-deepseek-agent docs/codex.md.
+#
+# DEEPSEEK_API_KEY_PLACEHOLDER is replaced with $DEEPSEEK_API_KEY by
+# setup_codex_deepseek_bridge.sh at runtime (the key is never committed).
+mode: "Transform"
+server:
+  addr: "127.0.0.1:38440"
+models:
+  deepseek-v4-pro:
+    context_window: 1000000
+    max_output_tokens: 384000
+    default_reasoning_level: "high"
+    supported_reasoning_levels:
+      - effort: "high"
+        description: "High reasoning effort"
+      - effort: "xhigh"
+        description: "Extra high reasoning effort"
+    supports_reasoning_summaries: true
+    default_reasoning_summary: "auto"
+    extensions:
+      deepseek_v4:
+        enabled: true
+providers:
+  deepseek:
+    base_url: "https://api.deepseek.com/anthropic"
+    api_key: "DEEPSEEK_API_KEY_PLACEHOLDER"
+    offers:
+      - model: deepseek-v4-pro
+routes:
+  moonbridge:
+    model: deepseek-v4-pro
+    provider: deepseek
+defaults:
+  model: moonbridge
+  max_tokens: 65536

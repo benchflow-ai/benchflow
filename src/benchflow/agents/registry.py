@@ -109,6 +109,14 @@ def _apt_install(*packages: str) -> str:
 _BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
 _BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
 _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
+
+# OpenCode-family proxy provider id. OpenCode hard-codes the OpenAI *Responses*
+# API for the built-in ``openai`` provider id (its ``getModel`` calls
+# ``provider.responses(id)``), which the LiteLLM gateway/DeepSeek cannot serve —
+# so the gateway alias must be registered under a *separate* provider id that
+# OpenCode routes through the chat-completions path. Shared with
+# ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
+OPENCODE_PROXY_PROVIDER_ID = "benchflow"
 _OPENHANDS_CLI_GIT_REV = "3ca17446c5d9c1e35e054803478a3501ec251ecf"
 _OPENHANDS_SDK_VERSION = "1.22.1"
 _OPENHANDS_TOOLS_VERSION = "1.22.1"
@@ -194,6 +202,84 @@ def _js_agent_launch(binary: str, args: str = "") -> str:
     return f"{cmd} {args}".rstrip()
 
 
+_MIMO_MANIFEST_INSTALL_CMD = (
+    _NODE_INSTALL
+    + " && "
+    + "mkdir -p /opt/benchflow/js-agents/mimo-acp && "
+    + 'printf \'%s\' \'{"name":"bf-mimo-acp","private":true,"type":"module"}\' '
+    + "> /opt/benchflow/js-agents/mimo-acp/package.json && "
+    + "cd /opt/benchflow/js-agents/mimo-acp && "
+    + "/opt/benchflow/node/bin/npm install @mimo-ai/cli@0.1.4 "
+    + "--no-audit --no-fund >/dev/null 2>&1 && "
+    + "chmod -R a+rX /opt/benchflow && "
+    + "[ -f /opt/benchflow/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo ]"
+)
+_MIMO_MANIFEST_LAUNCHER = r"""
+A="${BENCHFLOW_LITELLM_MODEL_ALIAS:-}"
+B="${OPENAI_BASE_URL:-}"
+K="${OPENAI_API_KEY:-}"
+# Two wirings, both valid: PROXY mode (alias A present — write the custom
+# "openai" provider at the proxy and strip the colliding OPENAI_* env) and
+# DIRECT-provider mode (no alias — leave OPENAI_* intact and write nothing;
+# benchflow delivers the model over ACP set_model as provider/model). The old
+# launcher hard-failed (rc78) on "base URL without alias", which broke every
+# direct-provider run.
+if [ -n "$B" ] && [ -n "$A" ]; then
+  # Canonical config location MiMo Code (OpenCode fork) reads:
+  # {home}/.config/mimocode/mimocode.json (matches benchflow-core's native mimo
+  # agent). Also written to ./mimocode.json (cwd) as a belt-and-suspenders for
+  # the proven-working run, so the routing is not cwd-dependent.
+  CFG_HOME="${HOME:-/root}/.config/mimocode"
+  mkdir -p "$CFG_HOME"
+  CFG_JSON='{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "openai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "BenchFlow Proxy",
+      "options": { "baseURL": "'"$B"'", "apiKey": "'"${K:-benchflow}"'" },
+      "models": { "'"$A"'": { "name": "'"$A"'" } }
+    }
+  },
+  "model": "openai/'"$A"'"
+}'
+  printf '%s\n' "$CFG_JSON" > "$CFG_HOME/mimocode.json"
+  printf '%s\n' "$CFG_JSON" > ./mimocode.json
+  CFG_WRITTEN=yes
+else
+  CFG_WRITTEN=no
+fi
+if [ -n "${BF_PR8_DEBUG:-}" ]; then
+  H=$(printf %s "$B" | sed -E "s#^[a-z]+://([^@]*@)?([^/:?]+).*#\2#")
+  echo "BF_DIAG base_url_set=$([ -n \"$B\" ] && echo yes || echo no) host=${H:-NONE}"
+  echo "BF_DIAG api_key_set=$([ -n \"$K\" ] && echo yes || echo no)"
+  echo "BF_DIAG alias=${A:-NONE}"
+  echo "BF_DIAG cfg_written=$CFG_WRITTEN cfg_cwd=$(pwd)/mimocode.json cfg_home=${HOME}/.config/mimocode/mimocode.json MIMOCODE_CONFIG=${MIMOCODE_CONFIG:-unset}"
+  echo BF_DIAG mimocode_begin
+  for p in ./mimocode.json "${HOME}/.config/mimocode/mimocode.json" "${MIMOCODE_CONFIG:-}"; do
+    if [ -n "$p" ] && [ -f "$p" ]; then
+      sed -E -e 's#("apiKey"[[:space:]]*:[[:space:]]*")[^"]*#\1<REDACTED>#g' \
+             -e 's#://[^@/"]*@#://<REDACTED>@#g' "$p" \
+        | awk -v pfx="BF_DIAG_CFG $p: " '{print pfx $0}'
+    fi
+  done
+  echo BF_DIAG mimocode_end
+fi
+if [ -n "$A" ]; then
+  # Proxy mode only: mimo's built-in openai provider auto-activates from
+  # OPENAI_* env and would conflict with the custom provider written above.
+  # In direct mode the env IS the provider config — leave it intact.
+  unset OPENAI_BASE_URL OPENAI_API_KEY
+fi
+exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo acp
+"""
+_MIMO_MANIFEST_LAUNCH_CMD = (
+    "printf '%s' '"
+    + base64.b64encode(_MIMO_MANIFEST_LAUNCHER.encode()).decode()
+    + "' | base64 -d > /tmp/mimo-acp-launch.sh && sh /tmp/mimo-acp-launch.sh"
+)
+
+
 # Path to the openclaw ACP shim script
 _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
@@ -218,6 +304,100 @@ def _json_settings_merge(path: str, mutator: str) -> str:
         "p.write_text(json.dumps(d, indent=2) + '\\n')"
     )
     return f"python3 -c {shlex.quote(py)}"
+
+
+# OpenCode-family proxy fix: OpenCode and its MiMo fork validate provider/model
+# ids against the models.dev catalog and reject the synthetic
+# ``openai/benchflow-<alias>`` that BenchFlow's LiteLLM proxy serves the model
+# under (ProviderModelNotFoundError -> zero requests -> no
+# ``trajectory/llm_trajectory.jsonl``, which ``benchflow-experiment-review``
+# requires). Registering the alias under ``provider.openai.models`` (with the
+# gateway baseURL) bypasses that catalog check so the agent accepts the id and
+# routes through the proxy.
+def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str:
+    """Install ``/opt/benchflow/bin/<binary>-proxy``: a thin wrapper that, in
+    proxy mode, registers the LiteLLM gateway alias under a dedicated
+    OpenCode provider, then execs the isolated agent binary. Idempotent
+    (preserves existing config); no-op outside proxy mode.
+
+    The gateway alias is registered under the ``{OPENCODE_PROXY_PROVIDER_ID}``
+    provider using ``@ai-sdk/openai-compatible`` — NOT the built-in ``openai``
+    provider. OpenCode-family agents hard-code the OpenAI **Responses API** for
+    the ``openai`` provider id (``getModel`` calls ``provider.responses(id)``);
+    BenchFlow's LiteLLM gateway — and the OpenAI-completions upstreams it fronts
+    (e.g. DeepSeek) — only serve **chat completions**, so a Responses-API call
+    404s/500s and the agent idles with zero tool calls. Overriding the ``openai``
+    provider's ``npm`` does not help: OpenCode still calls ``.responses()`` and
+    crashes with ``provider.responses is not a function``. A *separate* provider
+    id routes through the chat-completions path, which is what the gateway
+    expects. ``small_model`` is pinned to the same alias so OpenCode's
+    title/summary helper stops falling back to its hard-coded ``gpt-5-nano``
+    (which the gateway cannot serve either).
+    """
+    real = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
+    agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
+    target = f"{_BENCHFLOW_BIN_PREFIX}/{binary}-proxy"
+    provider_id = OPENCODE_PROXY_PROVIDER_ID
+    # ``config_relpath`` is resolved against ``$BENCHFLOW_AGENT_HOME`` at launch
+    # time — the same home the agent's ``disallow_web_tools_setup_cmd`` and
+    # ``credential_files`` write to — so all writers target one config file even
+    # when the sandbox home differs from ``$HOME``. Falls back to ``~``.
+    config_relpath = config_path.lstrip("/")
+    register_py = "\n".join(
+        [
+            "import json, os, pathlib",
+            'alias = os.environ.get("BENCHFLOW_LITELLM_MODEL_ALIAS", "").strip()',
+            "if alias:",
+            '    home = os.environ.get("BENCHFLOW_AGENT_HOME", "").strip() or os.path.expanduser("~")',
+            f"    p = pathlib.Path(home) / {config_relpath!r}",
+            "    p.parent.mkdir(parents=True, exist_ok=True)",
+            "    d = json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {}",
+            # Dedicated provider id (see docstring) → chat completions, not the
+            # Responses API the built-in ``openai`` id is hard-coded to.
+            f'    prov = d.setdefault("provider", {{}}).setdefault({provider_id!r}, {{}})',
+            '    prov["npm"] = "@ai-sdk/openai-compatible"',
+            '    prov.setdefault("name", "BenchFlow Gateway")',
+            '    opts = prov.setdefault("options", {})',
+            '    base = os.environ.get("OPENAI_BASE_URL", "").strip()',
+            "    if base:",
+            '        opts["baseURL"] = base',
+            '    key = os.environ.get("OPENAI_API_KEY", "").strip()',
+            "    if key:",
+            '        opts["apiKey"] = key',
+            '    prov.setdefault("models", {}).setdefault(alias, {"name": alias})',
+            f'    d["small_model"] = "{provider_id}/" + alias',
+            '    p.write_text(json.dumps(d, indent=2) + "\\n")',
+        ]
+    )
+    wrapper = (
+        "#!/bin/sh\n"
+        # Proxy mode only. Fail LOUD: if registration errors (malformed existing
+        # config, unwritable path), do NOT launch — the agent would otherwise get
+        # set_model "<provider>/<alias>" for a model now missing from its config
+        # and hit ProviderModelNotFoundError with nothing explaining why. A hard
+        # exit surfaces the cause instead of a silent broken proxy path.
+        'if [ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ]; then\n'
+        "  if ! python3 - <<'PYEOF'\n"
+        f"{register_py}\n"
+        "PYEOF\n"
+        "  then\n"
+        f'    echo "benchflow {binary}-proxy: gateway alias registration failed; '
+        'refusing to launch in proxy mode" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "fi\n"
+        # Exec the agent. A node-shim bin (shebang) goes through the isolated node
+        # launcher; a native binary (e.g. opencode-ai 1.17.x ships its bin as a
+        # native ELF, bin/opencode.exe) must run DIRECTLY — running it via `node`
+        # parses the ELF as JS and crashes at startup with a SyntaxError.
+        f'if [ "$(head -c2 {agent_bin} 2>/dev/null)" = "#!" ]; then\n'
+        f'  exec {real} "$@"\n'
+        "else\n"
+        f'  PATH="{_BENCHFLOW_NODE_PREFIX}/bin:$PATH" exec {agent_bin} "$@"\n'
+        "fi\n"
+    )
+    b64 = base64.b64encode(wrapper.encode()).decode()
+    return f"printf '%s' '{b64}' | base64 -d > {target} && chmod +x {target}"
 
 
 @dataclass
@@ -302,21 +482,28 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
-    acp_model_config_id: str = ""
     # ACP session config option id used for model selection when an agent
     # exposes model as a session option instead of implementing set_model.
-    acp_effort_config_id: str = ""
+    acp_model_config_id: str = ""
     # ACP session config option id used for reasoning/thinking effort.
-    disallow_web_tools_setup_cmd: str = ""
+    acp_effort_config_id: str = ""
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
     # target home so settings land in the same home the agent will run from.
-    disallow_web_tools_owned_paths: list[str] = field(default_factory=list)
+    disallow_web_tools_setup_cmd: str = ""
     # Directories under $HOME that disallow_web_tools_setup_cmd may create and
     # that must remain writable by the sandbox user after the root-run setup.
-    disallow_web_tools_launch_suffix: str = ""
+    disallow_web_tools_owned_paths: list[str] = field(default_factory=list)
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
+    disallow_web_tools_launch_suffix: str = ""
+    # How task-declared MCP servers are delivered to the agent:
+    # "acp" sends them in session/new; "native-config" writes an agent-specific
+    # config file before launch (for agents whose ACP server drops/reformats
+    # MCP fields).
+    task_mcp_transport: str = "acp"
+    # Native-config target path, relative to $HOME unless absolute.
+    task_mcp_config_path: str = ""
 
 
 # Agent registry — all supported agents
@@ -422,8 +609,22 @@ AGENTS: dict[str, AgentConfig] = {
         install_cmd=_js_agent_install(
             "codex-acp", "@agentclientprotocol/codex-acp@0.0.45"
         ),
-        launch_cmd=_js_agent_launch(
-            "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+        # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
+        # ONLY when the key is set (so subscription/host-auth mode is untouched),
+        # instead of relying on core's credential_files writer. This makes the
+        # decoupled manifest self-contained — like mimo/opencode — and is
+        # byte-identical to the former credential_files template
+        # ({"OPENAI_API_KEY": "<key>"}) and keeps the old 0600 secret mode.
+        # `exec` so signals/PID reach codex.
+        launch_cmd=(
+            'h="${BENCHFLOW_AGENT_HOME:-$HOME}"; '
+            'if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && '
+            'printf \'{"OPENAI_API_KEY": "%s"}\' "$OPENAI_API_KEY" '
+            '> "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; '
+            "fi; exec "
+            + _js_agent_launch(
+                "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+            )
         ),
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
@@ -432,13 +633,6 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
         },
-        credential_files=[
-            CredentialFile(
-                path="{home}/.codex/auth.json",
-                env_source="OPENAI_API_KEY",
-                template='{{"OPENAI_API_KEY": "{value}"}}',
-            ),
-        ],
         subscription_auth=SubscriptionAuth(
             replaces_env="OPENAI_API_KEY",
             detect_file="~/.codex/auth.json",
@@ -501,8 +695,14 @@ AGENTS: dict[str, AgentConfig] = {
         description="OpenCode via ACP — open-source coding agent (TypeScript)",
         skill_paths=["$HOME/.opencode/skills"],
         home_dirs=[".opencode"],
-        install_cmd=_js_agent_install("opencode", "opencode-ai"),
-        launch_cmd=_js_agent_launch("opencode", "acp"),
+        install_cmd=(
+            _js_agent_install("opencode", "opencode-ai")
+            + " && "
+            + _opencode_family_proxy_wrapper_install(
+                "opencode", ".config/opencode/opencode.json"
+            )
+        ),
+        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/opencode-proxy acp",
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         acp_model_format="provider/model",
@@ -520,11 +720,12 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "mimo": AgentConfig(
         name="mimo",
-        description="MiMo Code via ACP — Xiaomi's OpenCode fork (TypeScript)",
-        skill_paths=["$HOME/.mimocode/skills"],
-        home_dirs=[".mimocode", ".config/mimocode"],
-        install_cmd=_js_agent_install("mimo", "@mimo-ai/cli@0.1.0"),
-        launch_cmd=_js_agent_launch("mimo", "acp"),
+        description=(
+            "MiMo Code (Xiaomi, OpenCode fork) native `mimo acp` ACP server via "
+            "the `mimo` CLI — no server.mjs (mimo is the ACP server)"
+        ),
+        install_cmd=_MIMO_MANIFEST_INSTALL_CMD,
+        launch_cmd=_MIMO_MANIFEST_LAUNCH_CMD,
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         # MiMo Code ships a fixed endpoint for its native models.dev "xiaomi"
@@ -543,12 +744,17 @@ AGENTS: dict[str, AgentConfig] = {
                 ),
             ),
         ],
+        install_timeout=1200,
+        api_protocol="openai-completions",
         acp_model_format="provider/model",
         # MiMo Code is an OpenCode fork: `mimo acp` reports agentInfo.name="OpenCode"
         # and uses models.dev "provider/model" ids, so set_model must send e.g.
-        # "openai/benchflow-<alias>" in proxy mode, or "xiaomi/mimo-v2.5" in
-        # non-proxy mode via the registered xiaomi provider (the ("mimo","xiaomi")
-        # models.dev heuristic in acp/runtime.py keeps that prefix intact).
+        # "benchflow/benchflow-<alias>" in proxy mode (the dedicated
+        # OPENCODE_PROXY_PROVIDER_ID chat-completions provider the -proxy wrapper
+        # registers — NOT the built-in "openai" id, whose Responses-API hard-coding
+        # the gateway cannot serve), or "xiaomi/mimo-v2.5" in non-proxy mode via the
+        # registered xiaomi provider (the ("mimo","xiaomi") models.dev heuristic in
+        # acp/runtime.py keeps that prefix intact).
         env_mapping={
             # Map BOTH base_url and api_key (codex-acp precedent) so the non-proxy
             # path wires the key without an `if agent == "mimo"` core edit.
@@ -590,9 +796,21 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd=f"HARVEY_LABS_ROOT=/opt/harvey-labs /opt/benchflow/harvey-lab-venv/bin/python {_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim",
         protocol="acp",
         requires_env=[],  # inferred from model at runtime (ANTHROPIC_API_KEY, etc.)
-        # env_mapping intentionally empty — Harvey LAB adapters read
-        # provider-specific env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY,
-        # GOOGLE_API_KEY) directly; auto_inherit_env propagates these.
+        # Harvey LAB's Anthropic/Gemini adapters read ANTHROPIC_API_KEY /
+        # GOOGLE_API_KEY directly (auto_inherit_env propagates a host key). But
+        # the OpenAI-compatible adapter — the one that serves every proxied
+        # provider (deepseek, the azure gpt-5.4-mini gateway, the benchflow-*
+        # aliases) — reads OPENAI_BASE_URL/OPENAI_API_KEY, which only exist as
+        # BENCHFLOW_PROVIDER_* on the proxy path. Without this mapping the
+        # adapter had no base URL/key, hit api.openai.com unauthenticated, and
+        # the harness loop ended on turn 0 with zero LLM activity
+        # (suspected_api_error). Mapping them points the adapter at the gateway;
+        # a direct ANTHROPIC/GEMINI run is unaffected (those adapters ignore
+        # OPENAI_*).
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
+            "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
+        },
     ),
     "deepagents": AgentConfig(
         name="deepagents",
@@ -725,6 +943,8 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_API_KEY": "LLM_API_KEY",
         },
         supports_acp_set_model=False,
+        task_mcp_transport="native-config",
+        task_mcp_config_path=".openhands/mcp.json",
         disallow_web_tools_setup_cmd=(
             'mkdir -p "$BENCHFLOW_AGENT_HOME/.openhands" && '
             "printf '[agent]\\nenable_browsing = false\\n' "
@@ -923,13 +1143,51 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
+        task_mcp_transport=config.task_mcp_transport,
+        task_mcp_config_path=config.task_mcp_config_path,
     )
+
+
+# Namespace shorthand — harbor-style "<ns>:<id>" agent specs (design: #876).
+# The namespace names the adaptation path; resolution is a deterministic
+# name-candidate mapping onto the existing flat names (the naming law: the
+# native/ACP path owns bare names, every other path prefixes "<path>-"). No new
+# config fields, no ambiguity machinery — exact registered names and aliases
+# always win (checked before this), so "acpx:" runtime keys are unaffected.
+# Phase 2 (#876) keys the registry-backed agent auto-fetch on these same
+# namespaces (mirroring harbor's `--agent acp:<id>[@version]`).
+def _resolve_namespace_shorthand(name: str) -> AgentConfig | None:
+    """Resolve "<ns>:<id>" (e.g. "omnigent:pi", "acp:mimo", "ai-sdk:codex").
+
+    Candidates per namespace: ``acp:<id>`` tries the bare id then ``<id>-acp``
+    (so ``acp:mimo`` → ``mimo``, ``acp:pi`` → ``pi-acp``, ``acp:claude`` →
+    alias ``claude`` → ``claude-agent-acp``); ``ai-sdk:<id>`` /
+    ``omnigent:<id>`` try the ``<ns>-<id>`` prefix form. Every candidate goes
+    through AGENT_ALIASES, so alias-only names resolve too. Returns ``None``
+    when nothing matches (callers fall through to the unknown-agent error).
+    """
+    ns, sep, ident = name.partition(":")
+    if not sep or not ident:
+        return None
+    if ns == "acp":
+        candidates = [ident, f"{ident}-acp"]
+    elif ns in ("ai-sdk", "omnigent"):
+        candidates = [f"{ns}-{ident}"]
+    else:
+        return None
+    for candidate in candidates:
+        candidate = AGENT_ALIASES.get(candidate, candidate)
+        if candidate in AGENTS:
+            return AGENTS[candidate]
+    return None
 
 
 def resolve_agent(spec: str) -> AgentConfig:
     """Resolve an agent spec to an AgentConfig.
 
-    Supports: bare name, alias, protocol/name, acpx/name.
+    Supports: bare name, alias, protocol/name, acpx/name, and the namespace
+    shorthand "<ns>:<id>" for ns in {acp, ai-sdk, omnigent} — e.g.
+    "omnigent:pi" → omnigent-pi, "acp:pi" → pi-acp (see #876).
     Raises KeyError with suggestions for unknown agents.
     """
     protocol, name = parse_agent_spec(spec)
@@ -946,13 +1204,48 @@ def resolve_agent(spec: str) -> AgentConfig:
         return AGENTS[name]
 
     if name not in AGENTS:
+        shorthand = _resolve_namespace_shorthand(name)
+        if shorthand is not None:
+            return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
+
+        # Miss-driven manifest auto-load (#876 Phase 2a): fetch DECLARATIVE
+        # manifest agents from the pinned agents source (data only — their
+        # install/launch strings run in the sandbox, same trust as task
+        # sources) and retry. One-shot per process; local names always win.
+        from benchflow.agents import remote_manifests
+
+        if remote_manifests.autoload_remote_manifest_agents():
+            name = AGENT_ALIASES.get(name, name)
+            if name in AGENTS:
+                config = AGENTS[name]
+                return _acpx_wrap(config) if protocol == "acpx" else config
+            shorthand = _resolve_namespace_shorthand(name)
+            if shorthand is not None:
+                return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
+
         from difflib import get_close_matches
 
+        # Breadcrumb: if agent plugin packages failed to load at import time
+        # (see FAILED_AGENT_PLUGINS / _load_agent_plugin_packages), the missing
+        # name is very likely one of theirs — connect the two events here, at
+        # the point the user actually sees a failure.
+        plugin_hint = ""
+        if FAILED_AGENT_PLUGINS:
+            failed = ", ".join(sorted(FAILED_AGENT_PLUGINS))
+            plugin_hint = (
+                f" Note: agent plugin(s) failed to load at startup: {failed} "
+                "(see the startup warning for details)."
+            )
+        if remote_manifests.last_source_description:
+            plugin_hint += f" ({remote_manifests.last_source_description} consulted)"
         close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
         if close:
-            raise KeyError(f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?")
+            raise KeyError(
+                f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?{plugin_hint}"
+            )
         raise KeyError(
-            f"Unknown agent: {name!r}. Available: {', '.join(sorted(AGENTS.keys()))}"
+            f"Unknown agent: {name!r}. Available: "
+            f"{', '.join(sorted(AGENTS.keys()))}{plugin_hint}"
         )
 
     config = AGENTS[name]
@@ -980,6 +1273,20 @@ def resolve_agent_key(spec: str) -> str:
     try:
         config = resolve_agent(spec)
     except KeyError:
+        # The raw-command fallback bypasses resolve_agent's error entirely (the
+        # spec is later exec'd verbatim in the sandbox), so surface the failed-
+        # plugin breadcrumb HERE too — otherwise a plugin load failure manifests
+        # only as a deep, minutes-later "command not found" in the rollout.
+        if FAILED_AGENT_PLUGINS:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Agent spec %r is not a registered agent and will be treated as "
+                "a raw command; note that agent plugin(s) failed to load at "
+                "startup: %s",
+                spec,
+                ", ".join(sorted(FAILED_AGENT_PLUGINS)),
+            )
         return spec
     if config.name not in AGENTS:
         AGENTS[config.name] = config
@@ -1074,3 +1381,85 @@ def register_agent(
     AGENT_INSTALLERS[name] = install_cmd
     AGENT_LAUNCH[name] = launch_cmd
     return config
+
+
+# --- Opt-in dual-source registry (agent-decoupling decision #7) ---------------
+# Merge agents declared as <dir>/manifest.toml files under $BENCHFLOW_AGENTS_DIR
+# into the registry. A NO-OP when the env var is unset, so a default import of
+# core is byte-for-byte unchanged; the manifest path only activates on explicit
+# opt-in. The import is deferred to here (end of module) on purpose: manifest.py
+# imports AgentConfig from this module, so a top-level import would be circular,
+# and the merge must run after AGENTS / AGENT_ALIASES / AGENT_INSTALLERS /
+# AGENT_LAUNCH are fully built above.
+from benchflow.agents.manifest import (  # noqa: E402
+    register_env_manifest_agents as _register_env_manifest_agents,
+)
+
+_register_env_manifest_agents()
+
+
+# --- Agent plugin packages (entry-point autoload) ------------------------------
+# Out-of-core agent packages (e.g. the benchflow-ai/agents packages) register
+# their agents either as an import side effect or via a zero-arg ``register()``.
+# Without discovery, `bench eval run --agent omnigent-pi` only works if
+# something in the process happened to import/call them first — in practice a
+# hand-planted sitecustomize/.pth hack. Standard plugin pattern instead: any
+# installed distribution may declare
+#
+#     [project.entry-points."benchflow.agents"]
+#     my-agents = "my_agents"                          # module: import registers
+#     # ...or:  my-agents = "my_agents.register:register"  (callable: invoked)
+#
+# and it is loaded here (after the core + manifest registries are built, so
+# `register_agent` overwrite-by-name semantics apply — though a plugin may still
+# choose not to overwrite, e.g. acp-registry skips names built-ins already own).
+# A module-style value registers by import; a callable-style value is
+# additionally invoked with no arguments. Installing the plugin distribution
+# alongside benchflow (PyPI, git-subdirectory URL, or path) is then sufficient
+# for `--agent <registered-name>` to resolve — note the DIST name, entry-point
+# name, and registered AGENT name may all differ (installing dist `mimo-acp`
+# registers agent `mimo`).
+#
+# Failure handling: each plugin is guarded (a broken plugin logs a warning with
+# traceback and is skipped — siblings still load, the CLI never crashes), and a
+# failed metadata scan disables discovery with a warning. Failures are recorded
+# in FAILED_AGENT_PLUGINS so the eventual "Unknown agent" / raw-command-fallback
+# paths can point back at the real cause.
+
+# entry-point name -> "ExcType: message" for plugins that failed to load; the
+# sentinel key "<entry-point-scan>" means discovery itself failed.
+FAILED_AGENT_PLUGINS: dict[str, str] = {}
+
+
+def _load_agent_plugin_packages() -> None:
+    import logging
+    from importlib.metadata import entry_points
+
+    try:
+        eps = entry_points(group="benchflow.agents")
+    except Exception as exc:  # pragma: no cover - metadata backend quirks
+        FAILED_AGENT_PLUGINS["<entry-point-scan>"] = f"{type(exc).__name__}: {exc}"
+        logging.getLogger(__name__).warning(
+            "benchflow.agents entry-point scan failed; ALL agent plugins are "
+            "disabled: %s",
+            exc,
+            exc_info=True,
+        )
+        return
+    for ep in eps:
+        try:
+            loaded = ep.load()
+            if callable(loaded):
+                loaded()
+        except Exception as exc:
+            FAILED_AGENT_PLUGINS[ep.name] = f"{type(exc).__name__}: {exc}"
+            logging.getLogger(__name__).warning(
+                "benchflow.agents plugin %r failed to load (some or all of its "
+                "agents may be unavailable or partially registered): %s",
+                ep.name,
+                exc,
+                exc_info=True,
+            )
+
+
+_load_agent_plugin_packages()

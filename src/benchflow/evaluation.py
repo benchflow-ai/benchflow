@@ -52,6 +52,8 @@ from benchflow._utils.scoring import (
     PIPE_CLOSED,
     PROVIDER_AUTH,
     PROVIDER_RATE_LIMIT,
+    PROVIDER_REJECTED,
+    SANDBOX_SETUP,
     SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
@@ -195,7 +197,12 @@ class RetryConfig:
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
     exclude_categories: set[str] = field(
-        default_factory=lambda: {"timeout", PROVIDER_AUTH, PROVIDER_RATE_LIMIT}
+        default_factory=lambda: {
+            "timeout",
+            PROVIDER_AUTH,
+            PROVIDER_RATE_LIMIT,
+            PROVIDER_REJECTED,
+        }
     )
 
     @classmethod
@@ -252,7 +259,7 @@ class RetryConfig:
             return True
         if self.retry_on_idle_timeout and category == IDLE_TIMEOUT:
             return True
-        if self.retry_on_infra and category == INFRA_ERROR:
+        if self.retry_on_infra and category in {INFRA_ERROR, SANDBOX_SETUP}:
             return True
         if category == API_ERROR:
             # Transient-only: rate limit / provider 5xx self-heal on backoff;
@@ -482,6 +489,7 @@ class EvaluationConfig:
     skip_agent_install: bool = False
     agent_idle_timeout: int | None = 600
     context_root: str | None = None
+    base_image_override: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
     skill_mode: str = SKILL_MODE_NO_SKILL
@@ -503,6 +511,8 @@ class EvaluationConfig:
     # readiness gating, teardown) is exercised — closing the gap between
     # single-rollout SDK.run() and the batch Evaluation/Job API (#398).
     environment_manifest: EnvironmentManifest | None = None
+    # C-axis overlay (parsed dict) deep-merged into each task's resolved config.
+    config_override: dict | None = None
     # Harness loop strategy applied to every rollout (e.g.
     # "verify-retry:k=3,feedback=names"). Threaded to RolloutConfig.from_legacy
     # and stamped in summary.json; None = single-shot. A dict (the to_mapping()
@@ -779,6 +789,7 @@ class Evaluation:
             ensure_tasks,
             resolve_source_with_metadata,
         )
+        from benchflow.adapters.source import adapt_resolved_source_if_needed
 
         # New two-field format: source.repo + source.path
         source_provenance = None
@@ -799,6 +810,7 @@ class Evaluation:
                 path=src.get("path"),
                 ref=src.get("ref"),
             )
+            resolved = adapt_resolved_source_if_needed(resolved)
             tasks_dir = resolved.path
             source_provenance = resolved.provenance
         elif "tasks_dir" in raw:
@@ -855,6 +867,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            context_root=raw.get("context_root"),
+            base_image_override=raw.get("base_image_override"),
             exclude_tasks=exclude,
             include_tasks=include,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -868,6 +882,7 @@ class Evaluation:
             source_provenance=source_provenance,
             usage_tracking=UsageTrackingConfig.from_mapping(raw),
             environment_manifest=env_manifest,
+            config_override=raw.get("config_override"),
             loop_strategy=raw.get("loop_strategy"),
         )
         return cls(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config, **kwargs)
@@ -948,6 +963,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            context_root=raw.get("context_root"),
+            base_image_override=raw.get("base_image_override"),
             include_tasks=include,
             exclude_tasks=exclude,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -1057,7 +1074,7 @@ class Evaluation:
         for task, (_mt, r) in best.items():
             if r.get("verifier_error"):
                 logger.info(
-                    f"Skipping verifier-errored task on resume: {task} "
+                    f"Reusing completed verifier-errored task on resume: {task} "
                     f"({truncate_end(r['verifier_error'], 80)})"
                 )
             completed[task] = r
@@ -1199,6 +1216,7 @@ class Evaluation:
             concurrency=cfg.concurrency,
             environment=cfg.environment,
             environment_manifest=environment_manifest,
+            config_override=cfg.config_override,
             skills_dir=skills_dir,
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
@@ -1206,6 +1224,7 @@ class Evaluation:
             skip_agent_install=cfg.skip_agent_install,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
+            base_image_override=cfg.base_image_override,
             skill_mode=skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -1252,6 +1271,7 @@ class Evaluation:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
+            base_image_override=cfg.base_image_override,
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -1856,6 +1876,12 @@ class Evaluation:
             write_job_adp_jsonl(job_dir)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Job-level ADP aggregation failed: %s", e)
+        try:
+            from benchflow.trajectories.results import write_job_results_jsonl
+
+            write_job_results_jsonl(job_dir)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Job-level results.jsonl aggregation failed: %s", e)
 
         # Per-diagnostic summary warnings — driven by the registry so a
         # new diagnostic class adds its warning automatically (issue #503).

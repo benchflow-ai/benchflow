@@ -41,7 +41,7 @@ from typing import Any, cast
 
 from benchflow._utils.json_safe import dumps_finite
 from benchflow.trajectories._export_common import ThoughtBuffer, content_blocks_to_text
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.types import redact_trajectory_obj
 
 ATIF_SCHEMA_VERSION = "ATIF-v1.7"
 
@@ -183,8 +183,7 @@ def trajectory_to_atif_record(
 
 
 def _record_to_redacted_json(record: dict[str, Any]) -> str:
-    raw = dumps_finite(record, default=str, indent=2)
-    return redact_trajectory_text(raw)
+    return dumps_finite(redact_trajectory_obj(record), default=str, indent=2)
 
 
 def write_rollout_atif_json(

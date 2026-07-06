@@ -1,0 +1,182 @@
+"""Unit tests for the S-axis environment registry (benchflow._utils.env_registry)."""
+
+from __future__ import annotations
+
+import pytest
+
+from benchflow._utils.env_registry import (
+    EnvironmentRegistryError,
+    looks_like_env_spec,
+    resolve_environment,
+    resolve_state,
+)
+from benchflow.environment.manifest import load_manifest
+
+
+def _write_env(registry, name_version: str, base_image: str = "img:1"):
+    p = registry / f"{name_version}.toml"
+    p.write_text(f'[environment]\nname = "env0"\nbase_image = "{base_image}"\n')
+    return p
+
+
+def _write_env_yaml(registry, name_version: str, base_image: str = "img:1"):
+    p = registry / f"{name_version}.yaml"
+    p.write_text(f"environment:\n  name: env0\n  base_image: {base_image}\n")
+    return p
+
+
+def test_looks_like_env_spec_discriminates_spec_from_path():
+    assert looks_like_env_spec("env0")
+    assert looks_like_env_spec("env0@v2")
+    assert not looks_like_env_spec("../_manifests/env0.toml")  # path → not a spec
+    assert not looks_like_env_spec("a/b")
+    assert not looks_like_env_spec("env0.toml")
+    assert not looks_like_env_spec("env0.yaml")  # yaml path → not a spec
+    assert not looks_like_env_spec("env0.yml")
+
+
+def test_resolve_pinned_version(tmp_path):
+    _write_env(tmp_path, "env0@v1")
+    r = resolve_environment("env0@v1", registry=tmp_path)
+    assert (r.name, r.version) == ("env0", "v1")
+    assert r.manifest_path.name == "env0@v1.toml"
+    assert r.env_hash.startswith("sha256:")
+    assert r.spec == "env0@v1"
+
+
+def test_resolve_bare_name_prefers_default_file(tmp_path):
+    _write_env(tmp_path, "env0")  # env0.toml is the "default"
+    _write_env(tmp_path, "env0@v1")
+    assert resolve_environment("env0", registry=tmp_path).version == "default"
+
+
+def test_resolve_bare_name_falls_back_to_newest(tmp_path):
+    _write_env(tmp_path, "env0@v1")
+    _write_env(tmp_path, "env0@v2")
+    assert resolve_environment("env0", registry=tmp_path).version == "v2"
+
+
+def test_resolve_content_addressed(tmp_path):
+    _write_env(tmp_path, "env0@v1", base_image="img:1")
+    _write_env(tmp_path, "env0@v2", base_image="img:2")
+    h1 = resolve_environment("env0@v1", registry=tmp_path).env_hash
+    h2 = resolve_environment("env0@v2", registry=tmp_path).env_hash
+    assert h1 != h2
+
+
+def test_resolve_missing_version_errors(tmp_path):
+    _write_env(tmp_path, "env0@v1")
+    with pytest.raises(EnvironmentRegistryError, match="not found"):
+        resolve_environment("env0@v9", registry=tmp_path)
+
+
+def test_resolve_unknown_name_errors(tmp_path):
+    with pytest.raises(EnvironmentRegistryError, match="no versions"):
+        resolve_environment("nope", registry=tmp_path)
+
+
+def test_resolve_invalid_spec_errors(tmp_path):
+    with pytest.raises(EnvironmentRegistryError, match="invalid environment spec"):
+        resolve_environment("bad/spec@x", registry=tmp_path)
+
+
+def test_resolve_no_registry_configured_errors(tmp_path, monkeypatch):
+    monkeypatch.delenv("BENCHFLOW_ENV_REGISTRY", raising=False)
+    with pytest.raises(EnvironmentRegistryError, match="no environment registry"):
+        resolve_environment("env0")
+
+
+# ---- load_manifest dispatch (spec vs file) --------------------------------
+
+
+def test_load_manifest_resolves_spec_via_registry(tmp_path, monkeypatch):
+    _write_env(tmp_path, "env0@v1", base_image="img:42")
+    monkeypatch.setenv("BENCHFLOW_ENV_REGISTRY", str(tmp_path))
+    m = load_manifest("env0@v1")
+    assert m.base_image == "img:42"
+
+
+def test_load_manifest_still_loads_a_real_file(tmp_path):
+    p = _write_env(tmp_path, "plain", base_image="img:file")
+    m = load_manifest(p)  # real path → loaded directly, no registry needed
+    assert m.base_image == "img:file"
+
+
+# ---- YAML manifests (canonical) alongside TOML (back-compat) ---------------
+
+
+def test_resolve_yaml_manifest(tmp_path):
+    _write_env_yaml(tmp_path, "env0@v1", base_image="img:yaml")
+    r = resolve_environment("env0@v1", registry=tmp_path)
+    assert r.manifest_path.name == "env0@v1.yaml"
+    assert r.version == "v1"
+
+
+def test_resolve_prefers_toml_for_back_compat_when_both_exist(tmp_path):
+    _write_env(tmp_path, "env0@v1", base_image="img:toml")
+    _write_env_yaml(tmp_path, "env0@v1", base_image="img:yaml")
+    r = resolve_environment("env0@v1", registry=tmp_path)
+    assert r.manifest_path.suffix == ".toml"
+
+
+def test_load_manifest_yaml_spec_via_registry(tmp_path, monkeypatch):
+    _write_env_yaml(tmp_path, "env0@v2", base_image="img:y")
+    monkeypatch.setenv("BENCHFLOW_ENV_REGISTRY", str(tmp_path))
+    assert load_manifest("env0@v2").base_image == "img:y"
+
+
+def test_load_manifest_yaml_file_path(tmp_path):
+    p = _write_env_yaml(tmp_path, "plain", base_image="img:yfile")
+    assert load_manifest(p).base_image == "img:yfile"
+
+
+# ---- resolve_state — the --state axis (inline JSON + tool subset) ----------
+
+
+def _write_multi_service_env(registry, name="env0"):
+    (registry / f"{name}.toml").write_text(
+        '[environment]\nname = "env-0"\nbase_image = "img"\nowns_lifecycle = false\n'
+        '[[environment.services]]\nname = "gmail"\ncommand = "gmail serve"\nport = 9001\n'
+        '[[environment.services]]\nname = "slack"\ncommand = "slack serve"\nport = 9002\n'
+        '[[environment.services]]\nname = "gcal"\ncommand = "gcal serve"\nport = 9003\n'
+    )
+
+
+def test_resolve_state_inline_json_filters_to_tool_subset(tmp_path):
+    _write_multi_service_env(tmp_path)
+    import os
+
+    os.environ["BENCHFLOW_ENV_REGISTRY"] = str(tmp_path)
+    try:
+        m = resolve_state('{"name":"env0","tools":["gmail","gcal"]}')
+        assert sorted(s.name for s in m.services) == ["gcal", "gmail"]  # slack dropped
+    finally:
+        del os.environ["BENCHFLOW_ENV_REGISTRY"]
+
+
+def test_resolve_state_missing_tool_errors(tmp_path):
+    _write_multi_service_env(tmp_path)
+    import os
+
+    os.environ["BENCHFLOW_ENV_REGISTRY"] = str(tmp_path)
+    try:
+        with pytest.raises(EnvironmentRegistryError, match="not in environment"):
+            resolve_state('{"name":"env0","tools":["nope"]}')
+    finally:
+        del os.environ["BENCHFLOW_ENV_REGISTRY"]
+
+
+def test_resolve_state_ref_form_no_filter(tmp_path):
+    _write_env(tmp_path, "env0@v1", base_image="img:ref")
+    import os
+
+    os.environ["BENCHFLOW_ENV_REGISTRY"] = str(tmp_path)
+    try:
+        assert resolve_state("env0@v1").base_image == "img:ref"
+    finally:
+        del os.environ["BENCHFLOW_ENV_REGISTRY"]
+
+
+def test_resolve_state_bad_json_errors():
+    with pytest.raises(EnvironmentRegistryError, match=r"must be a mapping"):
+        resolve_state('{"tools":["gmail"]}')  # no name (mapping without "name")

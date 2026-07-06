@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,13 +62,16 @@ def test_needs_litellm_runtime_excludes_native_protocol_agents(agent, model, exp
     assert runtime_mod.needs_litellm_runtime(agent, model) is expected
 
 
-def test_opencode_litellm_alias_formats_to_registered_openai_route():
+def test_opencode_litellm_alias_formats_to_dedicated_provider_route():
     from benchflow.acp.runtime import _format_acp_model
+    from benchflow.agents.registry import OPENCODE_PROXY_PROVIDER_ID
 
-    # The proxy registers only "<alias>" and "openai/<alias>"; provider/model
-    # agents must send the openai/ form, not a guessed anthropic/ provider.
+    # The <binary>-proxy wrapper registers the gateway alias under a dedicated
+    # provider id (NOT the built-in "openai" id, whose Responses-API hard-coding
+    # the gateway cannot serve). provider/model agents must send that id.
     out = _format_acp_model("benchflow-minimax-MiniMax-M3", "opencode")
-    assert out == "openai/benchflow-minimax-MiniMax-M3"
+    assert out == f"{OPENCODE_PROXY_PROVIDER_ID}/benchflow-minimax-MiniMax-M3"
+    assert not out.startswith("openai/")
 
 
 def test_format_acp_model_passes_through_existing_provider_prefix():
@@ -105,15 +109,15 @@ def test_format_acp_model_routes_via_provider_registry_not_runtime_branches():
     assert "xiaomi" not in {provider for _, provider in _MODELSDEV_PROVIDER_HEURISTICS}
 
 
-def test_mimo_litellm_alias_formats_to_registered_openai_route():
+def test_mimo_litellm_alias_formats_to_dedicated_provider_route():
     from benchflow.acp.runtime import _format_acp_model
+    from benchflow.agents.registry import OPENCODE_PROXY_PROVIDER_ID
 
-    # Proxy mode is untouched by the heuristic: aliases still route to the
-    # proxy-registered "openai/<alias>" form.
-    assert (
-        _format_acp_model("benchflow-deepseek-deepseek-v4-flash", "mimo")
-        == "openai/benchflow-deepseek-deepseek-v4-flash"
-    )
+    # Proxy-mode aliases route to the dedicated chat-completions provider id,
+    # not the built-in "openai" id (Responses-API crash) nor a guessed provider.
+    out = _format_acp_model("benchflow-deepseek-deepseek-v4-flash", "mimo")
+    assert out == f"{OPENCODE_PROXY_PROVIDER_ID}/benchflow-deepseek-deepseek-v4-flash"
+    assert not out.startswith("openai/")
 
 
 def test_vllm_route_honors_runtime_supplied_base_url():
@@ -289,6 +293,7 @@ class _FakeSandbox:
     ):
         self.uploaded: dict[str, str] = {}
         self.exec_calls: list[str] = []
+        self.exec_timeouts: list[int | None] = []
         self.fail_launch = fail_launch
         self.fail_preflight = fail_preflight
         self.log_content = log_content
@@ -299,6 +304,7 @@ class _FakeSandbox:
 
     async def exec(self, command: str, timeout_sec: int | None = None) -> _ExecResult:
         self.exec_calls.append(command)
+        self.exec_timeouts.append(timeout_sec)
         if "stat -c %s" in command:
             return _ExecResult(0, stdout=str(len(self.log_content)))
         if "urllib.request" in command:
@@ -360,6 +366,36 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
 
     assert proc.base_url == "http://127.0.0.1:45999"
     assert await proc.is_running() is True
+
+
+@pytest.mark.asyncio
+async def test_sandbox_litellm_install_uses_configured_setup_timeout():
+    """Guards PR #878 against the hardcoded 600s LiteLLM install timeout."""
+    route = resolve_litellm_route(
+        "minimax/MiniMax-M3",
+        {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
+    )
+    sandbox = _FakeSandbox()
+
+    await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env={
+            "MINIMAX_API_KEY": "k",
+            "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        },
+        session_id="s",
+        agent_name="openhands",
+        install_timeout_sec=901,
+    )
+
+    install_index = next(
+        index
+        for index, command in enumerate(sandbox.exec_calls)
+        if "pip install" in command and "litellm" in command
+    )
+    assert sandbox.exec_timeouts[install_index] == 901
 
 
 @pytest.mark.asyncio
@@ -881,3 +917,114 @@ async def test_callback_records_unpriced_cost_as_null(tmp_path, monkeypatch):
     assert usage["n_input_tokens"] == 1000
     assert usage["cost_usd"] is None
     assert usage["price_source"] is None
+
+
+def test_poll_host_health_fails_fast_when_process_exited():
+    # PR #871's extended deadline leans on the process-exit check: a crashed proxy
+    # must fail fast, not wait out the full budget.
+    import asyncio
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from benchflow.providers.litellm_runtime import _poll_host_health
+
+    process = MagicMock()
+    process.process.poll.return_value = 1  # already exited
+    process.log_tail.return_value = "(tail)"
+
+    with pytest.raises(RuntimeError, match="exited before becoming healthy"):
+        asyncio.run(_poll_host_health(process, deadline_s=30.0))
+    process.process.poll.assert_called()  # checked liveness, did not wait out 30s
+
+
+def test_poll_host_health_bails_at_deadline_when_never_healthy(monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    import benchflow.providers.litellm_runtime as rt
+
+    class _FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            raise ConnectionError("refused")
+
+    monkeypatch.setattr(rt.httpx, "AsyncClient", _FailingClient)
+    process = MagicMock()
+    process.process.poll.return_value = None  # alive but never healthy
+    process.endpoint.local_base_url = "http://127.0.0.1:9/"
+    process.log_tail.return_value = "(tail)"
+
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        asyncio.run(rt._poll_host_health(process, deadline_s=0.3))
+
+
+def test_health_deadline_env_parse_is_defensive(monkeypatch):
+    # A malformed BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC must not crash import; a
+    # 0/negative value is floored so the poll still runs at least once.
+    import benchflow.providers.litellm_runtime as rt
+
+    monkeypatch.setenv("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "not-a-number")
+    assert rt._health_deadline_sec() == 180.0
+    monkeypatch.setenv("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "0")
+    assert rt._health_deadline_sec() >= 1.0
+    monkeypatch.setenv("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "240")
+    assert rt._health_deadline_sec() == 240.0
+
+
+@pytest.mark.asyncio
+async def test_wait_for_sandbox_state_retries_slow_exec_probe():
+    class _Sandbox:
+        def __init__(self):
+            self.calls = 0
+
+        async def exec(self, _command, timeout_sec):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("Command timed out after 5 seconds")
+            return SimpleNamespace(return_code=0, stdout='{"port": 32123}')
+
+    sandbox = _Sandbox()
+    state = await runtime_mod._wait_for_sandbox_state(
+        sandbox,
+        state_path="/tmp/state.json",
+        stderr_path="/tmp/stderr.log",
+        deadline_s=1.0,
+    )
+
+    assert state["port"] == 32123
+    assert sandbox.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_poll_sandbox_health_retries_slow_exec_probe():
+    class _Sandbox:
+        def __init__(self):
+            self.calls = 0
+
+        async def exec(self, _command, timeout_sec):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("Command timed out after 5 seconds")
+            return SimpleNamespace(return_code=0, stdout="")
+
+    sandbox = _Sandbox()
+    await runtime_mod._poll_sandbox_health(
+        sandbox,
+        python="/venv/bin/python",
+        port=32123,
+        stderr_path="/tmp/stderr.log",
+        deadline_s=1.0,
+    )
+
+    assert sandbox.calls == 2

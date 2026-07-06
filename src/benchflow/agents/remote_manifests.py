@@ -1,0 +1,171 @@
+"""Miss-driven auto-load of DECLARATIVE agent manifests from a remote source.
+
+Design: #876 (Phase 2a). When ``--agent <name>`` does not resolve locally,
+benchflow fetches the pinned agents source (default: the first-party
+``benchflow-ai/agents`` repo, cloned+cached through the same
+``benchmark_repos`` machinery task sources use) and registers every
+``manifest.toml`` agent found there that does not collide with anything already
+registered — then resolution is retried.
+
+Why this is safe to do automatically, unlike installing agent packages: a
+manifest is **pure data**. Its ``install_cmd``/``launch_cmd`` strings execute
+inside the task sandbox — exactly the trust level of a task fetched with
+``--source-repo`` (and of harbor's ``acp:<id>`` registry auto-fetch, which also
+fetches data and executes it sandboxed). No remote code ever runs in the host
+process. Host-side *python* agent adapters (e.g. omnigent's session-factory)
+are deliberately NOT auto-loaded — those remain explicit installs.
+
+Semantics:
+
+* **Gap-fill only** — an agent name or alias that already exists locally
+  always wins; the remote manifest for it is skipped (never overwritten).
+* **One-shot per process** — the first resolution miss triggers at most one
+  fetch; later misses fail fast as before.
+* **Guarded** — a broken manifest (or an unreachable source) logs a warning
+  and never breaks agent resolution.
+* **Opt-out / re-point** — ``BENCHFLOW_AGENTS_SOURCE=off`` disables;
+  ``BENCHFLOW_AGENTS_SOURCE=owner/repo[@ref]`` re-pins; a local directory path
+  is also accepted (dev/tests).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+
+from benchflow.agents.manifest import (
+    LoadedManifest,
+    discover_manifests,
+    load_agent_manifest,
+    register_manifest_agents,
+)
+
+logger = logging.getLogger(__name__)
+
+AGENTS_SOURCE_ENV = "BENCHFLOW_AGENTS_SOURCE"
+DEFAULT_AGENTS_SOURCE = "benchflow-ai/agents@main"
+_OFF_VALUES = frozenset({"off", "0", "none", "disabled", "false"})
+
+# One-shot latch: the first resolution miss triggers at most one fetch per
+# process. A human-readable description of what was consulted is kept for the
+# unknown-agent error path.
+_attempted = False
+last_source_description: str = ""
+
+
+def _source_root(spec: str) -> Path:
+    """Resolve the source spec to a local directory of manifests.
+
+    A local directory path is used verbatim (dev/tests); otherwise the spec is
+    ``owner/repo[@ref]`` and is cloned+cached via the task-source machinery
+    (data-only shallow clone, same cache as ``--source-repo``).
+    """
+    local = Path(spec).expanduser()
+    if local.is_dir():
+        return local
+    repo, _, ref = spec.partition("@")
+    from benchflow._utils.benchmark_repos import resolve_source
+
+    return resolve_source(repo, ref=ref or None)
+
+
+def _gap_fill(
+    manifests: list[LoadedManifest],
+    *,
+    agents: dict,
+    aliases: dict,
+) -> dict[str, LoadedManifest]:
+    """Keep only manifests (and aliases) that collide with nothing local.
+
+    Local always wins: an existing agent name, an existing alias, or a name
+    shadowed by an alias disqualifies the remote manifest; colliding aliases on
+    an otherwise-fresh manifest are stripped rather than fatal.
+    """
+    kept: dict[str, LoadedManifest] = {}
+    for lm in manifests:
+        name = lm.config.name
+        if name in agents or name in aliases or name in kept:
+            continue
+        fresh_aliases = tuple(
+            a
+            for a in lm.aliases
+            if a != name and a not in agents and a not in aliases and a not in kept
+        )
+        kept[name] = LoadedManifest(config=lm.config, aliases=fresh_aliases)
+    return kept
+
+
+def autoload_remote_manifest_agents() -> int:
+    """Fetch + register remote manifest agents once; return how many were added.
+
+    Called from ``resolve_agent``'s miss path. Never raises: any failure logs a
+    warning and returns 0 so the normal unknown-agent error still surfaces.
+    """
+    global _attempted, last_source_description
+    if _attempted:
+        return 0
+    _attempted = True
+
+    spec = os.environ.get(AGENTS_SOURCE_ENV, DEFAULT_AGENTS_SOURCE).strip()
+    if not spec or spec.lower() in _OFF_VALUES:
+        last_source_description = "agents source disabled"
+        return 0
+    last_source_description = f"agents source {spec!r}"
+
+    try:
+        root = _source_root(spec)
+    except Exception as exc:
+        logger.warning(
+            "Agent manifest auto-load: could not fetch %s (%s); remote agents "
+            "unavailable this run.",
+            spec,
+            exc,
+        )
+        return 0
+
+    manifests: list[LoadedManifest] = []
+    for path in discover_manifests(root):
+        try:
+            manifests.append(load_agent_manifest(path))
+        except Exception as exc:
+            logger.warning(
+                "Agent manifest auto-load: skipping unreadable manifest %s: %s",
+                path,
+                exc,
+            )
+
+    from benchflow.agents.registry import (
+        AGENT_ALIASES,
+        AGENT_INSTALLERS,
+        AGENT_LAUNCH,
+        AGENTS,
+    )
+
+    fresh = _gap_fill(manifests, agents=AGENTS, aliases=AGENT_ALIASES)
+    if not fresh:
+        logger.info(
+            "Agent manifest auto-load: %s had no agents beyond the local registry.",
+            spec,
+        )
+        return 0
+    register_manifest_agents(
+        fresh,
+        agents=AGENTS,
+        aliases=AGENT_ALIASES,
+        installers=AGENT_INSTALLERS,
+        launch=AGENT_LAUNCH,
+    )
+    logger.info(
+        "Agent manifest auto-load: registered %d agent(s) from %s: %s",
+        len(fresh),
+        spec,
+        ", ".join(sorted(fresh)),
+    )
+    return len(fresh)
+
+
+def _reset_for_tests() -> None:
+    global _attempted, last_source_description
+    _attempted = False
+    last_source_description = ""

@@ -138,10 +138,10 @@ def test_provider_host_for_model():
         == "api.deepseek.com"
     )
     assert provider_host_for_model("openai/gpt-4o", {}) == "api.openai.com"
-    # no provider prefix -> unknown -> None (caller leaves allowlist unchanged)
-    assert provider_host_for_model("deepseek-v4-flash", {}) is None
-    # provider prefix but its base_url env is missing -> None (don't guess)
-    assert provider_host_for_model("deepseek/x", {}) is None
+    # bare model ids still resolve through the provider catalog
+    assert provider_host_for_model("deepseek-v4-flash", {}) == "api.deepseek.com"
+    # provider prefix resolves through the provider catalog default
+    assert provider_host_for_model("deepseek/x", {}) == "api.deepseek.com"
 
 
 # ---- Daytona allowlist parity: enforce-when-faithful plan (ENG-219 follow-up) ----
@@ -581,6 +581,37 @@ def _make_docker_relock_stub(inspect_stdout, inspect_rc):
     return sb
 
 
+def test_docker_allowlist_omits_extra_hosts_when_model_lane_disabled(monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from benchflow.sandbox import docker_network_lockdown
+    from benchflow.sandbox.docker import DockerSandbox
+    from benchflow.task.config import SandboxConfig
+
+    captured = {}
+
+    def fake_build(hosts, *, out_dir, model_lane):
+        captured["hosts"] = hosts
+        captured["model_lane"] = model_lane
+        return Path("/tmp/egress.json")
+
+    monkeypatch.setattr(docker_network_lockdown, "build_egress_override", fake_build)
+    sb = DockerSandbox.__new__(DockerSandbox)
+    sb.task_env_config = SandboxConfig(
+        network_mode="allowlist",
+        allowed_hosts=["task.example"],
+        allow_model_endpoint=False,
+    )
+    sb._network_locked = True
+    sb._extra_allowed_hosts = ("api.model.test",)
+    sb.rollout_paths = SimpleNamespace(rollout_dir=Path("/tmp"))
+
+    assert sb._network_policy_compose_paths() == [Path("/tmp/egress.json")]
+    assert captured["hosts"] == ("task.example",)
+    assert captured["model_lane"] is None
+
+
 @pytest.mark.asyncio
 async def test_docker_relock_raises_on_stray_network():
     from benchflow.sandbox.protocol import SandboxStartupError
@@ -606,6 +637,21 @@ async def test_docker_relock_happy_sidecar_returns_proxy_env():
     sb = _make_docker_relock_stub(f"{proj}_bf_egress_internal", 0)
     out = await sb.relock_network()
     assert out.get("HTTPS_PROXY", "").startswith("http://bf-egress:")
+
+
+@pytest.mark.asyncio
+async def test_docker_restore_rejects_restrictive_network_policy():
+    from benchflow.sandbox.docker import DockerSandbox
+    from benchflow.sandbox.protocol import SandboxImage, SandboxSnapshotNotSupported
+    from benchflow.task.config import SandboxConfig
+
+    sb = DockerSandbox.__new__(DockerSandbox)
+    sb.task_env_config = SandboxConfig(
+        network_mode="allowlist", allowed_hosts=["a.com"]
+    )
+
+    with pytest.raises(SandboxSnapshotNotSupported, match="restrictive"):
+        await sb.restore(SandboxImage(provider="docker", ref="snapshot:latest"))
 
 
 # ---- daytona allowlist hardening (audit P2: canary / compose / probe) ----
@@ -650,3 +696,32 @@ async def test_daytona_relock_fails_closed_for_compose_mode():
     sb.logger = logging.getLogger("daytona-compose-test")
     with pytest.raises(SandboxStartupError, match="compose/DinD"):
         await sb.relock_network(extra_allowed_hosts=())
+
+
+@pytest.mark.asyncio
+async def test_daytona_relock_omits_model_host_when_lane_disabled(monkeypatch):
+    from benchflow.sandbox import network_policy
+    from benchflow.task.config import SandboxConfig
+
+    sb, _ = _make_daytona_stub(
+        SandboxConfig(
+            network_mode="allowlist",
+            allowed_hosts=["a.com"],
+            allow_model_endpoint=False,
+        )
+    )
+    seen = {}
+
+    def _plan(hosts, *, model_host, resolve=None):
+        seen["hosts"] = hosts
+        seen["model_host"] = model_host
+        return network_policy.DaytonaAllowlistPlan(cidrs=("9.9.9.9/32",))
+
+    monkeypatch.setattr(network_policy, "plan_daytona_allowlist", _plan)
+
+    async def _unreachable(canary=None):
+        return False
+
+    sb._egress_reachable = _unreachable
+    await sb.relock_network(extra_allowed_hosts=("api.model.test",))
+    assert seen == {"hosts": ("a.com",), "model_host": None}
