@@ -1728,6 +1728,64 @@ class TestDiagnosticRegistry:
             DIAGNOSTIC_REASON_TRANSPORT_CLOSED,
         )
 
+    def test_diagnostic_serialization_drops_none_fields_uniformly(self) -> None:
+        """Guards the fix from PR #895 for issue #531: diagnostic info dicts use one None-policy."""
+        from benchflow.diagnostics import (
+            AgentPromptTimeoutDiagnostic,
+            IdleTimeoutDiagnostic,
+            ProviderApiErrorDiagnostic,
+            SandboxStartupDiagnostic,
+            SuspectedApiErrorDiagnostic,
+            TransportClosedDiagnostic,
+            VerifierTimeoutDiagnostic,
+        )
+
+        expected_keys_by_cls = {
+            IdleTimeoutDiagnostic: {
+                "reason",
+                "idle_timeout_sec",
+                "idle_duration_sec",
+                "wall_clock_elapsed_sec",
+                "n_tool_calls",
+                "n_message_chunks",
+                "n_thought_chunks",
+                "last_activity_at",
+            },
+            AgentPromptTimeoutDiagnostic: {
+                "reason",
+                "timeout_sec",
+                "n_tool_calls",
+                "pending_tool_call_ids",
+                "terminal_event_recorded",
+                "terminal_trajectory_complete",
+            },
+            SandboxStartupDiagnostic: {"reason", "attempts", "raw_message"},
+            TransportClosedDiagnostic: {"reason", "transport_diagnosis"},
+            VerifierTimeoutDiagnostic: {
+                "timeout_budget_sec",
+                "elapsed_sec",
+                "task_name",
+            },
+            ProviderApiErrorDiagnostic: {
+                "subcategory",
+                "transient",
+                "total_requests",
+                "failed_requests",
+                "fingerprint",
+            },
+            SuspectedApiErrorDiagnostic: {
+                "total_tokens",
+                "n_tool_calls",
+                "total_requests",
+                "failed_requests",
+            },
+        }
+
+        for diag_cls, expected_keys in expected_keys_by_cls.items():
+            payload = diag_cls().to_dict()
+            assert set(payload) == expected_keys
+            assert all(value is not None for value in payload.values())
+
     def test_summary_warning_uses_registry_metadata(self) -> None:
         """Summary warning text comes from the registry's
         ``summary_description``, not a per-call f-string in evaluation.py."""

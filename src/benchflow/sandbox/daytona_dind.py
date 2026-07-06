@@ -113,8 +113,13 @@ def _with_long_exec_heartbeat(command: str, timeout_sec: int | None) -> str:
             f'({command}\n) >"$bf_out" 2>"$bf_err" &',
             "bf_pid=$!",
             "(",
+            '  bf_sleep_pid=""',
+            '  trap \'[ -n "$bf_sleep_pid" ] && kill "$bf_sleep_pid" 2>/dev/null || true; exit 0\' TERM INT EXIT',
             '  while kill -0 "$bf_pid" 2>/dev/null; do',
-            f"  sleep {interval}",
+            f"    sleep {interval} &",
+            "    bf_sleep_pid=$!",
+            '    wait "$bf_sleep_pid" 2>/dev/null || exit 0',
+            '    bf_sleep_pid=""',
             '    if kill -0 "$bf_pid" 2>/dev/null; then',
             "      echo '[benchflow] Daytona DinD command still running' >&2",
             "    fi",
@@ -339,8 +344,12 @@ class _DaytonaDinD(_DaytonaStrategy):
 
         env._client_manager = await _sdk.DaytonaClientManager.get_instance()
 
-        dind_image: str = env._kwargs.get("dind_image", "docker:28.3.3-dind")
-        dind_snapshot: str | None = env._kwargs.get("dind_snapshot")
+        dind_image = env._kwargs.get("dind_image", "docker:28.3.3-dind")
+        if not isinstance(dind_image, str):
+            raise TypeError("dind_image must be a string")
+        dind_snapshot = env._kwargs.get("dind_snapshot")
+        if dind_snapshot is not None and not isinstance(dind_snapshot, str):
+            raise TypeError("dind_snapshot must be a string")
 
         params: _SandboxParams
         if dind_snapshot:
