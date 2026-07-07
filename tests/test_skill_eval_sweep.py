@@ -193,7 +193,7 @@ class TestExactMatchJudgeDelimiters:
     def test_non_word_suffix_ground_truth_uses_word_char_delimiters(
         self, tmp_path, content, expected_reward
     ):
-        """Guards GitHub issue #897 against exact answers ending in non-word chars."""
+        """Guards PR #900 / issue #897 against punctuated exact answers."""
         skill_dir = tmp_path / "skill"
         skill_dir.mkdir()
         ds = EvalDataset(
