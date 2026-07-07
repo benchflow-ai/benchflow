@@ -625,7 +625,7 @@ class TestDaytonaPtyProcessSecretTransport:
 
     @pytest.mark.asyncio
     async def test_provider_env_value_not_sent_through_pty_input(self):
-        """Guards the 2026-05-22 Daytona PTY env transport leak fix."""
+        """Guards PR #896 and the 2026-05-22 Daytona PTY env transport leak fix."""
         sandbox, ptys = _make_daytona_pty_sandbox()
         proc = DaytonaPtyProcess(
             sandbox=sandbox,
