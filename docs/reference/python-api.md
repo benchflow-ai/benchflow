@@ -4,8 +4,11 @@ The Rollout/Scene API is the primary way to run agent benchmarks programmaticall
 ## Install
 
 ```bash
-uv tool install --upgrade benchflow
+uv tool install --python 3.12 --upgrade benchflow
 ```
+
+BenchFlow requires Python 3.12 or newer. For CLI installs, keep the
+`--python 3.12` flag so `uv` provisions a compatible tool environment.
 
 ## Quick Start
 
