@@ -85,13 +85,13 @@ class TestAgentPicker:
 
 class TestModelPing:
     """A GET /models can 200 while the route is broken (proven in the census);
-    only a max_tokens=1 completion exercises key + model id + endpoint."""
+    only a 1-token completion exercises key + model id + endpoint."""
 
     def _transport(self, status, body):
         import httpx
 
         def handler(request):
-            # the ping must hit the chat-completions route with max_tokens=1
+            # the ping must hit the chat-completions route with a 1-token cap
             assert request.url.path.endswith("/chat/completions")
             import json
 
@@ -238,8 +238,11 @@ class TestModelPingProviderClasses:
         seen = {}
 
         def handler(request):
+            import json
+
             seen["url"] = str(request.url)
             seen["headers"] = dict(request.headers)
+            seen["json"] = json.loads(request.content)
             return httpx.Response(status, json=body or {"choices": [{}]})
 
         return httpx.MockTransport(handler), seen
@@ -265,8 +268,8 @@ class TestModelPingProviderClasses:
         )
         assert seen["headers"].get("x-api-key") == "sk-az"
 
-    def test_azure_openai_ping_uses_api_key_header(self):
-        """Guards PR #883: Azure OpenAI smoke pings use api-key auth."""
+    def test_azure_openai_ping_uses_api_key_header_and_gpt5_token_field(self):
+        """Guards PR #883: Azure GPT-5 smoke pings use supported wire shape."""
         transport, seen = self._capture()
         result = onboarding.model_ping(
             "azure-foundry-openai/gpt-5.5",
@@ -279,6 +282,8 @@ class TestModelPingProviderClasses:
         )
         assert seen["headers"].get("api-key") == "sk-az"
         assert "authorization" not in seen["headers"]
+        assert seen["json"]["max_completion_tokens"] == 1
+        assert "max_tokens" not in seen["json"]
 
     def test_adc_provider_is_honestly_skipped_not_failed(self):
         result = onboarding.model_ping("google-vertex/gemini-3-pro", env={})

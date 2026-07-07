@@ -240,8 +240,15 @@ def _ping_headers(prov_name: str, protocol: str, key: str) -> dict[str, str]:
     return {}
 
 
+def _openai_completion_token_limit(bare_model: str) -> dict[str, int]:
+    """Return the supported 1-token limit field for chat-completions pings."""
+    if bare_model.startswith(("gpt-5", "o1", "o3", "o4")):
+        return {"max_completion_tokens": 1}
+    return {"max_tokens": 1}
+
+
 def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
-    """Verify key + model id + endpoint with ONE max_tokens=1 completion.
+    """Verify key + model id + endpoint with ONE 1-token completion.
 
     GET /models is not used: it can 200 while the actual route is broken
     (wrong model id, upstream 5xx) — a 1-token completion is the cheapest
@@ -293,7 +300,7 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
         payload = {
             "model": bare_model,
             "messages": [{"role": "user", "content": "ping"}],
-            "max_tokens": 1,
+            **_openai_completion_token_limit(bare_model),
         }
     elif "anthropic-messages" in endpoints:
         protocol = "anthropic-messages"
