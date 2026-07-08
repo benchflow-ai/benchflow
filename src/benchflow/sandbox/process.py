@@ -58,6 +58,35 @@ async def _cleanup_daytona_remote_env_file(
         )
 
 
+async def _bootstrap_daytona_script_file(
+    sandbox: Any,
+    *,
+    remote_script_path: str,
+    script: str,
+    error_label: str,
+) -> None:
+    delimiter = f"__BENCHFLOW_SCRIPT_{uuid.uuid4().hex}__"
+    remote_script_path_q = shlex.quote(remote_script_path)
+    command = (
+        f"cat > {remote_script_path_q} <<'{delimiter}'\n"
+        f"{script}"
+        f"{delimiter}\n"
+        f"chmod 700 {remote_script_path_q}\n"
+        f"echo {_BOOTSTRAP_DONE}\n"
+    )
+    response = await sandbox.process.exec(
+        command,
+        timeout=30,
+    )
+    stdout_text = str(getattr(response, "result", "") or "")
+    exit_code = getattr(response, "exit_code", 1)
+    if exit_code != 0 or _BOOTSTRAP_DONE not in stdout_text.splitlines():
+        raise RuntimeError(
+            f"Failed to bootstrap {error_label} "
+            f"(rc={exit_code}): {stdout_text[:_DIAG_TRUNCATE]}"
+        )
+
+
 async def _bootstrap_daytona_env_file(
     sandbox: Any,
     *,
@@ -647,6 +676,7 @@ class DaytonaPtyProcess(LiveProcess):
         self._partial = b""
         self._closed = False
         self._remote_env_path: str | None = None
+        self._remote_script_path: str | None = None
 
     @classmethod
     async def from_sandbox_env(cls, env: Any) -> "DaytonaPtyProcess":
@@ -697,6 +727,10 @@ class DaytonaPtyProcess(LiveProcess):
         self._remote_env_path = None
         if remote_env_path:
             await _cleanup_daytona_remote_env_file(self._sandbox, remote_env_path)
+        remote_script_path = self._remote_script_path
+        self._remote_script_path = None
+        if remote_script_path:
+            await _cleanup_daytona_remote_env_file(self._sandbox, remote_script_path)
 
     def _clear_startup_output(self) -> None:
         self._partial = b""
@@ -765,17 +799,41 @@ class DaytonaPtyProcess(LiveProcess):
                 direct_parts.append(f"exec bash -lc {shlex.quote(command)}")
                 setup_exec_cmd = " && ".join(direct_parts)
 
+            remote_script_path = f"/tmp/benchflow_pty_exec_{uuid.uuid4().hex[:16]}.sh"
+            self._remote_script_path = remote_script_path
+            await _bootstrap_daytona_script_file(
+                self._sandbox,
+                remote_script_path=remote_script_path,
+                script=(
+                    "#!/usr/bin/env bash\n"
+                    "set -e\n"
+                    f"rm -f {shlex.quote(remote_script_path)}\n"
+                    f"{setup_exec_cmd}\n"
+                ),
+                error_label="Daytona PTY agent command",
+            )
+            setup_exec_cmd = f"exec sh {shlex.quote(remote_script_path)}"
+
             # Use a marker + stty to cleanly hand over the PTY to the agent.
-            # 1. Disable echo so typed commands don't appear in output
+            # 1. Disable echo and canonical line buffering before ACP traffic.
+            #    ACP JSON-RPC messages can be much longer than the usual
+            #    4096-byte terminal line discipline limit, and canonical mode
+            #    can corrupt long prompts before the agent JSON parser sees them.
             # 2. Print marker so we know when to start reading ACP output
-            # 3. After the marker, exec into compose so the agent owns the PTY
+            # 3. After the marker, exec a short uploaded script so the agent owns
+            #    the PTY. The long compose/agent command must not be typed into
+            #    the interactive PTY input path.
             #
             # Keep the marker command separate from the agent command. The
             # OpenHands launch command contains nested shell quoting; putting
             # it on the same interactive-shell line means the shell must parse
             # that whole line before running the marker echo.
             marker = f"__BENCHFLOW_ACP_{session_id}__"
-            await self._pty.send_input(f"stty -echo 2>/dev/null; echo '{marker}'\n")
+            await self._pty.send_input(
+                "stty raw -echo 2>/dev/null || "
+                "stty -echo -icanon min 1 time 0 2>/dev/null || true; "
+                f"echo '{marker}'\n"
+            )
             logger.info("DaytonaPtyProcess: sent setup, waiting for marker...")
 
             while True:
