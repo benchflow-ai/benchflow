@@ -187,6 +187,10 @@ from benchflow.rollout._user_loop import (
 )
 from benchflow.rollout._user_loop import _run_steps as _run_steps_engine
 from benchflow.rollout._user_loop import _run_user_loop as _run_user_loop_engine
+from benchflow.rollout.task_runtime import BashToolResult as BashToolResult
+from benchflow.rollout.task_runtime import TaskRuntime as TaskRuntime
+from benchflow.rollout.task_runtime import TaskRuntimeConfig as TaskRuntimeConfig
+from benchflow.rollout.task_runtime import TaskRuntimeResult as TaskRuntimeResult
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
 from benchflow.sandbox.metadata import persist_sandbox_info
@@ -703,6 +707,36 @@ class Rollout:
     @property
     def trajectory(self) -> list[dict]:
         return self._trajectory
+
+    def record_external_tool_call(
+        self,
+        *,
+        tool_name: str,
+        event: dict,
+    ) -> None:
+        """Record a tool call driven outside the ACP prompt loop.
+
+        Training integrations can own model generation while still preserving
+        BenchFlow's verifier and rollout artifact contract. Normal ACP rollouts
+        should continue to use ``execute``.
+        """
+
+        reserved = {"type", "tool_name"} & set(event)
+        if reserved:
+            reserved_text = ", ".join(sorted(reserved))
+            raise ValueError(
+                "record_external_tool_call event cannot contain reserved fields: "
+                f"{reserved_text}"
+            )
+
+        self._n_tool_calls += 1
+        self._trajectory.append(
+            {
+                "type": "tool_call",
+                "tool_name": tool_name,
+                **event,
+            }
+        )
 
     @property
     def tree(self) -> RolloutTree:
@@ -2443,4 +2477,8 @@ __all__ = [
     "Turn",
     "Rollout",
     "RolloutConfig",
+    "BashToolResult",
+    "TaskRuntime",
+    "TaskRuntimeConfig",
+    "TaskRuntimeResult",
 ]

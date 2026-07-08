@@ -83,7 +83,14 @@ from benchflow.rewards import (
     load_rubric_json,
     load_rubric_toml,
 )
-from benchflow.rollout import Rollout, RolloutConfig
+from benchflow.rollout import (
+    BashToolResult,
+    Rollout,
+    RolloutConfig,
+    TaskRuntime,
+    TaskRuntimeConfig,
+    TaskRuntimeResult,
+)
 from benchflow.runtime import (
     Agent,
     Environment,
@@ -211,6 +218,10 @@ __all__ = [
     "list_snapshots",
     "Rollout",
     "RolloutConfig",
+    "BashToolResult",
+    "TaskRuntime",
+    "TaskRuntimeConfig",
+    "TaskRuntimeResult",
     "rollout_config_from_yaml",
     "BaseUser",
     "DocumentNudgeUser",
