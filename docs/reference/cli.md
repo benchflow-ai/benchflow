@@ -569,6 +569,27 @@ Arguments: `TASK_DIR` (task directory to export) and optional `OUTPUT_DIR`
 | `--overwrite` | `false` | Replace an existing export directory |
 | `--report-only` | `false` | Print the compatibility loss report without writing files |
 
+### bench tasks snapshot-hf
+
+Materialize a Hugging Face dataset repo or subpath as a local BenchFlow task
+tree and write `.benchflow-source.json` provenance beside it. The resulting
+directory can be passed to `bench eval run --tasks-dir`; split-layout task
+snapshots under `tasks/<task_id>/` are discovered directly.
+
+```bash
+bench tasks snapshot-hf benchflow/my-tasks .cache/hf-tasks/my-tasks
+bench tasks snapshot-hf benchflow/my-tasks .cache/hf-tasks/my-tasks --revision abc123 --path tasks --overwrite
+```
+
+Arguments: `REPO_ID` (Hugging Face dataset repo ID) and `OUTPUT_DIR`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--revision`, `--ref` | — | Dataset revision, branch, tag, or commit |
+| `--path` | — | Optional subpath inside the dataset repo, e.g. `tasks` |
+| `--cache-dir` | HF default | Optional Hugging Face cache directory |
+| `--overwrite` | `false` | Replace an existing output directory |
+
 ### bench tasks digest
 
 Compute the content digest that pins a task's files, independent of git — the
