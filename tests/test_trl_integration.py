@@ -222,7 +222,7 @@ def test_environment_reset_lets_rollout_generate_unique_names(
 def test_environment_public_tools_have_transformers_schema() -> None:
     """Guards PR #903 so TRL sees only intended callable tools."""
 
-    from transformers.utils import get_json_schema
+    transformers_utils = pytest.importorskip("transformers.utils")
 
     public_callables = [
         name
@@ -234,7 +234,9 @@ def test_environment_public_tools_have_transformers_schema() -> None:
 
     assert public_callables == ["run_bash", "submit"]
     for name in public_callables:
-        schema = get_json_schema(getattr(BenchFlowRuntimeEnvironment, name))
+        schema = transformers_utils.get_json_schema(
+            getattr(BenchFlowRuntimeEnvironment, name)
+        )
         assert schema["function"]["name"] == name
 
 
