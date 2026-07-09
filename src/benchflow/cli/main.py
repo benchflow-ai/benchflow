@@ -48,6 +48,7 @@ from benchflow.cli.agent import register_agent
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.environment import register_environment
 from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_eval
+from benchflow.cli.eval_lift import register_eval_lift
 from benchflow.cli.hub import register_hub
 from benchflow.cli.monitor import register_monitor
 from benchflow.cli.sandbox import register_sandbox
@@ -195,6 +196,7 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 # Canonical single `bench eval adopt` command (eval is the universal benchmark
 # entry point; adopt makes a foreign benchmark runnable).
 register_eval_adopt(eval_app)
+register_eval_lift(eval_app)
 
 
 @eval_app.command("run")
