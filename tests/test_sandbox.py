@@ -1,5 +1,8 @@
 """Tests for sandbox user config/auth directory derivation from agent registry."""
 
+import os
+from types import SimpleNamespace
+
 import pytest
 
 from benchflow.agents.registry import (
@@ -156,6 +159,51 @@ class TestDockerExecEnvSecrecy:
         assert "-e" not in cmd
         for arg in cmd:
             assert "sk-leak" not in arg
+
+    @pytest.mark.asyncio
+    async def test_pre_compose_hook_runs_with_compose_env(self, tmp_path):
+        """Task environments can prepare local Docker state before compose starts."""
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.environment_dir = tmp_path
+        sandbox.environment_name = "pre-compose"
+        sandbox.task_env_config = SimpleNamespace(build_timeout_sec=60)
+        sandbox._env_vars = SimpleNamespace(
+            to_env_dict=lambda include_os_env=True: {
+                "PATH": os.environ["PATH"],
+                "BASE": "1",
+            }
+        )
+        sandbox._compose_task_env = {"TASK": "2"}
+        sandbox._persistent_env = {"PERSIST": "3"}
+
+        hook = tmp_path / "benchflow-pre-compose.sh"
+        hook.write_text(
+            'printf \'%s:%s:%s:%s\\n\' "$PWD" "$BASE" "$TASK" "$PERSIST" > hook.out\n'
+        )
+
+        await sandbox._run_pre_compose_hook()
+
+        assert (tmp_path / "hook.out").read_text() == f"{tmp_path}:1:2:3\n"
+
+    @pytest.mark.asyncio
+    async def test_pre_compose_hook_failure_is_reported(self, tmp_path):
+        from benchflow.sandbox.docker import DockerSandbox
+
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox.environment_dir = tmp_path
+        sandbox.environment_name = "bad-pre-compose"
+        sandbox.task_env_config = SimpleNamespace(build_timeout_sec=60)
+        sandbox._env_vars = SimpleNamespace(
+            to_env_dict=lambda include_os_env=True: {"PATH": os.environ["PATH"]}
+        )
+        sandbox._compose_task_env = {}
+        sandbox._persistent_env = {}
+        (tmp_path / "benchflow-pre-compose.sh").write_text("echo hook-broke\nexit 42\n")
+
+        with pytest.raises(RuntimeError, match="hook-broke"):
+            await sandbox._run_pre_compose_hook()
 
     @pytest.mark.asyncio
     async def test_docker_build_retries_transient_apt_signature_errors(

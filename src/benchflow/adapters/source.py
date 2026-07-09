@@ -24,8 +24,13 @@ import tomli_w
 
 from benchflow._utils.benchmark_repos import ResolvedSource
 from benchflow.adapters._toolathlon import materialize_toolathlon, toolathlon_tasks_root
+from benchflow.task.discovery import (
+    contains_immediate_task,
+    is_task_dir,
+    resolve_task_collection_root,
+)
 
-_ADAPTER_VERSION = "2026-07-02.8"
+_ADAPTER_VERSION = "2026-07-05.5"
 _NOOP_EXCLUDE_TAG = "__benchflow_exclude_no_tools__"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 logger = logging.getLogger(__name__)
@@ -90,15 +95,8 @@ def adapt_resolved_source_if_needed(resolved: ResolvedSource) -> ResolvedSource:
 
 
 def _contains_native_task(path: Path) -> bool:
-    if (path / "task.toml").is_file() or (path / "task.md").is_file():
-        return True
-    if not path.is_dir():
-        return False
-    return any(
-        child.is_dir()
-        and ((child / "task.toml").is_file() or (child / "task.md").is_file())
-        for child in path.iterdir()
-    )
+    root = resolve_task_collection_root(path)
+    return is_task_dir(root) or contains_immediate_task(root)
 
 
 def _infer_repo_root(resolved: ResolvedSource) -> Path:

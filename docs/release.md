@@ -13,32 +13,39 @@ BenchFlow uses two PyPI release channels with the same package name:
 Use the public channel by default. Opt into internal preview only when you want
 the newest build from `main` before the next public tag.
 
-Public Python package users, inside a supported Python environment:
+BenchFlow CLI and SDK releases require Python 3.12 or newer. For CLI installs,
+prefer `uv tool install --python 3.12 ...` so `uv` provisions a compatible
+interpreter. If `uv` uses Python 3.10 or 3.11, it can resolve an old
+Python-compatible `benchflow` release that does not provide the `bench` /
+`benchflow` executables and fail with `No executables are provided by package
+benchflow`.
+
+Public Python package users, inside a Python 3.12+ environment:
 
 ```bash
-python -m pip install --upgrade benchflow
+python3.12 -m pip install --upgrade benchflow
 ```
 
 Public `uv`-managed CLI users:
 
 ```bash
-uv tool install --upgrade benchflow
+uv tool install --python 3.12 --upgrade benchflow
 ```
 
 If the command reports `Executables already exist: bench, benchflow`, rerun it
-with `uv tool install --upgrade --force benchflow` to replace stale entrypoints
+with `uv tool install --python 3.12 --upgrade --force benchflow` to replace stale entrypoints
 from an older install.
 
-Internal preview Python package users, inside a supported Python environment:
+Internal preview Python package users, inside a Python 3.12+ environment:
 
 ```bash
-python -m pip install --pre --upgrade benchflow
+python3.12 -m pip install --pre --upgrade benchflow
 ```
 
 Internal preview `uv`-managed CLI users:
 
 ```bash
-uv tool install --prerelease allow --upgrade benchflow
+uv tool install --python 3.12 --prerelease allow --upgrade benchflow
 ```
 
 The preview CLI command intentionally omits an exact package pin, so `uv`
@@ -48,7 +55,7 @@ non-`uv tool` method, the command can fail with `Executables already exist:
 bench, benchflow`. In that case, rerun with the forced preview install:
 
 ```bash
-uv tool install --prerelease allow --upgrade --force benchflow
+uv tool install --python 3.12 --prerelease allow --upgrade --force benchflow
 ```
 
 For downstream projects that use `uv`, keep public dependencies on the default

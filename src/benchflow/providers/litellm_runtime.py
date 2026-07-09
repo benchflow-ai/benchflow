@@ -429,11 +429,10 @@ def _write_runtime_files(
 # deadline so a slow-but-fine proxy is not killed; a genuine crash still fails fast
 # via the process-exit check below.
 #
-# Scope: this deadline covers only ``_poll_host_health``. The in-sandbox proxy
-# pollers (``_wait_for_sandbox_state`` / ``_poll_sandbox_health``) keep their own
-# ``range(120)`` loop, where each iteration is bounded by a ``sandbox.exec`` round
-# trip rather than a fixed 0.25s sleep — so they already wait far longer than 30s
-# and are deliberately not governed by this budget.
+# Scope: this deadline covers host and sandbox LiteLLM readiness. The sandbox
+# pollers also use it as their overall deadline; a single slow Daytona
+# ``sandbox.exec`` probe is treated as one failed attempt, not a fatal startup
+# failure.
 def _health_deadline_sec() -> float:
     # Parse defensively: a malformed BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC must not
     # crash ``import benchflow``. Floor at one poll cycle so a 0/negative value still
@@ -709,21 +708,27 @@ async def _wait_for_sandbox_state(
     *,
     state_path: str,
     stderr_path: str,
+    deadline_s: float = _HEALTH_DEADLINE_SEC,
 ) -> dict[str, Any]:
     last_output = ""
-    for _ in range(120):
-        result = await sandbox.exec(
-            f"cat {shlex.quote(state_path)} 2>/dev/null || true",
-            timeout_sec=5,
-        )
-        last_output = (result.stdout or "").strip()
-        if last_output:
-            try:
-                state = json.loads(last_output)
-                if int(state.get("port") or 0) > 0:
-                    return state
-            except (TypeError, ValueError, json.JSONDecodeError):
-                pass
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while loop.time() - start < deadline_s:
+        try:
+            result = await sandbox.exec(
+                f"cat {shlex.quote(state_path)} 2>/dev/null || true",
+                timeout_sec=5,
+            )
+            last_output = (result.stdout or "").strip()
+            if last_output:
+                try:
+                    state = json.loads(last_output)
+                    if int(state.get("port") or 0) > 0:
+                        return state
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+        except Exception as exc:
+            last_output = str(exc)
         await asyncio.sleep(0.25)
     stderr = await sandbox.exec(
         f"tail -c 4000 {shlex.quote(stderr_path)} 2>/dev/null || true",
@@ -736,7 +741,12 @@ async def _wait_for_sandbox_state(
 
 
 async def _poll_sandbox_health(
-    sandbox: Any, *, python: str, port: int, stderr_path: str
+    sandbox: Any,
+    *,
+    python: str,
+    port: int,
+    stderr_path: str,
+    deadline_s: float = _HEALTH_DEADLINE_SEC,
 ) -> None:
     probe = (
         f"{shlex.quote(python)} - <<'PY'\n"
@@ -748,10 +758,15 @@ async def _poll_sandbox_health(
         "    urllib.request.urlopen(url.replace('/health/liveliness','/health'), timeout=2).read()\n"
         "PY"
     )
-    for _ in range(120):
-        result = await sandbox.exec(probe, timeout_sec=5)
-        if result.return_code == 0:
-            return
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while loop.time() - start < deadline_s:
+        try:
+            result = await sandbox.exec(probe, timeout_sec=5)
+            if result.return_code == 0:
+                return
+        except Exception:
+            pass
         await asyncio.sleep(0.25)
     stderr = await sandbox.exec(
         f"tail -c 4000 {shlex.quote(stderr_path)} 2>/dev/null || true",

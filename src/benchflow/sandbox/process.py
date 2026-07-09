@@ -58,6 +58,35 @@ async def _cleanup_daytona_remote_env_file(
         )
 
 
+async def _bootstrap_daytona_script_file(
+    sandbox: Any,
+    *,
+    remote_script_path: str,
+    script: str,
+    error_label: str,
+) -> None:
+    delimiter = f"__BENCHFLOW_SCRIPT_{uuid.uuid4().hex}__"
+    remote_script_path_q = shlex.quote(remote_script_path)
+    command = (
+        f"cat > {remote_script_path_q} <<'{delimiter}'\n"
+        f"{script}"
+        f"{delimiter}\n"
+        f"chmod 700 {remote_script_path_q}\n"
+        f"echo {_BOOTSTRAP_DONE}\n"
+    )
+    response = await sandbox.process.exec(
+        command,
+        timeout=30,
+    )
+    stdout_text = str(getattr(response, "result", "") or "")
+    exit_code = getattr(response, "exit_code", 1)
+    if exit_code != 0 or _BOOTSTRAP_DONE not in stdout_text.splitlines():
+        raise RuntimeError(
+            f"Failed to bootstrap {error_label} "
+            f"(rc={exit_code}): {stdout_text[:_DIAG_TRUNCATE]}"
+        )
+
+
 async def _bootstrap_daytona_env_file(
     sandbox: Any,
     *,
@@ -630,8 +659,9 @@ class DaytonaPtyProcess(LiveProcess):
     """Live stdin/stdout via Daytona PTY WebSocket API.
 
     Uses the Daytona SDK's PTY session (WebSocket) instead of SSH, which
-    maintains long-lived interactive pipes through DinD compose layers.
-    Falls back to this for DinD sandboxes where SSH pipes break.
+    maintains long-lived interactive pipes through Daytona sandboxes.
+    Compose sandboxes enter the ``main`` service through ``docker compose exec``;
+    direct sandboxes run the agent command directly in the PTY shell.
     """
 
     _process = None  # Not used — override readline/writeline/close
@@ -646,17 +676,25 @@ class DaytonaPtyProcess(LiveProcess):
         self._partial = b""
         self._closed = False
         self._remote_env_path: str | None = None
+        self._remote_script_path: str | None = None
 
     @classmethod
     async def from_sandbox_env(cls, env: Any) -> "DaytonaPtyProcess":
         sandbox = env._sandbox
         if not sandbox:
             raise RuntimeError("Daytona sandbox not started")
-        strategy = env._strategy
-        compose_env = " ".join(
-            f"{k}={shlex.quote(v)}" for k, v in strategy._compose_env_vars().items()
-        )
-        compose_cmd_base = strategy._compose_cmd([])
+        strategy = getattr(env, "_strategy", None)
+        compose_env = ""
+        compose_cmd_base = ""
+        if (
+            strategy is not None
+            and hasattr(strategy, "_compose_env_vars")
+            and hasattr(strategy, "_compose_cmd")
+        ):
+            compose_env = " ".join(
+                f"{k}={shlex.quote(v)}" for k, v in strategy._compose_env_vars().items()
+            )
+            compose_cmd_base = strategy._compose_cmd([])
         return cls(
             sandbox=sandbox,
             compose_cmd_prefix=compose_env,
@@ -689,6 +727,10 @@ class DaytonaPtyProcess(LiveProcess):
         self._remote_env_path = None
         if remote_env_path:
             await _cleanup_daytona_remote_env_file(self._sandbox, remote_env_path)
+        remote_script_path = self._remote_script_path
+        self._remote_script_path = None
+        if remote_script_path:
+            await _cleanup_daytona_remote_env_file(self._sandbox, remote_script_path)
 
     def _clear_startup_output(self) -> None:
         self._partial = b""
@@ -720,14 +762,6 @@ class DaytonaPtyProcess(LiveProcess):
             await self._pty.wait_for_connection()
             logger.info(f"DaytonaPtyProcess: PTY connected (session={session_id})")
 
-            compose_parts = (
-                shlex.split(self._compose_cmd_base)
-                if self._compose_cmd_base
-                else ["docker", "compose"]
-            )
-            exec_parts = [*compose_parts, "exec", "-i", "-T"]
-            if cwd:
-                exec_parts.extend(["-w", cwd])
             if env:
                 remote_env_path = f"/tmp/benchflow_env_{uuid.uuid4().hex[:16]}.env"
                 self._remote_env_path = remote_env_path
@@ -735,30 +769,71 @@ class DaytonaPtyProcess(LiveProcess):
                     remote_env_path=remote_env_path,
                     env=env,
                 )
-                for key in env:
-                    exec_parts.extend(["--env", key])
-            exec_parts.extend(["main", "bash", "-lc", command])
-            exec_cmd = shlex.join(exec_parts)
-            if remote_env_path:
-                remote_env_path_q = shlex.quote(remote_env_path)
-                setup_exec_cmd = (
-                    f". {remote_env_path_q} && rm -f {remote_env_path_q} && "
-                    f"exec {exec_cmd}"
-                )
+
+            if self._compose_cmd_base:
+                compose_parts = shlex.split(self._compose_cmd_base)
+                exec_parts = [*compose_parts, "exec", "-i", "-T"]
+                if cwd:
+                    exec_parts.extend(["-w", cwd])
+                if env:
+                    for key in env:
+                        exec_parts.extend(["--env", key])
+                exec_parts.extend(["main", "bash", "-lc", command])
+                exec_cmd = shlex.join(exec_parts)
+                if remote_env_path:
+                    remote_env_path_q = shlex.quote(remote_env_path)
+                    setup_exec_cmd = (
+                        f". {remote_env_path_q} && rm -f {remote_env_path_q} && "
+                        f"exec {exec_cmd}"
+                    )
+                else:
+                    setup_exec_cmd = f"exec {exec_cmd}"
             else:
-                setup_exec_cmd = f"exec {exec_cmd}"
+                direct_parts: list[str] = []
+                if cwd:
+                    direct_parts.append(f"cd {shlex.quote(cwd)}")
+                if remote_env_path:
+                    remote_env_path_q = shlex.quote(remote_env_path)
+                    direct_parts.append(f". {remote_env_path_q}")
+                    direct_parts.append(f"rm -f {remote_env_path_q}")
+                direct_parts.append(f"exec bash -lc {shlex.quote(command)}")
+                setup_exec_cmd = " && ".join(direct_parts)
+
+            remote_script_path = f"/tmp/benchflow_pty_exec_{uuid.uuid4().hex[:16]}.sh"
+            self._remote_script_path = remote_script_path
+            await _bootstrap_daytona_script_file(
+                self._sandbox,
+                remote_script_path=remote_script_path,
+                script=(
+                    "#!/usr/bin/env bash\n"
+                    "set -e\n"
+                    f"rm -f {shlex.quote(remote_script_path)}\n"
+                    f"{setup_exec_cmd}\n"
+                ),
+                error_label="Daytona PTY agent command",
+            )
+            setup_exec_cmd = f"exec sh {shlex.quote(remote_script_path)}"
 
             # Use a marker + stty to cleanly hand over the PTY to the agent.
-            # 1. Disable echo so typed commands don't appear in output
+            # 1. Disable echo and canonical line buffering before ACP traffic.
+            #    ACP JSON-RPC messages can be much longer than the usual
+            #    4096-byte terminal line discipline limit, and canonical mode
+            #    can corrupt long prompts before the agent JSON parser sees them.
             # 2. Print marker so we know when to start reading ACP output
-            # 3. After the marker, exec into compose so the agent owns the PTY
+            # 3. After the marker, exec a short uploaded script so the agent owns
+            #    the PTY. The long compose/agent command must not be typed into
+            #    the interactive PTY input path.
             #
             # Keep the marker command separate from the agent command. The
             # OpenHands launch command contains nested shell quoting; putting
             # it on the same interactive-shell line means the shell must parse
             # that whole line before running the marker echo.
             marker = f"__BENCHFLOW_ACP_{session_id}__"
-            await self._pty.send_input(f"stty -echo 2>/dev/null; echo '{marker}'\n")
+            await self._pty.send_input(
+                "stty raw -echo 2>/dev/null || "
+                "stty -echo -icanon min 1 time 0 2>/dev/null || true; "
+                f"echo '{marker}'\n"
+            )
             logger.info("DaytonaPtyProcess: sent setup, waiting for marker...")
 
             while True:

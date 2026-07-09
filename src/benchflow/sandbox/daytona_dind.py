@@ -63,6 +63,85 @@ def _positive_int_env(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+_SANDBOX_DISAPPEARED_MARKERS = (
+    "sandbox container not found",
+    "failed to inspect sandbox container",
+    "no such container",
+)
+_LONG_EXEC_HEARTBEAT_MIN_TIMEOUT_SEC = 600
+_LONG_EXEC_HEARTBEAT_INTERVAL_SEC = _positive_int_env(
+    "BENCHFLOW_DAYTONA_DIND_EXEC_HEARTBEAT_SEC", 60
+)
+
+
+def _is_sandbox_disappeared_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _SANDBOX_DISAPPEARED_MARKERS)
+
+
+def _is_daytona_sdk_error(exc: BaseException) -> bool:
+    return type(exc).__module__.startswith("daytona.")
+
+
+def _raise_if_startup_provider_error(env: DaytonaSandbox, exc: BaseException) -> None:
+    if not (_is_sandbox_disappeared_error(exc) or _is_daytona_sdk_error(exc)):
+        return
+    sandbox_id = getattr(env._sandbox, "id", None) if env._sandbox else None
+    raise SandboxStartupError(
+        f"Daytona DinD startup failed: {exc}",
+        sandbox_id=sandbox_id,
+        sandbox_state="not_found",
+        attempts=1,
+        build_timeout_sec=env.task_env_config.build_timeout_sec,
+    ) from exc
+
+
+def _with_long_exec_heartbeat(command: str, timeout_sec: int | None) -> str:
+    if (
+        timeout_sec is None
+        or timeout_sec < _LONG_EXEC_HEARTBEAT_MIN_TIMEOUT_SEC
+        or _LONG_EXEC_HEARTBEAT_INTERVAL_SEC <= 0
+    ):
+        return command
+    interval = shlex.quote(str(_LONG_EXEC_HEARTBEAT_INTERVAL_SEC))
+    return "\n".join(
+        [
+            "bf_out=$(mktemp)",
+            "bf_err=$(mktemp)",
+            'bf_cleanup() { rm -f "$bf_out" "$bf_err"; }',
+            "trap bf_cleanup EXIT",
+            f'({command}\n) >"$bf_out" 2>"$bf_err" &',
+            "bf_pid=$!",
+            "(",
+            "  bf_stop_heartbeat() {",
+            '    if [ -n "${bf_sleep_pid:-}" ]; then',
+            '      kill "$bf_sleep_pid" 2>/dev/null || true',
+            "    fi",
+            "    exit 0",
+            "  }",
+            "  trap bf_stop_heartbeat TERM INT",
+            '  while kill -0 "$bf_pid" 2>/dev/null; do',
+            f"    sleep {interval} &",
+            "    bf_sleep_pid=$!",
+            '    wait "$bf_sleep_pid" 2>/dev/null || bf_stop_heartbeat',
+            "    bf_sleep_pid=",
+            '    if kill -0 "$bf_pid" 2>/dev/null; then',
+            "      echo '[benchflow] Daytona DinD command still running' >&2",
+            "    fi",
+            "  done",
+            ") &",
+            "bf_heartbeat_pid=$!",
+            'wait "$bf_pid"',
+            "bf_rc=$?",
+            'kill "$bf_heartbeat_pid" 2>/dev/null || true',
+            'wait "$bf_heartbeat_pid" 2>/dev/null || true',
+            'cat "$bf_out"',
+            'cat "$bf_err" >&2',
+            'exit "$bf_rc"',
+        ]
+    )
+
+
 class _DaytonaDinD(_DaytonaStrategy):
     """Docker-in-Docker compose strategy for multi-container tasks.
 
@@ -77,7 +156,7 @@ class _DaytonaDinD(_DaytonaStrategy):
     """
 
     _DOCKER_DAEMON_TIMEOUT_SEC = _positive_int_env(
-        "BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 180
+        "BENCHFLOW_DAYTONA_DOCKER_DAEMON_TIMEOUT_SEC", 600
     )
     _COMPOSE_DIR = "/benchflow/compose"
     _ENVIRONMENT_DIR = "/benchflow/environment"
@@ -185,6 +264,23 @@ class _DaytonaDinD(_DaytonaStrategy):
             timeout_sec=timeout_sec,
         )
 
+    async def _run_pre_compose_hook(self) -> None:
+        hook = f"{self._ENVIRONMENT_DIR}/benchflow-pre-compose.sh"
+        timeout_sec = max(120, round(self._env.task_env_config.build_timeout_sec))
+        result = await self._vm_exec(
+            f"if [ -f {shlex.quote(hook)} ]; then "
+            f"chmod +x {shlex.quote(hook)} && {shlex.quote(hook)}; "
+            "fi",
+            cwd=self._ENVIRONMENT_DIR,
+            env=self._compose_env_vars(),
+            timeout_sec=timeout_sec,
+        )
+        if result.return_code != 0:
+            raise RuntimeError(
+                "pre-compose hook failed inside DinD sandbox: "
+                f"{result.stdout} {result.stderr}"
+            )
+
     async def _compose_up_with_retry(self, env: DaytonaSandbox) -> None:
         """Run ``compose up -d`` honouring the author's build budget and retrying
         a fresh-daemon network create/attach race (mirrors the host docker path).
@@ -288,51 +384,62 @@ class _DaytonaDinD(_DaytonaStrategy):
                 build_timeout_sec=env.task_env_config.build_timeout_sec,
             ) from e
 
-        env.logger.debug("Starting Docker daemon inside DinD sandbox...")
-        await self._vm_exec(
-            "dockerd-entrypoint.sh dockerd > /var/log/dockerd.log 2>&1 &",
-            timeout_sec=10,
-        )
-
-        await self._wait_for_docker_daemon()
-
-        # Upload BenchFlow compose files to the sandbox
-        for path in (
-            COMPOSE_BASE_PATH,
-            COMPOSE_BUILD_PATH,
-            COMPOSE_PREBUILT_PATH,
-            COMPOSE_NO_NETWORK_PATH,
-        ):
-            await env._sdk_upload_file(path, f"{self._COMPOSE_DIR}/{path.name}")
-
-        # Upload task environment directory
-        await env._sdk_upload_dir(env.environment_dir, self._ENVIRONMENT_DIR)
-
-        # Create log directories
-        await self._vm_exec(
-            f"mkdir -p {self._LOGS_DIR}/verifier {self._LOGS_DIR}/agent "
-            f"{self._LOGS_DIR}/artifacts && "
-            f"chmod 777 {self._LOGS_DIR}/verifier {self._LOGS_DIR}/agent "
-            f"{self._LOGS_DIR}/artifacts"
-        )
-
-        # Build and start compose services
-        self._use_prebuilt = not force_build and bool(env.task_env_config.docker_image)
-
-        env.logger.debug("Building compose services inside DinD sandbox...")
-        result = await self._compose_exec(
-            ["build"],
-            timeout_sec=round(env.task_env_config.build_timeout_sec),
-        )
-        if result.return_code != 0:
-            raise RuntimeError(
-                f"docker compose build failed: {result.stdout} {result.stderr}"
+        try:
+            env.logger.debug("Starting Docker daemon inside DinD sandbox...")
+            await self._vm_exec(
+                "dockerd-entrypoint.sh dockerd > /var/log/dockerd.log 2>&1 &",
+                timeout_sec=10,
             )
 
-        env.logger.debug("Starting compose services inside DinD sandbox...")
-        await self._compose_up_with_retry(env)
+            await self._wait_for_docker_daemon()
 
-        await self._wait_for_main_container()
+            # Upload BenchFlow compose files to the sandbox
+            for path in (
+                COMPOSE_BASE_PATH,
+                COMPOSE_BUILD_PATH,
+                COMPOSE_PREBUILT_PATH,
+                COMPOSE_NO_NETWORK_PATH,
+            ):
+                await env._sdk_upload_file(path, f"{self._COMPOSE_DIR}/{path.name}")
+
+            # Upload task environment directory
+            await env._sdk_upload_dir(env.environment_dir, self._ENVIRONMENT_DIR)
+
+            # Create log directories
+            await self._vm_exec(
+                f"mkdir -p {self._LOGS_DIR}/verifier {self._LOGS_DIR}/agent "
+                f"{self._LOGS_DIR}/artifacts && "
+                f"chmod 777 {self._LOGS_DIR}/verifier {self._LOGS_DIR}/agent "
+                f"{self._LOGS_DIR}/artifacts"
+            )
+
+            # Build and start compose services
+            self._use_prebuilt = not force_build and bool(
+                env.task_env_config.docker_image
+            )
+
+            env.logger.debug(
+                "Running pre-compose hook inside DinD sandbox if present..."
+            )
+            await self._run_pre_compose_hook()
+
+            env.logger.debug("Building compose services inside DinD sandbox...")
+            result = await self._compose_exec(
+                ["build"],
+                timeout_sec=round(env.task_env_config.build_timeout_sec),
+            )
+            if result.return_code != 0:
+                raise RuntimeError(
+                    f"docker compose build failed: {result.stdout} {result.stderr}"
+                )
+
+            env.logger.debug("Starting compose services inside DinD sandbox...")
+            await self._compose_up_with_retry(env)
+
+            await self._wait_for_main_container()
+        except Exception as e:
+            _raise_if_startup_provider_error(env, e)
+            raise
 
     async def stop(self, delete: bool) -> None:
         env = self._env
@@ -392,6 +499,7 @@ class _DaytonaDinD(_DaytonaStrategy):
         # already applies to the outer VM-side command.
         if env:
             command = _wrap_daytona_command_with_env_file(env, command)
+        command = _with_long_exec_heartbeat(command, timeout_sec)
         # Use POSIX ``sh`` rather than ``bash``: with multi-service support
         # (#248), ``service`` can target arbitrary task containers, and
         # Alpine/distroless/minimal images often ship no ``/bin/bash``. The

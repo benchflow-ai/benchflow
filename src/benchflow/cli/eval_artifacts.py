@@ -43,6 +43,17 @@ def _redacted_eval_config(eval_config: EvaluationConfig) -> dict:
     }
 
 
+def _apply_source_sidecar(
+    eval_config: EvaluationConfig, resolved_tasks_dir: Path
+) -> EvaluationConfig:
+    if eval_config.source_provenance is not None:
+        return eval_config
+    from benchflow._utils.hf_datasets import load_source_sidecar
+
+    eval_config.source_provenance = load_source_sidecar(resolved_tasks_dir)
+    return eval_config
+
+
 def postprocess_eval_artifacts(
     plan: EvalPlan,
     resolved_tasks_dir: Path,
@@ -52,6 +63,7 @@ def postprocess_eval_artifacts(
     req = plan.request
     if job_dir is None:
         return
+    eval_config = _apply_source_sidecar(eval_config, resolved_tasks_dir)
     from benchflow.eval_artifacts import (
         TaskManifestOptions,
         materialize_canonical_job,
@@ -189,6 +201,7 @@ def _write_matrix_task_manifest(
     req = plan.request
     if req.task_manifest_out is None:
         return
+    eval_config = _apply_source_sidecar(eval_config, resolved_tasks_dir)
     from benchflow.eval_artifacts import TaskManifestOptions, write_task_manifest
 
     manifest = write_task_manifest(
@@ -216,6 +229,8 @@ def run_matrix_eval(
     resolved_tasks_dir: Path,
     run_batch_eval: Callable[[EvalPlan, Path, EvaluationConfig], EvaluationResult],
 ) -> None:
+    from benchflow.task.discovery import resolve_task_collection_root
+
     req = plan.request
     assert req.matrix is not None
     try:
@@ -224,7 +239,8 @@ def run_matrix_eval(
         print_error(str(exc))
         raise typer.Exit(1) from None
     root = Path(plan.output_jobs_dir)
-    _write_matrix_task_manifest(plan, resolved_tasks_dir, plan.make_eval_config())
+    task_collection_dir = resolve_task_collection_root(resolved_tasks_dir)
+    _write_matrix_task_manifest(plan, task_collection_dir, plan.make_eval_config())
     matrix_runs = []
     for alias, raw in models.items():
         for trial in range(1, req.trials + 1):
@@ -263,7 +279,7 @@ def run_matrix_eval(
             eval_config.model = str(raw["model"])
             if raw.get("agent"):
                 eval_config.agent = str(raw["agent"])
-            result = run_batch_eval(trial_plan, resolved_tasks_dir, eval_config)
+            result = run_batch_eval(trial_plan, task_collection_dir, eval_config)
             matrix_runs.append(
                 {
                     "alias": alias,

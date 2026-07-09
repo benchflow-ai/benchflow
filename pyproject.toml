@@ -51,6 +51,10 @@ train = [
     # handing JSONL rows to Prime-RL.
     "transformers==5.6.2",
 ]
+trl = [
+    "trl>=0.24.0",
+    "datasets>=2.19.0",
+]
 sandbox-daytona = [
     # >=0.183: list() returns an auto-paginating Iterator[Sandbox] (the older
     # paged list(page=, limit=) -> .items API was removed).

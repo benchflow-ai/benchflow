@@ -276,6 +276,8 @@ def task_file_hashes(task_path: Path) -> dict[str, str]:
         if not path.is_file():
             continue
         rel_parts = path.relative_to(task_path).parts
+        if rel_parts == (".benchflow-source.json",):
+            continue
         if ".git" in rel_parts or "__pycache__" in rel_parts:
             continue
         rel = Path(*rel_parts).as_posix()
@@ -405,6 +407,15 @@ def infer_task_source_provenance(task_path: Path) -> dict[str, Any] | None:
         task_resolved = task_path.resolve(strict=True)
     except OSError:
         return None
+
+    try:
+        from benchflow._utils.hf_datasets import load_source_sidecar
+
+        sidecar_source = load_source_sidecar(task_resolved)
+    except ImportError:
+        sidecar_source = None
+    if sidecar_source is not None:
+        return task_source_provenance(sidecar_source, task_resolved)
 
     cache_root = _cache_dir()
     try:
