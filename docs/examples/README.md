@@ -39,6 +39,9 @@ skill loading semantics and available nudge modes.
 
 ## Demos
 
+- `benchflow-grpo-pipeline.md` documents the end-to-end
+  BenchFlow-owned TRL GRPO workflow: HF task snapshots, baseline eval, GRPO
+  training with `BenchFlowSpec`, final eval, and paired lift reporting.
 - `coder-reviewer-demo.py` runs a single-agent baseline and a coder-reviewer
   scene against a task directory.
 - `scene-patterns.md` explains single-agent, self-review, specialist-review,
