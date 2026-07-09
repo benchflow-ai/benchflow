@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from benchflow._utils.task_authoring import task_digest
+from benchflow.task.discovery import is_task_dir, resolve_task_collection_root
 from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
     load_llm_trajectory_jsonl,
@@ -42,18 +43,15 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _is_task_dir(path: Path) -> bool:
-    return (path / "task.md").is_file() or (path / "task.toml").is_file()
-
-
 def _selected_task_dirs(
     tasks_dir: Path, include_tasks: set[str], exclude_tasks: set[str]
 ) -> list[Path]:
-    if _is_task_dir(tasks_dir):
-        candidates = [tasks_dir]
+    root = resolve_task_collection_root(tasks_dir)
+    if is_task_dir(root):
+        candidates = [root]
     else:
-        candidates = sorted(path for path in tasks_dir.iterdir() if path.is_dir())
-        candidates = [path for path in candidates if _is_task_dir(path)]
+        candidates = sorted(path for path in root.iterdir() if path.is_dir())
+        candidates = [path for path in candidates if is_task_dir(path)]
     selected = []
     for task_dir in candidates:
         name = task_dir.name
@@ -66,10 +64,11 @@ def _selected_task_dirs(
 
 
 def build_task_manifest(options: TaskManifestOptions) -> dict[str, Any]:
+    resolved_tasks_dir = resolve_task_collection_root(options.tasks_dir)
     tasks = []
     dataset_digests = options.dataset_task_digests or {}
     for task_dir in _selected_task_dirs(
-        options.tasks_dir, options.include_tasks, options.exclude_tasks
+        resolved_tasks_dir, options.include_tasks, options.exclude_tasks
     ):
         digest = task_digest(task_dir)
         entry: dict[str, Any] = {
@@ -84,7 +83,7 @@ def build_task_manifest(options: TaskManifestOptions) -> dict[str, Any]:
         tasks.append(entry)
     return {
         "schema_version": 1,
-        "tasks_dir": str(options.tasks_dir),
+        "tasks_dir": str(resolved_tasks_dir),
         "source": options.source_provenance,
         "dataset_name": options.dataset_name,
         "dataset_version": options.dataset_version,

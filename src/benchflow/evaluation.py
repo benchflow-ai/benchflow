@@ -83,6 +83,12 @@ from benchflow.skill_policy import (
     SKILL_MODE_WITH_SKILL,
     normalize_skill_mode,
 )
+from benchflow.task.discovery import (
+    is_task_dir as _is_structural_task_dir,
+)
+from benchflow.task.discovery import (
+    resolve_task_collection_root,
+)
 from benchflow.trajectories.tree import RolloutNode
 from benchflow.usage_tracking import UsageTrackingConfig
 
@@ -137,7 +143,7 @@ _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMoc
 
 def _is_task_dir(path: Path) -> bool:
     if not (path / "task.md").exists():
-        return (path / "task.toml").exists()
+        return _is_structural_task_dir(path)
     from benchflow._utils.task_authoring import check_task
 
     return check_task(path) == []
@@ -655,9 +661,13 @@ class Evaluation:
         on_task_start: Callable[[str], None] | None = None,
         on_plan: Callable[[int, int, int, tuple[int, int, int]], None] | None = None,
     ):
-        self._tasks_dir = Path(tasks_dir)
+        self._tasks_dir = resolve_task_collection_root(tasks_dir)
         self._jobs_dir = Path(jobs_dir)
         self._config = config or EvaluationConfig()
+        if self._config.source_provenance is None:
+            from benchflow._utils.hf_datasets import load_source_sidecar
+
+            self._config.source_provenance = load_source_sidecar(self._tasks_dir)
         self._job_name = job_name or self._resolve_job_name(self._jobs_dir)
         self._on_result = on_result
         # UI-progress hooks (the CLI live dashboard; None everywhere else). Fired

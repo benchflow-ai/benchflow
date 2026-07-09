@@ -191,6 +191,7 @@ def test_documented_subcommands_exist() -> None:
         ["tasks", "check"],
         ["tasks", "generate"],
         ["tasks", "overlap"],
+        ["tasks", "snapshot-hf"],
         ["tasks", "list-sources"],
         ["skills", "list"],
         ["skills", "eval"],

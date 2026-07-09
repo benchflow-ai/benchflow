@@ -1,6 +1,9 @@
 """Tests for benchmark task repository materialization."""
 
+import json
 import shutil
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +16,7 @@ from benchflow._utils.benchmark_repos import (
     resolve_source_with_metadata,
     task_source_provenance,
 )
+from benchflow._utils.hf_datasets import SOURCE_SIDECAR, snapshot_hf_dataset
 
 
 def _fake_worktree(cmd):
@@ -341,6 +345,60 @@ def test_task_source_provenance_derives_batch_task_path_and_hashes(tmp_path):
         "tests/test.sh",
     }
     assert "sample-task/task.toml" not in task_provenance["file_hashes"]
+
+
+def test_snapshot_hf_dataset_writes_generic_source_sidecar(tmp_path, monkeypatch):
+    """Guards PR slice 1 HF task snapshots without Harbor-specific imports."""
+    remote = tmp_path / "remote"
+    task = remote / "tasks" / "sample-task"
+    (task / "tests").mkdir(parents=True)
+    (task / "task.toml").write_text("[task]\n")
+    (task / "instruction.md").write_text("Solve it.\n")
+    (task / "tests" / "test.sh").write_text("exit 0\n")
+
+    class FakeHfApi:
+        def repo_info(self, repo_id, repo_type=None, revision=None):
+            assert repo_id == "benchflow/sample-tasks"
+            assert repo_type == "dataset"
+            assert revision == "abc123"
+            return SimpleNamespace(sha="d" * 40)
+
+    def fake_snapshot_download(**kwargs):
+        assert kwargs["repo_id"] == "benchflow/sample-tasks"
+        assert kwargs["repo_type"] == "dataset"
+        assert kwargs["revision"] == "abc123"
+        return str(remote)
+
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.HfApi = lambda: FakeHfApi()
+    fake_hub.snapshot_download = fake_snapshot_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    output = tmp_path / "snapshot"
+    snapshot = snapshot_hf_dataset(
+        "benchflow/sample-tasks",
+        output_dir=output,
+        revision="abc123",
+    )
+
+    assert snapshot.path == output
+    assert (output / "tasks" / "sample-task" / "task.toml").is_file()
+    sidecar = json.loads((output / SOURCE_SIDECAR).read_text())
+    assert sidecar["type"] == "huggingface_dataset"
+    assert sidecar["repo"] == "benchflow/sample-tasks"
+    assert sidecar["repo_type"] == "dataset"
+    assert sidecar["requested_revision"] == "abc123"
+    assert sidecar["resolved_revision"] == "d" * 40
+
+    task_provenance = task_source_provenance(None, output / "tasks" / "sample-task")
+    assert task_provenance is not None
+    assert task_provenance["type"] == "huggingface_dataset"
+    assert task_provenance["path"] == "tasks/sample-task"
+    assert set(task_provenance["file_hashes"]) == {
+        "instruction.md",
+        "task.toml",
+        "tests/test.sh",
+    }
 
 
 def test_task_source_provenance_rejects_task_outside_source_root(tmp_path):
