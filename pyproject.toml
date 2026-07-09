@@ -206,4 +206,4 @@ required-version = ">=0.8.4"
 # `[tool.benchflow.dependency-cooldown.override-rationale]`. The CI gate fails
 # missing/stale rationales and stale overrides once their package cutoff ages
 # past the cooldown window, so they cannot become a permanent package allowlist.
-exclude-newer = "2026-06-26T00:00:00Z"
+exclude-newer = "2026-07-02T00:00:00Z"
