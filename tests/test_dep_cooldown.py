@@ -46,8 +46,9 @@ def test_uv_exclude_newer_caps_resolution() -> None:
     if cutoff.tzinfo is None:
         cutoff = cutoff.replace(tzinfo=datetime.UTC)
     age = datetime.datetime.now(datetime.UTC) - cutoff
+    age_days = age.total_seconds() / 86400
     assert age >= datetime.timedelta(days=COOLDOWN_DAYS), (
-        f"[tool.uv] exclude-newer ({raw}) is only {age.days}d old; the dependency "
+        f"[tool.uv] exclude-newer ({raw}) is only {age_days:.1f}d old; the dependency "
         f"cooldown requires it to be >= {COOLDOWN_DAYS} days in the past. Re-lock "
         "with `python tools/lock.py` when taking dependency updates."
     )
