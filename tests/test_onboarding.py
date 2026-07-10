@@ -426,6 +426,7 @@ class TestSubscriptionAwareDoctor:
         """A subscription-onboarded setup (host login files, no API key) must
         not be failed by its own smoke test: key/route/ping rows are skipped,
         not red."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setattr(
             "benchflow.agents.env.check_subscription_auth", lambda a, k: True
         )
