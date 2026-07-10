@@ -149,6 +149,20 @@ def test_daytona_sdk_error_during_dind_start_is_structured_startup_error():
     assert "Daytona DinD startup failed" in str(raised.value)
 
 
+def test_daytona_dind_type_guard_uses_structured_startup_error():
+    """Guards the follow-up fix from PR #895 for invalid DinD config values."""
+    from benchflow.sandbox.daytona_dind import _startup_config_error
+
+    env = SimpleNamespace(
+        task_env_config=SimpleNamespace(build_timeout_sec=1800),
+    )
+    err = _startup_config_error(env, "dind_image must be a string")
+    assert isinstance(err, SandboxStartupError)
+    assert err.diagnostic.sandbox_state == "config_error"
+    assert err.diagnostic.build_timeout_sec == 1800
+    assert "dind_image must be a string" in err.diagnostic.raw_message
+
+
 def test_long_exec_heartbeat_only_wraps_long_commands():
     command = "python preprocess.py"
     assert _with_long_exec_heartbeat(command, 599) == command
