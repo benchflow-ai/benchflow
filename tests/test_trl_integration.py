@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import sys
 import types
@@ -300,6 +301,21 @@ def test_reward_func_does_not_reverify_submitted_rollout(
     assert spec.reward_funcs[0](completions=["submitted"], environments=[env]) == [1.0]
     assert runtime is not None
     assert runtime.verify_count == 1
+
+
+def test_async_bridge_reuses_one_event_loop() -> None:
+    """Guards the Daytona event-loop lifetime fix added with PR #907."""
+
+    from benchflow.integrations.trl.spec import _run_blocking
+
+    async def current_loop():
+        return asyncio.get_running_loop()
+
+    first = _run_blocking(current_loop())
+    second = _run_blocking(current_loop())
+
+    assert first is second
+    assert first.is_running()
 
 
 def test_create_trainer_missing_trl_is_actionable(

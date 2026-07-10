@@ -21,6 +21,42 @@ from benchflow.rollout import TaskRuntime, TaskRuntimeConfig
 from benchflow.task.package import TaskPackage
 
 
+class _AsyncRunner:
+    """Own one event loop for the lifetime of the synchronous TRL adapter."""
+
+    def __init__(self) -> None:
+        self._ready = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        self._ready.wait()
+
+    def _run(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._ready.set()
+        loop.run_forever()
+
+    def run(self, coro: Coroutine[Any, Any, Any]) -> Any:
+        loop = self._loop
+        if loop is None:
+            raise RuntimeError("BenchFlow TRL async runner failed to start")
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+
+
+_ASYNC_RUNNER: _AsyncRunner | None = None
+_ASYNC_RUNNER_LOCK = threading.Lock()
+
+
+def _async_runner() -> _AsyncRunner:
+    global _ASYNC_RUNNER
+    with _ASYNC_RUNNER_LOCK:
+        if _ASYNC_RUNNER is None:
+            _ASYNC_RUNNER = _AsyncRunner()
+        return _ASYNC_RUNNER
+
+
 class BenchFlowOptionalDependencyError(ImportError):
     """Raised when optional TRL integration dependencies are used but missing."""
 
@@ -415,25 +451,7 @@ def _truncate(text: str, max_chars: int) -> str:
 def _run_blocking(coro: Coroutine[Any, Any, Any]) -> Any:
     """Run an async BenchFlow primitive from TRL's sync tool surface."""
 
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    result: dict[str, Any] = {}
-
-    def runner() -> None:
-        try:
-            result["value"] = asyncio.run(coro)
-        except BaseException as exc:  # pragma: no cover - re-raised in caller
-            result["error"] = exc
-
-    thread = threading.Thread(target=runner, daemon=True)
-    thread.start()
-    thread.join()
-    if "error" in result:
-        raise result["error"]
-    return result.get("value")
+    return _async_runner().run(coro)
 
 
 __all__ = [
