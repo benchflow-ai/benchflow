@@ -50,6 +50,7 @@ from benchflow.providers.litellm_logging import (
 )
 from benchflow.sandbox.network_policy import (
     network_is_restrictive,
+    resolve_network_decision,
 )
 from benchflow.sandbox.providers import OFF_BOX_MODEL_PROVIDERS
 from benchflow.trajectories.types import Trajectory
@@ -1236,13 +1237,25 @@ async def ensure_litellm_runtime(
         # forwarding path; on daytona it must pip-install in-sandbox AFTER the
         # allowlist is applied (pypi is not allowlisted -> install fails). In
         # both cases the agent instead reaches the provider DIRECTLY over
-        # HTTPS — but only if the provider host was actually allowlisted. The
-        # lockdown allowlists exactly provider_host_for_model(model); if that is
-        # None the host can't have been allowlisted, so skipping here would
-        # launch an agent whose model CONNECT the egress proxy then denies
-        # (ACP -32603). Fail closed with an actionable message instead.
+        # HTTPS — but only if the model lane was allowed and the provider host
+        # was actually allowlisted. A task with allow_model_endpoint=false
+        # intentionally has no model lane; skipping the proxy would launch an
+        # agent whose model CONNECT cannot ever succeed. Likewise, lockdown
+        # allowlists exactly provider_host_for_model(model); if that is None the
+        # host can't have been allowlisted. Fail closed with an actionable
+        # message in both cases instead of surfacing a later ACP -32603.
         from benchflow.agents.providers import provider_host_for_model
 
+        assert sandbox is not None
+        task_env_config = sandbox.task_env_config
+        decision = resolve_network_decision(task_env_config, environment)
+        if not decision.model_lane:
+            raise RuntimeError(
+                f"Restrictive network_mode on {environment!r} has "
+                "allow_model_endpoint=false, so the model endpoint is not "
+                "reachable. Enable allow_model_endpoint or relax the network "
+                "policy for model-backed agents."
+            )
         if provider_host_for_model(model, agent_env) is None:
             raise RuntimeError(
                 f"Restrictive network_mode on {environment!r}: cannot resolve a "

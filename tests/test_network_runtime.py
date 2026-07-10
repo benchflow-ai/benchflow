@@ -516,6 +516,32 @@ async def test_ensure_litellm_fails_closed_when_provider_host_unresolvable():
         )
 
 
+@pytest.mark.asyncio
+async def test_ensure_litellm_fails_closed_when_model_lane_disabled():
+    """Guards PR #785: restrictive tasks that opt out of the model lane must not
+    skip the proxy and launch an agent whose model endpoint is unreachable."""
+    from benchflow.providers import litellm_runtime
+    from benchflow.task.config import SandboxConfig
+
+    class _FakeSandbox:
+        task_env_config = SandboxConfig(
+            network_mode="allowlist",
+            allowed_hosts=["api.deepseek.com"],
+            allow_model_endpoint=False,
+        )
+
+    with pytest.raises(RuntimeError, match="allow_model_endpoint=false"):
+        await litellm_runtime.ensure_litellm_runtime(
+            agent="openhands",
+            agent_env={"DEEPSEEK_API_KEY": "sk"},
+            model="deepseek/deepseek-v4-flash",
+            runtime=None,
+            environment="docker",
+            usage_tracking="auto",
+            sandbox=_FakeSandbox(),
+        )
+
+
 # ---- docker relock fail-closed gate: deny extras + inspect-rc (audit P1/P2) ----
 
 
