@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,29 @@ def _copy_tree(src: Path, dst: Path, *, overwrite: bool) -> None:
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".git"))
 
 
+def _copy_selected_tasks(
+    source_root: Path,
+    output_dir: Path,
+    task_ids: Sequence[str],
+    *,
+    overwrite: bool,
+) -> None:
+    if output_dir.exists():
+        if not overwrite:
+            raise FileExistsError(f"Output already exists: {output_dir}")
+        if output_dir.is_dir():
+            shutil.rmtree(output_dir)
+        else:
+            output_dir.unlink()
+    output_dir.mkdir(parents=True)
+    for task_id in task_ids:
+        shutil.copytree(
+            source_root / task_id,
+            output_dir / task_id,
+            ignore=shutil.ignore_patterns(".git"),
+        )
+
+
 def _read_hf_revision(repo_id: str, revision: str | None) -> str:
     try:
         from huggingface_hub import HfApi
@@ -48,7 +72,11 @@ def _read_hf_revision(repo_id: str, revision: str | None) -> str:
 
 
 def _download_snapshot(
-    repo_id: str, *, revision: str | None, cache_dir: Path | None
+    repo_id: str,
+    *,
+    revision: str | None,
+    cache_dir: Path | None,
+    allow_patterns: Sequence[str] = (),
 ) -> Path:
     try:
         from huggingface_hub import snapshot_download
@@ -65,6 +93,8 @@ def _download_snapshot(
     }
     if cache_dir is not None:
         kwargs["cache_dir"] = str(cache_dir)
+    if allow_patterns:
+        kwargs["allow_patterns"] = list(allow_patterns)
     return Path(snapshot_download(**kwargs))
 
 
@@ -75,11 +105,12 @@ def hf_dataset_provenance(
     resolved_revision: str,
     source_path: str,
     local_path: Path,
+    include_tasks: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build generic HF dataset source provenance for a local task tree."""
 
     path = source_path.strip("/")
-    return {
+    provenance: dict[str, Any] = {
         "type": "huggingface_dataset",
         "repo": repo_id,
         "repo_type": "dataset",
@@ -92,6 +123,9 @@ def hf_dataset_provenance(
         if (local_path / "task.toml").is_file() or (local_path / "task.md").is_file()
         else {},
     }
+    if include_tasks:
+        provenance["include_tasks"] = list(include_tasks)
+    return provenance
 
 
 def write_source_sidecar(root: Path, provenance: dict[str, Any]) -> Path:
@@ -135,25 +169,54 @@ def snapshot_hf_dataset(
     path: str | None = None,
     cache_dir: Path | None = None,
     overwrite: bool = False,
+    include_tasks: Sequence[str] = (),
 ) -> HfDatasetSnapshot:
     """Materialize a HF dataset snapshot and stamp local source metadata."""
 
     resolved_revision = _read_hf_revision(repo_id, revision)
-    snapshot_root = _download_snapshot(repo_id, revision=revision, cache_dir=cache_dir)
     source_path = (path or "").strip("/")
+    selected_tasks = tuple(dict.fromkeys(include_tasks))
+    allow_patterns = tuple(
+        f"{source_path}/{task_id}/**" if source_path else f"{task_id}/**"
+        for task_id in selected_tasks
+    )
+    snapshot_root = _download_snapshot(
+        repo_id,
+        revision=revision,
+        cache_dir=cache_dir,
+        allow_patterns=allow_patterns,
+    )
     source_root = snapshot_root / source_path if source_path else snapshot_root
     if not source_root.is_dir():
         raise FileNotFoundError(
             f"Path {source_path!r} not found in HF dataset {repo_id!r}"
         )
 
-    _copy_tree(source_root, output_dir, overwrite=overwrite)
+    missing_tasks = [
+        task_id for task_id in selected_tasks if not (source_root / task_id).is_dir()
+    ]
+    if missing_tasks:
+        raise FileNotFoundError(
+            f"Tasks not found under {source_path or '.'!r} in HF dataset "
+            f"{repo_id!r}: {', '.join(missing_tasks)}"
+        )
+
+    if selected_tasks:
+        _copy_selected_tasks(
+            source_root,
+            output_dir,
+            selected_tasks,
+            overwrite=overwrite,
+        )
+    else:
+        _copy_tree(source_root, output_dir, overwrite=overwrite)
     provenance = hf_dataset_provenance(
         repo_id=repo_id,
         requested_revision=revision,
         resolved_revision=resolved_revision,
         source_path=source_path,
         local_path=output_dir,
+        include_tasks=selected_tasks,
     )
     write_source_sidecar(output_dir, provenance)
     return HfDatasetSnapshot(path=output_dir, provenance=provenance)

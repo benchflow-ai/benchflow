@@ -347,6 +347,74 @@ def test_task_source_provenance_derives_batch_task_path_and_hashes(tmp_path):
     assert "sample-task/task.toml" not in task_provenance["file_hashes"]
 
 
+def test_snapshot_hf_dataset_filters_selected_tasks(tmp_path, monkeypatch):
+    """Guards the selective snapshot support added with PR #907."""
+
+    source = tmp_path / "source"
+    selected = source / "tasks" / "beta"
+    (selected / "tests").mkdir(parents=True)
+    (selected / "task.toml").write_text("[task]\n")
+    (selected / "instruction.md").write_text("Solve beta.\n")
+    (selected / "tests" / "test.sh").write_text("exit 0\n")
+    unselected = source / "tasks" / "alpha"
+    unselected.mkdir()
+    (unselected / "task.toml").write_text("[task]\n")
+    captured = {}
+
+    def fake_download(repo_id, *, revision, cache_dir, allow_patterns=()):
+        captured["allow_patterns"] = allow_patterns
+        return source
+
+    monkeypatch.setattr(
+        "benchflow._utils.hf_datasets._read_hf_revision",
+        lambda *args, **kwargs: "resolved-sha",
+    )
+    monkeypatch.setattr(
+        "benchflow._utils.hf_datasets._download_snapshot", fake_download
+    )
+    output = tmp_path / "output"
+
+    snapshot_hf_dataset(
+        "org/tasks",
+        output_dir=output,
+        revision="main",
+        path="tasks",
+        include_tasks=["beta"],
+    )
+
+    assert captured["allow_patterns"] == ("tasks/beta/**",)
+    assert sorted(path.name for path in output.iterdir()) == [
+        SOURCE_SIDECAR,
+        "beta",
+    ]
+    assert not (output / "alpha").exists()
+    sidecar = json.loads((output / SOURCE_SIDECAR).read_text())
+    assert sidecar["include_tasks"] == ["beta"]
+
+
+def test_snapshot_hf_dataset_rejects_missing_selected_task(tmp_path, monkeypatch):
+    """Guards the selective snapshot support added with PR #907."""
+
+    source = tmp_path / "source"
+    (source / "tasks").mkdir(parents=True)
+    monkeypatch.setattr(
+        "benchflow._utils.hf_datasets._read_hf_revision",
+        lambda *args, **kwargs: "resolved-sha",
+    )
+    monkeypatch.setattr(
+        "benchflow._utils.hf_datasets._download_snapshot",
+        lambda *args, **kwargs: source,
+    )
+
+    with pytest.raises(FileNotFoundError, match="missing"):
+        snapshot_hf_dataset(
+            "org/tasks",
+            output_dir=tmp_path / "output",
+            path="tasks",
+            include_tasks=["missing"],
+        )
+
+
 def test_snapshot_hf_dataset_writes_generic_source_sidecar(tmp_path, monkeypatch):
     """Guards PR slice 1 HF task snapshots without Harbor-specific imports."""
     remote = tmp_path / "remote"
