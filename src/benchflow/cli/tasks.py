@@ -380,6 +380,13 @@ def register_tasks(app: typer.Typer) -> None:
             bool,
             typer.Option("--overwrite", help="Replace an existing output directory"),
         ] = False,
+        include_task: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--include-task",
+                help="Download only this task directory; repeat for multiple tasks",
+            ),
+        ] = None,
     ) -> None:
         """Materialize a Hugging Face dataset task tree with provenance."""
         from benchflow._utils.hf_datasets import SOURCE_SIDECAR, snapshot_hf_dataset
@@ -393,6 +400,7 @@ def register_tasks(app: typer.Typer) -> None:
                 path=path,
                 cache_dir=cache_dir,
                 overwrite=overwrite,
+                include_tasks=include_task or (),
             )
         except (ImportError, OSError, ValueError) as e:
             print_error(f"{e}")
