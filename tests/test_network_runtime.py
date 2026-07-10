@@ -567,14 +567,18 @@ def _make_docker_relock_stub(inspect_stdout, inspect_rc):
     sb._main_container_id = _cid
     sb._network_policy_compose_paths = lambda: ["/x/egress.json"]
 
-    async def _compose(_args):
-        return None
+    async def _compose(args, check=True):
+        if args == ["ps", "--quiet", "bf-egress"]:
+            return ExecResult(stdout="egresscid\n", stderr="", return_code=0)
+        return ExecResult(stdout="", stderr="", return_code=0)
 
     sb._run_docker_compose_command = _compose
 
     async def _cli(args, check=True):
-        if "inspect" in args:
+        if args[:2] == ["inspect", "cid123"]:
             return ExecResult(stdout=inspect_stdout, stderr="", return_code=inspect_rc)
+        if args[:2] == ["inspect", "egresscid"]:
+            return ExecResult(stdout="healthy\n", stderr="", return_code=0)
         return ExecResult(stdout="", stderr="", return_code=0)
 
     sb._docker_cli = _cli
@@ -637,6 +641,50 @@ async def test_docker_relock_happy_sidecar_returns_proxy_env():
     sb = _make_docker_relock_stub(f"{proj}_bf_egress_internal", 0)
     out = await sb.relock_network()
     assert out.get("HTTPS_PROXY", "").startswith("http://bf-egress:")
+
+
+@pytest.mark.asyncio
+async def test_docker_relock_waits_for_egress_health_before_proxy_env(monkeypatch):
+    """Guards PR #785 against returning proxy env before bf-egress is ready."""
+    from benchflow.sandbox import docker_network_lockdown
+    from benchflow.sandbox._base import ExecResult
+
+    monkeypatch.setattr(docker_network_lockdown, "_EGRESS_HEALTH_INTERVAL_SEC", 0)
+    proj = _relock_project()
+    sb = _make_docker_relock_stub(f"{proj}_bf_egress_internal", 0)
+    events: list[str] = []
+    health_statuses = iter(["starting\n", "healthy\n"])
+
+    async def _compose(args, check=True):
+        events.append(f"compose:{' '.join(args)}")
+        if args == ["ps", "--quiet", "bf-egress"]:
+            return ExecResult(stdout="egresscid\n", stderr="", return_code=0)
+        return ExecResult(stdout="", stderr="", return_code=0)
+
+    async def _cli(args, check=True):
+        if args[:2] == ["inspect", "cid123"]:
+            events.append("main-networks-inspected")
+            return ExecResult(
+                stdout=f"{proj}_bf_egress_internal", stderr="", return_code=0
+            )
+        if args[:2] == ["inspect", "egresscid"]:
+            status = next(health_statuses)
+            events.append(f"egress-health:{status.strip()}")
+            return ExecResult(stdout=status, stderr="", return_code=0)
+        return ExecResult(stdout="", stderr="", return_code=0)
+
+    sb._run_docker_compose_command = _compose
+    sb._docker_cli = _cli
+
+    out = await sb.relock_network()
+
+    assert out["HTTP_PROXY"].startswith("http://bf-egress:")
+    assert events.index("main-networks-inspected") < events.index(
+        "compose:ps --quiet bf-egress"
+    )
+    assert events.index("egress-health:starting") < events.index(
+        "egress-health:healthy"
+    )
 
 
 @pytest.mark.asyncio

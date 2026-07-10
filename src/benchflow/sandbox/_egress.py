@@ -53,6 +53,23 @@ def build_egress_override(
         "volumes": [f"{script_dst.resolve()}:/egress_proxy.py:ro"],
         "labels": {"benchflow.owned": "true"},
         "restart": "on-failure",
+        "healthcheck": {
+            "test": [
+                "CMD",
+                "python3",
+                "-c",
+                (
+                    "import os, socket; "
+                    "port = int(os.environ.get('PORT', '8080')); "
+                    "sock = socket.create_connection(('127.0.0.1', port), timeout=1); "
+                    "sock.close()"
+                ),
+            ],
+            "interval": "1s",
+            "timeout": "2s",
+            "retries": 30,
+            "start_period": "1s",
+        },
     }
     if model_lane:
         # Always-allow lane to the host-side model proxy. The agent's base_url
@@ -78,7 +95,9 @@ def build_egress_override(
                     "NO_PROXY": "localhost,127.0.0.1",
                     "no_proxy": "localhost,127.0.0.1",
                 },
-                "depends_on": [_EGRESS_SERVICE],
+                "depends_on": {
+                    _EGRESS_SERVICE: {"condition": "service_healthy"},
+                },
             },
             _EGRESS_SERVICE: egress_service,
         },

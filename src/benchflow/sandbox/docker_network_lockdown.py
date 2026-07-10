@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,9 @@ from benchflow.sandbox.network_policy import (
     resolve_network_decision,
 )
 from benchflow.sandbox.protocol import SandboxStartupError
+
+_EGRESS_HEALTH_ATTEMPTS = 30
+_EGRESS_HEALTH_INTERVAL_SEC = 1.0
 
 
 def docker_network_policy_compose_paths(sandbox: Any) -> list[Path]:
@@ -55,6 +59,55 @@ def docker_network_policy_compose_paths(sandbox: Any) -> list[Path]:
 
     # BLOCK_ALL with no lane, or nowhere to stage the proxy: fail closed.
     return [sandbox._DOCKER_COMPOSE_NO_NETWORK_PATH]
+
+
+async def _wait_for_egress_sidecar_ready(sandbox: Any) -> None:
+    ps_res = await sandbox._run_docker_compose_command(
+        ["ps", "--quiet", _EGRESS_SERVICE], check=False
+    )
+    if ps_res.return_code != 0:
+        raise SandboxStartupError(
+            "relock_network: could not resolve egress sidecar container "
+            f"(docker compose ps rc={ps_res.return_code}); failing closed "
+            "rather than returning proxy env before bf-egress is ready"
+        )
+
+    cid = next((line.strip() for line in (ps_res.stdout or "").splitlines()), "")
+    if not cid:
+        raise SandboxStartupError(
+            "relock_network: egress sidecar container was not found; failing closed "
+            "rather than returning proxy env before bf-egress is ready"
+        )
+
+    last_status = "unknown"
+    for attempt in range(_EGRESS_HEALTH_ATTEMPTS):
+        inspect_res = await sandbox._docker_cli(
+            [
+                "inspect",
+                cid,
+                "--format",
+                "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}",
+            ],
+            check=False,
+        )
+        if inspect_res.return_code == 0:
+            status = (inspect_res.stdout or "").strip()
+            if status == "healthy":
+                return
+            last_status = status or "empty"
+            if status == "unhealthy":
+                break
+        else:
+            last_status = f"inspect rc={inspect_res.return_code}"
+
+        if attempt + 1 < _EGRESS_HEALTH_ATTEMPTS:
+            await asyncio.sleep(_EGRESS_HEALTH_INTERVAL_SEC)
+
+    raise SandboxStartupError(
+        "relock_network: egress sidecar did not become ready "
+        f"(last status={last_status}); failing closed rather than returning "
+        "proxy env before bf-egress is ready"
+    )
 
 
 async def relock_docker_network(
@@ -129,12 +182,18 @@ async def relock_docker_network(
             "with an unenforced network policy"
         )
 
+    if not use_sidecar:
+        sandbox.logger.info(
+            "relock_network: %s applied (sidecar=%s)",
+            decision.policy.name,
+            use_sidecar,
+        )
+        return {}
+
+    await _wait_for_egress_sidecar_ready(sandbox)
     sandbox.logger.info(
         "relock_network: %s applied (sidecar=%s)", decision.policy.name, use_sidecar
     )
-    if not use_sidecar:
-        return {}
-
     proxy = f"http://{_EGRESS_SERVICE}:{_EGRESS_PORT}"
     return {
         "HTTP_PROXY": proxy,

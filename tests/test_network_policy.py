@@ -89,10 +89,11 @@ class TestEgressOverride:
         # main detached from default bridge → only the internal network
         assert main["networks"] == ["bf_egress_internal"]
         assert main["environment"]["HTTPS_PROXY"].startswith("http://bf-egress:")
-        assert main["depends_on"] == ["bf-egress"]
+        assert main["depends_on"] == {"bf-egress": {"condition": "service_healthy"}}
         # proxy bridges internal + external and carries the allowlist
         assert set(proxy["networks"]) == {"bf_egress_internal", "bf_egress_external"}
         assert proxy["environment"]["ALLOWED_HOSTS"] == "example.com,api.test.org"
+        assert proxy["healthcheck"]["test"][:3] == ["CMD", "python3", "-c"]
         assert doc["networks"]["bf_egress_internal"]["internal"] is True
         assert "internal" not in doc["networks"]["bf_egress_external"]
         # the proxy script is staged next to the override for bind-mounting
