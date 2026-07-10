@@ -177,14 +177,22 @@ class BenchFlowRuntimeEnvironment:
                 timeout_sec=self._harness.bash_timeout_sec,
             )
         )
-        result = _run_blocking(runtime.verify())
-        self.reward = (
-            float(result.reward) if isinstance(result.reward, int | float) else 0.0
-        )
-        self.rollout_dir = result.rollout_dir
-        self._runtime = None
-        _run_blocking(runtime.close())
+        self._finalize()
         return f"submission recorded; reward={self.reward:g}"
+
+    def _finalize(self) -> None:
+        runtime = self._runtime
+        if runtime is None:
+            return
+        try:
+            result = _run_blocking(runtime.verify())
+            self.reward = (
+                float(result.reward) if isinstance(result.reward, int | float) else 0.0
+            )
+            self.rollout_dir = result.rollout_dir
+        finally:
+            self._runtime = None
+            _run_blocking(runtime.close())
 
     def _close(self) -> None:
         runtime = self._runtime
@@ -212,6 +220,8 @@ def benchflow_environment_reward(
     rewards: list[float] = []
     for index, _completion in enumerate(completions):
         env = environments[index] if index < len(environments) else None
+        if isinstance(env, BenchFlowRuntimeEnvironment):
+            env._finalize()
         value = getattr(env, "reward", 0.0)
         rewards.append(
             float(value)
