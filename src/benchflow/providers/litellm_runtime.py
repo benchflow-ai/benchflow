@@ -48,6 +48,11 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
+from benchflow.providers.litellm_retry_preflight import (
+    RETRY_PATCH_PREFLIGHT_SOURCE,
+    preflight_host_retry_patch,
+    preflight_sandbox_retry_patch,
+)
 from benchflow.sandbox.providers import OFF_BOX_MODEL_PROVIDERS
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
@@ -542,6 +547,11 @@ async def _start_host_litellm(
     )
     try:
         await _poll_host_health(runner)
+        await asyncio.to_thread(
+            preflight_host_retry_patch,
+            env=env,
+            litellm_executable=litellm_executable,
+        )
         if route_requires_bedrock_patch(route):
             # Fail closed before the agent launches when the Bedrock 4.8+
             # thinking patch did not activate (#602).
@@ -644,6 +654,7 @@ async def _upload_runtime_files_to_sandbox(
         "venv": f"{runtime_dir}/venv",
         "launch_config": f"{runtime_dir}/launch_config.json",
         "preflight": f"{runtime_dir}/bedrock_patch_preflight.py",
+        "retry_preflight": f"{runtime_dir}/retry_patch_preflight.py",
     }
     result = await sandbox.exec(f"mkdir -p {shlex.quote(runtime_dir)}", timeout_sec=20)
     if result.return_code != 0:
@@ -673,6 +684,9 @@ async def _upload_runtime_files_to_sandbox(
     await _upload_text(sandbox, _sandbox_launcher_source(), paths["launcher"], ".py")
     await _upload_text(
         sandbox, BEDROCK_PATCH_PREFLIGHT_SOURCE, paths["preflight"], ".py"
+    )
+    await _upload_text(
+        sandbox, RETRY_PATCH_PREFLIGHT_SOURCE, paths["retry_preflight"], ".py"
     )
     return paths
 
@@ -853,6 +867,12 @@ async def _start_sandbox_litellm(
             python=python,
             port=port,
             stderr_path=paths["stderr"],
+        )
+        await preflight_sandbox_retry_patch(
+            sandbox,
+            python=python,
+            runtime_dir=runtime_dir,
+            preflight_path=paths["retry_preflight"],
         )
         if route_requires_bedrock_patch(route):
             # Fail closed before the agent launches when the Bedrock 4.8+
