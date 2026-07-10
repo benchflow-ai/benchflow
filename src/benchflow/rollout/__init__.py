@@ -530,6 +530,51 @@ async def _run_environment_setup_commands(env: Any, task: Any) -> None:
             )
 
 
+async def _run_environment_healthcheck(env: Any, task: Any) -> None:
+    """Gate rollout startup on the task-authored environment healthcheck."""
+
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    healthcheck = getattr(env_config, "healthcheck", None)
+    if healthcheck is None:
+        return
+
+    loop = asyncio.get_running_loop()
+    start_deadline = loop.time() + healthcheck.start_period_sec
+    if healthcheck.start_period_sec > 0 and healthcheck.start_interval_sec > 0:
+        await asyncio.sleep(
+            min(healthcheck.start_interval_sec, healthcheck.start_period_sec)
+        )
+
+    failures = 0
+    while True:
+        result = await env.exec(
+            healthcheck.command,
+            user="root",
+            timeout_sec=max(1, math.ceil(healthcheck.timeout_sec)),
+        )
+        if getattr(result, "return_code", 0) == 0:
+            return
+
+        now = loop.time()
+        if now >= start_deadline:
+            failures += 1
+            if failures >= healthcheck.retries:
+                stdout = (getattr(result, "stdout", "") or "").strip()
+                stderr = (getattr(result, "stderr", "") or "").strip()
+                detail = "\n".join(part for part in (stdout, stderr) if part)
+                if len(detail) > 4000:
+                    detail = detail[:4000] + "\n... truncated ..."
+                raise RuntimeError(
+                    "environment healthcheck failed after "
+                    f"{healthcheck.retries} attempt(s): {detail}"
+                )
+            delay = healthcheck.interval_sec
+        else:
+            delay = min(healthcheck.start_interval_sec, start_deadline - now)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+
 class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
@@ -960,6 +1005,8 @@ class Rollout:
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)
+
+        await _run_environment_healthcheck(self._env, self._task)
 
         # Environment plane: provision the manifest-declared stateful
         # environment and gate on its readiness before the agent runs.

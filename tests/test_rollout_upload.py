@@ -20,6 +20,7 @@ from benchflow.rollout import (
     _build_rollout_result,
     _publish_trajectory_for_verifier,
     _resolve_agent_cwd,
+    _run_environment_healthcheck,
     _run_environment_setup_commands,
     _start_env_and_upload,
 )
@@ -59,6 +60,75 @@ class FakeSetupCommandEnv:
     async def exec(self, command: str, **kwargs):
         self.exec_calls.append({"command": command, **kwargs})
         return SimpleNamespace(return_code=self.return_code, stdout="out", stderr="err")
+
+
+@pytest.mark.asyncio
+async def test_environment_healthcheck_retries_until_ready(monkeypatch) -> None:
+    """Guards environment healthcheck execution added with PR #907."""
+
+    env = FakeSetupCommandEnv()
+    env.return_codes = iter([1, 0])
+
+    async def exec_healthcheck(command: str, **kwargs):
+        env.exec_calls.append({"command": command, **kwargs})
+        return SimpleNamespace(
+            return_code=next(env.return_codes), stdout="warming", stderr=""
+        )
+
+    env.exec = exec_healthcheck
+    task = SimpleNamespace(
+        config=SimpleNamespace(
+            environment=SimpleNamespace(
+                healthcheck=SimpleNamespace(
+                    command="python /opt/pull_bucket.py",
+                    interval_sec=0,
+                    timeout_sec=30.2,
+                    start_period_sec=0,
+                    start_interval_sec=0,
+                    retries=3,
+                )
+            )
+        )
+    )
+
+    await _run_environment_healthcheck(env, task)
+
+    assert env.exec_calls == [
+        {
+            "command": "python /opt/pull_bucket.py",
+            "user": "root",
+            "timeout_sec": 31,
+        },
+        {
+            "command": "python /opt/pull_bucket.py",
+            "user": "root",
+            "timeout_sec": 31,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_environment_healthcheck_fails_closed() -> None:
+    """Guards environment healthcheck execution added with PR #907."""
+
+    env = FakeSetupCommandEnv(return_code=1)
+    task = SimpleNamespace(
+        config=SimpleNamespace(
+            environment=SimpleNamespace(
+                healthcheck=SimpleNamespace(
+                    command="false",
+                    interval_sec=0,
+                    timeout_sec=1,
+                    start_period_sec=0,
+                    start_interval_sec=0,
+                    retries=2,
+                )
+            )
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="after 2 attempt"):
+        await _run_environment_healthcheck(env, task)
 
 
 @pytest.mark.asyncio
