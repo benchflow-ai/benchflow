@@ -24,6 +24,42 @@ def test_non_interactive_writes_files_and_prints_command(tmp_path, monkeypatch):
     )
 
 
+def test_non_interactive_azure_init_persists_derived_resource(tmp_path, monkeypatch):
+    """Guards PR #883: saved Azure setup includes run-path-derived resource."""
+    monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
+    monkeypatch.setenv(
+        "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
+    )
+    monkeypatch.delenv("AZURE_RESOURCE", raising=False)
+    monkeypatch.setattr("benchflow.agents.env.load_dotenv_env", lambda: {})
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--model",
+            "azure-foundry-openai/gpt-5.5",
+            "--agent",
+            "pi-acp",
+            "--dataset",
+            "skillsbench@1.1",
+            "--sandbox",
+            "docker",
+            "--api-key",
+            "sk-az",
+            "--skip-smoke",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    from benchflow import onboarding
+
+    assert onboarding.read_env_file(tmp_path / ".env") == {
+        "AZURE_API_KEY": "sk-az",
+        "AZURE_RESOURCE": "example-resource",
+    }
+
+
 def test_incompatible_agent_for_model_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("BENCHFLOW_HOME", str(tmp_path))
     result = runner.invoke(

@@ -85,13 +85,13 @@ class TestAgentPicker:
 
 class TestModelPing:
     """A GET /models can 200 while the route is broken (proven in the census);
-    only a 1-token completion exercises key + model id + endpoint."""
+    only a minimal completion exercises key + model id + endpoint."""
 
     def _transport(self, status, body):
         import httpx
 
         def handler(request):
-            # the ping must hit the chat-completions route with a 1-token cap
+            # the ping must hit the chat-completions route with a minimal cap
             assert request.url.path.endswith("/chat/completions")
             import json
 
@@ -282,7 +282,7 @@ class TestModelPingProviderClasses:
         )
         assert seen["headers"].get("api-key") == "sk-az"
         assert "authorization" not in seen["headers"]
-        assert seen["json"]["max_completion_tokens"] == 1
+        assert seen["json"]["max_completion_tokens"] == 8
         assert "max_tokens" not in seen["json"]
 
     def test_adc_provider_is_honestly_skipped_not_failed(self):
@@ -320,6 +320,38 @@ class TestModelPingProviderClasses:
 
 
 class TestDoctorHardening:
+    def test_doctor_reuses_run_path_azure_endpoint_normalization(self, monkeypatch):
+        """Guards PR #883: saved Azure endpoint-only setup reaches smoke ping."""
+        import httpx
+
+        monkeypatch.delenv("AZURE_RESOURCE", raising=False)
+        monkeypatch.setattr("benchflow.agents.env.load_dotenv_env", lambda: {})
+        seen = {}
+
+        def handler(request):
+            import json
+
+            seen["url"] = str(request.url)
+            seen["json"] = json.loads(request.content)
+            return httpx.Response(200, json={"choices": [{}]})
+
+        results = onboarding.run_doctor(
+            model="azure-foundry-openai/gpt-5.5",
+            sandbox="modal",
+            env={
+                "AZURE_API_KEY": "sk-az",
+                "AZURE_API_ENDPOINT": "https://example-resource.openai.azure.com/",
+            },
+            ping_transport=httpx.MockTransport(handler),
+            agent="pi-acp",
+        )
+
+        assert all(r.ok for r in results), [r for r in results if not r.ok]
+        assert seen["url"] == (
+            "https://example-resource.openai.azure.com/openai/v1/chat/completions"
+        )
+        assert seen["json"]["max_completion_tokens"] == 8
+
     def test_unknown_sandbox_is_a_failing_row_not_silence(self):
         results = onboarding.run_doctor(
             model="deepseek/deepseek-v4-flash",

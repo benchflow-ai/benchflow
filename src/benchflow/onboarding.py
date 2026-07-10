@@ -241,17 +241,48 @@ def _ping_headers(prov_name: str, protocol: str, key: str) -> dict[str, str]:
 
 
 def _openai_completion_token_limit(bare_model: str) -> dict[str, int]:
-    """Return the supported 1-token limit field for chat-completions pings."""
+    """Return the supported minimal token limit for chat-completions pings."""
     if bare_model.startswith(("gpt-5", "o1", "o3", "o4")):
-        return {"max_completion_tokens": 1}
+        return {"max_completion_tokens": 8}
     return {"max_tokens": 1}
 
 
+def _run_path_env(model: str, env: dict[str, str], agent: str | None) -> dict[str, str]:
+    """Normalize a check env with the same resolver used before real runs."""
+    if not agent:
+        return dict(env)
+    from benchflow.agents.env import resolve_agent_env
+
+    try:
+        return resolve_agent_env(agent, model, env)
+    except Exception:
+        return dict(env)
+
+
+def saved_setup_env_updates(
+    *,
+    agent: str,
+    model: str,
+    env: dict[str, str],
+    updates: dict[str, str],
+) -> dict[str, str]:
+    """Return env-file updates, including derived provider setup values."""
+    saved = dict(updates)
+    resolved = resolve_provider(model)
+    if not resolved or not resolved[0].startswith("azure-foundry-"):
+        return saved
+    normalized = _run_path_env(model, {**env, **updates}, agent)
+    resource = normalized.get("AZURE_RESOURCE")
+    if resource:
+        saved.setdefault("AZURE_RESOURCE", resource)
+    return saved
+
+
 def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
-    """Verify key + model id + endpoint with ONE 1-token completion.
+    """Verify key + model id + endpoint with one minimal completion.
 
     GET /models is not used: it can 200 while the actual route is broken
-    (wrong model id, upstream 5xx) — a 1-token completion is the cheapest
+    (wrong model id, upstream 5xx) — a minimal completion is the cheapest
     request that exercises the full path. The endpoint uses the same
     resolve_base_url + path-segment join as the run path, but prefers the
     openai-completions endpoint when a provider has several — it validates
@@ -369,6 +400,7 @@ def run_doctor(
     """
     import shutil
 
+    env = _run_path_env(model, env, agent)
     results: list[CheckResult] = []
     if sandbox == "docker":
         found = shutil.which("docker")

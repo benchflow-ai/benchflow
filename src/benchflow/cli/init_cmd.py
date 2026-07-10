@@ -117,7 +117,25 @@ def _auth_option(source: str, value: str | None, agent: str, auth_env: str):
     )
 
 
-def _wizard_auth_step(home: Path, agent: str, auth_env: str) -> None:
+def _save_setup_env(
+    home: Path,
+    *,
+    agent: str,
+    model: str,
+    updates: dict[str, str],
+) -> None:
+    updates = onboarding.saved_setup_env_updates(
+        agent=agent,
+        model=model,
+        env=dict(os.environ),
+        updates=updates,
+    )
+    onboarding.write_env_file(home / ".env", updates)
+    for key, value in updates.items():
+        os.environ.setdefault(key, value)
+
+
+def _wizard_auth_step(home: Path, agent: str, model: str, auth_env: str) -> None:
     """OpenClaw-style auth step: every detected credential source is a listed
     choice (subscription login included), manual entry is the escape hatch.
 
@@ -138,12 +156,12 @@ def _wizard_auth_step(home: Path, agent: str, auth_env: str) -> None:
     if use is None:
         key = typer.prompt(f"{auth_env}", hide_input=True)
         _warn_shadow(auth_env, key)
-        onboarding.write_env_file(home / ".env", {auth_env: key})
+        _save_setup_env(home, agent=agent, model=model, updates={auth_env: key})
         os.environ[auth_env] = key  # the explicit choice wins in-process
     elif use[0] == "./.env":
         value = use[1] or ""  # detect_key_sources only lists ./.env with a value
         _warn_shadow(auth_env, value)
-        onboarding.write_env_file(home / ".env", {auth_env: value})
+        _save_setup_env(home, agent=agent, model=model, updates={auth_env: value})
         os.environ[auth_env] = value  # the explicit choice wins in-process
         typer.echo(
             f"✓ {auth_env} ({_fingerprint(value)}) from {Path.cwd() / '.env'} —"
@@ -495,10 +513,15 @@ def register_init(app: typer.Typer) -> None:
             try:
                 if api_key:
                     _warn_shadow(auth_env, api_key)
-                    onboarding.write_env_file(home / ".env", {auth_env: api_key})
+                    _save_setup_env(
+                        home,
+                        agent=agent,
+                        model=model,
+                        updates={auth_env: api_key},
+                    )
                     os.environ.setdefault(auth_env, api_key)
                 else:
-                    _wizard_auth_step(home, agent, auth_env)
+                    _wizard_auth_step(home, agent, model, auth_env)
             except OSError as exc:
                 typer.echo(
                     f"Could not save credentials to {home / '.env'}: {exc}",
