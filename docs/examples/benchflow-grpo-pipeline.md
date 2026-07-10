@@ -6,8 +6,16 @@ measuring held-out lift with BenchFlow eval artifacts.
 
 The example uses the public data-agent task suites:
 
-- training: `AdithyaSK/data_agent_rl_environment_train`
-- held-out eval: `AdithyaSK/data_agent_rl_environment_eval`
+- training: `benchflow/data_agent_rl_environment_train`
+  at `34ff63c91731df6b3670bfcd7e3d44e6790ddc48` (`2,238` tasks)
+- held-out eval: `benchflow/data_agent_rl_environment_eval`
+  at `0ea976c79e3248c85737c4f7363484e4d47ce287` (`366` tasks)
+
+Both repositories contain BenchFlow-native `task.md` packages with
+`environment/` and `verifier/` directories. They contain no legacy
+`task.toml`, `instruction.md`, or `tests/` paths. For difficulty analysis, use
+the published `manifest.parquet`; the source task-level difficulty metadata is
+not a reliable distribution field.
 
 BenchFlow owns task loading, Daytona/Docker sandbox lifecycle, verifier
 execution, artifacts, and lift reporting. TRL owns optimization.
@@ -37,17 +45,17 @@ can retain dataset provenance.
 
 ```bash
 bench tasks snapshot-hf \
-  AdithyaSK/data_agent_rl_environment_train \
+  benchflow/data_agent_rl_environment_train \
   .local/data-agent-train \
   --path tasks \
-  --revision <train-dataset-sha> \
+  --revision 34ff63c91731df6b3670bfcd7e3d44e6790ddc48 \
   --overwrite
 
 bench tasks snapshot-hf \
-  AdithyaSK/data_agent_rl_environment_eval \
+  benchflow/data_agent_rl_environment_eval \
   .local/data-agent-eval \
   --path tasks \
-  --revision <eval-dataset-sha> \
+  --revision 0ea976c79e3248c85737c4f7363484e4d47ce287 \
   --overwrite
 ```
 
