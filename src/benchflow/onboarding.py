@@ -398,19 +398,17 @@ def run_doctor(
     subscription setup must not be failed by checks that only understand API
     keys.
     """
-    import shutil
-
     env = _run_path_env(model, env, agent)
     results: list[CheckResult] = []
     if sandbox == "docker":
-        found = shutil.which("docker")
-        results.append(
-            CheckResult(
-                "docker",
-                bool(found),
-                found or "docker binary not found on PATH",
-            )
-        )
+        from benchflow.sandbox.docker import DockerSandbox
+
+        try:
+            DockerSandbox.preflight()
+        except SystemExit as exc:
+            results.append(CheckResult("docker", False, _sanitize(str(exc))))
+        else:
+            results.append(CheckResult("docker", True, "docker daemon ready"))
     elif sandbox == "daytona":
         has = bool(env.get("DAYTONA_API_KEY"))
         results.append(

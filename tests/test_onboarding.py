@@ -422,6 +422,50 @@ class TestEnvFileDataSafety:
 
 
 class TestSubscriptionAwareDoctor:
+    def test_docker_row_uses_canonical_sandbox_preflight(self, monkeypatch):
+        """Guards PR #883: doctor must check Docker daemon readiness, not just
+        the docker binary path."""
+        called = False
+
+        def preflight():
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(
+            "benchflow.sandbox.docker.DockerSandbox.preflight", preflight
+        )
+        results = onboarding.run_doctor(
+            model="deepseek/deepseek-v4-flash",
+            sandbox="docker",
+            env={"DEEPSEEK_API_KEY": "sk"},
+            skip_ping=True,
+        )
+
+        assert called
+        row = next(r for r in results if r.name == "docker")
+        assert row.ok
+        assert "daemon ready" in row.detail
+
+    def test_docker_row_reports_preflight_failure(self, monkeypatch):
+        """Guards PR #883 against a green doctor row when the Docker daemon is down."""
+
+        def preflight():
+            raise SystemExit("Docker daemon is not running. Please start Docker.")
+
+        monkeypatch.setattr(
+            "benchflow.sandbox.docker.DockerSandbox.preflight", preflight
+        )
+        results = onboarding.run_doctor(
+            model="deepseek/deepseek-v4-flash",
+            sandbox="docker",
+            env={"DEEPSEEK_API_KEY": "sk"},
+            skip_ping=True,
+        )
+
+        row = next(r for r in results if r.name == "docker")
+        assert not row.ok
+        assert "Docker daemon is not running" in row.detail
+
     def test_subscription_login_skips_key_route_and_ping_rows(self, monkeypatch):
         """A subscription-onboarded setup (host login files, no API key) must
         not be failed by its own smoke test: key/route/ping rows are skipped,
