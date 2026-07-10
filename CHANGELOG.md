@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Removed
+- **`BENCHFLOW_SKILL_NUDGE` skill prompt nudge.** The optional prompt injection
+  that prepended mounted-skill names/descriptions/bodies to the task
+  instruction (#207) is gone. Setting the environment variable now has no
+  effect: prompt resolution never reads skill directories, and mounted skills
+  reach agents only through their native skill paths. This keeps prompts
+  identical across skill modes and closes off accidental prompt-level skill
+  leakage.
+
 ## 0.6.4 — 2026-06-27
 
 ### Added
