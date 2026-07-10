@@ -41,7 +41,6 @@ def test_task_skills_are_stripped_from_no_skills_task_copy(tmp_path: Path) -> No
     assert policy.include_task_skills is False
     assert policy.host_dir is None
     assert policy.sandbox_dir is None
-    assert policy.prompt_dir is None
     assert policy.needs_task_copy is True
     assert policy.strip_bundled_dir_from_copy is True
 
@@ -95,7 +94,6 @@ def test_with_skill_mode_keeps_task_bundle(tmp_path: Path) -> None:
     assert policy.include_task_skills is True
     assert policy.host_dir == skills_root
     assert policy.sandbox_dir == "/skills"
-    assert policy.prompt_dir == skills_root
     assert policy.strip_bundled_dir_from_copy is False
 
 
@@ -117,13 +115,12 @@ def test_declared_task_skills_only_apply_when_included(tmp_path: Path) -> None:
         declared_sandbox_skills_dir="/skills",
     )
 
-    assert disabled.prompt_dir is None
+    assert disabled.host_dir is None
     assert disabled.sandbox_dir is None
     assert disabled.strip_bundled_dir_from_copy is True
     assert enabled.enabled is True
     assert enabled.host_dir == skills_root
     assert enabled.sandbox_dir == "/skills"
-    assert enabled.prompt_dir == skills_root
     assert enabled.strip_bundled_dir_from_copy is False
 
 
