@@ -18,9 +18,13 @@ from benchflow.agents.providers import (
 AZURE_API_VERSION_ENV = "AZURE_API_VERSION"
 AZURE_DEFAULT_API_VERSION = "preview"
 BEDROCK_THINKING_EFFORT_ENV = "BENCHFLOW_BEDROCK_THINKING_EFFORT"
+PROVIDER_REASONING_EFFORT_ENV = "BENCHFLOW_REASONING_EFFORT"
 LITELLM_MODEL_ALIAS_ENV = "BENCHFLOW_LITELLM_MODEL_ALIAS"
 LITELLM_MODEL_VIA_ENV = "BENCHFLOW_LITELLM_MODEL_VIA_ENV"
 LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
+_PROVIDER_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
 
 # Per-token USD prices for models LiteLLM's built-in ``model_cost`` does not
 # already know (custom OpenAI-compatible endpoints such as private vLLM servers
@@ -164,6 +168,24 @@ def _registered_api_key_ref(cfg: ProviderConfig) -> str | None:
     return None
 
 
+def _provider_reasoning_effort(env: dict[str, str]) -> str | None:
+    """Return an explicitly requested gateway-side reasoning effort."""
+    raw = (
+        env.get(PROVIDER_REASONING_EFFORT_ENV)
+        or env.get("LLM_REASONING_EFFORT")
+        or ""
+    )
+    effort = raw.strip().lower()
+    if not effort:
+        return None
+    if effort not in _PROVIDER_REASONING_EFFORTS:
+        allowed = ", ".join(sorted(_PROVIDER_REASONING_EFFORTS))
+        raise ValueError(
+            f"{PROVIDER_REASONING_EFFORT_ENV} must be one of: {allowed}"
+        )
+    return effort
+
+
 def _bedrock_thinking_effort(model: str, env: dict[str, str]) -> str | None:
     if not _BEDROCK_ADAPTIVE_THINKING_RE.search(model):
         return None
@@ -213,6 +235,9 @@ def _route_registered_provider(
             "api_base": api_base,
             "api_version": env.get(AZURE_API_VERSION_ENV, AZURE_DEFAULT_API_VERSION),
         }
+        effort = _provider_reasoning_effort(env)
+        if effort:
+            params["reasoning_effort"] = effort
         return LiteLLMRoute(
             requested_model=model,
             model_alias=safe_model_alias(model),
