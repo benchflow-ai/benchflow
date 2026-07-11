@@ -159,7 +159,10 @@ def test_long_exec_heartbeat_only_wraps_long_commands():
 
 
 def test_long_exec_heartbeat_returns_promptly_after_fast_command():
+    """Guards the heartbeat cleanup race introduced by PR #894."""
     wrapped = _with_long_exec_heartbeat("printf done", 600)
+    assert 'kill "$bf_heartbeat_pid"' not in wrapped
+    assert ': > "$bf_stop"' in wrapped
     result = subprocess.run(
         ["bash", "-lc", wrapped],
         capture_output=True,

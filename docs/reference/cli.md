@@ -203,14 +203,13 @@ bench eval run \
   --agent gemini \
   --model google/gemini-2.5-flash-lite
 
-# Single task with mounted skills and the recommended skill nudge
+# Single task with mounted skills
 bench eval run \
   --tasks-dir tasks/pdf-fix \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
   --sandbox daytona \
-  --skill-mode with-skill \
-  --agent-env BENCHFLOW_SKILL_NUDGE=name
+  --skill-mode with-skill
 
 # Pinned registry dataset: resolves skillsbench@1.1, verifies task digests,
 # and stamps dataset identity into every result.json/config.json
@@ -283,10 +282,8 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
 | `--trials` | `1` | Number of trials for `--matrix` |
 
-When mounting skills, the recommended docs default is
-`--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
-[Architecture: skill loading](../architecture.md#skill-loading) for how
-`with-skill` mode is registered with each agent and how the nudge modes differ.
+See [Architecture: skill loading](../architecture.md#skill-loading) for how
+`with-skill` mode is registered with each agent.
 
 Daytona batch runs collect provider token/cost telemetry by default with a
 sandbox-local LiteLLM gateway. Use `--usage-tracking required` when missing telemetry
@@ -569,6 +566,27 @@ Arguments: `TASK_DIR` (task directory to export) and optional `OUTPUT_DIR`
 | `--overwrite` | `false` | Replace an existing export directory |
 | `--report-only` | `false` | Print the compatibility loss report without writing files |
 
+### bench tasks snapshot-hf
+
+Materialize a Hugging Face dataset repo or subpath as a local BenchFlow task
+tree and write `.benchflow-source.json` provenance beside it. The resulting
+directory can be passed to `bench eval run --tasks-dir`; split-layout task
+snapshots under `tasks/<task_id>/` are discovered directly.
+
+```bash
+bench tasks snapshot-hf benchflow/my-tasks .cache/hf-tasks/my-tasks
+bench tasks snapshot-hf benchflow/my-tasks .cache/hf-tasks/my-tasks --revision abc123 --path tasks --overwrite
+```
+
+Arguments: `REPO_ID` (Hugging Face dataset repo ID) and `OUTPUT_DIR`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--revision`, `--ref` | — | Dataset revision, branch, tag, or commit |
+| `--path` | — | Optional subpath inside the dataset repo, e.g. `tasks` |
+| `--cache-dir` | HF default | Optional Hugging Face cache directory |
+| `--overwrite` | `false` | Replace an existing output directory |
+
 ### bench tasks digest
 
 Compute the content digest that pins a task's files, independent of git — the
@@ -731,7 +749,7 @@ bench hub check --level check --tasks-per-dataset 2 --out hub.jsonl
 
 ## YAML Config Format
 
-### Batch config with skills and skill nudge
+### Batch config with skills
 
 ```yaml
 source:
@@ -744,8 +762,6 @@ agent: gemini
 model: gemini-3.1-flash-lite-preview
 skill_mode: with-skill
 skills_dir: shared-skills/
-agent_env:
-  BENCHFLOW_SKILL_NUDGE: name
 max_retries: 2
 ```
 

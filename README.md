@@ -27,7 +27,7 @@ BenchFlow is a universal environment framework: it runs AI agents against task e
 
 ```bash
 # Install or upgrade to the latest stable BenchFlow CLI
-uv tool install --upgrade benchflow
+uv tool install --python 3.12 --upgrade benchflow
 
 # Run a benchmark: any task source, any ACP agent, any sandbox
 export GEMINI_API_KEY=...            # or claude login / codex --login for subscription auth
@@ -44,16 +44,25 @@ Each run writes a per-task `result.json` (rewards + trajectory + token usage) an
 Install or upgrade to the latest stable release from PyPI with `uv`:
 
 ```bash
-uv tool install --upgrade benchflow
+uv tool install --python 3.12 --upgrade benchflow
 ```
 
 - Confirm with `bench --version`.
-- If you see `Executables already exist: bench, benchflow`, re-run with `uv tool install --upgrade --force benchflow` to replace stale entrypoints from an older install.
-- For Daytona or Modal extras, install the relevant optional package, for example `uv tool install --upgrade 'benchflow[sandbox-daytona]'`.
+- BenchFlow CLI releases require Python 3.12 or newer. Keep `--python 3.12`
+  in the install command so `uv` does not resolve an older Python-compatible
+  package that lacks the CLI entrypoints.
+- If you see `Executables already exist: bench, benchflow`, re-run with `uv tool install --python 3.12 --upgrade --force benchflow` to replace stale entrypoints from an older install.
+- For Daytona or Modal extras, install the relevant optional package, for example `uv tool install --python 3.12 --upgrade 'benchflow[sandbox-daytona]'`.
 
-Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --prerelease allow --upgrade benchflow`).
+Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --python 3.12 --prerelease allow --upgrade benchflow`).
 
-**Requirements & auth.** Install [uv](https://docs.astral.sh/uv/); it provisions a compatible Python for the tool install. Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal; export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use subscription auth (`claude login` / `codex --login`). Provider-prefixed models may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` + `AZURE_API_ENDPOINT`.
+**Requirements & auth.** Install [uv](https://docs.astral.sh/uv/); the
+`--python 3.12` flag lets it provision a compatible interpreter for the tool
+install. Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal;
+export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use
+subscription auth (`claude login` / `codex --login`). Provider-prefixed models
+may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` +
+`AZURE_API_ENDPOINT`.
 
 ## Documentation
 

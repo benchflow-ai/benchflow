@@ -37,16 +37,21 @@ STEP 0 — Preflight
   the run partway through instead of at startup.
 - Check uv: `command -v uv`. If missing, install it:
   `curl -LsSf https://astral.sh/uv/install.sh | sh` and ensure it is on PATH.
-- uv will provision the required Python if needed.
+- uv will provision the required Python if the install command includes
+  `--python 3.12`.
 
 STEP 1 — Install benchflow
 Install or upgrade the latest stable BenchFlow CLI/SDK from PyPI:
-    uv tool install --upgrade benchflow
+    uv tool install --python 3.12 --upgrade benchflow
 benchflow pins a stable litellm (no `--prerelease` flag needed). If uv reports
 "Executables already exist: bench, benchflow", rerun the same command with
 `--force`. Confirm with `bench --version` after install.
 If uv still resolves an older executable, rerun with `--force` and confirm the
 active executable with `bench --version`.
+TRAP — BenchFlow CLI releases require Python 3.12 or newer. Do not omit
+`--python 3.12`: on Python 3.10/3.11, uv can resolve an old `benchflow` package
+that has no `bench` / `benchflow` executable and fails with "No executables are
+provided by package benchflow".
 TRAP — this quickstart uses the tool-installed `bench` (on PATH after
 `uv tool install`); if you instead invoke benchflow as `uv run bench …` from a
 benchflow source checkout, run it from INSIDE that project directory, because

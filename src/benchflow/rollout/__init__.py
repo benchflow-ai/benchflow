@@ -46,6 +46,7 @@ import inspect
 import io
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -141,7 +142,6 @@ from benchflow.rollout._setup import (
 from benchflow.rollout._setup import _resolve_agent_cwd as _resolve_agent_cwd
 from benchflow.rollout._setup import _resolve_prompts as _resolve_prompts
 from benchflow.rollout._setup import _run_oracle as _run_oracle
-from benchflow.rollout._setup import _skill_nudge as _skill_nudge
 from benchflow.rollout._setup import _start_env_and_upload as _start_env_and_upload
 from benchflow.rollout._setup import (
     _task_disallows_internet as _task_disallows_internet,
@@ -188,6 +188,10 @@ from benchflow.rollout._user_loop import (
 )
 from benchflow.rollout._user_loop import _run_steps as _run_steps_engine
 from benchflow.rollout._user_loop import _run_user_loop as _run_user_loop_engine
+from benchflow.rollout.task_runtime import BashToolResult as BashToolResult
+from benchflow.rollout.task_runtime import TaskRuntime as TaskRuntime
+from benchflow.rollout.task_runtime import TaskRuntimeConfig as TaskRuntimeConfig
+from benchflow.rollout.task_runtime import TaskRuntimeResult as TaskRuntimeResult
 from benchflow.rollout_branch import ChildRunner
 from benchflow.rollout_branch import branch as _branch_engine
 from benchflow.sandbox.metadata import persist_sandbox_info
@@ -527,6 +531,51 @@ async def _run_environment_setup_commands(env: Any, task: Any) -> None:
             )
 
 
+async def _run_environment_healthcheck(env: Any, task: Any) -> None:
+    """Gate rollout startup on the task-authored environment healthcheck."""
+
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    healthcheck = getattr(env_config, "healthcheck", None)
+    if healthcheck is None:
+        return
+
+    loop = asyncio.get_running_loop()
+    start_deadline = loop.time() + healthcheck.start_period_sec
+    if healthcheck.start_period_sec > 0 and healthcheck.start_interval_sec > 0:
+        await asyncio.sleep(
+            min(healthcheck.start_interval_sec, healthcheck.start_period_sec)
+        )
+
+    failures = 0
+    while True:
+        result = await env.exec(
+            healthcheck.command,
+            user="root",
+            timeout_sec=max(1, math.ceil(healthcheck.timeout_sec)),
+        )
+        if getattr(result, "return_code", 0) == 0:
+            return
+
+        now = loop.time()
+        if now >= start_deadline:
+            failures += 1
+            if failures >= healthcheck.retries:
+                stdout = (getattr(result, "stdout", "") or "").strip()
+                stderr = (getattr(result, "stderr", "") or "").strip()
+                detail = "\n".join(part for part in (stdout, stderr) if part)
+                if len(detail) > 4000:
+                    detail = detail[:4000] + "\n... truncated ..."
+                raise RuntimeError(
+                    "environment healthcheck failed after "
+                    f"{healthcheck.retries} attempt(s): {detail}"
+                )
+            delay = healthcheck.interval_sec
+        else:
+            delay = min(healthcheck.start_interval_sec, start_deadline - now)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+
 class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
@@ -711,6 +760,36 @@ class Rollout:
     def trajectory(self) -> list[dict]:
         return self._trajectory
 
+    def record_external_tool_call(
+        self,
+        *,
+        tool_name: str,
+        event: dict,
+    ) -> None:
+        """Record a tool call driven outside the ACP prompt loop.
+
+        Training integrations can own model generation while still preserving
+        BenchFlow's verifier and rollout artifact contract. Normal ACP rollouts
+        should continue to use ``execute``.
+        """
+
+        reserved = {"type", "tool_name"} & set(event)
+        if reserved:
+            reserved_text = ", ".join(sorted(reserved))
+            raise ValueError(
+                "record_external_tool_call event cannot contain reserved fields: "
+                f"{reserved_text}"
+            )
+
+        self._n_tool_calls += 1
+        self._trajectory.append(
+            {
+                "type": "tool_call",
+                "tool_name": tool_name,
+                **event,
+            }
+        )
+
     @property
     def tree(self) -> RolloutTree:
         """The RolloutTree this rollout grows as it executes.
@@ -797,14 +876,7 @@ class Rollout:
             declared_sandbox_skills_dir=getattr(env_config, "skills_dir", None),
         )
         self._task_skill_policy = task_skill_policy
-        self._resolved_prompts = _resolve_prompts(
-            cfg.task_path,
-            cfg.prompts,
-            skills_dir=task_skill_policy.prompt_dir,
-            skill_nudge=_skill_nudge(cfg.agent_env),
-            agent=cfg.primary_agent,
-            planes=self._planes,
-        )
+        self._resolved_prompts = _resolve_prompts(cfg.task_path, cfg.prompts)
         self._agent_launch = self._planes.agent_launch(
             cfg.primary_agent,
             disallow_web_tools=self._disallow_web_tools,
@@ -933,6 +1005,8 @@ class Rollout:
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)
+
+        await _run_environment_healthcheck(self._env, self._task)
 
         # Environment plane: provision the manifest-declared stateful
         # environment and gate on its readiness before the agent runs.
@@ -2496,4 +2570,8 @@ __all__ = [
     "Turn",
     "Rollout",
     "RolloutConfig",
+    "BashToolResult",
+    "TaskRuntime",
+    "TaskRuntimeConfig",
+    "TaskRuntimeResult",
 ]

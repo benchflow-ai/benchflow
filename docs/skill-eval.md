@@ -4,8 +4,12 @@ Test whether your agent skill actually helps agents perform better.
 ## Install
 
 ```bash
-uv tool install --upgrade benchflow
+uv tool install --python 3.12 --upgrade benchflow
 ```
+
+BenchFlow CLI releases require Python 3.12 or newer. Keep `--python 3.12` in
+tool-install commands so `uv` does not fall back to an old release without the
+`bench` / `benchflow` executables.
 
 ## Overview
 
@@ -395,7 +399,7 @@ BenchFlow generates everything ephemeral — only results persist.
 **CI integration:**
 ```bash
 # In your skill's CI pipeline
-uv tool install --upgrade benchflow
+uv tool install --python 3.12 --upgrade benchflow
 bench skills eval . --agent claude-agent-acp --no-baseline
 ```
 

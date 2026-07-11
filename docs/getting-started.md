@@ -3,7 +3,8 @@ A 5-minute path from install to first eval.
 
 ## Prerequisites
 
-- [`uv`](https://docs.astral.sh/uv/) for the CLI install; it provisions a compatible Python automatically
+- [`uv`](https://docs.astral.sh/uv/) for the CLI install; use the documented
+  `--python 3.12` flag so it provisions a compatible Python automatically
 - Docker for local sandboxes; install `benchflow[sandbox-daytona]` + set `DAYTONA_API_KEY` for Daytona cloud runs, or install `benchflow[sandbox-modal]` for Modal-backed runs
 - An API key or subscription/OAuth auth for at least one agent (see below)
 
@@ -12,19 +13,25 @@ A 5-minute path from install to first eval.
 Install or upgrade to the latest stable release from PyPI with `uv`:
 
 ```bash
-uv tool install --upgrade benchflow
+uv tool install --python 3.12 --upgrade benchflow
 ```
 
 If `uv` reports `Executables already exist: bench, benchflow`, rerun with
-`uv tool install --upgrade --force benchflow` to replace older non-`uv`
+`uv tool install --python 3.12 --upgrade --force benchflow` to replace older non-`uv`
 entrypoints. Confirm with `bench --version`.
 See [Release channels](./release.md) for the full command matrix.
+
+BenchFlow's CLI package requires Python 3.12 or newer. If `uv` is allowed to
+reuse Python 3.10 or 3.11, it may resolve an old `benchflow` package that does
+not provide the `bench` / `benchflow` executables and fail with
+`No executables are provided by package benchflow`. Keeping `--python 3.12` in
+the install command avoids that resolver fallback.
 
 For optional sandbox integrations, include the extra in the tool install:
 
 ```bash
-uv tool install --upgrade 'benchflow[sandbox-daytona]'
-uv tool install --upgrade 'benchflow[sandbox-modal]'
+uv tool install --python 3.12 --upgrade 'benchflow[sandbox-daytona]'
+uv tool install --python 3.12 --upgrade 'benchflow[sandbox-modal]'
 ```
 
 This gives you the `benchflow` (alias `bench`) CLI plus the Python SDK. To install for editable development:
@@ -142,8 +149,7 @@ GEMINI_API_KEY=... bench eval run \
   --model gemini-3.1-pro-preview \
   --sandbox daytona \
   --skill-mode with-skill \
-  --skills-dir tasks/edit-pdf/environment/skills \
-  --agent-env BENCHFLOW_SKILL_NUDGE=name
+  --skills-dir tasks/edit-pdf/environment/skills
 
 # A whole batch from YAML config
 bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
@@ -174,10 +180,8 @@ cd skillsbench && git sparse-checkout set tasks/edit-pdf
 bench eval run --tasks-dir tasks/edit-pdf --agent gemini --model gemini-3.1-pro-preview
 ```
 
-When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
-option. See [Architecture: skill loading](./architecture.md#skill-loading) for
-how mounted skills reach the agent and how `name`, `description`, and `full`
-differ.
+See [Architecture: skill loading](./architecture.md#skill-loading) for how
+mounted skills reach the agent.
 
 ### Where results land
 

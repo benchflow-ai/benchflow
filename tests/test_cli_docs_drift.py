@@ -191,6 +191,7 @@ def test_documented_subcommands_exist() -> None:
         ["tasks", "check"],
         ["tasks", "generate"],
         ["tasks", "overlap"],
+        ["tasks", "snapshot-hf"],
         ["tasks", "list-sources"],
         ["skills", "list"],
         ["skills", "eval"],
@@ -220,20 +221,30 @@ def test_documented_subcommands_exist() -> None:
 # ── install-doc guard: no regression to pinned GitHub-release RC wheels ───────
 
 # Install docs that used to pin a concrete RC-wheel URL before 0.6.0 shipped to
-# PyPI. They now install from PyPI (`uv tool install … benchflow`); a hand-pinned
-# `releases/download/<tag>/benchflow-…rcN.whl` goes stale the instant a newer
-# release lands, so this guards against re-introducing that pattern.
+# PyPI. They now install from PyPI with an explicit Python 3.12 tool
+# interpreter; a hand-pinned `releases/download/<tag>/benchflow-…rcN.whl` goes
+# stale the instant a newer release lands, so this guards against re-introducing
+# that pattern.
 _INSTALL_URL_DOCS = (
     "README.md",
     "docs/getting-started.md",
     "docs/release.md",
     "docs/agent-quickstart.md",
     "docs/skill-eval.md",
+    "docs/llm-judge.md",
+    "docs/reference/python-api.md",
+    "docs/examples/coder-reviewer-demo.py",
+    "docs/examples/scene-patterns.ipynb",
     ".claude/skills/benchflow/SKILL.md",
+    ".claude/skills/benchflow/tasks/benchflow-knowledge/environment/benchflow/SKILL.md",
+    ".claude/skills/benchflow/tasks/create-simple-task/environment/benchflow/SKILL.md",
 )
 _RC_WHEEL_URL_RE = re.compile(
     r"releases/download/\d+\.\d+\.\d+-rc\.\d+/"
     r"benchflow-\d+\.\d+\.\d+rc\d+-py3-none-any\.whl"
+)
+_BENCHFLOW_UV_TOOL_INSTALL_RE = re.compile(
+    r"uv tool install\b[^\n`]*\bbenchflow(?:\[[^\]\n`]+\])?\b"
 )
 
 
@@ -249,4 +260,21 @@ def test_install_docs_use_pypi_not_pinned_rc_wheel() -> None:
     assert not offenders, (
         "install docs pin a stale GitHub-release RC wheel instead of installing "
         f"from PyPI: {offenders}"
+    )
+
+
+def test_install_docs_pin_python_312_for_uv_tool_install() -> None:
+    """Guards the fix from PR #899 against Python 3.10/3.11 resolver fallback
+    to the old no-entrypoint benchflow wheel."""
+    offenders: list[tuple[str, str]] = []
+    for rel in _INSTALL_URL_DOCS:
+        text = (_REPO_ROOT / rel).read_text()
+        for match in _BENCHFLOW_UV_TOOL_INSTALL_RE.finditer(text):
+            command = match.group(0)
+            if "--python 3.12" not in command:
+                offenders.append((rel, command))
+
+    assert not offenders, (
+        "benchflow CLI install docs must use `uv tool install --python 3.12 ...` "
+        f"to avoid old no-entrypoint wheels on Python 3.10/3.11: {offenders}"
     )
