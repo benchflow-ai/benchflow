@@ -932,6 +932,10 @@ AGENTS: dict[str, AgentConfig] = {
             'printf \',"base_url":"%s"\' "$LLM_BASE_URL"; fi; '
             'if [ -n "$LLM_API_VERSION" ]; then '
             'printf \',"api_version":"%s"\' "$LLM_API_VERSION"; fi; '
+            'if [ -n "$LLM_REASONING_EFFORT" ]; then '
+            'printf \',"reasoning_effort":"%s",'
+            '"litellm_extra_body":{"reasoning_effort":"%s"}\' '
+            '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT"; fi; '
             "printf '}}'; } > ~/.openhands/agent_settings.json && "
             "openhands acp --always-approve --override-with-envs"
         ),
