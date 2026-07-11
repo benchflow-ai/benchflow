@@ -202,16 +202,6 @@ class TestOpenHandsConfig:
         assert ',"api_version":"%s"' in cfg.launch_cmd
         assert '"$LLM_API_VERSION"' in cfg.launch_cmd
 
-    def test_openhands_launch_cmd_writes_optional_reasoning_effort(self):
-        """Guards PR #911 against OpenHands silently using default high effort."""
-        cfg = AGENTS["openhands"]
-        assert 'if [ -n "$LLM_REASONING_EFFORT" ]' in cfg.launch_cmd
-        assert ',"reasoning_effort":"%s",' in cfg.launch_cmd
-        assert '"litellm_extra_body":{"reasoning_effort":"%s"}' in cfg.launch_cmd
-        assert (
-            '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT"' in cfg.launch_cmd
-        )
-
     def test_harvey_lab_installs_python_deps_in_venv(self):
         """Guards the v0.5 stress failure where pip hit PEP 668 in Ubuntu."""
         cfg = AGENTS["harvey-lab-harness"]

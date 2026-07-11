@@ -171,18 +171,14 @@ def _registered_api_key_ref(cfg: ProviderConfig) -> str | None:
 def _provider_reasoning_effort(env: dict[str, str]) -> str | None:
     """Return an explicitly requested gateway-side reasoning effort."""
     raw = (
-        env.get(PROVIDER_REASONING_EFFORT_ENV)
-        or env.get("LLM_REASONING_EFFORT")
-        or ""
+        env.get(PROVIDER_REASONING_EFFORT_ENV) or env.get("LLM_REASONING_EFFORT") or ""
     )
     effort = raw.strip().lower()
     if not effort:
         return None
     if effort not in _PROVIDER_REASONING_EFFORTS:
         allowed = ", ".join(sorted(_PROVIDER_REASONING_EFFORTS))
-        raise ValueError(
-            f"{PROVIDER_REASONING_EFFORT_ENV} must be one of: {allowed}"
-        )
+        raise ValueError(f"{PROVIDER_REASONING_EFFORT_ENV} must be one of: {allowed}")
     return effort
 
 
