@@ -68,6 +68,7 @@ def _callback_line(*, content: str = "ok") -> str:
 
 
 def test_writer_redacts_and_atomically_replaces_snapshot(tmp_path):
+    """Guards live redaction and atomic replacement from commit c86adfb."""
     path = tmp_path / "trajectory" / "llm_trajectory.jsonl"
     writer = LiveLLMTrajectoryWriter(path)
 
@@ -81,6 +82,7 @@ def test_writer_redacts_and_atomically_replaces_snapshot(tmp_path):
 
 
 def test_writer_deduplicates_unchanged_snapshot_and_reconciles(tmp_path):
+    """Guards snapshot deduplication and reconciliation from commit c86adfb."""
     path = tmp_path / "llm_trajectory.jsonl"
     writer = LiveLLMTrajectoryWriter(path)
     trajectory = _trajectory()
@@ -94,6 +96,7 @@ def test_writer_deduplicates_unchanged_snapshot_and_reconciles(tmp_path):
 
 
 def test_writer_does_not_create_empty_live_artifact(tmp_path):
+    """Guards empty-artifact suppression from commit c86adfb."""
     path = tmp_path / "llm_trajectory.jsonl"
     writer = LiveLLMTrajectoryWriter(path)
 
@@ -103,6 +106,7 @@ def test_writer_does_not_create_empty_live_artifact(tmp_path):
 
 @pytest.mark.asyncio
 async def test_host_proxy_mirrors_callback_before_stop(tmp_path, monkeypatch):
+    """Guards host-side live callback mirroring from commit c86adfb."""
     monkeypatch.setattr(runtime_mod, "_LIVE_CAPTURE_INTERVAL_SEC", 0.01)
     log_path = tmp_path / "callback.jsonl"
     output_path = tmp_path / "rollout" / "trajectory" / "llm_trajectory.jsonl"
@@ -147,6 +151,7 @@ class _SandboxWithCallbackLog:
 
 @pytest.mark.asyncio
 async def test_daytona_proxy_incrementally_mirrors_callback(tmp_path, monkeypatch):
+    """Guards incremental Daytona callback mirroring from commit c86adfb."""
     monkeypatch.setattr(runtime_mod, "_LIVE_CAPTURE_INTERVAL_SEC", 0.01)
     sandbox = _SandboxWithCallbackLog(_callback_line(content="first").encode())
     output_path = tmp_path / "trajectory" / "llm_trajectory.jsonl"
