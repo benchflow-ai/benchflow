@@ -109,6 +109,39 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_deploy_skills_fails_closed_when_expected_catalog_is_unreadable(tmp_path):
+    """Guards the OpenCode task-skill fidelity gate from this PR."""
+    env = MagicMock()
+    env.exec = AsyncMock(
+        return_value=MagicMock(return_code=1, stdout="", stderr="missing SKILL.md")
+    )
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="opencode",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.opencode/skills"],
+    )
+    skills_dir = tmp_path / "skills"
+    skill = skills_dir / "mesh-analysis" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# Mesh analysis\n")
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"experiment_fidelity/skill_deployment_missing.*mesh-analysis",
+    ):
+        await deploy_skills(
+            env=env,
+            task_path=tmp_path,
+            skills_dir=skills_dir,
+            agent_cfg=agent_cfg,
+            sandbox_user="agent",
+            agent_cwd="/workspace",
+        )
+
+
+@pytest.mark.asyncio
 async def test_deploy_skills_uses_policy_sandbox_dir(tmp_path):
     """Guards PR #586 so task skills can mount outside the default /skills."""
     env = MagicMock()

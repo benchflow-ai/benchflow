@@ -67,6 +67,8 @@ _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 # it's ignored) and `NO_DOCS=true` so the docs route is skipped regardless of the
 # inherited environment.
 _PROXY_DOCS_DISABLE_ENV = {"DOCS_URL": "", "NO_DOCS": "true"}
+_SKILL_CATALOG_GATE_AGENT_ENV = "BENCHFLOW_SKILL_CATALOG_GATE_AGENT"
+_REQUIRED_SKILL_NAMES_ENV = "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON"
 
 # Agents that speak a provider-native wire protocol the LiteLLM proxy does not
 # expose on its OpenAI/Anthropic surfaces. Routing them through the proxy would
@@ -1044,6 +1046,19 @@ def _apply_litellm_agent_env(
     return updated
 
 
+def _litellm_proxy_env(
+    *, agent: str, agent_env: dict[str, str], required_skill_names: tuple[str, ...]
+) -> dict[str, str]:
+    updated = dict(agent_env)
+    updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
+    updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
+    expected = sorted(set(required_skill_names))
+    if agent == "opencode" and expected:
+        updated[_SKILL_CATALOG_GATE_AGENT_ENV] = agent
+        updated[_REQUIRED_SKILL_NAMES_ENV] = json.dumps(expected)
+    return updated
+
+
 def _wire_litellm_agent_env(
     *,
     agent: str,
@@ -1053,6 +1068,8 @@ def _wire_litellm_agent_env(
     master_key: str,
 ) -> dict[str, str]:
     updated = dict(agent_env)
+    updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
+    updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
     # Isolation: the agent must reach providers only through the proxy. Drop raw
     # upstream provider secrets AND endpoints so a compromised or curious agent
     # cannot bypass the gateway (and its usage metering) or read live keys. The
@@ -1191,6 +1208,7 @@ async def ensure_litellm_runtime(
     usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
     sandbox: Any | None = None,
     sandbox_setup_timeout: int = 120,
+    required_skill_names: tuple[str, ...] = (),
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1252,7 +1270,12 @@ async def ensure_litellm_runtime(
         agent_env.get(LITELLM_MASTER_KEY_ENV)
         or f"sk-benchflow-{secrets.token_urlsafe(24)}"
     )
-    config_key = f"{environment}:{route.config_key}:{agent}:{session_id}"
+    skill_gate_key = json.dumps(
+        sorted(set(required_skill_names)), separators=(",", ":")
+    )
+    config_key = (
+        f"{environment}:{route.config_key}:{agent}:{session_id}:{skill_gate_key}"
+    )
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
         if getattr(runtime, "config_key", None) == config_key and server is not None:
@@ -1271,12 +1294,17 @@ async def ensure_litellm_runtime(
         await stop_litellm_runtime(runtime)
 
     try:
+        proxy_env = _litellm_proxy_env(
+            agent=agent,
+            agent_env=agent_env,
+            required_skill_names=required_skill_names,
+        )
         if environment in _SANDBOX_LOCAL_ENVIRONMENTS:
             server = await _start_sandbox_litellm(
                 sandbox=sandbox,
                 route=route,
                 master_key=master_key,
-                agent_env=agent_env,
+                agent_env=proxy_env,
                 session_id=session_id,
                 agent_name=agent,
                 install_timeout_sec=max(600, int(sandbox_setup_timeout)),
@@ -1285,7 +1313,7 @@ async def ensure_litellm_runtime(
             server = await _start_host_litellm(
                 route=route,
                 master_key=master_key,
-                agent_env=agent_env,
+                agent_env=proxy_env,
                 environment=environment,
                 session_id=session_id,
                 agent_name=agent,

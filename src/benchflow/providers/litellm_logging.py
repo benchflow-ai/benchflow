@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import traceback
 from datetime import datetime, timezone
@@ -92,6 +93,70 @@ from typing import Any
 
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
+
+
+_skill_catalog_gate_passed = False
+
+
+def _required_skill_names() -> tuple[str, ...]:
+    raw = os.environ.get("BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", "")
+    if not raw:
+        return ()
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "experiment_fidelity/skill_catalog_gate_config_invalid"
+        ) from exc
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise RuntimeError("experiment_fidelity/skill_catalog_gate_config_invalid")
+    return tuple(sorted(set(values)))
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(item.get("text", ""))
+            for item in content
+            if isinstance(item, dict)
+        )
+    return ""
+
+
+def _opencode_catalog_names(data: dict[str, Any]) -> set[str]:
+    system = "\n".join(
+        _message_text(message.get("content"))
+        for message in data.get("messages") or []
+        if isinstance(message, dict) and message.get("role") == "system"
+    )
+    match = re.search(
+        r"<available_skills>(.*?)</available_skills>", system, flags=re.DOTALL
+    )
+    if not match:
+        return set()
+    return set(re.findall(r"<name>\s*([^<]+?)\s*</name>", match.group(1)))
+
+
+def _gate_opencode_skill_catalog(data: dict[str, Any]) -> None:
+    global _skill_catalog_gate_passed
+    if _skill_catalog_gate_passed:
+        return
+    if os.environ.get("BENCHFLOW_SKILL_CATALOG_GATE_AGENT") != "opencode":
+        return
+    expected = _required_skill_names()
+    if not expected:
+        return
+    visible = _opencode_catalog_names(data)
+    missing = sorted(set(expected) - visible)
+    if missing:
+        raise RuntimeError(
+            "experiment_fidelity/skill_catalog_missing: "
+            f"missing={','.join(missing)} expected={','.join(expected)} "
+            f"visible={','.join(sorted(visible))}"
+        )
+    _skill_catalog_gate_passed = True
 
 
 def _jsonable(value: Any) -> Any:
@@ -218,6 +283,8 @@ class BenchFlowLiteLLMLogger(CustomLogger):
     ):
         if not isinstance(data, dict):
             return None
+
+        _gate_opencode_skill_catalog(data)
 
         cleaned = data
 
