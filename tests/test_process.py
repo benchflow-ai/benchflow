@@ -625,7 +625,7 @@ class TestDaytonaPtyProcessSecretTransport:
 
     @pytest.mark.asyncio
     async def test_provider_env_value_not_sent_through_pty_input(self):
-        """Guards the 2026-05-22 Daytona PTY env transport leak fix."""
+        """Guards PR #896 and the 2026-05-22 Daytona PTY env transport leak fix."""
         sandbox, ptys = _make_daytona_pty_sandbox()
         proc = DaytonaPtyProcess(
             sandbox=sandbox,
@@ -639,25 +639,32 @@ class TestDaytonaPtyProcessSecretTransport:
         assert ptys
         assert len(ptys[0].inputs) == 2
         assert "echo '__BENCHFLOW_ACP_" in ptys[0].inputs[0]
+        assert "stty raw -echo" in ptys[0].inputs[0]
         assert "docker compose -p test exec" not in ptys[0].inputs[0]
-        assert "docker compose -p test exec" in ptys[0].inputs[1]
+        assert ptys[0].inputs[1].startswith("exec sh /tmp/benchflow_pty_exec_")
+        assert "docker compose -p test exec" not in ptys[0].inputs[1]
         sent_payload = "\n".join(ptys[0].inputs)
         assert secret not in sent_payload
         bootstrap_call = sandbox.process.exec.await_args_list[0]
         assert bootstrap_call.kwargs["env"] == {"GEMINI_API_KEY": secret}
         assert secret not in bootstrap_call.args[0]
-        assert ". /tmp/benchflow_env_" in sent_payload
-        assert "rm -f /tmp/benchflow_env_" in sent_payload
-        assert "--env GEMINI_API_KEY" in sent_payload
+        script_call = sandbox.process.exec.await_args_list[1]
+        assert secret not in script_call.args[0]
+        assert "docker compose -p test exec" in script_call.args[0]
+        assert "--env GEMINI_API_KEY" in script_call.args[0]
+        assert ". /tmp/benchflow_env_" not in sent_payload
+        assert "rm -f /tmp/benchflow_env_" not in sent_payload
+        assert "--env GEMINI_API_KEY" not in sent_payload
         assert "--env-file" not in sent_payload
         assert "exec ." not in sent_payload
-        assert "&& exec docker compose -p test exec" in sent_payload
 
         await proc.close()
 
-        cleanup_call = sandbox.process.exec.await_args_list[-1]
-        assert cleanup_call.args[0].startswith("rm -f /tmp/benchflow_env_")
-        assert secret not in cleanup_call.args[0]
+        cleanup_calls = sandbox.process.exec.await_args_list[-2:]
+        assert cleanup_calls[0].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert cleanup_calls[1].args[0].startswith("rm -f /tmp/benchflow_pty_exec_")
+        assert secret not in cleanup_calls[0].args[0]
+        assert secret not in cleanup_calls[1].args[0]
 
     @pytest.mark.asyncio
     async def test_direct_daytona_pty_runs_without_compose_and_hides_env(self):
@@ -680,10 +687,11 @@ class TestDaytonaPtyProcessSecretTransport:
         assert len(ptys[0].inputs) == 2
         sent_payload = "\n".join(ptys[0].inputs)
         assert "docker compose" not in sent_payload
-        assert "cd /workspace/agent_workspace" in sent_payload
-        assert ". /tmp/benchflow_env_" in sent_payload
-        assert "rm -f /tmp/benchflow_env_" in sent_payload
-        assert "exec bash -lc 'openhands acp --always-approve'" in sent_payload
+        assert "cd /workspace/agent_workspace" not in sent_payload
+        assert ". /tmp/benchflow_env_" not in sent_payload
+        assert "rm -f /tmp/benchflow_env_" not in sent_payload
+        assert "exec bash -lc 'openhands acp --always-approve'" not in sent_payload
+        assert ptys[0].inputs[1].startswith("exec sh /tmp/benchflow_pty_exec_")
         assert "--env OPENAI_API_KEY" not in sent_payload
         assert secret not in sent_payload
         bootstrap_call = sandbox.process.exec.await_args_list[0]
@@ -711,11 +719,14 @@ class TestDaytonaPtyProcessSecretTransport:
         assert ptys[0].killed
         assert ptys[0].disconnected
         calls = sandbox.process.exec.await_args_list
-        assert len(calls) == 2
+        assert len(calls) == 4
         assert calls[0].args[0].startswith("sh -c ")
         assert calls[0].kwargs["env"] == {"GEMINI_API_KEY": "secret"}
-        assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
-        assert "secret" not in calls[1].args[0]
+        assert "docker compose -p test exec" in calls[1].args[0]
+        assert calls[2].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert calls[3].args[0].startswith("rm -f /tmp/benchflow_pty_exec_")
+        assert "secret" not in calls[2].args[0]
+        assert "secret" not in calls[3].args[0]
 
     @pytest.mark.asyncio
     async def test_pty_marker_timeout_raises_typed_transport_error(self, monkeypatch):
@@ -738,11 +749,14 @@ class TestDaytonaPtyProcessSecretTransport:
         assert ptys[0].disconnected
         assert exc_info.value.diagnostic.transport_diagnosis == "pty_startup_timeout"
         calls = sandbox.process.exec.await_args_list
-        assert len(calls) == 2
+        assert len(calls) == 4
         assert calls[0].args[0].startswith("sh -c ")
         assert calls[0].kwargs["env"] == {"GEMINI_API_KEY": "secret"}
-        assert calls[1].args[0].startswith("rm -f /tmp/benchflow_env_")
-        assert "secret" not in calls[1].args[0]
+        assert "docker compose -p test exec" in calls[1].args[0]
+        assert calls[2].args[0].startswith("rm -f /tmp/benchflow_env_")
+        assert calls[3].args[0].startswith("rm -f /tmp/benchflow_pty_exec_")
+        assert "secret" not in calls[2].args[0]
+        assert "secret" not in calls[3].args[0]
 
     @pytest.mark.asyncio
     async def test_pty_readline_timeout_uses_default_when_env_is_missing(

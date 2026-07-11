@@ -347,6 +347,81 @@ def register_tasks(app: typer.Typer) -> None:
         console.print(f"  losses: {len(report.losses)}")
         console.print("  report: compatibility/export-report.json")
 
+    @tasks_app.command("snapshot-hf")
+    def tasks_snapshot_hf(
+        repo_id: Annotated[
+            str,
+            typer.Argument(help="Hugging Face dataset repo ID, e.g. org/name"),
+        ],
+        output_dir: Annotated[
+            Path,
+            typer.Argument(help="Local output directory for the materialized snapshot"),
+        ],
+        revision: Annotated[
+            str | None,
+            typer.Option(
+                "--revision",
+                "--ref",
+                help="Dataset revision, branch, tag, or commit",
+            ),
+        ] = None,
+        path: Annotated[
+            str | None,
+            typer.Option(
+                "--path",
+                help="Optional subpath inside the dataset repo, e.g. tasks",
+            ),
+        ] = None,
+        cache_dir: Annotated[
+            Path | None,
+            typer.Option("--cache-dir", help="Optional Hugging Face cache directory"),
+        ] = None,
+        overwrite: Annotated[
+            bool,
+            typer.Option("--overwrite", help="Replace an existing output directory"),
+        ] = False,
+        include_task: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--include-task",
+                help="Download only this task directory; repeat for multiple tasks",
+            ),
+        ] = None,
+    ) -> None:
+        """Materialize a Hugging Face dataset task tree with provenance."""
+        from benchflow._utils.hf_datasets import SOURCE_SIDECAR, snapshot_hf_dataset
+        from benchflow.task.discovery import is_task_dir, resolve_task_collection_root
+
+        try:
+            snapshot = snapshot_hf_dataset(
+                repo_id,
+                output_dir=output_dir,
+                revision=revision,
+                path=path,
+                cache_dir=cache_dir,
+                overwrite=overwrite,
+                include_tasks=include_task or (),
+            )
+        except (ImportError, OSError, ValueError) as e:
+            print_error(f"{e}")
+            raise typer.Exit(1) from None
+
+        task_root = resolve_task_collection_root(snapshot.path)
+        if is_task_dir(task_root):
+            task_count = 1
+        else:
+            task_count = sum(
+                1
+                for child in task_root.iterdir()
+                if child.is_dir() and is_task_dir(child)
+            )
+        console.print(f"[green]Snapshot:[/green] {escape(str(snapshot.path))}")
+        console.print(f"  tasks: {task_count} under {escape(str(task_root))}")
+        console.print(
+            f"  source: {escape(repo_id)}@{escape(str(snapshot.provenance['resolved_revision']))}"
+        )
+        console.print(f"  provenance: {SOURCE_SIDECAR}")
+
     @tasks_app.command("digest")
     def tasks_digest(
         path: Annotated[

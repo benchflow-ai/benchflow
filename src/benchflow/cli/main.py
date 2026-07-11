@@ -48,6 +48,7 @@ from benchflow.cli.agent import register_agent
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.environment import register_environment
 from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_eval
+from benchflow.cli.eval_lift import register_eval_lift
 from benchflow.cli.hub import register_hub
 from benchflow.cli.monitor import register_monitor
 from benchflow.cli.sandbox import register_sandbox
@@ -195,6 +196,7 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 # Canonical single `bench eval adopt` command (eval is the universal benchmark
 # entry point; adopt makes a foreign benchmark runnable).
 register_eval_adopt(eval_app)
+register_eval_lift(eval_app)
 
 
 @eval_app.command("run")
@@ -787,6 +789,13 @@ def run_batch_eval(
     """
     from benchflow.eval_sharding import ShardWorkerError
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
+    from benchflow.task.discovery import resolve_task_collection_root
+
+    task_collection_dir = resolve_task_collection_root(resolved_tasks_dir)
+    if eval_config.source_provenance is None:
+        from benchflow._utils.hf_datasets import load_source_sidecar
+
+        eval_config.source_provenance = load_source_sidecar(task_collection_dir)
 
     try:
         if plan.request.retry_attempts is not None:
@@ -800,7 +809,7 @@ def run_batch_eval(
             if progress_enabled(console):
                 live = LiveEvalProgress(
                     console,
-                    label=_eval_label(plan, resolved_tasks_dir),
+                    label=_eval_label(plan, task_collection_dir),
                     agent=eval_config.agent,
                     model=eval_config.model,
                     sandbox=eval_config.environment,
@@ -814,7 +823,7 @@ def run_batch_eval(
             with run_ctx:
                 result = asyncio.run(
                     Evaluation(
-                        tasks_dir=str(resolved_tasks_dir),
+                        tasks_dir=str(task_collection_dir),
                         jobs_dir=plan.output_jobs_dir,
                         config=eval_config,
                         **hooks,
@@ -825,7 +834,7 @@ def run_batch_eval(
 
             result = asyncio.run(
                 run_sharded_evaluation(
-                    tasks_dir=resolved_tasks_dir,
+                    tasks_dir=task_collection_dir,
                     jobs_dir=Path(plan.output_jobs_dir),
                     config=eval_config,
                     worker_concurrency=plan.request.worker_concurrency,
@@ -842,7 +851,7 @@ def run_batch_eval(
 
     job_name = getattr(result, "job_name", None)
     job_dir = Path(plan.output_jobs_dir) / job_name if job_name else None
-    postprocess_eval_artifacts(plan, resolved_tasks_dir, eval_config, job_dir)
+    postprocess_eval_artifacts(plan, task_collection_dir, eval_config, job_dir)
     _report_eval_result(result, job_dir)
     _exit_if_evaluation_had_errors(result)
     return result
