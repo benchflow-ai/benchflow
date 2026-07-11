@@ -835,18 +835,16 @@ class Evaluation:
             tasks_dir = Path(ref)
             if not tasks_dir.exists() and ref in TASK_ALIASES:
                 tasks_dir = ensure_tasks(ref)
-            elif not tasks_dir.exists():
-                hint = ""
-                if str(ref) == ".cache/programbench-benchflow":
-                    hint = (
-                        " Generate ProgramBench tasks first with "
-                        "`python benchmarks/programbench/run_programbench.py "
-                        "benchmarks/programbench/programbench-gemini-flash-lite.yaml` "
-                        "or `python -m benchmarks.programbench.main --output-dir "
-                        ".cache/programbench-benchflow`."
-                    )
+            elif str(ref) == ".cache/programbench-benchflow":
                 config_note = f" in {config_path}" if config_path is not None else ""
-                raise ValueError(f"YAML tasks_dir not found{config_note}: {ref}.{hint}")
+                raise ValueError(
+                    f"YAML tasks_dir not found{config_note}: {ref}. "
+                    "Generate ProgramBench tasks first with "
+                    "`python benchmarks/programbench/run_programbench.py "
+                    "benchmarks/programbench/programbench-gemini-flash-lite.yaml` "
+                    "or `python -m benchmarks.programbench.main --output-dir "
+                    ".cache/programbench-benchflow`."
+                )
         else:
             raise ValueError("YAML config must have 'source' or 'tasks_dir'")
 
