@@ -117,6 +117,10 @@ def classify_error(error: str | None) -> str | None:
     if not error:
         return None
     lower = error.lower()
+    if "missing credential" in lower or (
+        "required for model" in lower and "not set" in lower
+    ):
+        return PROVIDER_AUTH
     if "agent idle for" in lower:
         return IDLE_TIMEOUT
     if "install failed" in lower:

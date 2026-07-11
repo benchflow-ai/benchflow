@@ -75,6 +75,7 @@ from benchflow._types import Role, Scene, Turn
 from benchflow._utils.scoring import classify_error as classify_error
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
+from benchflow.agents.env import MissingAgentCredentialError
 from benchflow.agents.registry import AGENTS
 from benchflow.contracts import (
     AgentProtocolError,
@@ -2039,6 +2040,9 @@ class Rollout:
             # placeholder during cleanup.
             self._error = str(e)
             logger.error(str(e))
+        except MissingAgentCredentialError as e:
+            self._error = f"Missing credential: {e}"
+            logger.error(self._error)
         except Exception as e:
             self._error = str(e)
             logger.error("Run failed", exc_info=True)

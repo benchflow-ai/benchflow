@@ -74,6 +74,57 @@ def test_eval_create_reasoning_effort_lands_in_config(tmp_path: Path):
     assert captured["config"].reasoning_effort == "max"
 
 
+def test_eval_create_max_retries_alias_lands_in_config(tmp_path: Path):
+    """Guards the fix for Linear ENG-169: --max-retries reaches RetryConfig."""
+    tasks = _make_tasks_dir(tmp_path)
+    captured: dict = {}
+
+    with _stub_evaluation_run(captured):
+        eval_run(
+            tasks_dir=tasks,
+            max_retries=3,
+            jobs_dir=str(tmp_path / "jobs"),
+        )
+
+    assert captured["config"].retry.max_retries == 3
+
+
+def test_eval_create_max_retries_alias_overrides_yaml_config(tmp_path: Path):
+    """Guards the fix for Linear ENG-169 on --config eval runs."""
+    tasks = _make_tasks_dir(tmp_path)
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        "tasks_dir: " + str(tasks) + "\nagent: oracle\nmax_retries: 1\n"
+    )
+    captured: dict = {}
+
+    with _stub_evaluation_run(captured):
+        eval_run(
+            config_file=yaml_path,
+            max_retries=4,
+            jobs_dir=str(tmp_path / "jobs"),
+        )
+
+    assert captured["config"].retry.max_retries == 4
+
+
+def test_eval_create_rejects_duplicate_retry_aliases(tmp_path: Path):
+    """Guards the fix for Linear ENG-169 against ambiguous retry aliases."""
+    tasks = _make_tasks_dir(tmp_path)
+
+    try:
+        eval_run(
+            tasks_dir=tasks,
+            retry_attempts=1,
+            max_retries=2,
+            jobs_dir=str(tmp_path / "jobs"),
+        )
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected typer.Exit for duplicate retry aliases")
+
+
 def test_eval_create_reasoning_effort_overrides_yaml_config(tmp_path: Path):
     """Guards SkillsBench PR #825 so CLI effort overrides YAML defaults."""
     tasks = _make_tasks_dir(tmp_path)
