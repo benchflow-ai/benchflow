@@ -149,7 +149,8 @@ GEMINI_API_KEY=... bench eval run \
   --model gemini-3.1-pro-preview \
   --sandbox daytona \
   --skill-mode with-skill \
-  --skills-dir tasks/edit-pdf/environment/skills
+  --skills-dir tasks/edit-pdf/environment/skills \
+  --agent-env BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch from YAML config
 bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
@@ -180,8 +181,10 @@ cd skillsbench && git sparse-checkout set tasks/edit-pdf
 bench eval run --tasks-dir tasks/edit-pdf --agent gemini --model gemini-3.1-pro-preview
 ```
 
-See [Architecture: skill loading](./architecture.md#skill-loading) for how
-mounted skills reach the agent.
+When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
+option. See [Architecture: skill loading](./architecture.md#skill-loading) for
+how mounted skills reach the agent and how `name`, `description`, and `full`
+differ.
 
 ### Where results land
 

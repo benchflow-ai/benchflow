@@ -67,8 +67,19 @@ class SDK:
     def _resolve_prompts(
         task_path: Path,
         prompts: list[str | None] | None,
+        skills_dir: str | Path | None = None,
+        task_skills_dir: str | Path | None = None,
+        skill_nudge: str = "",
+        agent: str | None = None,
     ) -> list[str]:
-        return _resolve_prompts(task_path, prompts)
+        return _resolve_prompts(
+            task_path,
+            prompts,
+            skills_dir=skills_dir,
+            task_skills_dir=task_skills_dir,
+            skill_nudge=skill_nudge,
+            agent=agent,
+        )
 
     @staticmethod
     def _build_result(

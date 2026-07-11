@@ -230,7 +230,8 @@ bench eval run \
   --agent claude-agent-acp \
   --sandbox daytona \
   --skills-dir skills/ \
-  --skill-mode with-skill
+  --skill-mode with-skill \
+  --agent-env BENCHFLOW_SKILL_NUDGE=name
 ```
 
 `--skill-mode with-skill` is required whenever you pass `--skills-dir` (omitting

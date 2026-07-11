@@ -46,6 +46,10 @@ class TaskSkillPolicy:
     strip_bundled_dir_from_copy: bool
 
     @property
+    def prompt_dir(self) -> Path | None:
+        return self.host_dir
+
+    @property
     def needs_task_copy(self) -> bool:
         return self.has_bundled_dir or self.host_dir is not None
 

@@ -141,6 +141,7 @@ from benchflow.rollout._setup import (
 from benchflow.rollout._setup import _resolve_agent_cwd as _resolve_agent_cwd
 from benchflow.rollout._setup import _resolve_prompts as _resolve_prompts
 from benchflow.rollout._setup import _run_oracle as _run_oracle
+from benchflow.rollout._setup import _skill_nudge as _skill_nudge
 from benchflow.rollout._setup import _start_env_and_upload as _start_env_and_upload
 from benchflow.rollout._setup import (
     _task_disallows_internet as _task_disallows_internet,
@@ -869,7 +870,14 @@ class Rollout:
             declared_sandbox_skills_dir=getattr(env_config, "skills_dir", None),
         )
         self._task_skill_policy = task_skill_policy
-        self._resolved_prompts = _resolve_prompts(cfg.task_path, cfg.prompts)
+        self._resolved_prompts = _resolve_prompts(
+            cfg.task_path,
+            cfg.prompts,
+            skills_dir=task_skill_policy.prompt_dir,
+            skill_nudge=_skill_nudge(cfg.agent_env),
+            agent=cfg.primary_agent,
+            planes=self._planes,
+        )
         self._agent_launch = self._planes.agent_launch(
             cfg.primary_agent,
             disallow_web_tools=self._disallow_web_tools,
