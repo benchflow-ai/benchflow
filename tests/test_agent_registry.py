@@ -212,20 +212,13 @@ class TestOpenHandsConfig:
         assert 'elif [ -n "$LLM_REASONING_EFFORT" ]' in cfg.launch_cmd
         assert ',"reasoning_effort":"%s",' in cfg.launch_cmd
         assert '"litellm_extra_body":{"reasoning_effort":"%s"}' in cfg.launch_cmd
-        assert (
-            '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT"' in cfg.launch_cmd
-        )
+        assert '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT"' in cfg.launch_cmd
 
-    def test_openhands_launch_cmd_passes_max_via_untyped_responses_body(
-        self, tmp_path
-    ):
+    def test_openhands_launch_cmd_passes_max_via_untyped_responses_body(self, tmp_path):
         """Guards PR #921: OpenHands' typed effort enum stops at xhigh."""
         cfg = AGENTS["openhands"]
         assert 'if [ "$LLM_REASONING_EFFORT" = "max" ]' in cfg.launch_cmd
-        assert (
-            ',"litellm_extra_body":{"reasoning":{"effort":"max"}}'
-            in cfg.launch_cmd
-        )
+        assert ',"litellm_extra_body":{"reasoning":{"effort":"max"}}' in cfg.launch_cmd
         settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
         env = {
             **os.environ,
@@ -241,9 +234,7 @@ class TestOpenHandsConfig:
             (tmp_path / ".openhands" / "agent_settings.json").read_text()
         )
         assert "reasoning_effort" not in settings["llm"]
-        assert settings["llm"]["litellm_extra_body"] == {
-            "reasoning": {"effort": "max"}
-        }
+        assert settings["llm"]["litellm_extra_body"] == {"reasoning": {"effort": "max"}}
 
     def test_harvey_lab_installs_python_deps_in_venv(self):
         """Guards the v0.5 stress failure where pip hit PEP 668 in Ubuntu."""
