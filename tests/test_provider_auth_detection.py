@@ -399,7 +399,7 @@ async def test_run_auth_failure_sets_provisional_error_before_cleanup(
 async def test_run_missing_credential_error_is_clean_provider_auth(
     tmp_path, monkeypatch, caplog
 ):
-    """Guards the fix for Linear ENG-257: missing credentials avoid tracebacks."""
+    """Guards the fix from PR #918 / Linear ENG-257: missing credentials avoid tracebacks."""
     from benchflow._utils.scoring import PROVIDER_AUTH, classify_error
     from benchflow.agents.env import MissingAgentCredentialError
 

@@ -75,7 +75,7 @@ def test_eval_create_reasoning_effort_lands_in_config(tmp_path: Path):
 
 
 def test_eval_create_max_retries_alias_lands_in_config(tmp_path: Path):
-    """Guards the fix for Linear ENG-169: --max-retries reaches RetryConfig."""
+    """Guards the fix from PR #918 / Linear ENG-169: --max-retries reaches RetryConfig."""
     tasks = _make_tasks_dir(tmp_path)
     captured: dict = {}
 
@@ -90,7 +90,7 @@ def test_eval_create_max_retries_alias_lands_in_config(tmp_path: Path):
 
 
 def test_eval_create_max_retries_alias_overrides_yaml_config(tmp_path: Path):
-    """Guards the fix for Linear ENG-169 on --config eval runs."""
+    """Guards the fix from PR #918 / Linear ENG-169 on --config eval runs."""
     tasks = _make_tasks_dir(tmp_path)
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text(
@@ -109,7 +109,7 @@ def test_eval_create_max_retries_alias_overrides_yaml_config(tmp_path: Path):
 
 
 def test_eval_create_rejects_duplicate_retry_aliases(tmp_path: Path):
-    """Guards the fix for Linear ENG-169 against ambiguous retry aliases."""
+    """Guards the fix from PR #918 / Linear ENG-169 against ambiguous retry aliases."""
     tasks = _make_tasks_dir(tmp_path)
 
     try:

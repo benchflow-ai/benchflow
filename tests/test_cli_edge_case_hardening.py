@@ -231,7 +231,7 @@ def test_yaml_string_prompts_are_wrapped_in_a_list(tmp_path):
 
 
 def test_from_yaml_rejects_missing_tasks_dir_with_programbench_hint(tmp_path):
-    """Guards the fix for Linear ENG-162: missing ProgramBench tasks fail cleanly."""
+    """Guards the fix from PR #918 / Linear ENG-162: missing ProgramBench tasks fail cleanly."""
     from benchflow.evaluation import Evaluation
 
     p = tmp_path / "programbench.yaml"
@@ -242,7 +242,7 @@ def test_from_yaml_rejects_missing_tasks_dir_with_programbench_hint(tmp_path):
 
 
 def test_eval_create_config_missing_tasks_dir_no_raw_traceback(tmp_path):
-    """Guards the fix for Linear ENG-162 at the CLI config boundary."""
+    """Guards the fix from PR #918 / Linear ENG-162 at the CLI config boundary."""
     p = tmp_path / "programbench.yaml"
     p.write_text("tasks_dir: .cache/programbench-benchflow\nagent: oracle\n")
 
