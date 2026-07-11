@@ -484,8 +484,12 @@ async def connect_acp(
             if environment == "docker":
                 live_proc = DockerProcess.from_sandbox_env(env)
             elif environment == "daytona":
-                live_proc = await DaytonaPtyProcess.from_sandbox_env(env)
-                logger.info("Using PTY transport for Daytona sandbox")
+                if agent == "gemini":
+                    live_proc = await DaytonaProcess.from_sandbox_env(env)
+                    logger.info("Using SSH transport for Gemini on Daytona")
+                else:
+                    live_proc = await DaytonaPtyProcess.from_sandbox_env(env)
+                    logger.info("Using PTY transport for Daytona sandbox")
             else:
                 is_dind = hasattr(env, "_strategy") and hasattr(
                     env._strategy, "_compose_cmd"
