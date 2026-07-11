@@ -835,7 +835,7 @@ class Evaluation:
             tasks_dir = Path(ref)
             if not tasks_dir.exists() and ref in TASK_ALIASES:
                 tasks_dir = ensure_tasks(ref)
-            elif str(ref) == ".cache/programbench-benchflow":
+            elif not tasks_dir.exists() and str(ref) == ".cache/programbench-benchflow":
                 config_note = f" in {config_path}" if config_path is not None else ""
                 raise ValueError(
                     f"YAML tasks_dir not found{config_note}: {ref}. "

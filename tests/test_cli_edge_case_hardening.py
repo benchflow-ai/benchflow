@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -239,6 +240,21 @@ def test_from_yaml_rejects_missing_tasks_dir_with_programbench_hint(tmp_path):
 
     with pytest.raises(ValueError, match=r"run_programbench\.py"):
         Evaluation.from_yaml(p)
+
+
+def test_from_yaml_accepts_existing_programbench_tasks_dir(tmp_path, monkeypatch):
+    """Guards the fix from PR #918 / Linear ENG-162: generated ProgramBench dirs load."""
+    from benchflow.evaluation import Evaluation
+
+    (tmp_path / ".cache" / "programbench-benchflow").mkdir(parents=True)
+    p = tmp_path / "programbench.yaml"
+    p.write_text("tasks_dir: .cache/programbench-benchflow\nagent: oracle\n")
+
+    monkeypatch.chdir(tmp_path)
+
+    ev = Evaluation.from_yaml(p)
+
+    assert ev._tasks_dir == Path(".cache/programbench-benchflow")
 
 
 def test_eval_create_config_missing_tasks_dir_no_raw_traceback(tmp_path):
