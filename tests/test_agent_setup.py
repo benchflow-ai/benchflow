@@ -14,6 +14,22 @@ from benchflow.models import AgentInstallError
 from benchflow.rollout._setup import _agent_process_kill_pattern
 
 
+class LocalShellEnv:
+    async def exec(self, command: str, timeout_sec: int):
+        completed = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+        return SimpleNamespace(
+            return_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )
+
+
 @pytest.mark.asyncio
 async def test_deploy_skills_symlinks_agent_skill_paths_instead_of_copying(tmp_path):
     env = MagicMock()
@@ -82,10 +98,18 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
         name="test-agent",
         install_cmd="true",
         launch_cmd="true",
-        skill_paths=["$HOME/.agents/skills", "$WORKSPACE/skills"],
+        skill_paths=[
+            "$HOME/.agents/skills",
+            "$HOME/.claude/skills",
+            "$HOME/.codex/skills",
+            "$HOME/.opencode/skills",
+            "$WORKSPACE/skills",
+        ],
     )
     skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
+    skill = skills_dir / "mesh-analysis" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# Mesh analysis\n")
 
     await deploy_skills(
         env=env,
@@ -103,9 +127,78 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
     assert " && " in distributed_link_cmd
     assert ";" not in distributed_link_cmd
     assert "ln -sfn /skills /home/agent/.agents/skills" in distributed_link_cmd
+    assert "ln -sfn /skills /home/agent/.claude/skills" in distributed_link_cmd
+    assert "ln -sfn /skills /home/agent/.codex/skills" in distributed_link_cmd
+    assert "ln -sfn /skills /home/agent/.opencode/skills" in distributed_link_cmd
     assert "ln -sfn /skills /workspace/skills" in distributed_link_cmd
+    for discovery_path in (
+        "/home/agent/.agents/skills",
+        "/home/agent/.claude/skills",
+        "/home/agent/.codex/skills",
+        "/home/agent/.opencode/skills",
+        "/workspace/skills",
+    ):
+        assert f"find -L {discovery_path}" in distributed_link_cmd
+    assert distributed_link_cmd.count("mesh-analysis") == 5
     assert "/root/.agents/skills" not in distributed_link_cmd
     assert "/app/skills" not in distributed_link_cmd
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_fails_closed_when_expected_catalog_is_unreadable(tmp_path):
+    """Guards the agent-neutral task-skill fidelity gate from PR #919."""
+    env = MagicMock()
+    env.exec = AsyncMock(
+        return_value=MagicMock(return_code=1, stdout="", stderr="missing SKILL.md")
+    )
+    env.upload_dir = AsyncMock()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$HOME/.opencode/skills"],
+    )
+    skills_dir = tmp_path / "skills"
+    skill = skills_dir / "mesh-analysis" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# Mesh analysis\n")
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"experiment_fidelity/skill_deployment_missing.*mesh-analysis",
+    ):
+        await deploy_skills(
+            env=env,
+            task_path=tmp_path,
+            skills_dir=skills_dir,
+            agent_cfg=agent_cfg,
+            sandbox_user="agent",
+            agent_cwd="/workspace",
+        )
+
+
+@pytest.mark.asyncio
+async def test_deploy_skills_rejects_dangling_remote_skill_root(tmp_path):
+    """Guards every agent discovery path against a dangling source in PR #919."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    agent_cfg = AgentConfig(
+        name="test-agent",
+        install_cmd="true",
+        launch_cmd="true",
+        skill_paths=["$WORKSPACE/.agents/skills"],
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to link skills"):
+        await deploy_skills(
+            env=LocalShellEnv(),
+            task_path=tmp_path,
+            skills_dir=None,
+            agent_cfg=agent_cfg,
+            sandbox_user=None,
+            agent_cwd=str(workspace),
+            skills_sandbox_dir=str(tmp_path / "missing-skills"),
+        )
 
 
 @pytest.mark.asyncio

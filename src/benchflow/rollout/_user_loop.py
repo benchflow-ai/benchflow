@@ -131,6 +131,7 @@ async def _activate_step_skills(rollout: Rollout, step: Step) -> None:
     role = scene_step_role(step)
     source = str(skills_dir)
     local_source = Path(source).expanduser()
+    expected_skill_names: tuple[str, ...] = ()
     # Upload whenever skills_dir resolves to a real directory on the
     # orchestrator host, regardless of whether it arrived as a str or a
     # PathLike. The SkillsBench entrypoint passes an absolute *str* host
@@ -142,6 +143,9 @@ async def _activate_step_skills(rollout: Rollout, step: Step) -> None:
     # host is a sandbox path produced by an earlier scene and is linked
     # as-is.
     if local_source.is_dir():
+        expected_skill_names = tuple(
+            sorted(path.parent.name for path in local_source.glob("*/SKILL.md"))
+        )
         remote_source = f"/skills/{_safe_skill_name(scene_name)}"
         await _ensure_sandbox_dir(rollout._env, Path(remote_source).parent)
         await rollout._env.upload_dir(local_source, remote_source)
@@ -165,6 +169,7 @@ async def _activate_step_skills(rollout: Rollout, step: Step) -> None:
         home,
         rollout._agent_cwd,
         rollout._config.sandbox_user,
+        expected_skill_names=expected_skill_names,
     )
 
 

@@ -95,6 +95,77 @@ async def test_callback_pre_call_hook_preserves_input_only_requests():
     assert await logger.async_pre_call_hook(None, None, data, "responses") is None
 
 
+@pytest.mark.asyncio
+async def test_callback_rejects_missing_required_opencode_skill_before_provider(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards the OpenCode first-request catalog gate from PR #919."""
+    monkeypatch.setenv("BENCHFLOW_SKILL_CATALOG_GATE_AGENT", "opencode")
+    monkeypatch.setenv(
+        "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", json.dumps(["mesh-analysis"])
+    )
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    data = {
+        "model": "qwen35-9b-base",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "<available_skills><skill><name>customize-opencode</name>"
+                    "</skill></available_skills>"
+                ),
+            },
+            {"role": "user", "content": "calculate mass"},
+        ],
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"experiment_fidelity/skill_catalog_missing.*mesh-analysis",
+    ):
+        await logger.async_pre_call_hook(None, None, data, "completion")
+
+
+@pytest.mark.asyncio
+async def test_callback_accepts_matching_opencode_catalog_once(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards the OpenCode first-request catalog gate from PR #919."""
+    monkeypatch.setenv("BENCHFLOW_SKILL_CATALOG_GATE_AGENT", "opencode")
+    monkeypatch.setenv(
+        "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", json.dumps(["mesh-analysis"])
+    )
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    first = {
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "<available_skills>"
+                    "<skill><name>customize-opencode</name></skill>"
+                    "<skill><name>mesh-analysis</name></skill>"
+                    "</available_skills>"
+                ),
+            }
+        ]
+    }
+
+    assert await logger.async_pre_call_hook(None, None, first, "completion") is None
+    assert (
+        await logger.async_pre_call_hook(
+            None,
+            None,
+            {"messages": [{"role": "user", "content": "continue"}]},
+            "completion",
+        )
+        is None
+    )
+
+
 def test_litellm_callback_jsonl_imports_usage_and_cost():
     record = {
         "event": "success",

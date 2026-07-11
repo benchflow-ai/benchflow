@@ -28,6 +28,7 @@ async def test_trial_connect_starts_litellm_before_connect_acp(tmp_path: Path):
     rollout._agent_cwd = "/workspace"
     rollout._env = SimpleNamespace()
     rollout._usage_runtime = None
+    rollout._required_skill_names = ("mesh-analysis",)
     rollout._timing = {}
     rollout._reapply_ask_user_handler = lambda: None
     rollout._attach_trajectory_writer = lambda _rollout_dir: None
@@ -36,6 +37,7 @@ async def test_trial_connect_starts_litellm_before_connect_acp(tmp_path: Path):
     async def fake_litellm(**kwargs):
         calls.append("litellm")
         assert kwargs["environment"] == "docker"
+        assert kwargs["required_skill_names"] == ("mesh-analysis",)
         env = dict(kwargs["agent_env"])
         env["OPENAI_BASE_URL"] = "http://host.docker.internal:4000/v1"
         return env, SimpleNamespace(kind="litellm")

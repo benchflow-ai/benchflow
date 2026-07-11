@@ -920,6 +920,15 @@ class Rollout:
         self._effective_task_path = effective_task_path
         self._effective_skills_dir = effective_skills_dir
         self._effective_skills_sandbox_dir = task_skill_policy.sandbox_dir
+        self._required_skill_names = (
+            tuple(
+                sorted(
+                    path.parent.name for path in effective_skills_dir.glob("*/SKILL.md")
+                )
+            )
+            if effective_skills_dir is not None
+            else ()
+        )
 
         # Honour an externally-supplied sandbox (use_prebuilt_env, set by
         # Runtime.execute() when the caller passes a live Environment).
@@ -1176,6 +1185,7 @@ class Rollout:
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            required_skill_names=getattr(self, "_required_skill_names", ()),
         )
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
@@ -2133,6 +2143,7 @@ class Rollout:
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            required_skill_names=getattr(self, "_required_skill_names", ()),
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
