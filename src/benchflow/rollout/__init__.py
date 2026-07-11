@@ -1133,7 +1133,7 @@ class Rollout:
             self._env,
             self._effective_task_path,
             self._effective_skills_dir,
-            self._agent_cfg,
+            self._agent_cfg or self._planes.agent_config(agent_name),
             cfg.sandbox_user,
             self._agent_cwd,
             skills_sandbox_dir=self._effective_skills_sandbox_dir,

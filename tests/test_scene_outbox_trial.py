@@ -346,7 +346,7 @@ async def test_scene_skills_upload_local_root_and_link_agent_paths(
 
 
 async def test_scene_skills_link_remote_generated_root() -> None:
-    """Scene.skills_dir can point at a sandbox path produced by an earlier scene."""
+    """PR #919: validate scene-local sandbox skills across discovery paths."""
     scene = Scene(
         name="solve",
         roles=[Role("solver", "claude-agent-acp", "haiku")],
@@ -393,7 +393,7 @@ async def test_scene_skills_prefers_remote_string_path_over_matching_host_path(
 
 
 async def test_scene_skills_upload_absolute_str_host_dir(tmp_path: Path) -> None:
-    """An absolute *str* skills_dir that exists on the host is uploaded.
+    """PR #919: an absolute *str* host skills_dir is uploaded and validated.
 
     Regression test guarding the OpenHands with-skills delivery fix: a prior
     change gated the scene-skill upload on ``isinstance(skills_dir, os.PathLike)``,

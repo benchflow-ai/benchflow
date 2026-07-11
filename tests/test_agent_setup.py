@@ -91,6 +91,7 @@ async def test_deploy_skills_can_skip_task_declared_skills(tmp_path):
 
 @pytest.mark.asyncio
 async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_path):
+    """PR #919: every configured discovery path must expose the full catalog."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
     env.upload_dir = AsyncMock()

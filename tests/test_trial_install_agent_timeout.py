@@ -108,7 +108,7 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
 
 @pytest.mark.asyncio
 async def test_install_agent_honors_skip_agent_install(tmp_path, monkeypatch):
-    """Guards #588: skip_install skips installer but keeps setup/credentials."""
+    """Guards #588 and PR #919: skip install still uses agent skill paths."""
     trial = _make_trial(
         tmp_path,
         agent="claude-agent-acp",
@@ -140,6 +140,7 @@ async def test_install_agent_honors_skip_agent_install(tmp_path, monkeypatch):
     write_credential_files_mock.assert_awaited_once()
     assert write_credential_files_mock.await_args.args[3] is None
     deploy_skills_mock.assert_awaited_once()
+    assert deploy_skills_mock.await_args.args[3] is AGENTS["claude-agent-acp"]
     assert trial._agent_cfg is None
     assert trial._agent_cwd == "/home/agent"
 

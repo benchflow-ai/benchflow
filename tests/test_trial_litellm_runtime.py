@@ -11,6 +11,7 @@ from benchflow.rollout import Role, Rollout, RolloutConfig
 
 @pytest.mark.asyncio
 async def test_trial_connect_starts_litellm_before_connect_acp(tmp_path: Path):
+    """PR #919: forward required skill names before the ACP connection."""
     rollout = Rollout.__new__(Rollout)
     rollout._config = RolloutConfig(
         task_path=tmp_path / "task",
