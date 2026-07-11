@@ -164,19 +164,35 @@ def _llm_steps_from_trajectory(
         exchanges = load_llm_trajectory_jsonl(path, strict=True)
     except PrimeSftTrajectoryJsonlError as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
+    skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
         response = exchange.get("response")
         if not isinstance(response, dict) or response.get("status_code") != 200:
             continue
-        normalized, _ = normalize_prime_sft_exchange(exchange)
+        normalized, skip_reason = normalize_prime_sft_exchange(exchange)
         if normalized is None:
+            skipped_successful.append(
+                f"exchange {exchange_idx}: {skip_reason or 'normalization failed'}"
+            )
             continue
         prompt = normalized.messages[:-1]
         completion = normalized.messages[-1:]
         if not completion:
+            skipped_successful.append(f"exchange {exchange_idx}: no completion")
             continue
         if normalized.tool_defs:
-            tool_defs = normalized.tool_defs
+            known_names = {
+                tool.get("function", {}).get("name")
+                for tool in tool_defs
+                if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+            }
+            tool_defs.extend(
+                tool
+                for tool in normalized.tool_defs
+                if isinstance(tool, dict)
+                and isinstance(tool.get("function"), dict)
+                and tool["function"].get("name") not in known_names
+            )
         response_body = (
             cast(dict[str, Any], response.get("body"))
             if isinstance(response.get("body"), dict)
@@ -194,16 +210,28 @@ def _llm_steps_from_trajectory(
             "tokens": None,
             "reward": reward,
             "advantage": 0.0,
-            "is_truncated": bool(
-                response_body.get("incomplete_details")
-                or response_body.get("truncation")
-                or is_truncated
-            ),
+            "is_truncated": _response_is_truncated(response_body) or is_truncated,
             "trajectory_id": f"{trajectory_id_prefix}__llm_{exchange_idx}",
             "extras": extras,
         }
         steps.append(step)
+    if skipped_successful:
+        return (
+            steps,
+            tool_defs,
+            "Successful LLM exchanges were omitted from results.jsonl: "
+            + "; ".join(skipped_successful),
+        )
     return steps, tool_defs, None
+
+
+def _response_is_truncated(response_body: dict[str, Any]) -> bool:
+    if response_body.get("incomplete_details"):
+        return True
+    truncation = response_body.get("truncation")
+    if isinstance(truncation, str):
+        return truncation.strip().lower() not in {"", "disabled", "false", "none"}
+    return bool(truncation)
 
 
 def _top_level_prompt_completion(
@@ -285,7 +313,11 @@ def build_rollout_results_record(
     training_ready_reason = None
     if not training_ready:
         if llm_export_error:
-            training_ready_reason = "invalid_llm_trajectory_jsonl"
+            training_ready_reason = (
+                "invalid_llm_trajectory_jsonl"
+                if llm_export_error.startswith("Invalid LLM trajectory JSONL:")
+                else "export_error"
+            )
         elif validation_error:
             training_ready_reason = "invalid_prime_sft_row"
         elif effective_export_error:

@@ -238,3 +238,38 @@ def test_validator_rejects_unready_results_for_healthy_rollout(tmp_path: Path) -
 
     assert report["healthy"] is False
     assert any("training_ready=false" in issue for issue in report["issues"])
+
+
+def test_validator_rejects_results_with_dropped_successful_exchange(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #921 MAX review against silently omitted LLM exchanges."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    row = json.loads(llm_path.read_text())
+    _write_jsonl(llm_path, [row, row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is False
+    assert any(
+        "results trajectory steps 1 != successful LLM responses 2" in issue
+        for issue in report["issues"]
+    )
+
+
+def test_validator_rejects_nested_truncated_training_step(tmp_path: Path) -> None:
+    """Guards PR #921 MAX review against `truncation=\"disabled\"` truthiness."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"][0]["is_truncated"] = True
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is False
+    assert any(
+        "trajectory[0] is incorrectly truncated" in issue for issue in report["issues"]
+    )

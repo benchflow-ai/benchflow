@@ -607,6 +607,123 @@ def test_results_jsonl_uses_canonical_prime_sft_normalization(tmp_path):
     assert validate_prime_sft_jsonl(artifact, expected_rows=1)["ok"] is True
 
 
+def test_results_jsonl_keeps_all_repaired_exchanges_and_disabled_truncation(
+    tmp_path,
+):
+    """Guards PR #921 MAX canary against silent exchange loss."""
+    rollout_dir = tmp_path / "rollout-max-multi-exchange"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    first = _llm_exchange()
+    first["response"]["body"]["truncation"] = "disabled"
+    second = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"ls"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "README.md"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "pyproject.toml",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    second["response"]["body"]["truncation"] = "disabled"
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(first) + "\n" + json.dumps(second) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+        total_tokens=26,
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 2
+    assert all(step["is_truncated"] is False for step in row["trajectory"])
+    assert {tool["function"]["name"] for tool in row["tool_defs"]} == {"terminal"}
+    assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert row["completion"][1] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "README.md\npyproject.toml",
+    }
+    assert row["completion"][-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_results_jsonl_fails_closed_when_successful_exchange_is_omitted(tmp_path):
+    """Guards PR #921 MAX canary against green rows with dropped exchanges."""
+    rollout_dir = tmp_path / "rollout-invalid-later-exchange"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    invalid = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {"role": "tool", "tool_call_id": "orphan", "content": "README.md"},
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(_llm_exchange()) + "\n" + json.dumps(invalid) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "export_error"
+    assert "Successful LLM exchanges were omitted" in row["error"]["error_chain_str"]
+
+
 def test_results_jsonl_redacts_without_corrupting_secret_named_booleans(tmp_path):
     """Secret-carrier field names must not turn JSON booleans into bare tokens."""
     rollout_dir = tmp_path / "rollout-redaction-bool"

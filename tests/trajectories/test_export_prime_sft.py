@@ -12,6 +12,7 @@ from benchflow.trajectories.export_prime_sft import (
     convert_benchflow_rollouts_to_prime_sft_rows,
     export_prime_sft_jsonl,
     load_llm_trajectory_jsonl,
+    normalize_prime_sft_exchange,
     validate_prime_sft_jsonl,
 )
 
@@ -1114,6 +1115,45 @@ def test_convert_openhands_responses_shape_preserves_tool_calls(tmp_path: Path) 
         "content": "File created.",
     }
     assert row["messages"][-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_normalize_exchange_merges_duplicate_tool_output_fragments() -> None:
+    """Guards PR #921 MAX canary exchange conversion against silent drops."""
+    exchange = _exchange(final=False)
+    exchange["request"]["body"]["messages"] = [
+        {"role": "user", "content": "List files."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "arguments": {"command": "ls"},
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "README.md"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "pyproject.toml"},
+    ]
+
+    normalized, skip_reason = normalize_prime_sft_exchange(exchange)
+
+    assert skip_reason is None
+    assert normalized is not None
+    tool_messages = [
+        message for message in normalized.messages if message["role"] == "tool"
+    ]
+    assert tool_messages == [
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "README.md\npyproject.toml",
+        }
+    ]
 
 
 def test_convert_succeeds_when_trajectory_written_via_to_jsonl_with_secrets(

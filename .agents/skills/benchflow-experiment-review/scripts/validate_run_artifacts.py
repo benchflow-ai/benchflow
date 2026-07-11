@@ -250,6 +250,8 @@ def validate_llm(
     issues: list[str] = []
     request_count = 0
     response_count = 0
+    successful_response_count = 0
+    successful_exchange_indices: list[int] = []
     error_count = 0
     usage_count = 0
     for index, row in enumerate(rows, start=1):
@@ -266,6 +268,9 @@ def validate_llm(
             body = response.get("body")
             if isinstance(body, dict):
                 response_count += 1
+                if response.get("status_code") == 200:
+                    successful_response_count += 1
+                    successful_exchange_indices.append(index - 1)
                 if has_token_usage(body):
                     usage_count += 1
             else:
@@ -285,6 +290,8 @@ def validate_llm(
     return issues, {
         "requests": request_count,
         "responses": response_count,
+        "successful_responses": successful_response_count,
+        "successful_exchange_indices": successful_exchange_indices,
         "errors": error_count,
         "responses_with_usage": usage_count,
     }
@@ -446,10 +453,20 @@ def validate_results_row(
                 )
         trajectory = row.get("trajectory")
         if isinstance(trajectory, list):
-            if llm_summary and llm_summary.get("responses", 0) and len(trajectory) == 0:
+            successful_responses = (
+                int(llm_summary.get("successful_responses", 0)) if llm_summary else 0
+            )
+            if successful_responses and len(trajectory) != successful_responses:
                 issues.append(
-                    f"{row_path}: no results trajectory steps from LLM exchanges"
+                    f"{row_path}: results trajectory steps {len(trajectory)} != "
+                    f"successful LLM responses {successful_responses}"
                 )
+            expected_indices = (
+                set(llm_summary.get("successful_exchange_indices", []))
+                if llm_summary
+                else set()
+            )
+            observed_indices: set[int] = set()
             for idx, step in enumerate(trajectory):
                 if not isinstance(step, dict):
                     issues.append(f"{row_path}: trajectory[{idx}] must be an object")
@@ -468,6 +485,34 @@ def validate_results_row(
                     issues.append(
                         f"{row_path}: trajectory[{idx}] source is not llm_trajectory"
                     )
+                if isinstance(extras, dict) and isinstance(
+                    extras.get("exchange_index"), int
+                ):
+                    observed_indices.add(extras["exchange_index"])
+                if step.get("is_truncated") is True:
+                    issues.append(
+                        f"{row_path}: trajectory[{idx}] is incorrectly truncated"
+                    )
+                step_messages = []
+                for field in ("prompt", "completion"):
+                    value = step.get(field)
+                    if isinstance(value, list):
+                        step_messages.extend(
+                            message for message in value if isinstance(message, dict)
+                        )
+                issues.extend(
+                    validate_training_messages(
+                        step_messages,
+                        tools=tools,
+                        row_path=f"{row_path}: trajectory[{idx}]",
+                    )
+                )
+            if expected_indices and observed_indices != expected_indices:
+                issues.append(
+                    f"{row_path}: results exchange indices "
+                    f"{sorted(observed_indices)} != successful LLM exchange indices "
+                    f"{sorted(expected_indices)}"
+                )
         token_usage = row.get("token_usage")
         if not isinstance(token_usage, dict):
             issues.append(f"{row_path}: missing object token_usage")
