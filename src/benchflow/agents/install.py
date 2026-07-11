@@ -144,15 +144,21 @@ async def _link_skill_paths(
         leaf = expanded if source == expanded else str(Path(expanded).parent)
         chain = _intermediate_dirs(prefix, leaf) if sandbox_user else []
         parts.append(_skill_link_cmd(source, expanded, sandbox_user, chain))
+        q_source = shlex.quote(source)
+        q_expanded = shlex.quote(expanded)
+        parts.append(
+            f"test -d {q_source} && test -d {q_expanded}"
+            ' && source_catalog="$(find -L '
+            f"{q_source} -mindepth 2 -maxdepth 2 -type f -name SKILL.md "
+            "-printf '%h\\n' | sed 's#.*/##' | LC_ALL=C sort -u)" + '"'
+            ' && actual="$(find -L '
+            f"{q_expanded} -mindepth 2 -maxdepth 2 -type f -name SKILL.md "
+            "-printf '%h\\n' | sed 's#.*/##' | LC_ALL=C sort -u)" + '"'
+            ' && test "$actual" = "$source_catalog"'
+        )
         if expected:
             q_expected = shlex.quote(expected_text)
-            q_expanded = shlex.quote(expanded)
-            parts.append(
-                'actual="$(find -L '
-                f"{q_expanded} -mindepth 2 -maxdepth 2 -type f -name SKILL.md "
-                "-printf '%h\\n' | sed 's#.*/##' | LC_ALL=C sort -u)" + '"'
-                f' && test "$actual" = {q_expected}'
-            )
+            parts.append(f'test "$source_catalog" = {q_expected}')
     if parts:
         cmd = " && ".join(parts)
         result = await env.exec(cmd, timeout_sec=15)
@@ -175,7 +181,7 @@ async def _link_skill_paths(
             raise RuntimeError(
                 f"Failed to link skills from {source}: {'; '.join(details)}"
             )
-    return len(parts)
+    return len(skill_paths) if parts else 0
 
 
 def effective_install_timeout(
