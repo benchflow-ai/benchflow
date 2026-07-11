@@ -84,7 +84,7 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_opencode_required_skills_reach_proxy_not_agent(monkeypatch):
-    """Guards the OpenCode first-request catalog gate from this PR."""
+    """Guards the OpenCode first-request catalog gate from PR #919."""
     starts = []
 
     async def fake_start(**kwargs):

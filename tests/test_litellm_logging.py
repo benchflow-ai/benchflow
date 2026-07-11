@@ -99,7 +99,7 @@ async def test_callback_pre_call_hook_preserves_input_only_requests():
 async def test_callback_rejects_missing_required_opencode_skill_before_provider(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Guards the OpenCode first-request catalog gate from this PR."""
+    """Guards the OpenCode first-request catalog gate from PR #919."""
     monkeypatch.setenv("BENCHFLOW_SKILL_CATALOG_GATE_AGENT", "opencode")
     monkeypatch.setenv(
         "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", json.dumps(["mesh-analysis"])
@@ -132,7 +132,7 @@ async def test_callback_rejects_missing_required_opencode_skill_before_provider(
 async def test_callback_accepts_matching_opencode_catalog_once(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Guards the OpenCode first-request catalog gate from this PR."""
+    """Guards the OpenCode first-request catalog gate from PR #919."""
     monkeypatch.setenv("BENCHFLOW_SKILL_CATALOG_GATE_AGENT", "opencode")
     monkeypatch.setenv(
         "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", json.dumps(["mesh-analysis"])

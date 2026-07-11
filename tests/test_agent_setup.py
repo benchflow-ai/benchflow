@@ -110,7 +110,7 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
 
 @pytest.mark.asyncio
 async def test_deploy_skills_fails_closed_when_expected_catalog_is_unreadable(tmp_path):
-    """Guards the OpenCode task-skill fidelity gate from this PR."""
+    """Guards the OpenCode task-skill fidelity gate from PR #919."""
     env = MagicMock()
     env.exec = AsyncMock(
         return_value=MagicMock(return_code=1, stdout="", stderr="missing SKILL.md")
