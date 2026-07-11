@@ -203,7 +203,7 @@ class TestOpenHandsConfig:
         assert '"$LLM_API_VERSION"' in cfg.launch_cmd
 
     def test_openhands_launch_cmd_writes_optional_reasoning_effort(self):
-        """Guards GPT-5.6-SOL xhigh runs against OpenHands' default high effort."""
+        """Guards PR #911 against OpenHands silently using default high effort."""
         cfg = AGENTS["openhands"]
         assert 'if [ -n "$LLM_REASONING_EFFORT" ]' in cfg.launch_cmd
         assert ',"reasoning_effort":"%s",' in cfg.launch_cmd

@@ -50,7 +50,7 @@ def test_azure_openai_route_uses_resource_and_preview_version():
 
 
 def test_azure_openai_route_honors_openhands_reasoning_effort_env():
-    """Guards GPT-5.6-SOL xhigh runs against proxy-alias capability guessing."""
+    """Guards PR #911 against proxy-alias capability guessing."""
     route = resolve_litellm_route(
         "azure-foundry-openai/gpt-5.6-sol",
         {
