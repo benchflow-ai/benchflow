@@ -5,6 +5,10 @@ Negative invariants ("agent X should NOT have feature Y configured") live in
 test_registry_invariants.py — search there for the consolidated tripwire.
 """
 
+import json
+import os
+import subprocess
+
 import pytest
 
 from benchflow.agents.env import resolve_provider_env
@@ -205,12 +209,41 @@ class TestOpenHandsConfig:
     def test_openhands_launch_cmd_writes_optional_reasoning_effort(self):
         """Guards PR #911 against OpenHands silently using default high effort."""
         cfg = AGENTS["openhands"]
-        assert 'if [ -n "$LLM_REASONING_EFFORT" ]' in cfg.launch_cmd
+        assert 'elif [ -n "$LLM_REASONING_EFFORT" ]' in cfg.launch_cmd
         assert ',"reasoning_effort":"%s",' in cfg.launch_cmd
         assert '"litellm_extra_body":{"reasoning_effort":"%s"}' in cfg.launch_cmd
         assert (
             '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT"' in cfg.launch_cmd
         )
+
+    def test_openhands_launch_cmd_passes_max_via_untyped_responses_body(
+        self, tmp_path
+    ):
+        """Guards PR #921: OpenHands' typed effort enum stops at xhigh."""
+        cfg = AGENTS["openhands"]
+        assert 'if [ "$LLM_REASONING_EFFORT" = "max" ]' in cfg.launch_cmd
+        assert (
+            ',"litellm_extra_body":{"reasoning":{"effort":"max"}}'
+            in cfg.launch_cmd
+        )
+        settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path),
+            "LLM_MODEL": "openai/gpt-5.6-sol",
+            "LLM_API_KEY": "proxy-key",
+            "LLM_BASE_URL": "http://127.0.0.1:4000/v1",
+            "LLM_API_VERSION": "preview",
+            "LLM_REASONING_EFFORT": "max",
+        }
+        subprocess.run(["bash", "-c", settings_cmd], env=env, check=True)
+        settings = json.loads(
+            (tmp_path / ".openhands" / "agent_settings.json").read_text()
+        )
+        assert "reasoning_effort" not in settings["llm"]
+        assert settings["llm"]["litellm_extra_body"] == {
+            "reasoning": {"effort": "max"}
+        }
 
     def test_harvey_lab_installs_python_deps_in_venv(self):
         """Guards the v0.5 stress failure where pip hit PEP 668 in Ubuntu."""
