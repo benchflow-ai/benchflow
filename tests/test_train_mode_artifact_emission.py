@@ -608,7 +608,7 @@ def test_results_jsonl_uses_canonical_prime_sft_normalization(tmp_path):
 
 
 def test_results_jsonl_preserves_llm_exchange_metadata(tmp_path):
-    """Guards PR #TBD: trainer conversion retains LLM call purpose metadata."""
+    """Guards PR #925: trainer conversion retains LLM call purpose metadata."""
     rollout_dir = tmp_path / "rollout-call-purpose"
     rollout_dir.mkdir()
     traj_dir = rollout_dir / "trajectory"

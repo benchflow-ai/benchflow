@@ -334,20 +334,34 @@ trainer rows before handing them to a training framework.
 
 ### bench train convert
 
-Convert a rollout directory or jobs directory into Prime-RL SFT JSONL. The
-default format is `prime-sft`, which writes one JSON object per row with
-OpenAI-compatible `messages` plus `tool_defs`.
+Convert a rollout directory, jobs directory, canonical BenchFlow
+`results.jsonl`, or existing trainer JSONL into a trainer-specific dataset.
+The default `prime-sft` format writes OpenAI-compatible `messages` plus
+`tool_defs`. The `trl-sft` format writes conversational `prompt` and
+`completion` lists plus a `tools` column.
 
 ```bash
 bench train convert jobs/run-001 --out train.jsonl
 bench train convert jobs/run-001 --out train.jsonl --min-reward 1.0
 bench train convert jobs/run-001 --out train.jsonl --canonical-selection canonical-selection.json
+bench train convert jobs/run-001 \
+  --format trl-sft \
+  --row-mode exchange \
+  --min-reward 1.0 \
+  --out train.trl.jsonl \
+  --manifest train.trl.manifest.json
 ```
+
+`results.jsonl` remains the canonical scored-rollout artifact regardless of
+trainer. The selected format changes only the converted output. For TRL,
+`exchange` mode emits one supervised completion for every primary agent model
+call while excluding captured OpenCode title, summary, compaction, and helper
+calls. `rollout` mode emits only the final primary model call.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out`, `-o` | required | Output JSONL path |
-| `--format` | `prime-sft` | Trainer format |
+| `--format` | `prime-sft` | Trainer format: `prime-sft` or `trl-sft` |
 | `--min-reward` | — | Only include rows with reward greater than or equal to this value |
 | `--row-mode` | `rollout` | `rollout` writes one row per rollout; `exchange` writes one row per LLM exchange |
 | `--manifest` | — | Optional conversion stats JSON path |
@@ -356,9 +370,10 @@ bench train convert jobs/run-001 --out train.jsonl --canonical-selection canonic
 
 ### bench train validate
 
-Validate Prime-RL SFT JSONL before upload or training. This fails closed on
-malformed tool-call arguments, undeclared tool names, orphan tool outputs, and
-row-count mismatches before Prime-RL can hit the bad row mid-training.
+Validate Prime-RL or TRL SFT JSONL before upload or training. Both formats fail
+closed on malformed tool calls, undeclared tools, orphan tool outputs, and row
+count mismatches. TRL validation additionally requires object-valued tool-call
+arguments and exactly one assistant message in each completion.
 
 ```bash
 bench train validate train.jsonl
@@ -367,17 +382,35 @@ bench train validate train.jsonl \
   --source-jobs jobs/run-001 \
   --require-llm-trajectory \
   --require-tool-calls
+
+bench train validate train.trl.jsonl \
+  --format trl-sft \
+  --source-jobs jobs/run-001 \
+  --require-llm-trajectory \
+  --require-tool-calls \
+  --tokenizer Qwen/Qwen3-4B \
+  --tokenizer-revision <immutable-sha> \
+  --max-length 40960
 ```
+
+When `--tokenizer` is set, TRL validation uses TRL's training chat template,
+checks that prompt tokenization remains a prefix of prompt-plus-completion,
+requires a non-empty assistant token mask after the prompt boundary, and fails
+instead of silently truncating a row beyond `--max-length`. The JSON report
+includes token-length distribution and minimum trainable assistant tokens.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format` | `prime-sft` | Trainer format |
+| `--format` | `prime-sft` | Trainer format: `prime-sft` or `trl-sft` |
 | `--expected-rows` | — | Fail unless this many rows are present |
 | `--source-jobs` | — | Source BenchFlow jobs directory to audit alongside trainer JSONL |
 | `--source-canonical-selection` | — | Canonical selection JSON used for this trainer data |
 | `--task-manifest` | — | Task manifest for source rows |
 | `--require-llm-trajectory` | `false` | Fail unless source selected rows have valid `llm_trajectory.jsonl` |
 | `--require-tool-calls` | `false` | Fail unless trainer rows and source rows include tool calls |
+| `--tokenizer` | — | Tokenizer/model ID used to render and mask TRL rows |
+| `--tokenizer-revision` | — | Immutable tokenizer revision used for TRL validation |
+| `--max-length` | — | Fail when a rendered TRL row exceeds this token length |
 
 ### bench train run sft
 

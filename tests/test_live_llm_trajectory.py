@@ -81,6 +81,25 @@ def test_writer_redacts_and_atomically_replaces_snapshot(tmp_path):
     assert not path.with_suffix(".jsonl.tmp").exists()
 
 
+def test_writer_persists_exchange_metadata_for_training_exports(tmp_path):
+    """Guards PR #925: live llm_trajectory rows retain call-purpose metadata."""
+    path = tmp_path / "trajectory" / "llm_trajectory.jsonl"
+    writer = LiveLLMTrajectoryWriter(path)
+    trajectory = _trajectory()
+    trajectory.exchanges[0].metadata = {
+        "call_purpose": "agent",
+        "request_model": "benchflow-model",
+    }
+
+    assert writer.write(trajectory) is True
+
+    row = json.loads(path.read_text())
+    assert row["metadata"] == {
+        "call_purpose": "agent",
+        "request_model": "benchflow-model",
+    }
+
+
 def test_writer_deduplicates_unchanged_snapshot_and_reconciles(tmp_path):
     """Guards snapshot deduplication and reconciliation from commit c86adfb."""
     path = tmp_path / "llm_trajectory.jsonl"

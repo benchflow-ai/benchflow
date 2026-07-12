@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from benchflow.trajectories.call_purpose import infer_call_purpose
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -408,39 +409,6 @@ def _record_response_body(record: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
-def _message_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            str(item.get("text") or item.get("content") or "")
-            for item in content
-            if isinstance(item, dict)
-        )
-    return ""
-
-
-def _infer_call_purpose(*, agent_name: str, request_body: dict[str, Any]) -> str:
-    if agent_name != "opencode":
-        return "agent"
-    messages = request_body.get("messages")
-    system = "\n".join(
-        _message_text(message.get("content"))
-        for message in messages or []
-        if isinstance(message, dict) and message.get("role") == "system"
-    ).lstrip()
-    if system.startswith("You are a title generator."):
-        return "title"
-    if system.startswith("Summarize what was done in this conversation."):
-        return "summary"
-    if system.startswith("You are an anchored context summarization assistant"):
-        return "compaction"
-    tools = request_body.get("tools")
-    if isinstance(tools, list) and tools:
-        return "agent"
-    return "helper"
-
-
 def _exchange_metadata(
     record: dict[str, Any],
     *,
@@ -458,7 +426,7 @@ def _exchange_metadata(
         )
         if record.get(key) is not None
     }
-    metadata["call_purpose"] = _infer_call_purpose(
+    metadata["call_purpose"] = infer_call_purpose(
         agent_name=agent_name,
         request_body=request_body,
     )

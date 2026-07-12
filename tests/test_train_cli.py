@@ -13,6 +13,7 @@ from typing import Any
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
+from benchflow.trajectories import export_trl_sft
 
 runner = CliRunner()
 
@@ -51,6 +52,43 @@ class _FakeTailTokenizer:
             "<eos>" if token_id == self.eos_token_id else chr(token_id)
             for token_id in token_ids
         )
+
+
+class _FakeTrlTokenizer:
+    chat_template = "fake"
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        add_generation_prompt: bool = False,
+        return_dict: bool = False,
+        return_assistant_tokens_mask: bool = False,
+        **kwargs: Any,
+    ):
+        del kwargs
+        input_ids: list[int] = []
+        assistant_masks: list[int] = []
+        input_ids.extend([1] * len(tools or []))
+        assistant_masks.extend([0] * len(tools or []))
+        for message in messages:
+            role = message.get("role")
+            if role == "assistant":
+                input_ids.append(3)
+                assistant_masks.append(0)
+            size = max(1, len(str(message.get("content") or "")))
+            input_ids.extend([2] * size)
+            assistant_masks.extend([1 if role == "assistant" else 0] * size)
+        if add_generation_prompt:
+            input_ids.append(3)
+            assistant_masks.append(0)
+        if return_dict:
+            result = {"input_ids": input_ids}
+            if return_assistant_tokens_mask:
+                result["assistant_masks"] = assistant_masks
+            return result
+        return input_ids
 
 
 def _write_rollout(rollout_dir: Path) -> None:
@@ -146,6 +184,106 @@ def test_train_convert_and_validate_cli(tmp_path: Path) -> None:
     assert '"rows": 1' in result.output
 
 
+def test_train_convert_and_validate_trl_sft_cli_excludes_opencode_helpers(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #925: TRL export keeps agent calls and drops OpenCode helpers."""
+    jobs = tmp_path / "jobs"
+    rollout = jobs / "run" / "task-a__abc123"
+    _write_rollout(rollout)
+    result_json = json.loads((rollout / "result.json").read_text())
+    result_json["agent"] = "opencode"
+    (rollout / "result.json").write_text(json.dumps(result_json))
+    trajectory_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    primary = json.loads(trajectory_path.read_text())
+    title = {
+        "request": {
+            "body": {
+                "model": "m",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a title generator. Output only a title.",
+                    },
+                    {"role": "user", "content": "Generate a title."},
+                ],
+            }
+        },
+        "response": {
+            "status_code": 200,
+            "body": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Repository inspection",
+                        }
+                    }
+                ]
+            },
+        },
+        "duration_ms": 1,
+    }
+    trajectory_path.write_text(
+        "\n".join((json.dumps(primary), json.dumps(title))) + "\n"
+    )
+    out = tmp_path / "trl-sft.jsonl"
+    manifest = tmp_path / "trl-sft-manifest.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "convert",
+            str(jobs),
+            "--format",
+            "trl-sft",
+            "--row-mode",
+            "exchange",
+            "--out",
+            str(out),
+            "--manifest",
+            str(manifest),
+            "--expected-rows",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = json.loads(out.read_text())
+    assert row["prompt"] == [{"role": "user", "content": "do it"}]
+    assert row["completion"][0]["role"] == "assistant"
+    assert row["completion"][0]["tool_calls"][0]["function"] == {
+        "name": "finish",
+        "arguments": {},
+    }
+    assert row["tools"][0]["function"]["name"] == "finish"
+    assert "tool_defs" not in row
+    assert row["call_purpose"] == "agent"
+    assert row["exchange_index"] == 0
+    assert row["source_rollout_dir"] == str(rollout)
+    stats = json.loads(manifest.read_text())
+    assert stats["rows_written"] == 1
+    assert stats["skipped_helper_calls"] == 1
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "validate",
+            str(out),
+            "--format",
+            "trl-sft",
+            "--expected-rows",
+            "1",
+            "--require-tool-calls",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert '"rows": 1' in result.output
+
+
 def test_train_convert_accepts_results_jsonl_cli(tmp_path: Path) -> None:
     """Guards the public repro command that converts an existing results.jsonl."""
     source = tmp_path / "results.jsonl"
@@ -202,6 +340,285 @@ def test_train_convert_accepts_results_jsonl_cli(tmp_path: Path) -> None:
     assert "Converted 1 row" in result.output
     result = runner.invoke(app, ["train", "validate", str(out), "--expected-rows", "1"])
     assert result.exit_code == 0, result.output
+
+
+def test_train_convert_trl_sft_accepts_results_jsonl_trajectory_steps(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #925: canonical results.jsonl can feed TRL conversion."""
+    source = tmp_path / "results.jsonl"
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "finish",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    source.write_text(
+        json.dumps(
+            {
+                "info": {
+                    "source": "benchflow",
+                    "training_ready": True,
+                    "task_id": "task-a",
+                    "agent": "opencode",
+                    "model": "m",
+                    "rollout_dir": "/tmp/task-a__abc123",
+                },
+                "reward": 1.0,
+                "tool_defs": tools,
+                "trajectory": [
+                    {
+                        "prompt": [
+                            {"role": "system", "content": "You are OpenCode."},
+                            {"role": "user", "content": "do it"},
+                        ],
+                        "completion": [
+                            {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "finish",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                        "extras": {
+                            "exchange_index": 0,
+                            "call_purpose": "agent",
+                        },
+                    },
+                    {
+                        "prompt": [
+                            {
+                                "role": "system",
+                                "content": "You are a title generator.",
+                            },
+                            {"role": "user", "content": "Generate a title."},
+                        ],
+                        "completion": [
+                            {
+                                "role": "assistant",
+                                "content": "Task title",
+                            }
+                        ],
+                        "extras": {
+                            "exchange_index": 1,
+                            "call_purpose": "title",
+                        },
+                    },
+                ],
+            }
+        )
+        + "\n"
+    )
+    out = tmp_path / "trl-sft.jsonl"
+    manifest = tmp_path / "manifest.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "convert",
+            str(source),
+            "--format",
+            "trl-sft",
+            "--row-mode",
+            "exchange",
+            "--out",
+            str(out),
+            "--manifest",
+            str(manifest),
+            "--expected-rows",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = json.loads(out.read_text())
+    assert row["prompt"][0] == {
+        "role": "system",
+        "content": "You are OpenCode.",
+    }
+    assert row["completion"][0]["tool_calls"][0]["function"]["arguments"] == {}
+    assert row["tools"] == tools
+    assert row["task_id"] == "task-a"
+    assert row["source_format"] == "benchflow-results-jsonl"
+    assert row["source_index"] == 0
+    stats = json.loads(manifest.read_text())
+    assert stats["skipped_helper_calls"] == 1
+
+
+def test_train_convert_trl_sft_accepts_existing_native_jsonl(tmp_path: Path) -> None:
+    """Guards PR #925: TRL conversion can normalize an existing native file."""
+    source = tmp_path / "source-trl-sft.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "do it"}],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "finish",
+                                    "arguments": {},
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "reward": 1.0,
+            }
+        )
+        + "\n"
+    )
+    out = tmp_path / "normalized-trl-sft.jsonl"
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "convert",
+            str(source),
+            "--format",
+            "trl-sft",
+            "--out",
+            str(out),
+            "--expected-rows",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = json.loads(out.read_text())
+    assert row["prompt"] == [{"role": "user", "content": "do it"}]
+    assert row["completion"][0]["tool_calls"][0]["function"]["arguments"] == {}
+    assert row["source_format"] == "trl-sft"
+    assert row["source_index"] == 0
+
+
+def test_train_validate_trl_sft_checks_tokenizer_masks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Guards PR #925: TRL validation proves target assistant tokens survive."""
+    source = tmp_path / "trl-sft.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "do it"}],
+                "completion": [{"role": "assistant", "content": "done"}],
+                "tools": [],
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(
+        export_trl_sft,
+        "_load_tokenizer",
+        lambda tokenizer_id, revision: _FakeTrlTokenizer(),
+    )
+    monkeypatch.setattr(
+        export_trl_sft,
+        "_training_chat_template",
+        lambda tokenizer: None,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "validate",
+            str(source),
+            "--format",
+            "trl-sft",
+            "--tokenizer",
+            "fake-tokenizer",
+            "--max-length",
+            "20",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["tokenization"] == {
+        "tokenizer": "fake-tokenizer",
+        "tokenizer_revision": None,
+        "max_length": 20,
+        "min_tokens": 10,
+        "median_tokens": 10,
+        "p95_tokens": 10,
+        "max_tokens": 10,
+        "min_trainable_assistant_tokens": 4,
+    }
+
+
+def test_train_validate_trl_sft_fails_before_training_on_overlength_row(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Guards PR #925: TRL validation rejects rows the trainer would truncate."""
+    source = tmp_path / "trl-sft.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "long prompt"}],
+                "completion": [{"role": "assistant", "content": "done"}],
+                "tools": [],
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(
+        export_trl_sft,
+        "_load_tokenizer",
+        lambda tokenizer_id, revision: _FakeTrlTokenizer(),
+    )
+    monkeypatch.setattr(
+        export_trl_sft,
+        "_training_chat_template",
+        lambda tokenizer: None,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "validate",
+            str(source),
+            "--format",
+            "trl-sft",
+            "--tokenizer",
+            "fake-tokenizer",
+            "--max-length",
+            "8",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "tokenized length 16 exceeds max_length 8" in result.output
 
 
 def test_train_convert_no_redact_preserves_tool_argument_tokens(tmp_path: Path) -> None:

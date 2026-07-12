@@ -219,7 +219,7 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
 
 
 def test_opencode_callback_import_preserves_call_metadata_and_purpose():
-    """Guards PR #TBD: TRL conversion can exclude OpenCode helper calls."""
+    """Guards PR #925: TRL conversion can exclude OpenCode helper calls."""
     primary = {
         "event": "success",
         "request_model": "benchflow-glm-5.1",
@@ -271,9 +271,63 @@ def test_opencode_callback_import_preserves_call_metadata_and_purpose():
             },
         },
     }
+    summary = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Summarize what was done in this conversation. "
+                            "Write like a pull request description."
+                        ),
+                    },
+                    {"role": "user", "content": "Summarize this session."},
+                ],
+            },
+        },
+    }
+    compaction = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an anchored context summarization assistant "
+                            "for coding sessions."
+                        ),
+                    },
+                    {"role": "user", "content": "Compact this session."},
+                ],
+            },
+        },
+    }
+    helper = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {"role": "system", "content": "Small utility model."},
+                    {"role": "user", "content": "Classify this input."},
+                ],
+            },
+        },
+    }
 
     trajectory = trajectory_from_litellm_callback_log(
-        "\n".join((json.dumps(primary), json.dumps(title))),
+        "\n".join(
+            json.dumps(record)
+            for record in (primary, title, summary, compaction, helper)
+        ),
         session_id="session",
         agent_name="opencode",
     )
@@ -290,7 +344,13 @@ def test_opencode_callback_import_preserves_call_metadata_and_purpose():
         },
         "call_purpose": "agent",
     }
-    assert trajectory.exchanges[1].metadata["call_purpose"] == "title"
+    assert [exchange.metadata["call_purpose"] for exchange in trajectory.exchanges] == [
+        "agent",
+        "title",
+        "summary",
+        "compaction",
+        "helper",
+    ]
 
 
 def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
