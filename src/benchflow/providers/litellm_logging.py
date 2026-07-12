@@ -408,6 +408,63 @@ def _record_response_body(record: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(item.get("text") or item.get("content") or "")
+            for item in content
+            if isinstance(item, dict)
+        )
+    return ""
+
+
+def _infer_call_purpose(*, agent_name: str, request_body: dict[str, Any]) -> str:
+    if agent_name != "opencode":
+        return "agent"
+    messages = request_body.get("messages")
+    system = "\n".join(
+        _message_text(message.get("content"))
+        for message in messages or []
+        if isinstance(message, dict) and message.get("role") == "system"
+    ).lstrip()
+    if system.startswith("You are a title generator."):
+        return "title"
+    if system.startswith("Summarize what was done in this conversation."):
+        return "summary"
+    if system.startswith("You are an anchored context summarization assistant"):
+        return "compaction"
+    tools = request_body.get("tools")
+    if isinstance(tools, list) and tools:
+        return "agent"
+    return "helper"
+
+
+def _exchange_metadata(
+    record: dict[str, Any],
+    *,
+    request_body: dict[str, Any],
+    agent_name: str,
+) -> dict[str, Any]:
+    metadata = {
+        key: record.get(key)
+        for key in (
+            "request_model",
+            "provider_model",
+            "model_group",
+            "call_type",
+            "input_shape",
+        )
+        if record.get(key) is not None
+    }
+    metadata["call_purpose"] = _infer_call_purpose(
+        agent_name=agent_name,
+        request_body=request_body,
+    )
+    return metadata
+
+
 def _coerce_provider_failure_status(value: Any) -> int | None:
     if isinstance(value, int) and value in _PROVIDER_FAILURE_STATUS_CODES:
         return value
@@ -553,6 +610,11 @@ def trajectory_from_litellm_callback_log(
                     body=response_body,
                 ),
                 duration_ms=float(record.get("duration_ms") or 0.0),
+                metadata=_exchange_metadata(
+                    record,
+                    request_body=request_body,
+                    agent_name=agent_name,
+                ),
             )
         )
         cost = record.get("response_cost")

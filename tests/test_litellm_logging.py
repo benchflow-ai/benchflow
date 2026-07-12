@@ -218,6 +218,81 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
     assert usage["cost_usd"] == 0.00042
 
 
+def test_opencode_callback_import_preserves_call_metadata_and_purpose():
+    """Guards PR #TBD: TRL conversion can exclude OpenCode helper calls."""
+    primary = {
+        "event": "success",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+        "model_group": "benchflow-glm-5.1",
+        "call_type": "completion",
+        "input_shape": {
+            "has_messages": True,
+            "has_input": True,
+            "n_messages": 2,
+        },
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {"role": "system", "content": "You are OpenCode."},
+                    {"role": "user", "content": "Inspect the repository."},
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "read", "parameters": {"type": "object"}},
+                    }
+                ],
+            },
+        },
+        "response": {
+            "choices": [{"message": {"role": "assistant", "content": "Working."}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        },
+        "start_time": "2026-07-12T10:00:00Z",
+        "end_time": "2026-07-12T10:00:01Z",
+    }
+    title = {
+        **primary,
+        "request": {
+            **primary["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a title generator. Output only a title.",
+                    },
+                    {"role": "user", "content": "Generate a title."},
+                ],
+            },
+        },
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        "\n".join((json.dumps(primary), json.dumps(title))),
+        session_id="session",
+        agent_name="opencode",
+    )
+
+    assert trajectory.exchanges[0].metadata == {
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+        "model_group": "benchflow-glm-5.1",
+        "call_type": "completion",
+        "input_shape": {
+            "has_messages": True,
+            "has_input": True,
+            "n_messages": 2,
+        },
+        "call_purpose": "agent",
+    }
+    assert trajectory.exchanges[1].metadata["call_purpose"] == "title"
+
+
 def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
     record = {
         "event": "success",

@@ -187,6 +187,15 @@ def _llm_steps_from_trajectory(
             "tracking_source": "litellm_callback",
             "exchange_index": exchange_idx,
         }
+        exchange_metadata = exchange.get("metadata")
+        if isinstance(exchange_metadata, dict):
+            extras.update(
+                {
+                    str(key): value
+                    for key, value in exchange_metadata.items()
+                    if key not in extras
+                }
+            )
         step = {
             "prompt": prompt,
             "completion": completion,
