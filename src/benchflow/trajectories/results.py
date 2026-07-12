@@ -167,7 +167,7 @@ def _llm_steps_from_trajectory(
     skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
         response = exchange.get("response")
-        if not isinstance(response, dict) or response.get("status_code") != 200:
+        if not _response_is_training_success(response):
             continue
         normalized, skip_reason = normalize_prime_sft_exchange(exchange)
         if normalized is None:
@@ -226,12 +226,22 @@ def _llm_steps_from_trajectory(
 
 
 def _response_is_truncated(response_body: dict[str, Any]) -> bool:
-    if response_body.get("incomplete_details"):
-        return True
-    truncation = response_body.get("truncation")
-    if isinstance(truncation, str):
-        return truncation.strip().lower() not in {"", "disabled", "false", "none"}
-    return bool(truncation)
+    return bool(
+        response_body.get("incomplete_details")
+        or response_body.get("status") == "incomplete"
+    )
+
+
+def _response_is_training_success(response: Any) -> bool:
+    if not isinstance(response, dict) or response.get("status_code") != 200:
+        return False
+    body = response.get("body")
+    if not isinstance(body, dict):
+        return False
+    status = body.get("status")
+    if status is not None and status != "completed":
+        return False
+    return not bool(body.get("incomplete_details"))
 
 
 def _top_level_prompt_completion(

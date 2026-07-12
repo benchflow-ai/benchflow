@@ -273,3 +273,32 @@ def test_validator_rejects_nested_truncated_training_step(tmp_path: Path) -> Non
     assert any(
         "trajectory[0] is incorrectly truncated" in issue for issue in report["issues"]
     )
+
+
+def test_validator_excludes_recovered_incomplete_response_from_expected_steps(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #921 MAX review content-filter recovery semantics."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    incomplete = json.loads(llm_path.read_text())
+    incomplete["response"]["body"].update(
+        {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "content_filter"},
+        }
+    )
+    completed = json.loads(llm_path.read_text())
+    completed["response"]["body"].update(
+        {"status": "completed", "incomplete_details": None}
+    )
+    _write_jsonl(llm_path, [incomplete, completed])
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"][0]["extras"]["exchange_index"] = 1
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+    assert report["artifacts"]["llm"]["successful_responses"] == 1

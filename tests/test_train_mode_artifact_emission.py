@@ -724,6 +724,58 @@ def test_results_jsonl_fails_closed_when_successful_exchange_is_omitted(tmp_path
     assert "Successful LLM exchanges were omitted" in row["error"]["error_chain_str"]
 
 
+def test_results_jsonl_excludes_recovered_incomplete_provider_exchange(tmp_path):
+    """Guards PR #921 MAX canary content-filter recovery semantics."""
+    rollout_dir = tmp_path / "rollout-recovered-incomplete"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    incomplete = _llm_exchange()
+    incomplete["response"]["body"].update(
+        {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "content_filter"},
+            "truncation": "disabled",
+        }
+    )
+    completed = _llm_exchange(assistant={"role": "assistant", "content": "Recovered."})
+    completed["response"]["body"].update(
+        {
+            "status": "completed",
+            "incomplete_details": None,
+            "truncation": "disabled",
+        }
+    )
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(incomplete) + "\n" + json.dumps(completed) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 1
+    assert row["trajectory"][0]["extras"]["exchange_index"] == 1
+    assert row["trajectory"][0]["is_truncated"] is False
+
+
 def test_results_jsonl_redacts_without_corrupting_secret_named_booleans(tmp_path):
     """Secret-carrier field names must not turn JSON booleans into bare tokens."""
     rollout_dir = tmp_path / "rollout-redaction-bool"

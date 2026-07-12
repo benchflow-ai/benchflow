@@ -252,6 +252,7 @@ def validate_llm(
     response_count = 0
     successful_response_count = 0
     successful_exchange_indices: list[int] = []
+    successful_usage_count = 0
     error_count = 0
     usage_count = 0
     for index, row in enumerate(rows, start=1):
@@ -268,9 +269,17 @@ def validate_llm(
             body = response.get("body")
             if isinstance(body, dict):
                 response_count += 1
-                if response.get("status_code") == 200:
+                response_status = body.get("status")
+                completed = (
+                    response.get("status_code") == 200
+                    and response_status in {None, "completed"}
+                    and not body.get("incomplete_details")
+                )
+                if completed:
                     successful_response_count += 1
                     successful_exchange_indices.append(index - 1)
+                    if has_token_usage(body):
+                        successful_usage_count += 1
                 if has_token_usage(body):
                     usage_count += 1
             else:
@@ -287,11 +296,17 @@ def validate_llm(
         )
     if usage_count == 0:
         issues.append(f"{path}: no provider token usage in response bodies")
+    if successful_response_count and successful_usage_count < successful_response_count:
+        issues.append(
+            f"{path}: completed responses with usage {successful_usage_count} < "
+            f"completed responses {successful_response_count}"
+        )
     return issues, {
         "requests": request_count,
         "responses": response_count,
         "successful_responses": successful_response_count,
         "successful_exchange_indices": successful_exchange_indices,
+        "successful_responses_with_usage": successful_usage_count,
         "errors": error_count,
         "responses_with_usage": usage_count,
     }
