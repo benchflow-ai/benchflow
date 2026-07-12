@@ -90,6 +90,15 @@ class TestSetupSandboxUser:
         assert f"chown -R agent:agent {shlex.quote('/app')}" in cmd
 
     @pytest.mark.asyncio
+    async def test_setup_command_grants_declared_top_level_output_roots(self):
+        """Guards PR #921 against root-owned /output breaking non-root agents."""
+        cmd, _ = await _run_setup_sandbox_user()
+
+        assert "for d in /output /outputs; do" in cmd
+        assert '[ -d "$d" ] && [ ! -L "$d" ]' in cmd
+        assert 'chown -R agent:agent "$d"' in cmd
+
+    @pytest.mark.asyncio
     async def test_setup_command_keeps_heavy_root_tool_dirs_on_shared_paths(self):
         """Legacy root-only tool dirs should use conditional symlinks, not duplication."""
         cmd, _ = await _run_setup_sandbox_user()

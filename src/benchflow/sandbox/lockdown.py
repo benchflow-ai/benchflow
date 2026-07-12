@@ -142,7 +142,10 @@ async def setup_sandbox_user(
         f"if [ -d /root/$d ]; then "
         f"cp -a /root/$d/. {home}/$d/ 2>/dev/null || true; fi; done && "
         f"chown -R {sandbox_user}:{sandbox_user} {home} && "
-        f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)}",
+        f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)} && "
+        f"for d in /output /outputs; do "
+        f'if [ -d "$d" ] && [ ! -L "$d" ]; then '
+        f'chown -R {sandbox_user}:{sandbox_user} "$d"; fi; done',
         timeout_sec=timeout_sec,
     )
     logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
