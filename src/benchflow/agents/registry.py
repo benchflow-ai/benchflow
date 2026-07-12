@@ -343,30 +343,34 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
     # ``credential_files`` write to — so all writers target one config file even
     # when the sandbox home differs from ``$HOME``. Falls back to ``~``.
     config_relpath = config_path.lstrip("/")
-    register_py = "\n".join(
+    register_js = "\n".join(
         [
-            "import json, os, pathlib",
-            'alias = os.environ.get("BENCHFLOW_LITELLM_MODEL_ALIAS", "").strip()',
-            "if alias:",
-            '    home = os.environ.get("BENCHFLOW_AGENT_HOME", "").strip() or os.path.expanduser("~")',
-            f"    p = pathlib.Path(home) / {config_relpath!r}",
-            "    p.parent.mkdir(parents=True, exist_ok=True)",
-            "    d = json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {}",
+            'const fs = require("fs");',
+            'const os = require("os");',
+            'const path = require("path");',
+            'const alias = (process.env.BENCHFLOW_LITELLM_MODEL_ALIAS || "").trim();',
+            "if (alias) {",
+            '  const home = (process.env.BENCHFLOW_AGENT_HOME || "").trim() || os.homedir();',
+            f"  const p = path.join(home, {config_relpath!r});",
+            "  fs.mkdirSync(path.dirname(p), { recursive: true });",
+            '  const text = fs.existsSync(p) ? fs.readFileSync(p, "utf8").trim() : "";',
+            "  const d = text ? JSON.parse(text) : {};",
             # Dedicated provider id (see docstring) → chat completions, not the
             # Responses API the built-in ``openai`` id is hard-coded to.
-            f'    prov = d.setdefault("provider", {{}}).setdefault({provider_id!r}, {{}})',
-            '    prov["npm"] = "@ai-sdk/openai-compatible"',
-            '    prov.setdefault("name", "BenchFlow Gateway")',
-            '    opts = prov.setdefault("options", {})',
-            '    base = os.environ.get("OPENAI_BASE_URL", "").strip()',
-            "    if base:",
-            '        opts["baseURL"] = base',
-            '    key = os.environ.get("OPENAI_API_KEY", "").strip()',
-            "    if key:",
-            '        opts["apiKey"] = key',
-            '    prov.setdefault("models", {}).setdefault(alias, {"name": alias})',
-            f'    d["small_model"] = "{provider_id}/" + alias',
-            '    p.write_text(json.dumps(d, indent=2) + "\\n")',
+            "  const providers = d.provider ||= {};",
+            f"  const prov = providers[{provider_id!r}] ||= {{}};",
+            '  prov.npm = "@ai-sdk/openai-compatible";',
+            '  prov.name ||= "BenchFlow Gateway";',
+            "  const opts = prov.options ||= {};",
+            '  const base = (process.env.OPENAI_BASE_URL || "").trim();',
+            "  if (base) opts.baseURL = base;",
+            '  const key = (process.env.OPENAI_API_KEY || "").trim();',
+            "  if (key) opts.apiKey = key;",
+            "  const models = prov.models ||= {};",
+            "  models[alias] ||= { name: alias };",
+            f'  d.small_model = "{provider_id}/" + alias;',
+            '  fs.writeFileSync(p, JSON.stringify(d, null, 2) + "\\n");',
+            "}",
         ]
     )
     wrapper = (
@@ -377,9 +381,9 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
         # and hit ProviderModelNotFoundError with nothing explaining why. A hard
         # exit surfaces the cause instead of a silent broken proxy path.
         'if [ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ]; then\n'
-        "  if ! python3 - <<'PYEOF'\n"
-        f"{register_py}\n"
-        "PYEOF\n"
+        f"  if ! {_BENCHFLOW_NODE_PREFIX}/bin/node - <<'JSEOF'\n"
+        f"{register_js}\n"
+        "JSEOF\n"
         "  then\n"
         f'    echo "benchflow {binary}-proxy: gateway alias registration failed; '
         'refusing to launch in proxy mode" >&2\n'

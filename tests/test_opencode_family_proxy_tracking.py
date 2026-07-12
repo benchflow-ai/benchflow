@@ -66,7 +66,7 @@ def test_proxy_wrapper_forces_chat_completions_sdk(agent, wrapper_bin, cfg):
     ``apiKey``."""
     w = _wrapper_script(agent, wrapper_bin)
     assert "@ai-sdk/openai-compatible" in w  # chat completions, not Responses API
-    assert '"npm"' in w
+    assert "prov.npm" in w
     assert "OPENAI_API_KEY" in w and "apiKey" in w
 
 
@@ -100,7 +100,17 @@ def test_proxy_wrapper_fails_loud_on_registration_error(agent, wrapper_bin, cfg)
     w = _wrapper_script(agent, wrapper_bin)
     assert "|| true" not in w
     assert "exit 1" in w
-    assert "if ! python3" in w
+    assert "if ! /opt/benchflow/node/bin/node" in w
+
+
+@pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
+def test_proxy_wrapper_does_not_require_task_image_python(agent, wrapper_bin, cfg):
+    """OpenCode's proxy must work in non-Python task images (for example the
+    Spring Boot SkillsBench environment). Use BenchFlow's isolated Node runtime
+    instead of assuming a task image provides an executable ``python3``."""
+    w = _wrapper_script(agent, wrapper_bin)
+    assert "python3" not in w
+    assert "/opt/benchflow/node/bin/node" in w
 
 
 @pytest.mark.parametrize("agent,wrapper_bin,cfg", CASES)
