@@ -60,6 +60,8 @@ def test_pre_call_hook_is_noop_for_pure_function_tools():
 def test_pre_call_hook_opt_in_requests_token_logprobs(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """Guards PR #926: training rollouts must request sampled token logprobs."""
+
     logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
     data = {
         "messages": [{"role": "user", "content": "hi"}],
@@ -78,6 +80,8 @@ def test_pre_call_hook_opt_in_requests_token_logprobs(
 def test_pre_call_hook_does_not_add_chat_logprobs_to_responses_requests(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """Guards PR #926: chat logprob capture must not alter Responses calls."""
+
     logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
     data = {"messages": [{"role": "user", "content": "hi"}]}
     monkeypatch.setenv("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "1")
@@ -89,6 +93,8 @@ def test_pre_call_hook_does_not_add_chat_logprobs_to_responses_requests(
 
 
 def test_callback_record_preserves_logprob_request_fields():
+    """Guards PR #926: trajectory requests retain logprob capture settings."""
+
     logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
     now = datetime.now()
 
@@ -300,6 +306,8 @@ def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
 
 
 def test_callback_log_preserves_sampled_token_logprobs():
+    """Guards PR #926: provider token logprobs survive trajectory import."""
+
     record = {
         "event": "success",
         "request_model": "benchflow-qwen",
