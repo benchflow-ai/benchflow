@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 
 import pytest
 
@@ -54,6 +55,55 @@ def test_pre_call_hook_is_noop_for_pure_function_tools():
     assert (
         asyncio.run(logger.async_pre_call_hook(None, None, data, "completion")) is None
     )
+
+
+def test_pre_call_hook_opt_in_requests_token_logprobs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "shell"}}],
+        "logprobs": False,
+    }
+    monkeypatch.setenv("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "1")
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    assert cleaned is not data
+    assert cleaned["logprobs"] is True
+    assert data["logprobs"] is False
+
+
+def test_pre_call_hook_does_not_add_chat_logprobs_to_responses_requests(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {"messages": [{"role": "user", "content": "hi"}]}
+    monkeypatch.setenv("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "1")
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "responses"))
+
+    assert cleaned is None
+    assert "logprobs" not in data
+
+
+def test_callback_record_preserves_logprob_request_fields():
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {
+            "model": "openai/qwen",
+            "messages": [{"role": "user", "content": "hi"}],
+            "optional_params": {"logprobs": True, "top_logprobs": 1},
+        },
+        now,
+        now,
+    )
+
+    assert record["request"]["body"]["logprobs"] is True
+    assert record["request"]["body"]["top_logprobs"] == 1
 
 
 def test_callback_module_source_exposes_proxy_handler_instance():
@@ -247,6 +297,54 @@ def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
     )
 
     assert trajectory.exchanges[0].request.body["reasoning_effort"] == "max"
+
+
+def test_callback_log_preserves_sampled_token_logprobs():
+    record = {
+        "event": "success",
+        "request_model": "benchflow-qwen",
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "benchflow-qwen",
+                "messages": [{"role": "user", "content": "hi"}],
+                "logprobs": True,
+            },
+        },
+        "response": {
+            "model": "openai/qwen",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "hello"},
+                    "logprobs": {
+                        "content": [
+                            {
+                                "token": "hello",
+                                "logprob": -0.25,
+                                "bytes": [104, 101, 108, 108, 111],
+                            }
+                        ]
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        },
+        "start_time": "2026-07-12T10:00:00",
+        "end_time": "2026-07-12T10:00:01",
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="session",
+        agent_name="opencode",
+    )
+
+    exchange = trajectory.exchanges[0]
+    assert exchange.request.body["logprobs"] is True
+    token = exchange.response.body["choices"][0]["logprobs"]["content"][0]
+    assert token["token"] == "hello"
+    assert token["logprob"] == -0.25
 
 
 def test_litellm_failure_records_become_error_exchanges():
