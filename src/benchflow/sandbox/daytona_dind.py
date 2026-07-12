@@ -187,10 +187,16 @@ class _DaytonaDinD(_DaytonaStrategy):
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         timeout_sec: int | None = None,
+        cleanup_session: bool = False,
     ) -> ExecResult:
         """Run a command on the DinD sandbox VM using sh (Alpine-compatible)."""
         return await self._env._sandbox_exec(
-            command, cwd=cwd, env=env, timeout_sec=timeout_sec, shell="sh -c"
+            command,
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+            shell="sh -c",
+            cleanup_session=cleanup_session,
         )
 
     def _compose_env_vars(self) -> dict[str, str]:
@@ -254,11 +260,13 @@ class _DaytonaDinD(_DaytonaStrategy):
         self,
         subcommand: list[str],
         timeout_sec: int | None = None,
+        cleanup_session: bool = False,
     ) -> ExecResult:
         return await self._vm_exec(
             self._compose_cmd(subcommand),
             env=self._compose_env_vars(),
             timeout_sec=timeout_sec,
+            cleanup_session=cleanup_session,
         )
 
     async def _run_pre_compose_hook(self) -> None:
@@ -476,6 +484,45 @@ class _DaytonaDinD(_DaytonaStrategy):
         user: str | int | None = None,
         service: str = "main",
     ) -> ExecResult:
+        return await self._exec(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+            user=user,
+            service=service,
+            cleanup_session=False,
+        )
+
+    async def exec_transient(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+        service: str = "main",
+    ) -> ExecResult:
+        return await self._exec(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+            user=user,
+            service=service,
+            cleanup_session=True,
+        )
+
+    async def _exec(
+        self,
+        command: str,
+        cwd: str | None,
+        env: dict[str, str] | None,
+        timeout_sec: int | None,
+        user: str | int | None,
+        service: str,
+        cleanup_session: bool,
+    ) -> ExecResult:
         """Run a command in a compose service inside the DinD VM.
 
         ``service`` defaults to ``"main"`` (the agent container); pass
@@ -504,6 +551,12 @@ class _DaytonaDinD(_DaytonaStrategy):
         # ``set -a``/``. file``).
         parts.extend([service, "sh", "-c", command])
 
+        if cleanup_session:
+            return await self._compose_exec(
+                parts,
+                timeout_sec=timeout_sec,
+                cleanup_session=True,
+            )
         return await self._compose_exec(parts, timeout_sec=timeout_sec)
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:

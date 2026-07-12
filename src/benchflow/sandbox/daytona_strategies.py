@@ -75,6 +75,25 @@ class _DaytonaStrategy:
         service: str = "main",
     ) -> ExecResult: ...
 
+    async def exec_transient(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+        service: str = "main",
+    ) -> ExecResult:
+        """Run a child-free command, cleaning its provider session if supported."""
+        return await self.exec(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+            user=user,
+            service=service,
+        )
+
     @abstractmethod
     async def upload_file(self, source_path: Path | str, target_path: str) -> None: ...
 
@@ -243,6 +262,25 @@ class _DaytonaDirect(_DaytonaStrategy):
         _reject_non_main_service(service)
         return await self._env._sandbox_exec(
             command, cwd=cwd, env=env, timeout_sec=timeout_sec, user=user
+        )
+
+    async def exec_transient(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+        service: str = "main",
+    ) -> ExecResult:
+        _reject_non_main_service(service)
+        return await self._env._sandbox_exec(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+            user=user,
+            cleanup_session=True,
         )
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
