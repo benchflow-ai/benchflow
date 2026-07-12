@@ -82,11 +82,49 @@ def register_train(app: typer.Typer) -> None:
                 ),
             ),
         ] = True,
+        context_policy: Annotated[
+            Literal["full", "message-window"],
+            typer.Option(
+                "--context-policy",
+                help="TRL context handling: full or tokenizer-aware message-window",
+            ),
+        ] = "full",
+        tokenizer_id: Annotated[
+            str | None,
+            typer.Option(
+                "--tokenizer",
+                help="Tokenizer/model ID for TRL message-window conversion",
+            ),
+        ] = None,
+        tokenizer_revision: Annotated[
+            str | None,
+            typer.Option(
+                "--tokenizer-revision",
+                help="Immutable tokenizer revision for TRL conversion",
+            ),
+        ] = None,
+        max_length: Annotated[
+            int | None,
+            typer.Option(
+                "--max-length",
+                help="Maximum rendered length for TRL message-window conversion",
+            ),
+        ] = None,
     ) -> None:
         """Convert BenchFlow rollout artifacts into trainer-ready data."""
         _ensure_training_format(format_name)
         try:
             if format_name == "prime-sft":
+                if (
+                    context_policy != "full"
+                    or tokenizer_id is not None
+                    or tokenizer_revision is not None
+                    or max_length is not None
+                ):
+                    raise ValueError(
+                        "--context-policy/--tokenizer/--tokenizer-revision/"
+                        "--max-length are supported only with --format trl-sft"
+                    )
                 from benchflow.trajectories.export_prime_sft import (
                     export_prime_sft_jsonl,
                 )
@@ -115,6 +153,10 @@ def register_train(app: typer.Typer) -> None:
                     manifest=manifest,
                     canonical_selection=canonical_selection,
                     redact=redact,
+                    context_policy=context_policy,
+                    tokenizer_id=tokenizer_id,
+                    tokenizer_revision=tokenizer_revision,
+                    max_length=max_length,
                 )
         except ValueError as exc:
             print_error(str(exc))

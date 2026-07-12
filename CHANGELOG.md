@@ -8,7 +8,10 @@
   excludes OpenCode title/summary helper calls, and accepts rollout trees,
   canonical `results.jsonl`, or existing TRL JSONL. `bench train validate
   --format trl-sft` can render rows with a pinned tokenizer and fail closed on
-  missing assistant masks or overlength samples. (#925)
+  missing assistant masks or overlength samples. Tokenizer-aware
+  `--context-policy message-window` keeps the harness/task prefix and the
+  longest complete recent assistant/tool suffix when exact rows exceed the
+  student context window. (#925)
 - **LLM call-purpose provenance.** Captured LLM exchanges retain provider/model
   metadata and classify agent, title, summary, compaction, and helper calls;
   `results.jsonl` carries the metadata on each trajectory step. (#925)

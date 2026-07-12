@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import math
 import statistics
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
+from benchflow.trajectories import trl_sft_tokenization as tokenization
 from benchflow.trajectories.call_purpose import infer_call_purpose
 from benchflow.trajectories.export_prime_sft import (
     _benchflow_row_training_skip_reason,
@@ -27,6 +27,7 @@ from benchflow.trajectories.export_prime_sft import (
 from benchflow.trajectories.types import redact_trajectory_obj
 
 TrlSftRowMode = Literal["rollout", "exchange"]
+TrlSftContextPolicy = Literal["full", "message-window"]
 
 
 @dataclass
@@ -44,6 +45,10 @@ class TrlSftExportStats:
     skipped_terminal_error: int = 0
     skipped_helper_calls: int = 0
     skipped_invalid: int = 0
+    rows_compacted: int = 0
+    messages_dropped: int = 0
+    max_original_tokens: int = 0
+    max_final_tokens: int = 0
     sources: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -62,6 +67,10 @@ class TrlSftExportStats:
             "skipped_terminal_error": self.skipped_terminal_error,
             "skipped_helper_calls": self.skipped_helper_calls,
             "skipped_invalid": self.skipped_invalid,
+            "rows_compacted": self.rows_compacted,
+            "messages_dropped": self.messages_dropped,
+            "max_original_tokens": self.max_original_tokens,
+            "max_final_tokens": self.max_final_tokens,
             "sources": self.sources,
         }
 
@@ -123,98 +132,57 @@ def _has_tool_calls(messages: list[dict[str, Any]]) -> bool:
     return any(bool(message.get("tool_calls")) for message in messages)
 
 
-def _load_tokenizer(tokenizer_id: str, revision: str | None) -> Any:
-    try:
-        from transformers import AutoTokenizer
-    except ImportError as exc:
-        raise ValueError(
-            "tokenizer validation requires the benchflow train or trl extra"
-        ) from exc
-    kwargs = {"revision": revision} if revision else {}
-    return AutoTokenizer.from_pretrained(tokenizer_id, **kwargs)
-
-
-def _training_chat_template(tokenizer: Any) -> str | None:
-    try:
-        from trl.chat_template_utils import get_training_chat_template
-    except ImportError as exc:
-        raise ValueError(
-            "assistant-mask validation requires the benchflow trl extra"
-        ) from exc
-    return get_training_chat_template(tokenizer)
-
-
-def _input_ids(value: Any) -> list[int]:
-    if isinstance(value, Mapping):
-        value = value.get("input_ids")
-    if isinstance(value, list) and value and isinstance(value[0], list):
-        value = value[0]
-    if not isinstance(value, list) or not all(isinstance(item, int) for item in value):
-        raise ValueError("tokenizer apply_chat_template did not return input_ids")
-    return value
-
-
-def _assistant_masks(value: Any) -> list[int]:
-    if not isinstance(value, Mapping):
-        raise ValueError("tokenizer did not return assistant token masks")
-    masks = value.get("assistant_masks")
-    if isinstance(masks, list) and masks and isinstance(masks[0], list):
-        masks = masks[0]
-    if not isinstance(masks, list) or not all(
-        isinstance(item, int | bool) for item in masks
-    ):
-        raise ValueError("chat template does not provide assistant token masks")
-    return [int(item) for item in masks]
-
-
-def _validate_tokenized_row(
-    row: dict[str, Any],
+def _apply_context_policy(
+    rows: list[dict[str, Any]],
+    stats: TrlSftExportStats,
     *,
-    row_num: int,
-    tokenizer: Any,
-    chat_template: str | None,
+    context_policy: TrlSftContextPolicy,
+    tokenizer_id: str | None,
+    tokenizer_revision: str | None,
     max_length: int | None,
-) -> tuple[int, int]:
-    prompt = cast(list[dict[str, Any]], row["prompt"])
-    completion = cast(list[dict[str, Any]], row["completion"])
-    tools = cast(list[dict[str, Any]], row.get("tools") or [])
-    template_kwargs: dict[str, Any] = {"tools": tools or None}
-    if chat_template is not None:
-        template_kwargs["chat_template"] = chat_template
-    prompt_output = tokenizer.apply_chat_template(
-        prompt,
-        tokenize=True,
-        add_generation_prompt=True,
-        return_dict=True,
-        **template_kwargs,
-    )
-    full_output = tokenizer.apply_chat_template(
-        prompt + completion,
-        tokenize=True,
-        return_dict=True,
-        return_assistant_tokens_mask=True,
-        **template_kwargs,
-    )
-    prompt_ids = _input_ids(prompt_output)
-    full_ids = _input_ids(full_output)
-    assistant_masks = _assistant_masks(full_output)
-    if full_ids[: len(prompt_ids)] != prompt_ids:
+) -> list[dict[str, Any]]:
+    if context_policy == "full":
+        if (
+            tokenizer_id is not None
+            or tokenizer_revision is not None
+            or max_length is not None
+        ):
+            raise ValueError(
+                "--tokenizer/--tokenizer-revision/--max-length require "
+                "--context-policy message-window during conversion"
+            )
+        return rows
+    if tokenizer_id is None or max_length is None:
         raise ValueError(
-            f"row {row_num}: tokenized prompt is not a prefix of prompt+completion"
+            "--context-policy message-window requires --tokenizer and --max-length"
         )
-    if len(assistant_masks) != len(full_ids):
-        raise ValueError(
-            f"row {row_num}: assistant mask length does not match input_ids"
+    if max_length < 1:
+        raise ValueError("max_length must be positive")
+    tokenizer = tokenization.load_tokenizer(tokenizer_id, tokenizer_revision)
+    chat_template = tokenization.training_chat_template(tokenizer)
+    windowed: list[dict[str, Any]] = []
+    for row in rows:
+        (
+            final,
+            compacted,
+            dropped,
+            original_tokens,
+            final_tokens,
+        ) = tokenization.window_trl_sft_row(
+            row,
+            tokenizer=tokenizer,
+            chat_template=chat_template,
+            tokenizer_id=tokenizer_id,
+            tokenizer_revision=tokenizer_revision,
+            max_length=max_length,
         )
-    trainable = sum(assistant_masks[len(prompt_ids) :])
-    if trainable < 1:
-        raise ValueError(f"row {row_num}: no trainable assistant completion tokens")
-    if max_length is not None and len(full_ids) > max_length:
-        raise ValueError(
-            f"row {row_num}: tokenized length {len(full_ids)} exceeds "
-            f"max_length {max_length}"
-        )
-    return len(full_ids), trainable
+        validate_trl_sft_row(final, 1)
+        windowed.append(final)
+        stats.rows_compacted += compacted
+        stats.messages_dropped += dropped
+        stats.max_original_tokens = max(stats.max_original_tokens, original_tokens)
+        stats.max_final_tokens = max(stats.max_final_tokens, final_tokens)
+    return windowed
 
 
 def _step_call_purpose(
@@ -550,6 +518,10 @@ def export_trl_sft_jsonl(
     manifest: str | Path | None = None,
     canonical_selection: str | Path | None = None,
     redact: bool = True,
+    context_policy: TrlSftContextPolicy = "full",
+    tokenizer_id: str | None = None,
+    tokenizer_revision: str | None = None,
+    max_length: int | None = None,
 ) -> TrlSftExportStats:
     source_path = Path(jobs_dir)
     if source_path.is_file() and source_path.suffix == ".jsonl":
@@ -570,6 +542,14 @@ def export_trl_sft_jsonl(
             canonical_selection=canonical_selection,
             redact=redact,
         )
+    rows = _apply_context_policy(
+        rows,
+        stats,
+        context_policy=context_policy,
+        tokenizer_id=tokenizer_id,
+        tokenizer_revision=tokenizer_revision,
+        max_length=max_length,
+    )
     if expected_rows is not None and len(rows) != expected_rows:
         raise ValueError(f"row count {len(rows)} != expected {expected_rows}")
     out_path = Path(out)
@@ -602,10 +582,14 @@ def validate_trl_sft_jsonl(
     rows = 0
     rows_with_tool_calls = 0
     tokenizer = (
-        _load_tokenizer(tokenizer_id, tokenizer_revision) if tokenizer_id else None
+        tokenization.load_tokenizer(tokenizer_id, tokenizer_revision)
+        if tokenizer_id
+        else None
     )
     chat_template = (
-        _training_chat_template(tokenizer) if tokenizer is not None else None
+        tokenization.training_chat_template(tokenizer)
+        if tokenizer is not None
+        else None
     )
     token_lengths: list[int] = []
     trainable_counts: list[int] = []
@@ -629,7 +613,7 @@ def validate_trl_sft_jsonl(
             if _has_tool_calls(messages):
                 rows_with_tool_calls += 1
             if tokenizer is not None:
-                token_length, trainable = _validate_tokenized_row(
+                token_length, trainable = tokenization.validate_tokenized_row(
                     row,
                     row_num=row_num,
                     tokenizer=tokenizer,

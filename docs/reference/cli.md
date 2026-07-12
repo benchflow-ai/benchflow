@@ -348,6 +348,10 @@ bench train convert jobs/run-001 \
   --format trl-sft \
   --row-mode exchange \
   --min-reward 1.0 \
+  --context-policy message-window \
+  --tokenizer Qwen/Qwen3-4B \
+  --tokenizer-revision <immutable-sha> \
+  --max-length 40960 \
   --out train.trl.jsonl \
   --manifest train.trl.manifest.json
 ```
@@ -358,6 +362,15 @@ trainer. The selected format changes only the converted output. For TRL,
 call while excluding captured OpenCode title, summary, compaction, and helper
 calls. `rollout` mode emits only the final primary model call.
 
+TRL conversion never truncates implicitly. The default `full` context policy
+preserves every captured message. `message-window` first renders with the
+pinned tokenizer; when a row is too long it preserves all leading system
+messages, the original task user message, the target assistant completion, and
+the longest complete recent suffix of assistant/tool groups that fits. It
+records original/final token counts and every dropped-message count in both the
+row and conversion manifest. It fails if the required prefix and completion
+cannot fit.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out`, `-o` | required | Output JSONL path |
@@ -367,6 +380,10 @@ calls. `rollout` mode emits only the final primary model call.
 | `--manifest` | — | Optional conversion stats JSON path |
 | `--expected-rows` | — | Fail before writing unless exactly this many rows would be exported |
 | `--canonical-selection` | — | Restrict conversion to rows selected by `canonical-selection.json` |
+| `--context-policy` | `full` | TRL context policy: exact `full` rows or tokenizer-aware `message-window` |
+| `--tokenizer` | — | Tokenizer/model ID required by `message-window` |
+| `--tokenizer-revision` | — | Immutable tokenizer revision for context windowing |
+| `--max-length` | — | Maximum rendered length required by `message-window` |
 
 ### bench train validate
 
