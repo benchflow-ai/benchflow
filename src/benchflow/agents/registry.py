@@ -936,12 +936,15 @@ AGENTS: dict[str, AgentConfig] = {
             'case "$LLM_TIMEOUT" in *[!0-9]*) '
             'echo "LLM_TIMEOUT must be a non-negative integer" >&2; exit 2;; esac; '
             'printf \',"timeout":%s\' "$LLM_TIMEOUT"; fi; '
-            'if [ "$LLM_REASONING_EFFORT" = "max" ]; then '
-            'printf \',"litellm_extra_body":{"reasoning":{"effort":"max"}}\'; '
-            'elif [ -n "$LLM_REASONING_EFFORT" ]; then '
+            'case "$LLM_REASONING_EFFORT" in '
+            'max) printf \',"litellm_extra_body":{"reasoning":{"effort":"max"}}\' ;; '
+            "none|low|medium|high|xhigh) "
             'printf \',"reasoning_effort":"%s",'
             '"litellm_extra_body":{"reasoning_effort":"%s"}\' '
-            '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT"; fi; '
+            '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT" ;; '
+            '?*) printf \',"litellm_extra_body":{"reasoning_effort":"%s"}\' '
+            '"$LLM_REASONING_EFFORT" ;; '
+            "esac; "
             "printf '}}'; } > ~/.openhands/agent_settings.json && "
             "openhands acp --always-approve --override-with-envs"
         ),

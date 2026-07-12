@@ -209,15 +209,35 @@ class TestOpenHandsConfig:
     def test_openhands_launch_cmd_writes_optional_reasoning_effort(self):
         """Guards PR #911 against OpenHands silently using default high effort."""
         cfg = AGENTS["openhands"]
-        assert 'elif [ -n "$LLM_REASONING_EFFORT" ]' in cfg.launch_cmd
+        assert "none|low|medium|high|xhigh)" in cfg.launch_cmd
         assert ',"reasoning_effort":"%s",' in cfg.launch_cmd
         assert '"litellm_extra_body":{"reasoning_effort":"%s"}' in cfg.launch_cmd
         assert '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT"' in cfg.launch_cmd
 
+    def test_openhands_launch_cmd_keeps_minimal_out_of_typed_effort(self, tmp_path):
+        """Guards PR #921: OpenHands' typed effort enum rejects minimal."""
+        cfg = AGENTS["openhands"]
+        settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path),
+            "LLM_MODEL": "openai/gpt-5.6-sol",
+            "LLM_API_KEY": "proxy-key",
+            "LLM_BASE_URL": "http://127.0.0.1:4000/v1",
+            "LLM_REASONING_EFFORT": "minimal",
+        }
+        subprocess.run(["bash", "-c", settings_cmd], env=env, check=True)
+        settings = json.loads(
+            (tmp_path / ".openhands" / "agent_settings.json").read_text()
+        )
+        assert "reasoning_effort" not in settings["llm"]
+        assert settings["llm"]["litellm_extra_body"] == {"reasoning_effort": "minimal"}
+
     def test_openhands_launch_cmd_passes_max_via_untyped_responses_body(self, tmp_path):
         """Guards PR #921: OpenHands' typed effort enum stops at xhigh."""
         cfg = AGENTS["openhands"]
-        assert 'if [ "$LLM_REASONING_EFFORT" = "max" ]' in cfg.launch_cmd
+        assert 'case "$LLM_REASONING_EFFORT" in ' in cfg.launch_cmd
+        assert "max) printf" in cfg.launch_cmd
         assert ',"litellm_extra_body":{"reasoning":{"effort":"max"}}' in cfg.launch_cmd
         settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
         env = {
