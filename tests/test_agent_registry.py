@@ -236,6 +236,45 @@ class TestOpenHandsConfig:
         assert "reasoning_effort" not in settings["llm"]
         assert settings["llm"]["litellm_extra_body"] == {"reasoning": {"effort": "max"}}
 
+    def test_openhands_launch_cmd_writes_optional_llm_timeout(self, tmp_path):
+        """Guards PR #921 against MAX responses exceeding OpenHands' 300s default."""
+        cfg = AGENTS["openhands"]
+        assert 'if [ -n "$LLM_TIMEOUT" ]' in cfg.launch_cmd
+        assert ',"timeout":%s' in cfg.launch_cmd
+        settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path),
+            "LLM_MODEL": "openai/gpt-5.6-sol",
+            "LLM_API_KEY": "proxy-key",
+            "LLM_TIMEOUT": "115200",
+        }
+        subprocess.run(["bash", "-c", settings_cmd], env=env, check=True)
+        settings = json.loads(
+            (tmp_path / ".openhands" / "agent_settings.json").read_text()
+        )
+        assert settings["llm"]["timeout"] == 115200
+
+    def test_openhands_launch_cmd_rejects_non_numeric_llm_timeout(self, tmp_path):
+        """Guards PR #921 against malformed timeout JSON in agent settings."""
+        cfg = AGENTS["openhands"]
+        settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path),
+            "LLM_MODEL": "openai/gpt-5.6-sol",
+            "LLM_API_KEY": "proxy-key",
+            "LLM_TIMEOUT": "none",
+        }
+        result = subprocess.run(
+            ["bash", "-c", settings_cmd],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2
+        assert "LLM_TIMEOUT must be a non-negative integer" in result.stderr
+
     def test_harvey_lab_installs_python_deps_in_venv(self):
         """Guards the v0.5 stress failure where pip hit PEP 668 in Ubuntu."""
         cfg = AGENTS["harvey-lab-harness"]
