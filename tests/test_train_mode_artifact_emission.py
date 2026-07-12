@@ -28,6 +28,7 @@ from benchflow.trajectories.export import (
 from benchflow.trajectories.export_prime_sft import validate_prime_sft_jsonl
 from benchflow.trajectories.results import (
     JOB_RESULTS_ERRORS_FILENAME,
+    _training_success_exchange_indices,
     write_job_results_jsonl,
 )
 
@@ -887,6 +888,53 @@ def test_results_jsonl_prefers_duplicate_consumed_by_later_request(tmp_path):
         0,
         2,
     ]
+
+
+def test_results_drop_unique_late_unconsumed_nonterminal_retry():
+    """Guards PR #921 against the adaptive-cruise exchange-59 regression."""
+    consumed = _llm_exchange()
+    consumed["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_consumed"
+    )
+    followup = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            consumed["response"]["body"]["choices"][0]["message"],
+            {
+                "role": "tool",
+                "tool_call_id": "call_consumed",
+                "content": "README.md",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Continuing."},
+    )
+    late = _llm_exchange()
+    late["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Late retry request."}
+    )
+    late["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_late"
+    )
+    terminal = _llm_exchange(
+        assistant={
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_finish",
+                    "type": "function",
+                    "function": {"name": "finish", "arguments": "{}"},
+                }
+            ],
+        }
+    )
+    terminal["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Final response."}
+    )
+
+    assert _training_success_exchange_indices(
+        [consumed, followup, late, terminal]
+    ) == {0, 1, 3}
 
 
 def test_results_jsonl_redacts_without_corrupting_secret_named_booleans(tmp_path):

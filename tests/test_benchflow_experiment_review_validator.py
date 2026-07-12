@@ -377,3 +377,61 @@ def test_validator_prefers_duplicate_consumed_by_later_request(
 
     assert report["healthy"] is True
     assert report["artifacts"]["llm"]["successful_exchange_indices"] == [0, 2]
+
+
+def test_validator_excludes_unique_late_unconsumed_nonterminal_retry(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #921 against the adaptive-cruise exchange-59 regression."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    base = json.loads(llm_path.read_text())
+    late = json.loads(json.dumps(base))
+    late["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Late retry request."}
+    )
+    late["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_late",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "{}"},
+            }
+        ],
+    }
+    terminal = json.loads(json.dumps(base))
+    terminal["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Final response."}
+    )
+    terminal["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_finish",
+                "type": "function",
+                "function": {"name": "finish", "arguments": "{}"},
+            }
+        ],
+    }
+    _write_jsonl(llm_path, [base, late, terminal])
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"] = [
+        {
+            **row["trajectory"][0],
+            "extras": {"source": "llm_trajectory", "exchange_index": 0},
+        },
+        {
+            **row["trajectory"][0],
+            "extras": {"source": "llm_trajectory", "exchange_index": 2},
+        },
+    ]
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+    assert report["artifacts"]["llm"]["successful_exchange_indices"] == [0, 2]

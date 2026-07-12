@@ -283,7 +283,16 @@ def _training_success_exchange_indices(
                 exchanges, request_bodies, exchange_idx
             )
         ]
-        selected.add(max(consumed or candidates))
+        if consumed:
+            selected.add(max(consumed))
+            continue
+        safe_unconsumed = [
+            exchange_idx
+            for exchange_idx in candidates
+            if _response_safe_without_later_consumption(exchanges, exchange_idx)
+        ]
+        if safe_unconsumed:
+            selected.add(max(safe_unconsumed))
     return selected
 
 
@@ -305,33 +314,76 @@ def _response_consumed_by_later_request(
 
 
 def _response_call_ids(body: dict[str, Any]) -> set[str]:
-    call_ids = {
-        str(item.get("call_id") or item.get("id"))
+    return {call_id for call_id, _ in _response_tool_calls(body)}
+
+
+def _response_safe_without_later_consumption(
+    exchanges: list[dict[str, Any]], exchange_idx: int
+) -> bool:
+    exchange = exchanges[exchange_idx]
+    response = exchange.get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    calls = _response_tool_calls(body if isinstance(body, dict) else {})
+    if not calls or all(name == "finish" for _, name in calls):
+        return True
+    return not any(
+        isinstance(request := later.get("request"), dict)
+        and isinstance(request.get("body"), dict)
+        for later in exchanges[exchange_idx + 1 :]
+    )
+
+
+def _response_tool_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
+    calls = [
+        (
+            str(item.get("call_id") or item.get("id")),
+            str(item.get("name")) if item.get("name") else None,
+        )
         for item in body.get("output") or []
         if isinstance(item, dict)
         and item.get("type") in {"function_call", "tool_call"}
         and (item.get("call_id") or item.get("id"))
-    }
+    ]
     choices = body.get("choices")
     if isinstance(choices, list):
         for choice in choices:
             message = choice.get("message") if isinstance(choice, dict) else None
             if not isinstance(message, dict):
                 continue
-            call_ids.update(
-                str(call.get("id") or call.get("tool_call_id"))
+            calls.extend(
+                (
+                    str(call.get("id") or call.get("tool_call_id")),
+                    (
+                        str(function.get("name"))
+                        if isinstance(function := call.get("function"), dict)
+                        and function.get("name")
+                        else str(call.get("name"))
+                        if call.get("name")
+                        else None
+                    ),
+                )
                 for call in message.get("tool_calls") or []
                 if isinstance(call, dict)
                 and (call.get("id") or call.get("tool_call_id"))
             )
     message = body.get("message")
     if isinstance(message, dict):
-        call_ids.update(
-            str(call.get("id") or call.get("tool_call_id"))
+        calls.extend(
+            (
+                str(call.get("id") or call.get("tool_call_id")),
+                (
+                    str(function.get("name"))
+                    if isinstance(function := call.get("function"), dict)
+                    and function.get("name")
+                    else str(call.get("name"))
+                    if call.get("name")
+                    else None
+                ),
+            )
             for call in message.get("tool_calls") or []
             if isinstance(call, dict) and (call.get("id") or call.get("tool_call_id"))
         )
-    return call_ids
+    return calls
 
 
 def _top_level_prompt_completion(
