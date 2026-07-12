@@ -164,10 +164,11 @@ def _llm_steps_from_trajectory(
         exchanges = load_llm_trajectory_jsonl(path, strict=True)
     except PrimeSftTrajectoryJsonlError as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
+    training_success_indices = _training_success_exchange_indices(exchanges)
     skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
         response = exchange.get("response")
-        if not _response_is_training_success(response):
+        if exchange_idx not in training_success_indices:
             continue
         normalized, skip_reason = normalize_prime_sft_exchange(exchange)
         if normalized is None:
@@ -242,6 +243,25 @@ def _response_is_training_success(response: Any) -> bool:
     if status is not None and status != "completed":
         return False
     return not bool(body.get("incomplete_details"))
+
+
+def _training_success_exchange_indices(
+    exchanges: list[dict[str, Any]],
+) -> set[int]:
+    latest_by_request: dict[str, int] = {}
+    for exchange_idx, exchange in enumerate(exchanges):
+        if not _response_is_training_success(exchange.get("response")):
+            continue
+        request = exchange.get("request")
+        request_body = request.get("body") if isinstance(request, dict) else {}
+        signature = json.dumps(
+            request_body if isinstance(request_body, dict) else {},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        latest_by_request[signature] = exchange_idx
+    return set(latest_by_request.values())
 
 
 def _top_level_prompt_completion(

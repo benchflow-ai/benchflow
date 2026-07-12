@@ -247,8 +247,10 @@ def test_validator_rejects_results_with_dropped_successful_exchange(
     validator = _load_validator()
     rollout = _rollout(tmp_path)
     llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
-    row = json.loads(llm_path.read_text())
-    _write_jsonl(llm_path, [row, row])
+    first = json.loads(llm_path.read_text())
+    second = json.loads(llm_path.read_text())
+    second["request"]["body"]["messages"][0]["content"] = "solve a different turn"
+    _write_jsonl(llm_path, [first, second])
 
     report = validator.validate_rollout(rollout)
 
@@ -302,3 +304,22 @@ def test_validator_excludes_recovered_incomplete_response_from_expected_steps(
 
     assert report["healthy"] is True
     assert report["artifacts"]["llm"]["successful_responses"] == 1
+
+
+def test_validator_deduplicates_completed_retry_race(tmp_path: Path) -> None:
+    """Guards PR #921 MAX review against abandoned late responses."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    first = json.loads(llm_path.read_text())
+    second = json.loads(llm_path.read_text())
+    _write_jsonl(llm_path, [first, second])
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"][0]["extras"]["exchange_index"] = 1
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+    assert report["artifacts"]["llm"]["successful_responses"] == 1
+    assert report["artifacts"]["llm"]["deduplicated_completed_responses"] == 1

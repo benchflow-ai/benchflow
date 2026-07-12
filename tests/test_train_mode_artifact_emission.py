@@ -776,6 +776,49 @@ def test_results_jsonl_excludes_recovered_incomplete_provider_exchange(tmp_path)
     assert row["trajectory"][0]["is_truncated"] is False
 
 
+def test_results_jsonl_keeps_latest_completed_duplicate_request(tmp_path):
+    """Guards PR #921 MAX canary against late retry race responses."""
+    rollout_dir = tmp_path / "rollout-duplicate-completed-request"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    abandoned = _llm_exchange(
+        assistant={"role": "assistant", "content": "Abandoned response."}
+    )
+    consumed = _llm_exchange(
+        assistant={"role": "assistant", "content": "Consumed retry."}
+    )
+    assert abandoned["request"]["body"] == consumed["request"]["body"]
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(abandoned) + "\n" + json.dumps(consumed) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 1
+    assert row["trajectory"][0]["extras"]["exchange_index"] == 1
+    assert row["completion"] == [{"role": "assistant", "content": "Consumed retry."}]
+
+
 def test_results_jsonl_redacts_without_corrupting_secret_named_booleans(tmp_path):
     """Secret-carrier field names must not turn JSON booleans into bare tokens."""
     rollout_dir = tmp_path / "rollout-redaction-bool"

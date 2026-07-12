@@ -250,9 +250,7 @@ def validate_llm(
     issues: list[str] = []
     request_count = 0
     response_count = 0
-    successful_response_count = 0
-    successful_exchange_indices: list[int] = []
-    successful_usage_count = 0
+    completed_candidates: list[tuple[int, str, bool]] = []
     error_count = 0
     usage_count = 0
     for index, row in enumerate(rows, start=1):
@@ -276,10 +274,20 @@ def validate_llm(
                     and not body.get("incomplete_details")
                 )
                 if completed:
-                    successful_response_count += 1
-                    successful_exchange_indices.append(index - 1)
-                    if has_token_usage(body):
-                        successful_usage_count += 1
+                    signature = json.dumps(
+                        (
+                            request.get("body")
+                            if isinstance(request, dict)
+                            and isinstance(request.get("body"), dict)
+                            else {}
+                        ),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    completed_candidates.append(
+                        (index - 1, signature, has_token_usage(body))
+                    )
                 if has_token_usage(body):
                     usage_count += 1
             else:
@@ -296,6 +304,13 @@ def validate_llm(
         )
     if usage_count == 0:
         issues.append(f"{path}: no provider token usage in response bodies")
+    latest_by_request: dict[str, tuple[int, bool]] = {}
+    for index, signature, has_usage in completed_candidates:
+        latest_by_request[signature] = (index, has_usage)
+    selected = sorted(latest_by_request.values())
+    successful_exchange_indices = [index for index, _ in selected]
+    successful_response_count = len(selected)
+    successful_usage_count = sum(1 for _, has_usage in selected if has_usage)
     if successful_response_count and successful_usage_count < successful_response_count:
         issues.append(
             f"{path}: completed responses with usage {successful_usage_count} < "
@@ -307,6 +322,9 @@ def validate_llm(
         "successful_responses": successful_response_count,
         "successful_exchange_indices": successful_exchange_indices,
         "successful_responses_with_usage": successful_usage_count,
+        "deduplicated_completed_responses": (
+            len(completed_candidates) - successful_response_count
+        ),
         "errors": error_count,
         "responses_with_usage": usage_count,
     }
