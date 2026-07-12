@@ -170,6 +170,11 @@ def _llm_steps_from_trajectory(
         response = exchange.get("response")
         if exchange_idx not in training_success_indices:
             continue
+        if not isinstance(response, dict):
+            skipped_successful.append(
+                f"exchange {exchange_idx}: selected response is not an object"
+            )
+            continue
         normalized, skip_reason = normalize_prime_sft_exchange(exchange)
         if normalized is None:
             skipped_successful.append(
