@@ -90,6 +90,41 @@ def _resolve_locked_paths(
 # Sandbox user + privilege drop
 
 
+def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
+    user = shlex.quote(sandbox_user)
+    return (
+        'if [ "${BENCHFLOW_DISALLOW_WEB_TOOLS:-}" = "1" ]; then '
+        "if ! command -v iptables >/dev/null 2>&1; then "
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "export DEBIAN_FRONTEND=noninteractive; "
+        "apt-get update -qq && apt-get install -y -qq iptables >/dev/null; "
+        "elif command -v dnf >/dev/null 2>&1; then "
+        "dnf -y install iptables >/dev/null; "
+        "elif command -v apk >/dev/null 2>&1; then "
+        "apk add --no-cache iptables >/dev/null; "
+        "else echo 'No supported iptables package manager' >&2; exit 86; fi; fi; "
+        'case "${LLM_BASE_URL:-}" in '
+        "http://127.0.0.1:*|http://localhost:*) ;; "
+        "*) echo 'No-web agent requires a loopback LLM_BASE_URL' >&2; exit 86;; "
+        "esac; "
+        'proxy_addr="${LLM_BASE_URL#http://}"; '
+        'proxy_addr="${proxy_addr%%/*}"; '
+        'proxy_port="${proxy_addr##*:}"; '
+        'case "$proxy_port" in ""|*[!0-9]*) '
+        "echo 'Invalid loopback LLM proxy port' >&2; exit 86;; esac; "
+        f"agent_uid=$(id -u {user}) || exit 86; "
+        "iptables -C OUTPUT -d 127.0.0.1/32 -p tcp "
+        '-m owner --uid-owner "$agent_uid" --dport "$proxy_port" '
+        "-j ACCEPT 2>/dev/null || "
+        "iptables -I OUTPUT 1 -d 127.0.0.1/32 -p tcp "
+        '-m owner --uid-owner "$agent_uid" --dport "$proxy_port" -j ACCEPT; '
+        'iptables -C OUTPUT -m owner --uid-owner "$agent_uid" '
+        "-j REJECT 2>/dev/null || "
+        'iptables -A OUTPUT -m owner --uid-owner "$agent_uid" -j REJECT; '
+        "fi; "
+    )
+
+
 def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     """Build a shell command that drops to sandbox_user via setpriv or su.
 
@@ -99,6 +134,7 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     inner = f"export HOME=/home/{sandbox_user} && {agent_launch}"
     quoted = shlex.quote(inner)
     return (
+        f"{_agent_egress_firewall_cmd(sandbox_user)}"
         f"if setpriv --help 2>&1 | grep -q reuid; then"
         f" exec setpriv --reuid={sandbox_user} --regid={sandbox_user}"
         f" --init-groups -- bash -c {quoted};"

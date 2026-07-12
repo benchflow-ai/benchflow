@@ -1,5 +1,6 @@
 """Tests for path lockdown — _validate_locked_path, _resolve_locked_paths, lockdown_paths."""
 
+import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -384,11 +385,25 @@ class TestPrivDropCommand:
         """Single quotes in agent_launch don't break the command."""
         cmd = build_priv_drop_cmd("agent --prompt 'hello world'", "agent")
         assert "hello world" in cmd
-        assert cmd.count("if ") == 1
-        assert cmd.count(" fi") == 1
+        subprocess.run(["bash", "-n", "-c", cmd], check=True)
 
     def test_custom_sandbox_user(self):
         cmd = build_priv_drop_cmd("my-agent", "bench-user")
         assert "--reuid=bench-user" in cmd
         assert "su -l bench-user" in cmd
         assert "/home/bench-user" in cmd
+
+    def test_no_web_policy_installs_owner_firewall_before_privilege_drop(self):
+        """Guards PR #921 against terminal-based oracle downloads."""
+        cmd = build_priv_drop_cmd("my-agent", "agent")
+
+        assert 'BENCHFLOW_DISALLOW_WEB_TOOLS:-}" = "1"' in cmd
+        assert "apt-get install -y -qq iptables" in cmd
+        assert "dnf -y install iptables" in cmd
+        assert "apk add --no-cache iptables" in cmd
+        assert "http://127.0.0.1:*|http://localhost:*" in cmd
+        assert "agent_uid=$(id -u agent)" in cmd
+        assert '--uid-owner "$agent_uid" --dport "$proxy_port" -j ACCEPT' in cmd
+        assert '--uid-owner "$agent_uid" -j REJECT' in cmd
+        assert cmd.index("iptables -C OUTPUT") < cmd.index("exec setpriv")
+        subprocess.run(["bash", "-n", "-c", cmd], check=True)
