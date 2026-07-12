@@ -258,6 +258,12 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 value = litellm_params.get(key)
             if value is not None:
                 request_body[key] = value
+        for key in ("logprobs", "top_logprobs"):
+            value = optional_params.get(key)
+            if value is None:
+                value = kwargs.get(key)
+            if value is not None:
+                request_body[key] = value
         request_body = {k: v for k, v in request_body.items() if v is not None}
         return {
             "request_model": kwargs.get("model"),
@@ -315,6 +321,19 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 if cleaned is data:
                     cleaned = dict(data)
                 cleaned["tools"] = kept
+
+        capture_logprobs = (
+            os.environ.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if (
+            capture_logprobs
+            and call_type in {"completion", "acompletion"}
+            and cleaned.get("messages") is not None
+        ):
+            if cleaned is data:
+                cleaned = dict(data)
+            cleaned["logprobs"] = True
         if cleaned is data:
             return None
         return cleaned

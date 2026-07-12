@@ -290,6 +290,13 @@ sandbox-local LiteLLM gateway. Use `--usage-tracking required` when missing tele
 should fail the rollout, or `--usage-tracking off` for recovery runs that should
 leave provider traffic untouched.
 
+For online-training rollouts against a chat-completions endpoint that supports
+sampled-token log probabilities, pass
+`--agent-env BENCHFLOW_CAPTURE_TOKEN_LOGPROBS=1`. The LiteLLM gateway adds
+`logprobs=true` to each chat request and preserves the provider's token
+logprobs in `trajectory/llm_trajectory.jsonl`. This is opt-in because providers
+that do not implement chat-completion logprobs may reject the request.
+
 `--source-env` is for external hosted environment hubs. The first supported
 runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity
 (`env_uid`, `hub_url`), installs the versioned package into an isolated local
