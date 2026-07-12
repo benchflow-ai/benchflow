@@ -18,6 +18,7 @@ import re
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from benchflow.agents.registry import get_sandbox_home_dirs
 from benchflow.sandbox._cache_reclaim import build_reclaim_caches_cmd
@@ -93,7 +94,7 @@ def _resolve_locked_paths(
 def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
     user = shlex.quote(sandbox_user)
     return (
-        'if [ "${BENCHFLOW_DISALLOW_WEB_TOOLS:-}" = "1" ]; then '
+        "set -e; "
         "if ! command -v iptables >/dev/null 2>&1; then "
         "if command -v apt-get >/dev/null 2>&1; then "
         "export DEBIAN_FRONTEND=noninteractive; "
@@ -103,25 +104,25 @@ def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
         "elif command -v apk >/dev/null 2>&1; then "
         "apk add --no-cache iptables >/dev/null; "
         "else echo 'No supported iptables package manager' >&2; exit 86; fi; fi; "
-        'case "${LLM_BASE_URL:-}" in '
-        "http://127.0.0.1:*|http://localhost:*) ;; "
-        "*) echo 'No-web agent requires a loopback LLM_BASE_URL' >&2; exit 86;; "
-        "esac; "
-        'proxy_addr="${LLM_BASE_URL#http://}"; '
-        'proxy_addr="${proxy_addr%%/*}"; '
-        'proxy_port="${proxy_addr##*:}"; '
-        'case "$proxy_port" in ""|*[!0-9]*) '
-        "echo 'Invalid loopback LLM proxy port' >&2; exit 86;; esac; "
         f"agent_uid=$(id -u {user}) || exit 86; "
-        "iptables -C OUTPUT -d 127.0.0.1/32 -p tcp "
-        '-m owner --uid-owner "$agent_uid" --dport "$proxy_port" '
+        'iptables -C OUTPUT -o lo -m owner --uid-owner "$agent_uid" '
         "-j ACCEPT 2>/dev/null || "
-        "iptables -I OUTPUT 1 -d 127.0.0.1/32 -p tcp "
-        '-m owner --uid-owner "$agent_uid" --dport "$proxy_port" -j ACCEPT; '
+        'iptables -I OUTPUT 1 -o lo -m owner --uid-owner "$agent_uid" '
+        "-j ACCEPT; "
         'iptables -C OUTPUT -m owner --uid-owner "$agent_uid" '
         "-j REJECT 2>/dev/null || "
         'iptables -A OUTPUT -m owner --uid-owner "$agent_uid" -j REJECT; '
-        "fi; "
+        "if [ -s /proc/net/if_inet6 ]; then "
+        "command -v ip6tables >/dev/null 2>&1 || "
+        "{ echo 'IPv6 enabled but ip6tables unavailable' >&2; exit 86; }; "
+        'ip6tables -C OUTPUT -o lo -m owner --uid-owner "$agent_uid" '
+        "-j ACCEPT 2>/dev/null || "
+        'ip6tables -I OUTPUT 1 -o lo -m owner --uid-owner "$agent_uid" '
+        "-j ACCEPT; "
+        'ip6tables -C OUTPUT -m owner --uid-owner "$agent_uid" '
+        "-j REJECT 2>/dev/null || "
+        'ip6tables -A OUTPUT -m owner --uid-owner "$agent_uid" -j REJECT; '
+        "fi"
     )
 
 
@@ -134,12 +135,45 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     inner = f"export HOME=/home/{sandbox_user} && {agent_launch}"
     quoted = shlex.quote(inner)
     return (
-        f"{_agent_egress_firewall_cmd(sandbox_user)}"
         f"if setpriv --help 2>&1 | grep -q reuid; then"
         f" exec setpriv --reuid={sandbox_user} --regid={sandbox_user}"
         f" --init-groups -- bash -c {quoted};"
         f" else exec su -l {sandbox_user} -c {quoted};"
         f" fi"
+    )
+
+
+async def enforce_agent_egress_firewall(
+    env: Any,
+    sandbox_user: str | None,
+    agent_env: dict[str, str],
+) -> None:
+    """Block sandbox-user external egress after ACP bootstrap, before prompting."""
+    if not sandbox_user or agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") != "1":
+        return
+
+    base_url = agent_env.get("LLM_BASE_URL", "")
+    parsed = urlsplit(base_url)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or parsed.port is None
+    ):
+        raise RuntimeError(
+            "No-web agent requires an HTTP loopback LLM_BASE_URL with a port"
+        )
+
+    result = await env.exec(
+        _agent_egress_firewall_cmd(sandbox_user),
+        user="root",
+        timeout_sec=120,
+    )
+    if _exec_return_code(result) != 0:
+        detail = _exec_failure_detail(result)
+        raise RuntimeError(f"Failed to enforce sandbox-user egress firewall.{detail}")
+    logger.info(
+        "Sandbox-user egress firewall active for %s (loopback allowed)",
+        sandbox_user,
     )
 
 
