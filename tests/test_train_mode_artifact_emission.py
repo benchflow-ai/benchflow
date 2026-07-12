@@ -819,6 +819,76 @@ def test_results_jsonl_keeps_latest_completed_duplicate_request(tmp_path):
     assert row["completion"] == [{"role": "assistant", "content": "Consumed retry."}]
 
 
+def test_results_jsonl_prefers_duplicate_consumed_by_later_request(tmp_path):
+    """Guards PR #921 against keeping a late abandoned response."""
+    rollout_dir = tmp_path / "rollout-consumed-duplicate-request"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    consumed = _llm_exchange()
+    consumed["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_consumed"
+    )
+    abandoned = _llm_exchange()
+    abandoned["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_abandoned"
+    )
+    followup = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_consumed",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"ls"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_consumed",
+                "content": "README.md",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    assert consumed["request"]["body"] == abandoned["request"]["body"]
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in (consumed, abandoned, followup)) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert [step["extras"]["exchange_index"] for step in row["trajectory"]] == [
+        0,
+        2,
+    ]
+
+
 def test_results_jsonl_redacts_without_corrupting_secret_named_booleans(tmp_path):
     """Secret-carrier field names must not turn JSON booleans into bare tokens."""
     rollout_dir = tmp_path / "rollout-redaction-bool"

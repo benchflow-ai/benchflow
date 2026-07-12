@@ -248,20 +248,85 @@ def _response_is_training_success(response: Any) -> bool:
 def _training_success_exchange_indices(
     exchanges: list[dict[str, Any]],
 ) -> set[int]:
-    latest_by_request: dict[str, int] = {}
-    for exchange_idx, exchange in enumerate(exchanges):
-        if not _response_is_training_success(exchange.get("response")):
-            continue
-        request = exchange.get("request")
-        request_body = request.get("body") if isinstance(request, dict) else {}
-        signature = json.dumps(
-            request_body if isinstance(request_body, dict) else {},
+    request_bodies = [
+        json.dumps(
+            (
+                request.get("body")
+                if isinstance(request := exchange.get("request"), dict)
+                and isinstance(request.get("body"), dict)
+                else {}
+            ),
             sort_keys=True,
             separators=(",", ":"),
             default=str,
         )
-        latest_by_request[signature] = exchange_idx
-    return set(latest_by_request.values())
+        for exchange in exchanges
+    ]
+    candidates_by_request: dict[str, list[int]] = {}
+    for exchange_idx, exchange in enumerate(exchanges):
+        if not _response_is_training_success(exchange.get("response")):
+            continue
+        candidates_by_request.setdefault(request_bodies[exchange_idx], []).append(
+            exchange_idx
+        )
+    selected: set[int] = set()
+    for candidates in candidates_by_request.values():
+        consumed = [
+            exchange_idx
+            for exchange_idx in candidates
+            if _response_consumed_by_later_request(
+                exchanges, request_bodies, exchange_idx
+            )
+        ]
+        selected.add(max(consumed or candidates))
+    return selected
+
+
+def _response_consumed_by_later_request(
+    exchanges: list[dict[str, Any]],
+    request_bodies: list[str],
+    exchange_idx: int,
+) -> bool:
+    response = exchanges[exchange_idx].get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    call_ids = _response_call_ids(body if isinstance(body, dict) else {})
+    return bool(
+        call_ids
+        and any(
+            any(call_id in request_body for call_id in call_ids)
+            for request_body in request_bodies[exchange_idx + 1 :]
+        )
+    )
+
+
+def _response_call_ids(body: dict[str, Any]) -> set[str]:
+    call_ids = {
+        str(item.get("call_id") or item.get("id"))
+        for item in body.get("output") or []
+        if isinstance(item, dict)
+        and item.get("type") in {"function_call", "tool_call"}
+        and (item.get("call_id") or item.get("id"))
+    }
+    choices = body.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            message = choice.get("message") if isinstance(choice, dict) else None
+            if not isinstance(message, dict):
+                continue
+            call_ids.update(
+                str(call.get("id") or call.get("tool_call_id"))
+                for call in message.get("tool_calls") or []
+                if isinstance(call, dict)
+                and (call.get("id") or call.get("tool_call_id"))
+            )
+    message = body.get("message")
+    if isinstance(message, dict):
+        call_ids.update(
+            str(call.get("id") or call.get("tool_call_id"))
+            for call in message.get("tool_calls") or []
+            if isinstance(call, dict) and (call.get("id") or call.get("tool_call_id"))
+        )
+    return call_ids
 
 
 def _top_level_prompt_completion(

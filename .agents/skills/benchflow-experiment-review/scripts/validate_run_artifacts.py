@@ -304,10 +304,32 @@ def validate_llm(
         )
     if usage_count == 0:
         issues.append(f"{path}: no provider token usage in response bodies")
-    latest_by_request: dict[str, tuple[int, bool]] = {}
+    candidates_by_request: dict[str, list[tuple[int, bool]]] = {}
     for index, signature, has_usage in completed_candidates:
-        latest_by_request[signature] = (index, has_usage)
-    selected = sorted(latest_by_request.values())
+        candidates_by_request.setdefault(signature, []).append((index, has_usage))
+    request_bodies = [
+        json.dumps(
+            (
+                request.get("body")
+                if isinstance(request := row.get("request"), dict)
+                and isinstance(request.get("body"), dict)
+                else {}
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        for row in rows
+    ]
+    selected: list[tuple[int, bool]] = []
+    for candidates in candidates_by_request.values():
+        consumed = [
+            candidate
+            for candidate in candidates
+            if response_consumed_by_later_request(rows, request_bodies, candidate[0])
+        ]
+        selected.append(max(consumed or candidates))
+    selected.sort()
     successful_exchange_indices = [index for index, _ in selected]
     successful_response_count = len(selected)
     successful_usage_count = sum(1 for _, has_usage in selected if has_usage)
@@ -328,6 +350,53 @@ def validate_llm(
         "errors": error_count,
         "responses_with_usage": usage_count,
     }
+
+
+def response_consumed_by_later_request(
+    rows: list[dict[str, Any]],
+    request_bodies: list[str],
+    exchange_idx: int,
+) -> bool:
+    response = rows[exchange_idx].get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    call_ids = response_call_ids(body if isinstance(body, dict) else {})
+    return bool(
+        call_ids
+        and any(
+            any(call_id in request_body for call_id in call_ids)
+            for request_body in request_bodies[exchange_idx + 1 :]
+        )
+    )
+
+
+def response_call_ids(body: dict[str, Any]) -> set[str]:
+    call_ids = {
+        str(item.get("call_id") or item.get("id"))
+        for item in body.get("output") or []
+        if isinstance(item, dict)
+        and item.get("type") in {"function_call", "tool_call"}
+        and (item.get("call_id") or item.get("id"))
+    }
+    choices = body.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            message = choice.get("message") if isinstance(choice, dict) else None
+            if not isinstance(message, dict):
+                continue
+            call_ids.update(
+                str(call.get("id") or call.get("tool_call_id"))
+                for call in message.get("tool_calls") or []
+                if isinstance(call, dict)
+                and (call.get("id") or call.get("tool_call_id"))
+            )
+    message = body.get("message")
+    if isinstance(message, dict):
+        call_ids.update(
+            str(call.get("id") or call.get("tool_call_id"))
+            for call in message.get("tool_calls") or []
+            if isinstance(call, dict) and (call.get("id") or call.get("tool_call_id"))
+        )
+    return call_ids
 
 
 def result_has_terminal_error(result: dict[str, Any]) -> bool:

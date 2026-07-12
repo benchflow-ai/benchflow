@@ -323,3 +323,57 @@ def test_validator_deduplicates_completed_retry_race(tmp_path: Path) -> None:
     assert report["healthy"] is True
     assert report["artifacts"]["llm"]["successful_responses"] == 1
     assert report["artifacts"]["llm"]["deduplicated_completed_responses"] == 1
+
+
+def test_validator_prefers_duplicate_consumed_by_later_request(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #921 against keeping a late abandoned response."""
+    validator = _load_validator()
+    rollout = _rollout(tmp_path)
+    llm_path = rollout / "trajectory" / "llm_trajectory.jsonl"
+    consumed = json.loads(llm_path.read_text())
+    consumed["response"]["body"]["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_consumed",
+                "type": "function",
+                "function": {"name": "finish", "arguments": "{}"},
+            }
+        ],
+    }
+    abandoned = json.loads(json.dumps(consumed))
+    abandoned["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_abandoned"
+    )
+    followup = json.loads(llm_path.read_text())
+    followup["request"]["body"]["messages"].extend(
+        [
+            consumed["response"]["body"]["choices"][0]["message"],
+            {
+                "role": "tool",
+                "tool_call_id": "call_consumed",
+                "content": "done",
+            },
+        ]
+    )
+    _write_jsonl(llm_path, [consumed, abandoned, followup])
+    row = json.loads((rollout / "results.jsonl").read_text())
+    row["trajectory"] = [
+        {
+            **row["trajectory"][0],
+            "extras": {"source": "llm_trajectory", "exchange_index": 0},
+        },
+        {
+            **row["trajectory"][0],
+            "extras": {"source": "llm_trajectory", "exchange_index": 2},
+        },
+    ]
+    _write_jsonl(rollout / "results.jsonl", [row])
+
+    report = validator.validate_rollout(rollout)
+
+    assert report["healthy"] is True
+    assert report["artifacts"]["llm"]["successful_exchange_indices"] == [0, 2]
