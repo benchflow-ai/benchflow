@@ -287,6 +287,13 @@ def _resolve_prompts(
     return [p if p is not None else instruction for p in prompts]
 
 
+def _apply_prompt_prefix(prompts: list[str], prompt_prefix: str | None) -> list[str]:
+    """Prepend a recorded, task-agnostic harness policy to resolved prompts."""
+    if prompt_prefix is None:
+        return prompts
+    return [f"{prompt_prefix}\n\n{prompt}" for prompt in prompts]
+
+
 async def _start_env_and_upload(
     env: Any,
     task_path: Path,

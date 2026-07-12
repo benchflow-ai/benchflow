@@ -122,6 +122,7 @@ from benchflow.rollout._setup import (
 from benchflow.rollout._setup import (
     _agent_process_kill_pattern as _agent_process_kill_pattern,
 )
+from benchflow.rollout._setup import _apply_prompt_prefix as _apply_prompt_prefix
 from benchflow.rollout._setup import _apply_web_policy as _apply_web_policy
 from benchflow.rollout._setup import (
     _configured_task_workdir as _configured_task_workdir,
@@ -869,7 +870,10 @@ class Rollout:
             declared_sandbox_skills_dir=getattr(env_config, "skills_dir", None),
         )
         self._task_skill_policy = task_skill_policy
-        self._resolved_prompts = _resolve_prompts(cfg.task_path, cfg.prompts)
+        self._resolved_prompts = _apply_prompt_prefix(
+            _resolve_prompts(cfg.task_path, cfg.prompts),
+            self._task.config.agent.prompt_prefix,
+        )
         self._agent_launch = self._planes.agent_launch(
             cfg.primary_agent,
             disallow_web_tools=self._disallow_web_tools,

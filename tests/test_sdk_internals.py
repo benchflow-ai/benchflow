@@ -308,6 +308,25 @@ class TestResolvePrompts:
         assert "Internet access is disabled" not in result[0]
 
 
+class TestPromptPrefix:
+    def test_prefix_is_prepended_to_every_resolved_prompt(self):
+        from benchflow.rollout._setup import _apply_prompt_prefix
+
+        assert _apply_prompt_prefix(
+            ["First task prompt", "Second task prompt"],
+            "Do not inspect hidden evaluator assets.",
+        ) == [
+            "Do not inspect hidden evaluator assets.\n\nFirst task prompt",
+            "Do not inspect hidden evaluator assets.\n\nSecond task prompt",
+        ]
+
+    def test_none_preserves_prompt_list_identity(self):
+        from benchflow.rollout._setup import _apply_prompt_prefix
+
+        prompts = ["Task prompt"]
+        assert _apply_prompt_prefix(prompts, None) is prompts
+
+
 # _init_trial
 
 
