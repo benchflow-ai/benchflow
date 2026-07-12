@@ -932,9 +932,11 @@ def test_results_drop_unique_late_unconsumed_nonterminal_retry():
         {"role": "user", "content": "Final response."}
     )
 
-    assert _training_success_exchange_indices(
-        [consumed, followup, late, terminal]
-    ) == {0, 1, 3}
+    assert _training_success_exchange_indices([consumed, followup, late, terminal]) == {
+        0,
+        1,
+        3,
+    }
 
 
 def test_results_jsonl_redacts_without_corrupting_secret_named_booleans(tmp_path):
