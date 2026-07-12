@@ -274,6 +274,141 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
     assert usage["cost_usd"] == 0.00042
 
 
+def test_opencode_callback_import_preserves_call_metadata_and_purpose():
+    """Guards PR #925: TRL conversion can exclude OpenCode helper calls."""
+    primary = {
+        "event": "success",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+        "model_group": "benchflow-glm-5.1",
+        "call_type": "completion",
+        "input_shape": {
+            "has_messages": True,
+            "has_input": True,
+            "n_messages": 2,
+        },
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {"role": "system", "content": "You are OpenCode."},
+                    {"role": "user", "content": "Inspect the repository."},
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "read", "parameters": {"type": "object"}},
+                    }
+                ],
+            },
+        },
+        "response": {
+            "choices": [{"message": {"role": "assistant", "content": "Working."}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        },
+        "start_time": "2026-07-12T10:00:00Z",
+        "end_time": "2026-07-12T10:00:01Z",
+    }
+    title = {
+        **primary,
+        "request": {
+            **primary["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a title generator. Output only a title.",
+                    },
+                    {"role": "user", "content": "Generate a title."},
+                ],
+            },
+        },
+    }
+    summary = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Summarize what was done in this conversation. "
+                            "Write like a pull request description."
+                        ),
+                    },
+                    {"role": "user", "content": "Summarize this session."},
+                ],
+            },
+        },
+    }
+    compaction = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an anchored context summarization assistant "
+                            "for coding sessions."
+                        ),
+                    },
+                    {"role": "user", "content": "Compact this session."},
+                ],
+            },
+        },
+    }
+    helper = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {"role": "system", "content": "Small utility model."},
+                    {"role": "user", "content": "Classify this input."},
+                ],
+            },
+        },
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        "\n".join(
+            json.dumps(record)
+            for record in (primary, title, summary, compaction, helper)
+        ),
+        session_id="session",
+        agent_name="opencode",
+    )
+
+    assert trajectory.exchanges[0].metadata == {
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+        "model_group": "benchflow-glm-5.1",
+        "call_type": "completion",
+        "input_shape": {
+            "has_messages": True,
+            "has_input": True,
+            "n_messages": 2,
+        },
+        "call_purpose": "agent",
+    }
+    assert [exchange.metadata["call_purpose"] for exchange in trajectory.exchanges] == [
+        "agent",
+        "title",
+        "summary",
+        "compaction",
+        "helper",
+    ]
+
+
 def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
     record = {
         "event": "success",

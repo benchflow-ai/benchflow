@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from benchflow.trajectories.call_purpose import infer_call_purpose
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -427,6 +428,30 @@ def _record_response_body(record: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
+def _exchange_metadata(
+    record: dict[str, Any],
+    *,
+    request_body: dict[str, Any],
+    agent_name: str,
+) -> dict[str, Any]:
+    metadata = {
+        key: record.get(key)
+        for key in (
+            "request_model",
+            "provider_model",
+            "model_group",
+            "call_type",
+            "input_shape",
+        )
+        if record.get(key) is not None
+    }
+    metadata["call_purpose"] = infer_call_purpose(
+        agent_name=agent_name,
+        request_body=request_body,
+    )
+    return metadata
+
+
 def _coerce_provider_failure_status(value: Any) -> int | None:
     if isinstance(value, int) and value in _PROVIDER_FAILURE_STATUS_CODES:
         return value
@@ -572,6 +597,11 @@ def trajectory_from_litellm_callback_log(
                     body=response_body,
                 ),
                 duration_ms=float(record.get("duration_ms") or 0.0),
+                metadata=_exchange_metadata(
+                    record,
+                    request_body=request_body,
+                    agent_name=agent_name,
+                ),
             )
         )
         cost = record.get("response_cost")
