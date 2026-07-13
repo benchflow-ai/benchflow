@@ -81,13 +81,27 @@ def validate_tokenized_row(
     prompt_ids = _input_ids(prompt_output)
     full_ids = _input_ids(full_output)
     assistant_masks = _assistant_masks(full_output)
-    if full_ids[: len(prompt_ids)] != prompt_ids:
-        raise ValueError(
-            f"row {row_num}: tokenized prompt is not a prefix of prompt+completion"
-        )
     if len(assistant_masks) != len(full_ids):
         raise ValueError(
             f"row {row_num}: assistant mask length does not match input_ids"
+        )
+    prefix_length = 0
+    for prompt_id, full_id in zip(prompt_ids, full_ids, strict=False):
+        if prompt_id != full_id:
+            break
+        prefix_length += 1
+    first_assistant = next(
+        (index for index, value in enumerate(assistant_masks) if value),
+        None,
+    )
+    if full_ids[: len(prompt_ids)] != prompt_ids and (
+        len(prompt_ids) > len(full_ids)
+        or first_assistant is None
+        or prefix_length < first_assistant
+    ):
+        raise ValueError(
+            f"row {row_num}: tokenized prompt differs before the assistant "
+            "generation boundary"
         )
     trainable = sum(assistant_masks[len(prompt_ids) :])
     if trainable < 1:

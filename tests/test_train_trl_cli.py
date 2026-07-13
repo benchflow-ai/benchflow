@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
@@ -47,6 +48,38 @@ class _FakeTrlTokenizer:
                 result["assistant_masks"] = assistant_masks
             return result
         return input_ids
+
+
+class _GenerationPrefixDriftTokenizer:
+    chat_template = "fake"
+
+    def __init__(self, *, early_drift: bool = False) -> None:
+        self.early_drift = early_drift
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        add_generation_prompt: bool = False,
+        return_dict: bool = False,
+        return_assistant_tokens_mask: bool = False,
+        **kwargs: Any,
+    ):
+        del messages, kwargs
+        if add_generation_prompt:
+            input_ids = [1, 9 if self.early_drift else 2, 3]
+            return {"input_ids": input_ids} if return_dict else input_ids
+        result = {
+            "input_ids": [1, 2, 4, 5],
+            "assistant_masks": [0, 0, 1, 1],
+        }
+        if return_dict:
+            return (
+                result
+                if return_assistant_tokens_mask
+                else {"input_ids": result["input_ids"]}
+            )
+        return result["input_ids"]
 
 
 def _tool(name: str = "finish") -> dict[str, Any]:
@@ -149,6 +182,43 @@ def _patch_tokenizer(monkeypatch) -> None:
         "training_chat_template",
         lambda tokenizer: None,
     )
+
+
+def test_tokenized_row_allows_generation_prefix_drift_after_assistant_boundary() -> (
+    None
+):
+    token_length, trainable = trl_sft_tokenization.validate_tokenized_row(
+        {
+            "prompt": [{"role": "user", "content": "do it"}],
+            "completion": [{"role": "assistant", "content": "done"}],
+            "tools": [],
+        },
+        row_num=1,
+        tokenizer=_GenerationPrefixDriftTokenizer(),
+        chat_template=None,
+        max_length=8,
+    )
+
+    assert token_length == 4
+    assert trainable == 1
+
+
+def test_tokenized_row_rejects_drift_before_assistant_boundary() -> None:
+    with pytest.raises(
+        ValueError,
+        match="differs before the assistant generation boundary",
+    ):
+        trl_sft_tokenization.validate_tokenized_row(
+            {
+                "prompt": [{"role": "user", "content": "do it"}],
+                "completion": [{"role": "assistant", "content": "done"}],
+                "tools": [],
+            },
+            row_num=1,
+            tokenizer=_GenerationPrefixDriftTokenizer(early_drift=True),
+            chat_template=None,
+            max_length=8,
+        )
 
 
 def test_trl_sft_cli_excludes_opencode_helpers(tmp_path: Path) -> None:
