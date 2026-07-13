@@ -148,7 +148,7 @@ class TestOpenHandsConfig:
             "--overrides /tmp/oh-sdk-overrides.txt "
             "--from "
             "'git+https://github.com/OpenHands/OpenHands-CLI.git@"
-            "3ca17446c5d9c1e35e054803478a3501ec251ecf' "
+            "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271' "
             "openhands --python 3.12" in cfg.install_cmd
         )
         assert "OpenHands/OpenHands-CLI.git@main" not in cfg.install_cmd
@@ -156,12 +156,12 @@ class TestOpenHandsConfig:
         assert "command -v git" in cfg.install_cmd
         assert "install.openhands.dev/install.sh" not in cfg.install_cmd
 
-    def test_openhands_install_cmd_overrides_buggy_sdk_pin(self):
-        """Guards PR #644 against Opus timeouts from OpenHands SDK 1.21.0."""
+    def test_openhands_install_cmd_pins_matching_long_run_sdk(self):
+        """Guards PR #921 against restoring the unstable 1.22.1 ACP runtime."""
         cfg = AGENTS["openhands"]
 
-        assert "openhands-sdk==1.22.1" in cfg.install_cmd
-        assert "openhands-tools==1.22.1" in cfg.install_cmd
+        assert "openhands-sdk==1.28.1" in cfg.install_cmd
+        assert "openhands-tools==1.28.1" in cfg.install_cmd
         assert "openhands-sdk>=1.22.0" not in cfg.install_cmd
         assert "--overrides /tmp/oh-sdk-overrides.txt" in cfg.install_cmd
 

@@ -117,9 +117,9 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
-_OPENHANDS_CLI_GIT_REV = "3ca17446c5d9c1e35e054803478a3501ec251ecf"
-_OPENHANDS_SDK_VERSION = "1.22.1"
-_OPENHANDS_TOOLS_VERSION = "1.22.1"
+_OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
+_OPENHANDS_SDK_VERSION = "1.28.1"
+_OPENHANDS_TOOLS_VERSION = "1.28.1"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -902,10 +902,11 @@ AGENTS: dict[str, AgentConfig] = {
             "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 && "
             '    export PATH="$HOME/.local/bin:$PATH"; '
             "  fi && "
-            # Pin the OpenHands CLI source so the agent workflow cannot drift
-            # with GitHub main; only override the buggy sdk/tools 1.21.0 pins.
-            # SDK 1.22.x restores default-to-UNKNOWN for the synthetic
-            # `security_risk` tool field without the API drift seen in 1.26.x.
+            # Pin the OpenHands CLI source and its matching SDK/tools release
+            # together so the ACP runtime cannot drift or be forced onto an
+            # older, API-incompatible SDK. The 1.28.1 line retains the
+            # security_risk default fix and includes later long-run ACP,
+            # terminal, tool-executor, and event-log stability fixes.
             f"printf 'openhands-sdk=={_OPENHANDS_SDK_VERSION}\\n"
             f"openhands-tools=={_OPENHANDS_TOOLS_VERSION}\\n' "
             "> /tmp/oh-sdk-overrides.txt && "

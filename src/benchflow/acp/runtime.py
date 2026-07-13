@@ -20,12 +20,12 @@ Does not own:
 import asyncio
 import contextlib
 import logging
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
+from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
@@ -57,6 +57,7 @@ __all__ = [
     "IdleTimeoutError",
     "connect_acp",
     "execute_prompts",
+    "selected_acp_transport",
 ]
 
 logger = logging.getLogger(__name__)
@@ -66,20 +67,6 @@ _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
 _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 _ACP_HANDSHAKE_TIMEOUT_SEC = 60
-_DAYTONA_ACP_TRANSPORT_ENV = "BENCHFLOW_DAYTONA_ACP_TRANSPORT"
-_DAYTONA_ACP_TRANSPORTS = {"pty", "ssh"}
-
-
-def _daytona_acp_transport() -> str:
-    value = os.environ.get(_DAYTONA_ACP_TRANSPORT_ENV, "pty").strip().lower()
-    if value in _DAYTONA_ACP_TRANSPORTS:
-        return value
-    logger.warning(
-        "Invalid %s=%r; using PTY transport",
-        _DAYTONA_ACP_TRANSPORT_ENV,
-        value,
-    )
-    return "pty"
 
 
 async def _wait_for_acp_handshake(awaitable, *, phase: str):
@@ -522,8 +509,9 @@ async def connect_acp(
             if environment == "docker":
                 live_proc = DockerProcess.from_sandbox_env(env)
             elif environment == "daytona":
-                transport_name = (
-                    "ssh" if agent == "gemini" else _daytona_acp_transport()
+                transport_name = selected_acp_transport(
+                    agent=agent,
+                    environment=environment,
                 )
                 if transport_name == "ssh":
                     live_proc = await DaytonaProcess.from_sandbox_env(env)
