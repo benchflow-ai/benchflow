@@ -121,7 +121,7 @@ _OPENHANDS_CLI_GIT_REV = "3ca17446c5d9c1e35e054803478a3501ec251ecf"
 _OPENHANDS_SDK_VERSION = "1.22.1"
 _OPENHANDS_TOOLS_VERSION = "1.22.1"
 _OPENHANDS_SETTINGS_WRITER_PATH = "/opt/benchflow/bin/openhands-settings-writer"
-_OPENHANDS_SETTINGS_WRITER = r'''import json
+_OPENHANDS_SETTINGS_WRITER = r"""import json
 import os
 import sys
 from pathlib import Path
@@ -198,7 +198,7 @@ settings = {
     "kind": "Agent",
 }
 Path(sys.argv[1]).write_text(json.dumps(settings, separators=(",", ":")))
-'''
+"""
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -587,6 +587,9 @@ class AgentConfig:
     task_mcp_transport: str = "acp"
     # Native-config target path, relative to $HOME unless absolute.
     task_mcp_config_path: str = ""
+    # Host-owned launch override for provider/harness compatibility shims that
+    # cannot be represented in the data-only agent manifest contract.
+    launch_override_cmd: str = ""
 
 
 # Agent registry — all supported agents
@@ -1002,15 +1005,29 @@ AGENTS: dict[str, AgentConfig] = {
             'echo \'{"llm":{"model":"placeholder","api_key":"placeholder"}}\' '
             "> ~/.openhands/agent_settings.json && "
             "command -v openhands >/dev/null 2>&1"
-            + " && "
-            + _install_python_script(
-                _OPENHANDS_SETTINGS_WRITER_PATH, _OPENHANDS_SETTINGS_WRITER
-            )
         ),
         launch_cmd=(
             'export PATH="$HOME/.local/bin:$PATH" && '
             "mkdir -p ~/.openhands && "
-            f"python3 {_OPENHANDS_SETTINGS_WRITER_PATH} "
+            # Write llm settings including base_url so the BenchFlow LiteLLM
+            # gateway (LLM_BASE_URL) is honored. OpenHands' --override-with-envs
+            # does not reliably apply base_url; it is omitted when unset.
+            '{ printf \'{"llm":{"model":"%s","api_key":"%s"\' '
+            '"$LLM_MODEL" "$LLM_API_KEY"; '
+            'if [ -n "$LLM_BASE_URL" ]; then '
+            'printf \',"base_url":"%s"\' "$LLM_BASE_URL"; fi; '
+            'if [ -n "$LLM_API_VERSION" ]; then '
+            'printf \',"api_version":"%s"\' "$LLM_API_VERSION"; fi; '
+            "printf '}}'; } > ~/.openhands/agent_settings.json && "
+            "openhands acp --always-approve --override-with-envs"
+        ),
+        launch_override_cmd=(
+            'export PATH="$HOME/.local/bin:$PATH" && '
+            "mkdir -p ~/.openhands && "
+            + _install_python_script(
+                _OPENHANDS_SETTINGS_WRITER_PATH, _OPENHANDS_SETTINGS_WRITER
+            )
+            + f" && python3 {_OPENHANDS_SETTINGS_WRITER_PATH} "
             "~/.openhands/agent_settings.json && "
             "openhands acp --always-approve --override-with-envs"
         ),

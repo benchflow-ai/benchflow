@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from benchflow.agents.registry import _OPENHANDS_SETTINGS_WRITER, AGENTS
+from benchflow.rollout_planes import DefaultRolloutPlanes
 
 
 def test_openhands_settings_reserve_context_for_output(tmp_path):
@@ -42,7 +43,9 @@ def test_openhands_settings_reserve_context_for_output(tmp_path):
 
 
 def test_openhands_launch_installs_and_runs_settings_writer():
-    config = AGENTS["openhands"]
     path = "/opt/benchflow/bin/openhands-settings-writer"
-    assert path in config.install_cmd
-    assert path in config.launch_cmd
+    launch = DefaultRolloutPlanes().agent_launch("openhands", disallow_web_tools=False)
+    assert path in AGENTS["openhands"].launch_override_cmd
+    assert "mkdir -p ~/.openhands" in AGENTS["openhands"].launch_override_cmd
+    assert path in launch
+    assert launch == AGENTS["openhands"].launch_override_cmd

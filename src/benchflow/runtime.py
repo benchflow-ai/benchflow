@@ -195,7 +195,7 @@ class Agent:
         config = self.config
         if config is None:
             return self.name
-        return config.launch_cmd
+        return config.launch_override_cmd or config.launch_cmd
 
     def __repr__(self) -> str:
         return f"Agent({self.name!r}, model={self.model!r})"
