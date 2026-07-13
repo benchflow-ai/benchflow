@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from benchflow.trajectories.call_purpose import infer_call_purpose
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -257,6 +258,12 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 value = litellm_params.get(key)
             if value is not None:
                 request_body[key] = value
+        for key in ("logprobs", "top_logprobs"):
+            value = optional_params.get(key)
+            if value is None:
+                value = kwargs.get(key)
+            if value is not None:
+                request_body[key] = value
         request_body = {k: v for k, v in request_body.items() if v is not None}
         return {
             "request_model": kwargs.get("model"),
@@ -314,6 +321,19 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 if cleaned is data:
                     cleaned = dict(data)
                 cleaned["tools"] = kept
+
+        capture_logprobs = (
+            os.environ.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if (
+            capture_logprobs
+            and call_type in {"completion", "acompletion"}
+            and cleaned.get("messages") is not None
+        ):
+            if cleaned is data:
+                cleaned = dict(data)
+            cleaned["logprobs"] = True
         if cleaned is data:
             return None
         return cleaned
@@ -406,6 +426,30 @@ def _record_response_body(record: dict[str, Any]) -> dict[str, Any]:
     if record.get("event") == "failure":
         body.setdefault("error", record.get("error") or {"message": "LiteLLM error"})
     return body
+
+
+def _exchange_metadata(
+    record: dict[str, Any],
+    *,
+    request_body: dict[str, Any],
+    agent_name: str,
+) -> dict[str, Any]:
+    metadata = {
+        key: record.get(key)
+        for key in (
+            "request_model",
+            "provider_model",
+            "model_group",
+            "call_type",
+            "input_shape",
+        )
+        if record.get(key) is not None
+    }
+    metadata["call_purpose"] = infer_call_purpose(
+        agent_name=agent_name,
+        request_body=request_body,
+    )
+    return metadata
 
 
 def _coerce_provider_failure_status(value: Any) -> int | None:
@@ -553,6 +597,11 @@ def trajectory_from_litellm_callback_log(
                     body=response_body,
                 ),
                 duration_ms=float(record.get("duration_ms") or 0.0),
+                metadata=_exchange_metadata(
+                    record,
+                    request_body=request_body,
+                    agent_name=agent_name,
+                ),
             )
         )
         cost = record.get("response_cost")

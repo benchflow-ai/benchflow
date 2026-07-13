@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 
 import pytest
 
@@ -54,6 +55,61 @@ def test_pre_call_hook_is_noop_for_pure_function_tools():
     assert (
         asyncio.run(logger.async_pre_call_hook(None, None, data, "completion")) is None
     )
+
+
+def test_pre_call_hook_opt_in_requests_token_logprobs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards PR #926: training rollouts must request sampled token logprobs."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "shell"}}],
+        "logprobs": False,
+    }
+    monkeypatch.setenv("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "1")
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    assert cleaned is not data
+    assert cleaned["logprobs"] is True
+    assert data["logprobs"] is False
+
+
+def test_pre_call_hook_does_not_add_chat_logprobs_to_responses_requests(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards PR #926: chat logprob capture must not alter Responses calls."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {"messages": [{"role": "user", "content": "hi"}]}
+    monkeypatch.setenv("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "1")
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "responses"))
+
+    assert cleaned is None
+    assert "logprobs" not in data
+
+
+def test_callback_record_preserves_logprob_request_fields():
+    """Guards PR #926: trajectory requests retain logprob capture settings."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {
+            "model": "openai/qwen",
+            "messages": [{"role": "user", "content": "hi"}],
+            "optional_params": {"logprobs": True, "top_logprobs": 1},
+        },
+        now,
+        now,
+    )
+
+    assert record["request"]["body"]["logprobs"] is True
+    assert record["request"]["body"]["top_logprobs"] == 1
 
 
 def test_callback_module_source_exposes_proxy_handler_instance():
@@ -218,6 +274,141 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
     assert usage["cost_usd"] == 0.00042
 
 
+def test_opencode_callback_import_preserves_call_metadata_and_purpose():
+    """Guards PR #925: TRL conversion can exclude OpenCode helper calls."""
+    primary = {
+        "event": "success",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+        "model_group": "benchflow-glm-5.1",
+        "call_type": "completion",
+        "input_shape": {
+            "has_messages": True,
+            "has_input": True,
+            "n_messages": 2,
+        },
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {"role": "system", "content": "You are OpenCode."},
+                    {"role": "user", "content": "Inspect the repository."},
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "read", "parameters": {"type": "object"}},
+                    }
+                ],
+            },
+        },
+        "response": {
+            "choices": [{"message": {"role": "assistant", "content": "Working."}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        },
+        "start_time": "2026-07-12T10:00:00Z",
+        "end_time": "2026-07-12T10:00:01Z",
+    }
+    title = {
+        **primary,
+        "request": {
+            **primary["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a title generator. Output only a title.",
+                    },
+                    {"role": "user", "content": "Generate a title."},
+                ],
+            },
+        },
+    }
+    summary = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Summarize what was done in this conversation. "
+                            "Write like a pull request description."
+                        ),
+                    },
+                    {"role": "user", "content": "Summarize this session."},
+                ],
+            },
+        },
+    }
+    compaction = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an anchored context summarization assistant "
+                            "for coding sessions."
+                        ),
+                    },
+                    {"role": "user", "content": "Compact this session."},
+                ],
+            },
+        },
+    }
+    helper = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {"role": "system", "content": "Small utility model."},
+                    {"role": "user", "content": "Classify this input."},
+                ],
+            },
+        },
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        "\n".join(
+            json.dumps(record)
+            for record in (primary, title, summary, compaction, helper)
+        ),
+        session_id="session",
+        agent_name="opencode",
+    )
+
+    assert trajectory.exchanges[0].metadata == {
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+        "model_group": "benchflow-glm-5.1",
+        "call_type": "completion",
+        "input_shape": {
+            "has_messages": True,
+            "has_input": True,
+            "n_messages": 2,
+        },
+        "call_purpose": "agent",
+    }
+    assert [exchange.metadata["call_purpose"] for exchange in trajectory.exchanges] == [
+        "agent",
+        "title",
+        "summary",
+        "compaction",
+        "helper",
+    ]
+
+
 def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
     record = {
         "event": "success",
@@ -247,6 +438,56 @@ def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
     )
 
     assert trajectory.exchanges[0].request.body["reasoning_effort"] == "max"
+
+
+def test_callback_log_preserves_sampled_token_logprobs():
+    """Guards PR #926: provider token logprobs survive trajectory import."""
+
+    record = {
+        "event": "success",
+        "request_model": "benchflow-qwen",
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "benchflow-qwen",
+                "messages": [{"role": "user", "content": "hi"}],
+                "logprobs": True,
+            },
+        },
+        "response": {
+            "model": "openai/qwen",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "hello"},
+                    "logprobs": {
+                        "content": [
+                            {
+                                "token": "hello",
+                                "logprob": -0.25,
+                                "bytes": [104, 101, 108, 108, 111],
+                            }
+                        ]
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        },
+        "start_time": "2026-07-12T10:00:00",
+        "end_time": "2026-07-12T10:00:01",
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="session",
+        agent_name="opencode",
+    )
+
+    exchange = trajectory.exchanges[0]
+    assert exchange.request.body["logprobs"] is True
+    token = exchange.response.body["choices"][0]["logprobs"]["content"][0]
+    assert token["token"] == "hello"
+    assert token["logprob"] == -0.25
 
 
 def test_litellm_failure_records_become_error_exchanges():
