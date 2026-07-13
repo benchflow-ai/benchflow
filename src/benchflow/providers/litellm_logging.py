@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from benchflow.trajectories.call_purpose import infer_call_purpose
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -85,6 +86,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import traceback
 from datetime import datetime, timezone
@@ -92,6 +94,70 @@ from typing import Any
 
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
+
+
+_skill_catalog_gate_passed = False
+
+
+def _required_skill_names() -> tuple[str, ...]:
+    raw = os.environ.get("BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", "")
+    if not raw:
+        return ()
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "experiment_fidelity/skill_catalog_gate_config_invalid"
+        ) from exc
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise RuntimeError("experiment_fidelity/skill_catalog_gate_config_invalid")
+    return tuple(sorted(set(values)))
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(item.get("text", ""))
+            for item in content
+            if isinstance(item, dict)
+        )
+    return ""
+
+
+def _opencode_catalog_names(data: dict[str, Any]) -> set[str]:
+    system = "\n".join(
+        _message_text(message.get("content"))
+        for message in data.get("messages") or []
+        if isinstance(message, dict) and message.get("role") == "system"
+    )
+    match = re.search(
+        r"<available_skills>(.*?)</available_skills>", system, flags=re.DOTALL
+    )
+    if not match:
+        return set()
+    return set(re.findall(r"<name>\s*([^<]+?)\s*</name>", match.group(1)))
+
+
+def _gate_opencode_skill_catalog(data: dict[str, Any]) -> None:
+    global _skill_catalog_gate_passed
+    if _skill_catalog_gate_passed:
+        return
+    if os.environ.get("BENCHFLOW_SKILL_CATALOG_GATE_AGENT") != "opencode":
+        return
+    expected = _required_skill_names()
+    if not expected:
+        return
+    visible = _opencode_catalog_names(data)
+    missing = sorted(set(expected) - visible)
+    if missing:
+        raise RuntimeError(
+            "experiment_fidelity/skill_catalog_missing: "
+            f"missing={','.join(missing)} expected={','.join(expected)} "
+            f"visible={','.join(sorted(visible))}"
+        )
+    _skill_catalog_gate_passed = True
 
 
 def _jsonable(value: Any) -> Any:
@@ -192,6 +258,12 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 value = litellm_params.get(key)
             if value is not None:
                 request_body[key] = value
+        for key in ("logprobs", "top_logprobs"):
+            value = optional_params.get(key)
+            if value is None:
+                value = kwargs.get(key)
+            if value is not None:
+                request_body[key] = value
         request_body = {k: v for k, v in request_body.items() if v is not None}
         return {
             "request_model": kwargs.get("model"),
@@ -218,6 +290,8 @@ class BenchFlowLiteLLMLogger(CustomLogger):
     ):
         if not isinstance(data, dict):
             return None
+
+        _gate_opencode_skill_catalog(data)
 
         cleaned = data
 
@@ -247,6 +321,19 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 if cleaned is data:
                     cleaned = dict(data)
                 cleaned["tools"] = kept
+
+        capture_logprobs = (
+            os.environ.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if (
+            capture_logprobs
+            and call_type in {"completion", "acompletion"}
+            and cleaned.get("messages") is not None
+        ):
+            if cleaned is data:
+                cleaned = dict(data)
+            cleaned["logprobs"] = True
         if cleaned is data:
             return None
         return cleaned
@@ -339,6 +426,30 @@ def _record_response_body(record: dict[str, Any]) -> dict[str, Any]:
     if record.get("event") == "failure":
         body.setdefault("error", record.get("error") or {"message": "LiteLLM error"})
     return body
+
+
+def _exchange_metadata(
+    record: dict[str, Any],
+    *,
+    request_body: dict[str, Any],
+    agent_name: str,
+) -> dict[str, Any]:
+    metadata = {
+        key: record.get(key)
+        for key in (
+            "request_model",
+            "provider_model",
+            "model_group",
+            "call_type",
+            "input_shape",
+        )
+        if record.get(key) is not None
+    }
+    metadata["call_purpose"] = infer_call_purpose(
+        agent_name=agent_name,
+        request_body=request_body,
+    )
+    return metadata
 
 
 def _coerce_provider_failure_status(value: Any) -> int | None:
@@ -486,6 +597,11 @@ def trajectory_from_litellm_callback_log(
                     body=response_body,
                 ),
                 duration_ms=float(record.get("duration_ms") or 0.0),
+                metadata=_exchange_metadata(
+                    record,
+                    request_body=request_body,
+                    agent_name=agent_name,
+                ),
             )
         )
         cost = record.get("response_cost")

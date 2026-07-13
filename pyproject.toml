@@ -52,7 +52,9 @@ train = [
     "transformers==5.6.2",
 ]
 trl = [
-    "trl>=0.24.0",
+    # Native tool-calling prompt/completion rows, assistant-only masks, and
+    # training chat-template patches used by `bench train validate --format trl-sft`.
+    "trl>=1.8.0,<2",
     "datasets>=2.19.0",
 ]
 sandbox-daytona = [

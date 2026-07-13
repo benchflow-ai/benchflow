@@ -363,6 +363,11 @@ async def test_scene_skills_link_remote_generated_root() -> None:
         "ln -sfn /app/generated-skills /home/agent/.claude/skills" in cmd
         for cmd in trial._env._exec_log
     )
+    assert any(
+        "find -L /app/generated-skills" in cmd
+        and "find -L /home/agent/.claude/skills" in cmd
+        for cmd in trial._env._exec_log
+    )
 
 
 async def test_scene_skills_prefers_remote_string_path_over_matching_host_path(
@@ -419,5 +424,9 @@ async def test_scene_skills_upload_absolute_str_host_dir(tmp_path: Path) -> None
     assert trial._env._uploads == [(skills_root, "/skills/solve")]
     assert any(
         "ln -sfn /skills/solve /home/agent/.claude/skills" in cmd
+        for cmd in trial._env._exec_log
+    )
+    assert any(
+        "find -L /home/agent/.claude/skills" in cmd and "mesh-analysis" in cmd
         for cmd in trial._env._exec_log
     )
