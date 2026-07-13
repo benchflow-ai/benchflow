@@ -10,6 +10,8 @@ unchanged.
 from __future__ import annotations
 
 import logging
+import os
+import re
 from typing import Any
 
 logger = logging.getLogger("benchflow")
@@ -33,12 +35,28 @@ _REAP_MIN_IDLE_MIN = 30
 # of age. The dotted key follows the Docker/Daytona label convention.
 _BENCHFLOW_MANAGED_LABEL = "benchflow.managed"
 _BENCHFLOW_MANAGED_VALUE = "1"
+_BENCHFLOW_OWNER_LABEL = "benchflow.owner"
+_BENCHFLOW_OWNER_ENV = "BENCHFLOW_DAYTONA_OWNER"
+_BENCHFLOW_OWNER_MAX_LEN = 48
 # The dotted prefix every benchflow-stamped label key shares. Used only by the
 # read-only orphan-leak guard below to recognize a sandbox that *looks* like
 # benchflow created it (carries the namespace) yet fails the strict ownership
 # check — i.e. its ownership label drifted off the exact key/value the reaper
 # keys on. ``_BENCHFLOW_MANAGED_LABEL`` itself lives under this namespace.
 _BENCHFLOW_LABEL_NAMESPACE = "benchflow."
+
+
+def _benchflow_owner_scope() -> str | None:
+    raw = os.environ.get(_BENCHFLOW_OWNER_ENV, "").strip()
+    if not raw:
+        return None
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip(".-")
+    return normalized[:_BENCHFLOW_OWNER_MAX_LEN] or None
+
+
+def _benchflow_managed_value() -> str:
+    owner = _benchflow_owner_scope()
+    return _BENCHFLOW_MANAGED_VALUE if owner is None else f"1:{owner}"
 
 
 def _benchflow_owned_labels() -> dict[str, str]:
@@ -48,7 +66,11 @@ def _benchflow_owned_labels() -> dict[str, str]:
     in place (it injects the language label), so a shared dict would leak that
     mutation across creation sites.
     """
-    return {_BENCHFLOW_MANAGED_LABEL: _BENCHFLOW_MANAGED_VALUE}
+    owner = _benchflow_owner_scope()
+    labels = {_BENCHFLOW_MANAGED_LABEL: _benchflow_managed_value()}
+    if owner is not None:
+        labels[_BENCHFLOW_OWNER_LABEL] = owner
+    return labels
 
 
 def _is_benchflow_owned(sb: Any) -> bool:
@@ -63,15 +85,16 @@ def _is_benchflow_owned(sb: Any) -> bool:
     labels = getattr(sb, "labels", None)
     if not isinstance(labels, dict):
         return False
-    return labels.get(_BENCHFLOW_MANAGED_LABEL) == _BENCHFLOW_MANAGED_VALUE
+    return labels.get(_BENCHFLOW_MANAGED_LABEL) == _benchflow_managed_value()
 
 
 def _is_benchflow_label_orphan(sb: Any) -> bool:
     """Return whether *sb* looks benchflow-created but lacks the ownership label.
 
     True only when the sandbox carries at least one ``benchflow.``-namespaced
-    label key yet fails :func:`_is_benchflow_owned` (the exact
-    ``benchflow.managed=1`` pair is absent or has drifted to another value).
+    label key yet lacks any valid ownership marker. A sandbox with a scoped
+    ``benchflow.managed=1:<owner>`` value belongs to another BenchFlow operator,
+    so it is foreign rather than orphaned and must be silently skipped.
     Such a sandbox is almost certainly one benchflow created whose ownership
     label was lost — the age-based reaper's scope gate will now skip it forever,
     so it leaks. This is a *detection-only* predicate: the missing/altered label
@@ -83,6 +106,9 @@ def _is_benchflow_label_orphan(sb: Any) -> bool:
         return False
     labels = getattr(sb, "labels", None)
     if not isinstance(labels, dict):
+        return False
+    managed = labels.get(_BENCHFLOW_MANAGED_LABEL)
+    if isinstance(managed, str) and managed.startswith("1:"):
         return False
     return any(
         isinstance(key, str) and key.startswith(_BENCHFLOW_LABEL_NAMESPACE)
@@ -171,7 +197,7 @@ def reap_stale_sandboxes(
                     "verify and remove it manually if it is stale.",
                     getattr(sb, "id", "?"),
                     _BENCHFLOW_MANAGED_LABEL,
-                    _BENCHFLOW_MANAGED_VALUE,
+                    _benchflow_managed_value(),
                 )
             counts["skipped"] += 1
             continue
