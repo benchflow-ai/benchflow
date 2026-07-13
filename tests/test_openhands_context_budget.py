@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 
-from benchflow.agents.registry import AGENTS, _OPENHANDS_SETTINGS_WRITER
+from benchflow.agents.registry import _OPENHANDS_SETTINGS_WRITER, AGENTS
 
 
 def test_openhands_settings_reserve_context_for_output(tmp_path):
