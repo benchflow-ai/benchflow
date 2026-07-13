@@ -28,6 +28,7 @@ from benchflow._utils.result_metadata import (
 from benchflow._utils.reward_events import build_rewards_jsonl_events
 from benchflow._utils.scoring import classify_error, classify_verifier_error
 from benchflow._utils.source_provenance import artifact_source_provenance
+from benchflow._utils.timestamps import artifact_timestamp
 from benchflow.contracts import (
     BaseUser,
     DocumentNudgeUser,
@@ -194,7 +195,7 @@ def _write_config(
         "timeout_sec": timeout,
         "concurrency": concurrency,
         "agent_idle_timeout_sec": agent_idle_timeout,
-        "started_at": str(started_at),
+        "started_at": artifact_timestamp(started_at),
         "agent_env": recorded_env,
         "scenes": _scene_metadata(scenes or []),
         "loop": loop_block(loop_strategy),
@@ -305,7 +306,13 @@ def _build_rollout_result(
             runtime_skills_dir=None,
             declared_sandbox_skills_dir=None,
         )
-    finished_at = datetime.now()
+    started_tz = (
+        started_at.tzinfo
+        if started_at.tzinfo is not None
+        and started_at.tzinfo.utcoffset(started_at) is not None
+        else None
+    )
+    finished_at = datetime.now(started_tz) if started_tz is not None else datetime.now()
     n_skill_invocations = count_skill_invocations(trajectory)
     error_category = (
         diagnostics.category_for_channel("error") if error is not None else None
@@ -387,10 +394,10 @@ def _build_rollout_result(
         "agent_name": result.agent_name,
         "model": result.model,
         **skill_policy.config_metadata(),
-        "n_tool_calls": result.n_tool_calls,
-        "n_skill_invocations": result.n_skill_invocations,
-        "n_prompts": result.n_prompts,
         "agent_result": agent_result,
+        "n_tool_calls": agent_result["n_tool_calls"],
+        "n_skill_invocations": agent_result["n_skill_invocations"],
+        "n_prompts": agent_result["n_prompts"],
         "final_metrics": final_metrics,
         "trajectory_summary": trajectory_summary,
         "usage_tracking": usage_tracking,
@@ -402,8 +409,8 @@ def _build_rollout_result(
         **diagnostics.to_result_fields(),
         "partial_trajectory": result.partial_trajectory,
         "trajectory_source": result.trajectory_source,
-        "started_at": str(result.started_at),
-        "finished_at": str(result.finished_at),
+        "started_at": artifact_timestamp(result.started_at),
+        "finished_at": artifact_timestamp(result.finished_at),
         "timing": timing,
         "scenes": _scene_metadata(scenes or []),
         "loop": loop or loop_block(None),

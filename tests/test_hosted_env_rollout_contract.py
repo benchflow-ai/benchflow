@@ -101,7 +101,7 @@ def _classify(result) -> str:
 
 
 def test_hosted_env_writes_contract_result_json(tmp_path, monkeypatch):
-    """result.json carries the rollout-contract field set, not a custom shape."""
+    """Guards issue #528 and PR #419: hosted result.json keeps the contract."""
     result = _run(tmp_path, monkeypatch)
     payload = json.loads((result.run_dir / "result.json").read_text())
 
@@ -151,6 +151,11 @@ def test_hosted_env_writes_contract_result_json(tmp_path, monkeypatch):
     }
     assert payload["trajectory_summary"]["steps"] >= 0
     assert payload["trajectory_summary"]["tool_call_steps"] >= 0
+    assert payload["n_tool_calls"] == agent_result["n_tool_calls"]
+    assert payload["n_prompts"] == agent_result["n_prompts"]
+    assert payload["started_at"].endswith("Z")
+    assert payload["finished_at"].endswith("Z")
+    assert "T" in payload["started_at"]
 
 
 def test_hosted_env_writes_rewards_jsonl(tmp_path, monkeypatch):

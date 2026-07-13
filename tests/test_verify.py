@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -135,6 +135,65 @@ class TestResultJson:
         assert data["final_metrics"]["total_prompt_tokens"] == 18000
         assert data["final_metrics"]["total_completion_tokens"] == 5993
         assert "total_tokens" not in data
+
+    def test_result_timestamps_are_timezone_aware_iso8601(self, tmp_path):
+        """Guards issue #528: result.json timestamps are ISO 8601 UTC strings."""
+        from benchflow.rollout import _build_rollout_result
+
+        rollout_dir = tmp_path / "trial"
+        rollout_dir.mkdir()
+        _build_rollout_result(
+            rollout_dir,
+            task_name="t1",
+            rollout_name="trial-1",
+            agent="test",
+            agent_name="openhands",
+            model="m",
+            n_tool_calls=0,
+            prompts=[],
+            error=None,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=datetime(2026, 3, 24, 10, 0),
+            timing={},
+        )
+
+        data = json.loads((rollout_dir / "result.json").read_text())
+        assert data["started_at"] == "2026-03-24T10:00:00Z"
+        assert data["finished_at"].endswith("Z")
+        assert " " not in data["finished_at"]
+        assert datetime.fromisoformat(data["finished_at"].replace("Z", "+00:00"))
+
+    def test_result_timestamps_normalize_offsets_to_utc(self, tmp_path):
+        """Guards issue #528: aware result timestamps serialize in UTC."""
+        from benchflow.rollout import _build_rollout_result
+
+        rollout_dir = tmp_path / "trial"
+        rollout_dir.mkdir()
+        _build_rollout_result(
+            rollout_dir,
+            task_name="t1",
+            rollout_name="trial-1",
+            agent="test",
+            agent_name="openhands",
+            model="m",
+            n_tool_calls=0,
+            prompts=[],
+            error=None,
+            verifier_error=None,
+            trajectory=[],
+            partial_trajectory=False,
+            rewards={"reward": 1.0},
+            started_at=datetime(
+                2026, 3, 24, 3, 0, tzinfo=timezone(timedelta(hours=-7))
+            ),
+            timing={},
+        )
+
+        data = json.loads((rollout_dir / "result.json").read_text())
+        assert data["started_at"] == "2026-03-24T10:00:00Z"
 
 
 class TestSdkVerify:
