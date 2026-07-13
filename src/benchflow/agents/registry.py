@@ -120,6 +120,85 @@ OPENCODE_PROXY_PROVIDER_ID = "benchflow"
 _OPENHANDS_CLI_GIT_REV = "3ca17446c5d9c1e35e054803478a3501ec251ecf"
 _OPENHANDS_SDK_VERSION = "1.22.1"
 _OPENHANDS_TOOLS_VERSION = "1.22.1"
+_OPENHANDS_SETTINGS_WRITER_PATH = "/opt/benchflow/bin/openhands-settings-writer"
+_OPENHANDS_SETTINGS_WRITER = r'''import json
+import os
+import sys
+from pathlib import Path
+
+
+def optional_int(name):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive")
+    return parsed
+
+
+def optional_bool(name):
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return None
+    if value in {"1", "true", "yes"}:
+        return True
+    if value in {"0", "false", "no"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
+
+
+llm = {
+    "model": os.environ["LLM_MODEL"],
+    "api_key": os.environ["LLM_API_KEY"],
+    "usage_id": "agent",
+}
+for env_name, field_name in (
+    ("LLM_BASE_URL", "base_url"),
+    ("LLM_API_VERSION", "api_version"),
+):
+    value = os.environ.get(env_name, "").strip()
+    if value:
+        llm[field_name] = value
+
+for env_name, field_name in (
+    ("LLM_NATIVE_TOOL_CALLING", "native_tool_calling"),
+    ("LLM_CACHING_PROMPT", "caching_prompt"),
+    ("LLM_DROP_PARAMS", "drop_params"),
+    ("LLM_MODIFY_PARAMS", "modify_params"),
+):
+    value = optional_bool(env_name)
+    if value is not None:
+        llm[field_name] = value
+
+context_limit = optional_int("BENCHFLOW_OPENHANDS_CONTEXT_LIMIT")
+output_limit = optional_int("BENCHFLOW_OPENHANDS_OUTPUT_LIMIT")
+if context_limit is not None:
+    llm["max_input_tokens"] = context_limit
+if output_limit is not None:
+    llm["max_output_tokens"] = output_limit
+
+condenser = {
+    "llm": {**llm, "usage_id": "condenser"},
+    "max_size": 80,
+    "keep_first": 4,
+    "kind": "LLMSummarizingCondenser",
+}
+if context_limit is not None and output_limit is not None:
+    reserve = optional_int("BENCHFLOW_OPENHANDS_CONTEXT_RESERVE") or 4096
+    condenser_limit = context_limit - output_limit - reserve
+    if condenser_limit <= 0:
+        raise ValueError("OpenHands context budget leaves no room for input")
+    condenser["max_tokens"] = condenser_limit
+
+settings = {
+    "llm": llm,
+    "tools": [],
+    "condenser": condenser,
+    "kind": "Agent",
+}
+Path(sys.argv[1]).write_text(json.dumps(settings, separators=(",", ":")))
+'''
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -923,20 +1002,16 @@ AGENTS: dict[str, AgentConfig] = {
             'echo \'{"llm":{"model":"placeholder","api_key":"placeholder"}}\' '
             "> ~/.openhands/agent_settings.json && "
             "command -v openhands >/dev/null 2>&1"
+            + " && "
+            + _install_python_script(
+                _OPENHANDS_SETTINGS_WRITER_PATH, _OPENHANDS_SETTINGS_WRITER
+            )
         ),
         launch_cmd=(
             'export PATH="$HOME/.local/bin:$PATH" && '
             "mkdir -p ~/.openhands && "
-            # Write llm settings including base_url so the BenchFlow LiteLLM
-            # gateway (LLM_BASE_URL) is honored. OpenHands' --override-with-envs
-            # does not reliably apply base_url; it is omitted when unset.
-            '{ printf \'{"llm":{"model":"%s","api_key":"%s"\' '
-            '"$LLM_MODEL" "$LLM_API_KEY"; '
-            'if [ -n "$LLM_BASE_URL" ]; then '
-            'printf \',"base_url":"%s"\' "$LLM_BASE_URL"; fi; '
-            'if [ -n "$LLM_API_VERSION" ]; then '
-            'printf \',"api_version":"%s"\' "$LLM_API_VERSION"; fi; '
-            "printf '}}'; } > ~/.openhands/agent_settings.json && "
+            f"python3 {_OPENHANDS_SETTINGS_WRITER_PATH} "
+            "~/.openhands/agent_settings.json && "
             "openhands acp --always-approve --override-with-envs"
         ),
         protocol="acp",
