@@ -1253,6 +1253,88 @@ class TestConnectAcpModelSelection:
         mock_ssh.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_daytona_direct_can_opt_into_ssh_transport(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards PR #921 fallback for PTY post-tool controller deadlocks."""
+        from benchflow.acp.runtime import connect_acp
+
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_ACP_TRANSPORT", "ssh")
+        mock_acp = self._make_mocks()
+        mock_env = MagicMock()
+        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
+
+        with (
+            patch(
+                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_pty,
+            patch(
+                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_ssh,
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="openhands",
+                agent_launch="openhands acp",
+                agent_env={},
+                sandbox_user=None,
+                model=None,
+                rollout_dir=tmp_path,
+                environment="daytona",
+                agent_cwd="/app",
+            )
+
+        mock_ssh.assert_awaited_once_with(mock_env)
+        mock_pty.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invalid_daytona_transport_falls_back_to_pty(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards PR #921 against invalid transport config disabling Daytona."""
+        from benchflow.acp.runtime import connect_acp
+
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_ACP_TRANSPORT", "invalid")
+        mock_acp = self._make_mocks()
+        mock_env = MagicMock()
+        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
+
+        with (
+            patch(
+                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_pty,
+            patch(
+                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_ssh,
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="openhands",
+                agent_launch="openhands acp",
+                agent_env={},
+                sandbox_user=None,
+                model=None,
+                rollout_dir=tmp_path,
+                environment="daytona",
+                agent_cwd="/app",
+            )
+
+        mock_pty.assert_awaited_once_with(mock_env)
+        mock_ssh.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_daytona_gemini_uses_ssh_transport(self, tmp_path):
         """Guards the Gemini regression introduced by PR #896's PTY migration."""
         from benchflow.acp.runtime import connect_acp
