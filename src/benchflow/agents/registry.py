@@ -587,8 +587,10 @@ class AgentConfig:
     task_mcp_transport: str = "acp"
     # Native-config target path, relative to $HOME unless absolute.
     task_mcp_config_path: str = ""
-    # Host-owned launch override for provider/harness compatibility shims that
+    # Host-owned install step for provider/harness compatibility shims that
     # cannot be represented in the data-only agent manifest contract.
+    install_setup_cmd: str = ""
+    # Host-owned launch override paired with install_setup_cmd.
     launch_override_cmd: str = ""
 
 
@@ -1021,13 +1023,13 @@ AGENTS: dict[str, AgentConfig] = {
             "printf '}}'; } > ~/.openhands/agent_settings.json && "
             "openhands acp --always-approve --override-with-envs"
         ),
+        install_setup_cmd=_install_python_script(
+            _OPENHANDS_SETTINGS_WRITER_PATH, _OPENHANDS_SETTINGS_WRITER
+        ),
         launch_override_cmd=(
             'export PATH="$HOME/.local/bin:$PATH" && '
             "mkdir -p ~/.openhands && "
-            + _install_python_script(
-                _OPENHANDS_SETTINGS_WRITER_PATH, _OPENHANDS_SETTINGS_WRITER
-            )
-            + f" && python3 {_OPENHANDS_SETTINGS_WRITER_PATH} "
+            f"python3 {_OPENHANDS_SETTINGS_WRITER_PATH} "
             "~/.openhands/agent_settings.json && "
             "openhands acp --always-approve --override-with-envs"
         ),

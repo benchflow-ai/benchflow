@@ -2,7 +2,11 @@ import json
 import os
 import subprocess
 import sys
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from benchflow.agents.install import install_agent
 from benchflow.agents.registry import _OPENHANDS_SETTINGS_WRITER, AGENTS
 from benchflow.rollout_planes import DefaultRolloutPlanes
 
@@ -45,7 +49,20 @@ def test_openhands_settings_reserve_context_for_output(tmp_path):
 def test_openhands_launch_installs_and_runs_settings_writer():
     path = "/opt/benchflow/bin/openhands-settings-writer"
     launch = DefaultRolloutPlanes().agent_launch("openhands", disallow_web_tools=False)
+    assert path in AGENTS["openhands"].install_setup_cmd
     assert path in AGENTS["openhands"].launch_override_cmd
     assert "mkdir -p ~/.openhands" in AGENTS["openhands"].launch_override_cmd
     assert path in launch
     assert launch == AGENTS["openhands"].launch_override_cmd
+
+
+@pytest.mark.asyncio
+async def test_openhands_install_runs_root_owned_settings_setup(tmp_path):
+    env = MagicMock()
+    env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout="", stderr=""))
+
+    await install_agent(env, "openhands", tmp_path)
+
+    assert env.exec.await_count == 2
+    setup_cmd = env.exec.await_args_list[1].args[0]
+    assert "/opt/benchflow/bin/openhands-settings-writer" in setup_cmd

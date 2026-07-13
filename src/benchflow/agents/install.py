@@ -255,6 +255,28 @@ async def install_agent(
             diagnostics=diag.stdout or "",
             log_path=str(install_log),
         )
+    if agent_cfg and agent_cfg.install_setup_cmd:
+        setup_cmd = agent_cfg.install_setup_cmd
+        setup_result = await env.exec(setup_cmd, timeout_sec=install_timeout)
+        setup_parts = [f"$ {setup_cmd}\n"]
+        if setup_result.stdout:
+            setup_parts.extend(["=== stdout ===\n", setup_result.stdout])
+            if not setup_result.stdout.endswith("\n"):
+                setup_parts.append("\n")
+        if setup_result.stderr:
+            setup_parts.extend(["=== stderr ===\n", setup_result.stderr])
+            if not setup_result.stderr.endswith("\n"):
+                setup_parts.append("\n")
+        with install_log.open("a") as handle:
+            handle.write("".join(setup_parts))
+        if setup_result.return_code != 0:
+            raise AgentInstallError(
+                agent=agent_base,
+                return_code=setup_result.return_code,
+                stdout="".join(setup_parts),
+                diagnostics="post-install setup failed",
+                log_path=str(install_log),
+            )
     return agent_cfg
 
 

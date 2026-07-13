@@ -91,6 +91,7 @@ _SHIM_ONLY = frozenset(
         "disallow_web_tools_launch_suffix",
         "task_mcp_transport",
         "task_mcp_config_path",
+        "install_setup_cmd",
         "launch_override_cmd",
     }
 )
