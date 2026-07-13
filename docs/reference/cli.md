@@ -203,14 +203,13 @@ bench eval run \
   --agent gemini \
   --model google/gemini-2.5-flash-lite
 
-# Single task with mounted skills and the recommended skill nudge
+# Single task with mounted skills
 bench eval run \
   --tasks-dir tasks/pdf-fix \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
   --sandbox daytona \
-  --skill-mode with-skill \
-  --agent-env BENCHFLOW_SKILL_NUDGE=name
+  --skill-mode with-skill
 
 # Pinned registry dataset: resolves skillsbench@1.1, verifies task digests,
 # and stamps dataset identity into every result.json/config.json
@@ -283,15 +282,20 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
 | `--trials` | `1` | Number of trials for `--matrix` |
 
-When mounting skills, the recommended docs default is
-`--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
-[Architecture: skill loading](../architecture.md#skill-loading) for how
-`with-skill` mode is registered with each agent and how the nudge modes differ.
+See [Architecture: skill loading](../architecture.md#skill-loading) for how
+`with-skill` mode is registered with each agent.
 
 Daytona batch runs collect provider token/cost telemetry by default with a
 sandbox-local LiteLLM gateway. Use `--usage-tracking required` when missing telemetry
 should fail the rollout, or `--usage-tracking off` for recovery runs that should
 leave provider traffic untouched.
+
+For online-training rollouts against a chat-completions endpoint that supports
+sampled-token log probabilities, pass
+`--agent-env BENCHFLOW_CAPTURE_TOKEN_LOGPROBS=1`. The LiteLLM gateway adds
+`logprobs=true` to each chat request and preserves the provider's token
+logprobs in `trajectory/llm_trajectory.jsonl`. This is opt-in because providers
+that do not implement chat-completion logprobs may reject the request.
 
 `--source-env` is for external hosted environment hubs. The first supported
 runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity
@@ -337,31 +341,63 @@ trainer rows before handing them to a training framework.
 
 ### bench train convert
 
-Convert a rollout directory or jobs directory into Prime-RL SFT JSONL. The
-default format is `prime-sft`, which writes one JSON object per row with
-OpenAI-compatible `messages` plus `tool_defs`.
+Convert a rollout directory, jobs directory, canonical BenchFlow
+`results.jsonl`, or existing trainer JSONL into a trainer-specific dataset.
+The default `prime-sft` format writes OpenAI-compatible `messages` plus
+`tool_defs`. The `trl-sft` format writes conversational `prompt` and
+`completion` lists plus a `tools` column.
 
 ```bash
 bench train convert jobs/run-001 --out train.jsonl
 bench train convert jobs/run-001 --out train.jsonl --min-reward 1.0
 bench train convert jobs/run-001 --out train.jsonl --canonical-selection canonical-selection.json
+bench train convert jobs/run-001 \
+  --format trl-sft \
+  --row-mode exchange \
+  --min-reward 1.0 \
+  --context-policy message-window \
+  --tokenizer Qwen/Qwen3-4B \
+  --tokenizer-revision <immutable-sha> \
+  --max-length 40960 \
+  --out train.trl.jsonl \
+  --manifest train.trl.manifest.json
 ```
+
+`results.jsonl` remains the canonical scored-rollout artifact regardless of
+trainer. The selected format changes only the converted output. For TRL,
+`exchange` mode emits one supervised completion for every primary agent model
+call while excluding captured OpenCode title, summary, compaction, and helper
+calls. `rollout` mode emits only the final primary model call.
+
+TRL conversion never truncates implicitly. The default `full` context policy
+preserves every captured message. `message-window` first renders with the
+pinned tokenizer; when a row is too long it preserves all leading system
+messages, the original task user message, the target assistant completion, and
+the longest complete recent suffix of assistant/tool groups that fits. It
+records original/final token counts and every dropped-message count in both the
+row and conversion manifest. It fails if the required prefix and completion
+cannot fit.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out`, `-o` | required | Output JSONL path |
-| `--format` | `prime-sft` | Trainer format |
+| `--format` | `prime-sft` | Trainer format: `prime-sft` or `trl-sft` |
 | `--min-reward` | — | Only include rows with reward greater than or equal to this value |
 | `--row-mode` | `rollout` | `rollout` writes one row per rollout; `exchange` writes one row per LLM exchange |
 | `--manifest` | — | Optional conversion stats JSON path |
 | `--expected-rows` | — | Fail before writing unless exactly this many rows would be exported |
 | `--canonical-selection` | — | Restrict conversion to rows selected by `canonical-selection.json` |
+| `--context-policy` | `full` | TRL context policy: exact `full` rows or tokenizer-aware `message-window` |
+| `--tokenizer` | — | Tokenizer/model ID required by `message-window` |
+| `--tokenizer-revision` | — | Immutable tokenizer revision for context windowing |
+| `--max-length` | — | Maximum rendered length required by `message-window` |
 
 ### bench train validate
 
-Validate Prime-RL SFT JSONL before upload or training. This fails closed on
-malformed tool-call arguments, undeclared tool names, orphan tool outputs, and
-row-count mismatches before Prime-RL can hit the bad row mid-training.
+Validate Prime-RL or TRL SFT JSONL before upload or training. Both formats fail
+closed on malformed tool calls, undeclared tools, orphan tool outputs, and row
+count mismatches. TRL validation additionally requires object-valued tool-call
+arguments and exactly one assistant message in each completion.
 
 ```bash
 bench train validate train.jsonl
@@ -370,17 +406,35 @@ bench train validate train.jsonl \
   --source-jobs jobs/run-001 \
   --require-llm-trajectory \
   --require-tool-calls
+
+bench train validate train.trl.jsonl \
+  --format trl-sft \
+  --source-jobs jobs/run-001 \
+  --require-llm-trajectory \
+  --require-tool-calls \
+  --tokenizer Qwen/Qwen3-4B \
+  --tokenizer-revision <immutable-sha> \
+  --max-length 40960
 ```
+
+When `--tokenizer` is set, TRL validation uses TRL's training chat template,
+checks that prompt tokenization remains a prefix of prompt-plus-completion,
+requires a non-empty assistant token mask after the prompt boundary, and fails
+instead of silently truncating a row beyond `--max-length`. The JSON report
+includes token-length distribution and minimum trainable assistant tokens.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format` | `prime-sft` | Trainer format |
+| `--format` | `prime-sft` | Trainer format: `prime-sft` or `trl-sft` |
 | `--expected-rows` | — | Fail unless this many rows are present |
 | `--source-jobs` | — | Source BenchFlow jobs directory to audit alongside trainer JSONL |
 | `--source-canonical-selection` | — | Canonical selection JSON used for this trainer data |
 | `--task-manifest` | — | Task manifest for source rows |
 | `--require-llm-trajectory` | `false` | Fail unless source selected rows have valid `llm_trajectory.jsonl` |
 | `--require-tool-calls` | `false` | Fail unless trainer rows and source rows include tool calls |
+| `--tokenizer` | — | Tokenizer/model ID used to render and mask TRL rows |
+| `--tokenizer-revision` | — | Immutable tokenizer revision used for TRL validation |
+| `--max-length` | — | Fail when a rendered TRL row exceeds this token length |
 
 ### bench train run sft
 
@@ -752,7 +806,7 @@ bench hub check --level check --tasks-per-dataset 2 --out hub.jsonl
 
 ## YAML Config Format
 
-### Batch config with skills and skill nudge
+### Batch config with skills
 
 ```yaml
 source:
@@ -765,8 +819,6 @@ agent: gemini
 model: gemini-3.1-flash-lite-preview
 skill_mode: with-skill
 skills_dir: shared-skills/
-agent_env:
-  BENCHFLOW_SKILL_NUDGE: name
 max_retries: 2
 ```
 

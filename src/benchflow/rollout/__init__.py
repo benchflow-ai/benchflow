@@ -45,6 +45,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -140,7 +141,6 @@ from benchflow.rollout._setup import (
 from benchflow.rollout._setup import _resolve_agent_cwd as _resolve_agent_cwd
 from benchflow.rollout._setup import _resolve_prompts as _resolve_prompts
 from benchflow.rollout._setup import _run_oracle as _run_oracle
-from benchflow.rollout._setup import _skill_nudge as _skill_nudge
 from benchflow.rollout._setup import _start_env_and_upload as _start_env_and_upload
 from benchflow.rollout._setup import (
     _task_disallows_internet as _task_disallows_internet,
@@ -212,6 +212,7 @@ from benchflow.trajectories._capture import (
     _scrape_agent_trajectory,
     make_trajectory_sink,
 )
+from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.tree import RolloutNode, RolloutTree, Step
 from benchflow.usage_tracking import (
     USAGE_SOURCE_AGENT_NATIVE_ACP,
@@ -530,6 +531,51 @@ async def _run_environment_setup_commands(env: Any, task: Any) -> None:
             )
 
 
+async def _run_environment_healthcheck(env: Any, task: Any) -> None:
+    """Gate rollout startup on the task-authored environment healthcheck."""
+
+    env_config = getattr(getattr(task, "config", None), "environment", None)
+    healthcheck = getattr(env_config, "healthcheck", None)
+    if healthcheck is None:
+        return
+
+    loop = asyncio.get_running_loop()
+    start_deadline = loop.time() + healthcheck.start_period_sec
+    if healthcheck.start_period_sec > 0 and healthcheck.start_interval_sec > 0:
+        await asyncio.sleep(
+            min(healthcheck.start_interval_sec, healthcheck.start_period_sec)
+        )
+
+    failures = 0
+    while True:
+        result = await env.exec(
+            healthcheck.command,
+            user="root",
+            timeout_sec=max(1, math.ceil(healthcheck.timeout_sec)),
+        )
+        if getattr(result, "return_code", 0) == 0:
+            return
+
+        now = loop.time()
+        if now >= start_deadline:
+            failures += 1
+            if failures >= healthcheck.retries:
+                stdout = (getattr(result, "stdout", "") or "").strip()
+                stderr = (getattr(result, "stderr", "") or "").strip()
+                detail = "\n".join(part for part in (stdout, stderr) if part)
+                if len(detail) > 4000:
+                    detail = detail[:4000] + "\n... truncated ..."
+                raise RuntimeError(
+                    "environment healthcheck failed after "
+                    f"{healthcheck.retries} attempt(s): {detail}"
+                )
+            delay = healthcheck.interval_sec
+        else:
+            delay = min(healthcheck.start_interval_sec, start_deadline - now)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+
 class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
@@ -824,14 +870,7 @@ class Rollout:
             declared_sandbox_skills_dir=getattr(env_config, "skills_dir", None),
         )
         self._task_skill_policy = task_skill_policy
-        self._resolved_prompts = _resolve_prompts(
-            cfg.task_path,
-            cfg.prompts,
-            skills_dir=task_skill_policy.prompt_dir,
-            skill_nudge=_skill_nudge(cfg.agent_env),
-            agent=cfg.primary_agent,
-            planes=self._planes,
-        )
+        self._resolved_prompts = _resolve_prompts(cfg.task_path, cfg.prompts)
         self._agent_launch = self._planes.agent_launch(
             cfg.primary_agent,
             disallow_web_tools=self._disallow_web_tools,
@@ -882,6 +921,15 @@ class Rollout:
         self._effective_task_path = effective_task_path
         self._effective_skills_dir = effective_skills_dir
         self._effective_skills_sandbox_dir = task_skill_policy.sandbox_dir
+        self._required_skill_names = (
+            tuple(
+                sorted(
+                    path.parent.name for path in effective_skills_dir.glob("*/SKILL.md")
+                )
+            )
+            if effective_skills_dir is not None
+            else ()
+        )
 
         # Honour an externally-supplied sandbox (use_prebuilt_env, set by
         # Runtime.execute() when the caller passes a live Environment).
@@ -960,6 +1008,8 @@ class Rollout:
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)
+
+        await _run_environment_healthcheck(self._env, self._task)
 
         # Environment plane: provision the manifest-declared stateful
         # environment and gate on its readiness before the agent runs.
@@ -1136,6 +1186,8 @@ class Rollout:
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            required_skill_names=getattr(self, "_required_skill_names", ()),
+            live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
         )
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
@@ -2093,6 +2145,8 @@ class Rollout:
             usage_tracking=cfg.usage_tracking,
             sandbox=self._env,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            required_skill_names=getattr(self, "_required_skill_names", ()),
+            live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
@@ -2289,11 +2343,9 @@ class Rollout:
         trajectory = getattr(getattr(usage_runtime, "server", None), "trajectory", None)
         if trajectory is None or not trajectory.exchanges:
             return
-        traj_dir = self._rollout_dir / "trajectory"
-        traj_dir.mkdir(parents=True, exist_ok=True)
-        (traj_dir / "llm_trajectory.jsonl").write_text(
-            trajectory.to_jsonl(redact_keys=True)
-        )
+        LiveLLMTrajectoryWriter(
+            self._rollout_dir / "trajectory" / "llm_trajectory.jsonl"
+        ).reconcile(trajectory)
 
     def _usage_tracking_metadata(self) -> dict[str, Any]:
         usage_cfg = self._config.usage_tracking.with_env_defaults()

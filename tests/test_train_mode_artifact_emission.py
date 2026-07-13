@@ -607,6 +607,50 @@ def test_results_jsonl_uses_canonical_prime_sft_normalization(tmp_path):
     assert validate_prime_sft_jsonl(artifact, expected_rows=1)["ok"] is True
 
 
+def test_results_jsonl_preserves_llm_exchange_metadata(tmp_path):
+    """Guards PR #925: trainer conversion retains LLM call purpose metadata."""
+    rollout_dir = tmp_path / "rollout-call-purpose"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    exchange = _llm_exchange()
+    exchange["metadata"] = {
+        "call_purpose": "agent",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+    }
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(exchange) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="opencode",
+        agent_name="OpenCode",
+        model="glm/glm-5.1",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["trajectory"][0]["extras"] == {
+        "source": "llm_trajectory",
+        "tracking_source": "litellm_callback",
+        "exchange_index": 0,
+        "call_purpose": "agent",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+    }
+
+
 def test_results_jsonl_redacts_without_corrupting_secret_named_booleans(tmp_path):
     """Secret-carrier field names must not turn JSON booleans into bare tokens."""
     rollout_dir = tmp_path / "rollout-redaction-bool"

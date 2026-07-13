@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import sys
 import types
@@ -73,6 +74,7 @@ class _FakeRuntime:
         self.rollout_dir = Path(config.jobs_dir) / "fake-rollout"
         self.commands: list[str] = []
         self.closed = False
+        self.verify_count = 0
 
     @classmethod
     async def create(cls, config: Any) -> _FakeRuntime:
@@ -86,6 +88,7 @@ class _FakeRuntime:
         return _FakeBashResult()
 
     async def verify(self) -> _FakeRuntimeResult:
+        self.verify_count += 1
         reward = (
             1.0 if any("/workdir/answer.txt" in cmd for cmd in self.commands) else 0.0
         )
@@ -249,6 +252,70 @@ def test_reward_func_returns_zero_without_environment(tmp_path: Path):
     spec = BenchFlowSpec.from_tasks_dir(tasks)
 
     assert spec.reward_funcs[0](completions=["ok"]) == [0.0]
+
+
+def test_reward_func_finalizes_rollout_without_submit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards the TRL artifact finalization fix after PR #903."""
+
+    monkeypatch.setattr("benchflow.integrations.trl.spec.TaskRuntime", _FakeRuntime)
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    _make_task(tasks, "alpha", "Answer alpha")
+    spec = BenchFlowSpec(
+        tasks_dir=tasks,
+        bash_harness=BashHarnessConfig(jobs_dir=tmp_path / "jobs"),
+    )
+    env = spec.environment_factory()
+    env.reset(**spec.train_dataset_rows[0])
+    runtime = env._runtime
+
+    assert spec.reward_funcs[0](completions=["no submit"], environments=[env]) == [0.0]
+    assert runtime is not None
+    assert runtime.verify_count == 1
+    assert runtime.closed is True
+    assert env.rollout_dir == runtime.rollout_dir
+
+
+def test_reward_func_does_not_reverify_submitted_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards the TRL artifact finalization fix after PR #903."""
+
+    monkeypatch.setattr("benchflow.integrations.trl.spec.TaskRuntime", _FakeRuntime)
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    _make_task(tasks, "alpha", "Answer alpha")
+    spec = BenchFlowSpec(
+        tasks_dir=tasks,
+        bash_harness=BashHarnessConfig(jobs_dir=tmp_path / "jobs"),
+    )
+    env = spec.environment_factory()
+    env.reset(**spec.train_dataset_rows[0])
+    runtime = env._runtime
+    env.submit("done")
+
+    assert spec.reward_funcs[0](completions=["submitted"], environments=[env]) == [1.0]
+    assert runtime is not None
+    assert runtime.verify_count == 1
+
+
+def test_async_bridge_reuses_one_event_loop() -> None:
+    """Guards the Daytona event-loop lifetime fix added with PR #907."""
+
+    from benchflow.integrations.trl.spec import _run_blocking
+
+    async def current_loop():
+        return asyncio.get_running_loop()
+
+    first = _run_blocking(current_loop())
+    second = _run_blocking(current_loop())
+
+    assert first is second
+    assert first.is_running()
 
 
 def test_create_trainer_missing_trl_is_actionable(

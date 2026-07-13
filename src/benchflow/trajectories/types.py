@@ -516,6 +516,7 @@ class LLMExchange(BaseModel):
     request: LLMRequest
     response: LLMResponse
     duration_ms: float = 0.0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class Trajectory(BaseModel):

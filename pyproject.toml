@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.6.4"
+version = "0.6.5"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -52,7 +52,9 @@ train = [
     "transformers==5.6.2",
 ]
 trl = [
-    "trl>=0.24.0",
+    # Native tool-calling prompt/completion rows, assistant-only masks, and
+    # training chat-template patches used by `bench train validate --format trl-sft`.
+    "trl>=1.8.0,<2",
     "datasets>=2.19.0",
 ]
 sandbox-daytona = [
@@ -206,4 +208,10 @@ required-version = ">=0.8.4"
 # `[tool.benchflow.dependency-cooldown.override-rationale]`. The CI gate fails
 # missing/stale rationales and stale overrides once their package cutoff ages
 # past the cooldown window, so they cannot become a permanent package allowlist.
-exclude-newer = "2026-07-02T00:00:00Z"
+exclude-newer = "2026-07-06T00:00:00Z"
+
+[tool.uv.exclude-newer-package]
+trl = "2026-07-10T00:00:00Z"
+
+[tool.benchflow.dependency-cooldown.override-rationale]
+trl = "Temporary mainline compatibility override: the TRL-SFT export extra requires trl>=1.8.0, and 1.8.0 was published after the current global cooldown cutoff. Remove once the release ages past the cooldown window."

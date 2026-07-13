@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import inspect
 import json
@@ -49,6 +50,7 @@ from benchflow.providers.litellm_logging import (
     trajectory_from_litellm_callback_log,
 )
 from benchflow.sandbox.providers import OFF_BOX_MODEL_PROVIDERS
+from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
@@ -67,6 +69,10 @@ _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 # it's ignored) and `NO_DOCS=true` so the docs route is skipped regardless of the
 # inherited environment.
 _PROXY_DOCS_DISABLE_ENV = {"DOCS_URL": "", "NO_DOCS": "true"}
+_SKILL_CATALOG_GATE_AGENT_ENV = "BENCHFLOW_SKILL_CATALOG_GATE_AGENT"
+_REQUIRED_SKILL_NAMES_ENV = "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON"
+_LIVE_CAPTURE_CHUNK_BYTES = 24 * 1024
+_LIVE_CAPTURE_INTERVAL_SEC = 1.0
 
 # Agents that speak a provider-native wire protocol the LiteLLM proxy does not
 # expose on its OpenAI/Anthropic surfaces. Routing them through the proxy would
@@ -92,6 +98,8 @@ class LiteLLMProcess:
 
     route: LiteLLMRoute
     trajectory: Trajectory | None
+    session_id: str
+    agent_name: str
 
     @property
     def base_url(self) -> str:
@@ -102,6 +110,84 @@ class LiteLLMProcess:
 
     async def is_running(self) -> bool:
         raise NotImplementedError
+
+    def start_live_capture(self, path: Path) -> None:
+        """Mirror completed callback records into a redacted local artifact."""
+        existing_path = getattr(self, "_live_trajectory_path", None)
+        task = getattr(self, "_live_capture_task", None)
+        if existing_path == Path(path) and task is not None and not task.done():
+            return
+        if task is not None and not task.done():
+            task.cancel()
+        self._live_trajectory_path = Path(path)
+        self._live_writer = LiveLLMTrajectoryWriter(Path(path))
+        self._live_trajectory = Trajectory(
+            session_id=self.session_id,
+            agent_name=self.agent_name,
+        )
+        self._live_callback_offset = 0
+        self._live_callback_remainder = b""
+        self._live_capture_task = asyncio.create_task(self._live_capture_loop())
+
+    async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
+        raise NotImplementedError
+
+    async def _capture_live_records(self) -> None:
+        trajectory = getattr(self, "_live_trajectory", None)
+        writer = getattr(self, "_live_writer", None)
+        if trajectory is None or writer is None:
+            return
+
+        changed = False
+        for _ in range(64):
+            offset = int(getattr(self, "_live_callback_offset", 0))
+            chunk = await self._read_callback_chunk(offset, _LIVE_CAPTURE_CHUNK_BYTES)
+            if not chunk:
+                break
+            self._live_callback_offset = offset + len(chunk)
+            data = getattr(self, "_live_callback_remainder", b"") + chunk
+            lines = data.split(b"\n")
+            self._live_callback_remainder = lines.pop()
+            for raw_line in lines:
+                if not raw_line.strip():
+                    continue
+                parsed = trajectory_from_litellm_callback_log(
+                    raw_line.decode("utf-8", errors="replace"),
+                    session_id=self.session_id,
+                    agent_name=self.agent_name,
+                )
+                if parsed.exchanges:
+                    trajectory.exchanges.extend(parsed.exchanges)
+                    changed = True
+            if len(chunk) < _LIVE_CAPTURE_CHUNK_BYTES:
+                break
+        if changed:
+            writer.write(trajectory)
+
+    async def _live_capture_loop(self) -> None:
+        while True:
+            try:
+                await self._capture_live_records()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Live LLM trajectory mirror failed: %s", exc)
+            await asyncio.sleep(_LIVE_CAPTURE_INTERVAL_SEC)
+
+    async def _stop_live_capture(self) -> None:
+        task = getattr(self, "_live_capture_task", None)
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            self._live_capture_task = None
+        with contextlib.suppress(Exception):
+            await self._capture_live_records()
+
+    def _reconcile_live_capture(self) -> None:
+        writer = getattr(self, "_live_writer", None)
+        if writer is not None:
+            writer.reconcile(self.trajectory)
 
 
 class HostLiteLLMProcess(LiteLLMProcess):
@@ -137,6 +223,7 @@ class HostLiteLLMProcess(LiteLLMProcess):
         return self.process.poll() is None
 
     async def stop(self) -> None:
+        await self._stop_live_capture()
         await _await_log_stable(self._log_size)
         if self.process.poll() is None:
             self.process.terminate()
@@ -146,6 +233,7 @@ class HostLiteLLMProcess(LiteLLMProcess):
                 self.process.kill()
                 await asyncio.to_thread(self.process.wait, 10)
         self._load_callback_log()
+        self._reconcile_live_capture()
         with contextlib.suppress(Exception):
             shutil.rmtree(self.runtime_dir, ignore_errors=True)
 
@@ -154,6 +242,17 @@ class HostLiteLLMProcess(LiteLLMProcess):
             return self.log_path.stat().st_size
         except OSError:
             return -1
+
+    async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
+        def _read() -> bytes:
+            try:
+                with self.log_path.open("rb") as handle:
+                    handle.seek(offset)
+                    return handle.read(limit)
+            except OSError:
+                return b""
+
+        return await asyncio.to_thread(_read)
 
     def _load_callback_log(self) -> None:
         if not self.log_path.exists():
@@ -221,6 +320,7 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         return result.return_code == 0 and (result.stdout or "").strip() == "yes"
 
     async def stop(self) -> None:
+        await self._stop_live_capture()
         await _await_log_stable(self._remote_log_size)
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
@@ -232,6 +332,7 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
                 timeout_sec=10,
             )
         await self._load_callback_log()
+        self._reconcile_live_capture()
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
                 f"rm -rf {shlex.quote(self.runtime_dir)}", timeout_sec=10
@@ -245,6 +346,17 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             )
             return int((result.stdout or "-1").strip() or -1)
         return -1
+
+    async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
+        command = (
+            f"dd if={shlex.quote(self.log_path)} bs=1 skip={offset} count={limit} "
+            "2>/dev/null | base64 -w 0"
+        )
+        result = await self.sandbox.exec(command, timeout_sec=10)
+        encoded = (result.stdout or "").strip()
+        if result.return_code != 0 or not encoded:
+            return b""
+        return base64.b64decode(encoded, validate=True)
 
     async def _load_callback_log(self) -> None:
         text = ""
@@ -1044,6 +1156,19 @@ def _apply_litellm_agent_env(
     return updated
 
 
+def _litellm_proxy_env(
+    *, agent: str, agent_env: dict[str, str], required_skill_names: tuple[str, ...]
+) -> dict[str, str]:
+    updated = dict(agent_env)
+    updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
+    updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
+    expected = sorted(set(required_skill_names))
+    if agent == "opencode" and expected:
+        updated[_SKILL_CATALOG_GATE_AGENT_ENV] = agent
+        updated[_REQUIRED_SKILL_NAMES_ENV] = json.dumps(expected)
+    return updated
+
+
 def _wire_litellm_agent_env(
     *,
     agent: str,
@@ -1053,6 +1178,8 @@ def _wire_litellm_agent_env(
     master_key: str,
 ) -> dict[str, str]:
     updated = dict(agent_env)
+    updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
+    updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
     # Isolation: the agent must reach providers only through the proxy. Drop raw
     # upstream provider secrets AND endpoints so a compromised or curious agent
     # cannot bypass the gateway (and its usage metering) or read live keys. The
@@ -1191,6 +1318,8 @@ async def ensure_litellm_runtime(
     usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
     sandbox: Any | None = None,
     sandbox_setup_timeout: int = 120,
+    required_skill_names: tuple[str, ...] = (),
+    live_trajectory_path: Path | None = None,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1252,12 +1381,19 @@ async def ensure_litellm_runtime(
         agent_env.get(LITELLM_MASTER_KEY_ENV)
         or f"sk-benchflow-{secrets.token_urlsafe(24)}"
     )
-    config_key = f"{environment}:{route.config_key}:{agent}:{session_id}"
+    skill_gate_key = json.dumps(
+        sorted(set(required_skill_names)), separators=(",", ":")
+    )
+    config_key = (
+        f"{environment}:{route.config_key}:{agent}:{session_id}:{skill_gate_key}"
+    )
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
         if getattr(runtime, "config_key", None) == config_key and server is not None:
             is_running = await server.is_running()
             if is_running:
+                if live_trajectory_path is not None:
+                    server.start_live_capture(live_trajectory_path)
                 return (
                     _apply_litellm_agent_env(
                         agent=agent,
@@ -1271,12 +1407,17 @@ async def ensure_litellm_runtime(
         await stop_litellm_runtime(runtime)
 
     try:
+        proxy_env = _litellm_proxy_env(
+            agent=agent,
+            agent_env=agent_env,
+            required_skill_names=required_skill_names,
+        )
         if environment in _SANDBOX_LOCAL_ENVIRONMENTS:
             server = await _start_sandbox_litellm(
                 sandbox=sandbox,
                 route=route,
                 master_key=master_key,
-                agent_env=agent_env,
+                agent_env=proxy_env,
                 session_id=session_id,
                 agent_name=agent,
                 install_timeout_sec=max(600, int(sandbox_setup_timeout)),
@@ -1285,7 +1426,7 @@ async def ensure_litellm_runtime(
             server = await _start_host_litellm(
                 route=route,
                 master_key=master_key,
-                agent_env=agent_env,
+                agent_env=proxy_env,
                 environment=environment,
                 session_id=session_id,
                 agent_name=agent,
@@ -1311,6 +1452,8 @@ async def ensure_litellm_runtime(
         config_key=config_key,
         master_key=master_key,
     )
+    if live_trajectory_path is not None:
+        server.start_live_capture(live_trajectory_path)
     return (
         _apply_litellm_agent_env(
             agent=agent,

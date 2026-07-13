@@ -2,6 +2,68 @@
 
 ## [Unreleased]
 
+### Added
+- **Native TRL tool-calling SFT export.** `bench train convert --format
+  trl-sft` emits conversational prompt/completion rows with a `tools` column,
+  excludes OpenCode title/summary helper calls, and accepts rollout trees,
+  canonical `results.jsonl`, or existing TRL JSONL. `bench train validate
+  --format trl-sft` can render rows with a pinned tokenizer and fail closed on
+  missing assistant masks or overlength samples. Tokenizer-aware
+  `--context-policy message-window` keeps the harness/task prefix and the
+  longest complete recent assistant/tool suffix when exact rows exceed the
+  student context window. (#925)
+- **LLM call-purpose provenance.** Captured LLM exchanges retain provider/model
+  metadata and classify agent, title, summary, compaction, and helper calls;
+  `results.jsonl` carries the metadata on each trajectory step. (#925)
+
+## 0.6.5 — 2026-07-10
+
+### Added
+- **Reproducible evaluation artifact workflows.** `bench eval run` can emit
+  task/run manifests, trajectory-health summaries, canonical one-rollout-per-task
+  selections, materialized trainer inputs, repeated model matrices, and
+  Hugging Face dataset uploads with source provenance. (#844, #907)
+- **Prime-RL supervised fine-tuning integration.** `bench train validate` and
+  `bench train run sft --backend prime-rl` add fail-closed trainer-row checks,
+  local/Hugging Face dataset staging, publishing hooks, and compatibility
+  controls for reproducing the Mobile300 PR828 training recipe. (#842–#865)
+- **Native external benchmark adapters.** BenchFlow can materialize MCP Atlas
+  and Toolathlon sources, credential-backed task packages, and the service
+  sidecars required by their hosted runtimes. (#878, #885, #889)
+- **Registry-driven agent extension.** Agent packages can autoload through
+  `benchflow.agents` entry points or declarative manifests, including namespace
+  shorthand for externally registered agents. (#873, #877)
+- **BenchFlow-native GRPO/TRL pipeline.** Adds reusable `TaskRuntime`, the
+  optional `BenchFlowSpec` TRL adapter, selective Hugging Face task snapshots,
+  paired `bench eval compare-lift` reporting, and an end-to-end GRPO runbook.
+  (#901–#907)
+
+### Changed
+- BenchFlow CLI and SDK installations now explicitly require Python 3.12 or
+  newer, with `uv tool install --python 3.12` as the recommended CLI path.
+  (#899)
+
+### Fixed
+- Hardened LiteLLM and provider routing across Responses/chat bridges, Gemini
+  custom endpoints, Claude OAuth, Harvey LAB, OpenHands Azure reasoning effort,
+  diagnostics, and parallel ACP shim startup. (#868, #871, #879–#881, #886,
+  #888, #911)
+- Stabilized Daytona execution for Toolathlon and ACP agents, including DinD
+  retries, PTY handling, orphan-free long-command heartbeats, and Gemini's SSH
+  transport fallback. (#890, #892–#896, #910, #912)
+- Tightened trajectory and Prime-SFT artifact integrity with secret redaction,
+  tool-call validation, repaired results conversion, and reproducible
+  compatibility controls. (#849–#865)
+
+### Removed
+- **`BENCHFLOW_SKILL_NUDGE` skill prompt nudge.** The optional prompt injection
+  that prepended mounted-skill names/descriptions/bodies to the task
+  instruction (#207) is gone. Setting the environment variable now has no
+  effect: prompt resolution never reads skill directories, and mounted skills
+  reach agents only through their native skill paths. This keeps prompts
+  identical across skill modes and closes off accidental prompt-level skill
+  leakage. (#908)
+
 ## 0.6.4 — 2026-06-27
 
 ### Added

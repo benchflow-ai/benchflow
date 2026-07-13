@@ -20,8 +20,8 @@ Sandboxes are `docker`, `daytona`, and `modal`.
 
 ## Skills
 
-When an example or task has a skills directory, mount it and pass the skill
-nudge. The docs use `BENCHFLOW_SKILL_NUDGE=name` as the default recommendation:
+When an example or task has a skills directory, mount it with
+`--skill-mode with-skill`:
 
 ```bash
 bench eval run \
@@ -30,12 +30,11 @@ bench eval run \
   --model gemini-3.1-flash-lite-preview \
   --sandbox daytona \
   --skill-mode with-skill \
-  --skills-dir tasks/my-task/environment/skills \
-  --agent-env BENCHFLOW_SKILL_NUDGE=name
+  --skills-dir tasks/my-task/environment/skills
 ```
 
 See [Architecture: skill loading](../architecture.md#skill-loading) for the
-skill loading semantics and available nudge modes.
+skill loading semantics.
 
 ## Demos
 

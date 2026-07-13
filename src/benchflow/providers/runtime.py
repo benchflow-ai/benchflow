@@ -8,6 +8,7 @@ from the concrete host/sandbox process launcher.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from benchflow.usage_tracking import UsageTrackingConfig
@@ -40,6 +41,8 @@ async def ensure_litellm_runtime(
     usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
     sandbox: Any | None = None,
     sandbox_setup_timeout: int = 120,
+    required_skill_names: tuple[str, ...] = (),
+    live_trajectory_path: Path | None = None,
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
     from benchflow.providers.litellm_runtime import (
         ensure_litellm_runtime as _ensure_litellm_runtime,
@@ -55,6 +58,8 @@ async def ensure_litellm_runtime(
         usage_tracking=usage_tracking,
         sandbox=sandbox,
         sandbox_setup_timeout=sandbox_setup_timeout,
+        required_skill_names=required_skill_names,
+        live_trajectory_path=live_trajectory_path,
     )
 
 

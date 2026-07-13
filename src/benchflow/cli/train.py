@@ -12,9 +12,9 @@ from rich.markup import escape
 from benchflow.cli._shared import console, print_error
 
 
-def _ensure_prime_sft(format_name: str) -> None:
-    if format_name != "prime-sft":
-        print_error("--format currently supports only 'prime-sft'")
+def _ensure_training_format(format_name: str) -> None:
+    if format_name not in {"prime-sft", "trl-sft"}:
+        print_error("--format must be 'prime-sft' or 'trl-sft'")
         raise typer.Exit(1)
 
 
@@ -82,22 +82,82 @@ def register_train(app: typer.Typer) -> None:
                 ),
             ),
         ] = True,
+        context_policy: Annotated[
+            Literal["full", "message-window"],
+            typer.Option(
+                "--context-policy",
+                help="TRL context handling: full or tokenizer-aware message-window",
+            ),
+        ] = "full",
+        tokenizer_id: Annotated[
+            str | None,
+            typer.Option(
+                "--tokenizer",
+                help="Tokenizer/model ID for TRL message-window conversion",
+            ),
+        ] = None,
+        tokenizer_revision: Annotated[
+            str | None,
+            typer.Option(
+                "--tokenizer-revision",
+                help="Immutable tokenizer revision for TRL conversion",
+            ),
+        ] = None,
+        max_length: Annotated[
+            int | None,
+            typer.Option(
+                "--max-length",
+                help="Maximum rendered length for TRL message-window conversion",
+            ),
+        ] = None,
     ) -> None:
         """Convert BenchFlow rollout artifacts into trainer-ready data."""
-        _ensure_prime_sft(format_name)
-        from benchflow.trajectories.export_prime_sft import export_prime_sft_jsonl
-
+        _ensure_training_format(format_name)
         try:
-            stats = export_prime_sft_jsonl(
-                jobs_dir,
-                output,
-                min_reward=min_reward,
-                row_mode=row_mode,
-                expected_rows=expected_rows,
-                manifest=manifest,
-                canonical_selection=canonical_selection,
-                redact=redact,
-            )
+            if format_name == "prime-sft":
+                if (
+                    context_policy != "full"
+                    or tokenizer_id is not None
+                    or tokenizer_revision is not None
+                    or max_length is not None
+                ):
+                    raise ValueError(
+                        "--context-policy/--tokenizer/--tokenizer-revision/"
+                        "--max-length are supported only with --format trl-sft"
+                    )
+                from benchflow.trajectories.export_prime_sft import (
+                    export_prime_sft_jsonl,
+                )
+
+                stats = export_prime_sft_jsonl(
+                    jobs_dir,
+                    output,
+                    min_reward=min_reward,
+                    row_mode=row_mode,
+                    expected_rows=expected_rows,
+                    manifest=manifest,
+                    canonical_selection=canonical_selection,
+                    redact=redact,
+                )
+            else:
+                from benchflow.trajectories.export_trl_sft import (
+                    export_trl_sft_jsonl,
+                )
+
+                stats = export_trl_sft_jsonl(
+                    jobs_dir,
+                    output,
+                    min_reward=min_reward,
+                    row_mode=row_mode,
+                    expected_rows=expected_rows,
+                    manifest=manifest,
+                    canonical_selection=canonical_selection,
+                    redact=redact,
+                    context_policy=context_policy,
+                    tokenizer_id=tokenizer_id,
+                    tokenizer_revision=tokenizer_revision,
+                    max_length=max_length,
+                )
         except ValueError as exc:
             print_error(str(exc))
             raise typer.Exit(1) from None
@@ -154,13 +214,61 @@ def register_train(app: typer.Typer) -> None:
                 help="Fail unless trainer rows and source rows include tool calls",
             ),
         ] = False,
+        tokenizer_id: Annotated[
+            str | None,
+            typer.Option(
+                "--tokenizer",
+                help="Tokenizer/model ID for TRL render and assistant-mask validation",
+            ),
+        ] = None,
+        tokenizer_revision: Annotated[
+            str | None,
+            typer.Option(
+                "--tokenizer-revision",
+                help="Immutable tokenizer revision for TRL validation",
+            ),
+        ] = None,
+        max_length: Annotated[
+            int | None,
+            typer.Option(
+                "--max-length",
+                help="Fail TRL validation when a rendered row exceeds this length",
+            ),
+        ] = None,
     ) -> None:
         """Validate trainer-ready data."""
-        _ensure_prime_sft(format_name)
-        from benchflow.trajectories.export_prime_sft import validate_prime_sft_jsonl
-
+        _ensure_training_format(format_name)
         try:
-            result = validate_prime_sft_jsonl(jsonl, expected_rows=expected_rows)
+            if format_name == "prime-sft":
+                if (
+                    tokenizer_id is not None
+                    or tokenizer_revision is not None
+                    or max_length is not None
+                ):
+                    raise ValueError(
+                        "--tokenizer/--tokenizer-revision/--max-length "
+                        "are supported only with --format trl-sft"
+                    )
+                from benchflow.trajectories.export_prime_sft import (
+                    validate_prime_sft_jsonl,
+                )
+
+                result = validate_prime_sft_jsonl(
+                    jsonl,
+                    expected_rows=expected_rows,
+                )
+            else:
+                from benchflow.trajectories.export_trl_sft import (
+                    validate_trl_sft_jsonl,
+                )
+
+                result = validate_trl_sft_jsonl(
+                    jsonl,
+                    expected_rows=expected_rows,
+                    tokenizer_id=tokenizer_id,
+                    tokenizer_revision=tokenizer_revision,
+                    max_length=max_length,
+                )
             if require_tool_calls and result["rows_with_tool_calls"] != result["rows"]:
                 raise ValueError(
                     "not all trainer rows contain tool calls: "

@@ -11,7 +11,10 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-07-02T00:00:00Z"
+exclude-newer = "2026-07-06T00:00:00Z"
+
+[options.exclude-newer-package]
+trl = "2026-07-10T00:00:00Z"
 
 [[package]]
 name = "accelerate"
@@ -313,7 +316,7 @@ wheels = [
 
 [[package]]
 name = "benchflow"
-version = "0.6.4"
+version = "0.6.5"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -391,7 +394,7 @@ requires-dist = [
     { name = "tenacity", marker = "extra == 'sandbox-modal'", specifier = ">=8.0" },
     { name = "tomli-w", specifier = ">=1.0" },
     { name = "transformers", marker = "extra == 'train'", specifier = "==5.6.2" },
-    { name = "trl", marker = "extra == 'trl'", specifier = ">=0.24.0" },
+    { name = "trl", marker = "extra == 'trl'", specifier = ">=1.8.0,<2" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a1" },
     { name = "typer", specifier = ">=0.9" },
 ]
@@ -3976,7 +3979,7 @@ wheels = [
 
 [[package]]
 name = "trl"
-version = "1.7.0"
+version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "accelerate" },
@@ -3985,9 +3988,9 @@ dependencies = [
     { name = "packaging" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/41/83/82ac8591ebefbdfec60d643e5473bb0a138f2b7dc94bf30c54777c3e78b3/trl-1.7.0.tar.gz", hash = "sha256:c22b6b59f919abf327ccae7bbec4ec8df308bc8b0df9de7f4bf1b8bdcd960947", size = 687760, upload-time = "2026-06-25T22:47:22.022Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/d2/0bde76fff71f577dd3497ac2daefe4fa093f28791dd636228ebd17165bd5/trl-1.8.0.tar.gz", hash = "sha256:b7fc6ed021bb288e02f8530a4f809a182fe689440c84a47c9d8e35897bea0af1", size = 717196, upload-time = "2026-07-09T18:32:19.279Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8a/1f/470d5f68d4056604e7acf56b8a42693a94d4890f423557ea1eea5c0d2589/trl-1.7.0-py3-none-any.whl", hash = "sha256:097358a35caec99477d9fcc5284bcf349319fca1e6e507e8f7efa3988e23727a", size = 838829, upload-time = "2026-06-25T22:47:19.91Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/ad/0eede5c5d5a643aa8fab3336a01645fe38a3cb1b64a0df665c06c3d1ac17/trl-1.8.0-py3-none-any.whl", hash = "sha256:6fae1e592162907f952d3a909c8e152e3e046851c870ae9b973cbe9e259b0005", size = 863216, upload-time = "2026-07-09T18:32:17.64Z" },
 ]
 
 [[package]]
