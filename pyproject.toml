@@ -14,7 +14,7 @@ dependencies = [
     "rich>=13.0",
     # Dataset registry bench_version checks (PEP 440 specifier sets).
     "packaging>=24",
-    "litellm[proxy]==1.89.0",
+    "litellm[proxy]==1.91.0",
     "tomli-w>=1.0",
     "typer>=0.9",
 ]
