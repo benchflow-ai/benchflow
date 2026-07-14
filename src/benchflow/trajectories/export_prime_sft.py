@@ -1122,6 +1122,10 @@ def normalize_prime_sft_exchange(
     )
     if skip_reason:
         return None, skip_reason
+    repaired, _ = _align_legacy_tool_call_ids(
+        [("messages", message) for message in messages]
+    )
+    messages = [message for _, message in repaired]
     if _has_tool_calls(messages) and not tool_defs:
         return None, "missing_tool_defs"
     try:

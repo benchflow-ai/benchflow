@@ -3,6 +3,7 @@
 import os
 import shlex
 import subprocess
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -565,6 +566,35 @@ class TestDaytonaProcessSecretArgv:
         assert cleanup_cmd.startswith("rm -f /tmp/benchflow_env_")
         assert "secret" not in cleanup_cmd
         assert proc._ssh_config_path is None
+
+    def test_ssh_config_hardens_long_running_connections(self):
+        """Guards PR #921 against Daytona SSH idle-session transport loss."""
+        path = DaytonaProcess._write_ssh_config("token-user")
+        try:
+            config = Path(path).read_text()
+        finally:
+            os.unlink(path)
+
+        assert "ServerAliveInterval 30" in config
+        assert "ServerAliveCountMax 12" in config
+        assert "TCPKeepAlive yes" in config
+
+    @pytest.mark.asyncio
+    async def test_ssh_access_outlives_max_agent_timeout(self):
+        """Guards PR #921 against Daytona's 60-minute SSH token default."""
+        sandbox = _make_daytona_sandbox()
+        proc = DaytonaProcess(sandbox=sandbox, is_dind=False)
+        process = _FakeProcess(stdin=_FakeStdin())
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=process,
+        ):
+            await proc.start(command="openhands acp")
+
+        sandbox.create_ssh_access.assert_awaited_once_with(expires_in_minutes=2880)
+        await proc.close()
 
     @pytest.mark.asyncio
     async def test_ssh_config_not_created_when_env_bootstrap_fails(self):

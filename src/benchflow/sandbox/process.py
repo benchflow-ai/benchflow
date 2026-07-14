@@ -26,6 +26,9 @@ _BOOTSTRAP_DONE = "__BENCHFLOW_BOOTSTRAP_DONE__"
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DAYTONA_PTY_READLINE_TIMEOUT_ENV = "BENCHFLOW_DAYTONA_PTY_READLINE_TIMEOUT"
 _DAYTONA_PTY_READLINE_TIMEOUT_DEFAULT_SEC = 900.0
+_DAYTONA_SSH_ACCESS_TTL_MINUTES = 48 * 60
+_DAYTONA_SSH_SERVER_ALIVE_INTERVAL_SEC = 30
+_DAYTONA_SSH_SERVER_ALIVE_COUNT_MAX = 12
 
 
 def _daytona_pty_readline_timeout_sec() -> float:
@@ -418,6 +421,13 @@ class DaytonaProcess(LiveProcess):
                 f.write(f"  User {ssh_user}\n")
                 f.write("  StrictHostKeyChecking no\n")
                 f.write("  UserKnownHostsFile /dev/null\n")
+                f.write(
+                    f"  ServerAliveInterval {_DAYTONA_SSH_SERVER_ALIVE_INTERVAL_SEC}\n"
+                )
+                f.write(
+                    f"  ServerAliveCountMax {_DAYTONA_SSH_SERVER_ALIVE_COUNT_MAX}\n"
+                )
+                f.write("  TCPKeepAlive yes\n")
                 f.write("  LogLevel ERROR\n")
             os.chmod(path, 0o600)
         except Exception:
@@ -616,7 +626,9 @@ class DaytonaProcess(LiveProcess):
                 )
 
         try:
-            ssh_access = await self._sandbox.create_ssh_access()
+            ssh_access = await self._sandbox.create_ssh_access(
+                expires_in_minutes=_DAYTONA_SSH_ACCESS_TTL_MINUTES
+            )
             ssh_config_path = self._write_ssh_config(ssh_access.token)
             self._ssh_config_path = ssh_config_path
             cmd = self._ssh_args(ssh_config_path, remote_cmd)

@@ -374,6 +374,14 @@ class VerifierConfig(TaskConfigModel):
 class AgentConfig(TaskConfigModel):
     """Agent harness ($H$) configuration."""
 
+    prompt_prefix: str | None = Field(
+        default=None,
+        description=(
+            "Optional run-specific policy text prepended to each resolved task "
+            "prompt. Intended for generic harness constraints such as benchmark "
+            "integrity rules; must not contain task-specific solution content."
+        ),
+    )
     timeout_sec: float | None = Field(
         default=None,
         gt=0,
@@ -395,6 +403,16 @@ class AgentConfig(TaskConfigModel):
         default=None,
         description="Hostnames reachable when network_mode='allowlist'.",
     )
+
+    @field_validator("prompt_prefix")
+    @classmethod
+    def validate_prompt_prefix(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("prompt_prefix must contain non-whitespace text")
+        return value
 
     @field_validator("allowed_hosts")
     @classmethod

@@ -163,6 +163,7 @@ def _write_config(
     loop_strategy: LoopStrategySpec | None = None,
 ) -> None:
     """Write config.json to rollout_dir with secrets filtered out."""
+    from benchflow.acp.selection import selected_acp_transport
     from benchflow.agents.install import effective_install_timeout
 
     artifact_source = artifact_source_provenance(source_provenance)
@@ -180,6 +181,10 @@ def _write_config(
         "model": model,
         "reasoning_effort": reasoning_effort,
         "environment": environment,
+        "acp_transport": selected_acp_transport(
+            agent=agent,
+            environment=environment,
+        ),
         "environment_manifest": _environment_manifest_metadata(environment_manifest),
         **skill_policy.config_metadata(),
         "sandbox_user": sandbox_user,

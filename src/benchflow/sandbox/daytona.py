@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import importlib
 import logging
 import shlex
@@ -605,6 +606,7 @@ class DaytonaSandbox(BaseSandbox):
         timeout_sec: int | None = None,
         shell: str = "bash -c",
         user: str | int | None = None,
+        cleanup_session: bool = False,
     ) -> ExecResult:
         """Run ``command`` as a Daytona session command and poll to completion.
 
@@ -646,24 +648,32 @@ class DaytonaSandbox(BaseSandbox):
                 user_arg = shlex.quote(user)
             command = f"su {user_arg} -s /bin/bash -c {shlex.quote(command)}"
 
-        response = await sandbox.process.execute_session_command(
-            session_id,
-            SessionExecuteRequest(
-                command=command,
-                run_async=True,
-            ),
-            timeout=timeout_sec,
-        )
+        try:
+            response = await sandbox.process.execute_session_command(
+                session_id,
+                SessionExecuteRequest(
+                    command=command,
+                    run_async=True,
+                ),
+                timeout=timeout_sec,
+            )
 
-        if response.cmd_id is None:
-            raise RuntimeError("Cannot find command ID.")
+            if response.cmd_id is None:
+                raise RuntimeError("Cannot find command ID.")
 
-        # Don't delete session; Daytona kills child processes
-        return await self._poll_response(
-            session_id,
-            response.cmd_id,
-            timeout_sec=timeout_sec,
-        )
+            # Normal sandbox execs intentionally retain their Daytona session:
+            # deleting one can kill detached child processes that the caller
+            # started deliberately. Short-lived polling commands opt into
+            # cleanup_session=True and must not leave children behind.
+            return await self._poll_response(
+                session_id,
+                response.cmd_id,
+                timeout_sec=timeout_sec,
+            )
+        finally:
+            if cleanup_session:
+                with contextlib.suppress(Exception):
+                    await sandbox.process.delete_session(session_id)
 
     @_SDK_RETRY
     async def _sdk_upload_file(self, source_path: Path | str, target_path: str) -> None:
@@ -822,6 +832,34 @@ class DaytonaSandbox(BaseSandbox):
         user = self._resolve_user(user)
         env = self._merge_env(env)
         return await self._strategy.exec(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+            user=user,
+            service=service,
+        )
+
+    async def exec_transient(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+        service: str = "main",
+    ) -> ExecResult:
+        """Run a child-free command and delete its Daytona session afterward.
+
+        Daytona session commands may leave their wrapper shell alive after the
+        command has completed. High-frequency polling must use this method so a
+        long rollout does not accumulate thousands of orphaned shells. Callers
+        must not use it for commands intended to leave background services
+        running, because deleting the session may terminate those children.
+        """
+        user = self._resolve_user(user)
+        env = self._merge_env(env)
+        return await self._strategy.exec_transient(
             command,
             cwd=cwd,
             env=env,

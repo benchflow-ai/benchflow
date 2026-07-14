@@ -18,6 +18,7 @@ import re
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from benchflow.agents.registry import get_sandbox_home_dirs
 from benchflow.sandbox._cache_reclaim import build_reclaim_caches_cmd
@@ -90,6 +91,41 @@ def _resolve_locked_paths(
 # Sandbox user + privilege drop
 
 
+def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
+    user = shlex.quote(sandbox_user)
+    return (
+        "set -e; "
+        "if ! command -v iptables >/dev/null 2>&1; then "
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "export DEBIAN_FRONTEND=noninteractive; "
+        "apt-get update -qq && apt-get install -y -qq iptables >/dev/null; "
+        "elif command -v dnf >/dev/null 2>&1; then "
+        "dnf -y install iptables >/dev/null; "
+        "elif command -v apk >/dev/null 2>&1; then "
+        "apk add --no-cache iptables >/dev/null; "
+        "else echo 'No supported iptables package manager' >&2; exit 86; fi; fi; "
+        f"agent_uid=$(id -u {user}) || exit 86; "
+        'iptables -C OUTPUT -o lo -m owner --uid-owner "$agent_uid" '
+        "-j ACCEPT 2>/dev/null || "
+        'iptables -I OUTPUT 1 -o lo -m owner --uid-owner "$agent_uid" '
+        "-j ACCEPT; "
+        'iptables -C OUTPUT -m owner --uid-owner "$agent_uid" '
+        "-j REJECT 2>/dev/null || "
+        'iptables -A OUTPUT -m owner --uid-owner "$agent_uid" -j REJECT; '
+        "if [ -s /proc/net/if_inet6 ]; then "
+        "command -v ip6tables >/dev/null 2>&1 || "
+        "{ echo 'IPv6 enabled but ip6tables unavailable' >&2; exit 86; }; "
+        'ip6tables -C OUTPUT -o lo -m owner --uid-owner "$agent_uid" '
+        "-j ACCEPT 2>/dev/null || "
+        'ip6tables -I OUTPUT 1 -o lo -m owner --uid-owner "$agent_uid" '
+        "-j ACCEPT; "
+        'ip6tables -C OUTPUT -m owner --uid-owner "$agent_uid" '
+        "-j REJECT 2>/dev/null || "
+        'ip6tables -A OUTPUT -m owner --uid-owner "$agent_uid" -j REJECT; '
+        "fi"
+    )
+
+
 def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     """Build a shell command that drops to sandbox_user via setpriv or su.
 
@@ -104,6 +140,40 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
         f" --init-groups -- bash -c {quoted};"
         f" else exec su -l {sandbox_user} -c {quoted};"
         f" fi"
+    )
+
+
+async def enforce_agent_egress_firewall(
+    env: Any,
+    sandbox_user: str | None,
+    agent_env: dict[str, str],
+) -> None:
+    """Block sandbox-user external egress after ACP bootstrap, before prompting."""
+    if not sandbox_user or agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") != "1":
+        return
+
+    base_url = agent_env.get("LLM_BASE_URL", "")
+    parsed = urlsplit(base_url)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or parsed.port is None
+    ):
+        raise RuntimeError(
+            "No-web agent requires an HTTP loopback LLM_BASE_URL with a port"
+        )
+
+    result = await env.exec(
+        _agent_egress_firewall_cmd(sandbox_user),
+        user="root",
+        timeout_sec=120,
+    )
+    if _exec_return_code(result) != 0:
+        detail = _exec_failure_detail(result)
+        raise RuntimeError(f"Failed to enforce sandbox-user egress firewall.{detail}")
+    logger.info(
+        "Sandbox-user egress firewall active for %s (loopback allowed)",
+        sandbox_user,
     )
 
 
@@ -142,7 +212,10 @@ async def setup_sandbox_user(
         f"if [ -d /root/$d ]; then "
         f"cp -a /root/$d/. {home}/$d/ 2>/dev/null || true; fi; done && "
         f"chown -R {sandbox_user}:{sandbox_user} {home} && "
-        f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)}",
+        f"chown -R {sandbox_user}:{sandbox_user} {shlex.quote(workspace)} && "
+        f"for d in /output /outputs; do "
+        f'if [ -d "$d" ] && [ ! -L "$d" ]; then '
+        f'chown -R {sandbox_user}:{sandbox_user} "$d"; fi; done',
         timeout_sec=timeout_sec,
     )
     logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")

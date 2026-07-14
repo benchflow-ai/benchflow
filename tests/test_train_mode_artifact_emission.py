@@ -28,6 +28,7 @@ from benchflow.trajectories.export import (
 from benchflow.trajectories.export_prime_sft import validate_prime_sft_jsonl
 from benchflow.trajectories.results import (
     JOB_RESULTS_ERRORS_FILENAME,
+    _training_success_exchange_indices,
     write_job_results_jsonl,
 )
 
@@ -605,6 +606,337 @@ def test_results_jsonl_uses_canonical_prime_sft_normalization(tmp_path):
     assert row["trajectory"][0]["prompt"][1]["role"] == "user"
     assert row["info"]["training_ready"] is True
     assert validate_prime_sft_jsonl(artifact, expected_rows=1)["ok"] is True
+
+
+def test_results_jsonl_keeps_all_repaired_exchanges_and_disabled_truncation(
+    tmp_path,
+):
+    """Guards PR #921 MAX canary against silent exchange loss."""
+    rollout_dir = tmp_path / "rollout-max-multi-exchange"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    first = _llm_exchange()
+    first["response"]["body"]["truncation"] = "disabled"
+    second = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"ls"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "README.md"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "pyproject.toml",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    second["response"]["body"]["truncation"] = "disabled"
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(first) + "\n" + json.dumps(second) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+        total_tokens=26,
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 2
+    assert all(step["is_truncated"] is False for step in row["trajectory"])
+    assert {tool["function"]["name"] for tool in row["tool_defs"]} == {"terminal"}
+    assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert row["completion"][1] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "README.md\npyproject.toml",
+    }
+    assert row["completion"][-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_results_jsonl_fails_closed_when_successful_exchange_is_omitted(tmp_path):
+    """Guards PR #921 MAX canary against green rows with dropped exchanges."""
+    rollout_dir = tmp_path / "rollout-invalid-later-exchange"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    invalid = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {"role": "tool", "tool_call_id": "orphan", "content": "README.md"},
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(_llm_exchange()) + "\n" + json.dumps(invalid) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "export_error"
+    assert "Successful LLM exchanges were omitted" in row["error"]["error_chain_str"]
+
+
+def test_results_jsonl_excludes_recovered_incomplete_provider_exchange(tmp_path):
+    """Guards PR #921 MAX canary content-filter recovery semantics."""
+    rollout_dir = tmp_path / "rollout-recovered-incomplete"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    incomplete = _llm_exchange()
+    incomplete["response"]["body"].update(
+        {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "content_filter"},
+            "truncation": "disabled",
+        }
+    )
+    completed = _llm_exchange(assistant={"role": "assistant", "content": "Recovered."})
+    completed["response"]["body"].update(
+        {
+            "status": "completed",
+            "incomplete_details": None,
+            "truncation": "disabled",
+        }
+    )
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(incomplete) + "\n" + json.dumps(completed) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 1
+    assert row["trajectory"][0]["extras"]["exchange_index"] == 1
+    assert row["trajectory"][0]["is_truncated"] is False
+
+
+def test_results_jsonl_keeps_latest_completed_duplicate_request(tmp_path):
+    """Guards PR #921 MAX canary against late retry race responses."""
+    rollout_dir = tmp_path / "rollout-duplicate-completed-request"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    abandoned = _llm_exchange(
+        assistant={"role": "assistant", "content": "Abandoned response."}
+    )
+    consumed = _llm_exchange(
+        assistant={"role": "assistant", "content": "Consumed retry."}
+    )
+    assert abandoned["request"]["body"] == consumed["request"]["body"]
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(abandoned) + "\n" + json.dumps(consumed) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 1
+    assert row["trajectory"][0]["extras"]["exchange_index"] == 1
+    assert row["completion"] == [{"role": "assistant", "content": "Consumed retry."}]
+
+
+def test_results_jsonl_prefers_duplicate_consumed_by_later_request(tmp_path):
+    """Guards PR #921 against keeping a late abandoned response."""
+    rollout_dir = tmp_path / "rollout-consumed-duplicate-request"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    consumed = _llm_exchange()
+    consumed["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_consumed"
+    )
+    abandoned = _llm_exchange()
+    abandoned["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_abandoned"
+    )
+    followup = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_consumed",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"ls"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_consumed",
+                "content": "README.md",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    assert consumed["request"]["body"] == abandoned["request"]["body"]
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in (consumed, abandoned, followup)) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert [step["extras"]["exchange_index"] for step in row["trajectory"]] == [
+        0,
+        2,
+    ]
+
+
+def test_results_drop_unique_late_unconsumed_nonterminal_retry():
+    """Guards PR #921 against the adaptive-cruise exchange-59 regression."""
+    consumed = _llm_exchange()
+    consumed["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_consumed"
+    )
+    followup = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            consumed["response"]["body"]["choices"][0]["message"],
+            {
+                "role": "tool",
+                "tool_call_id": "call_consumed",
+                "content": "README.md",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Continuing."},
+    )
+    late = _llm_exchange()
+    late["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Late retry request."}
+    )
+    late["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_late"
+    )
+    terminal = _llm_exchange(
+        assistant={
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_finish",
+                    "type": "function",
+                    "function": {"name": "finish", "arguments": "{}"},
+                }
+            ],
+        }
+    )
+    terminal["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Final response."}
+    )
+
+    assert _training_success_exchange_indices([consumed, followup, late, terminal]) == {
+        0,
+        1,
+        3,
+    }
 
 
 def test_results_jsonl_preserves_llm_exchange_metadata(tmp_path):

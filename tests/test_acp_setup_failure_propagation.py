@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from benchflow.acp.client import ACPClient
+from benchflow.diagnostics import TransportClosedError
 
 
 def _stock_acp_mock() -> AsyncMock:
@@ -206,3 +207,96 @@ async def test_no_model_does_not_call_set_model(tmp_path) -> None:
 
     mock_acp.set_model.assert_not_awaited()
     mock_acp.close.assert_not_awaited()
+
+
+async def test_initialize_timeout_is_transport_failure_not_agent_timeout(
+    tmp_path,
+) -> None:
+    """Guards PR #921 against classifying ACP bootstrap stalls as task timeout."""
+    from benchflow.acp.runtime import connect_acp
+
+    mock_acp = _stock_acp_mock()
+    mock_acp.initialize = AsyncMock(side_effect=TimeoutError())
+    mock_env = AsyncMock()
+
+    with (
+        patch(
+            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+            return_value=MagicMock(),
+        ),
+        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+        patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        patch("benchflow.acp.runtime.asyncio.sleep", new_callable=AsyncMock),
+        pytest.raises(TransportClosedError) as exc_info,
+    ):
+        await connect_acp(
+            env=mock_env,
+            agent="test-agent",
+            agent_launch="test-agent",
+            agent_env={},
+            sandbox_user=None,
+            model=None,
+            rollout_dir=tmp_path,
+            environment="docker",
+            agent_cwd="/app",
+        )
+
+    assert exc_info.value.diagnostic.transport_diagnosis == "acp_initialize_timeout"
+    assert mock_acp.initialize.await_count == 4
+    mock_acp.close.assert_awaited()
+
+
+async def test_no_web_firewall_runs_after_session_new_before_return(tmp_path) -> None:
+    """Guards PR #921: bootstrap first, then fail-closed egress isolation."""
+    from benchflow.acp.runtime import connect_acp
+
+    events: list[str] = []
+    mock_acp = _stock_acp_mock()
+
+    async def session_new(*args, **kwargs):
+        events.append("session_new")
+        return MagicMock(session_id="s1")
+
+    async def enforce(*args, **kwargs):
+        events.append("firewall")
+
+    mock_acp.session_new = AsyncMock(side_effect=session_new)
+    mock_env = AsyncMock()
+
+    with (
+        patch(
+            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+            return_value=MagicMock(),
+        ),
+        patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+        patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        patch(
+            "benchflow.acp.runtime.enforce_agent_egress_firewall",
+            new_callable=AsyncMock,
+            side_effect=enforce,
+        ) as mock_firewall,
+    ):
+        await connect_acp(
+            env=mock_env,
+            agent="openhands",
+            agent_launch="openhands acp",
+            agent_env={
+                "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                "LLM_BASE_URL": "http://127.0.0.1:1234",
+            },
+            sandbox_user="agent",
+            model=None,
+            rollout_dir=tmp_path,
+            environment="docker",
+            agent_cwd="/app",
+        )
+
+    assert events == ["session_new", "firewall"]
+    mock_firewall.assert_awaited_once_with(
+        mock_env,
+        "agent",
+        {
+            "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+            "LLM_BASE_URL": "http://127.0.0.1:1234",
+        },
+    )

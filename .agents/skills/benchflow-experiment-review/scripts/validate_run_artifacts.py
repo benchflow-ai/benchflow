@@ -250,6 +250,7 @@ def validate_llm(
     issues: list[str] = []
     request_count = 0
     response_count = 0
+    completed_candidates: list[tuple[int, str, bool]] = []
     error_count = 0
     usage_count = 0
     for index, row in enumerate(rows, start=1):
@@ -266,6 +267,27 @@ def validate_llm(
             body = response.get("body")
             if isinstance(body, dict):
                 response_count += 1
+                response_status = body.get("status")
+                completed = (
+                    response.get("status_code") == 200
+                    and response_status in {None, "completed"}
+                    and not body.get("incomplete_details")
+                )
+                if completed:
+                    signature = json.dumps(
+                        (
+                            request.get("body")
+                            if isinstance(request, dict)
+                            and isinstance(request.get("body"), dict)
+                            else {}
+                        ),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    completed_candidates.append(
+                        (index - 1, signature, has_token_usage(body))
+                    )
                 if has_token_usage(body):
                     usage_count += 1
             else:
@@ -282,12 +304,151 @@ def validate_llm(
         )
     if usage_count == 0:
         issues.append(f"{path}: no provider token usage in response bodies")
+    candidates_by_request: dict[str, list[tuple[int, bool]]] = {}
+    for index, signature, has_usage in completed_candidates:
+        candidates_by_request.setdefault(signature, []).append((index, has_usage))
+    request_bodies = [
+        json.dumps(
+            (
+                request.get("body")
+                if isinstance(request := row.get("request"), dict)
+                and isinstance(request.get("body"), dict)
+                else {}
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        for row in rows
+    ]
+    selected: list[tuple[int, bool]] = []
+    for candidates in candidates_by_request.values():
+        consumed = [
+            candidate
+            for candidate in candidates
+            if response_consumed_by_later_request(rows, request_bodies, candidate[0])
+        ]
+        if consumed:
+            selected.append(max(consumed))
+            continue
+        safe_unconsumed = [
+            candidate
+            for candidate in candidates
+            if response_safe_without_later_consumption(rows, candidate[0])
+        ]
+        if safe_unconsumed:
+            selected.append(max(safe_unconsumed))
+    selected.sort()
+    successful_exchange_indices = [index for index, _ in selected]
+    successful_response_count = len(selected)
+    successful_usage_count = sum(1 for _, has_usage in selected if has_usage)
+    if successful_response_count and successful_usage_count < successful_response_count:
+        issues.append(
+            f"{path}: completed responses with usage {successful_usage_count} < "
+            f"completed responses {successful_response_count}"
+        )
     return issues, {
         "requests": request_count,
         "responses": response_count,
+        "successful_responses": successful_response_count,
+        "successful_exchange_indices": successful_exchange_indices,
+        "successful_responses_with_usage": successful_usage_count,
+        "deduplicated_completed_responses": (
+            len(completed_candidates) - successful_response_count
+        ),
         "errors": error_count,
         "responses_with_usage": usage_count,
     }
+
+
+def response_consumed_by_later_request(
+    rows: list[dict[str, Any]],
+    request_bodies: list[str],
+    exchange_idx: int,
+) -> bool:
+    response = rows[exchange_idx].get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    call_ids = response_call_ids(body if isinstance(body, dict) else {})
+    return bool(
+        call_ids
+        and any(
+            any(call_id in request_body for call_id in call_ids)
+            for request_body in request_bodies[exchange_idx + 1 :]
+        )
+    )
+
+
+def response_call_ids(body: dict[str, Any]) -> set[str]:
+    return {call_id for call_id, _ in response_tool_calls(body)}
+
+
+def response_safe_without_later_consumption(
+    rows: list[dict[str, Any]], exchange_idx: int
+) -> bool:
+    row = rows[exchange_idx]
+    response = row.get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    calls = response_tool_calls(body if isinstance(body, dict) else {})
+    if not calls or all(name == "finish" for _, name in calls):
+        return True
+    return not any(
+        isinstance(request := later.get("request"), dict)
+        and isinstance(request.get("body"), dict)
+        for later in rows[exchange_idx + 1 :]
+    )
+
+
+def response_tool_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
+    calls = [
+        (
+            str(item.get("call_id") or item.get("id")),
+            str(item.get("name")) if item.get("name") else None,
+        )
+        for item in body.get("output") or []
+        if isinstance(item, dict)
+        and item.get("type") in {"function_call", "tool_call"}
+        and (item.get("call_id") or item.get("id"))
+    ]
+    choices = body.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            message = choice.get("message") if isinstance(choice, dict) else None
+            if not isinstance(message, dict):
+                continue
+            calls.extend(
+                (
+                    str(call.get("id") or call.get("tool_call_id")),
+                    (
+                        str(function.get("name"))
+                        if isinstance(function := call.get("function"), dict)
+                        and function.get("name")
+                        else str(call.get("name"))
+                        if call.get("name")
+                        else None
+                    ),
+                )
+                for call in message.get("tool_calls") or []
+                if isinstance(call, dict)
+                and (call.get("id") or call.get("tool_call_id"))
+            )
+    message = body.get("message")
+    if isinstance(message, dict):
+        calls.extend(
+            (
+                str(call.get("id") or call.get("tool_call_id")),
+                (
+                    str(function.get("name"))
+                    if isinstance(function := call.get("function"), dict)
+                    and function.get("name")
+                    else str(call.get("name"))
+                    if call.get("name")
+                    else None
+                ),
+            )
+            for call in message.get("tool_calls") or []
+            if isinstance(call, dict) and (call.get("id") or call.get("tool_call_id"))
+        )
+    return calls
 
 
 def result_has_terminal_error(result: dict[str, Any]) -> bool:
@@ -446,10 +607,20 @@ def validate_results_row(
                 )
         trajectory = row.get("trajectory")
         if isinstance(trajectory, list):
-            if llm_summary and llm_summary.get("responses", 0) and len(trajectory) == 0:
+            successful_responses = (
+                int(llm_summary.get("successful_responses", 0)) if llm_summary else 0
+            )
+            if successful_responses and len(trajectory) != successful_responses:
                 issues.append(
-                    f"{row_path}: no results trajectory steps from LLM exchanges"
+                    f"{row_path}: results trajectory steps {len(trajectory)} != "
+                    f"successful LLM responses {successful_responses}"
                 )
+            expected_indices = (
+                set(llm_summary.get("successful_exchange_indices", []))
+                if llm_summary
+                else set()
+            )
+            observed_indices: set[int] = set()
             for idx, step in enumerate(trajectory):
                 if not isinstance(step, dict):
                     issues.append(f"{row_path}: trajectory[{idx}] must be an object")
@@ -468,6 +639,34 @@ def validate_results_row(
                     issues.append(
                         f"{row_path}: trajectory[{idx}] source is not llm_trajectory"
                     )
+                if isinstance(extras, dict) and isinstance(
+                    extras.get("exchange_index"), int
+                ):
+                    observed_indices.add(extras["exchange_index"])
+                if step.get("is_truncated") is True:
+                    issues.append(
+                        f"{row_path}: trajectory[{idx}] is incorrectly truncated"
+                    )
+                step_messages = []
+                for field in ("prompt", "completion"):
+                    value = step.get(field)
+                    if isinstance(value, list):
+                        step_messages.extend(
+                            message for message in value if isinstance(message, dict)
+                        )
+                issues.extend(
+                    validate_training_messages(
+                        step_messages,
+                        tools=tools,
+                        row_path=f"{row_path}: trajectory[{idx}]",
+                    )
+                )
+            if expected_indices and observed_indices != expected_indices:
+                issues.append(
+                    f"{row_path}: results exchange indices "
+                    f"{sorted(observed_indices)} != successful LLM exchange indices "
+                    f"{sorted(expected_indices)}"
+                )
         token_usage = row.get("token_usage")
         if not isinstance(token_usage, dict):
             issues.append(f"{row_path}: missing object token_usage")

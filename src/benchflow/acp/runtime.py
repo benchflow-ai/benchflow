@@ -25,6 +25,7 @@ from pathlib import Path
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
+from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
@@ -38,8 +39,13 @@ from benchflow.diagnostics import (
     AgentPromptTimeoutError,
     IdleTimeoutDiagnostic,
     IdleTimeoutError,
+    TransportClosedDiagnostic,
+    TransportClosedError,
 )
-from benchflow.sandbox.lockdown import build_priv_drop_cmd
+from benchflow.sandbox.lockdown import (
+    build_priv_drop_cmd,
+    enforce_agent_egress_firewall,
+)
 from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
 from benchflow.trajectories._capture import _capture_session_trajectory
 
@@ -51,6 +57,7 @@ __all__ = [
     "IdleTimeoutError",
     "connect_acp",
     "execute_prompts",
+    "selected_acp_transport",
 ]
 
 logger = logging.getLogger(__name__)
@@ -59,6 +66,24 @@ logger = logging.getLogger(__name__)
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
 _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
+_ACP_HANDSHAKE_TIMEOUT_SEC = 60
+
+
+async def _wait_for_acp_handshake(awaitable, *, phase: str):
+    try:
+        return await asyncio.wait_for(awaitable, timeout=_ACP_HANDSHAKE_TIMEOUT_SEC)
+    except TimeoutError as e:
+        msg = (
+            f"ACP {phase} timed out after {_ACP_HANDSHAKE_TIMEOUT_SEC}s "
+            "before the first prompt"
+        )
+        raise TransportClosedError(
+            msg,
+            TransportClosedDiagnostic(
+                raw_message=msg,
+                transport_diagnosis=f"acp_{phase}_timeout",
+            ),
+        ) from e
 
 
 # models.dev provider inference — used when acp_model_format="provider/model"
@@ -484,9 +509,13 @@ async def connect_acp(
             if environment == "docker":
                 live_proc = DockerProcess.from_sandbox_env(env)
             elif environment == "daytona":
-                if agent == "gemini":
+                transport_name = selected_acp_transport(
+                    agent=agent,
+                    environment=environment,
+                )
+                if transport_name == "ssh":
                     live_proc = await DaytonaProcess.from_sandbox_env(env)
-                    logger.info("Using SSH transport for Gemini on Daytona")
+                    logger.info("Using SSH transport for %s on Daytona", agent)
                 else:
                     live_proc = await DaytonaPtyProcess.from_sandbox_env(env)
                     logger.info("Using PTY transport for Daytona sandbox")
@@ -511,15 +540,18 @@ async def connect_acp(
             acp_client = ACPClient(transport)
             await acp_client.connect()
 
-            init_result = await asyncio.wait_for(acp_client.initialize(), timeout=60)
+            init_result = await _wait_for_acp_handshake(
+                acp_client.initialize(),
+                phase="initialize",
+            )
             agent_name = (
                 init_result.agent_info.name if init_result.agent_info else agent
             )
             logger.info(f"ACP agent: {agent_name}")
 
-            session = await asyncio.wait_for(
+            session = await _wait_for_acp_handshake(
                 acp_client.session_new(cwd=agent_cwd, mcp_servers=mcp_servers),
-                timeout=60,
+                phase="session_new",
             )
             logger.info(f"Session: {session.session_id}")
             break
@@ -552,6 +584,7 @@ async def connect_acp(
             agent_env=agent_env,
             reasoning_effort=reasoning_effort,
         )
+        await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
     except Exception:
         with contextlib.suppress(Exception):
             await acp_client.close()
