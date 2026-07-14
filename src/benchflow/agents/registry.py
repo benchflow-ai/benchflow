@@ -951,6 +951,19 @@ AGENTS: dict[str, AgentConfig] = {
             '"$LLM_REASONING_EFFORT" ;; '
             "esac; "
             "printf '}}'; } > ~/.openhands/agent_settings.json && "
+            'if [ "${BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS:-0}" = "1" ]; then '
+            'OH_BIN="$(command -v openhands)"; '
+            'OH_PY="$(dirname "$(readlink -f "$OH_BIN")")/python"; '
+            '[ -x "$OH_PY" ] || { '
+            'echo "Cannot locate OpenHands tool interpreter" >&2; exit 127; }; '
+            '"$OH_PY" -c \'from pathlib import Path; '
+            "import openhands_cli.utils as u; "
+            "p=Path(u.__file__); s=p.read_text(); "
+            'old="        Tool(name=task_tool_name),\\n"; '
+            'new="        # BenchFlow: delegation disabled for this run.\\n"; '
+            "assert old in s or new in s; "
+            "p.write_text(s.replace(old,new,1))'; "
+            "fi && "
             "openhands acp --always-approve --override-with-envs"
         ),
         protocol="acp",
