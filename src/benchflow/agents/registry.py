@@ -700,7 +700,7 @@ AGENTS: dict[str, AgentConfig] = {
         skill_paths=["$HOME/.opencode/skills"],
         home_dirs=[".opencode"],
         install_cmd=(
-            _js_agent_install("opencode", "opencode-ai")
+            _js_agent_install("opencode", "opencode-ai@1.17.20")
             + " && "
             + _opencode_family_proxy_wrapper_install(
                 "opencode", ".config/opencode/opencode.json"
