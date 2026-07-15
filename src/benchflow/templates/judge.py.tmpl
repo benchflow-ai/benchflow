@@ -163,11 +163,18 @@ def judge_with_llm(trajectory_text: str) -> float:
         return 0.0
 
 
+def exact_ground_truth_pattern(ground_truth: str) -> re.Pattern:
+    """Return a regex that matches a standalone exact ground-truth string."""
+    return re.compile(r"(?<!\w)" + re.escape(ground_truth) + r"(?!\w)")
+
+
 def judge_exact_match() -> float:
     """Fallback: exact string match against ground_truth."""
     ground_truth = CASE.get("ground_truth", "").strip()
     if not ground_truth:
         return 0.0
+
+    pattern = exact_ground_truth_pattern(ground_truth)
 
     # Only check agent output files, not arbitrary filesystem content
     search_paths = [AGENT_LOG_DIR, APP_DIR]
@@ -179,8 +186,9 @@ def judge_exact_match() -> float:
                 continue
             try:
                 content = f.read_text()
-                # Check for exact match on word boundaries (not substring)
-                if re.search(r'\b' + re.escape(ground_truth) + r'\b', content):
+                # Check for an exact standalone answer without requiring
+                # code-like punctuation such as ")" to form a word boundary.
+                if pattern.search(content):
                     return 1.0
             except (UnicodeDecodeError, PermissionError):
                 pass
