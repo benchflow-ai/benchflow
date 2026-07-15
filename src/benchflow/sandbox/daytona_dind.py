@@ -96,6 +96,15 @@ def _raise_if_startup_provider_error(env: DaytonaSandbox, exc: BaseException) ->
     ) from exc
 
 
+def _startup_config_error(env: DaytonaSandbox, message: str) -> SandboxStartupError:
+    return SandboxStartupError(
+        message,
+        sandbox_state="config_error",
+        attempts=0,
+        build_timeout_sec=env.task_env_config.build_timeout_sec,
+    )
+
+
 def _with_long_exec_heartbeat(command: str, timeout_sec: int | None) -> str:
     if (
         timeout_sec is None
@@ -354,8 +363,12 @@ class _DaytonaDinD(_DaytonaStrategy):
 
         env._client_manager = await _sdk.DaytonaClientManager.get_instance()
 
-        dind_image: str = env._kwargs.get("dind_image", "docker:28.3.3-dind")
-        dind_snapshot: str | None = env._kwargs.get("dind_snapshot")
+        dind_image = env._kwargs.get("dind_image", "docker:28.3.3-dind")
+        if not isinstance(dind_image, str):
+            raise _startup_config_error(env, "dind_image must be a string")
+        dind_snapshot = env._kwargs.get("dind_snapshot")
+        if dind_snapshot is not None and not isinstance(dind_snapshot, str):
+            raise _startup_config_error(env, "dind_snapshot must be a string")
 
         params: _SandboxParams
         if dind_snapshot:
