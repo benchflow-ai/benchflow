@@ -196,10 +196,157 @@ params:
     assert "evaluator environment failure" in test_sh
     assert "^(ModuleNotFoundError|ImportError|PermissionError): " in test_sh
     assert "Traceback (most recent call last):" not in test_sh
+    assert "ast.walk" in setup_command
+    assert "ast.walk" in test_sh
     assert "/usr/local/bin/uv run python" in test_sh
     assert "toolathlon_container.py write-task-tokens" in setup_command
     assert setup_command.index("write-task-tokens") < setup_command.index(
         'chmod -R go-rwx "$private"'
+    )
+
+
+def _run_toolathlon_setup_script(
+    tmp_path: Path, preprocess_source: str
+) -> subprocess.CompletedProcess:
+    from benchflow.adapters._toolathlon import (
+        _toolathlon_container_module_source,
+        _toolathlon_setup_command,
+    )
+
+    workspace = tmp_path / "workspace"
+    task_dir = workspace / "tasks" / "finalpool" / "demo"
+    preprocess_dir = task_dir / "preprocess"
+    preprocess_dir.mkdir(parents=True)
+    (workspace / "agent_workspace").mkdir(parents=True)
+    for package in (
+        workspace / "tasks",
+        workspace / "tasks" / "finalpool",
+        task_dir,
+        preprocess_dir,
+    ):
+        (package / "__init__.py").write_text("")
+    (preprocess_dir / "main.py").write_text(preprocess_source)
+    helper = workspace / ".toolathlon" / "toolathlon_container.py"
+    helper.parent.mkdir()
+    helper.write_text(_toolathlon_container_module_source())
+    helper.chmod(0o755)
+
+    script = _toolathlon_setup_command(task_name="demo", variant="gym")
+    script = script.replace("/workspace", str(workspace))
+    script = script.replace("/opt/venv/bin/python3", sys.executable)
+    script_path = tmp_path / "setup.sh"
+    script_path.write_text(script)
+
+    env = os.environ.copy()
+    env["TOOLATHLON_WORKSPACE"] = str(workspace)
+
+    return subprocess.run(
+        ["bash", str(script_path)],
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=30,
+    )
+
+
+def test_toolathlon_preprocess_ignores_launch_time_in_comments(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #887: launch_time comments do not receive the CLI flag."""
+    result = _run_toolathlon_setup_script(
+        tmp_path,
+        "import argparse\n"
+        "# launch_time is documented here but not accepted by this script.\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--agent_workspace', required=True)\n"
+        "parser.parse_args()\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "unrecognized arguments: --launch_time" not in result.stderr
+
+
+def _run_toolathlon_verifier_script(
+    tmp_path: Path, evaluator_source: str
+) -> subprocess.CompletedProcess:
+    from benchflow.adapters._toolathlon import _toolathlon_test_sh
+
+    workspace = tmp_path / "workspace"
+    logs = tmp_path / "logs" / "verifier"
+    eval_dir = workspace / "tasks" / "finalpool" / "demo" / "evaluation"
+    eval_dir.mkdir(parents=True)
+    (workspace / "agent_workspace").mkdir(parents=True)
+    (workspace / "tasks" / "finalpool" / "demo" / "groundtruth_workspace").mkdir()
+    for package in (
+        workspace / "tasks",
+        workspace / "tasks" / "finalpool",
+        workspace / "tasks" / "finalpool" / "demo",
+        eval_dir,
+    ):
+        (package / "__init__.py").write_text("")
+    (eval_dir / "main.py").write_text(evaluator_source)
+
+    script = _toolathlon_test_sh(task_name="demo", variant="gym")
+    script = script.replace("/workspace", str(workspace))
+    script = script.replace("/logs/verifier", str(logs))
+    script = script.replace("/opt/venv/bin/python3", sys.executable)
+    script_path = tmp_path / "test.sh"
+    script_path.write_text(script)
+
+    return subprocess.run(
+        ["bash", str(script_path)],
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+
+def test_toolathlon_verifier_scores_task_failure_exit_zero(tmp_path: Path) -> None:
+    """Guards PR #887: evaluator task failures score 0 without infra failure."""
+    result = _run_toolathlon_verifier_script(
+        tmp_path,
+        "raise ValueError('Some tests FAILED')\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    reward_dir = tmp_path / "logs" / "verifier"
+    assert (reward_dir / "reward.txt").read_text() == "0.0\n"
+    assert json.loads((reward_dir / "reward.json").read_text()) == {"reward": 0.0}
+    assert "ValueError: Some tests FAILED" in result.stdout
+
+
+def test_toolathlon_verifier_escalates_import_failure(tmp_path: Path) -> None:
+    """Guards PR #887: broken evaluator environments fail the verifier."""
+    result = _run_toolathlon_verifier_script(
+        tmp_path,
+        "import definitely_missing_toolathlon_dependency\n",
+    )
+
+    assert result.returncode != 0
+    assert "ModuleNotFoundError" in result.stdout
+    assert "evaluator environment failure" in result.stderr
+    assert not (tmp_path / "logs" / "verifier" / "reward.txt").exists()
+
+
+def test_toolathlon_verifier_ignores_launch_time_in_comments(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #887: launch_time comments do not downgrade verifier reward."""
+    result = _run_toolathlon_verifier_script(
+        tmp_path,
+        "import argparse\n"
+        "# launch_time is documented here but not accepted by this evaluator.\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--agent_workspace', required=True)\n"
+        "parser.add_argument('--groundtruth_workspace', required=True)\n"
+        "parser.add_argument('--res_log_file', required=True)\n"
+        "parser.parse_args()\n",
+    )
+    assert result.returncode == 0, result.stderr
+    logs = tmp_path / "logs" / "verifier"
+    assert json.loads((logs / "reward.json").read_text()) == {"reward": 1.0}
+    assert (
+        "unrecognized arguments: --launch_time"
+        not in (logs / "toolathlon_evaluator.log").read_text()
     )
 
 
@@ -887,6 +1034,7 @@ def _run_container_helper(
 
 
 def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None:
+    """Guards PR #887: container config bakes runtime secrets and attributes."""
     (tmp_path / "configs").mkdir()
     result = _run_container_helper(
         tmp_path,
@@ -917,6 +1065,13 @@ def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None
     # Unset secrets fall back to their example defaults, not the literal env ref.
     assert tokens["huggingface_token"] == "XX"
     assert tokens["github_read_only"] == "1"
+    assert (
+        tokens["kubeconfig_path"]
+        == "/workspace/deployment/k8s/configs/cluster1-config.yaml"
+    )
+    assert (
+        tokens["emails_config_file"] == "/workspace/configs/example_email_config.json"
+    )
     # Upstream preprocess/eval read tokens via ATTRIBUTE access (addict.Dict);
     # the generated dict must support it (a plain dict would AttributeError).
     assert tokens.github_token == "gho_xyz"
@@ -924,6 +1079,7 @@ def test_toolathlon_container_write_config_bakes_secrets(tmp_path: Path) -> None
 
 
 def test_toolathlon_credential_setup_pem_key_skips_json_and_locks_mode() -> None:
+    """Guards PR #887: PEM credentials bypass JSON parsing and lock mode."""
     from benchflow.adapters._toolathlon import _toolathlon_credential_setup_command
 
     cmd = _toolathlon_credential_setup_command({"configs/snowflake_rsa_key.p8"})
@@ -937,6 +1093,7 @@ def test_toolathlon_credential_setup_pem_key_skips_json_and_locks_mode() -> None
 
 
 def test_toolathlon_container_launch_resolves_tokens(tmp_path: Path) -> None:
+    """Guards PR #887: launcher resolves global and per-task token refs."""
     (tmp_path / "configs").mkdir()
     (tmp_path / "configs" / "token_key_session.py").write_text(
         "all_token_key_session = {"
@@ -1058,6 +1215,7 @@ def test_toolathlon_container_launch_wraps_google_cloud_mcp(tmp_path: Path) -> N
 
 
 def test_toolathlon_container_launch_resolves_env(tmp_path: Path) -> None:
+    """Guards PR #887: launcher resolves token refs inside child env."""
     (tmp_path / "configs").mkdir()
     (tmp_path / "configs" / "token_key_session.py").write_text(
         "all_token_key_session = {'github_token': 'gho_secret'}\n"
@@ -1100,6 +1258,7 @@ def test_toolathlon_container_launch_prefers_generated_kubeconfig(
 
 
 def test_toolathlon_container_launch_ensures_dirs(tmp_path: Path) -> None:
+    """Guards PR #887: launcher creates server storage dirs before spawn."""
     (tmp_path / "configs").mkdir()
     (tmp_path / "configs" / "token_key_session.py").write_text(
         "all_token_key_session = {}\n"
@@ -1148,8 +1307,7 @@ def test_toolathlon_container_launch_filters_non_json_stdout(
 def test_toolathlon_arxiv_server_declares_ensure_dirs(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The arxiv_local server's --storage-path is passed to the launcher as a
-    directory to pre-create, so the evaluator's listdir cannot crash."""
+    """Guards PR #887: arxiv_local storage is pre-created for evaluators."""
     monkeypatch.chdir(tmp_path)
     repo = tmp_path / "Toolathlon"
     (repo / ".git").mkdir(parents=True)
