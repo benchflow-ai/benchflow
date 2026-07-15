@@ -789,10 +789,12 @@ class Evaluation:
         # Detect format: legacy uses "agents" + "datasets", benchflow uses "agent"
         if "agents" in raw or "datasets" in raw:
             return cls._from_legacy_yaml(raw, **kwargs)
-        return cls._from_native_yaml(raw, **kwargs)
+        return cls._from_native_yaml(raw, config_path=path, **kwargs)
 
     @classmethod
-    def _from_native_yaml(cls, raw: dict, **kwargs) -> Evaluation:
+    def _from_native_yaml(
+        cls, raw: dict, config_path: Path | None = None, **kwargs
+    ) -> Evaluation:
         """Parse benchflow-native YAML."""
         from benchflow._utils.benchmark_repos import (
             TASK_ALIASES,
@@ -826,9 +828,23 @@ class Evaluation:
         elif "tasks_dir" in raw:
             # Legacy single-string format (backward compat).
             ref = raw["tasks_dir"]
+            if not isinstance(ref, str | Path):
+                raise ValueError(
+                    f"YAML 'tasks_dir' must be a path string; got {type(ref).__name__}."
+                )
             tasks_dir = Path(ref)
             if not tasks_dir.exists() and ref in TASK_ALIASES:
                 tasks_dir = ensure_tasks(ref)
+            elif not tasks_dir.exists() and str(ref) == ".cache/programbench-benchflow":
+                config_note = f" in {config_path}" if config_path is not None else ""
+                raise ValueError(
+                    f"YAML tasks_dir not found{config_note}: {ref}. "
+                    "Generate ProgramBench tasks first with "
+                    "`python benchmarks/programbench/run_programbench.py "
+                    "benchmarks/programbench/programbench-gemini-flash-lite.yaml` "
+                    "or `python -m benchmarks.programbench.main --output-dir "
+                    ".cache/programbench-benchflow`."
+                )
         else:
             raise ValueError("YAML config must have 'source' or 'tasks_dir'")
 

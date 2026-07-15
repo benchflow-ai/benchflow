@@ -557,6 +557,13 @@ def eval_run(
         int | None,
         typer.Option("--retry-attempts", help="Reserved retry-attempt override"),
     ] = None,
+    max_retries: Annotated[
+        int | None,
+        typer.Option(
+            "--max-retries",
+            help="Alias for --retry-attempts; maximum retries per task.",
+        ),
+    ] = None,
     retry_concurrency: Annotated[
         int | None,
         typer.Option("--retry-concurrency", help="Reserved retry concurrency"),
@@ -591,6 +598,13 @@ def eval_run(
     Sandbox: docker, daytona, or modal.
     """
     _apply_dotenv_to_process_env()
+
+    if retry_attempts is not None and max_retries is not None:
+        print_error("--retry-attempts and --max-retries are aliases; pass only one")
+        raise typer.Exit(1)
+    retry_attempt_override = (
+        retry_attempts if retry_attempts is not None else max_retries
+    )
 
     request = EvalCreateRequest(
         config_file=config_file,
@@ -636,7 +650,7 @@ def eval_run(
         canonical_selection_out=canonical_selection_out,
         canonical_jobs_dir=canonical_jobs_dir,
         retry_policy=retry_policy,
-        retry_attempts=retry_attempts,
+        retry_attempts=retry_attempt_override,
         retry_concurrency=retry_concurrency,
         publish_hf=publish_hf,
         hf_prefix=hf_prefix,
@@ -901,6 +915,8 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
             j._config.prompts = plan.eval_prompts
         if req.agent_idle_timeout is not None:
             j._config.agent_idle_timeout = plan.eval_agent_idle_timeout
+        if req.retry_attempts is not None:
+            j._config.retry.max_retries = req.retry_attempts
         if plan.usage_tracking_overridden:
             j._config.usage_tracking = j._config.usage_tracking.overlay(
                 plan.eval_usage_tracking

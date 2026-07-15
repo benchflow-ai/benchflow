@@ -72,6 +72,10 @@ _AZURE_ENDPOINT_ENV = "AZURE_API_ENDPOINT"
 _AZURE_HOST_SUFFIXES = (".openai.azure.com", ".services.ai.azure.com")
 
 
+class MissingAgentCredentialError(ValueError):
+    """Raised when an agent/model pair is missing a required credential."""
+
+
 def _derive_azure_resource(agent_env: dict[str, str]) -> None:
     """Populate AZURE_RESOURCE from AZURE_API_ENDPOINT when not already set."""
     if agent_env.get(_AZURE_RESOURCE_ENV):
@@ -794,7 +798,7 @@ def resolve_agent_env(
                     required_key,
                 )
             else:
-                raise ValueError(
+                raise MissingAgentCredentialError(
                     f"{required_key} required for model {model!r} but not set. "
                     "Pass it explicitly (for example via --agent-env/agent_env) "
                     "or define it in .env."

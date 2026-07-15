@@ -275,6 +275,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--canonical-jobs-dir` | — | Materialize selected rollout directories for trainer conversion |
 | `--retry-policy` | `default` | Retry policy label for reproducible eval artifacts: `default` or `unscored-only` |
 | `--retry-attempts` | — | Override retry attempts for the eval run |
+| `--max-retries` | — | Alias for `--retry-attempts`; maximum retries per task |
 | `--retry-concurrency` | — | Reserved retry concurrency setting recorded in run config |
 | `--publish-hf` | — | Upload final eval artifacts to this Hugging Face dataset repo |
 | `--hf-prefix` | — | Path prefix inside the Hugging Face repo; requires `--publish-hf` |
