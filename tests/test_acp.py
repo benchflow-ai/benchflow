@@ -1100,7 +1100,7 @@ class TestConnectAcpModelSelection:
 
         patch_call = mock_env.exec.await_args_list[0]
         assert "openhands_cli.utils" in patch_call.args[0]
-        assert patch_call.kwargs == {"timeout_sec": 30}
+        assert patch_call.kwargs == {"user": "root", "timeout_sec": 30}
         transport_env = mock_transport.call_args.kwargs["env"]
         assert transport_env["BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"] == "0"
         transport_command = mock_transport.call_args.kwargs["command"]

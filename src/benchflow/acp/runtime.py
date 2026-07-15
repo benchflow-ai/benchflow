@@ -108,7 +108,7 @@ async def _prepare_openhands_direct_execution(
         "p.write_text(s.replace(old,new,1)) if old in s else None; "
         "assert new in p.read_text()'"
     )
-    result = await env.exec(patch_cmd, timeout_sec=30)
+    result = await env.exec(patch_cmd, user="root", timeout_sec=30)
     return_code = getattr(
         result,
         "return_code",
