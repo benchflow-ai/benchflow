@@ -16,10 +16,11 @@ substitution are the evaluator-orchestration layer (built next; see
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 
 def check_include_exclude(
@@ -180,17 +181,24 @@ METRICS: dict[str, Callable[..., float]] = {
 }
 
 
-# The other ~116 OSWorld metrics are not re-implemented: they are resolved from the
-# vendored upstream suite (``_osworld_vendor/``) so scoring is OSWorld's own code —
-# exact parity by construction. Imported resiliently (benchflow path in-repo, sibling
-# path when carried into a task sandbox); ``None`` if the vendor tree is absent.
-try:
-    from benchflow.adapters.osworld_vendor import resolve_vendored_metric
-except ImportError:  # pragma: no cover - standalone in a sandbox verifier
-    try:
-        from osworld_vendor import resolve_vendored_metric  # type: ignore[no-redef]
-    except ImportError:  # pragma: no cover - vendor tree not carried
-        resolve_vendored_metric = None  # type: ignore[assignment]
+VendoredMetricResolver = Callable[[str], Callable[..., Any] | None]
+
+
+def _load_vendored_metric_resolver() -> VendoredMetricResolver | None:
+    """Load the vendored metric resolver in-repo or from sibling verifier files."""
+    for module_name in ("benchflow.adapters.osworld_vendor", "osworld_vendor"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        return cast(VendoredMetricResolver, module.__dict__["resolve_vendored_metric"])
+    return None
+
+
+# The other ~116 OSWorld metrics are not re-implemented: they are resolved from
+# the vendored upstream suite (``_osworld_vendor/``), so scoring is OSWorld's own
+# code by construction.
+_RESOLVE_VENDORED_METRIC = _load_vendored_metric_resolver()
 
 
 def resolve_metric(func: str) -> Callable[..., float]:
@@ -202,8 +210,8 @@ def resolve_metric(func: str) -> Callable[..., float]:
     """
     if func in METRICS:
         return METRICS[func]
-    if resolve_vendored_metric is not None:
-        fn = resolve_vendored_metric(func)  # raises if deps missing; None if unknown
+    if _RESOLVE_VENDORED_METRIC is not None:
+        fn = _RESOLVE_VENDORED_METRIC(func)  # raises if deps missing; None if unknown
         if fn is not None:
             return fn
     raise NotImplementedError(

@@ -699,7 +699,9 @@ def _expected_result(
     return "observed"
 
 
-def _instruction(raw: str, *, expected_result: str, append_expected: bool = True) -> str:
+def _instruction(
+    raw: str, *, expected_result: str, append_expected: bool = True
+) -> str:
     text = raw.strip()
     # OSWorld tasks are scored by the real evaluator running the task's check
     # command against system state — NOT by the agent printing a magic string, so
@@ -831,9 +833,9 @@ def _osworld_dockerfile() -> str:
     # pdf/json/text metrics). The desktop + OSWorld apps come from the desktop
     # backend (Daytona computer-use, or the OSWorld VM), not this base image.
     osworld_deps = (
-        "pandas openpyxl python-docx python-pptx pdfplumber PyPDF2 pymupdf "
+        "pandas openpyxl python-docx python-pptx pdfplumber PyPDF2 pypdf pymupdf "
         "rapidfuzz formulas lxml cssselect xmltodict tldextract Pillow numpy "
-        "odfpy mutagen pyyaml beautifulsoup4 borb imagehash"
+        "odfpy mutagen pyyaml beautifulsoup4 'borb<3.0.0' imagehash"
     )
     return (
         "FROM ubuntu:24.04\n\n"

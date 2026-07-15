@@ -60,10 +60,18 @@ class TestCheckIncludeExclude:
 
 class TestExactMatch:
     def test_equal_passes(self) -> None:
-        assert exact_match("Directory exists.\n", {"expected": "Directory exists.\n"}) == 1.0
+        assert (
+            exact_match("Directory exists.\n", {"expected": "Directory exists.\n"})
+            == 1.0
+        )
 
     def test_unequal_fails(self) -> None:
-        assert exact_match("Directory does not exist.\n", {"expected": "Directory exists.\n"}) == 0.0
+        assert (
+            exact_match(
+                "Directory does not exist.\n", {"expected": "Directory exists.\n"}
+            )
+            == 0.0
+        )
 
 
 class TestResolveMetric:

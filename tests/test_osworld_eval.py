@@ -33,7 +33,10 @@ _SSH_USER_EVALUATOR = {
                 ]
             },
         },
-        {"type": "execute", "parameters": {"command": "chmod +x check_password.sh", "shell": True}},
+        {
+            "type": "execute",
+            "parameters": {"command": "chmod +x check_password.sh", "shell": True},
+        },
     ],
     "func": "check_include_exclude",
     "result": {
@@ -178,12 +181,18 @@ def test_template_vars_substituted_in_commands() -> None:
         "func": "check_include_exclude",
         "result": {
             "type": "vm_command_line",
-            "command": ["python", "-c", "print({SCREEN_WIDTH_HALF}, {SCREEN_HEIGHT_HALF})"],
+            "command": [
+                "python",
+                "-c",
+                "print({SCREEN_WIDTH_HALF}, {SCREEN_HEIGHT_HALF})",
+            ],
             "shell": False,
         },
         "expected": {"type": "rule", "rules": {"include": ["ok"]}},
     }
-    evaluate({"evaluator": evaluator}, run_command, password="s3cret", screen=(1920, 1080))
+    evaluate(
+        {"evaluator": evaluator}, run_command, password="s3cret", screen=(1920, 1080)
+    )
     # postconfig command had {CLIENT_PASSWORD} substituted; result list parts too.
     assert "echo s3cret | sudo -S true" in seen
     assert ["python", "-c", "print(960, 540)"] in seen

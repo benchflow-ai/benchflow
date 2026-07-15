@@ -1495,6 +1495,9 @@ class TestUseComputerCookbookAdapter:
         assert "check_include_exclude" in str(generated["tests/osworld_task.json"])
         assert "run_osworld_verifier.py" in str(generated["tests/test.sh"])
         assert "computer-use-smoke-trace.json" not in str(generated["tests/test.sh"])
+        dockerfile = str(generated["environment/Dockerfile"])
+        assert "pypdf" in dockerfile
+        assert "'borb<3.0.0'" in dockerfile
 
     def test_cuagym_infra_smoke_is_supported(self, tmp_path: Path) -> None:
         task_dir = _write_use_computer_cookbook_cuagym_smoke_task(tmp_path)
