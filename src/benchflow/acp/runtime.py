@@ -67,6 +67,66 @@ _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
 _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 _ACP_HANDSHAKE_TIMEOUT_SEC = 60
+_OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
+
+
+async def _prepare_openhands_direct_execution(
+    env,
+    *,
+    agent: str,
+    agent_env: dict[str, str],
+) -> dict[str, str]:
+    """Patch OpenHands as root before a sandbox-user privilege drop.
+
+    OpenHands is installed under ``/root/.local/share/uv/tools`` and exposed to
+    the sandbox user through a read-only symlink.  Running the opt-in patch from
+    the launch command only worked for tasks whose workspace was ``/root``,
+    because sandbox-user setup happened to chown that whole directory.  Tasks
+    rooted elsewhere (for example ``/app``) exited before ACP initialization.
+
+    Apply the same narrow patch through the environment's root execution plane,
+    then disable the duplicate launch-time patch for this process.  The caller's
+    environment mapping is copied so recorded run provenance still reflects the
+    requested opt-in value.
+    """
+    if agent != "openhands" or agent_env.get(_OPENHANDS_DISABLE_SUBAGENTS_ENV) != "1":
+        return agent_env
+
+    patch_cmd = (
+        'export PATH="$HOME/.local/bin:$PATH"; '
+        'OH_BIN="$(command -v openhands)"; '
+        '[ -n "$OH_BIN" ] || { echo "Cannot locate OpenHands executable" >&2; exit 127; }; '
+        'OH_PY="$(dirname "$(readlink -f "$OH_BIN")")/python"; '
+        '[ -x "$OH_PY" ] || { '
+        'echo "Cannot locate OpenHands tool interpreter" >&2; exit 127; }; '
+        '"$OH_PY" -c \'from pathlib import Path; '
+        "import openhands_cli.utils as u; "
+        "p=Path(u.__file__); s=p.read_text(); "
+        'old="        Tool(name=task_tool_name),\\n"; '
+        'new="        # BenchFlow: delegation disabled for this run.\\n"; '
+        "assert old in s or new in s; "
+        "p.write_text(s.replace(old,new,1)) if old in s else None; "
+        "assert new in p.read_text()'"
+    )
+    result = await env.exec(patch_cmd, user="root", timeout_sec=30)
+    return_code = getattr(
+        result,
+        "return_code",
+        getattr(result, "exit_code", 1),
+    )
+    if return_code != 0:
+        stdout = (getattr(result, "stdout", "") or "").strip()
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        detail = stderr or stdout or "no output"
+        raise RuntimeError(
+            "Failed to prepare OpenHands direct-execution mode as root "
+            f"(exit code {return_code}): {detail[:2000]}"
+        )
+
+    launch_env = dict(agent_env)
+    launch_env[_OPENHANDS_DISABLE_SUBAGENTS_ENV] = "0"
+    logger.info("Prepared OpenHands direct-execution mode before privilege drop")
+    return launch_env
 
 
 async def _wait_for_acp_handshake(awaitable, *, phase: str):
@@ -478,6 +538,12 @@ async def connect_acp(
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
+    agent_env = await _prepare_openhands_direct_execution(
+        env,
+        agent=agent,
+        agent_env=agent_env,
+    )
+
     # Resolve agent binary path for non-docker environments
     if environment != "docker":
         which_result = await env.exec(
