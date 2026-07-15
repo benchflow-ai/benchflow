@@ -37,7 +37,7 @@ def test_tasks_generate_help_uses_long_options_only() -> None:
 def test_tasks_generate_rejects_removed_short_options(
     alias: str, value: str, tmp_path: Path
 ) -> None:
-    """Guards ENG-96: removed task-generation short options stay rejected."""
+    """Guards ENG-96 and the Click 8.4.2 lock refresh from PR #788."""
     result = CliRunner().invoke(
         app,
         [
