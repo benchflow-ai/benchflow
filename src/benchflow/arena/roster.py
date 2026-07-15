@@ -11,32 +11,39 @@ fans an entry into `name-0..name-(n-1)` seats.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
-from benchflow.agents.registry import AgentConfig
-from benchflow.arena.agents_manifest import AgentSpec, Seat, resolve_spec
+from benchflow.arena.agents_manifest import (
+    AgentSpec,
+    Seat,
+    agent_model_id,
+    resolve_spec,
+)
 
 __all__ = ["Roster"]
 
 
-def _agent_model_id(cfg: AgentConfig, model: str | None) -> str:
-    """The default seat/player id: ``<agent>-<model>`` (provider prefix stripped,
-    sanitized to a safe id). Player names must identify agent + model."""
-    m = (model or cfg.default_model or "model").split("/")[-1]
-    raw = f"{cfg.name}-{m}"
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-")
-
 # Keys that USED to live in the old agents.yaml but are now standard
 # `bench eval run` flags — reject them with a migration hint, not a bare
 # "extra inputs not permitted".
-_RUN_LEVEL_KEYS = frozenset({
-    "task", "task_path", "tasks_dir", "environment_manifest", "services",
-    "sandbox", "out", "drive", "prompt", "deadline_s", "idle_timeout_s",
-})
+_RUN_LEVEL_KEYS = frozenset(
+    {
+        "task",
+        "task_path",
+        "tasks_dir",
+        "environment_manifest",
+        "services",
+        "sandbox",
+        "out",
+        "drive",
+        "prompt",
+        "deadline_s",
+        "idle_timeout_s",
+    }
+)
 
 
 class Roster(BaseModel):
@@ -58,7 +65,7 @@ class Roster(BaseModel):
                     f"{bad} are run-level config, not roster fields: the roster is "
                     "the `--agents` file (agents only). Pass these as standard "
                     "`bench eval run` flags (--tasks-dir, --environment-manifest, "
-                    "--sandbox, --out, --drive, --prompt)."
+                    "--sandbox, --jobs-dir, --drive, --prompt)."
                 )
         return data
 
@@ -86,7 +93,7 @@ class Roster(BaseModel):
         seen: set[str] = set()
         for spec in self.agents:
             cfg = resolve_spec(spec, self._base_dir)
-            base = spec.name or _agent_model_id(cfg, spec.model)
+            base = spec.name or agent_model_id(cfg, spec.model)
             ids = (
                 [base]
                 if spec.count == 1

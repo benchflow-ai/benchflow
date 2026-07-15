@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import socket
@@ -79,15 +80,23 @@ def _free_port() -> int:
 async def _start_world(port: int) -> subprocess.Popen:
     # CASINOBENCH_GAMES="" => all 18 ENABLED_GAMES open (build_world_from_env);
     # "all" would be treated as a literal game id and rejected.
-    proc = subprocess.Popen(  # noqa: S603,S607
+    proc = subprocess.Popen(
         ["uv", "run", "casino-service", "--host", "0.0.0.0", "--port", str(port)],
         cwd=str(CASINOBENCH),
-        env={**os.environ, "CASINO_MULTIPLAYER": "1", "CASINOBENCH_GAMES": "",
-             "CASINO_PORT": str(port), "CASINOBENCH_HANDS": "1"},
+        env={
+            **os.environ,
+            "CASINO_MULTIPLAYER": "1",
+            "CASINOBENCH_GAMES": "",
+            "CASINO_PORT": str(port),
+            "CASINOBENCH_HANDS": "1",
+        },
     )
     for _ in range(200):
         try:
-            if httpx.get(f"http://127.0.0.1:{port}/health", timeout=2).status_code == 200:
+            if (
+                httpx.get(f"http://127.0.0.1:{port}/health", timeout=2).status_code
+                == 200
+            ):
                 print(f"world: healthy on :{port} (all games)", flush=True)
                 return proc
         except httpx.HTTPError:
@@ -101,14 +110,17 @@ def _is_subscription(agent: str) -> bool:
     return getattr(AGENTS.get(agent), "subscription_auth", None) is not None
 
 
-async def _run_seat(agent: str, model: str, seat_id: str, world_port: int,
-                    run_dir: Path) -> dict:
+async def _run_seat(
+    agent: str, model: str, seat_id: str, world_port: int, run_dir: Path
+) -> dict:
     out = run_dir / seat_id
     (out / "trajectory").mkdir(parents=True, exist_ok=True)
     world_url = f"http://{BRIDGE}:{world_port}"
     sandbox = DockerSandbox(
-        environment_dir=AGENT_ENV_DIR, environment_name="casinoseat",
-        session_id=seat_id, rollout_paths=None,
+        environment_dir=AGENT_ENV_DIR,
+        environment_name="casinoseat",
+        session_id=seat_id,
+        rollout_paths=None,
         task_env_config=SandboxConfig(allow_internet=True),
     )
     runtime = None
@@ -121,22 +133,36 @@ async def _run_seat(agent: str, model: str, seat_id: str, world_port: int,
             # the container BEFORE connect (the rollout would do this; we bypass it)
             await upload_subscription_auth(sandbox, agent, "/root")
             agent_env = {"CASINO_URL": world_url, "CASINOBENCH_SEAT_ID": seat_id}
-            print(f"{seat_id}: subscription [{agent}/{model}] world={world_url}", flush=True)
+            print(
+                f"{seat_id}: subscription [{agent}/{model}] world={world_url}",
+                flush=True,
+            )
         else:  # proxy-routed (e.g. deepseek) → per-seat raw llm_trajectory
             provider_env, runtime = await ensure_litellm_runtime(
                 agent=agent,
                 agent_env={"DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY", "")},
-                model="deepseek/deepseek-v4-pro", runtime=None, environment="docker",
+                model="deepseek/deepseek-v4-pro",
+                runtime=None,
+                environment="docker",
                 session_id=f"casino-{seat_id}",
             )
-            agent_env = {**provider_env, "CASINO_URL": world_url,
-                         "CASINOBENCH_SEAT_ID": seat_id}
+            agent_env = {
+                **provider_env,
+                "CASINO_URL": world_url,
+                "CASINOBENCH_SEAT_ID": seat_id,
+            }
             print(f"{seat_id}: proxy [{agent}/{model}] world={world_url}", flush=True)
 
         client, session, _adapter, _name = await connect_acp(
-            env=sandbox, agent=agent, agent_launch=AGENTS[agent].launch_cmd,
-            agent_env=agent_env, sandbox_user=None, model=model,
-            rollout_dir=out, environment="docker", agent_cwd="/app",
+            env=sandbox,
+            agent=agent,
+            agent_launch=AGENTS[agent].launch_cmd,
+            agent_env=agent_env,
+            sandbox_user=None,
+            model=model,
+            rollout_dir=out,
+            environment="docker",
+            agent_cwd="/app",
         )
         # stream the trajectory to disk on every ACP update — so it is visible
         # LIVE in the viewer and survives a wall-clock timeout (the agent may
@@ -145,18 +171,21 @@ async def _run_seat(agent: str, model: str, seat_id: str, world_port: int,
         session.on_change = make_trajectory_sink(writer, [])
         try:
             _traj, n_tools = await execute_prompts(
-                acp_client=client, session=session, prompts=[PROMPT],
-                timeout=1200, idle_timeout=300,
+                acp_client=client,
+                session=session,
+                prompts=[PROMPT],
+                timeout=1200,
+                idle_timeout=300,
             )
         except AgentPromptTimeoutError as exc:
-            n_tools = getattr(exc, "n_tool_calls", len(getattr(session, "tool_calls", [])))
+            n_tools = getattr(
+                exc, "n_tool_calls", len(getattr(session, "tool_calls", []))
+            )
             status = f"timeout (played {n_tools} moves)"  # non-fatal: it DID play
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await client.close()
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         status = f"error: {type(exc).__name__}: {str(exc)[:200]}"
         print(f"{seat_id}: {status}", flush=True)
     finally:
@@ -167,16 +196,21 @@ async def _run_seat(agent: str, model: str, seat_id: str, world_port: int,
     rt_traj = getattr(getattr(runtime, "server", None), "trajectory", None)
     if rt_traj is not None and rt_traj.exchanges:
         (out / "trajectory" / "llm_trajectory.jsonl").write_text(
-            rt_traj.to_jsonl(redact_keys=True))
+            rt_traj.to_jsonl(redact_keys=True)
+        )
         n_llm = len(rt_traj.exchanges)
-    try:
+    with contextlib.suppress(Exception):
         await sandbox.stop(delete=True)
-    except Exception:  # noqa: BLE001
-        pass
-    return {"seat": seat_id, "agent": agent, "model": model, "status": status,
-            "acp_tool_calls": n_tools, "llm_calls": n_llm,
-            "subscription": _is_subscription(agent),
-            "usage": extract_usage(runtime) if runtime is not None else {}}
+    return {
+        "seat": seat_id,
+        "agent": agent,
+        "model": model,
+        "status": status,
+        "acp_tool_calls": n_tools,
+        "llm_calls": n_llm,
+        "subscription": _is_subscription(agent),
+        "usage": extract_usage(runtime) if runtime is not None else {},
+    }
 
 
 def _seats(roster) -> list[tuple[str, str, str]]:
@@ -190,34 +224,44 @@ def _seats(roster) -> list[tuple[str, str, str]]:
 async def _main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="out/casino-floor/all-games")
-    ap.add_argument("--world-port", type=int, default=0,
-                    help="fixed World port (0 = ephemeral); set for a live viewer")
+    ap.add_argument(
+        "--world-port",
+        type=int,
+        default=0,
+        help="fixed World port (0 = ephemeral); set for a live viewer",
+    )
     args = ap.parse_args()
 
     run_dir = Path(args.out)
     run_dir.mkdir(parents=True, exist_ok=True)
     specs = _seats(DEFAULT_ROSTER)
     # roster for the viewer (seat -> agent/model), written before play starts
-    (run_dir / "roster.json").write_text(json.dumps(
-        [{"seat": s, "agent": a, "model": m} for a, m, s in specs]))
+    (run_dir / "roster.json").write_text(
+        json.dumps([{"seat": s, "agent": a, "model": m} for a, m, s in specs])
+    )
     world_port = args.world_port or _free_port()
     world = await _start_world(world_port)
     standings = {}
     results = []
     try:
-        print(f"floor: {len(specs)} seats · {', '.join(s[2] for s in specs)}", flush=True)
-        results = await asyncio.gather(*[
-            _run_seat(agent, model, seat_id, world_port, run_dir)
-            for agent, model, seat_id in specs
-        ])
-        try:
-            standings = httpx.get(f"http://127.0.0.1:{world_port}/_admin/standings",
-                                  timeout=10).json()
-        except httpx.HTTPError:
-            pass
+        print(
+            f"floor: {len(specs)} seats · {', '.join(s[2] for s in specs)}", flush=True
+        )
+        results = await asyncio.gather(
+            *[
+                _run_seat(agent, model, seat_id, world_port, run_dir)
+                for agent, model, seat_id in specs
+            ]
+        )
+        with contextlib.suppress(httpx.HTTPError):
+            standings = httpx.get(
+                f"http://127.0.0.1:{world_port}/_admin/standings", timeout=10
+            ).json()
         # snapshot the merged event log so the viewer can be built --from this run
         try:
-            ev = httpx.get(f"http://127.0.0.1:{world_port}/_admin/events", timeout=10).json()
+            ev = httpx.get(
+                f"http://127.0.0.1:{world_port}/_admin/events", timeout=10
+            ).json()
             (run_dir / "events.jsonl").write_text(ev.get("jsonl", ""))
         except httpx.HTTPError:
             pass
@@ -230,15 +274,20 @@ async def _main() -> int:
 
     print("\n=== floor results ===")
     for r in results:
-        print(f"  {r['seat']:<22} {r['status']:<30} acp_tool_calls={r['acp_tool_calls']} "
-              f"llm={r['llm_calls']} sub={r['subscription']}")
+        print(
+            f"  {r['seat']:<22} {r['status']:<30} acp_tool_calls={r['acp_tool_calls']} "
+            f"llm={r['llm_calls']} sub={r['subscription']}"
+        )
     print("standings:", json.dumps(standings))
-    (run_dir / "floor.json").write_text(json.dumps(
-        {"results": results, "standings": standings}, indent=2))
+    (run_dir / "floor.json").write_text(
+        json.dumps({"results": results, "standings": standings}, indent=2)
+    )
     ok = sum(1 for r in results if r["status"] == "ok")
     played = sum(1 for r in results if r["acp_tool_calls"] > 0)
-    print(f"\n{ok}/{len(results)} seats ok · {played} actually played · "
-          f"per-seat trajectories under {run_dir}")
+    print(
+        f"\n{ok}/{len(results)} seats ok · {played} actually played · "
+        f"per-seat trajectories under {run_dir}"
+    )
     return 0 if played else 1
 
 

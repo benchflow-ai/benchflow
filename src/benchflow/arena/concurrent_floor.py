@@ -46,6 +46,7 @@ from benchflow.arena.protocol import Observation, SeatStatus
 from benchflow.arena.roster import Roster
 from benchflow.providers import ensure_litellm_runtime, stop_provider_runtime
 from benchflow.trajectories._capture import TrajectoryWriter, make_trajectory_sink
+from benchflow.usage_tracking import UsageTrackingConfig
 
 __all__ = ["FloorConfig", "run_concurrent_floor", "HttpSeatClient"]
 
@@ -60,7 +61,9 @@ class FloorConfig:
     drive: str = "auto-loop"
     prompt: str | None = None
     deadline_s: int = 1200
-    idle_timeout_s: int = 300
+    idle_timeout_s: int | None = 300
+    reasoning_effort: str | None = None
+    usage_tracking: UsageTrackingConfig | None = None
     url_env: str | None = None
     seat_env: str | None = None
     standings_path: str | None = None  # in-sandbox path → {seat: score} for reward
@@ -91,7 +94,9 @@ class HttpSeatClient:
         self.http = http
 
     async def observe(self, seat_id: str) -> dict[str, Any]:
-        r = await self.http.get(f"{self.base}/observe", params={"seat": seat_id}, timeout=10)
+        r = await self.http.get(
+            f"{self.base}/observe", params={"seat": seat_id}, timeout=10
+        )
         return r.json()
 
     async def act(self, seat_id: str, request_id: str, action: dict) -> dict[str, Any]:
@@ -202,8 +207,10 @@ async def _drive_service_rounds(
         if obs.status is SeatStatus.YOUR_TURN:
             rounds += 1
             last_traj, n = await prompt_seat(
-                conn, _render_round(base, obs, rounds),
-                timeout=cfg.deadline_s, idle_timeout=cfg.idle_timeout_s,
+                conn,
+                _render_round(base, obs, rounds),
+                timeout=cfg.deadline_s,
+                idle_timeout=cfg.idle_timeout_s,
             )
             tools += n
         else:
@@ -242,8 +249,12 @@ async def _run_seat(
             await upload_subscription_auth(sandbox, agent_cfg.name, "/root")
         else:  # API-key seat → its OWN proxy → separate raw llm_trajectory
             provider_env, runtime = await ensure_litellm_runtime(
-                agent=agent_cfg.name, agent_env=agent_env, model=seat.spec.model,
-                runtime=None, environment=cfg.environment,
+                agent=agent_cfg.name,
+                agent_env=agent_env,
+                model=seat.spec.model,
+                runtime=None,
+                environment=cfg.environment,
+                usage_tracking=cfg.usage_tracking,
                 session_id=f"floor-{seat.seat_id}",
                 # daytona/modal are sandbox-local: the proxy must run INSIDE the
                 # shared sandbox (the remote agent reaches it on localhost), so it
@@ -253,9 +264,15 @@ async def _run_seat(
             agent_env = {**agent_env, **provider_env}
 
         conn = await connect_seat(
-            agent_cfg, env=sandbox, agent_cwd=seat.agent_cwd, agent_env=agent_env,
-            model=seat.spec.model, rollout_dir=out, environment=cfg.environment,
-            seat_id=seat.seat_id, reasoning_effort=seat.spec.reasoning_effort,
+            agent_cfg,
+            env=sandbox,
+            agent_cwd=seat.agent_cwd,
+            agent_env=agent_env,
+            model=seat.spec.model,
+            rollout_dir=out,
+            environment=cfg.environment,
+            seat_id=seat.seat_id,
+            reasoning_effort=seat.spec.reasoning_effort or cfg.reasoning_effort,
         )
         # stream the ACP trajectory live (survives a wall-clock timeout)
         writer = TrajectoryWriter(out / "trajectory" / "acp_trajectory.jsonl")
@@ -277,8 +294,10 @@ async def _run_seat(
                     raise ValueError("auto-loop drive requires a prompt (--prompt)")
                 deadline = time.monotonic() + cfg.deadline_s
                 traj, n_tools = await prompt_seat(
-                    conn, cfg.prompt,
-                    timeout=cfg.deadline_s, idle_timeout=cfg.idle_timeout_s,
+                    conn,
+                    cfg.prompt,
+                    timeout=cfg.deadline_s,
+                    idle_timeout=cfg.idle_timeout_s,
                 )
                 ignored = 0
                 while (
@@ -294,8 +313,10 @@ async def _run_seat(
                         nudges += 1
                         remaining = max(30, int(deadline - time.monotonic()))
                         t2, n2 = await prompt_seat(
-                            conn, _nudge_prompt(obs),
-                            timeout=remaining, idle_timeout=cfg.idle_timeout_s,
+                            conn,
+                            _nudge_prompt(obs),
+                            timeout=remaining,
+                            idle_timeout=cfg.idle_timeout_s,
                         )
                         if t2:
                             traj = t2  # session snapshots are cumulative
@@ -336,10 +357,15 @@ async def _run_seat(
         )
         n_llm = len(rt_traj.exchanges)
     return {
-        "seat": seat.seat_id, "agent": agent_cfg.name, "model": seat.spec.model,
-        "protocol": agent_cfg.protocol, "byoa": seat.is_byoa,
+        "seat": seat.seat_id,
+        "agent": agent_cfg.name,
+        "model": seat.spec.model,
+        "protocol": agent_cfg.protocol,
+        "byoa": seat.is_byoa,
         "raw": runtime is not None,  # raw captured iff a proxy ran for this seat
-        "status": status, "acp_tool_calls": n_tools, "llm_calls": n_llm,
+        "status": status,
+        "acp_tool_calls": n_tools,
+        "llm_calls": n_llm,
         "nudges": nudges,
     }
 
@@ -363,19 +389,37 @@ async def run_concurrent_floor(
     run_dir = Path(config.out)
     run_dir.mkdir(parents=True, exist_ok=True)
     seats = roster.seats()
-    (run_dir / "roster.json").write_text(json.dumps(
-        [{"seat": s.seat_id, "agent": s.config.name, "model": s.spec.model,
-          "protocol": s.config.protocol, "byoa": s.is_byoa} for s in seats],
-        indent=2,
-    ))
-
-    results = await asyncio.gather(*[
-        _run_seat(
-            s, roster=roster, cfg=config, sandbox=sandbox, service_url=service_url,
-            run_dir=run_dir, http=http, seat_client_factory=seat_client_factory,
+    (run_dir / "roster.json").write_text(
+        json.dumps(
+            [
+                {
+                    "seat": s.seat_id,
+                    "agent": s.config.name,
+                    "model": s.spec.model,
+                    "protocol": s.config.protocol,
+                    "byoa": s.is_byoa,
+                }
+                for s in seats
+            ],
+            indent=2,
         )
-        for s in seats
-    ])
+    )
+
+    results = await asyncio.gather(
+        *[
+            _run_seat(
+                s,
+                roster=roster,
+                cfg=config,
+                sandbox=sandbox,
+                service_url=service_url,
+                run_dir=run_dir,
+                http=http,
+                seat_client_factory=seat_client_factory,
+            )
+            for s in seats
+        ]
+    )
 
     summary = {"results": results, "drive": config.drive, "service_url": service_url}
     (run_dir / "floor.json").write_text(json.dumps(summary, indent=2))

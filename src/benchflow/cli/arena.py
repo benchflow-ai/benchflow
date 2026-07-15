@@ -33,11 +33,19 @@ def run_floor_from_cli(
     events_path: str | None = None,
     service_env: list[str] | None = None,
     deadline_s: int = 1200,
+    reasoning_effort: str | None = None,
+    usage_tracking: str | None = None,
+    agent_idle_timeout: str | None = None,
 ) -> None:
     """Shared entry for `eval run --agents` and the `arena run` alias."""
+    from benchflow._utils.config import (
+        normalize_agent_idle_timeout,
+        normalize_reasoning_effort,
+    )
     from benchflow.arena.bootstrap import run_native_floor
     from benchflow.arena.concurrent_floor import FloorConfig
     from benchflow.arena.roster import Roster
+    from benchflow.usage_tracking import UsageTrackingConfig
 
     roster = Roster.from_yaml(agents)
     seats = roster.seats()
@@ -46,21 +54,52 @@ def run_floor_from_cli(
     body = prompt
     if body and body.startswith("@"):
         body = Path(body[1:]).read_text()
+    try:
+        normalized_reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+        normalized_idle_timeout = (
+            normalize_agent_idle_timeout(agent_idle_timeout)
+            if agent_idle_timeout is not None
+            else 300
+        )
+        usage_cfg = (
+            UsageTrackingConfig(mode=usage_tracking)
+            if usage_tracking is not None
+            else None
+        )
+    except ValueError as exc:
+        print_error(str(exc))
+        raise typer.Exit(1) from exc
     cfg = FloorConfig(
-        out=str(out), drive=drive, prompt=body, deadline_s=deadline_s,
-        url_env=url_env, seat_env=seat_env, standings_path=standings_path,
-        events_path=events_path, environment=sandbox,
+        out=str(out),
+        drive=drive,
+        prompt=body,
+        deadline_s=deadline_s,
+        idle_timeout_s=normalized_idle_timeout,
+        url_env=url_env,
+        seat_env=seat_env,
+        standings_path=standings_path,
+        events_path=events_path,
+        environment=sandbox,
+        reasoning_effort=normalized_reasoning_effort,
+        usage_tracking=usage_cfg,
     )
     console.print(
         f"[bold]floor[/bold]: {len(seats)} seats · drive={drive} · sandbox={sandbox} · "
         f"{', '.join(s.seat_id for s in seats)}"
     )
     try:
-        svc_env = dict(kv.split("=", 1) for kv in (service_env or []) if "=" in kv) or None
-        summary = asyncio.run(run_native_floor(
-            roster, environment_manifest=environment_manifest, config=cfg, game=game,
-            service_env=svc_env,
-        ))
+        svc_env = (
+            dict(kv.split("=", 1) for kv in (service_env or []) if "=" in kv) or None
+        )
+        summary = asyncio.run(
+            run_native_floor(
+                roster,
+                environment_manifest=environment_manifest,
+                config=cfg,
+                game=game,
+                service_env=svc_env,
+            )
+        )
     except (SystemExit, RuntimeError) as exc:
         print_error(str(exc))
         raise typer.Exit(1) from exc
@@ -85,20 +124,38 @@ def run_floor_from_cli(
 def register_arena(app: typer.Typer) -> None:
     """Attach the deprecated ``arena`` alias. The supported entry is
     `bench eval run --agents` (see ``cli.main``)."""
-    arena_app = typer.Typer(help="[deprecated] use `bench eval run --agents roster.yaml`.")
+    arena_app = typer.Typer(
+        help="[deprecated] use `bench eval run --agents roster.yaml`."
+    )
     app.add_typer(arena_app, name="arena", hidden=True)
 
     @arena_app.command("run")
     def arena_run(
-        agents: Annotated[Path, typer.Option("--agents", help="Roster file (agents only).")],
-        environment_manifest: Annotated[
-            Path, typer.Option("--environment-manifest", help="environment.toml (in-sandbox service).")
+        agents: Annotated[
+            Path, typer.Option("--agents", help="Roster file (agents only).")
         ],
-        out: Annotated[Path, typer.Option("--out", help="Output dir.")] = Path("out/native-floor"),
-        game: Annotated[str | None, typer.Option("--game", help="task_selection value (e.g. game id).")] = None,
-        sandbox: Annotated[str, typer.Option("--sandbox", help="docker | daytona.")] = "docker",
-        drive: Annotated[str, typer.Option("--drive", help="auto-loop | service-rounds.")] = "auto-loop",
-        prompt: Annotated[str | None, typer.Option("--prompt", help="Shared prompt (or @file).")] = None,
+        environment_manifest: Annotated[
+            Path,
+            typer.Option(
+                "--environment-manifest", help="environment.toml (in-sandbox service)."
+            ),
+        ],
+        out: Annotated[Path, typer.Option("--out", help="Output dir.")] = Path(
+            "out/native-floor"
+        ),
+        game: Annotated[
+            str | None,
+            typer.Option("--game", help="task_selection value (e.g. game id)."),
+        ] = None,
+        sandbox: Annotated[
+            str, typer.Option("--sandbox", help="docker | daytona.")
+        ] = "docker",
+        drive: Annotated[
+            str, typer.Option("--drive", help="auto-loop | service-rounds.")
+        ] = "auto-loop",
+        prompt: Annotated[
+            str | None, typer.Option("--prompt", help="Shared prompt (or @file).")
+        ] = None,
         url_env: Annotated[str | None, typer.Option("--url-env")] = None,
         seat_env: Annotated[str | None, typer.Option("--seat-env")] = None,
         standings_path: Annotated[str | None, typer.Option("--standings-path")] = None,
@@ -106,9 +163,19 @@ def register_arena(app: typer.Typer) -> None:
         multiplayer: Annotated[bool, typer.Option("--multiplayer")] = False,
     ) -> None:
         """[deprecated] Alias of `bench eval run --agents`."""
-        console.print("[yellow]`arena run` is deprecated — use `bench eval run --agents`.[/yellow]")
+        console.print(
+            "[yellow]`arena run` is deprecated — use `bench eval run --agents`.[/yellow]"
+        )
         run_floor_from_cli(
-            agents=agents, environment_manifest=environment_manifest, out=out, game=game,
-            sandbox=sandbox, drive=drive, prompt=prompt, url_env=url_env, seat_env=seat_env,
-            standings_path=standings_path, events_path=events_path, multiplayer=multiplayer,
+            agents=agents,
+            environment_manifest=environment_manifest,
+            out=out,
+            game=game,
+            sandbox=sandbox,
+            drive=drive,
+            prompt=prompt,
+            url_env=url_env,
+            seat_env=seat_env,
+            standings_path=standings_path,
+            events_path=events_path,
         )

@@ -320,7 +320,9 @@ def _match_advertised_model_value(
         if base and base in tokens:
             logger.info(
                 "ACP model %r not in advertised values %r — using alias %r",
-                model_id, values, value,
+                model_id,
+                values,
+                value,
             )
             return value
     return model_id
@@ -504,7 +506,7 @@ async def connect_acp(
             which_result = await env.exec(
                 f"which {agent_launch.split()[0]}", timeout_sec=10
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning(f"Agent path resolve skipped ({type(e).__name__}): {e}")
         else:
             if which_result.return_code == 0 and (which_result.stdout or "").strip():

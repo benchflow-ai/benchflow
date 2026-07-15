@@ -576,6 +576,9 @@ def eval_run(
             events_path=events_path,
             service_env=service_env,
             deadline_s=deadline,
+            reasoning_effort=reasoning_effort,
+            usage_tracking=usage_tracking,
+            agent_idle_timeout=agent_idle_timeout,
         )
         return
 

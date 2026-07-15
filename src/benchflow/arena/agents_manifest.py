@@ -14,6 +14,7 @@ pydantic mirror of that schema (no new dependency) and ``register_agent`` the re
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,9 +31,17 @@ __all__ = [
     "SandboxSpec",
     "Seat",
     "Services",
+    "agent_model_id",
     "load_byoa",
     "resolve_spec",
 ]
+
+
+def agent_model_id(cfg: AgentConfig, model: str | None) -> str:
+    """Default seat id: ``<agent>-<model>`` with provider prefixes stripped."""
+    model_id = (model or cfg.default_model or "model").split("/")[-1]
+    raw = f"{cfg.name}-{model_id}"
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-")
 
 
 class AgentSpec(BaseModel):
@@ -205,10 +214,11 @@ class AgentsManifest(BaseModel):
         seen: set[str] = set()
         for spec in self.agents:
             cfg = resolve_spec(spec, self._base_dir)
+            base = spec.name or agent_model_id(cfg, spec.model)
             ids = (
-                [spec.name]
+                [base]
                 if spec.count == 1
-                else [f"{spec.name}-{i}" for i in range(spec.count)]
+                else [f"{base}-{i}" for i in range(spec.count)]
             )
             for sid in ids:
                 if sid in seen:  # else two seats share /work/<id> + trajectory dir

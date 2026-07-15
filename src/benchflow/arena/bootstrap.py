@@ -48,13 +48,6 @@ def _make_sandbox(
     # Unique per-run session: a fixed name makes concurrent floor runs on one
     # host share a docker-compose project and tear each other down.
     run_id = f"native-floor-{uuid.uuid4().hex[:8]}"
-    kwargs = dict(
-        environment_dir=manifest_dir,
-        environment_name=run_id,
-        session_id=run_id,
-        rollout_paths=None,
-        task_env_config=cfg,
-    )
     if environment == "daytona":
         from benchflow.sandbox.daytona import DaytonaSandbox
 
@@ -63,13 +56,23 @@ def _make_sandbox(
         # ACP session ("remote container killed / idle sleep"). Match the normal
         # rollout's 24h keep-alive; teardown() deletes it explicitly when done.
         return DaytonaSandbox(
-            **kwargs,
+            environment_dir=manifest_dir,
+            environment_name=run_id,
+            session_id=run_id,
+            rollout_paths=None,
+            task_env_config=cfg,
             auto_stop_interval_mins=1440,
             auto_delete_interval_mins=1440,
         )
     from benchflow.sandbox.docker import DockerSandbox
 
-    return DockerSandbox(**kwargs)
+    return DockerSandbox(
+        environment_dir=manifest_dir,
+        environment_name=run_id,
+        session_id=run_id,
+        rollout_paths=None,
+        task_env_config=cfg,
+    )
 
 
 async def bootstrap_shared_env(
@@ -143,7 +146,9 @@ async def _read_service_json(sandbox: Any, service_url: str, path: str) -> Any:
     return json.loads(out) if out and str(out).strip() else None
 
 
-async def _attach_reward(sandbox: Any, summary: dict, service_url: str, cfg: FloorConfig) -> None:
+async def _attach_reward(
+    sandbox: Any, summary: dict, service_url: str, cfg: FloorConfig
+) -> None:
     """Opt-in: fetch final standings IN-SANDBOX and write a per-seat reward vector."""
     path = getattr(cfg, "standings_path", None)
     if not path:
@@ -201,21 +206,30 @@ async def run_native_floor(
 ) -> dict:
     """Bootstrap the in-sandbox shared env, run every seat concurrently, tear down."""
     sandbox, service_url, teardown = await bootstrap_shared_env(
-        environment_manifest, environment=config.environment, game=game,
+        environment_manifest,
+        environment=config.environment,
+        game=game,
         service_env=service_env,
     )
     try:
         summary = await run_concurrent_floor(
-            roster, sandbox=sandbox, service_url=service_url, config=config,
+            roster,
+            sandbox=sandbox,
+            service_url=service_url,
+            config=config,
         )
         await _attach_reward(sandbox, summary, service_url, config)
         await _snapshot_events(sandbox, service_url, config)
         _attach_activity(summary, config)
         with contextlib.suppress(Exception):
-            outcomes = await _read_service_json(sandbox, service_url, "/_admin/outcomes")
+            outcomes = await _read_service_json(
+                sandbox, service_url, "/_admin/outcomes"
+            )
             if isinstance(outcomes, dict) and outcomes:
                 summary["outcomes"] = outcomes
-                (Path(config.out) / "floor.json").write_text(json.dumps(summary, indent=2))
+                (Path(config.out) / "floor.json").write_text(
+                    json.dumps(summary, indent=2)
+                )
         return summary
     finally:
         await teardown()

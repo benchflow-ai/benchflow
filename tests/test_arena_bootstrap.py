@@ -3,6 +3,7 @@ host subprocess — and the orchestrator reaches it on localhost."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import textwrap
 
@@ -40,7 +41,8 @@ class _FakeSandbox:
 
 def _write_manifest(tmp_path):
     p = tmp_path / "environment.toml"
-    p.write_text(textwrap.dedent("""
+    p.write_text(
+        textwrap.dedent("""
         [environment]
         name = "casinobench"
         image = "casinobench-base:latest"
@@ -50,7 +52,8 @@ def _write_manifest(tmp_path):
         command = "casino-service"
         port = 9001
         health_path = "/health"
-    """))
+    """)
+    )
     return p
 
 
@@ -62,11 +65,13 @@ async def test_bootstrap_starts_service_in_sandbox_on_localhost(tmp_path, monkey
     sandbox = _FakeSandbox()
 
     out_sandbox, service_url, teardown = await bs.bootstrap_shared_env(
-        _write_manifest(tmp_path), game="six-deck-blackjack-s17",
-        _sandbox=sandbox, _env=env,
+        _write_manifest(tmp_path),
+        game="six-deck-blackjack-s17",
+        _sandbox=sandbox,
+        _env=env,
     )
 
-    assert service_url == "http://localhost:9001"        # in-sandbox localhost, no bridge
+    assert service_url == "http://localhost:9001"  # in-sandbox localhost, no bridge
     assert out_sandbox is sandbox
     assert ("provision", {"task_id": "six-deck-blackjack-s17"}) in env.calls
     assert ("readiness", None) in env.calls
@@ -92,14 +97,14 @@ def test_service_env_goes_into_sandbox_persistent_env(tmp_path, monkeypatch):
 
 
 def _no_popen(*a, **k):
-    raise AssertionError("bootstrap must NOT spawn a host subprocess — service is in-sandbox")
+    raise AssertionError(
+        "bootstrap must NOT spawn a host subprocess — service is in-sandbox"
+    )
 
 
 def test_count_actions_reads_real_casino_actions_per_seat():
     # floor.json "moves" counted ACP tool calls; the REAL activity metric is
     # action_applied events per actor (opencode showed 77 calls but 1066 acts).
-    import json
-    from benchflow.arena.bootstrap import _count_actions
     rows = [
         {"type": "action_applied", "actor": "a", "seq": 1},
         {"type": "action_applied", "actor": "a", "seq": 2},
@@ -108,7 +113,7 @@ def test_count_actions_reads_real_casino_actions_per_seat():
         {"type": "settlement", "actor": "", "seq": 5},
     ]
     jsonl = "\n".join(json.dumps(r) for r in rows)
-    assert _count_actions(jsonl) == {
+    assert bs._count_actions(jsonl) == {
         "a": {"actions": 2, "timeouts": 1},
         "b": {"actions": 1, "timeouts": 0},
     }

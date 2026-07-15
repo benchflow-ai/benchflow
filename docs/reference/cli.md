@@ -224,6 +224,15 @@ bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-p
 | `--source-env-sampling-arg` | — | Verifiers sampling argument as `KEY=VALUE`; repeatable (for example `reasoning_effort=minimal`) |
 | `--agent` | `claude-agent-acp` | Agent name |
 | `--model` | Agent default | Model ID |
+| `--agents` | — | Roster file for a concurrent multi-agent floor; mutually exclusive with `--agent` |
+| `--drive` | `auto-loop` | Multi-agent floor drive: `auto-loop` or `service-rounds` |
+| `--deadline` | `1200` | Multi-agent floor soft deadline in seconds; `0` disables it up to the 24h safety cap |
+| `--game` | — | Multi-agent floor task-selection value; defaults from `--tasks-dir` when present |
+| `--url-env` | — | Multi-agent floor env var that receives the in-sandbox service URL |
+| `--seat-env` | — | Multi-agent floor env var that receives each seat id |
+| `--standings-path` | — | Multi-agent floor service path for final `{seat: score}` standings |
+| `--events-path` | — | Multi-agent floor service path for event log snapshot output |
+| `--service-env` | — | Multi-agent floor service environment variable as `KEY=VALUE`; repeatable |
 | `--reasoning-effort` | — | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) |
 | `--sandbox` | `docker` | Sandbox: docker, daytona, or modal |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |

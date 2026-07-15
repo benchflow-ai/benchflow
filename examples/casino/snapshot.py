@@ -10,6 +10,7 @@ to the persisted floor.json, so the viewer keeps working after the run finishes.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
@@ -39,8 +40,12 @@ def _events(jsonl: str) -> list[dict]:
         if "games" in p:
             text = "table opened: " + ", ".join(p["games"])
         else:
-            text = p.get("action") or p.get("note") or p.get("game") or json.dumps(p)[:90]
-        out.append({"seat": e.get("actor") or "", "text": f"{kind} {text}".strip()[:140]})
+            text = (
+                p.get("action") or p.get("note") or p.get("game") or json.dumps(p)[:90]
+            )
+        out.append(
+            {"seat": e.get("actor") or "", "text": f"{kind} {text}".strip()[:140]}
+        )
     return out
 
 
@@ -50,10 +55,8 @@ def _traj_rows(run_dir: Path, seat: str) -> list[dict]:
     if p.exists():
         for line in p.read_text().splitlines():
             if line.strip():
-                try:
+                with contextlib.suppress(json.JSONDecodeError):
                     rows.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
     return rows
 
 
@@ -64,8 +67,10 @@ def snapshot(world: str, run_dir: Path, serve: Path) -> None:
     standings, events, statuses = {}, [], {}
     try:
         standings = httpx.get(f"{world}/_admin/standings", timeout=5).json()
-        events = _events(httpx.get(f"{world}/_admin/events", timeout=5).json().get("jsonl", ""))
-    except Exception:  # noqa: BLE001 — World down (run ended) → use persisted floor.json
+        events = _events(
+            httpx.get(f"{world}/_admin/events", timeout=5).json().get("jsonl", "")
+        )
+    except Exception:
         running = False
         fj = run_dir / "floor.json"
         if fj.exists():
@@ -73,8 +78,12 @@ def snapshot(world: str, run_dir: Path, serve: Path) -> None:
             standings = d.get("standings", {})
             for r in d.get("results", []):
                 statuses[r["seat"]] = r.get("status")
-                roster.setdefault(r["seat"], {}).update(agent=r["agent"], model=r["model"])
-        ev = run_dir / "events.jsonl"  # persisted at teardown — narration for finished runs
+                roster.setdefault(r["seat"], {}).update(
+                    agent=r["agent"], model=r["model"]
+                )
+        ev = (
+            run_dir / "events.jsonl"
+        )  # persisted at teardown — narration for finished runs
         if ev.exists():
             events = _events(ev.read_text())
 
@@ -84,14 +93,23 @@ def snapshot(world: str, run_dir: Path, serve: Path) -> None:
         rows = _traj_rows(run_dir, seat)
         (serve / "traj" / f"{seat}.json").write_text(json.dumps(rows))
         meta = roster.get(seat, {})
-        agents.append({
-            "seat": seat, "agent": meta.get("agent", ""), "model": meta.get("model", ""),
-            "chips": standings.get(seat),
-            "status": statuses.get(seat, "playing" if running else "ended"),
-            "tool_calls": sum(1 for r in rows if r.get("type") == "tool_call"),
-        })
-    state = {"running": running, "updated": time.strftime("%H:%M:%S"),
-             "standings": standings, "agents": agents, "events": events}
+        agents.append(
+            {
+                "seat": seat,
+                "agent": meta.get("agent", ""),
+                "model": meta.get("model", ""),
+                "chips": standings.get(seat),
+                "status": statuses.get(seat, "playing" if running else "ended"),
+                "tool_calls": sum(1 for r in rows if r.get("type") == "tool_call"),
+            }
+        )
+    state = {
+        "running": running,
+        "updated": time.strftime("%H:%M:%S"),
+        "standings": standings,
+        "agents": agents,
+        "events": events,
+    }
     (serve / "state.json").write_text(json.dumps(state))
 
 
@@ -101,7 +119,7 @@ def main() -> None:
     while True:
         try:
             snapshot(world, run_dir, serve)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print("snapshot:", type(exc).__name__, str(exc)[:120], flush=True)
         if once:
             return

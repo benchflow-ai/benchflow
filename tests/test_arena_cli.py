@@ -13,10 +13,12 @@ runner = CliRunner()
 
 def _roster(tmp_path):
     p = tmp_path / "roster.yaml"
-    p.write_text(textwrap.dedent("""
+    p.write_text(
+        textwrap.dedent("""
         agents:
           - { name: codex, agent: codex-acp }
-    """))
+    """)
+    )
     return p
 
 
@@ -33,10 +35,19 @@ def test_agents_requires_environment_manifest(tmp_path):
 
 
 def test_agents_mutually_exclusive_with_agent(tmp_path):
-    r = runner.invoke(app, [
-        "eval", "run", "--agents", str(_roster(tmp_path)),
-        "--agent", "codex-acp", "--environment-manifest", "x.toml",
-    ])
+    r = runner.invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--agents",
+            str(_roster(tmp_path)),
+            "--agent",
+            "codex-acp",
+            "--environment-manifest",
+            "x.toml",
+        ],
+    )
     assert r.exit_code == 1
 
 
@@ -51,14 +62,38 @@ def test_eval_run_agents_threads_floor_flags(tmp_path, monkeypatch):
     from benchflow.cli import arena as arena_mod
 
     captured = {}
-    monkeypatch.setattr(arena_mod, "run_floor_from_cli", lambda **kw: captured.update(kw))
-    r = runner.invoke(app, [
-        "eval", "run", "--agents", str(_roster(tmp_path)),
-        "--environment-manifest", "benchmarks/casinobench/environment.toml",
-        "--game", "six-deck-blackjack-s17", "--service-env", "CASINO_MULTIPLAYER=1",
-        "--url-env", "CASINO_URL", "--seat-env", "CASINOBENCH_SEAT_ID",
-        "--standings-path", "/_admin/standings", "--events-path", "/_admin/events",
-    ])
+    monkeypatch.setattr(
+        arena_mod, "run_floor_from_cli", lambda **kw: captured.update(kw)
+    )
+    r = runner.invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--agents",
+            str(_roster(tmp_path)),
+            "--environment-manifest",
+            "benchmarks/casinobench/environment.toml",
+            "--game",
+            "six-deck-blackjack-s17",
+            "--service-env",
+            "CASINO_MULTIPLAYER=1",
+            "--url-env",
+            "CASINO_URL",
+            "--seat-env",
+            "CASINOBENCH_SEAT_ID",
+            "--standings-path",
+            "/_admin/standings",
+            "--events-path",
+            "/_admin/events",
+            "--reasoning-effort",
+            "MAX",
+            "--usage-tracking",
+            "required",
+            "--agent-idle-timeout",
+            "0",
+        ],
+    )
     assert r.exit_code == 0, r.output
     assert captured["service_env"] == ["CASINO_MULTIPLAYER=1"]
     assert captured["game"] == "six-deck-blackjack-s17"
@@ -66,3 +101,70 @@ def test_eval_run_agents_threads_floor_flags(tmp_path, monkeypatch):
     assert captured["seat_env"] == "CASINOBENCH_SEAT_ID"
     assert captured["standings_path"] == "/_admin/standings"
     assert captured["events_path"] == "/_admin/events"
+    assert captured["reasoning_effort"] == "MAX"
+    assert captured["usage_tracking"] == "required"
+    assert captured["agent_idle_timeout"] == "0"
+
+
+def test_arena_alias_does_not_pass_removed_multiplayer_kwarg(tmp_path, monkeypatch):
+    from benchflow.cli import arena as arena_mod
+
+    captured = {}
+    monkeypatch.setattr(
+        arena_mod, "run_floor_from_cli", lambda **kw: captured.update(kw)
+    )
+    r = runner.invoke(
+        app,
+        [
+            "arena",
+            "run",
+            "--agents",
+            str(_roster(tmp_path)),
+            "--environment-manifest",
+            "benchmarks/casinobench/environment.toml",
+            "--multiplayer",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert "multiplayer" not in captured
+
+
+def test_run_floor_from_cli_normalizes_run_level_knobs(tmp_path, monkeypatch):
+    from benchflow.arena import bootstrap
+    from benchflow.cli.arena import run_floor_from_cli
+
+    captured = {}
+
+    async def fake_run_native_floor(
+        roster, *, environment_manifest, config, game=None, service_env=None
+    ):
+        captured["config"] = config
+        captured["service_env"] = service_env
+        return {
+            "results": [
+                {
+                    "seat": "codex",
+                    "status": "ok",
+                    "acp_tool_calls": 1,
+                    "llm_calls": 0,
+                    "raw": False,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(bootstrap, "run_native_floor", fake_run_native_floor)
+    run_floor_from_cli(
+        agents=_roster(tmp_path),
+        environment_manifest=tmp_path / "environment.toml",
+        out=tmp_path / "out",
+        reasoning_effort="MAX",
+        usage_tracking="required",
+        agent_idle_timeout="0",
+        service_env=["CASINO_MULTIPLAYER=1"],
+        prompt="play",
+    )
+    cfg = captured["config"]
+    assert cfg.reasoning_effort == "max"
+    assert cfg.usage_tracking.mode == "required"
+    assert cfg.idle_timeout_s is None
+    assert captured["service_env"] == {"CASINO_MULTIPLAYER": "1"}

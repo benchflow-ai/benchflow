@@ -224,7 +224,7 @@ relationship graph. `agent_id` from (A) is the clean join key for (B).
   tree, instead of (or alongside) the bespoke JSONL.
 - **Omnigent track.** Wire `HARNESS_*_GATEWAY_*` at the proxy to close the bypass;
   drive server/session mode; export the conversation tree.
-- **Concurrent-seats track ✅ DONE — native multi-agent floor.** `benchflow arena run
+- **Concurrent-seats track ✅ DONE — native multi-agent floor.** `bench eval run
   --agents agents.yaml` (`src/benchflow/arena/`) runs N agents on ONE shared task +
   service CONCURRENTLY in ONE shared sandbox, each in `/work/<seat>`, each with its
   own ACP trajectory and — for proxy seats — a separate raw `llm_trajectory.jsonl`

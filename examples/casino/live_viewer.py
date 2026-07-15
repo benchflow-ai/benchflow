@@ -35,27 +35,43 @@ def main() -> None:
             standings = httpx.get(f"{world}/_admin/standings", timeout=8).json()
             (run / "events.jsonl").write_text(ev)
             (run / "standings.json").write_text(json.dumps(standings))
-            (run / "run.json").write_text(json.dumps({
-                "final_bankrolls": standings,
-                "game_config": state.get("game_config") or {"stake": 50},
-                "players": sorted(standings.keys()),
-                "starting_bankroll": int(state.get("starting_bankroll", 1000)),
-                "subject": state.get("subject", "agent"),
-            }))
-            r = subprocess.run(  # noqa: S603
-                ["uv", "run", "python", "viewer/build.py", "--from", str(run),
-                 "--out", str(out)],
-                cwd=CASINOBENCH, capture_output=True, text=True, timeout=60,
+            (run / "run.json").write_text(
+                json.dumps(
+                    {
+                        "final_bankrolls": standings,
+                        "game_config": state.get("game_config") or {"stake": 50},
+                        "players": sorted(standings.keys()),
+                        "starting_bankroll": int(state.get("starting_bankroll", 1000)),
+                        "subject": state.get("subject", "agent"),
+                    }
+                )
+            )
+            r = subprocess.run(
+                [
+                    "uv",
+                    "run",
+                    "python",
+                    "viewer/build.py",
+                    "--from",
+                    str(run),
+                    "--out",
+                    str(out),
+                ],
+                cwd=CASINOBENCH,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             if out.exists():
                 html = out.read_text()
-                if "http-equiv=\"refresh\"" not in html:
+                if 'http-equiv="refresh"' not in html:
                     html = html.replace(
-                        "<head>", '<head><meta http-equiv="refresh" content="6">', 1)
+                        "<head>", '<head><meta http-equiv="refresh" content="6">', 1
+                    )
                     out.write_text(html)
             else:
                 print("build:", (r.stderr or r.stdout or "")[-200:], flush=True)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print("live_viewer:", type(exc).__name__, str(exc)[:120], flush=True)
         time.sleep(6)
 

@@ -1,4 +1,4 @@
-# Native concurrent multi-agent floor (`benchflow arena run --agents`)
+# Native concurrent multi-agent floor (`bench eval run --agents`)
 
 Run **N agents on ONE shared task + its ONE service, concurrently, in ONE shared
 sandbox** — each agent in its own `/work/<seat>` folder, each with its own ACP
@@ -6,31 +6,30 @@ trajectory and (proxy seats only) a separate raw `llm_trajectory.jsonl`.
 
 ```bash
 set -a; . ~/sb-run.env; set +a          # API keys for proxy seats
-uv run benchflow arena run --agents examples/casino/agents.yaml
+uv run bench eval run \
+  --agents examples/casino/agents.yaml \
+  --environment-manifest benchmarks/casinobench/environment.toml \
+  --sandbox docker --drive auto-loop \
+  --url-env CASINO_URL --seat-env CASINOBENCH_SEAT_ID \
+  --standings-path /_admin/standings --events-path /_admin/events \
+  --service-env CASINO_MULTIPLAYER=1 \
+  --jobs-dir out/native-floor/casino
 ```
 
 ## `agents.yaml`
 
-One shared task, N seats. Each seat names a **prebuilt** benchflow agent
+The roster is only the A/M axis. Each seat names a **prebuilt** benchflow agent
 (`agent:`) **or** a **BYOA** agent manifest (`manifest:`) — exactly one — plus its
 model and an optional per-agent instruction file. `count` fans a seat out into
-`name-0..name-(n-1)`.
+`name-0..name-(n-1)`. Task, service, sandbox, output, drive, and prompt are normal
+`bench eval run` flags.
 
 ```yaml
-sandbox: { image_dir: agent_env }        # the shared image (Dockerfile dir, relative to this file)
-services:
-  url_env: CASINO_URL                    # env var the in-sandbox task CLI reads for the service URL
-  command: "uv run casino-service --host 0.0.0.0 --port {port}"   # host service, reached over the bridge
-  cwd: ~/casinobench
-  standings_path: /_admin/standings      # optional → per-seat reward vector in floor.json
-out: out/native-floor/casino
-drive: auto-loop                         # auto-loop | service-rounds
-prompt: "Play through the casino CLI. Begin with `casino lobby`."
 agents:
-  - { name: codex,    agent: codex-acp,         model: gpt-5.5,            count: 2, instructions: prompts/aggressive.md }
-  - { name: claude,   agent: claude-agent-acp,  model: claude-sonnet-4-6,  count: 2, instructions: prompts/cautious.md }
-  - { name: deepseek, agent: deepagents,        model: deepseek-v4-pro,    instructions: prompts/aggressive.md }  # proxy → raw+acp
-  - { name: mine,     manifest: agents/my.toml, model: gpt-5.5 }            # BYOA (ACP manifest contract)
+  - { agent: codex-acp,        model: gpt-5.5,           count: 2, instructions: prompts/aggressive.md }
+  - { agent: claude-agent-acp, model: claude-sonnet-4-6, count: 2, instructions: prompts/cautious.md }
+  - { agent: deepagents,       model: deepseek/deepseek-v4-pro, instructions: prompts/aggressive.md }  # proxy -> raw+acp
+  - { name: mine, manifest: agents/my.toml, model: gpt-5.5 }  # BYOA (ACP manifest contract)
 ```
 
 ## What you get

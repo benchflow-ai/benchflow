@@ -19,6 +19,7 @@ Run inside casinobench's env (for the casinobench imports):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
@@ -142,14 +143,18 @@ def _payload(world: str, run_dir: Path) -> tuple[dict, bool]:
     try:
         jsonl = httpx.get(f"{world}/_admin/events", timeout=5).json()["jsonl"]
         standings = httpx.get(f"{world}/_admin/standings", timeout=5).json()
-    except Exception:  # noqa: BLE001 — World down → persisted snapshot
+    except Exception:
         running = False
         ev = run_dir / "events.jsonl"
         jsonl = ev.read_text() if ev.exists() else ""
         fj = run_dir / "floor.json"
-        standings = json.loads(fj.read_text()).get("standings", {}) if fj.exists() else {}
+        standings = (
+            json.loads(fj.read_text()).get("standings", {}) if fj.exists() else {}
+        )
     events = list(EventLog.from_jsonl(jsonl).events) if jsonl.strip() else []
-    players = sorted(standings) or sorted({e.actor for e in events if getattr(e, "actor", "")})
+    players = sorted(standings) or sorted(
+        {e.actor for e in events if getattr(e, "actor", "")}
+    )
     data = to_viewer_data(events, players, 1000, REG, {"stake": 50})
     data["done"] = not running
     return data, running
@@ -181,9 +186,13 @@ def main() -> None:
             roster = _roster(run_dir)
             try:
                 standings = httpx.get(f"{world}/_admin/standings", timeout=4).json()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 fj = run_dir / "floor.json"
-                standings = json.loads(fj.read_text()).get("standings", {}) if fj.exists() else {}
+                standings = (
+                    json.loads(fj.read_text()).get("standings", {})
+                    if fj.exists()
+                    else {}
+                )
             agents = []
             for r in roster:
                 seat = r["seat"]
@@ -192,17 +201,26 @@ def main() -> None:
                 if p.exists():
                     for line in p.read_text().splitlines():
                         if line.strip():
-                            try:
+                            with contextlib.suppress(json.JSONDecodeError):
                                 rows.append(json.loads(line))
-                            except json.JSONDecodeError:
-                                pass
                 (serve / "traj" / f"{seat}.json").write_text(json.dumps(rows))
-                agents.append({"seat": seat, "agent": r.get("agent"), "model": r.get("model"),
-                               "chips": standings.get(seat),
-                               "tool_calls": sum(1 for x in rows if x.get("type") == "tool_call")})
-            (serve / "state.json").write_text(json.dumps(
-                {"running": running, "agents": agents, "standings": standings}))
-        except Exception as exc:  # noqa: BLE001
+                agents.append(
+                    {
+                        "seat": seat,
+                        "agent": r.get("agent"),
+                        "model": r.get("model"),
+                        "chips": standings.get(seat),
+                        "tool_calls": sum(
+                            1 for x in rows if x.get("type") == "tool_call"
+                        ),
+                    }
+                )
+            (serve / "state.json").write_text(
+                json.dumps(
+                    {"running": running, "agents": agents, "standings": standings}
+                )
+            )
+        except Exception as exc:
             print("town_snapshot:", type(exc).__name__, str(exc)[:140], flush=True)
         time.sleep(1.0)
 
