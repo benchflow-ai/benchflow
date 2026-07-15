@@ -1065,6 +1065,48 @@ class TestConnectAcpModelSelection:
         mock_acp.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_openhands_direct_execution_patches_before_privilege_drop(
+        self, tmp_path
+    ):
+        """Guards the PR #921 follow-up for OpenHands tasks rooted outside /root."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = AsyncMock()
+        mock_env.exec.return_value = MagicMock(return_code=0, stdout="", stderr="")
+
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "benchflow.acp.runtime.ContainerTransport",
+                return_value=MagicMock(),
+            ) as mock_transport,
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="openhands",
+                agent_launch="openhands acp --always-approve --override-with-envs",
+                agent_env={"BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS": "1"},
+                sandbox_user="agent",
+                model=None,
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        patch_call = mock_env.exec.await_args_list[0]
+        assert "openhands_cli.utils" in patch_call.args[0]
+        assert patch_call.kwargs == {"timeout_sec": 30}
+        transport_env = mock_transport.call_args.kwargs["env"]
+        assert transport_env["BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"] == "0"
+        transport_command = mock_transport.call_args.kwargs["command"]
+        assert "--reuid=agent" in transport_command
+
+    @pytest.mark.asyncio
     async def test_codex_uses_session_advertised_model_id(self, tmp_path):
         """Guards commit 81ff286 against codex-acp rejecting bare set_model IDs."""
         from benchflow.acp.runtime import connect_acp
