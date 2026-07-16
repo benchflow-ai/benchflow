@@ -222,6 +222,7 @@ class _FakeSandbox:
 
 @pytest.mark.asyncio
 async def test_sandbox_litellm_runs_retry_preflight_before_returning_proxy():
+    """Guards PR #882: sandbox proxy startup probes the retry patch first."""
     route = resolve_litellm_route(
         "minimax/MiniMax-M3",
         {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
@@ -249,6 +250,7 @@ async def test_sandbox_litellm_runs_retry_preflight_before_returning_proxy():
 
 @pytest.mark.asyncio
 async def test_sandbox_litellm_retry_preflight_failure_fails_closed():
+    """Guards PR #882: inactive sandbox retry patch tears down the proxy."""
     route = resolve_litellm_route(
         "minimax/MiniMax-M3",
         {"MINIMAX_API_KEY": "k", "MINIMAX_BASE_URL": "https://api.minimax.io/v1"},
