@@ -446,6 +446,14 @@ def litellm_proxy_config(
             # storms or deployment cooldown fast-fails (#830).
             "num_retries": 0,
             "disable_cooldowns": True,
+            # ...with ONE narrow exception honoring #830's rationale: transient
+            # upstream 5xx (InternalServerError) are not deterministic rejects,
+            # and some agents silently swallow a passed-through 500 into a
+            # zero-event turn (observed: MiMo Code ending turns with no error on
+            # a deepseek 500, repro x3). Absorb up to 2 transient 500s at the
+            # proxy; every deterministic class (4xx, auth, content) still fails
+            # fast with zero retries.
+            "retry_policy": {"InternalServerErrorRetries": 2},
         },
         "litellm_settings": {
             "callbacks": [f"{callback_module}.proxy_handler_instance"],
