@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from benchflow.sandbox.daytona import (
+    _benchflow_owned_labels,
     _is_benchflow_label_orphan,
     _is_benchflow_owned,
     reap_stale_sandboxes,
@@ -303,6 +304,33 @@ class TestIsBenchflowOwned:
     def test_non_mapping_labels_not_owned(self):
         assert not _is_benchflow_owned(SimpleNamespace(labels=["benchflow.managed"]))
 
+    def test_scoped_owner_matches_only_current_operator(self, monkeypatch):
+        """Guards PR #921 against cross-operator Daytona cleanup."""
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "gpt56 max / openhands")
+        labels = _benchflow_owned_labels()
+
+        assert labels == {
+            "benchflow.managed": "1:gpt56-max-openhands",
+            "benchflow.owner": "gpt56-max-openhands",
+        }
+        assert _is_benchflow_owned(SimpleNamespace(labels=labels))
+        assert not _is_benchflow_owned(
+            SimpleNamespace(
+                labels={
+                    "benchflow.managed": "1:another-experiment",
+                    "benchflow.owner": "another-experiment",
+                }
+            )
+        )
+
+    def test_unscoped_legacy_owner_does_not_match_scoped_operator(self, monkeypatch):
+        """Guards PR #921 so old broad labels cannot enter a scoped reap."""
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "gpt56-sol-openhands-max")
+
+        assert not _is_benchflow_owned(
+            SimpleNamespace(labels={"benchflow.managed": "1"})
+        )
+
 
 class TestIsBenchflowLabelOrphan:
     """The read-only orphan-leak predicate (label-integrity, mutation surface).
@@ -351,6 +379,51 @@ class TestIsBenchflowLabelOrphan:
 
     def test_non_mapping_labels_not_orphan(self):
         assert not _is_benchflow_label_orphan(SimpleNamespace(labels=["benchflow.run"]))
+
+    def test_other_scoped_owner_is_foreign_not_orphan(self, monkeypatch):
+        """Guards PR #921 against warning or deleting another operator's run."""
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "our-experiment")
+
+        assert not _is_benchflow_label_orphan(
+            SimpleNamespace(
+                labels={
+                    "benchflow.managed": "1:their-experiment",
+                    "benchflow.owner": "their-experiment",
+                }
+            )
+        )
+
+
+def test_reaper_skips_other_scoped_owner(monkeypatch):
+    """Guards PR #921 against cross-operator deletion on a shared API key."""
+    monkeypatch.setenv("BENCHFLOW_DAYTONA_OWNER", "our-experiment")
+    client = FakeClient(
+        [
+            _sb(
+                "ours",
+                "STARTED",
+                9999,
+                labels={
+                    "benchflow.managed": "1:our-experiment",
+                    "benchflow.owner": "our-experiment",
+                },
+            ),
+            _sb(
+                "theirs",
+                "STARTED",
+                9999,
+                labels={
+                    "benchflow.managed": "1:their-experiment",
+                    "benchflow.owner": "their-experiment",
+                },
+            ),
+        ]
+    )
+
+    counts = reap_stale_sandboxes(client)
+
+    assert client.deleted == ["ours"]
+    assert counts == {"found": 2, "deleted": 1, "skipped": 1, "failed": 0}
 
 
 class TestOrphanLeakGuard:

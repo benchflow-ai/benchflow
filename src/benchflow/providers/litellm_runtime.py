@@ -352,7 +352,13 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             f"dd if={shlex.quote(self.log_path)} bs=1 skip={offset} count={limit} "
             "2>/dev/null | base64 -w 0"
         )
-        result = await self.sandbox.exec(command, timeout_sec=10)
+        # Daytona otherwise retains one session wrapper shell for every
+        # one-second live-capture poll. Long MAX rollouts can accumulate
+        # thousands of orphaned shells and eventually wedge the agent's own
+        # terminal calls. Providers without a transient-exec path keep the
+        # existing behavior.
+        execute = getattr(self.sandbox, "exec_transient", self.sandbox.exec)
+        result = await execute(command, timeout_sec=10)
         encoded = (result.stdout or "").strip()
         if result.return_code != 0 or not encoded:
             return b""

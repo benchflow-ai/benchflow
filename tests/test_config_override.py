@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from unittest.mock import MagicMock
+
 import pytest
 from pydantic import ValidationError
 
@@ -121,6 +124,19 @@ def test_apply_overrides_agent_and_preserves_siblings():
     assert out.sandbox.cpus == 1
 
 
+def test_apply_overrides_agent_prompt_prefix_and_strips_whitespace():
+    out = apply_config_override(
+        _cfg(),
+        {"agent": {"prompt_prefix": "  Follow benchmark integrity rules.  "}},
+    )
+    assert out.agent.prompt_prefix == "Follow benchmark integrity rules."
+
+
+def test_apply_rejects_blank_agent_prompt_prefix():
+    with pytest.raises(ValidationError, match="prompt_prefix"):
+        apply_config_override(_cfg(), {"agent": {"prompt_prefix": "   "}})
+
+
 def test_apply_overrides_sandbox_by_field_name():
     # Regression: merging against by_alias=True made `sandbox` (alias
     # `environment`) un-overridable via its field name. Must work now.
@@ -136,6 +152,47 @@ def test_apply_enforces_allowlist():
 def test_apply_revalidates_and_rejects_bad_value():
     with pytest.raises(ValidationError):
         apply_config_override(_cfg(), {"agent": {"timeout_sec": "nope"}})
+
+
+@pytest.mark.asyncio
+async def test_rollout_applies_configured_prompt_prefix(tmp_path):
+    """Guards PR #921 against recording a prompt policy without sending it."""
+    from benchflow.rollout import Rollout, RolloutConfig
+
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text('version = "1.0"\n')
+    (task / "instruction.md").write_text("Solve the visible task.")
+
+    planes = MagicMock()
+    planes.resolve_locked_paths.return_value = []
+    planes.resolve_agent_env.return_value = {}
+    planes.agent_launch.return_value = "oracle"
+    planes.create_environment.return_value = MagicMock()
+
+    rollout = Rollout(
+        RolloutConfig.from_legacy(
+            task_path=task,
+            agent="oracle",
+            jobs_dir=tmp_path / "jobs",
+            config_override={
+                "agent": {"prompt_prefix": "Do not inspect hidden evaluators."}
+            },
+            planes=planes,
+        )
+    )
+    await rollout.setup()
+
+    assert rollout._resolved_prompts == [
+        "Do not inspect hidden evaluators.\n\nSolve the visible task."
+    ]
+    assert (
+        rollout._task.config.agent.prompt_prefix == "Do not inspect hidden evaluators."
+    )
+    config = json.loads((rollout._rollout_dir / "config.json").read_text())
+    assert config["config_override"]["patch"]["agent"]["prompt_prefix"] == (
+        "Do not inspect hidden evaluators."
+    )
 
 
 # ---- CLI threading: --config-override on the run-config-file path ----------

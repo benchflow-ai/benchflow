@@ -117,9 +117,9 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
-_OPENHANDS_CLI_GIT_REV = "3ca17446c5d9c1e35e054803478a3501ec251ecf"
-_OPENHANDS_SDK_VERSION = "1.22.1"
-_OPENHANDS_TOOLS_VERSION = "1.22.1"
+_OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
+_OPENHANDS_SDK_VERSION = "1.28.1"
+_OPENHANDS_TOOLS_VERSION = "1.28.1"
 _OPENHANDS_SETTINGS_WRITER_PATH = "/opt/benchflow/bin/openhands-settings-writer"
 _OPENHANDS_SETTINGS_WRITER = r"""import json
 import os
@@ -784,7 +784,7 @@ AGENTS: dict[str, AgentConfig] = {
         skill_paths=["$HOME/.opencode/skills"],
         home_dirs=[".opencode"],
         install_cmd=(
-            _js_agent_install("opencode", "opencode-ai")
+            _js_agent_install("opencode", "opencode-ai@1.17.20")
             + " && "
             + _opencode_family_proxy_wrapper_install(
                 "opencode", ".config/opencode/opencode.json"
@@ -986,10 +986,11 @@ AGENTS: dict[str, AgentConfig] = {
             "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 && "
             '    export PATH="$HOME/.local/bin:$PATH"; '
             "  fi && "
-            # Pin the OpenHands CLI source so the agent workflow cannot drift
-            # with GitHub main; only override the buggy sdk/tools 1.21.0 pins.
-            # SDK 1.22.x restores default-to-UNKNOWN for the synthetic
-            # `security_risk` tool field without the API drift seen in 1.26.x.
+            # Pin the OpenHands CLI source and its matching SDK/tools release
+            # together so the ACP runtime cannot drift or be forced onto an
+            # older, API-incompatible SDK. The 1.28.1 line retains the
+            # security_risk default fix and includes later long-run ACP,
+            # terminal, tool-executor, and event-log stability fixes.
             f"printf 'openhands-sdk=={_OPENHANDS_SDK_VERSION}\\n"
             f"openhands-tools=={_OPENHANDS_TOOLS_VERSION}\\n' "
             "> /tmp/oh-sdk-overrides.txt && "
@@ -1020,7 +1021,33 @@ AGENTS: dict[str, AgentConfig] = {
             'printf \',"base_url":"%s"\' "$LLM_BASE_URL"; fi; '
             'if [ -n "$LLM_API_VERSION" ]; then '
             'printf \',"api_version":"%s"\' "$LLM_API_VERSION"; fi; '
+            'if [ -n "$LLM_TIMEOUT" ]; then '
+            'case "$LLM_TIMEOUT" in *[!0-9]*) '
+            'echo "LLM_TIMEOUT must be a non-negative integer" >&2; exit 2;; esac; '
+            'printf \',"timeout":%s\' "$LLM_TIMEOUT"; fi; '
+            'case "$LLM_REASONING_EFFORT" in '
+            'max) printf \',"litellm_extra_body":{"reasoning":{"effort":"max"}}\' ;; '
+            "none|low|medium|high|xhigh) "
+            'printf \',"reasoning_effort":"%s",'
+            '"litellm_extra_body":{"reasoning_effort":"%s"}\' '
+            '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT" ;; '
+            '?*) printf \',"litellm_extra_body":{"reasoning_effort":"%s"}\' '
+            '"$LLM_REASONING_EFFORT" ;; '
+            "esac; "
             "printf '}}'; } > ~/.openhands/agent_settings.json && "
+            'if [ "${BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS:-0}" = "1" ]; then '
+            'OH_BIN="$(command -v openhands)"; '
+            'OH_PY="$(dirname "$(readlink -f "$OH_BIN")")/python"; '
+            '[ -x "$OH_PY" ] || { '
+            'echo "Cannot locate OpenHands tool interpreter" >&2; exit 127; }; '
+            '"$OH_PY" -c \'from pathlib import Path; '
+            "import openhands_cli.utils as u; "
+            "p=Path(u.__file__); s=p.read_text(); "
+            'old="        Tool(name=task_tool_name),\\n"; '
+            'new="        # BenchFlow: delegation disabled for this run.\\n"; '
+            "assert old in s or new in s; "
+            "p.write_text(s.replace(old,new,1))'; "
+            "fi && "
             "openhands acp --always-approve --override-with-envs"
         ),
         install_setup_cmd=_install_python_script(

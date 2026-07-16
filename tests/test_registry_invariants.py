@@ -259,6 +259,14 @@ def test_js_agent_install_respects_explicit_npm_package_specs():
     assert "some-agent@latest" in default_cmd
 
 
+def test_opencode_install_is_pinned_for_reproducible_harness_runs():
+    """Guards PR #931 against silently changing OpenCode between eval stages."""
+    install_cmd = AGENTS["opencode"].install_cmd
+
+    assert "opencode-ai@1.17.20" in install_cmd
+    assert "opencode-ai@latest" not in install_cmd
+
+
 def test_gemini_cli_install_is_pinned():
     """Guards v0.5-integration@27752fa against Daytona installing moving latest."""
     install_cmd = AGENTS["gemini"].install_cmd

@@ -168,6 +168,19 @@ class _SandboxWithCallbackLog:
         return SimpleNamespace(return_code=0, stdout=encoded)
 
 
+class _TransientSandboxWithCallbackLog(_SandboxWithCallbackLog):
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.transient_calls = 0
+
+    async def exec(self, command: str, timeout_sec: int):
+        raise AssertionError("Daytona callback polling must use transient exec")
+
+    async def exec_transient(self, command: str, timeout_sec: int):
+        self.transient_calls += 1
+        return await super().exec(command, timeout_sec)
+
+
 @pytest.mark.asyncio
 async def test_daytona_proxy_incrementally_mirrors_callback(tmp_path, monkeypatch):
     """Guards incremental Daytona callback mirroring from commit c86adfb."""
@@ -200,3 +213,26 @@ async def test_daytona_proxy_incrementally_mirrors_callback(tmp_path, monkeypatc
     await process._stop_live_capture()
 
     assert len(output_path.read_text().splitlines()) == 2
+
+
+@pytest.mark.asyncio
+async def test_daytona_proxy_uses_transient_exec_for_callback_poll(tmp_path):
+    """Guards the Daytona live-capture session fix in PR #921."""
+    sandbox = _TransientSandboxWithCallbackLog(_callback_line().encode())
+    process = SandboxLiteLLMProcess(
+        sandbox=sandbox,
+        route=SimpleNamespace(),
+        runtime_dir="/tmp/runtime",
+        endpoint=LiteLLMEndpoint("http://agent", "http://local"),
+        log_path="/tmp/runtime/callback.jsonl",
+        pid_path="/tmp/runtime/pid",
+        stdout_path="/tmp/runtime/stdout",
+        stderr_path="/tmp/runtime/stderr",
+        session_id="run",
+        agent_name="openhands",
+    )
+
+    chunk = await process._read_callback_chunk(0, 24 * 1024)
+
+    assert chunk
+    assert sandbox.transient_calls == 1

@@ -164,19 +164,41 @@ def _llm_steps_from_trajectory(
         exchanges = load_llm_trajectory_jsonl(path, strict=True)
     except PrimeSftTrajectoryJsonlError as exc:
         return [], [], f"Invalid LLM trajectory JSONL: {exc}"
+    training_success_indices = _training_success_exchange_indices(exchanges)
+    skipped_successful: list[str] = []
     for exchange_idx, exchange in enumerate(exchanges):
         response = exchange.get("response")
-        if not isinstance(response, dict) or response.get("status_code") != 200:
+        if exchange_idx not in training_success_indices:
             continue
-        normalized, _ = normalize_prime_sft_exchange(exchange)
+        if not isinstance(response, dict):
+            skipped_successful.append(
+                f"exchange {exchange_idx}: selected response is not an object"
+            )
+            continue
+        normalized, skip_reason = normalize_prime_sft_exchange(exchange)
         if normalized is None:
+            skipped_successful.append(
+                f"exchange {exchange_idx}: {skip_reason or 'normalization failed'}"
+            )
             continue
         prompt = normalized.messages[:-1]
         completion = normalized.messages[-1:]
         if not completion:
+            skipped_successful.append(f"exchange {exchange_idx}: no completion")
             continue
         if normalized.tool_defs:
-            tool_defs = normalized.tool_defs
+            known_names = {
+                tool.get("function", {}).get("name")
+                for tool in tool_defs
+                if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+            }
+            tool_defs.extend(
+                tool
+                for tool in normalized.tool_defs
+                if isinstance(tool, dict)
+                and isinstance(tool.get("function"), dict)
+                and tool["function"].get("name") not in known_names
+            )
         response_body = (
             cast(dict[str, Any], response.get("body"))
             if isinstance(response.get("body"), dict)
@@ -203,16 +225,174 @@ def _llm_steps_from_trajectory(
             "tokens": None,
             "reward": reward,
             "advantage": 0.0,
-            "is_truncated": bool(
-                response_body.get("incomplete_details")
-                or response_body.get("truncation")
-                or is_truncated
-            ),
+            "is_truncated": _response_is_truncated(response_body) or is_truncated,
             "trajectory_id": f"{trajectory_id_prefix}__llm_{exchange_idx}",
             "extras": extras,
         }
         steps.append(step)
+    if skipped_successful:
+        return (
+            steps,
+            tool_defs,
+            "Successful LLM exchanges were omitted from results.jsonl: "
+            + "; ".join(skipped_successful),
+        )
     return steps, tool_defs, None
+
+
+def _response_is_truncated(response_body: dict[str, Any]) -> bool:
+    return bool(
+        response_body.get("incomplete_details")
+        or response_body.get("status") == "incomplete"
+    )
+
+
+def _response_is_training_success(response: Any) -> bool:
+    if not isinstance(response, dict) or response.get("status_code") != 200:
+        return False
+    body = response.get("body")
+    if not isinstance(body, dict):
+        return False
+    status = body.get("status")
+    if status is not None and status != "completed":
+        return False
+    return not bool(body.get("incomplete_details"))
+
+
+def _training_success_exchange_indices(
+    exchanges: list[dict[str, Any]],
+) -> set[int]:
+    request_bodies = [
+        json.dumps(
+            (
+                request.get("body")
+                if isinstance(request := exchange.get("request"), dict)
+                and isinstance(request.get("body"), dict)
+                else {}
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        for exchange in exchanges
+    ]
+    candidates_by_request: dict[str, list[int]] = {}
+    for exchange_idx, exchange in enumerate(exchanges):
+        if not _response_is_training_success(exchange.get("response")):
+            continue
+        candidates_by_request.setdefault(request_bodies[exchange_idx], []).append(
+            exchange_idx
+        )
+    selected: set[int] = set()
+    for candidates in candidates_by_request.values():
+        consumed = [
+            exchange_idx
+            for exchange_idx in candidates
+            if _response_consumed_by_later_request(
+                exchanges, request_bodies, exchange_idx
+            )
+        ]
+        if consumed:
+            selected.add(max(consumed))
+            continue
+        safe_unconsumed = [
+            exchange_idx
+            for exchange_idx in candidates
+            if _response_safe_without_later_consumption(exchanges, exchange_idx)
+        ]
+        if safe_unconsumed:
+            selected.add(max(safe_unconsumed))
+    return selected
+
+
+def _response_consumed_by_later_request(
+    exchanges: list[dict[str, Any]],
+    request_bodies: list[str],
+    exchange_idx: int,
+) -> bool:
+    response = exchanges[exchange_idx].get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    call_ids = _response_call_ids(body if isinstance(body, dict) else {})
+    return bool(
+        call_ids
+        and any(
+            any(call_id in request_body for call_id in call_ids)
+            for request_body in request_bodies[exchange_idx + 1 :]
+        )
+    )
+
+
+def _response_call_ids(body: dict[str, Any]) -> set[str]:
+    return {call_id for call_id, _ in _response_tool_calls(body)}
+
+
+def _response_safe_without_later_consumption(
+    exchanges: list[dict[str, Any]], exchange_idx: int
+) -> bool:
+    exchange = exchanges[exchange_idx]
+    response = exchange.get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    calls = _response_tool_calls(body if isinstance(body, dict) else {})
+    if not calls or all(name == "finish" for _, name in calls):
+        return True
+    return not any(
+        isinstance(request := later.get("request"), dict)
+        and isinstance(request.get("body"), dict)
+        for later in exchanges[exchange_idx + 1 :]
+    )
+
+
+def _response_tool_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
+    calls = [
+        (
+            str(item.get("call_id") or item.get("id")),
+            str(item.get("name")) if item.get("name") else None,
+        )
+        for item in body.get("output") or []
+        if isinstance(item, dict)
+        and item.get("type") in {"function_call", "tool_call"}
+        and (item.get("call_id") or item.get("id"))
+    ]
+    choices = body.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            message = choice.get("message") if isinstance(choice, dict) else None
+            if not isinstance(message, dict):
+                continue
+            calls.extend(
+                (
+                    str(call.get("id") or call.get("tool_call_id")),
+                    (
+                        str(function.get("name"))
+                        if isinstance(function := call.get("function"), dict)
+                        and function.get("name")
+                        else str(call.get("name"))
+                        if call.get("name")
+                        else None
+                    ),
+                )
+                for call in message.get("tool_calls") or []
+                if isinstance(call, dict)
+                and (call.get("id") or call.get("tool_call_id"))
+            )
+    message = body.get("message")
+    if isinstance(message, dict):
+        calls.extend(
+            (
+                str(call.get("id") or call.get("tool_call_id")),
+                (
+                    str(function.get("name"))
+                    if isinstance(function := call.get("function"), dict)
+                    and function.get("name")
+                    else str(call.get("name"))
+                    if call.get("name")
+                    else None
+                ),
+            )
+            for call in message.get("tool_calls") or []
+            if isinstance(call, dict) and (call.get("id") or call.get("tool_call_id"))
+        )
+    return calls
 
 
 def _top_level_prompt_completion(
@@ -294,7 +474,11 @@ def build_rollout_results_record(
     training_ready_reason = None
     if not training_ready:
         if llm_export_error:
-            training_ready_reason = "invalid_llm_trajectory_jsonl"
+            training_ready_reason = (
+                "invalid_llm_trajectory_jsonl"
+                if llm_export_error.startswith("Invalid LLM trajectory JSONL:")
+                else "export_error"
+            )
         elif validation_error:
             training_ready_reason = "invalid_prime_sft_row"
         elif effective_export_error:
