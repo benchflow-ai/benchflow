@@ -8,6 +8,7 @@ by the command surface they protect.
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -22,9 +23,20 @@ runner = CliRunner()
 # ── continue: exit code (H1/H2) + concurrency floor (M4) ──────────────────────
 
 
-def test_continue_exits_1_on_agent_error(tmp_path, monkeypatch):
-    # H1/H2: a failed continuation must report failure to $? (it printed a green
-    # ✓ then a yellow warning and exited 0, so scripts read it as success).
+# Run the exit-code guards through BOTH spellings: the canonical
+# `bench eval continue` and the deprecated top-level `bench continue` alias.
+# Without the canonical case, a broken `eval_app` registration (PR #800) would
+# slip through because the alias path would still pass.
+_CONTINUE_SPELLINGS = pytest.mark.parametrize(
+    "invoke", [["eval", "continue"], ["continue"]], ids=["eval", "alias"]
+)
+
+
+@_CONTINUE_SPELLINGS
+def test_continue_exits_1_on_agent_error(invoke, tmp_path, monkeypatch):
+    """Guards the continue exit-code contract (H1/H2: a failed continuation must
+    report failure to $? — it printed a green ✓ then exited 0). Parametrized over
+    both spellings after PR #800 moved the command under `bench eval continue`."""
     import benchflow.continue_run.orchestrator as orch
 
     async def fake_continue_run(*args, **kwargs):
@@ -38,13 +50,16 @@ def test_continue_exits_1_on_agent_error(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(orch, "continue_run", fake_continue_run)
-    res = runner.invoke(app, ["continue", str(tmp_path)])
+    res = runner.invoke(app, [*invoke, str(tmp_path)])
     assert res.exit_code == 1
     assert "agent error" in res.output
 
 
-def test_continue_exits_0_when_no_error(tmp_path, monkeypatch):
-    # The success path must still exit 0 (guard against over-correcting H1).
+@_CONTINUE_SPELLINGS
+def test_continue_exits_0_when_no_error(invoke, tmp_path, monkeypatch):
+    """Guards the continue success path (must still exit 0, against over-correcting
+    H1), on both the canonical `bench eval continue` and the deprecated alias
+    after PR #800."""
     import benchflow.continue_run.orchestrator as orch
 
     async def fake_continue_run(*args, **kwargs):
@@ -58,15 +73,39 @@ def test_continue_exits_0_when_no_error(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(orch, "continue_run", fake_continue_run)
-    res = runner.invoke(app, ["continue", str(tmp_path)])
+    res = runner.invoke(app, [*invoke, str(tmp_path)])
     assert res.exit_code == 0
 
 
-def test_continue_batch_rejects_zero_concurrency(tmp_path):
-    # M4: --concurrency 0 reached an unguarded asyncio.run -> raw ValueError.
-    res = runner.invoke(app, ["continue-batch", str(tmp_path), "--concurrency", "0"])
+@pytest.mark.parametrize(
+    "invoke", [["eval", "continue-batch"], ["continue-batch"]], ids=["eval", "alias"]
+)
+def test_continue_batch_rejects_zero_concurrency(invoke, tmp_path):
+    """Guards the M4 concurrency floor (--concurrency 0 reached an unguarded
+    asyncio.run -> raw ValueError), on both the canonical `bench eval
+    continue-batch` and the deprecated alias after PR #800."""
+    res = runner.invoke(app, [*invoke, str(tmp_path), "--concurrency", "0"])
     assert res.exit_code != 0
     assert not isinstance(res.exception, ValueError)  # typer rejects it, not a crash
+
+
+def test_continue_is_canonical_under_eval_group(tmp_path):
+    """Guards PR #800: `continue` is canonical under the `eval` group.
+
+    `bench eval continue` is the canonical spelling (visible in `bench eval
+    --help`); the original top-level `bench continue` stays as a hidden,
+    deprecated alias so existing scripts keep working.
+    """
+    eval_help = runner.invoke(app, ["eval", "--help"])
+    assert eval_help.exit_code == 0
+    assert "continue" in eval_help.output  # visible under the eval group
+
+    # Both spellings resolve to the same command and fail the same way on an
+    # empty (config-less) run folder.
+    canonical = runner.invoke(app, ["eval", "continue", str(tmp_path)])
+    alias = runner.invoke(app, ["continue", str(tmp_path)])
+    assert canonical.exit_code == 1
+    assert alias.exit_code == 1
 
 
 # ── agent run: missing codex binary (H3) ─────────────────────────────────────
@@ -148,7 +187,7 @@ def test_parse_skill_coerces_scalar_frontmatter(tmp_path, frontmatter, field, ex
     assert info.description[:60] == info.description[:60]
 
 
-# ── eval create --config: malformed YAML (H7) + prompts string-split (H8) ─────
+# ── eval run --config: malformed YAML (H7) + prompts string-split (H8) ─────
 
 
 def test_from_yaml_rejects_non_mapping(tmp_path):
@@ -326,7 +365,7 @@ def test_hub_env_list_json_is_valid_json_even_when_narrow(monkeypatch):
     payload = json.dumps({"environments": [{"name": "a/b", "description": long_desc}]})
     monkeypatch.setattr(hosted, "prime_env_list", lambda **kw: payload)
     monkeypatch.setenv("COLUMNS", "40")
-    res = runner.invoke(app, ["hub", "env", "list", "--json"])
+    res = runner.invoke(app, ["hub", "list", "--json"])
     assert res.exit_code == 0
     assert json.loads(res.stdout) == json.loads(payload)  # round-trips cleanly
 
@@ -431,7 +470,7 @@ def test_arg_validation_errors_route_to_stderr(argv, needle):
 
 def test_skills_eval_exits_nonzero_when_cases_error(tmp_path, monkeypatch):
     # A run where cases errored (e.g. missing credentials) must exit non-zero,
-    # matching `eval create` — a 100%-error run printed `0/1` but exited 0, so CI
+    # matching `eval run` — a 100%-error run printed `0/1` but exited 0, so CI
     # read a total failure as success.
     from benchflow.skill_eval._core import CaseResult, SkillEvalResult, SkillEvaluator
 
@@ -517,3 +556,214 @@ def test_viewer_job_dir_indexes_rollout_subdirs(tmp_path):
     assert "job directory" in html_out
     assert "task-a__trial-1" in html_out
     assert "No trajectory files found" not in html_out
+
+
+# ── round-3 sweep: error-handling defects found by the CLI audit workflow ─────
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="chmod 000 does not restrict root, so the unreadable-dir probe is moot",
+)
+def test_tasks_digest_skips_unreadable_subdir_without_traceback(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P0: the directory scan stat'd task.toml inside an unreadable subdir and
+    # dumped a raw PermissionError traceback. It must skip what it cannot stat.
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "task.toml").write_text("")
+    locked.chmod(0o000)
+    try:
+        res = runner.invoke(app, ["tasks", "digest", str(tmp_path)])
+    finally:
+        locked.chmod(0o755)  # restore so pytest tmp cleanup can recurse in
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "No tasks under" in res.output
+
+
+def test_tasks_generate_from_file_directory_is_clean_error(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P0: a directory passed exists() then raised IsADirectoryError in the format
+    # sniff's path.open(). It must be rejected with a clean message.
+    res = runner.invoke(
+        app, ["tasks", "generate", "--from-file", str(tmp_path), "--dry-run"]
+    )
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "Not a file" in res.output
+
+
+def test_tasks_generate_rejects_invalid_outcome(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P3: a bogus --outcome silently matched nothing and exited 0; it must be
+    # rejected against the advertised choice set.
+    trace = tmp_path / "t.jsonl"
+    trace.write_text('{"foo":"bar"}\n')
+    res = runner.invoke(
+        app,
+        [
+            "tasks",
+            "generate",
+            "--from-file",
+            str(trace),
+            "--outcome",
+            "zzz",
+            "--dry-run",
+        ],
+    )
+    assert res.exit_code == 1
+    assert "Invalid --outcome" in res.output
+
+
+def test_continue_batch_rejects_nonexistent_root(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P1: a typo'd ROOT exited 0 "No timeout run folders found." (silent success).
+    res = runner.invoke(app, ["continue-batch", str(tmp_path / "nope-12345")])
+    assert res.exit_code == 1
+    assert "does not exist" in res.output
+
+
+def test_continue_batch_rejects_file_root(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P1: a regular-file ROOT also exited 0; it must fail like `bench continue`.
+    f = tmp_path / "a-file.txt"
+    f.write_text("x")
+    res = runner.invoke(app, ["continue-batch", str(f)])
+    assert res.exit_code == 1
+    assert "not a directory" in res.output
+
+
+def test_environment_create_empty_dir_names_task_md(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P2: the error named the legacy instruction.md; it must name the formats the
+    # author can actually create (task.md / task.toml).
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    res = runner.invoke(
+        app, ["environment", "create", str(empty), "--sandbox", "docker"]
+    )
+    assert res.exit_code == 1
+    assert "task.md" in res.output
+
+
+def test_eval_view_empty_dir_fails_fast_without_writing(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P3: `eval view` wrote a blank trajectory.html into an unrelated dir and
+    # started a server; an empty dir must fail fast and write nothing.
+    res = runner.invoke(app, ["eval", "view", str(tmp_path), "--port", "0"])
+    assert res.exit_code == 1
+    assert "No trajectories found" in res.output
+    assert not (tmp_path / "trajectory.html").exists()
+
+
+def test_print_error_echoes_colon_tokens_verbatim_no_emoji(monkeypatch):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P3: print_error rendered user input through Rich with emoji=True, so a
+    # hosted-env ref like primeintellect:a:b had :a: swapped for an emoji. The
+    # echoed value must be literal.
+    import io
+
+    import benchflow.cli._shared as shared
+
+    rec = Console(file=io.StringIO(), width=200)
+    monkeypatch.setattr(shared, "err_console", rec)
+    shared.print_error("Invalid hosted environment reference: primeintellect:a:b")
+    out = rec.file.getvalue()
+    assert "primeintellect:a:b" in out
+
+
+# ── round-4 sweep: deep fix-hunt regressions across the merged CLI ─────────────
+
+_MIN_TRACE = (
+    '{"type":"user","sessionId":"s1","message":{"role":"user","content":"x"}}\n'
+    '{"type":"assistant","sessionId":"s1","message":'
+    '{"role":"assistant","content":[{"type":"text","text":"y"}]}}\n'
+)
+
+
+def test_tasks_normalize_output_is_dir_clean_error(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P0: --output an existing directory raised a raw IsADirectoryError.
+    assert (
+        runner.invoke(
+            app, ["tasks", "init", "demotask", "--dir", str(tmp_path)]
+        ).exit_code
+        == 0
+    )
+    outdir = tmp_path / "outdir"
+    outdir.mkdir()
+    res = runner.invoke(
+        app, ["tasks", "normalize", str(tmp_path / "demotask"), "--output", str(outdir)]
+    )
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "directory" in res.output.lower()
+
+
+def test_skills_eval_evals_json_as_dir_clean_error(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P0: evals/evals.json being a directory raised a raw IsADirectoryError.
+    (tmp_path / "evals" / "evals.json").mkdir(parents=True)
+    res = runner.invoke(app, ["skills", "eval", str(tmp_path)])
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "No evals/evals.json found" in res.output
+
+
+def test_sandbox_create_task_file_as_dir_clean_error(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P0: task.md itself being a directory raised a raw IsADirectoryError.
+    (tmp_path / "task.md").mkdir()
+    res = runner.invoke(
+        app, ["sandbox", "create", str(tmp_path), "--sandbox", "docker"]
+    )
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "Not a valid task directory" in res.output
+
+
+def test_tasks_generate_output_is_file_clean_error(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P0: --output an existing file raised a raw NotADirectoryError.
+    trace = tmp_path / "t.jsonl"
+    trace.write_text(_MIN_TRACE)
+    outfile = tmp_path / "outfile"
+    outfile.write_text("x")
+    res = runner.invoke(
+        app, ["tasks", "generate", "--from-file", str(trace), "--output", str(outfile)]
+    )
+    assert res.exit_code == 1
+    assert not isinstance(res.exception, OSError), res.exception
+    assert "is not a directory" in res.output
+
+
+def test_tasks_generate_zero_results_exits_nonzero(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P2: generating 0 tasks (everything filtered) used to print a green
+    # "Generated 0 tasks" and exit 0 — a silent no-op success.
+    trace = tmp_path / "t.jsonl"
+    trace.write_text(_MIN_TRACE)
+    res = runner.invoke(
+        app,
+        [
+            "tasks",
+            "generate",
+            "--from-file",
+            str(trace),
+            "--min-steps",
+            "999",
+            "--output",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert res.exit_code == 1
+    assert "No tasks generated" in res.output
+
+
+def test_eval_list_explicit_nonexistent_dir_exits_nonzero(tmp_path):
+    """Guards PR #789 (CLI error-handling hardening)."""
+    # P3: a typo'd explicit jobs-dir exited 0 (silent) while `eval metrics` exits 1.
+    res = runner.invoke(app, ["eval", "list", str(tmp_path / "nope-xyz")])
+    assert res.exit_code == 1
+    assert "No such jobs directory" in res.output

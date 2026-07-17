@@ -1,7 +1,7 @@
 """Zero-task selection must exit non-zero and never write a misleading
 summary.json (#407).
 
-Before the fix, ``bench eval create --include not-a-real-task`` exited 0
+Before the fix, ``bench eval run --include not-a-real-task`` exited 0
 and published a ``total: 0, passed: 0, score: "0.0%"`` artifact that
 downstream dashboards could ingest as evidence.
 """

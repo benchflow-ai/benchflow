@@ -8,7 +8,7 @@ every artifact the run produces, and authoring a task of your own — expect
 roughly 10–20 minutes end to end, most of it the live eval.
 
 The prompt uses generic `<provider>/<model>` placeholders; substitute any
-supported provider. It targets benchflow 0.6.2 or newer.
+supported provider. It targets the latest stable BenchFlow CLI/SDK from PyPI.
 
 ````text
 You are setting up benchflow, an open-source harness for benchmarking AI coding
@@ -19,7 +19,7 @@ GUARDRAILS (apply to every step):
 - Never print, echo, log, or commit API keys. Never write keys into any file
   except a local .env (if the working directory is a git repo, confirm .env
   is gitignored; never commit it anywhere).
-- Every `bench eval create` invocation — including retries — must use a FRESH
+- Every `bench eval run` invocation — including retries — must use a FRESH
   --jobs-dir. Reusing a jobs dir triggers resume logic and skips the run.
 - A `[FAIL]` line with a fractional reward (e.g. reward 0.4, Score: 0/1) means
   the pipeline is HEALTHY: the agent ran and the verifier scored it below the
@@ -37,19 +37,16 @@ STEP 0 — Preflight
   the run partway through instead of at startup.
 - Check uv: `command -v uv`. If missing, install it:
   `curl -LsSf https://astral.sh/uv/install.sh | sh` and ensure it is on PATH.
-- Python 3.12+ is required; uv will provision it if needed.
+- uv will provision the required Python if needed.
 
 STEP 1 — Install benchflow
-This prompt targets the latest stable benchflow 0.6.2 CLI/SDK. Install it from
-PyPI:
-    uv tool install benchflow
+Install or upgrade the latest stable BenchFlow CLI/SDK from PyPI:
+    uv tool install --upgrade benchflow
 benchflow pins a stable litellm (no `--prerelease` flag needed). If uv reports
 "Executables already exist: bench, benchflow", rerun the same command with
 `--force`. Confirm with `bench --version` after install.
-If the installed version is older than 0.6.2, upgrade before continuing:
-    uv tool install --upgrade benchflow
 If uv still resolves an older executable, rerun with `--force` and confirm the
-new version with `bench --version`.
+active executable with `bench --version`.
 TRAP — this quickstart uses the tool-installed `bench` (on PATH after
 `uv tool install`); if you instead invoke benchflow as `uv run bench …` from a
 benchflow source checkout, run it from INSIDE that project directory, because
@@ -92,7 +89,7 @@ settings automatically.
 STEP 4 — Run the eval in a Docker sandbox
 Use a fresh, timestamped jobs dir and concurrency 1:
     JOBS_DIR="jobs/quickstart-$(date +%Y%m%d-%H%M%S)"
-    bench eval create \
+    bench eval run \
       --tasks-dir skillsbench/tasks/tictoc-unnecessary-abort-detection \
       --agent openhands \
       --model <provider>/<model> \
@@ -146,11 +143,12 @@ and what it is:
                                        test emits a CTRF report)
 Also note the job-level summary.json and the aggregated verifiers.jsonl /
 adp.jsonl in the job directory. The trainer/ files and the job-level
-aggregates are written by benchflow 0.6.2+; if they are missing, re-check
-`bench --version` before reporting a bug. `cost` in result.json can be null
-for user-endpoint providers (cost telemetry is unavailable for them) — that
-is a telemetry gap, not a failed run. Show the user one or two sample lines
-from acp_trajectory.jsonl so they see what a trace looks like.
+aggregates are written by current BenchFlow releases; if they are missing,
+re-check `bench --version` and upgrade before reporting a bug. `cost` in
+result.json can be null for user-endpoint providers (cost telemetry is
+unavailable for them) — that is a telemetry gap, not a failed run. Show the
+user one or two sample lines from acp_trajectory.jsonl so they see what a trace
+looks like.
 
 STEP 7 — Author your own task and verify it with the oracle
 Scaffold a task (`bench tasks init` defaults to the native task.md format):
@@ -178,7 +176,7 @@ Fix anything it flags (it rejects unreplaced [REPLACE: ...] placeholders).
 Then run the task with the built-in oracle agent — it executes
 oracle/solve.sh directly, needs no model or API key, and proves the task +
 verifier loop:
-    bench eval create \
+    bench eval run \
       --tasks-dir tasks/my-first-task \
       --agent oracle \
       --sandbox docker \

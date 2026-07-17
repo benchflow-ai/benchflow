@@ -1,0 +1,45 @@
+# env0@outage — env-0 with the gmail + slack services removed.
+#
+# A perturbation variant for the "Same state, tool outage" experiment: bind the
+# SAME task to env0@prod vs env0@outage and attribute the reward delta to the
+# environment alone (the S axis). A task that needs slack (port 9002) scores 1.0
+# under env0@prod and fails under env0@outage because the service is absent.
+#
+#   bench eval create --tasks-dir <task> --environment-manifest env0@outage ...
+
+[environment]
+name           = "env-0"
+base_image     = "xdotli/env0-base:latest"
+owns_lifecycle = false
+isolation      = "per_task"
+
+[environment.task_selection]
+mechanism = "image"
+
+[environment.readiness]
+timeout_sec = 60
+
+[[environment.services]]
+name    = "auth"
+command = "auth --db /data/auth.db serve --host 0.0.0.0 --port 9000 --no-mcp"
+port    = 9000
+
+[[environment.services]]
+name    = "gcal"
+command = "gcal --db /data/gcal.db serve --host 0.0.0.0 --port 9003 --no-mcp"
+port    = 9003
+
+[[environment.services]]
+name    = "gdoc"
+command = "gdoc --db /data/gdoc.db serve --host 0.0.0.0 --port 9004 --no-mcp"
+port    = 9004
+
+[[environment.services]]
+name    = "gdrive"
+command = "gdrive --db /data/gdrive.db serve --host 0.0.0.0 --port 9005 --no-mcp"
+port    = 9005
+
+[[environment.services]]
+name    = "stripe"
+command = "stripe --db /data/stripe.db serve --host 0.0.0.0 --port 9007 --no-mcp"
+port    = 9007

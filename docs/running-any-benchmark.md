@@ -54,7 +54,7 @@ their native Verifiers execution surface and preserves their hosted identity
 [`src/benchflow/hosted_env.py`](../src/benchflow/hosted_env.py):
 
 ```bash
-bench eval create \
+bench eval run \
     --source-env primeintellect/general-agent \
     --source-env-version 0.1.1 \
     --model google/gemini-2.5-flash-lite

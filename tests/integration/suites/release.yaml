@@ -97,6 +97,12 @@ axes:
       - pi-acp
     cheap_representative:
       - gemini
+    experimental:
+      # mimo runs the Xiaomi MiMo (MiMo Code) ACP path via the `xiaomi`
+      # provider and is intentionally OUTSIDE the credentialed release set
+      # (ENG-265). Listed here so the config<->manifest consistency check
+      # accepts configs/mimo.yaml rather than reporting it as drift.
+      - mimo
   models:
     default:
       gemini: gemini-3.1-flash-lite-preview
@@ -339,7 +345,7 @@ lanes:
       task_sets:
         - shared_sandbox_smoke
     acceptance:
-      - bench eval create succeeds on Docker and Daytona without special user intervention beyond each backend's documented auth.
+      - bench eval run succeeds on Docker and Daytona without special user intervention beyond each backend's documented auth.
       - result.json, trajectory output, and summary schema are valid.
 
   - id: security-dind-smoke
@@ -351,8 +357,8 @@ lanes:
       - Firecracker/K8s sandbox backends are not exposed by the current CLI.
       - Run evidence is blocked until those backends have runnable support.
     activation_criteria:
-      - bench eval create --sandbox firecracker runs the task without questions.
-      - bench eval create --sandbox k8s runs the task without questions.
+      - bench eval run --sandbox firecracker runs the task without questions.
+      - bench eval run --sandbox k8s runs the task without questions.
       - Docker-in-Docker-style service/container operations work inside both sandboxes.
     matrix:
       agents: cheap_representative
@@ -456,7 +462,7 @@ lanes:
     acceptance:
       - bench tasks generate emits valid task directories from both source classes.
       - Generated tasks pass bench tasks check.
-      - At least one generated task runs through bench eval create and validates verifier outcome.
+      - At least one generated task runs through bench eval run and validates verifier outcome.
 
   - id: decoupling-checks
     release_blocker: true

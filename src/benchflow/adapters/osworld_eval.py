@@ -1,25 +1,27 @@
 """Real OSWorld evaluator orchestration (faithful to xlang-ai/OSWorld).
 
 OSWorld scores a task by, in order: running the evaluator's ``postconfig`` setup
-steps in the desktop, running each ``result`` getter (``vm_command_line`` POSTs the
-command to the desktop control server's ``/execute`` and returns its stdout),
-resolving each ``expected`` getter (a ``rule`` getter just returns its ``rules``),
-and applying the named metric ``func`` to ``(result, expected)`` — combining
-multiple funcs with ``conj`` ("and"/"or"). See OSWorld ``desktop_env.py`` +
-``evaluators/getters,metrics``.
+steps in the desktop, resolving each ``result`` getter, resolving each ``expected``
+getter, and applying the named metric ``func`` to ``(result, expected, **options)``
+— combining multiple funcs with ``conj`` ("and"/"or"). See OSWorld ``desktop_env.py``
++ ``evaluators/getters,metrics``.
 
 This module ports that orchestration. The desktop's ``/execute`` is abstracted as an
-injected ``run_command(command, shell) -> str`` so the logic is unit-testable without
-a live desktop; the Cua-local desktop wiring is a later increment (see
-~/benchflow-context/0.7-real-evals-goal.md). It replaces the degenerate
-``use_computer_cookbook._expected_result`` "answer must be exactly 'observed'" stub.
+injected ``run_command(command, shell) -> str``; file getters (``vm_file``,
+``cloud_file``, ``cache_file`` …) resolve to local paths, which is correct when the
+verifier runs *in the guest* (files are local) — the benchflow OSWorld verifier runs
+in-sandbox. ``cache_dir`` is where ``cloud_file`` reference downloads land.
 """
 
 from __future__ import annotations
 
+import importlib
+import os
 import shlex
+import tempfile
+import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 try:
     # In-repo (tested) import path.
@@ -32,6 +34,29 @@ except ImportError:  # pragma: no cover - standalone in a sandbox verifier
 # Runs a command in the desktop sandbox and returns its stdout (the benchflow
 # analogue of OSWorld's POST to the desktop server's /execute endpoint).
 RunCommand = Callable[[Any, bool], str]
+VendoredGetter = Callable[..., Any]
+VendoredGetterResolver = Callable[[str], VendoredGetter | None]
+ShimEnvFactory = Callable[[RunCommand, str], Any]
+
+
+def _load_vendored_getters() -> tuple[ShimEnvFactory, VendoredGetterResolver] | None:
+    """Load vendored getter shims in-repo or from sibling verifier files."""
+    for module_name in ("benchflow.adapters.osworld_getters", "osworld_getters"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        return (
+            cast(ShimEnvFactory, module.__dict__["ShimEnv"]),
+            cast(VendoredGetterResolver, module.__dict__["resolve_vendored_getter"]),
+        )
+    return None
+
+
+# Vendored OSWorld getters (chrome/vlc/gimp/accessibility/...) for getter types
+# the native handling below does not cover. They run through an in-guest
+# controller shim so scoring uses OSWorld's own getter code.
+_VENDORED_GETTERS = _load_vendored_getters()
 
 # OSWorld defaults: desktop resolution 1920x1080 and the public-evaluation VM
 # password (desktop_env/controllers/setup.py + desktop_env.py screen_size).
@@ -80,9 +105,8 @@ def _run_postconfig(
     """Run evaluator ``postconfig`` setup in the desktop before scoring.
 
     Mirrors the OSWorld config vocabulary used by evaluator setup: ``execute`` /
-    ``command`` run a shell command; ``download`` fetches each file to its path
-    (via ``curl`` in the desktop, the benchflow analogue of OSWorld's host download
-    + upload). Unknown step types raise so we never silently under-provision.
+    ``command`` run a shell command; ``download`` fetches each file to its path;
+    ``sleep`` waits. Unknown step types raise so we never silently under-provision.
     """
     for step in steps:
         if not isinstance(step, dict):
@@ -99,34 +123,84 @@ def _run_postconfig(
                     run_command(
                         f"curl -fsSL {shlex.quote(url)} -o {shlex.quote(path)}", True
                     )
+        elif stype == "sleep":
+            run_command(f"sleep {float(params.get('seconds', 1))}", True)
         else:
             raise UnsupportedGetterError(
                 f"OSWorld postconfig step type {stype!r} is not ported yet"
             )
 
 
-def _get_result(
+def _download(url: str, dest: str) -> str | None:
+    """Download ``url`` to ``dest`` (atomic), returning the path or ``None`` on failure."""
+    if os.path.exists(dest):
+        return dest
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    tmp = f"{dest}.tmp"
+    try:
+        with urllib.request.urlopen(url) as resp, open(tmp, "wb") as f:
+            f.write(resp.read())
+        os.replace(tmp, dest)
+        return dest
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return None
+
+
+def _get_state(
     config: Mapping[str, Any] | None,
     run_command: RunCommand,
     subst: Callable[[Any], Any],
+    cache_dir: str,
 ) -> Any:
-    """Resolve a ``result`` getter to its value (port of OSWorld getters)."""
+    """Resolve a getter config to its value (port of OSWorld getters).
+
+    File getters resolve to *local paths* — correct for the in-guest verifier, where
+    the result file is already on disk and the expected reference is downloaded.
+    """
     if not config:
         return None
     gtype = config.get("type")
     if gtype == "vm_command_line":
-        return run_command(subst(config.get("command")), bool(config.get("shell", False)))
-    raise UnsupportedGetterError(f"OSWorld result getter {gtype!r} is not ported yet")
-
-
-def _get_expected(config: Mapping[str, Any] | None) -> Any:
-    """Resolve an ``expected`` getter (the common ``rule`` getter returns its rules)."""
-    if not config:
-        return None
-    gtype = config.get("type")
+        return run_command(
+            subst(config.get("command")), bool(config.get("shell", False))
+        )
     if gtype == "rule":
         return config.get("rules")
-    raise UnsupportedGetterError(f"OSWorld expected getter {gtype!r} is not ported yet")
+    if gtype in {"vm_file", "local"}:
+        path = subst(config.get("path"))
+        return path if path and os.path.exists(path) else None
+    if gtype == "cloud_file":
+        dest = os.path.join(
+            cache_dir,
+            str(config.get("dest") or os.path.basename(str(config.get("path")))),
+        )
+        return _download(str(config.get("path")), dest)
+    if gtype == "cache_file":
+        return os.path.join(cache_dir, str(config.get("path")))
+    if gtype == "content_from_vm_file":
+        return _content_from_vm_file(subst(config.get("path")), config)
+    # Anything else: run OSWorld's own getter via the in-guest controller shim.
+    if _VENDORED_GETTERS is not None:
+        shim_env, resolve_vendored_getter = _VENDORED_GETTERS
+        getter = resolve_vendored_getter(str(gtype))  # raises if deps missing
+        if getter is not None:
+            return getter(shim_env(run_command, cache_dir), dict(config))
+    raise UnsupportedGetterError(f"OSWorld getter {gtype!r} is not ported yet")
+
+
+def _content_from_vm_file(path: str | None, config: Mapping[str, Any]) -> Any:
+    """Port of OSWorld ``get_content_from_vm_file`` (xlsx ``last_row`` only so far)."""
+    if not path or not os.path.exists(path):
+        return None
+    if config.get("file_type") == "xlsx" and config.get("file_content") == "last_row":
+        import pandas as pd  # lazy: heavy dep only needed for this getter
+
+        return pd.read_excel(path).iloc[-1].astype(str).tolist()
+    raise UnsupportedGetterError(
+        f"content_from_vm_file {config.get('file_type')}/{config.get('file_content')} not ported"
+    )
 
 
 def evaluate(
@@ -135,18 +209,21 @@ def evaluate(
     *,
     password: str = _DEFAULT_PASSWORD,
     screen: tuple[int, int] = _DEFAULT_SCREEN,
+    cache_dir: str | None = None,
 ) -> float:
-    """Score a real OSWorld task: postconfig → result getter → metric vs expected.
+    """Score a real OSWorld task: postconfig → result/expected getters → metric.
 
     ``run_command(command, shell)`` runs a command in the desktop and returns stdout.
-    ``password``/``screen`` resolve the template variables in commands. Returns the
-    OSWorld reward (1.0 / 0.0), combining multiple metrics via ``conj``.
+    ``password``/``screen`` resolve template variables. ``cache_dir`` holds
+    ``cloud_file`` reference downloads. Returns the OSWorld reward (1.0 / 0.0),
+    combining multiple metrics via ``conj``.
     """
     evaluator = osworld_task.get("evaluator") or {}
     if not isinstance(evaluator, dict):
         raise ValueError("OSWorld task 'evaluator' must be an object")
 
     width, height = screen
+    cache = cache_dir or tempfile.mkdtemp(prefix="osworld-cache-")
 
     def subst(value: Any) -> Any:
         return substitute(value, password=password, width=width, height=height)
@@ -155,19 +232,26 @@ def evaluate(
 
     funcs = _as_list(evaluator["func"])
     results = _as_list(evaluator.get("result"))
+    has_expected = bool(evaluator.get("expected"))
     expecteds = _as_list(evaluator.get("expected"))
-    # Pad result/expected to the number of metrics (OSWorld requires equal lengths
-    # for the list form; the scalar form broadcasts to one).
-    while len(results) < len(funcs):
-        results.append(None)
-    while len(expecteds) < len(funcs):
-        expecteds.append(None)
+    options = _as_list(evaluator.get("options"))
+    # Pad result/expected/options to the number of metrics.
+    for seq in (results, expecteds, options):
+        while len(seq) < len(funcs):
+            seq.append(None)
 
     scores: list[float] = []
-    for func, result_cfg, expected_cfg in zip(funcs, results, expecteds, strict=False):
-        result = _get_result(result_cfg, run_command, subst)
-        expected = _get_expected(expected_cfg)
-        scores.append(float(resolve_metric(func)(result, expected)))
+    for func, result_cfg, expected_cfg, opt in zip(
+        funcs, results, expecteds, options, strict=False
+    ):
+        result = _get_state(result_cfg, run_command, subst, cache)
+        metric = resolve_metric(func)
+        kwargs = opt if isinstance(opt, dict) else {}
+        if has_expected and expected_cfg is not None:
+            expected = _get_state(expected_cfg, run_command, subst, cache)
+            scores.append(float(metric(result, expected, **kwargs)))
+        else:
+            scores.append(float(metric(result, **kwargs)))
 
     conj = evaluator.get("conj", "and")
     if conj == "or":

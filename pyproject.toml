@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.6.2"
+version = "0.6.3"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -8,7 +8,9 @@ keywords = ["benchmark", "llm-agents", "acp", "agent-evaluation", "multi-turn", 
 dependencies = [
     "agent-client-protocol>=0.10",
     "httpx>=0.27.0",
-    "anyio>=4.0",
+    # httpx-ws (transitive via the daytona SDK) needs anyio>=4.9 for
+    # AsyncContextManagerMixin; anyio 4.8 makes the daytona SDK un-importable.
+    "anyio>=4.9",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "rich>=13.0",
@@ -87,6 +89,42 @@ deepagents = [
     "deepagents>=0.6",
     "langchain-openai>=0.2",
 ]
+# Dependencies of the vendored OSWorld evaluator suite (src/benchflow/adapters/
+# _osworld_vendor, Apache-2.0). 'osworld' covers the bulk of the 122 metrics
+# (spreadsheet/document/pdf/json/text); the torch-class image+audio metrics
+# (docs-OCR/gimp/vlc) additionally need 'osworld-cv'. Installed into the OSWorld
+# verifier image so scoring runs OSWorld's own code in-guest.
+osworld = [
+    "pandas>=2.0",
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+    "python-pptx>=0.6",
+    "pdfplumber>=0.11",
+    "PyPDF2>=3.0",
+    "pypdf>=4.0",
+    "pymupdf>=1.24",
+    "rapidfuzz>=3.0",
+    "formulas>=1.2",
+    "lxml>=5.0",
+    "cssselect>=1.2",
+    "xmltodict>=0.13",
+    "tldextract>=5.0",
+    "Pillow>=10.0",
+    "numpy>=1.26",
+    "odfpy>=1.4",
+    "mutagen>=1.47",
+    "pyyaml>=6.0",
+    "beautifulsoup4>=4.12",
+    "borb>=2.1,<3.0.0",
+    "imagehash>=4.3",
+]
+osworld-cv = [
+    "easyocr>=1.7",
+    "opencv-python>=4.9",
+    "scikit-image>=0.22",
+    "librosa>=0.10",
+    "pyacoustid>=1.3",
+]
 
 [project.scripts]
 benchflow = "benchflow.cli.main:app"
@@ -146,6 +184,8 @@ extend-exclude = [
     ".claude/skills/skill-creator",
     "benchmarks/**/tasks/**/environment/claw-*",
     "tests/fixtures/skillsbench_slice",
+    # Vendored OSWorld evaluator suite (Apache-2.0) — run verbatim, not linted.
+    "src/benchflow/adapters/_osworld_vendor",
 ]
 
 [tool.ruff.lint]
@@ -198,4 +238,6 @@ exclude = [
     "src/benchflow/rewards/file_readers.py",
     "src/benchflow/rewards/rubric_config.py",
     "src/benchflow/experimental/mcp/reviewer_server.py",
+    # Vendored OSWorld evaluator suite (Apache-2.0) — upstream code, run as-is.
+    "src/benchflow/adapters/_osworld_vendor",
 ]

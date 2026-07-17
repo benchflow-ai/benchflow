@@ -3,30 +3,28 @@ A 5-minute path from install to first eval.
 
 ## Prerequisites
 
-- Python 3.12+
-- [`uv`](https://docs.astral.sh/uv/)
+- [`uv`](https://docs.astral.sh/uv/) for the CLI install; it provisions a compatible Python automatically
 - Docker for local sandboxes; install `benchflow[sandbox-daytona]` + set `DAYTONA_API_KEY` for Daytona cloud runs, or install `benchflow[sandbox-modal]` for Modal-backed runs
 - An API key or subscription/OAuth auth for at least one agent (see below)
 
 ## Install
 
-`0.6.2` is the latest stable release on PyPI. Install (or upgrade) with uv or pip:
+Install or upgrade to the latest stable release from PyPI with `uv`:
 
 ```bash
-uv tool install benchflow                  # add --upgrade to refresh
-pip install --upgrade benchflow            # pip equivalent
+uv tool install --upgrade benchflow
 ```
 
 If `uv` reports `Executables already exist: bench, benchflow`, rerun with
-`--force` to replace older non-`uv` entrypoints. Confirm with `bench --version`;
-the stable line should report `0.6.2`. See [Release channels](./release.md) for
-the full command matrix.
+`uv tool install --upgrade --force benchflow` to replace older non-`uv`
+entrypoints. Confirm with `bench --version`.
+See [Release channels](./release.md) for the full command matrix.
 
 For optional sandbox integrations, include the extra in the tool install:
 
 ```bash
-uv tool install 'benchflow[sandbox-daytona]'
-uv tool install 'benchflow[sandbox-modal]'
+uv tool install --upgrade 'benchflow[sandbox-daytona]'
+uv tool install --upgrade 'benchflow[sandbox-modal]'
 ```
 
 This gives you the `benchflow` (alias `bench`) CLI plus the Python SDK. To install for editable development:
@@ -112,7 +110,7 @@ and never reaches the `bench` process. The portable pattern for a `.env` file:
 
 ```bash
 set -a; source .env; set +a
-bench eval create ...
+bench eval run ...
 ```
 
 (benchflow also picks up well-known credential keys from a `.env` file in the
@@ -131,14 +129,14 @@ option, unset the higher one in your shell before running.
 
 ```bash
 # Single task from a local directory
-GEMINI_API_KEY=... bench eval create \
+GEMINI_API_KEY=... bench eval run \
   --tasks-dir tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --sandbox docker
 
 # Single task with mounted skills
-GEMINI_API_KEY=... bench eval create \
+GEMINI_API_KEY=... bench eval run \
   --tasks-dir tasks/edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
@@ -148,10 +146,10 @@ GEMINI_API_KEY=... bench eval create \
   --agent-env BENCHFLOW_SKILL_NUDGE=name
 
 # A whole batch from YAML config
-bench eval create --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
+bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
 
 # Batch over a local tasks directory with concurrency
-GEMINI_API_KEY=... bench eval create \
+GEMINI_API_KEY=... bench eval run \
     --tasks-dir tasks \
     --agent gemini --model gemini-3.1-pro-preview --sandbox daytona --concurrency 32
 
@@ -159,7 +157,7 @@ GEMINI_API_KEY=... bench eval create \
 bench agent list
 ```
 
-`bench eval create` is the primary command for running evaluations — it works for
+`bench eval run` is the primary command for running evaluations — it works for
 single tasks, batch runs, and remote repos. Use `--tasks-dir <dir>` for a local
 directory or `--config <config.yaml>` for a YAML config.
 
@@ -173,7 +171,7 @@ use a sparse checkout and point `--tasks-dir` at it:
 ```bash
 git clone --depth 1 --filter=blob:none --sparse https://github.com/benchflow-ai/skillsbench
 cd skillsbench && git sparse-checkout set tasks/edit-pdf
-bench eval create --tasks-dir tasks/edit-pdf --agent gemini --model gemini-3.1-pro-preview
+bench eval run --tasks-dir tasks/edit-pdf --agent gemini --model gemini-3.1-pro-preview
 ```
 
 When you mount skills, use `BENCHFLOW_SKILL_NUDGE=name` as the default docs
@@ -220,7 +218,7 @@ errors. CLI usage errors (bad flags) exit 2.
 
 The Docker sandbox needs the Docker daemon running. There is no up-front
 check — if the daemon is down the run fails partway through rather than at
-startup, so start Docker before `bench eval create --sandbox docker`.
+startup, so start Docker before `bench eval run --sandbox docker`.
 
 ## Run from Python
 

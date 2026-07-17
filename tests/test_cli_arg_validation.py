@@ -4,6 +4,7 @@ These lock in the v0.6.0 stress-test fixes: invalid arguments must fail fast
 with a clean message (no deadlock, no raw traceback) before any rollout starts.
 """
 
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -107,6 +108,60 @@ def test_tasks_dir_missing_clean_error(tmp_path: Path):
     assert "Traceback (most recent call last)" not in result.output
 
 
+def test_eval_run_context_root_threads_to_evaluation_config(tmp_path: Path):
+    """Guards issue #674: --context-root reaches Dockerfile staging config."""
+    task = _task_dir(tmp_path)
+    context_root = tmp_path / "repo"
+    context_root.mkdir()
+    captured: dict[str, str | None] = {}
+
+    async def capture_context_root(self):
+        captured["context_root"] = self._config.context_root
+        return SimpleNamespace(
+            passed=1, total=1, score=1.0, errored=0, verifier_errored=0
+        )
+
+    with patch.object(Evaluation, "run", new=capture_context_root):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "run",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                "oracle",
+                "--context-root",
+                str(context_root),
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert captured["context_root"] == str(context_root)
+
+
+def test_eval_run_context_root_missing_clean_error(tmp_path: Path):
+    """Guards PR #816 against typoed --context-root paths failing in rollout."""
+    task = _task_dir(tmp_path)
+    with patch.object(Evaluation, "run", new=_fake_run_pass):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "run",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                "oracle",
+                "--context-root",
+                str(tmp_path / "does-not-exist"),
+            ],
+        )
+    assert result.exit_code == 1
+    assert "--context-root not found" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
+
+
 def test_agent_without_default_model_clean_error(tmp_path: Path):
     # codex has no default model; omitting --model must report cleanly, not crash.
     result = _invoke(tmp_path, "--agent", "codex", "--sandbox", "docker")
@@ -116,7 +171,7 @@ def test_agent_without_default_model_clean_error(tmp_path: Path):
 
 
 @pytest.mark.skipif(
-    __import__("importlib").util.find_spec("modal") is not None,
+    importlib.util.find_spec("modal") is not None,
     reason="modal extra installed; missing-extra preflight does not fire",
 )
 def test_sandbox_modal_without_extra_fails_fast(tmp_path: Path):

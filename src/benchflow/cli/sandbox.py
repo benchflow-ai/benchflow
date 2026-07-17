@@ -4,7 +4,7 @@ This is the local execution side of the framework: provision a task as a
 runnable environment on a docker/daytona/modal **sandbox** backend, list active
 sandboxes, and reap stale ones. It was previously ``bench environment``; that
 name now reads as a misnomer (hosted-environment browsing moved to
-``bench hub env``), so the group is renamed to ``sandbox`` — ``bench
+``bench hub``), so the group is renamed to ``sandbox`` — ``bench
 environment`` stays as a hidden deprecated alias group through 0.6.
 
 The command bodies live here as plain functions so the deprecated
@@ -36,9 +36,11 @@ def sandbox_create(task_dir: Path, sandbox: str) -> None:
         raise typer.Exit(1)
     try:
         env = Environment.from_task(task_dir, sandbox=sandbox)
-    except (FileNotFoundError, NotADirectoryError, ValueError) as e:
-        # An existing dir with no task document reaches Task.__init__'s unguarded
-        # read_text() — surface a clean error instead of a raw traceback.
+    except (OSError, ValueError) as e:
+        # An existing dir with no task document — or one where task.md/task.toml
+        # is itself a directory — reaches Task's unguarded read_text(), raising
+        # FileNotFoundError / IsADirectoryError (both OSError). Surface a clean
+        # error instead of a raw traceback.
         print_error(f"Not a valid task directory {task_dir}: {e}")
         raise typer.Exit(1) from None
     except RuntimeError as e:
@@ -52,12 +54,50 @@ def sandbox_create(task_dir: Path, sandbox: str) -> None:
     console.print(f"  Task:    {env.task_path}")
     console.print(f"  Sandbox: {env.sandbox}")
     console.print(
-        "  Use [cyan]bench eval create[/cyan] for CLI runs, or pass to [cyan]bf.run()[/cyan]"
+        "  Use [cyan]bench eval run[/cyan] for CLI runs, or pass to [cyan]bf.run()[/cyan]"
     )
 
 
+def _daytona_sdk_available() -> bool:
+    """True if the optional Daytona SDK can be imported.
+
+    A plain import rather than ``importlib.util.find_spec``: the test suite
+    injects a fake ``daytona`` module into ``sys.modules`` that has no
+    ``__spec__``, which makes ``find_spec`` raise/return None. An import sees the
+    fake (and a real install) alike.
+
+    The anyio compat shim is applied first — the Daytona sync client imports
+    ``anyio.AsyncContextManagerMixin`` at import time, which the pinned anyio may
+    not expose. Without it a *real* install would look absent here (and so would
+    ``build_sync_client`` further down). Mirrors that bootstrap.
+    """
+    try:
+        from benchflow.sandbox.daytona import _ensure_daytona_anyio_compat
+
+        _ensure_daytona_anyio_compat()
+        import daytona  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def sandbox_list_local() -> None:
-    """List active Daytona sandboxes."""
+    """List active off-box sandboxes (Daytona).
+
+    Daytona is the only backend with persistent, listable sandboxes; Docker
+    sandboxes are ephemeral (built and torn down per run). When the optional
+    Daytona SDK is not installed there is nothing to list — an empty result, not
+    an error (mirroring how ``sandbox create`` degrades on a missing extra).
+    """
+    if not _daytona_sdk_available():
+        console.print(
+            "No active sandboxes. Daytona is the only backend with persistent, "
+            "listable sandboxes, and its SDK is not installed "
+            "([cyan]uv sync --extra sandbox-daytona[/cyan]). Docker sandboxes are "
+            "ephemeral and created per run."
+        )
+        return
     from benchflow.cli import main as cli_main
 
     d = cli_main._daytona_client_or_exit()
@@ -85,12 +125,58 @@ def sandbox_list_local() -> None:
 
 
 def sandbox_cleanup(*, dry_run: bool, max_age_minutes: int) -> None:
-    """Clean up orphaned Daytona sandboxes."""
+    """Clean up orphaned Daytona sandboxes.
+
+    Like ``sandbox list``, this is a no-op (not an error) when the optional
+    Daytona SDK is absent: only Daytona has persistent sandboxes to reap.
+    """
+    if not _daytona_sdk_available():
+        console.print(
+            "Nothing to clean up. The Daytona SDK is not installed "
+            "([cyan]uv sync --extra sandbox-daytona[/cyan]); only Daytona has "
+            "persistent sandboxes to reap. Docker sandboxes are torn down per run."
+        )
+        return
     from benchflow.cli import main as cli_main
 
     cli_main._cleanup_daytona_sandboxes(
         dry_run=dry_run, max_age_minutes=max_age_minutes
     )
+    _cleanup_daytona_snapshots(dry_run=dry_run)
+
+
+def _cleanup_daytona_snapshots(dry_run: bool) -> None:
+    """Reap leaked ``bf-snap-*`` Daytona snapshots (display wrapper).
+
+    The sandbox reaper never touches snapshots, so a snapshot whose owning
+    sandbox's ``stop()`` never ran leaks against the account. Scoped by the
+    ``bf-snap-`` name prefix benchflow stamps — Daytona snapshots have no labels.
+    """
+    from benchflow.cli import main as cli_main
+    from benchflow.sandbox.daytona import reap_leaked_snapshots
+
+    d = cli_main._daytona_client_or_exit()
+
+    def _show(snap, will_delete):
+        verdict = "[red](delete)[/red]" if will_delete else "[green](skip)[/green]"
+        if dry_run or not will_delete:
+            console.print(
+                f"  [dim]{getattr(snap, 'name', '?')}[/dim] "
+                f"state={getattr(snap, 'state', '?')} {verdict}"
+            )
+
+    counts = reap_leaked_snapshots(d, dry_run=dry_run, on_decision=_show)
+    if dry_run:
+        console.print(
+            f"\n[bold]{counts['found']} snapshots found, "
+            f"{counts['deleted']} benchflow-owned[/bold] "
+            "(use without --dry-run to delete)"
+        )
+    else:
+        console.print(
+            f"\n[bold green]{counts['deleted']} snapshots deleted[/bold green] "
+            f"({counts['skipped']} skipped, not benchflow-owned)"
+        )
 
 
 def register_sandbox(app: typer.Typer) -> None:
@@ -113,7 +199,7 @@ def register_sandbox(app: typer.Typer) -> None:
 
     @sandbox_app.command("list")
     def sandbox_list_cmd() -> None:
-        """List active local sandboxes."""
+        """List active sandboxes (Daytona; Docker sandboxes are ephemeral)."""
         sandbox_list_local()
 
     @sandbox_app.command("cleanup")

@@ -1,4 +1,4 @@
-"""Tests for registry dataset resolution (`bench eval create -d name@version`).
+"""Tests for registry dataset resolution (`bench eval run -d name@version`).
 
 Step 2 of the dataset-versioning plan (docs/dataset-versioning.md in
 benchflow-ai/skillsbench, registry added in skillsbench PR #922): resolving a

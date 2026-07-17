@@ -99,14 +99,92 @@ def _agent_launch_with_web_policy(
     )
 
 
+# Package runners whose *next* token is a subcommand (``uv run <agent>``,
+# ``npx <agent>``), not the agent binary — skip both.
+_PACKAGE_RUNNERS = frozenset({"uv", "uvx", "npx", "npm", "pnpm", "yarn", "pipx"})
+# Interpreters that launch an agent but never *identify* it: keying a
+# ``pkill -f`` pattern on one of these reaps every interpreter process in the
+# sandbox, not just the agent. (e.g. ``pythonX.Y`` is matched by the
+# ``python`` prefix in :func:`_is_generic_interpreter`.)
+_GENERIC_INTERPRETERS = (
+    frozenset(
+        {
+            "python",
+            "pypy",
+            "node",
+            "nodejs",
+            "deno",
+            "bun",
+            "ruby",
+            "perl",
+            "sh",
+            "bash",
+            "dash",
+            "env",
+        }
+    )
+    | _PACKAGE_RUNNERS
+)
+# Subcommands consumed by a package runner before the agent binary appears.
+_RUNNER_SUBCOMMANDS = frozenset({"run", "tool", "exec", "x"})
+# A leading ``FOO=bar`` environment-variable assignment (e.g. harvey-lab's
+# ``HARVEY_LABS_ROOT=/opt/harvey-labs ... python <shim>``).
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
+# Shell operators that separate commands; the agent invocation is the final
+# command in a ``setup && … && <agent>`` launch (openhands).
+_SHELL_SEP_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
+
+
+def _is_generic_interpreter(basename: str) -> bool:
+    return basename in _GENERIC_INTERPRETERS or basename.startswith("python")
+
+
 def _agent_process_kill_pattern(agent_launch: str) -> str | None:
-    """Return a pkill -f pattern for the launched agent binary."""
-    if not agent_launch.strip():
+    """Return a ``pkill -f`` pattern that targets the *agent* process only.
+
+    The pattern must identify the agent — never the interpreter that launches
+    it. Several agents launch as ``<venv>/bin/python <shim>`` (deepagents,
+    harvey-lab); naively keying on the first token then yields ``python``, and
+    ``pkill -f python`` reaps **every** Python process in the sandbox. That
+    includes Environment-plane services — mock APIs run as console scripts via
+    their ``#!/usr/bin/python`` shebang, so their argv is
+    ``/usr/bin/python /usr/local/bin/<svc> …`` — and Python verifiers. The
+    service is then dead when the verifier reads its live state, scoring 0.0
+    on an otherwise-correct rollout (BF-10).
+
+    Resolution:
+
+    1. Reduce to the **last shell-command segment** — for a
+       ``export … && mkdir … && <agent>`` launch (openhands) the agent is the
+       final command, not the leading ``export`` builtin.
+    2. Walk that segment and key on the agent's own binary/shim token, skipping
+       ``FOO=bar`` env assignments, generic interpreters, package-runner
+       subcommands (``uv run <agent>``), and flags.
+
+    Returns ``None`` when nothing specific enough is found — better to skip the
+    cleanup pkill than to fire a sandbox-wide one.
+    """
+    segments = [s for s in _SHELL_SEP_RE.split(agent_launch.strip()) if s.strip()]
+    if not segments:
         return None
-    agent_cmd = agent_launch.split()[0].split("/")[-1]
-    if not agent_cmd:
-        return None
-    return rf"(^|[ /]){re.escape(agent_cmd)}( |$)"
+
+    after_runner = False
+    for token in segments[-1].split():
+        if _ENV_ASSIGN_RE.match(token):  # FOO=bar prefix
+            continue
+        if token.startswith("-"):  # a flag (e.g. python -m, gemini --acp)
+            continue
+        basename = PurePosixPath(token).name
+        if not basename:
+            continue
+        if _is_generic_interpreter(basename):  # too broad to pkill on
+            after_runner = basename in _PACKAGE_RUNNERS
+            continue
+        if after_runner and basename in _RUNNER_SUBCOMMANDS:  # `uv run` etc.
+            after_runner = False
+            continue
+        return rf"(^|[ /]){re.escape(basename)}( |$)"
+    return None
 
 
 def _configured_task_workdir(task: Any) -> str | None:
