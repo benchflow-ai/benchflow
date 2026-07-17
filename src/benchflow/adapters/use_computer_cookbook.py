@@ -907,9 +907,13 @@ def main() -> None:
     password = os.environ.get("CLIENT_PASSWORD", "password")
     try:
         reward = float(osworld_eval.evaluate(task, run_command, password=password))
-    except Exception as exc:  # never crash the verifier; score 0 and log
-        sys.stderr.write(f"osworld verifier error: {exc}\\n")
-        reward = 0.0
+    except Exception as exc:
+        message = f"osworld verifier error: {exc}"
+        sys.stderr.write(message + "\\n")
+        verdir = pathlib.Path("/logs/verifier")
+        verdir.mkdir(parents=True, exist_ok=True)
+        (verdir / "reward.json").write_text(json.dumps({"error": message}) + "\\n")
+        raise SystemExit(1) from exc
     verdir = pathlib.Path("/logs/verifier")
     verdir.mkdir(parents=True, exist_ok=True)
     (verdir / "reward.txt").write_text(f"{reward}\\n")

@@ -1499,6 +1499,24 @@ class TestUseComputerCookbookAdapter:
         assert "pypdf" in dockerfile
         assert "'borb<3.0.0'" in dockerfile
 
+    def test_osworld_verifier_runner_fails_closed_on_evaluator_errors(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards PR #827 from collapsing OSWorld verifier errors into reward 0."""
+        task_dir = _write_use_computer_cookbook_osworld_task(tmp_path)
+        result = UseComputerCookbookAdapter.from_task_dir(task_dir)
+
+        runner = str(result.generated_files["tests/run_osworld_verifier.py"])
+        handler_prefix, _ = runner.split("raise SystemExit(1) from exc", 1)
+        handler = (
+            handler_prefix.split("except Exception as exc:", 1)[1]
+            + "raise SystemExit(1) from exc"
+        )
+
+        assert "json.dumps({\"error\": message})" in handler
+        assert "raise SystemExit(1) from exc" in handler
+        assert "reward = 0.0" not in handler
+
     def test_cuagym_infra_smoke_is_supported(self, tmp_path: Path) -> None:
         task_dir = _write_use_computer_cookbook_cuagym_smoke_task(tmp_path)
 
