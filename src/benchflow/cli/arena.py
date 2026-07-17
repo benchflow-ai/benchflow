@@ -17,6 +17,15 @@ import typer
 
 from benchflow.cli._shared import console, print_error
 
+_SUPPORTED_FLOOR_SANDBOXES = ("docker", "daytona")
+
+
+def _validate_floor_sandbox(sandbox: str) -> None:
+    if sandbox not in _SUPPORTED_FLOOR_SANDBOXES:
+        choices = " or ".join(_SUPPORTED_FLOOR_SANDBOXES)
+        print_error(f"Invalid --sandbox {sandbox!r}: choose {choices}")
+        raise typer.Exit(1)
+
 
 def run_floor_from_cli(
     *,
@@ -47,6 +56,7 @@ def run_floor_from_cli(
     from benchflow.arena.roster import Roster
     from benchflow.usage_tracking import UsageTrackingConfig
 
+    _validate_floor_sandbox(sandbox)
     roster = Roster.from_yaml(agents)
     seats = roster.seats()
     if deadline_s <= 0:
@@ -160,6 +170,29 @@ def register_arena(app: typer.Typer) -> None:
         seat_env: Annotated[str | None, typer.Option("--seat-env")] = None,
         standings_path: Annotated[str | None, typer.Option("--standings-path")] = None,
         events_path: Annotated[str | None, typer.Option("--events-path")] = None,
+        service_env: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--service-env",
+                help="Extra KEY=VALUE env for the in-sandbox service.",
+            ),
+        ] = None,
+        deadline: Annotated[
+            int,
+            typer.Option(
+                "--deadline",
+                help="Soft deadline in seconds (0 = no deadline, capped at 24h).",
+            ),
+        ] = 1200,
+        reasoning_effort: Annotated[
+            str | None, typer.Option("--reasoning-effort")
+        ] = None,
+        usage_tracking: Annotated[
+            str | None, typer.Option("--usage-tracking")
+        ] = None,
+        agent_idle_timeout: Annotated[
+            str | None, typer.Option("--agent-idle-timeout")
+        ] = None,
         multiplayer: Annotated[bool, typer.Option("--multiplayer")] = False,
     ) -> None:
         """[deprecated] Alias of `bench eval run --agents`."""
@@ -178,4 +211,9 @@ def register_arena(app: typer.Typer) -> None:
             seat_env=seat_env,
             standings_path=standings_path,
             events_path=events_path,
+            service_env=service_env,
+            deadline_s=deadline,
+            reasoning_effort=reasoning_effort,
+            usage_tracking=usage_tracking,
+            agent_idle_timeout=agent_idle_timeout,
         )

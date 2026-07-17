@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import textwrap
 
+import pytest
+import typer
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
@@ -107,6 +109,7 @@ def test_eval_run_agents_threads_floor_flags(tmp_path, monkeypatch):
 
 
 def test_arena_alias_does_not_pass_removed_multiplayer_kwarg(tmp_path, monkeypatch):
+    """Guards PR #846 against reintroducing the stale multiplayer kwarg alias."""
     from benchflow.cli import arena as arena_mod
 
     captured = {}
@@ -129,7 +132,93 @@ def test_arena_alias_does_not_pass_removed_multiplayer_kwarg(tmp_path, monkeypat
     assert "multiplayer" not in captured
 
 
+def test_arena_alias_threads_current_floor_controls(tmp_path, monkeypatch):
+    """Guards PR #846 so the deprecated alias stays wired to the floor surface."""
+    from benchflow.cli import arena as arena_mod
+
+    captured = {}
+    monkeypatch.setattr(
+        arena_mod, "run_floor_from_cli", lambda **kw: captured.update(kw)
+    )
+    r = runner.invoke(
+        app,
+        [
+            "arena",
+            "run",
+            "--agents",
+            str(_roster(tmp_path)),
+            "--environment-manifest",
+            "benchmarks/casinobench/environment.toml",
+            "--service-env",
+            "CASINO_MULTIPLAYER=1",
+            "--deadline",
+            "0",
+            "--reasoning-effort",
+            "max",
+            "--usage-tracking",
+            "required",
+            "--agent-idle-timeout",
+            "none",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert captured["service_env"] == ["CASINO_MULTIPLAYER=1"]
+    assert captured["deadline_s"] == 0
+    assert captured["reasoning_effort"] == "max"
+    assert captured["usage_tracking"] == "required"
+    assert captured["agent_idle_timeout"] == "none"
+
+
+def test_arena_run_help_includes_current_floor_controls():
+    """Guards PR #846 against hidden alias option drift."""
+    r = runner.invoke(app, ["arena", "run", "--help"])
+    assert r.exit_code == 0
+    for option in (
+        "--deadline",
+        "--service-env",
+        "--reasoning-effort",
+        "--usage-tracking",
+        "--agent-idle-timeout",
+    ):
+        assert option in r.output
+
+
+def test_floor_rejects_unknown_sandbox_before_bootstrap(tmp_path, monkeypatch):
+    """Guards PR #846 so typoed floor sandboxes fail before Docker/Daytona work."""
+    from benchflow.arena import bootstrap
+    from benchflow.cli.arena import run_floor_from_cli
+
+    async def fail_run_native_floor(*args, **kwargs):
+        raise AssertionError("run_native_floor should not be reached")
+
+    monkeypatch.setattr(bootstrap, "run_native_floor", fail_run_native_floor)
+    r = runner.invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--agents",
+            str(_roster(tmp_path)),
+            "--environment-manifest",
+            "benchmarks/casinobench/environment.toml",
+            "--sandbox",
+            "fake",
+        ],
+    )
+    assert r.exit_code == 1
+    assert "Invalid --sandbox 'fake': choose docker or daytona" in r.output
+
+    with pytest.raises(typer.Exit):
+        run_floor_from_cli(
+            agents=_roster(tmp_path),
+            environment_manifest=tmp_path / "environment.toml",
+            out=tmp_path / "out",
+            sandbox="fake",
+        )
+
+
 def test_run_floor_from_cli_normalizes_run_level_knobs(tmp_path, monkeypatch):
+    """Guards PR #846 run-level controls through the native floor entrypoint."""
     from benchflow.arena import bootstrap
     from benchflow.cli.arena import run_floor_from_cli
 

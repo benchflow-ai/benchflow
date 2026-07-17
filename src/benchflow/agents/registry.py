@@ -437,10 +437,10 @@ AGENTS: dict[str, AgentConfig] = {
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
-        # Pinned to 0.40.0: the config-option wiring below (set_config_option +
-        # the "model"/"effort" ids) targets this version's ACP protocol (sdk
-        # 0.24, which dropped session/set_model). The option ids are coupled to
-        # this pin — re-verify them when bumping. runtime.py uses
+        # Pinned to 0.55.0: the config-option wiring below (set_config_option +
+        # the "model"/"effort" ids) targets this package version's ACP protocol.
+        # The option ids are coupled to this pin — re-verify them when bumping.
+        # runtime.py uses
         # capability-first dispatch for the rest of the family.
         install_cmd=_js_agent_install(
             "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.55.0"
