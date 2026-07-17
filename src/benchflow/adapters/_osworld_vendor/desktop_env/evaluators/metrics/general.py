@@ -300,12 +300,12 @@ def check_json(result: str, rules: Dict[str, List[Dict[str, Union[List[str], str
     if result is None:
         logger.warning("Result file path is None, returning 0.0")
         return 0.
-        
+
     # Check if file exists
     if not os.path.exists(result):
         logger.warning(f"Result file does not exist: {result}, returning 0.0")
         return 0.
-    
+
     try:
         with open(result, 'r', encoding='utf-8') as f:
             if is_yaml:
@@ -358,7 +358,7 @@ def check_json(result: str, rules: Dict[str, List[Dict[str, Union[List[str], str
         except Exception as e:
             logger.error(f"Error processing expect rule {r}: {e}")
             return 0.
-            
+
     for r in unexpect_rules:
         value = result_data
         try:
@@ -375,7 +375,7 @@ def check_json(result: str, rules: Dict[str, List[Dict[str, Union[List[str], str
         except Exception as e:
             logger.error(f"Error processing unexpect rule {r}: {e}")
             return 0.
-            
+
     return float(metric)
 
 
@@ -386,7 +386,7 @@ def check_direct_json_object(result, rules) -> float:
     """
     logger.info(f"[DEBUG] check_direct_json_object called with result: {result}")
     logger.info(f"[DEBUG] check_direct_json_object called with rules: {rules}")
-    
+
     if isinstance(result, str):
         # remove blanks before and after result
         result = result.strip()
@@ -394,13 +394,13 @@ def check_direct_json_object(result, rules) -> float:
         result = result.replace("'", '"')
         # load json object
         result = json.loads(result)
-        
+
     logger.info(f"[DEBUG] Processed result: {result}")
-    
+
     if result is None:
         logger.info("[DEBUG] Result is None, returning 0.0")
         return 0.
-    
+
     # Check if expected value contains evaluation failure indicator
     try:
         expected_json = rules.get("expected", {})
@@ -415,16 +415,16 @@ def check_direct_json_object(result, rules) -> float:
     try:
         expect_in_result = rules.get("expect_in_result", False)
         logger.info(f"[DEBUG] expect_in_result: {expect_in_result}")
-        
+
         if not expect_in_result:
             expected_json = rules["expected"]
             logger.info(f"[DEBUG] Expected JSON: {expected_json}")
-            
+
             for key in expected_json.keys():
                 expected_value = expected_json.get(key)
                 actual_value = result.get(key)
                 logger.info(f"[DEBUG] Checking key '{key}': expected='{expected_value}', actual='{actual_value}'")
-                
+
                 if rules.get("ignore_list_order", False):
                     expected_value = sorted(expected_value)
                     result_value = sorted(result.get(key))
@@ -438,7 +438,7 @@ def check_direct_json_object(result, rules) -> float:
                         return 0.
                     else:
                         logger.info(f"[DEBUG] Value comparison passed for key '{key}'")
-                        
+
             logger.info("[DEBUG] All comparisons passed, returning 1.0")
             return 1.0
         else:
@@ -608,38 +608,38 @@ def compare_python_pure_text(py_file_path, gold_file_path):
         - Skip obvious file metadata (encoding, shebang) at the beginning
         - Normalize whitespace and indentation
         - Remove empty lines
-        
+
         This preserves any content that shouldn't be there (like markdown)
         so it can be detected as an error.
         """
         lines = text.splitlines()
         result_lines = []
         i = 0
-        
+
         # Only skip obvious metadata at the very beginning
         while i < len(lines) and i < 3:  # Check only first 3 lines
             stripped = lines[i].strip()
-            
+
             if (stripped.startswith('#!') or
                 stripped.startswith('# -*- coding:') or
                 stripped.startswith('# coding:') or
                 stripped.startswith('# coding=')):
                 i += 1
                 continue
-            
+
             break
-        
+
         # Process all remaining lines with minimal filtering
         while i < len(lines):
             line = lines[i]
             stripped = line.strip()
-            
+
             if stripped:  # Keep all non-empty lines
                 normalized = line.expandtabs(4).rstrip()
                 result_lines.append(normalized)
-            
+
             i += 1
-        
+
         return '\n'.join(result_lines)
 
     try:
@@ -647,16 +647,16 @@ def compare_python_pure_text(py_file_path, gold_file_path):
             user_content = file1.read()
         with open(gold_file_path, 'r', encoding='utf-8') as file2:
             gold_content = file2.read()
-        
+
         # Apply different normalization strategies
         user_normalized = _normalize(user_content)
         gold_normalized = _normalize(gold_content)
-        
+
         if user_normalized == gold_normalized:
             return 1.0
         else:
             return 0.0
-            
+
     except (FileNotFoundError, IOError, UnicodeDecodeError) as e:
         logger.debug(f"compare_python_pure_text: Error reading files - {e}")
         return 0.0
