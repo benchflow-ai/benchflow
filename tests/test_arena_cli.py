@@ -24,10 +24,20 @@ def _roster(tmp_path):
     return p
 
 
-def test_eval_run_exposes_agents_and_drive():
-    r = runner.invoke(app, ["eval", "run", "--help"], env={"COLUMNS": "240"})
-    assert r.exit_code == 0
-    assert "--agents" in r.output and "--drive" in r.output
+def test_eval_run_accepts_agents_and_drive_options(tmp_path):
+    r = runner.invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--agents",
+            str(_roster(tmp_path)),
+            "--drive",
+            "service-rounds",
+        ],
+    )
+    assert r.exit_code == 1
+    assert "--agents requires --environment-manifest" in r.output
 
 
 def test_agents_requires_environment_manifest(tmp_path):
@@ -169,18 +179,33 @@ def test_arena_alias_threads_current_floor_controls(tmp_path, monkeypatch):
     assert captured["agent_idle_timeout"] == "none"
 
 
-def test_arena_run_help_includes_current_floor_controls():
+def test_arena_run_accepts_current_floor_controls(tmp_path):
     """Guards PR #846 against hidden alias option drift."""
-    r = runner.invoke(app, ["arena", "run", "--help"], env={"COLUMNS": "240"})
-    assert r.exit_code == 0
-    for option in (
-        "--deadline",
-        "--service-env",
-        "--reasoning-effort",
-        "--usage-tracking",
-        "--agent-idle-timeout",
-    ):
-        assert option in r.output
+    r = runner.invoke(
+        app,
+        [
+            "arena",
+            "run",
+            "--agents",
+            str(_roster(tmp_path)),
+            "--environment-manifest",
+            str(tmp_path / "environment.toml"),
+            "--sandbox",
+            "fake",
+            "--deadline",
+            "0",
+            "--service-env",
+            "CASINO_MULTIPLAYER=1",
+            "--reasoning-effort",
+            "max",
+            "--usage-tracking",
+            "required",
+            "--agent-idle-timeout",
+            "none",
+        ],
+    )
+    assert r.exit_code == 1
+    assert "Invalid --sandbox 'fake': choose docker or daytona" in r.output
 
 
 def test_floor_rejects_unknown_sandbox_before_bootstrap(tmp_path, monkeypatch):
