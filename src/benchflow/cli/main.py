@@ -291,45 +291,69 @@ def eval_run(
     ] = None,
     drive: Annotated[
         str,
-        typer.Option("--drive", help="Multi-agent floor drive: auto-loop | service-rounds.",
-                     rich_help_panel="Multi-agent floor"),
+        typer.Option(
+            "--drive",
+            help="Multi-agent floor drive: auto-loop | service-rounds.",
+            rich_help_panel="Multi-agent floor",
+        ),
     ] = "auto-loop",
     deadline: Annotated[
         int,
-        typer.Option("--deadline", help="Multi-agent floor soft deadline in seconds "
-                     "(seats are cut off after this; 0 = no deadline, capped at 24h).",
-                     rich_help_panel="Multi-agent floor"),
+        typer.Option(
+            "--deadline",
+            help="Multi-agent floor soft deadline in seconds "
+            "(seats are cut off after this; 0 = no deadline, capped at 24h).",
+            rich_help_panel="Multi-agent floor",
+        ),
     ] = 1200,
     game: Annotated[
         str | None,
-        typer.Option("--game", help="Floor: task_selection value (e.g. game id); overrides the tasks-dir name.",
-                     rich_help_panel="Multi-agent floor"),
+        typer.Option(
+            "--game",
+            help="Floor: task_selection value (e.g. game id); overrides the tasks-dir name.",
+            rich_help_panel="Multi-agent floor",
+        ),
     ] = None,
     url_env: Annotated[
         str | None,
-        typer.Option("--url-env", help="Floor: env var the in-sandbox CLI reads for the service URL (e.g. CASINO_URL).",
-                     rich_help_panel="Multi-agent floor"),
+        typer.Option(
+            "--url-env",
+            help="Floor: env var the in-sandbox CLI reads for the service URL (e.g. CASINO_URL).",
+            rich_help_panel="Multi-agent floor",
+        ),
     ] = None,
     seat_env: Annotated[
         str | None,
-        typer.Option("--seat-env", help="Floor: env var that identifies each seat (e.g. CASINOBENCH_SEAT_ID).",
-                     rich_help_panel="Multi-agent floor"),
+        typer.Option(
+            "--seat-env",
+            help="Floor: env var that identifies each seat (e.g. CASINOBENCH_SEAT_ID).",
+            rich_help_panel="Multi-agent floor",
+        ),
     ] = None,
     standings_path: Annotated[
         str | None,
-        typer.Option("--standings-path", help="Floor: service path → final {seat: score} for the reward vector.",
-                     rich_help_panel="Multi-agent floor"),
+        typer.Option(
+            "--standings-path",
+            help="Floor: service path → final {seat: score} for the reward vector.",
+            rich_help_panel="Multi-agent floor",
+        ),
     ] = None,
     events_path: Annotated[
         str | None,
-        typer.Option("--events-path", help="Floor: service path → event log snapshot (events.jsonl).",
-                     rich_help_panel="Multi-agent floor"),
+        typer.Option(
+            "--events-path",
+            help="Floor: service path → event log snapshot (events.jsonl).",
+            rich_help_panel="Multi-agent floor",
+        ),
     ] = None,
     service_env: Annotated[
         list[str] | None,
-        typer.Option("--service-env", help="Floor: extra KEY=VALUE env for the in-sandbox "
-                     "service (repeatable), e.g. --service-env CASINO_MULTIPLAYER=1.",
-                     rich_help_panel="Multi-agent floor"),
+        typer.Option(
+            "--service-env",
+            help="Floor: extra KEY=VALUE env for the in-sandbox "
+            "service (repeatable), e.g. --service-env CASINO_MULTIPLAYER=1.",
+            rich_help_panel="Multi-agent floor",
+        ),
     ] = None,
     reasoning_effort: Annotated[
         str | None,
@@ -652,10 +676,14 @@ def eval_run(
         from benchflow.cli.arena import run_floor_from_cli
 
         if agent is not None:
-            print_error("--agents (multi-agent floor) is mutually exclusive with --agent.")
+            print_error(
+                "--agents (multi-agent floor) is mutually exclusive with --agent."
+            )
             raise typer.Exit(1)
         if environment_manifest is None:
-            print_error("--agents requires --environment-manifest (the in-sandbox service).")
+            print_error(
+                "--agents requires --environment-manifest (the in-sandbox service)."
+            )
             raise typer.Exit(1)
         run_floor_from_cli(
             agents=agents,

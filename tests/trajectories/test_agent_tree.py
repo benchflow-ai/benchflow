@@ -6,7 +6,9 @@ from benchflow.trajectories import LLMExchange, LLMRequest, LLMResponse, Traject
 from benchflow.trajectories.agents import build_agent_tree
 
 
-def _ex(agent_id: str, parent: str | None, run_id: str, *, span_kind: str = "chat") -> LLMExchange:
+def _ex(
+    agent_id: str, parent: str | None, run_id: str, *, span_kind: str = "chat"
+) -> LLMExchange:
     bf = {
         "agent_id": agent_id,
         "agent_name": agent_id,

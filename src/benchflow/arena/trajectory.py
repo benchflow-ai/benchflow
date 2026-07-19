@@ -56,9 +56,15 @@ class SeatTrajectory:
         turn = self._turns.get(seat, 0) + 1
         self._turns[seat] = turn
         rec = TurnRecord(
-            seat=seat, turn=turn, status=str(status), request_id=request_id,
-            observation=dict(observation or {}), legal_actions=list(legal_actions or []),
-            action=action, llm=llm, t=time.time(),
+            seat=seat,
+            turn=turn,
+            status=str(status),
+            request_id=request_id,
+            observation=dict(observation or {}),
+            legal_actions=list(legal_actions or []),
+            action=action,
+            llm=llm,
+            t=time.time(),
         )
         with self.path(seat).open("a") as f:
             f.write(json.dumps(asdict(rec)) + "\n")

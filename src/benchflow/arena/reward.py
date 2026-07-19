@@ -16,8 +16,8 @@ __all__ = ["FloorMode", "SharedEnvReward"]
 
 
 class FloorMode(enum.StrEnum):
-    PVP = "pvp"      # competitive: each seat scored by its own net result
-    COOP = "coop"    # cooperative: every seat shares one joint outcome
+    PVP = "pvp"  # competitive: each seat scored by its own net result
+    COOP = "coop"  # cooperative: every seat shares one joint outcome
 
 
 class SharedEnvReward:

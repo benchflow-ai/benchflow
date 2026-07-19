@@ -39,7 +39,9 @@ def provider_config(model_default: str | None = None) -> tuple[str, str, str]:
         or os.environ.get("OPENAI_API_KEY")
         or ""
     )
-    model = os.environ.get("BENCHFLOW_PROVIDER_MODEL") or model_default or "deepseek-v4-pro"
+    model = (
+        os.environ.get("BENCHFLOW_PROVIDER_MODEL") or model_default or "deepseek-v4-pro"
+    )
     return base, key, model
 
 
@@ -100,9 +102,17 @@ class ProxyChatPolicy:
         action = self.pick(text, list(obs.legal_actions))
         if self.recorder is not None:
             self.recorder.record(
-                self.seat, status=obs.status, observation=obs.public,
-                legal_actions=obs.legal_actions, action=action, request_id=obs.request_id,
-                llm={"model": self.model, "messages": messages, "response": text,
-                     "usage": usage},
+                self.seat,
+                status=obs.status,
+                observation=obs.public,
+                legal_actions=obs.legal_actions,
+                action=action,
+                request_id=obs.request_id,
+                llm={
+                    "model": self.model,
+                    "messages": messages,
+                    "response": text,
+                    "usage": usage,
+                },
             )
         return action

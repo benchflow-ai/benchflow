@@ -46,11 +46,11 @@ _DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 # upstream Qdrant collection so the graph runs without embeddings).
 _KB = {
     "metformin": "Metformin is first-line for type 2 diabetes; common side effects "
-                 "are GI upset (nausea, diarrhea) and, rarely, lactic acidosis.",
+    "are GI upset (nausea, diarrhea) and, rarely, lactic acidosis.",
     "aspirin": "Low-dose aspirin is used for secondary cardiovascular prevention; "
-               "bleeding risk rises with dose and with anticoagulants.",
+    "bleeding risk rises with dose and with anticoagulants.",
     "ibuprofen": "Ibuprofen is an NSAID for pain/inflammation; avoid in renal "
-                 "impairment and use caution with anticoagulants.",
+    "impairment and use caution with anticoagulants.",
 }
 
 
@@ -168,10 +168,16 @@ def build_graph(chat_model):
     threshold = _float_env(os.environ, "MEDICAL_CONFIDENCE_THRESHOLD", 0.6)
 
     def supervisor(state: S) -> S:
-        out = chat_model.invoke([{"role": "user", "content":
-            f"You route a medical question to a specialist. Question: {state['query']!r}. "
-            "Reply with ONE word: 'kb' if a drug/condition knowledge base likely covers "
-            "it, else 'web'."}]).content.lower()
+        out = chat_model.invoke(
+            [
+                {
+                    "role": "user",
+                    "content": f"You route a medical question to a specialist. Question: {state['query']!r}. "
+                    "Reply with ONE word: 'kb' if a drug/condition knowledge base likely covers "
+                    "it, else 'web'.",
+                }
+            ]
+        ).content.lower()
         return {"route": "web" if "web" in out else "kb"}
 
     def retrieve_kb(state: S) -> S:
@@ -181,14 +187,21 @@ def build_graph(chat_model):
 
     def web_search(state: S) -> S:
         ev = f"[web] current guidance relevant to: {state['query']}"
-        return {"evidence": (state.get("evidence", "") + " " + ev).strip(),
-                "web_tried": True}
+        return {
+            "evidence": (state.get("evidence", "") + " " + ev).strip(),
+            "web_tried": True,
+        }
 
     def answer(state: S) -> S:
-        out = chat_model.invoke([{"role": "user", "content":
-            f"Question: {state['query']}\nEvidence: {state.get('evidence') or '(none)'}\n"
-            "Answer concisely for a clinician. Then on a NEW line output "
-            "'CONFIDENCE: <0.0-1.0>' for how well the evidence supports your answer."}]
+        out = chat_model.invoke(
+            [
+                {
+                    "role": "user",
+                    "content": f"Question: {state['query']}\nEvidence: {state.get('evidence') or '(none)'}\n"
+                    "Answer concisely for a clinician. Then on a NEW line output "
+                    "'CONFIDENCE: <0.0-1.0>' for how well the evidence supports your answer.",
+                }
+            ]
         ).content
         m = re.search(r"CONFIDENCE:\s*([01](?:\.\d+)?)", out)
         conf = float(m.group(1)) if m else 0.5
@@ -196,9 +209,14 @@ def build_graph(chat_model):
         return {"answer": ans, "confidence": conf}
 
     def guardrail(state: S) -> S:
-        out = chat_model.invoke([{"role": "user", "content":
-            f"Output guardrail. The assistant answered: {state['answer']!r}. Is it safe and "
-            "appropriately cautious as medical information (not a diagnosis)? Reply yes/no."}]
+        out = chat_model.invoke(
+            [
+                {
+                    "role": "user",
+                    "content": f"Output guardrail. The assistant answered: {state['answer']!r}. Is it safe and "
+                    "appropriately cautious as medical information (not a diagnosis)? Reply yes/no.",
+                }
+            ]
         ).content.lower()
         return {"safe": "yes" in out}
 
@@ -211,23 +229,36 @@ def build_graph(chat_model):
         return "guardrail"
 
     g = StateGraph(S)
-    for name, fn in (("supervisor", supervisor), ("retrieve_kb", retrieve_kb),
-                     ("web_search", web_search), ("answer", answer),
-                     ("guardrail", guardrail)):
+    for name, fn in (
+        ("supervisor", supervisor),
+        ("retrieve_kb", retrieve_kb),
+        ("web_search", web_search),
+        ("answer", answer),
+        ("guardrail", guardrail),
+    ):
         g.add_node(name, fn)
     g.add_edge(START, "supervisor")
-    g.add_conditional_edges("supervisor", after_supervisor,
-                            {"retrieve_kb": "retrieve_kb", "web_search": "web_search"})
+    g.add_conditional_edges(
+        "supervisor",
+        after_supervisor,
+        {"retrieve_kb": "retrieve_kb", "web_search": "web_search"},
+    )
     g.add_edge("retrieve_kb", "answer")
     g.add_edge("web_search", "answer")
-    g.add_conditional_edges("answer", after_answer,
-                            {"web_search": "web_search", "guardrail": "guardrail"})
+    g.add_conditional_edges(
+        "answer", after_answer, {"web_search": "web_search", "guardrail": "guardrail"}
+    )
     g.add_edge("guardrail", END)
     return g.compile()
 
 
-def run_graph(model_id: str, query: str, cwd: str, session_id: str,
-              env: Mapping[str, str] | None = None) -> dict:
+def run_graph(
+    model_id: str,
+    query: str,
+    cwd: str,
+    session_id: str,
+    env: Mapping[str, str] | None = None,
+) -> dict:
     """Stream the medical graph, emitting one ACP tool_call per node, and write
     the final answer to ``<cwd>/answer.md`` for the verifier."""
     start = time.time()
@@ -252,7 +283,9 @@ def run_graph(model_id: str, query: str, cwd: str, session_id: str,
         with open(out_path, "w") as fh:
             fh.write(answer_text + "\n")
     except OSError as exc:
-        _emit_text(session_id, f"[medical-assistant: could not write {out_path}: {exc}]")
+        _emit_text(
+            session_id, f"[medical-assistant: could not write {out_path}: {exc}]"
+        )
 
     return {
         "path": " → ".join(order),
@@ -267,10 +300,19 @@ def run_graph(model_id: str, query: str, cwd: str, session_id: str,
 
 
 def _emit_text(session_id: str, text: str):
-    send({"jsonrpc": "2.0", "method": "session/update", "params": {
-        "sessionId": session_id, "update": {
-            "sessionUpdate": "agent_message_chunk",
-            "content": {"type": "text", "text": text[:_DIAG_TRUNCATE]}}}})
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": text[:_DIAG_TRUNCATE]},
+                },
+            },
+        }
+    )
 
 
 def _emit_tool_call(session_id: str, call_id: str, node: str, delta):
@@ -278,19 +320,49 @@ def _emit_tool_call(session_id: str, call_id: str, node: str, delta):
         input_text = json.dumps(delta)
     except (TypeError, ValueError):
         input_text = str(delta)
-    send({"jsonrpc": "2.0", "method": "session/update", "params": {
-        "sessionId": session_id, "update": {
-            "sessionUpdate": "tool_call", "toolCallId": call_id,
-            "title": node, "kind": _node_kind(node), "status": "in_progress",
-            "input": input_text[:_TOOL_INPUT_TRUNCATE]}}})
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": call_id,
+                    "title": node,
+                    "kind": _node_kind(node),
+                    "status": "in_progress",
+                    "input": input_text[:_TOOL_INPUT_TRUNCATE],
+                },
+            },
+        }
+    )
 
 
 def _emit_tool_result(session_id: str, call_id: str, result: str):
-    send({"jsonrpc": "2.0", "method": "session/update", "params": {
-        "sessionId": session_id, "update": {
-            "sessionUpdate": "tool_call_update", "toolCallId": call_id,
-            "status": "completed", "content": [{"type": "content", "content": {
-                "type": "text", "text": result[:_TOOL_RESULT_TRUNCATE]}}]}}})
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": call_id,
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "content",
+                            "content": {
+                                "type": "text",
+                                "text": result[:_TOOL_RESULT_TRUNCATE],
+                            },
+                        }
+                    ],
+                },
+            },
+        }
+    )
 
 
 def _node_kind(node: str) -> str:
@@ -325,11 +397,20 @@ def main():
         params = msg.get("params", {})
 
         if method == "initialize":
-            send({"jsonrpc": "2.0", "id": req_id, "result": {
-                "protocolVersion": 1,
-                "agentCapabilities": {"loadSession": False,
-                    "promptCapabilities": {"image": False, "audio": False}},
-                "agentInfo": {"name": "medical-assistant", "version": "1.0"}}})
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "protocolVersion": 1,
+                        "agentCapabilities": {
+                            "loadSession": False,
+                            "promptCapabilities": {"image": False, "audio": False},
+                        },
+                        "agentInfo": {"name": "medical-assistant", "version": "1.0"},
+                    },
+                }
+            )
 
         elif method == "session/new":
             cwd = params.get("cwd", "/app")
@@ -348,11 +429,16 @@ def main():
             model_id = resolve_model_id(model)
             try:
                 metrics = run_graph(model_id, text.strip(), cwd, session_id)
-                _emit_text(session_id, f"[medical-assistant: path {metrics['path']} · "
-                           f"confidence={metrics['confidence']} · safe={metrics['safe']} · "
-                           f"{metrics['wall_clock_seconds']}s]")
+                _emit_text(
+                    session_id,
+                    f"[medical-assistant: path {metrics['path']} · "
+                    f"confidence={metrics['confidence']} · safe={metrics['safe']} · "
+                    f"{metrics['wall_clock_seconds']}s]",
+                )
             except Exception as e:
-                _emit_text(session_id, f"[medical-assistant error: {type(e).__name__}: {e}]")
+                _emit_text(
+                    session_id, f"[medical-assistant error: {type(e).__name__}: {e}]"
+                )
             send({"jsonrpc": "2.0", "id": req_id, "result": {"stopReason": "end_turn"}})
 
         elif method == "session/cancel":
@@ -361,8 +447,15 @@ def main():
         elif method == "session/request_permission":
             options = params.get("options", [])
             option_id = options[0].get("optionId", "default") if options else "default"
-            send({"jsonrpc": "2.0", "id": req_id, "result": {
-                "outcome": {"outcome": "selected", "optionId": option_id}}})
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "outcome": {"outcome": "selected", "optionId": option_id}
+                    },
+                }
+            )
 
         else:
             if req_id is not None:

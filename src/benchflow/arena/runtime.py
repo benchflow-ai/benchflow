@@ -73,8 +73,13 @@ async def run_arena(
     async def _guarded(seat_id: str) -> dict[str, object]:
         try:
             return await _run_seat(
-                seat_id, client, policy_for(seat_id),
-                sem=sem, poll_s=poll_s, deadline=deadline, on_turn=on_turn,
+                seat_id,
+                client,
+                policy_for(seat_id),
+                sem=sem,
+                poll_s=poll_s,
+                deadline=deadline,
+                on_turn=on_turn,
             )
         except Exception as exc:  # one bad seat must not kill the floor
             return {"seat": seat_id, "status": "error", "error": repr(exc), "acts": 0}

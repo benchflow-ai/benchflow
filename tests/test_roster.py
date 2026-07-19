@@ -17,7 +17,9 @@ def _write(tmp_path, body: str):
     return p
 
 
-@pytest.mark.parametrize("key", ["task", "services", "sandbox", "out", "prompt", "drive"])
+@pytest.mark.parametrize(
+    "key", ["task", "services", "sandbox", "out", "prompt", "drive"]
+)
 def test_run_level_keys_rejected_with_migration_hint(tmp_path, key):
     p = _write(
         tmp_path,
@@ -43,14 +45,21 @@ def test_seat_id_defaults_to_agent_dash_model(tmp_path):
         """,
     )
     ids = [s.seat_id for s in Roster.from_yaml(p).seats()]
-    assert ids == ["codex-acp-gpt-5.5-0", "codex-acp-gpt-5.5-1", "deepagents-deepseek-v4-pro"]
+    assert ids == [
+        "codex-acp-gpt-5.5-0",
+        "codex-acp-gpt-5.5-1",
+        "deepagents-deepseek-v4-pro",
+    ]
 
 
 def test_explicit_name_overrides_agent_model_id(tmp_path):
-    p = _write(tmp_path, """
+    p = _write(
+        tmp_path,
+        """
         agents:
           - { name: hero, agent: codex-acp, model: gpt-5.5 }
-    """)
+    """,
+    )
     assert [s.seat_id for s in Roster.from_yaml(p).seats()] == ["hero"]
 
 

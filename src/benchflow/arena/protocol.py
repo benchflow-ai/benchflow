@@ -20,7 +20,7 @@ __all__ = ["SeatStatus", "Observation", "SeatClient", "SeatPolicy"]
 
 
 class SeatStatus(enum.StrEnum):
-    WAITING = "waiting"            # seated/queued, the table has not formed yet
+    WAITING = "waiting"  # seated/queued, the table has not formed yet
     NOT_YOUR_TURN = "not_your_turn"
     YOUR_TURN = "your_turn"
     DONE = "done"

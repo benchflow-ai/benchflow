@@ -74,9 +74,7 @@ def build_agent_tree(source: Trajectory | Iterable[LLMExchange]) -> AgentTree:
     root when it has no ``parent_agent_id`` (or points at itself); it is an orphan
     when its parent is named but absent from the run.
     """
-    exchanges = (
-        source.exchanges if isinstance(source, Trajectory) else list(source)
-    )
+    exchanges = source.exchanges if isinstance(source, Trajectory) else list(source)
     nodes: dict[str, AgentNode] = {}
     order: list[str] = []  # first-seen agent order, for stable output
     for exchange in exchanges:

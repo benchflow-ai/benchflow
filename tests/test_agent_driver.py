@@ -36,7 +36,9 @@ async def test_acp_branch_calls_connect_acp_and_execute_prompts(monkeypatch):
         seen["connect"] = kw
         return ("CLIENT", "SESSION", "ADAPTER", "the-agent")
 
-    async def fake_execute_prompts(*, acp_client, session, prompts, timeout, idle_timeout):
+    async def fake_execute_prompts(
+        *, acp_client, session, prompts, timeout, idle_timeout
+    ):
         seen["exec"] = dict(client=acp_client, prompts=prompts, timeout=timeout)
         return ([{"type": "tool_call"}], 1)
 
@@ -45,8 +47,14 @@ async def test_acp_branch_calls_connect_acp_and_execute_prompts(monkeypatch):
 
     cfg = AgentConfig(name="codex-acp", install_cmd="x", launch_cmd="codex --acp")
     conn = await connect_seat(
-        cfg, env="SANDBOX", agent_cwd="/work/cx", agent_env={"K": "v"},
-        model="gpt-5.5", rollout_dir="/tmp/out", environment="docker", seat_id="cx",
+        cfg,
+        env="SANDBOX",
+        agent_cwd="/work/cx",
+        agent_env={"K": "v"},
+        model="gpt-5.5",
+        rollout_dir="/tmp/out",
+        environment="docker",
+        seat_id="cx",
     )
     assert conn.protocol == "acp"
     assert conn.client == "CLIENT" and conn.session == "SESSION"
@@ -60,6 +68,7 @@ async def test_acp_branch_calls_connect_acp_and_execute_prompts(monkeypatch):
 
 
 # --- session-factory branch, exercised with a fake Agent/Session (no sandbox) ---
+
 
 class _FakeSession:
     on_change = None
@@ -96,8 +105,14 @@ async def test_session_factory_branch_uses_agent_connect_and_prompt():
         session_factory="tests.test_agent_driver:build_fake_agent",
     )
     conn = await connect_seat(
-        cfg, env="SANDBOX", agent_cwd="/work/omni", agent_env={},
-        model=None, rollout_dir="/tmp/out", environment="docker", seat_id="omni",
+        cfg,
+        env="SANDBOX",
+        agent_cwd="/work/omni",
+        agent_env={},
+        model=None,
+        rollout_dir="/tmp/out",
+        environment="docker",
+        seat_id="omni",
     )
     assert conn.protocol == "session-factory"
     assert conn.session.role == "omni"
@@ -116,8 +131,14 @@ async def test_session_factory_requires_factory():
     )
     with pytest.raises(ValueError, match="session_factory"):
         await connect_seat(
-            cfg, env="S", agent_cwd="/work/bad", agent_env={}, model=None,
-            rollout_dir="/tmp", environment="docker", seat_id="bad",
+            cfg,
+            env="S",
+            agent_cwd="/work/bad",
+            agent_env={},
+            model=None,
+            rollout_dir="/tmp",
+            environment="docker",
+            seat_id="bad",
         )
 
 
@@ -126,6 +147,12 @@ async def test_unsupported_protocol_raises():
     cfg = AgentConfig(name="weird", install_cmd="x", launch_cmd="y", protocol="cli")
     with pytest.raises(ValueError, match="unsupported protocol"):
         await connect_seat(
-            cfg, env="S", agent_cwd="/work/w", agent_env={}, model=None,
-            rollout_dir="/tmp", environment="docker", seat_id="w",
+            cfg,
+            env="S",
+            agent_cwd="/work/w",
+            agent_env={},
+            model=None,
+            rollout_dir="/tmp",
+            environment="docker",
+            seat_id="w",
         )

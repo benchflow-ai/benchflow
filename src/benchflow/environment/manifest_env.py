@@ -79,10 +79,7 @@ def service_start_command(svc: ServiceSpec) -> str:
     in the slim images these services build on) and is a no-op stronger-detach for
     services that already detached cleanly (e.g. clawbench's).
     """
-    return (
-        f"setsid nohup {svc.command} </dev/null "
-        f">{service_log_path(svc.name)} 2>&1 &"
-    )
+    return f"setsid nohup {svc.command} </dev/null >{service_log_path(svc.name)} 2>&1 &"
 
 
 class EnvironmentSnapshotError(RuntimeError):
@@ -187,7 +184,8 @@ class ManifestEnvironment:
                 raise
             logger.info(
                 "service %r start exec did not resolve (detached daemon on "
-                "daytona) — verifying via readiness()", svc.name,
+                "daytona) — verifying via readiness()",
+                svc.name,
             )
 
     async def readiness(self) -> ReadinessProbe:

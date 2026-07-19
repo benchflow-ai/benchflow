@@ -296,7 +296,8 @@ class ACPSession:
             self.tool_calls.append(record)
             self._tool_call_map[record.tool_call_id] = record
             self.events.append(
-                {"type": "tool_call", "record": record, "ts": time.time()})
+                {"type": "tool_call", "record": record, "ts": time.time()}
+            )
 
         elif update_type == "tool_call_update":
             tc_id = update.get("toolCallId", "")
@@ -313,7 +314,8 @@ class ACPSession:
                 self.tool_calls.append(record)
                 self._tool_call_map[tc_id] = record
                 self.events.append(
-                {"type": "tool_call", "record": record, "ts": time.time()})
+                    {"type": "tool_call", "record": record, "ts": time.time()}
+                )
             try:
                 status = ToolCallStatus(update.get("status", "in_progress"))
             except ValueError:
@@ -336,7 +338,8 @@ class ACPSession:
                 text = content.get("text", "")
                 self.message_chunks.append(text)
                 self._pending_text.append(
-                    {"type": "agent_message", "text": text, "ts": time.time()})
+                    {"type": "agent_message", "text": text, "ts": time.time()}
+                )
 
         elif update_type == "text_update":
             # Used by openclaw shim — full text (not chunked)
@@ -344,7 +347,8 @@ class ACPSession:
             if text:
                 self.message_chunks.append(text)
                 self._pending_text.append(
-                    {"type": "agent_message", "text": text, "ts": time.time()})
+                    {"type": "agent_message", "text": text, "ts": time.time()}
+                )
 
         elif update_type == "agent_thought":
             # Used by openclaw shim — full thought (not chunked)
@@ -352,7 +356,8 @@ class ACPSession:
             if text:
                 self.thought_chunks.append(text)
                 self._pending_text.append(
-                    {"type": "agent_thought", "text": text, "ts": time.time()})
+                    {"type": "agent_thought", "text": text, "ts": time.time()}
+                )
 
         elif update_type == "agent_thought_chunk":
             content = update.get("content", {})
@@ -360,7 +365,8 @@ class ACPSession:
                 text = content.get("text", "")
                 self.thought_chunks.append(text)
                 self._pending_text.append(
-                    {"type": "agent_thought", "text": text, "ts": time.time()})
+                    {"type": "agent_thought", "text": text, "ts": time.time()}
+                )
 
         self._notify_change()
 

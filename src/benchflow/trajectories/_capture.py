@@ -87,9 +87,7 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
                 "reason": event["reason"],
                 "timeout_sec": event["timeout_sec"],
                 "pending_tool_call_ids": event["pending_tool_call_ids"],
-                "terminal_trajectory_complete": event[
-                    "terminal_trajectory_complete"
-                ],
+                "terminal_trajectory_complete": event["terminal_trajectory_complete"],
             }
         if row is not None:
             # Arrival timestamp (client-stamped — the ACP wire has none).

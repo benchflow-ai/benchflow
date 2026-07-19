@@ -187,9 +187,7 @@ def register_arena(app: typer.Typer) -> None:
         reasoning_effort: Annotated[
             str | None, typer.Option("--reasoning-effort")
         ] = None,
-        usage_tracking: Annotated[
-            str | None, typer.Option("--usage-tracking")
-        ] = None,
+        usage_tracking: Annotated[str | None, typer.Option("--usage-tracking")] = None,
         agent_idle_timeout: Annotated[
             str | None, typer.Option("--agent-idle-timeout")
         ] = None,

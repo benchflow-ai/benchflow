@@ -48,6 +48,8 @@ async def test_write_uploads_to_right_filename(tmp_path):
 @pytest.mark.asyncio
 async def test_no_instructions_is_noop():
     sb = _FakeSandbox()
-    out = await write_agent_instructions(sb, "/work/x", resolve_agent("codex-acp"), None)
+    out = await write_agent_instructions(
+        sb, "/work/x", resolve_agent("codex-acp"), None
+    )
     assert out is None
     assert sb.uploads == []

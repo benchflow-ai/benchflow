@@ -55,7 +55,8 @@ class _FakeFloor:
             if self.pending != seat_id:
                 return {"status": "not_your_turn", "current_actor": self.pending}
             return {
-                "status": "your_turn", "request_id": self.cur_rid,
+                "status": "your_turn",
+                "request_id": self.cur_rid,
                 "observation": {"public": {"pot": self.stake}, "private": {}},
                 "legal_actions": [{"verb": "bid", "args": {"n": k}} for k in range(10)],
             }
@@ -99,38 +100,51 @@ class _FixedBid:
 
 def test_two_seats_play_concurrently_and_settle_zero_sum() -> None:
     env = _FakeFloor()
-    bids = {"seat-0": 7, "seat-1": 3}                 # seat-0 wins
-    res = asyncio.run(run_arena(
-        ["seat-0", "seat-1"], env, lambda s: _FixedBid(bids[s]),
-        deadline_s=5.0, poll_s=0.001,
-    ))
+    bids = {"seat-0": 7, "seat-1": 3}  # seat-0 wins
+    res = asyncio.run(
+        run_arena(
+            ["seat-0", "seat-1"],
+            env,
+            lambda s: _FixedBid(bids[s]),
+            deadline_s=5.0,
+            poll_s=0.001,
+        )
+    )
     assert all(r["status"] == "done" for r in res.values())
     st = env.standings()
     assert st == {"seat-0": 1100, "seat-1": 900}
-    assert sum(st.values()) == 2000                   # zero-sum, conserved
+    assert sum(st.values()) == 2000  # zero-sum, conserved
 
 
 def test_per_seat_reward_vector() -> None:
     env = _FakeFloor()
     bids = {"seat-0": 7, "seat-1": 3}
-    asyncio.run(run_arena(["seat-0", "seat-1"], env, lambda s: _FixedBid(bids[s]),
-                          deadline_s=5.0, poll_s=0.001))
+    asyncio.run(
+        run_arena(
+            ["seat-0", "seat-1"],
+            env,
+            lambda s: _FixedBid(bids[s]),
+            deadline_s=5.0,
+            poll_s=0.001,
+        )
+    )
     pvp = SharedEnvReward(mode=FloorMode.PVP).score(env.standings())
     assert pvp == {"seat-0": 100.0, "seat-1": -100.0}
     assert sum(pvp.values()) == 0.0
     coop = SharedEnvReward(mode=FloorMode.COOP).score(env.standings())
-    assert coop == {"seat-0": -100.0, "seat-1": -100.0}   # joint = worst seat
+    assert coop == {"seat-0": -100.0, "seat-1": -100.0}  # joint = worst seat
 
 
 def test_not_your_turn_is_rejected() -> None:
     async def scenario() -> None:
         env = _FakeFloor()
-        await env.observe("seat-0")                   # seat-0 seats, pending
-        await env.observe("seat-1")                   # forms; seat-0 is pending
+        await env.observe("seat-0")  # seat-0 seats, pending
+        await env.observe("seat-1")  # forms; seat-0 is pending
         o0 = await env.observe("seat-0")
         assert o0["status"] == "your_turn"
         bad = await env.act(
-            "seat-1", o0["request_id"], {"verb": "bid", "args": {"n": 9}})
+            "seat-1", o0["request_id"], {"verb": "bid", "args": {"n": 9}}
+        )
         assert bad == {"ok": False, "status": "not_your_turn"}  # out of turn
         stale = await env.act("seat-0", "bogus", {"verb": "bid", "args": {"n": 9}})
         assert stale["status"] == "stale_request_id"  # wrong request_id
@@ -139,11 +153,12 @@ def test_not_your_turn_is_rejected() -> None:
 
 
 def test_lone_seat_is_reaped_by_deadline() -> None:
-    env = _FakeFloor(n_seats=2)                        # needs a partner
-    res = asyncio.run(run_arena(["solo"], env, lambda s: _FixedBid(5),
-                                deadline_s=0.2, poll_s=0.01))
-    assert res["solo"]["status"] == "deadline"         # never formed, reaped
-    assert env.standings() == {"solo": 1000}           # no chips moved
+    env = _FakeFloor(n_seats=2)  # needs a partner
+    res = asyncio.run(
+        run_arena(["solo"], env, lambda s: _FixedBid(5), deadline_s=0.2, poll_s=0.01)
+    )
+    assert res["solo"]["status"] == "deadline"  # never formed, reaped
+    assert env.standings() == {"solo": 1000}  # no chips moved
 
 
 class _HighCard:
@@ -180,9 +195,12 @@ class _HighCard:
             if self.pending != seat_id:
                 return {"status": "not_your_turn", "current_actor": self.pending}
             return {
-                "status": "your_turn", "request_id": self.cur_rid,
+                "status": "your_turn",
+                "request_id": self.cur_rid,
                 "observation": {"public": {"pot": self.stake * self.n}, "private": {}},
-                "legal_actions": [{"verb": "pick", "args": {"n": k}} for k in range(10)],
+                "legal_actions": [
+                    {"verb": "pick", "args": {"n": k}} for k in range(10)
+                ],
             }
 
     async def act(self, seat_id: str, request_id: str, action: dict) -> dict:
@@ -204,9 +222,9 @@ class _HighCard:
         winners = [s for s, v in self.picks.items() if v == hi]
         share = (self.stake * self.n) // len(winners)
         for s in self.seated:
-            self.bankroll[s] -= self.stake          # everyone antes
+            self.bankroll[s] -= self.stake  # everyone antes
         for w in winners:
-            self.bankroll[w] += share               # winners split the pot
+            self.bankroll[w] += share  # winners split the pot
         self.pending = self.cur_rid = None
         self.done = True
 
@@ -224,24 +242,36 @@ class _FixedPick:
 
 def test_three_seats_play_one_shared_table_concurrently() -> None:
     env = _HighCard(3, stake=50)
-    picks = {"a": 3, "b": 7, "c": 5}                  # b wins
-    res = asyncio.run(run_arena(
-        ["a", "b", "c"], env, lambda s: _FixedPick(picks[s]),
-        deadline_s=5.0, poll_s=0.001,
-    ))
+    picks = {"a": 3, "b": 7, "c": 5}  # b wins
+    res = asyncio.run(
+        run_arena(
+            ["a", "b", "c"],
+            env,
+            lambda s: _FixedPick(picks[s]),
+            deadline_s=5.0,
+            poll_s=0.001,
+        )
+    )
     assert all(r["status"] == "done" for r in res.values())
     st = env.standings()
-    assert st == {"a": 950, "b": 1100, "c": 950}       # b: -50 ante +150 pot
-    assert sum(st.values()) == 3000                    # zero-sum, conserved
+    assert st == {"a": 950, "b": 1100, "c": 950}  # b: -50 ante +150 pot
+    assert sum(st.values()) == 3000  # zero-sum, conserved
 
 
 def test_run_arena_emits_per_turn_records() -> None:
     env = _FakeFloor()
     recs: list[tuple[str, int, int]] = []
-    asyncio.run(run_arena(
-        ["seat-0", "seat-1"], env, lambda s: _FixedBid({"seat-0": 7, "seat-1": 3}[s]),
-        on_turn=lambda seat, turn, obs, act: recs.append((seat, turn, act["args"]["n"])),
-        deadline_s=5.0, poll_s=0.001,
-    ))
+    asyncio.run(
+        run_arena(
+            ["seat-0", "seat-1"],
+            env,
+            lambda s: _FixedBid({"seat-0": 7, "seat-1": 3}[s]),
+            on_turn=lambda seat, turn, obs, act: recs.append(
+                (seat, turn, act["args"]["n"])
+            ),
+            deadline_s=5.0,
+            poll_s=0.001,
+        )
+    )
     assert sorted((s, n) for s, _, n in recs) == [("seat-0", 7), ("seat-1", 3)]
-    assert all(turn == 1 for _, turn, _ in recs)       # one turn each
+    assert all(turn == 1 for _, turn, _ in recs)  # one turn each

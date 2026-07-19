@@ -21,10 +21,18 @@ from benchflow.arena import (
 
 def test_seat_trajectory_writes_per_seat_jsonl(tmp_path) -> None:
     tr = SeatTrajectory(tmp_path)
-    tr.record("a", status=SeatStatus.YOUR_TURN, observation={"pot": 150},
-              action={"verb": "pick", "args": {"n": 7}})
-    tr.record("a", status=SeatStatus.YOUR_TURN, action={"verb": "pick", "args": {"n": 3}})
-    tr.record("b", status=SeatStatus.YOUR_TURN, action={"verb": "pick", "args": {"n": 5}})
+    tr.record(
+        "a",
+        status=SeatStatus.YOUR_TURN,
+        observation={"pot": 150},
+        action={"verb": "pick", "args": {"n": 7}},
+    )
+    tr.record(
+        "a", status=SeatStatus.YOUR_TURN, action={"verb": "pick", "args": {"n": 3}}
+    )
+    tr.record(
+        "b", status=SeatStatus.YOUR_TURN, action={"verb": "pick", "args": {"n": 5}}
+    )
     lines = tr.path("a").read_text().strip().splitlines()
     assert len(lines) == 2
     r0 = json.loads(lines[0])
@@ -47,26 +55,37 @@ def test_proxy_chat_policy_routes_through_provider_and_records(
         seen["auth"] = req.headers.get("authorization")
         seen["seat"] = req.headers.get("x-bf-seat")
         seen["body"] = json.loads(req.content)
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": "I choose rock."}}],
-            "usage": {"total_tokens": 11},
-        })
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "I choose rock."}}],
+                "usage": {"total_tokens": 11},
+            },
+        )
 
     tr = SeatTrajectory(tmp_path)
 
     async def scenario() -> dict:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-            legal = [{"verb": "throw", "args": {"hand": h}}
-                     for h in ("rock", "paper", "scissors")]
+            legal = [
+                {"verb": "throw", "args": {"hand": h}}
+                for h in ("rock", "paper", "scissors")
+            ]
             pol = ProxyChatPolicy(
-                "seat-0", http,
+                "seat-0",
+                http,
                 render=lambda o: "pick one",
                 pick=lambda text, lg: next(
-                    (a for a in lg if a["args"]["hand"] in text.lower()), lg[0]),
+                    (a for a in lg if a["args"]["hand"] in text.lower()), lg[0]
+                ),
                 recorder=tr,
             )
-            obs = Observation(status=SeatStatus.YOUR_TURN, request_id="r1",
-                              public={"pot": 100}, legal_actions=legal)
+            obs = Observation(
+                status=SeatStatus.YOUR_TURN,
+                request_id="r1",
+                public={"pot": 100},
+                legal_actions=legal,
+            )
             return await pol.act(obs)
 
     action = asyncio.run(scenario())
