@@ -25,7 +25,7 @@ def _roster(tmp_path):
 
 
 def test_eval_run_exposes_agents_and_drive():
-    r = runner.invoke(app, ["eval", "run", "--help"])
+    r = runner.invoke(app, ["eval", "run", "--help"], env={"COLUMNS": "240"})
     assert r.exit_code == 0
     assert "--agents" in r.output and "--drive" in r.output
 
@@ -171,7 +171,7 @@ def test_arena_alias_threads_current_floor_controls(tmp_path, monkeypatch):
 
 def test_arena_run_help_includes_current_floor_controls():
     """Guards PR #846 against hidden alias option drift."""
-    r = runner.invoke(app, ["arena", "run", "--help"])
+    r = runner.invoke(app, ["arena", "run", "--help"], env={"COLUMNS": "240"})
     assert r.exit_code == 0
     for option in (
         "--deadline",
