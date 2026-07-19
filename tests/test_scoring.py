@@ -80,6 +80,24 @@ class TestClassifyError:
             classify_error("Sandbox not found. Please retry later.") == "infra_failure"
         )
 
+    def test_docker_compose_build_failure_is_sandbox_setup(self):
+        assert (
+            classify_error(
+                "Docker compose command failed for environment jpg-ocr-stat. "
+                "failed to resolve source metadata for docker.io/library/ubuntu"
+            )
+            == "sandbox_setup"
+        )
+
+    def test_generic_docker_compose_failure_still_blocks(self):
+        assert (
+            classify_error(
+                "Docker compose command failed for environment authored-task. "
+                "Stdout: syntax error in docker-compose.yaml"
+            )
+            == "other"
+        )
+
     def test_other(self):
         assert classify_error("something unexpected") == "other"
 
@@ -138,6 +156,16 @@ class TestClassifyError:
             == "infra_failure"
         )
 
+    def test_provider_rejected_marker_is_permanent(self):
+        """Guards #830: a context-window 400 surfaced as a raised ACP error
+        classifies as provider_rejected (permanent), not generic acp_error."""
+        assert (
+            classify_error(
+                "ACP error -32603: Internal error | provider rejected request (HTTP 400)"
+            )
+            == "provider_rejected"
+        )
+
     def test_generic_acp_internal_error_still_retryable(self):
         """Guards PR #564: a bare ACP internal error with no auth signal stays
         acp_error — only a real surfaced 401/403 should flip it to provider_auth."""
@@ -161,6 +189,11 @@ class TestClassifyError:
     def test_install_broad_match_not_used(self):
         """'install' alone should NOT match — only 'install failed'."""
         assert classify_error("installing dependencies") == "other"
+
+    def test_error_classification_is_case_insensitive_for_core_markers(self):
+        """Guards the fix from PR #880 for issue #541."""
+        assert classify_error("Agent Install failed (rc=1)") == "install_failure"
+        assert classify_error("acp error -32000: connection refused") == "acp_error"
 
 
 class TestClassifyResultOutcome:

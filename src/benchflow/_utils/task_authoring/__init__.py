@@ -129,6 +129,8 @@ def task_digest(task_dir: Path) -> str:
     # Path.rglob), keeping "symlinks are excluded" true for whole subtrees.
     for dirpath, _dirnames, filenames in os.walk(task_dir):
         for filename in filenames:
+            if filename == ".benchflow-source.json":
+                continue
             path = Path(dirpath) / filename
             if path.is_symlink() or not path.is_file():
                 continue

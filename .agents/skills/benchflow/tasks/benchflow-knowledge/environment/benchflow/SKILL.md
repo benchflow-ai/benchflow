@@ -184,7 +184,7 @@ asyncio.run(main())
 ## Setup
 
 ```bash
-uv tool install benchflow    # or: uv tool install -e . (from source)
+uv tool install --python 3.12 benchflow    # or: uv tool install --python 3.12 -e . (from source)
 source .env              # ANTHROPIC_API_KEY, DAYTONA_API_KEY
 ```
 

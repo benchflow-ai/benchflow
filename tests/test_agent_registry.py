@@ -5,6 +5,11 @@ Negative invariants ("agent X should NOT have feature Y configured") live in
 test_registry_invariants.py — search there for the consolidated tripwire.
 """
 
+import json
+import os
+import subprocess
+import sys
+
 import pytest
 
 from benchflow.agents.env import resolve_provider_env
@@ -95,6 +100,22 @@ class TestEnvMappingField:
         assert env["LLM_API_KEY"] == "ghs_test_token"
         assert env["LLM_MODEL"] == "openai/openai/gpt-4.1-mini"
 
+    def test_openhands_normalizes_openrouter_model(self):
+        env = {"OPENROUTER_API_KEY": "sk-openrouter"}
+        resolve_provider_env(
+            agent="openhands",
+            model="openrouter/qwen/qwen3.5-397b-a17b",
+            agent_env=env,
+        )
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "openrouter"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "qwen/qwen3.5-397b-a17b"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://openrouter.ai/api/v1"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "sk-openrouter"
+        assert env["LLM_BASE_URL"] == "https://openrouter.ai/api/v1"
+        assert env["LLM_API_KEY"] == "sk-openrouter"
+        assert env["LLM_MODEL"] == "openai/qwen/qwen3.5-397b-a17b"
+
     def test_openhands_bedrock_initial_env_marks_registered_provider(self):
         """Guards the LiteLLM runtime refactor: Bedrock is detected before runtime rewrite."""
         env = {
@@ -129,7 +150,7 @@ class TestOpenHandsConfig:
             "--overrides /tmp/oh-sdk-overrides.txt "
             "--from "
             "'git+https://github.com/OpenHands/OpenHands-CLI.git@"
-            "3ca17446c5d9c1e35e054803478a3501ec251ecf' "
+            "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271' "
             "openhands --python 3.12" in cfg.install_cmd
         )
         assert "OpenHands/OpenHands-CLI.git@main" not in cfg.install_cmd
@@ -137,12 +158,12 @@ class TestOpenHandsConfig:
         assert "command -v git" in cfg.install_cmd
         assert "install.openhands.dev/install.sh" not in cfg.install_cmd
 
-    def test_openhands_install_cmd_overrides_buggy_sdk_pin(self):
-        """Guards PR #644 against Opus timeouts from OpenHands SDK 1.21.0."""
+    def test_openhands_install_cmd_pins_matching_long_run_sdk(self):
+        """Guards PR #921 against restoring the unstable 1.22.1 ACP runtime."""
         cfg = AGENTS["openhands"]
 
-        assert "openhands-sdk==1.22.1" in cfg.install_cmd
-        assert "openhands-tools==1.22.1" in cfg.install_cmd
+        assert "openhands-sdk==1.28.1" in cfg.install_cmd
+        assert "openhands-tools==1.28.1" in cfg.install_cmd
         assert "openhands-sdk>=1.22.0" not in cfg.install_cmd
         assert "--overrides /tmp/oh-sdk-overrides.txt" in cfg.install_cmd
 
@@ -187,6 +208,139 @@ class TestOpenHandsConfig:
         assert ',"api_version":"%s"' in cfg.launch_cmd
         assert '"$LLM_API_VERSION"' in cfg.launch_cmd
 
+    def test_openhands_launch_cmd_writes_optional_reasoning_effort(self):
+        """Guards PR #911 against OpenHands silently using default high effort."""
+        cfg = AGENTS["openhands"]
+        assert "none|low|medium|high|xhigh)" in cfg.launch_cmd
+        assert ',"reasoning_effort":"%s",' in cfg.launch_cmd
+        assert '"litellm_extra_body":{"reasoning_effort":"%s"}' in cfg.launch_cmd
+        assert '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT"' in cfg.launch_cmd
+
+    def test_openhands_launch_cmd_keeps_minimal_out_of_typed_effort(self, tmp_path):
+        """Guards PR #921: OpenHands' typed effort enum rejects minimal."""
+        cfg = AGENTS["openhands"]
+        settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path),
+            "LLM_MODEL": "openai/gpt-5.6-sol",
+            "LLM_API_KEY": "proxy-key",
+            "LLM_BASE_URL": "http://127.0.0.1:4000/v1",
+            "LLM_REASONING_EFFORT": "minimal",
+        }
+        subprocess.run(["bash", "-c", settings_cmd], env=env, check=True)
+        settings = json.loads(
+            (tmp_path / ".openhands" / "agent_settings.json").read_text()
+        )
+        assert "reasoning_effort" not in settings["llm"]
+        assert settings["llm"]["litellm_extra_body"] == {"reasoning_effort": "minimal"}
+
+    def test_openhands_launch_cmd_passes_max_via_untyped_responses_body(self, tmp_path):
+        """Guards PR #921: OpenHands' typed effort enum stops at xhigh."""
+        cfg = AGENTS["openhands"]
+        assert 'case "$LLM_REASONING_EFFORT" in ' in cfg.launch_cmd
+        assert "max) printf" in cfg.launch_cmd
+        assert ',"litellm_extra_body":{"reasoning":{"effort":"max"}}' in cfg.launch_cmd
+        settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path),
+            "LLM_MODEL": "openai/gpt-5.6-sol",
+            "LLM_API_KEY": "proxy-key",
+            "LLM_BASE_URL": "http://127.0.0.1:4000/v1",
+            "LLM_API_VERSION": "preview",
+            "LLM_REASONING_EFFORT": "max",
+        }
+        subprocess.run(["bash", "-c", settings_cmd], env=env, check=True)
+        settings = json.loads(
+            (tmp_path / ".openhands" / "agent_settings.json").read_text()
+        )
+        assert "reasoning_effort" not in settings["llm"]
+        assert settings["llm"]["litellm_extra_body"] == {"reasoning": {"effort": "max"}}
+
+    def test_openhands_launch_cmd_writes_optional_llm_timeout(self, tmp_path):
+        """Guards PR #921 against MAX responses exceeding OpenHands' 300s default."""
+        cfg = AGENTS["openhands"]
+        assert 'if [ -n "$LLM_TIMEOUT" ]' in cfg.launch_cmd
+        assert ',"timeout":%s' in cfg.launch_cmd
+        settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path),
+            "LLM_MODEL": "openai/gpt-5.6-sol",
+            "LLM_API_KEY": "proxy-key",
+            "LLM_TIMEOUT": "115200",
+        }
+        subprocess.run(["bash", "-c", settings_cmd], env=env, check=True)
+        settings = json.loads(
+            (tmp_path / ".openhands" / "agent_settings.json").read_text()
+        )
+        assert settings["llm"]["timeout"] == 115200
+
+    def test_openhands_launch_cmd_can_disable_subagents(self, tmp_path):
+        """Guards PR #921 against the OpenHands post-tool delegation deadlock."""
+        cfg = AGENTS["openhands"]
+        settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
+        tool_root = tmp_path / "tools"
+        package_root = tool_root / "openhands" / "site-packages"
+        package_dir = package_root / "openhands_cli"
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("")
+        utils_path = package_dir / "utils.py"
+        utils_path.write_text(
+            "def get_default_cli_tools():\n"
+            "    return [\n"
+            "        Tool(name=task_tool_name),\n"
+            "    ]\n"
+        )
+        bin_dir = tool_root / "openhands" / "bin"
+        bin_dir.mkdir(parents=True)
+        python_wrapper = bin_dir / "python"
+        python_wrapper.write_text(
+            f'#!/bin/sh\nPYTHONPATH={package_root} exec {sys.executable} "$@"\n'
+        )
+        python_wrapper.chmod(0o755)
+        openhands = bin_dir / "openhands"
+        openhands.write_text("#!/bin/sh\nexit 0\n")
+        openhands.chmod(0o755)
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "openhands").symlink_to(openhands)
+        env = {
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HOME": str(tmp_path),
+            "LLM_MODEL": "openai/gpt-5.6-sol",
+            "LLM_API_KEY": "proxy-key",
+            "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS": "1",
+        }
+
+        subprocess.run(["bash", "-c", settings_cmd], env=env, check=True)
+
+        patched = utils_path.read_text()
+        assert "Tool(name=task_tool_name)" not in patched
+        assert "BenchFlow: delegation disabled for this run." in patched
+
+    def test_openhands_launch_cmd_rejects_non_numeric_llm_timeout(self, tmp_path):
+        """Guards PR #921 against malformed timeout JSON in agent settings."""
+        cfg = AGENTS["openhands"]
+        settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path),
+            "LLM_MODEL": "openai/gpt-5.6-sol",
+            "LLM_API_KEY": "proxy-key",
+            "LLM_TIMEOUT": "none",
+        }
+        result = subprocess.run(
+            ["bash", "-c", settings_cmd],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2
+        assert "LLM_TIMEOUT must be a non-negative integer" in result.stderr
+
     def test_harvey_lab_installs_python_deps_in_venv(self):
         """Guards the v0.5 stress failure where pip hit PEP 668 in Ubuntu."""
         cfg = AGENTS["harvey-lab-harness"]
@@ -203,14 +357,17 @@ class TestOpenHandsConfig:
 
 
 class TestAgentCredentialFiles:
-    def test_codex_has_auth_json(self):
+    def test_codex_self_writes_auth_json_in_launcher(self):
+        """codex-acp's OPENAI_API_KEY→auth.json write moved OUT of core's
+        ``credential_files`` (a ``_SHIM_ONLY`` field a data-only manifest can't
+        carry) and INTO its ``launch_cmd``, so the agent is self-contained for
+        the manifest decouple. See tests/test_codex_self_write_auth.py for the
+        byte-identical-template + subscription-no-clobber behavior."""
         cfg = AGENTS["codex-acp"]
-        assert len(cfg.credential_files) == 1
-        cf = cfg.credential_files[0]
-        assert cf.env_source == "OPENAI_API_KEY"
-        assert ".codex/auth.json" in cf.path
-        assert "{home}" in cf.path
-        assert "{value}" in cf.template
+        assert cfg.credential_files == []  # relocated off core
+        assert ".codex/auth.json" in cfg.launch_cmd
+        assert "OPENAI_API_KEY" in cfg.launch_cmd
+        assert "exec " in cfg.launch_cmd  # launcher replaces itself with codex
 
 
 class TestProviderCredentialFiles:

@@ -486,6 +486,85 @@ class TestTransportProtocolFiltering:
         assert '["debug", "list"]' in log_text
 
     @pytest.mark.asyncio
+    async def test_container_transport_does_not_create_empty_agent_log(
+        self, tmp_path
+    ) -> None:
+        """Guards PR #832's fix for issue #535 against empty ACP agent logs."""
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            return_value=b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n'
+        )
+        agent_log = tmp_path / "agent" / "gemini.txt"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        assert not agent_log.exists()
+
+        try:
+            msg = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert msg == {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}
+        assert not agent_log.exists()
+
+    @pytest.mark.asyncio
+    async def test_container_transport_clears_stale_log_on_retry(
+        self, tmp_path
+    ) -> None:
+        """Guards #535/PR#832: a failed connect attempt that logged a warning must
+        not leave stale text behind when a later JSON-RPC-only retry succeeds.
+
+        _connect_acp_session reuses the same agent/<agent>.txt path across retry
+        attempts, so start() must clear any stale log from a prior attempt.
+        """
+        agent_log = tmp_path / "agent" / "gemini.txt"
+
+        # Attempt 0: agent emits a non-protocol warning (captured to the log),
+        # then the connection "fails" (the caller discards the transport).
+        first_process = AsyncMock()
+        first_process.readline = AsyncMock(
+            side_effect=[
+                b"WARNING: provider hiccup\n",
+                b'{"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}\n',
+            ]
+        )
+        first = ContainerTransport(
+            container_process=first_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+        await first.start()
+        await asyncio.wait_for(first.receive(), timeout=5)
+        await first.close()
+        assert "provider hiccup" in agent_log.read_text()
+
+        # Attempt 1: a fresh transport on the SAME path, JSON-RPC only (no
+        # non-protocol output). start() must wipe the stale log.
+        second_process = AsyncMock()
+        second_process.readline = AsyncMock(
+            return_value=b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n'
+        )
+        second = ContainerTransport(
+            container_process=second_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+        await second.start()
+        assert not agent_log.exists()
+        try:
+            msg = await asyncio.wait_for(second.receive(), timeout=5)
+        finally:
+            await second.close()
+        assert msg == {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}
+        # The successful retry never logged non-protocol output, so no stale text.
+        assert not agent_log.exists()
+
+    @pytest.mark.asyncio
     async def test_stdio_transport_skips_structured_json_logs(self) -> None:
         """Guards PR #236 against treating JSON object logs as ACP responses."""
         reader = asyncio.StreamReader()
@@ -986,6 +1065,48 @@ class TestConnectAcpModelSelection:
         mock_acp.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_openhands_direct_execution_patches_before_privilege_drop(
+        self, tmp_path
+    ):
+        """Guards the PR #921 follow-up for OpenHands tasks rooted outside /root."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = AsyncMock()
+        mock_env.exec.return_value = MagicMock(return_code=0, stdout="", stderr="")
+
+        with (
+            patch(
+                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "benchflow.acp.runtime.ContainerTransport",
+                return_value=MagicMock(),
+            ) as mock_transport,
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="openhands",
+                agent_launch="openhands acp --always-approve --override-with-envs",
+                agent_env={"BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS": "1"},
+                sandbox_user="agent",
+                model=None,
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+            )
+
+        patch_call = mock_env.exec.await_args_list[0]
+        assert "openhands_cli.utils" in patch_call.args[0]
+        assert patch_call.kwargs == {"user": "root", "timeout_sec": 30}
+        transport_env = mock_transport.call_args.kwargs["env"]
+        assert transport_env["BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"] == "0"
+        transport_command = mock_transport.call_args.kwargs["command"]
+        assert "--reuid=agent" in transport_command
+
+    @pytest.mark.asyncio
     async def test_codex_uses_session_advertised_model_id(self, tmp_path):
         """Guards commit 81ff286 against codex-acp rejecting bare set_model IDs."""
         from benchflow.acp.runtime import connect_acp
@@ -1134,6 +1255,164 @@ class TestConnectAcpModelSelection:
 
         mock_pty.assert_awaited_once_with(mock_env)
         mock_ssh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_daytona_direct_uses_pty_transport(self, tmp_path):
+        """Direct Daytona tasks also use PTY transport, not SSH pipes."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = MagicMock()
+        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
+
+        with (
+            patch(
+                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_pty,
+            patch(
+                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_ssh,
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="test-agent",
+                agent_launch="test-agent",
+                agent_env={},
+                sandbox_user=None,
+                model=None,
+                rollout_dir=tmp_path,
+                environment="daytona",
+                agent_cwd="/app",
+            )
+
+        mock_pty.assert_awaited_once_with(mock_env)
+        mock_ssh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_daytona_direct_can_opt_into_ssh_transport(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards PR #921 fallback for PTY post-tool controller deadlocks."""
+        from benchflow.acp.runtime import connect_acp
+
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_ACP_TRANSPORT", "ssh")
+        mock_acp = self._make_mocks()
+        mock_env = MagicMock()
+        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
+
+        with (
+            patch(
+                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_pty,
+            patch(
+                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_ssh,
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="openhands",
+                agent_launch="openhands acp",
+                agent_env={},
+                sandbox_user=None,
+                model=None,
+                rollout_dir=tmp_path,
+                environment="daytona",
+                agent_cwd="/app",
+            )
+
+        mock_ssh.assert_awaited_once_with(mock_env)
+        mock_pty.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invalid_daytona_transport_falls_back_to_pty(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards PR #921 against invalid transport config disabling Daytona."""
+        from benchflow.acp.runtime import connect_acp
+
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_ACP_TRANSPORT", "invalid")
+        mock_acp = self._make_mocks()
+        mock_env = MagicMock()
+        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
+
+        with (
+            patch(
+                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_pty,
+            patch(
+                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_ssh,
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="openhands",
+                agent_launch="openhands acp",
+                agent_env={},
+                sandbox_user=None,
+                model=None,
+                rollout_dir=tmp_path,
+                environment="daytona",
+                agent_cwd="/app",
+            )
+
+        mock_pty.assert_awaited_once_with(mock_env)
+        mock_ssh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_daytona_gemini_uses_ssh_transport(self, tmp_path):
+        """Guards the Gemini regression introduced by PR #896's PTY migration."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = MagicMock()
+        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
+
+        with (
+            patch(
+                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_pty,
+            patch(
+                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_ssh,
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="gemini",
+                agent_launch="gemini --acp --yolo",
+                agent_env={"GEMINI_API_KEY": "test"},
+                sandbox_user=None,
+                model="gemini-3.1-flash-lite",
+                rollout_dir=tmp_path,
+                environment="daytona",
+                agent_cwd="/app",
+            )
+
+        mock_ssh.assert_awaited_once_with(mock_env)
+        mock_pty.assert_not_awaited()
 
 
 class TestSandboxStartupDiagnostics:
@@ -1563,6 +1842,53 @@ class TestDiagnosticRegistry:
         empty = RolloutDiagnostics().to_result_fields()
         for diag_cls in DIAGNOSTIC_REGISTRY:
             assert empty[diag_cls.field] is None
+
+    def test_diagnostic_reason_constants_share_scoring_source(self) -> None:
+        """Guards the fix from PR #858 against diagnostic reasons drifting off the shared scoring source."""
+        from typing import get_args, get_type_hints
+
+        from benchflow._utils.scoring import IDLE_TIMEOUT
+        from benchflow.diagnostics import (
+            DIAGNOSTIC_REASON_IDLE_TIMEOUT,
+            DIAGNOSTIC_REASON_SANDBOX_STARTUP_FAILED,
+            DIAGNOSTIC_REASON_TRANSPORT_CLOSED,
+            DIAGNOSTIC_REASON_WALL_CLOCK_TIMEOUT,
+            AgentPromptTimeoutDiagnostic,
+            DiagnosticReason,
+            IdleTimeoutDiagnostic,
+            SandboxStartupDiagnostic,
+            TransportClosedDiagnostic,
+        )
+
+        assert IDLE_TIMEOUT == DIAGNOSTIC_REASON_IDLE_TIMEOUT
+        assert set(get_args(DiagnosticReason)) == {
+            DIAGNOSTIC_REASON_IDLE_TIMEOUT,
+            DIAGNOSTIC_REASON_WALL_CLOCK_TIMEOUT,
+            DIAGNOSTIC_REASON_SANDBOX_STARTUP_FAILED,
+            DIAGNOSTIC_REASON_TRANSPORT_CLOSED,
+        }
+
+        reason_hints = {
+            diag_cls.__name__: get_type_hints(diag_cls)["reason"]
+            for diag_cls in (
+                IdleTimeoutDiagnostic,
+                AgentPromptTimeoutDiagnostic,
+                SandboxStartupDiagnostic,
+                TransportClosedDiagnostic,
+            )
+        }
+        assert get_args(reason_hints["IdleTimeoutDiagnostic"]) == (
+            DIAGNOSTIC_REASON_IDLE_TIMEOUT,
+        )
+        assert get_args(reason_hints["AgentPromptTimeoutDiagnostic"]) == (
+            DIAGNOSTIC_REASON_WALL_CLOCK_TIMEOUT,
+        )
+        assert get_args(reason_hints["SandboxStartupDiagnostic"]) == (
+            DIAGNOSTIC_REASON_SANDBOX_STARTUP_FAILED,
+        )
+        assert get_args(reason_hints["TransportClosedDiagnostic"]) == (
+            DIAGNOSTIC_REASON_TRANSPORT_CLOSED,
+        )
 
     def test_summary_warning_uses_registry_metadata(self) -> None:
         """Summary warning text comes from the registry's

@@ -180,6 +180,8 @@ jobs/
 .jobs/
 dogfood/
 tmp/
+.local/
+src/benchflow/adapters/_toolathlon_canvas_tokens.json
 .claude/settings.local.json
 tests/.smoke-jobs/
 context/

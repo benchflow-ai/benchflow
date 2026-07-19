@@ -35,10 +35,10 @@ provider's SDK for the model you use, but the extra ships all three):
 uv sync --extra judge
 
 # or as an installed tool
-uv tool install --upgrade 'benchflow[judge]'
+uv tool install --python 3.12 --upgrade 'benchflow[judge]'
 
 # or with pip
-pip install --upgrade 'benchflow[judge]'
+python3.12 -m pip install --upgrade 'benchflow[judge]'
 ```
 
 If no provider SDK is installed, the judge cannot run: the verifier raises a

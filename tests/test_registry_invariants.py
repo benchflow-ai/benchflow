@@ -10,6 +10,7 @@ implicit conventions the SDK relies on (e.g. ``env_mapping`` keys must
 start with ``BENCHFLOW_PROVIDER_``).
 """
 
+import base64
 import re
 import shutil
 import subprocess
@@ -50,6 +51,7 @@ JS_ACP_AGENTS = {
     for name, cfg in AGENTS.items()
     if cfg.protocol == "acp" and "npm install" in cfg.install_cmd
 }
+DIRECT_JS_ACP_AGENTS = {"mimo"}
 
 
 # ── AgentConfig invariants ──────────────────────────────────────────────────
@@ -137,16 +139,30 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
         f"pinned node {pin.group(0)} is below openclaw's >=22.19 floor"
     )
     assert "/opt/benchflow/js-agents" in install_cmd
-    assert "/opt/benchflow/bin" in install_cmd
-    assert "--prefix /opt/benchflow/js-agents" in install_cmd
-    assert "/opt/benchflow/bin" in launch_cmd
-    assert "/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin:$PATH" in install_cmd
-    assert (
-        "exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/" in install_cmd
-    )
-    assert launch_cmd.split()[0].startswith("/opt/benchflow/bin/")
-    assert launch_cmd.split()[0] not in {"export", "env"}
-    assert not launch_cmd.startswith("PATH=")
+    if name in DIRECT_JS_ACP_AGENTS:
+        m = re.search(r"printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d", launch_cmd)
+        assert m, f"{name!r} direct JS ACP launcher is not base64-staged"
+        launcher = base64.b64decode(m.group(1)).decode()
+        assert "/opt/benchflow/js-agents/" in launcher
+        assert "/opt/benchflow/node/bin/node" in launcher
+        assert "/tmp/" in launch_cmd
+    else:
+        assert "/opt/benchflow/bin" in install_cmd
+        assert "--prefix /opt/benchflow/js-agents" in install_cmd
+        assert "/opt/benchflow/bin" in launch_cmd
+        assert (
+            "/opt/benchflow/js-agents/bin:/opt/benchflow/node/bin:$PATH" in install_cmd
+        )
+        assert (
+            "exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/bin/"
+            in install_cmd
+        )
+        # The launched program is the isolated bin — directly, or (codex-acp) after a
+        # self-config-writing prefix ending in `; exec <bin>` (writes ~/.codex/auth.json).
+        launched = launch_cmd.rsplit("; exec ", 1)[-1]
+        assert launched.split()[0].startswith("/opt/benchflow/bin/")
+        assert launched.split()[0] not in {"export", "env"}
+        assert not launched.startswith("PATH=")
 
     forbidden_fragments = [
         'export PATH="/opt/benchflow/node/bin:/opt/benchflow/js-agents/bin:$PATH"',
@@ -243,6 +259,14 @@ def test_js_agent_install_respects_explicit_npm_package_specs():
     assert "some-agent@latest" in default_cmd
 
 
+def test_opencode_install_is_pinned_for_reproducible_harness_runs():
+    """Guards PR #931 against silently changing OpenCode between eval stages."""
+    install_cmd = AGENTS["opencode"].install_cmd
+
+    assert "opencode-ai@1.17.20" in install_cmd
+    assert "opencode-ai@latest" not in install_cmd
+
+
 def test_gemini_cli_install_is_pinned():
     """Guards v0.5-integration@27752fa against Daytona installing moving latest."""
     install_cmd = AGENTS["gemini"].install_cmd
@@ -251,7 +275,7 @@ def test_gemini_cli_install_is_pinned():
     assert "[ -x /opt/benchflow/js-agents/bin/gemini ] ||" not in install_cmd
 
 
-@pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS))
+@pytest.mark.parametrize("name", sorted(JS_ACP_AGENTS - DIRECT_JS_ACP_AGENTS))
 def test_js_acp_agent_npm_failures_are_visible(name):
     """Npm stderr should reach agent/install-stdout.txt on install failure."""
     install_cmd = AGENTS[name].install_cmd
@@ -478,3 +502,17 @@ def test_resolve_auth_env_matches_provider_auth_type():
             assert result is None, (
                 f"{name!r} ({cfg.auth_type}): resolve_auth_env should return None, got {result!r}"
             )
+
+
+def test_harvey_maps_provider_env_to_openai_compatible_adapter():
+    """Harvey LAB's OpenAI-compatible adapter reads OPENAI_BASE_URL/OPENAI_API_KEY;
+    on the proxy path those only exist as BENCHFLOW_PROVIDER_*. Without this
+    mapping the adapter had no endpoint/key and the harness loop ended on turn 0
+    with zero LLM activity. Guard the mapping so deepseek / gpt-5.4-mini-gateway /
+    every benchflow-* alias can route.
+    """
+    from benchflow.agents.registry import AGENTS
+
+    em = AGENTS["harvey-lab-harness"].env_mapping
+    assert em.get("BENCHFLOW_PROVIDER_BASE_URL") == "OPENAI_BASE_URL", em
+    assert em.get("BENCHFLOW_PROVIDER_API_KEY") == "OPENAI_API_KEY", em

@@ -50,7 +50,7 @@ from benchflow.trajectories._export_common import (
     aggregate_rollout_jsonl,
     content_blocks_to_text,
 )
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.types import redact_trajectory_obj
 
 logger = logging.getLogger(__name__)
 
@@ -210,8 +210,7 @@ def trajectory_to_adp_record(
 
 
 def _record_to_redacted_json_line(record: dict[str, Any]) -> str:
-    raw = dumps_finite(record, default=str)
-    return redact_trajectory_text(raw)
+    return dumps_finite(redact_trajectory_obj(record), default=str)
 
 
 def write_rollout_adp_jsonl(

@@ -12,7 +12,6 @@ from benchflow.rollout import (
     Scene,
     _agent_launch_with_web_policy,
     _apply_web_policy,
-    _skill_nudge,
     _task_disallows_internet,
 )
 
@@ -59,20 +58,8 @@ def test_apply_web_policy_sets_marker_without_mutating_input():
     assert "BENCHFLOW_DISALLOW_WEB_TOOLS" not in env
 
 
-def test_skill_nudge_prefers_explicit_agent_env(monkeypatch):
-    monkeypatch.setenv("BENCHFLOW_SKILL_NUDGE", "name")
-
-    assert _skill_nudge({"BENCHFLOW_SKILL_NUDGE": "description"}) == "description"
-
-
-def test_skill_nudge_falls_back_to_host_env(monkeypatch):
-    monkeypatch.setenv("BENCHFLOW_SKILL_NUDGE", "name")
-
-    assert _skill_nudge({}) == "name"
-
-
-def test_host_skill_nudge_does_not_read_task_skills_by_default(monkeypatch, tmp_path):
-    """Guards PR #586 against prompt-level no-skills leaks."""
+def test_resolve_prompts_ignores_task_skills(monkeypatch, tmp_path):
+    """Prompt resolution never inlines skills — mounted skills reach agents natively."""
     from benchflow.sdk import SDK
 
     monkeypatch.setenv("BENCHFLOW_SKILL_NUDGE", "name")
@@ -83,44 +70,12 @@ def test_host_skill_nudge_does_not_read_task_skills_by_default(monkeypatch, tmp_
         "---\nname: alpha\ndescription: Alpha skill.\n---\n# Alpha\n"
     )
 
-    prompts = SDK._resolve_prompts(
-        tmp_path,
-        prompts=None,
-        skill_nudge=_skill_nudge({}),
-        agent="claude-agent-acp",
-    )
+    prompts = SDK._resolve_prompts(tmp_path, prompts=None)
 
     assert prompts == ["Do the thing."]
     assert "alpha" not in prompts[0]
     assert "Internet access is disabled" not in prompts[0]
     assert "Do not browse" not in prompts[0]
-
-
-def test_host_skill_nudge_reads_task_skills_when_explicitly_enabled(
-    monkeypatch, tmp_path
-):
-    """Guards PR #586 so with-task-skills mode still gets skill nudges."""
-    from benchflow.sdk import SDK
-
-    monkeypatch.setenv("BENCHFLOW_SKILL_NUDGE", "name")
-    (tmp_path / "instruction.md").write_text("Do the thing.")
-    task_skills = tmp_path / "environment" / "skills"
-    skill_dir = task_skills / "alpha"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: alpha\ndescription: Alpha skill.\n---\n# Alpha\n"
-    )
-
-    prompts = SDK._resolve_prompts(
-        tmp_path,
-        prompts=None,
-        task_skills_dir=task_skills,
-        skill_nudge=_skill_nudge({}),
-        agent="claude-agent-acp",
-    )
-
-    assert prompts[0].startswith("Skills available at ~/.claude/skills: alpha.")
-    assert prompts[0].endswith("Do the thing.")
 
 
 def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
@@ -210,10 +165,12 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
 
 
 def test_codex_launch_disable_is_gated_by_web_policy():
-    base_cmd = (
-        "/opt/benchflow/bin/codex-acp "
-        "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
-    )
+    # codex-acp's launch_cmd now self-writes ~/.codex/auth.json before exec'ing the
+    # isolated bin; derive the base from the registry so this stays about the
+    # web-policy gating, not the exact launcher string.
+    from benchflow.agents.registry import AGENTS
+
+    base_cmd = AGENTS["codex-acp"].launch_cmd
     assert _agent_launch_with_web_policy("codex-acp", disallow=False) == base_cmd
     assert _agent_launch_with_web_policy("codex-acp", disallow=True) == (
         f"{base_cmd} -c tools.web_search=false"

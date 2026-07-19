@@ -66,6 +66,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         sandbox_setup_timeout=int(raw.get("sandbox_setup_timeout") or 120),
         agent_idle_timeout=raw.get("agent_idle_timeout"),
         context_root=raw.get("context_root"),
+        base_image_override=raw.get("base_image_override"),
         exclude_tasks=set(raw.get("exclude_tasks") or []),
         include_tasks=set(raw.get("include_tasks") or []),
         skill_mode=raw.get("skill_mode") or SKILL_MODE_NO_SKILL,

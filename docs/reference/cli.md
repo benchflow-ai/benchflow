@@ -182,6 +182,19 @@ bench eval run \
 # From local directory
 bench eval run --tasks-dir ./tasks --agent gemini --model gemini-3.1-flash-lite-preview
 
+# Emit reproducible training/eval artifacts and publish them to Hugging Face
+bench eval run \
+  --tasks-dir ./tasks \
+  --agent openhands \
+  --model openai/gpt-5.4-mini \
+  --sandbox daytona \
+  --task-manifest-out task-manifest.json \
+  --health-summary-out health.json \
+  --canonicalize one-healthy-per-task \
+  --canonical-selection-out canonical-selection.json \
+  --publish-hf benchflow/env0-experiment-trajectories \
+  --hf-prefix experiments/my-run
+
 # From a hosted PrimeIntellect / Verifiers environment
 bench eval run \
   --source-env primeintellect/general-agent \
@@ -190,18 +203,20 @@ bench eval run \
   --agent gemini \
   --model google/gemini-2.5-flash-lite
 
-# Single task with mounted skills and the recommended skill nudge
+# Single task with mounted skills
 bench eval run \
   --tasks-dir tasks/pdf-fix \
   --agent gemini \
   --model gemini-3.1-flash-lite-preview \
   --sandbox daytona \
-  --skill-mode with-skill \
-  --agent-env BENCHFLOW_SKILL_NUDGE=name
+  --skill-mode with-skill
 
 # Pinned registry dataset: resolves skillsbench@1.1, verifies task digests,
 # and stamps dataset identity into every result.json/config.json
 bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-preview
+
+# Matrix eval over multiple models/trials
+bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 ```
 
 | Flag | Default | Description |
@@ -250,6 +265,7 @@ bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-p
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
 | `--context-root` | — | Repo/build-context root used to stage Dockerfile `COPY` sources for monorepo-authored local tasks |
+| `--base-image-override` | — | Rewrite task Dockerfile `FROM` images on the runtime task copy; use for reproducing runs whose base image moved namespaces |
 | `--skills-dir` | — | Advanced custom skills directory; valid only with `--skill-mode with-skill`. Omit it to use each task's `environment/skills`. |
 | `--skill-mode` | `no-skill` | Skill mode: `no-skill`, `with-skill`, or `self-gen` |
 | `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |
@@ -259,16 +275,36 @@ bench eval run -d skillsbench@1.1 --agent gemini --model gemini-3.1-flash-lite-p
 | `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |
 | `--loop-strategy` | — | Wrap each rollout in a loop, e.g. `verify-retry:k=3,feedback=names` or `self-review:k=3` (omit for single-shot) |
 | `--ignore-bench-version` | `false` | With `--dataset`, skip the dataset's `bench_version` compatibility gate |
+| `--task-manifest-out` | — | Write selected task-set manifest JSON with task ids, paths, digests, and source provenance |
+| `--run-config-out` | — | Write a redacted normalized run config JSON |
+| `--health-summary-out` | — | Write trajectory health summary JSON for the completed job |
+| `--expected-tasks` | — | Fail unless the selected task count, and canonical selected count when used, matches this value |
+| `--canonicalize` | `none` | Canonicalization policy: `none` or `one-healthy-per-task` |
+| `--canonical-selection-out` | — | Write canonical rollout-selection JSON |
+| `--canonical-jobs-dir` | — | Materialize selected rollout directories for trainer conversion |
+| `--retry-policy` | `default` | Retry policy label for reproducible eval artifacts: `default` or `unscored-only` |
+| `--retry-attempts` | — | Override retry attempts for the eval run |
+| `--retry-concurrency` | — | Reserved retry concurrency setting recorded in run config |
+| `--publish-hf` | — | Upload final eval artifacts to this Hugging Face dataset repo |
+| `--hf-prefix` | — | Path prefix inside the Hugging Face repo; requires `--publish-hf` |
+| `--hf-public-read-check` | `false` | Verify public Hugging Face reads after upload |
+| `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
+| `--trials` | `1` | Number of trials for `--matrix` |
 
-When mounting skills, the recommended docs default is
-`--agent-env BENCHFLOW_SKILL_NUDGE=name`. See
-[Architecture: skill loading](../architecture.md#skill-loading) for how
-`with-skill` mode is registered with each agent and how the nudge modes differ.
+See [Architecture: skill loading](../architecture.md#skill-loading) for how
+`with-skill` mode is registered with each agent.
 
 Daytona batch runs collect provider token/cost telemetry by default with a
 sandbox-local LiteLLM gateway. Use `--usage-tracking required` when missing telemetry
 should fail the rollout, or `--usage-tracking off` for recovery runs that should
 leave provider traffic untouched.
+
+For online-training rollouts against a chat-completions endpoint that supports
+sampled-token log probabilities, pass
+`--agent-env BENCHFLOW_CAPTURE_TOKEN_LOGPROBS=1`. The LiteLLM gateway adds
+`logprobs=true` to each chat request and preserves the provider's token
+logprobs in `trajectory/llm_trajectory.jsonl`. This is opt-in because providers
+that do not implement chat-completion logprobs may reject the request.
 
 `--source-env` is for external hosted environment hubs. The first supported
 runner is PrimeIntellect / Verifiers: BenchFlow preserves the hosted identity
@@ -306,6 +342,186 @@ Serve a trial trajectory viewer in the browser for a rollout or job directory.
 bench eval view jobs/run/task__abc123
 bench eval view jobs/ --port 9000
 ```
+
+## bench train
+
+Convert scored BenchFlow rollouts into trainer-ready datasets and validate
+trainer rows before handing them to a training framework.
+
+### bench train convert
+
+Convert a rollout directory, jobs directory, canonical BenchFlow
+`results.jsonl`, or existing trainer JSONL into a trainer-specific dataset.
+The default `prime-sft` format writes OpenAI-compatible `messages` plus
+`tool_defs`. The `trl-sft` format writes conversational `prompt` and
+`completion` lists plus a `tools` column.
+
+```bash
+bench train convert jobs/run-001 --out train.jsonl
+bench train convert jobs/run-001 --out train.jsonl --min-reward 1.0
+bench train convert jobs/run-001 --out train.jsonl --canonical-selection canonical-selection.json
+bench train convert jobs/run-001 \
+  --format trl-sft \
+  --row-mode exchange \
+  --min-reward 1.0 \
+  --context-policy message-window \
+  --tokenizer Qwen/Qwen3-4B \
+  --tokenizer-revision <immutable-sha> \
+  --max-length 40960 \
+  --out train.trl.jsonl \
+  --manifest train.trl.manifest.json
+```
+
+`results.jsonl` remains the canonical scored-rollout artifact regardless of
+trainer. The selected format changes only the converted output. For TRL,
+`exchange` mode emits one supervised completion for every primary agent model
+call while excluding captured OpenCode title, summary, compaction, and helper
+calls. `rollout` mode emits only the final primary model call.
+
+TRL conversion never truncates implicitly. The default `full` context policy
+preserves every captured message. `message-window` first renders with the
+pinned tokenizer; when a row is too long it preserves all leading system
+messages, the original task user message, the target assistant completion, and
+the longest complete recent suffix of assistant/tool groups that fits. It
+records original/final token counts and every dropped-message count in both the
+row and conversion manifest. It fails if the required prefix and completion
+cannot fit.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out`, `-o` | required | Output JSONL path |
+| `--format` | `prime-sft` | Trainer format: `prime-sft` or `trl-sft` |
+| `--min-reward` | — | Only include rows with reward greater than or equal to this value |
+| `--row-mode` | `rollout` | `rollout` writes one row per rollout; `exchange` writes one row per LLM exchange |
+| `--manifest` | — | Optional conversion stats JSON path |
+| `--expected-rows` | — | Fail before writing unless exactly this many rows would be exported |
+| `--canonical-selection` | — | Restrict conversion to rows selected by `canonical-selection.json` |
+| `--context-policy` | `full` | TRL context policy: exact `full` rows or tokenizer-aware `message-window` |
+| `--tokenizer` | — | Tokenizer/model ID required by `message-window` |
+| `--tokenizer-revision` | — | Immutable tokenizer revision for context windowing |
+| `--max-length` | — | Maximum rendered length required by `message-window` |
+
+### bench train validate
+
+Validate Prime-RL or TRL SFT JSONL before upload or training. Both formats fail
+closed on malformed tool calls, undeclared tools, orphan tool outputs, and row
+count mismatches. TRL validation additionally requires object-valued tool-call
+arguments and exactly one assistant message in each completion.
+
+```bash
+bench train validate train.jsonl
+bench train validate train.jsonl --expected-rows 4417
+bench train validate train.jsonl \
+  --source-jobs jobs/run-001 \
+  --require-llm-trajectory \
+  --require-tool-calls
+
+bench train validate train.trl.jsonl \
+  --format trl-sft \
+  --source-jobs jobs/run-001 \
+  --require-llm-trajectory \
+  --require-tool-calls \
+  --tokenizer Qwen/Qwen3-4B \
+  --tokenizer-revision <immutable-sha> \
+  --max-length 40960
+```
+
+When `--tokenizer` is set, TRL validation uses TRL's training chat template,
+checks that prompt tokenization remains a prefix of prompt-plus-completion,
+requires a non-empty assistant token mask after the prompt boundary, and fails
+instead of silently truncating a row beyond `--max-length`. The JSON report
+includes token-length distribution and minimum trainable assistant tokens.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `prime-sft` | Trainer format: `prime-sft` or `trl-sft` |
+| `--expected-rows` | — | Fail unless this many rows are present |
+| `--source-jobs` | — | Source BenchFlow jobs directory to audit alongside trainer JSONL |
+| `--source-canonical-selection` | — | Canonical selection JSON used for this trainer data |
+| `--task-manifest` | — | Task manifest for source rows |
+| `--require-llm-trajectory` | `false` | Fail unless source selected rows have valid `llm_trajectory.jsonl` |
+| `--require-tool-calls` | `false` | Fail unless trainer rows and source rows include tool calls |
+| `--tokenizer` | — | Tokenizer/model ID used to render and mask TRL rows |
+| `--tokenizer-revision` | — | Immutable tokenizer revision used for TRL validation |
+| `--max-length` | — | Fail when a rendered TRL row exceeds this token length |
+
+### bench train run sft
+
+Launch a supervised fine-tuning job and record BenchFlow launch metadata. The
+first supported backend is `prime-rl`; BenchFlow wraps the native Prime-RL SFT
+entrypoint instead of re-modeling trainer internals.
+
+```bash
+bench train run sft \
+  --backend prime-rl \
+  --config configs/qwen35-env0-sft.toml \
+  --data benchflow/env0-prime-sft \
+  --prime-rl-dir .local/prime-rl \
+  --work-dir train-runs/qwen35-env0-sft \
+  --publish-model benchflow/benchflow-qwen35-9b \
+  --publish-artifacts benchflow/env0-experiment-trajectories \
+  --hf-prefix experiments/env0-mobile-pr828/training \
+  --follow
+```
+
+The wrapper runs:
+
+```bash
+uv run sft @ configs/qwen35-env0-sft.toml \
+  --data.name benchflow/env0-prime-sft \
+  --output-dir train-runs/qwen35-env0-sft/prime-rl-output
+```
+
+BenchFlow writes `<work-dir>/train-run.json`, `<work-dir>/command.txt`, and
+separate Prime-RL stdout/stderr logs under `<work-dir>/prime-rl/`. Secrets are
+not written to the manifest; only the names of recognized credential env vars
+that were present are recorded.
+
+For the Mobile300 PR828 reproduction, use `--compat-profile
+env0-mobile300-pr828`. That profile stages the historical custom-trainer
+pretokenized shifted-label rows, bypasses Prime-RL `stack`/`cat` packing for
+those staged rows so training sees one original trajectory per micro-batch, and
+enables `sample_mean` loss normalization through a run-local `sitecustomize.py`
+shim. The shim leaves Prime-RL package files untouched but fails closed if the
+Prime-RL SFT train loop or data module no longer exposes the expected hooks.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--backend` | `prime-rl` | Training backend. Currently only `prime-rl` is supported |
+| `--config` | required | Prime-RL SFT TOML config. Relative paths are resolved from the current directory first, then from `--prime-rl-dir` when set |
+| `--data` | — | Optional dataset override passed through as `--data.name` |
+| `--output-dir` | `<work-dir>/prime-rl-output` | Prime-RL trainer output directory |
+| `--compat-profile` | — | Named BenchFlow Prime-RL SFT compatibility profile. `env0-mobile300-pr828` expands to the Mobile300 PR828 reproduction settings |
+| `--work-dir` | `train-runs/sft` | BenchFlow training run directory |
+| `--prime-rl-dir` | current directory | Prime-RL checkout to run `uv run sft` from |
+| `--dry-run` | `false` | Pass `--dry-run` through to Prime-RL |
+| `--follow` | `false` | Stream trainer stdout while writing logs |
+| `--uv-no-sync` | `false` | Run Prime-RL as `uv run --no-sync sft ...`, useful after backend post-install steps such as `flash-attn` |
+| `--override` | — | Prime-RL override as `KEY=VALUE`; repeatable, emitted as `--KEY VALUE` |
+| `--target-examples` | — | Derive Prime-RL `max_steps` from target sample exposure and effective `data.batch_size`, rounding up |
+| `--target-micro-steps` | — | Derive Prime-RL `max_steps` from custom-trainer batch-size-1 microsteps, dropping the final partial accumulation |
+| `--sync-scheduler-to-max-steps` / `--no-sync-scheduler-to-max-steps` | `true` | When `--target-examples` or `--target-micro-steps` is set, also derive `scheduler.decay_steps` |
+| `--sync-ckpt-to-max-steps` / `--no-sync-ckpt-to-max-steps` | `false` | When deriving `max_steps`, also derive `ckpt.interval` and `ckpt.keep_interval` |
+| `--pack-function` | — | First-class Prime-RL `data.pack_function` override: `cat` or `stack` |
+| `--loss-mask` | — | First-class Prime-RL `data.loss_mask` override: `assistant`, `all`, or comma-separated roles from `system,user,assistant,tool` |
+| `--loss-normalization` | — | Prime-RL SFT loss normalization. `token_mean` keeps native Prime-RL behavior; `sample_mean` launches a run-local compatibility shim that matches the historical custom trainer's per-row mean loss and requires `data.pack_function=stack` |
+| `--model-attn` | — | First-class Prime-RL `model.attn` override, e.g. `sdpa` |
+| `--renderer-mode` | — | Prime-RL renderer override. `none` emits `--renderer None`, making Prime-RL use tokenizer `apply_chat_template` tokenization |
+| `--tool-defs-mode` | `preserve` | For local JSONL or local dataset dirs, keep tool schemas (`preserve`) or remove `tool_defs`/`tools` from the temporary training copy (`omit`) |
+| `--allow-unsafe-stack-flash-attn` | `false` | Allow Qwen3.5 `stack` packing with flash attention despite the known Prime-RL varlen-kernel risk |
+| `--force` | `false` | Overwrite an existing `<work-dir>/train-run.json` manifest |
+| `--publish-model` | — | Upload trainer output to this Hugging Face model repo |
+| `--model-tag` | — | Path prefix/tag for the model upload |
+| `--model-card` | — | Model card mode; currently accepts `auto` |
+| `--publish-artifacts` | — | Upload BenchFlow train run artifacts to this Hugging Face dataset repo |
+| `--hf-prefix` | — | Path prefix for `--publish-artifacts` |
+| `--hf-public-read-check` | `false` | Verify public Hugging Face reads after upload |
+
+Local JSONL files are packaged automatically into a temporary Hugging Face
+dataset directory under `<work-dir>/prime-rl-dataset`, with source validation
+metadata recorded in the manifest. If `--tool-defs-mode omit` is set,
+BenchFlow validates the source JSONL first and then strips tool schema columns
+only from the temporary training copy.
 
 ## bench skills
 
@@ -416,6 +632,27 @@ Arguments: `TASK_DIR` (task directory to export) and optional `OUTPUT_DIR`
 | `--overwrite` | `false` | Replace an existing export directory |
 | `--report-only` | `false` | Print the compatibility loss report without writing files |
 
+### bench tasks snapshot-hf
+
+Materialize a Hugging Face dataset repo or subpath as a local BenchFlow task
+tree and write `.benchflow-source.json` provenance beside it. The resulting
+directory can be passed to `bench eval run --tasks-dir`; split-layout task
+snapshots under `tasks/<task_id>/` are discovered directly.
+
+```bash
+bench tasks snapshot-hf benchflow/my-tasks .cache/hf-tasks/my-tasks
+bench tasks snapshot-hf benchflow/my-tasks .cache/hf-tasks/my-tasks --revision abc123 --path tasks --overwrite
+```
+
+Arguments: `REPO_ID` (Hugging Face dataset repo ID) and `OUTPUT_DIR`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--revision`, `--ref` | — | Dataset revision, branch, tag, or commit |
+| `--path` | — | Optional subpath inside the dataset repo, e.g. `tasks` |
+| `--cache-dir` | HF default | Optional Hugging Face cache directory |
+| `--overwrite` | `false` | Replace an existing output directory |
+
 ### bench tasks digest
 
 Compute the content digest that pins a task's files, independent of git — the
@@ -432,6 +669,24 @@ bench tasks digest tasks/                  # one "<name> sha256:<hex>" line per 
 ```
 
 Arguments: `PATH` (a task directory, or a directory of task directories).
+
+### bench tasks overlap
+
+Compare two task manifests, typically one emitted by a training-data collection
+run and one emitted by an evaluation run.
+
+```bash
+bench tasks overlap train-task-manifest.json eval-task-manifest.json
+bench tasks overlap train-task-manifest.json eval-task-manifest.json --out overlap.json
+```
+
+The command reports exact task-id overlap and exact digest overlap. A zero
+overlap result means the task ids/digests are disjoint; it does not prove domain
+or generator-family disjointness.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out`, `-o` | — | Optional JSON output path |
 
 ### bench tasks generate
 
@@ -560,7 +815,7 @@ bench hub check --level check --tasks-per-dataset 2 --out hub.jsonl
 
 ## YAML Config Format
 
-### Batch config with skills and skill nudge
+### Batch config with skills
 
 ```yaml
 source:
@@ -573,8 +828,6 @@ agent: gemini
 model: gemini-3.1-flash-lite-preview
 skill_mode: with-skill
 skills_dir: shared-skills/
-agent_env:
-  BENCHFLOW_SKILL_NUDGE: name
 max_retries: 2
 ```
 

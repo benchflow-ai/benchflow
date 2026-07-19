@@ -342,6 +342,35 @@ def stage_dockerfile_deps(
     dockerfile_path.write_text("\n".join(new_lines))
 
 
+def override_dockerfile_base_image(task_path: Path, base_image: str) -> int:
+    """Rewrite Dockerfile ``FROM`` images for a copied task directory.
+
+    This is a runtime reproduction hook for historical runs that used the same
+    task definitions but a different base-image namespace. It should be applied
+    only to a temporary task copy, never to the source task tree.
+    """
+    replacement = base_image.strip()
+    if not replacement or any(char.isspace() for char in replacement):
+        raise ValueError("--base-image-override must be a non-empty image reference")
+
+    dockerfile_path = task_path / "environment" / "Dockerfile"
+    if not dockerfile_path.exists():
+        return 0
+
+    from_line = re.compile(r"^(\s*FROM(?:\s+--[^\s]+)*\s+)(\S+)(.*)$", re.I)
+    rewritten = 0
+    new_lines: list[str] = []
+    for line in dockerfile_path.read_text().splitlines():
+        match = from_line.match(line)
+        if match:
+            new_lines.append(f"{match.group(1)}{replacement}{match.group(3)}")
+            rewritten += 1
+        else:
+            new_lines.append(line)
+    dockerfile_path.write_text("\n".join(new_lines) + "\n")
+    return rewritten
+
+
 def _stage_copy_source(src_path: str, env_dir: Path, context_root: Path) -> str:
     """Stage a single COPY source into ``_deps/`` and return its rewritten path.
 

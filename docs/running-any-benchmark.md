@@ -214,6 +214,7 @@ Every layer terminates at the *same* output contract, written per rollout under
 | File | What it carries |
 |------|-----------------|
 | `result.json` | Rollout summary — rewards, errors, token usage/cost |
+| `results.jsonl` | Verifiers/Prime-RL shaped rollout row |
 | `rewards.jsonl` | The reward record for the rollout (ORS / OpenReward shape) |
 | `trajectory/acp_trajectory.jsonl` | Full agent trace as ACP events |
 | `trajectory/llm_trajectory.jsonl` | Raw provider requests/responses (when captured) |

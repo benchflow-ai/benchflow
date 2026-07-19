@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import datetime
+
+import pytest
 
 from benchflow.providers.litellm_logging import (
     callback_module_source,
@@ -9,11 +13,213 @@ from benchflow.providers.litellm_logging import (
 )
 
 
+def test_pre_call_hook_drops_non_function_tools_for_chat_backend():
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {"type": "function", "function": {"name": "shell"}},
+            {"type": "namespace", "namespace": {"name": "codex"}},
+        ],
+    }
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    # The Responses-only {"type": "namespace"} tool is stripped; the function
+    # tool a chat-completions backend accepts survives.
+    assert cleaned is not None
+    assert [t["type"] for t in cleaned["tools"]] == ["function"]
+    # The caller's dict is not mutated in place.
+    assert [t["type"] for t in data["tools"]] == ["function", "namespace"]
+
+
+def test_pre_call_hook_strips_responses_input_mirror_when_messages_present():
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {"messages": [{"role": "user", "content": "hi"}], "input": "hi"}
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    assert cleaned is not None
+    assert "input" not in cleaned
+    assert "input" in data  # no in-place mutation
+
+
+def test_pre_call_hook_is_noop_for_pure_function_tools():
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "shell"}}],
+    }
+
+    # Nothing to strip -> returns None so LiteLLM keeps the original payload.
+    assert (
+        asyncio.run(logger.async_pre_call_hook(None, None, data, "completion")) is None
+    )
+
+
+def test_pre_call_hook_opt_in_requests_token_logprobs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards PR #926: training rollouts must request sampled token logprobs."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "shell"}}],
+        "logprobs": False,
+    }
+    monkeypatch.setenv("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "1")
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    assert cleaned is not data
+    assert cleaned["logprobs"] is True
+    assert data["logprobs"] is False
+
+
+def test_pre_call_hook_does_not_add_chat_logprobs_to_responses_requests(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards PR #926: chat logprob capture must not alter Responses calls."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {"messages": [{"role": "user", "content": "hi"}]}
+    monkeypatch.setenv("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "1")
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "responses"))
+
+    assert cleaned is None
+    assert "logprobs" not in data
+
+
+def test_callback_record_preserves_logprob_request_fields():
+    """Guards PR #926: trajectory requests retain logprob capture settings."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {
+            "model": "openai/qwen",
+            "messages": [{"role": "user", "content": "hi"}],
+            "optional_params": {"logprobs": True, "top_logprobs": 1},
+        },
+        now,
+        now,
+    )
+
+    assert record["request"]["body"]["logprobs"] is True
+    assert record["request"]["body"]["top_logprobs"] == 1
+
+
 def test_callback_module_source_exposes_proxy_handler_instance():
     source = callback_module_source()
 
     assert "class BenchFlowLiteLLMLogger" in source
     assert "proxy_handler_instance = BenchFlowLiteLLMLogger()" in source
+
+
+@pytest.mark.asyncio
+async def test_callback_pre_call_hook_strips_chat_input_compat_field():
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+
+    data = {
+        "model": "accounts/example/deployments/qwen",
+        "messages": [{"role": "user", "content": "hi"}],
+        "input": [{"role": "user", "content": "hi"}],
+        "stream": True,
+    }
+
+    cleaned = await logger.async_pre_call_hook(None, None, data, "completion")
+
+    assert cleaned is not data
+    assert "input" not in cleaned
+    assert cleaned["messages"] == data["messages"]
+    assert cleaned["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_callback_pre_call_hook_preserves_input_only_requests():
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+
+    data = {"model": "responses-model", "input": "hello"}
+
+    assert await logger.async_pre_call_hook(None, None, data, "responses") is None
+
+
+@pytest.mark.asyncio
+async def test_callback_rejects_missing_required_opencode_skill_before_provider(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards the OpenCode first-request catalog gate from PR #919."""
+    monkeypatch.setenv("BENCHFLOW_SKILL_CATALOG_GATE_AGENT", "opencode")
+    monkeypatch.setenv(
+        "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", json.dumps(["mesh-analysis"])
+    )
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    data = {
+        "model": "qwen35-9b-base",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "<available_skills><skill><name>customize-opencode</name>"
+                    "</skill></available_skills>"
+                ),
+            },
+            {"role": "user", "content": "calculate mass"},
+        ],
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"experiment_fidelity/skill_catalog_missing.*mesh-analysis",
+    ):
+        await logger.async_pre_call_hook(None, None, data, "completion")
+
+
+@pytest.mark.asyncio
+async def test_callback_accepts_matching_opencode_catalog_once(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Guards the OpenCode first-request catalog gate from PR #919."""
+    monkeypatch.setenv("BENCHFLOW_SKILL_CATALOG_GATE_AGENT", "opencode")
+    monkeypatch.setenv(
+        "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", json.dumps(["mesh-analysis"])
+    )
+    namespace: dict[str, object] = {}
+    exec(callback_module_source(), namespace)
+    logger = namespace["proxy_handler_instance"]
+    first = {
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "<available_skills>"
+                    "<skill><name>customize-opencode</name></skill>"
+                    "<skill><name>mesh-analysis</name></skill>"
+                    "</available_skills>"
+                ),
+            }
+        ]
+    }
+
+    assert await logger.async_pre_call_hook(None, None, first, "completion") is None
+    assert (
+        await logger.async_pre_call_hook(
+            None,
+            None,
+            {"messages": [{"role": "user", "content": "continue"}]},
+            "completion",
+        )
+        is None
+    )
 
 
 def test_litellm_callback_jsonl_imports_usage_and_cost():
@@ -66,6 +272,141 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
     assert usage["n_output_tokens"] == 3
     assert usage["total_tokens"] == 16
     assert usage["cost_usd"] == 0.00042
+
+
+def test_opencode_callback_import_preserves_call_metadata_and_purpose():
+    """Guards PR #925: TRL conversion can exclude OpenCode helper calls."""
+    primary = {
+        "event": "success",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+        "model_group": "benchflow-glm-5.1",
+        "call_type": "completion",
+        "input_shape": {
+            "has_messages": True,
+            "has_input": True,
+            "n_messages": 2,
+        },
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {"role": "system", "content": "You are OpenCode."},
+                    {"role": "user", "content": "Inspect the repository."},
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "read", "parameters": {"type": "object"}},
+                    }
+                ],
+            },
+        },
+        "response": {
+            "choices": [{"message": {"role": "assistant", "content": "Working."}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        },
+        "start_time": "2026-07-12T10:00:00Z",
+        "end_time": "2026-07-12T10:00:01Z",
+    }
+    title = {
+        **primary,
+        "request": {
+            **primary["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a title generator. Output only a title.",
+                    },
+                    {"role": "user", "content": "Generate a title."},
+                ],
+            },
+        },
+    }
+    summary = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Summarize what was done in this conversation. "
+                            "Write like a pull request description."
+                        ),
+                    },
+                    {"role": "user", "content": "Summarize this session."},
+                ],
+            },
+        },
+    }
+    compaction = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an anchored context summarization assistant "
+                            "for coding sessions."
+                        ),
+                    },
+                    {"role": "user", "content": "Compact this session."},
+                ],
+            },
+        },
+    }
+    helper = {
+        **title,
+        "request": {
+            **title["request"],
+            "body": {
+                "model": "glm-5.1",
+                "messages": [
+                    {"role": "system", "content": "Small utility model."},
+                    {"role": "user", "content": "Classify this input."},
+                ],
+            },
+        },
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        "\n".join(
+            json.dumps(record)
+            for record in (primary, title, summary, compaction, helper)
+        ),
+        session_id="session",
+        agent_name="opencode",
+    )
+
+    assert trajectory.exchanges[0].metadata == {
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+        "model_group": "benchflow-glm-5.1",
+        "call_type": "completion",
+        "input_shape": {
+            "has_messages": True,
+            "has_input": True,
+            "n_messages": 2,
+        },
+        "call_purpose": "agent",
+    }
+    assert [exchange.metadata["call_purpose"] for exchange in trajectory.exchanges] == [
+        "agent",
+        "title",
+        "summary",
+        "compaction",
+        "helper",
+    ]
 
 
 def test_callback_log_preserves_bedrock_reasoning_effort_in_request_body():
@@ -179,6 +520,56 @@ def test_callback_records_extended_bf_vocabulary_without_code_change():
     assert bf["trace_id"] == "t-abc"
 
 
+def test_callback_log_preserves_sampled_token_logprobs():
+    """Guards PR #926: provider token logprobs survive trajectory import."""
+
+    record = {
+        "event": "success",
+        "request_model": "benchflow-qwen",
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "benchflow-qwen",
+                "messages": [{"role": "user", "content": "hi"}],
+                "logprobs": True,
+            },
+        },
+        "response": {
+            "model": "openai/qwen",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "hello"},
+                    "logprobs": {
+                        "content": [
+                            {
+                                "token": "hello",
+                                "logprob": -0.25,
+                                "bytes": [104, 101, 108, 108, 111],
+                            }
+                        ]
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        },
+        "start_time": "2026-07-12T10:00:00",
+        "end_time": "2026-07-12T10:00:01",
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="session",
+        agent_name="opencode",
+    )
+
+    exchange = trajectory.exchanges[0]
+    assert exchange.request.body["logprobs"] is True
+    token = exchange.response.body["choices"][0]["logprobs"]["content"][0]
+    assert token["token"] == "hello"
+    assert token["logprob"] == -0.25
+
+
 def test_litellm_failure_records_become_error_exchanges():
     record = {
         "event": "failure",
@@ -199,3 +590,129 @@ def test_litellm_failure_records_become_error_exchanges():
     assert trajectory.exchanges[0].response.body["error"]["message"] == "bad key"
     usage = extract_usage_from_trajectory(trajectory, fallback_model="openai/gpt-4")
     assert usage["usage_source"] == "unavailable"
+
+
+def test_context_length_failure_imports_as_permanent_rejected_request():
+    """Guards issue #830: context-window failures must not look like 500s."""
+    record = {
+        "event": "failure",
+        "request_model": "benchflow-qwen",
+        "request": {"method": "POST", "path": "/v1/chat/completions", "body": {}},
+        "error": {
+            "type": "NoneType",
+            "message": "None",
+            "traceback": (
+                "litellm.exceptions.BadRequestError: OpenAIException - Requested "
+                "token count exceeds the model's maximum context length of "
+                "16384 tokens."
+            ),
+        },
+        "start_time": "2026-06-04T10:00:00",
+        "end_time": "2026-06-04T10:00:00",
+    }
+
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="session",
+        agent_name="pi-acp",
+    )
+
+    assert trajectory.exchanges[0].response.status_code == 400
+
+
+def _callback_namespace() -> dict:
+    """Exec the embedded callback module source so its helpers/classes can be
+    exercised directly — the source ships as a string (runs inside the proxy
+    process) and cannot be imported, so exec is the only faithful seam."""
+    namespace: dict = {}
+    exec(callback_module_source(), namespace)
+    return namespace
+
+
+_CONTEXT_CAUSE = (
+    "litellm.ContextWindowExceededError: OpenAIException - Requested token "
+    "count exceeds the model's maximum context length of 16384 tokens. You "
+    "requested a total of 17964 tokens: 1580 input + 16384 completion."
+)
+
+
+def test_failure_detail_prefers_exception_when_response_none():
+    """Guards issue #830 fix#2: when litellm fires the failure hook with
+    response_obj=None, the real cause in kwargs['exception'] must drive
+    error.type/message — not the literal 'None'/'NoneType'."""
+    _failure_detail = _callback_namespace()["_failure_detail"]
+    detail = _failure_detail(None, ValueError(_CONTEXT_CAUSE))
+    assert type(detail).__name__ == "ValueError"
+    assert "16384 tokens" in str(detail)
+
+
+def test_failure_detail_uses_response_when_present():
+    """No behavior change on the existing path: a non-None response_obj wins."""
+    _failure_detail = _callback_namespace()["_failure_detail"]
+    assert _failure_detail("boom", ValueError("ignored")) == "boom"
+
+
+def test_failure_detail_none_when_both_missing():
+    """Graceful degradation: no response and no exception stays the old 'None'."""
+    _failure_detail = _callback_namespace()["_failure_detail"]
+    assert _failure_detail(None, None) is None
+
+
+def test_failure_traceback_falls_back_to_exception_without_active_exc():
+    """Greptile P2 / #830: when no exception is active (format_exc() is the
+    'NoneType: None' sentinel) but we recovered the cause from kwargs['exception'],
+    the traceback formats that exception so it doesn't go blank under a meaningful
+    error.message."""
+    _failure_traceback = _callback_namespace()["_failure_traceback"]
+    # Called OUTSIDE any except block → traceback.format_exc() == 'NoneType: None\n'.
+    tb = _failure_traceback(ValueError(_CONTEXT_CAUSE))
+    assert "ValueError" in tb
+    assert "16384 tokens" in tb
+    assert "NoneType: None" not in tb
+
+
+def test_failure_traceback_uses_active_exception():
+    """When an exception IS active, format_exc() (the real stack) is used as-is."""
+    _failure_traceback = _callback_namespace()["_failure_traceback"]
+    try:
+        raise RuntimeError("active boom")
+    except RuntimeError as exc:
+        tb = _failure_traceback(exc)
+    assert "RuntimeError" in tb
+    assert "active boom" in tb
+    assert "Traceback (most recent call last)" in tb
+
+
+def test_failure_traceback_non_exception_detail_keeps_sentinel():
+    """No active exception and a non-exception detail (both-None path) keeps the
+    old 'NoneType: None' behavior — no spurious formatting."""
+    _failure_traceback = _callback_namespace()["_failure_traceback"]
+    assert _failure_traceback(None).strip() == "NoneType: None"
+
+
+async def test_failure_event_records_exception_cause_when_response_none(
+    tmp_path, monkeypatch
+):
+    """End-to-end through the real write path: a context-window reject
+    (response_obj=None, cause in kwargs['exception']) lands a USABLE
+    error.message in the callback record, not 'None' (issue #830 fix#2)."""
+    from datetime import datetime
+
+    namespace = _callback_namespace()
+    logger = namespace["BenchFlowLiteLLMLogger"]()
+    log_path = tmp_path / "callback.jsonl"
+    monkeypatch.setenv("BENCHFLOW_LITELLM_LOG_PATH", str(log_path))
+
+    now = datetime.now()
+    await logger.async_log_failure_event(
+        {"model": "benchflow-qwen", "exception": ValueError(_CONTEXT_CAUSE)},
+        None,
+        now,
+        now,
+    )
+
+    record = json.loads(log_path.read_text().splitlines()[-1])
+    assert record["event"] == "failure"
+    assert record["error"]["type"] == "ValueError"
+    assert "16384 tokens" in record["error"]["message"]
+    assert record["error"]["message"] != "None"

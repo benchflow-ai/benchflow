@@ -308,6 +308,44 @@ class TestResolveAgentEnvSubscription:
             },
         )
 
+    def test_anthropic_subscription_gate_is_registry_driven(self, monkeypatch):
+        """Guards the fix from PR #886: ANTHROPIC subscription auth is registry-driven.
+
+        The gate used to hardcode claude-agent-acp; decoupled Claude-CLI
+        agents (e.g. omnigent claude-*) opt in by declaring subscription_auth
+        in their registration. Agents without it must never skip the proxy.
+        """
+        from benchflow.agents.env import uses_native_subscription_auth
+        from benchflow.agents.registry import AGENTS, AgentConfig, SubscriptionAuth
+
+        cfg = AgentConfig(
+            name="fake-claude-cli",
+            install_cmd="",
+            launch_cmd="",
+            subscription_auth=SubscriptionAuth(
+                replaces_env="ANTHROPIC_API_KEY",
+                detect_file="~/.claude/.credentials.json",
+            ),
+        )
+        monkeypatch.setitem(AGENTS, "fake-claude-cli", cfg)
+
+        oauth_env = {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}
+        assert uses_native_subscription_auth(
+            "fake-claude-cli", "claude-haiku-4-5-20251001", oauth_env
+        )
+        # API key present → stays on the LiteLLM path.
+        assert not uses_native_subscription_auth(
+            "fake-claude-cli",
+            "claude-haiku-4-5-20251001",
+            {**oauth_env, "ANTHROPIC_API_KEY": "sk-ant"},
+        )
+        # No ANTHROPIC subscription_auth declared → never skips the proxy.
+        cfg_plain = AgentConfig(name="fake-plain-acp", install_cmd="", launch_cmd="")
+        monkeypatch.setitem(AGENTS, "fake-plain-acp", cfg_plain)
+        assert not uses_native_subscription_auth(
+            "fake-plain-acp", "claude-haiku-4-5-20251001", oauth_env
+        )
+
     def test_codex_api_key_auth_alias(self, monkeypatch, tmp_path):
         """Guards PR #296: CODEX_API_KEY works for native Codex auth."""
         for k in ("CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
@@ -465,7 +503,12 @@ class TestUploadSubscriptionAuth:
 
     @pytest.mark.asyncio
     async def test_openai_key_wins_over_codex_auth_json_file_write(self):
-        """Guards PR #587: API-key auth keeps the existing Codex file shape."""
+        """Guards PR #587's "OPENAI_API_KEY wins over CODEX_AUTH_JSON" semantic
+        under the decouple relocation: when OPENAI_API_KEY is present, core
+        ``write_credential_files`` uploads NOTHING for codex — the inline
+        CODEX_AUTH_JSON subscription file is suppressed (the key wins), and the
+        API-key auth.json is now self-written by codex's ``launch_cmd`` rather
+        than core (see tests/test_codex_self_write_auth.py)."""
         from benchflow.agents.credentials import write_credential_files
 
         env = _FakeEnv()
@@ -481,9 +524,11 @@ class TestUploadSubscriptionAuth:
             "/home/agent",
         )
 
-        assert len(env.uploads) == 1
-        assert env.uploads[0][1] == "/home/agent/.codex/auth.json"
-        assert env.uploads[0][2] == '{"OPENAI_API_KEY": "sk-test"}'
+        # OPENAI_API_KEY present -> CODEX_AUTH_JSON path is skipped (key wins) and
+        # the generic credential_files loop is empty (relocated to the launcher).
+        assert env.uploads == []
+        # the auth.json write now lives in the launcher, conditional on the key.
+        assert ".codex/auth.json" in AGENTS["codex-acp"].launch_cmd
 
     @pytest.mark.asyncio
     async def test_subscription_auth_chowns_uploaded_home_file(

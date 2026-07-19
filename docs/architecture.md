@@ -126,13 +126,8 @@ provide a custom `--skills-dir` only in `with-skill` mode.
 
 Claude Code reads each skill's frontmatter name and description for native
 discovery. The full `SKILL.md` body and bundled resources are loaded by the
-agent when it invokes or reads the skill; BenchFlow does not inline every
-mounted skill body into the task prompt by default.
-
-`BENCHFLOW_SKILL_NUDGE` is an optional prompt nudge layered on top of native
-discovery. Use `name` to tell the agent which skills are mounted, `description`
-to include each mounted skill's description, or `full` to include the full
-`SKILL.md` body. Omit the variable to keep BenchFlow's runtime default off.
+agent when it invokes or reads the skill; BenchFlow never inlines mounted
+skill bodies into the task prompt.
 
 **Environment — the world (Han's S).** The stateful world the agent acts in. Owns the world's lifecycle: `provision / readiness / query / snapshot / restore / reset / teardown`. See "The Environment plane & the manifest."
 

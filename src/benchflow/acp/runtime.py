@@ -26,6 +26,7 @@ from pathlib import Path
 
 from benchflow.acp.client import ACPClient
 from benchflow.acp.container_transport import ContainerTransport
+from benchflow.acp.selection import selected_acp_transport
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.protocol import ACPSessionAdapter
 from benchflow.agents.providers import (
@@ -39,8 +40,13 @@ from benchflow.diagnostics import (
     AgentPromptTimeoutError,
     IdleTimeoutDiagnostic,
     IdleTimeoutError,
+    TransportClosedDiagnostic,
+    TransportClosedError,
 )
-from benchflow.sandbox.lockdown import build_priv_drop_cmd
+from benchflow.sandbox.lockdown import (
+    build_priv_drop_cmd,
+    enforce_agent_egress_firewall,
+)
 from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
 from benchflow.trajectories._capture import _capture_session_trajectory
 
@@ -52,6 +58,7 @@ __all__ = [
     "IdleTimeoutError",
     "connect_acp",
     "execute_prompts",
+    "selected_acp_transport",
 ]
 
 logger = logging.getLogger(__name__)
@@ -60,6 +67,84 @@ logger = logging.getLogger(__name__)
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
 _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
+_ACP_HANDSHAKE_TIMEOUT_SEC = 60
+_OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
+
+
+async def _prepare_openhands_direct_execution(
+    env,
+    *,
+    agent: str,
+    agent_env: dict[str, str],
+) -> dict[str, str]:
+    """Patch OpenHands as root before a sandbox-user privilege drop.
+
+    OpenHands is installed under ``/root/.local/share/uv/tools`` and exposed to
+    the sandbox user through a read-only symlink.  Running the opt-in patch from
+    the launch command only worked for tasks whose workspace was ``/root``,
+    because sandbox-user setup happened to chown that whole directory.  Tasks
+    rooted elsewhere (for example ``/app``) exited before ACP initialization.
+
+    Apply the same narrow patch through the environment's root execution plane,
+    then disable the duplicate launch-time patch for this process.  The caller's
+    environment mapping is copied so recorded run provenance still reflects the
+    requested opt-in value.
+    """
+    if agent != "openhands" or agent_env.get(_OPENHANDS_DISABLE_SUBAGENTS_ENV) != "1":
+        return agent_env
+
+    patch_cmd = (
+        'export PATH="$HOME/.local/bin:$PATH"; '
+        'OH_BIN="$(command -v openhands)"; '
+        '[ -n "$OH_BIN" ] || { echo "Cannot locate OpenHands executable" >&2; exit 127; }; '
+        'OH_PY="$(dirname "$(readlink -f "$OH_BIN")")/python"; '
+        '[ -x "$OH_PY" ] || { '
+        'echo "Cannot locate OpenHands tool interpreter" >&2; exit 127; }; '
+        '"$OH_PY" -c \'from pathlib import Path; '
+        "import openhands_cli.utils as u; "
+        "p=Path(u.__file__); s=p.read_text(); "
+        'old="        Tool(name=task_tool_name),\\n"; '
+        'new="        # BenchFlow: delegation disabled for this run.\\n"; '
+        "assert old in s or new in s; "
+        "p.write_text(s.replace(old,new,1)) if old in s else None; "
+        "assert new in p.read_text()'"
+    )
+    result = await env.exec(patch_cmd, user="root", timeout_sec=30)
+    return_code = getattr(
+        result,
+        "return_code",
+        getattr(result, "exit_code", 1),
+    )
+    if return_code != 0:
+        stdout = (getattr(result, "stdout", "") or "").strip()
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        detail = stderr or stdout or "no output"
+        raise RuntimeError(
+            "Failed to prepare OpenHands direct-execution mode as root "
+            f"(exit code {return_code}): {detail[:2000]}"
+        )
+
+    launch_env = dict(agent_env)
+    launch_env[_OPENHANDS_DISABLE_SUBAGENTS_ENV] = "0"
+    logger.info("Prepared OpenHands direct-execution mode before privilege drop")
+    return launch_env
+
+
+async def _wait_for_acp_handshake(awaitable, *, phase: str):
+    try:
+        return await asyncio.wait_for(awaitable, timeout=_ACP_HANDSHAKE_TIMEOUT_SEC)
+    except TimeoutError as e:
+        msg = (
+            f"ACP {phase} timed out after {_ACP_HANDSHAKE_TIMEOUT_SEC}s "
+            "before the first prompt"
+        )
+        raise TransportClosedError(
+            msg,
+            TransportClosedDiagnostic(
+                raw_message=msg,
+                transport_diagnosis=f"acp_{phase}_timeout",
+            ),
+        ) from e
 
 
 # models.dev provider inference — used when acp_model_format="provider/model"
@@ -497,6 +582,12 @@ async def connect_acp(
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).
     """
+    agent_env = await _prepare_openhands_direct_execution(
+        env,
+        agent=agent,
+        agent_env=agent_env,
+    )
+
     # Resolve agent binary path for non-docker environments. Advisory only:
     # under load a Daytona session command can time out transiently, and the
     # unresolved launch command still works (the launch fails loudly later if
@@ -534,6 +625,17 @@ async def connect_acp(
         try:
             if environment == "docker":
                 live_proc = DockerProcess.from_sandbox_env(env)
+            elif environment == "daytona":
+                transport_name = selected_acp_transport(
+                    agent=agent,
+                    environment=environment,
+                )
+                if transport_name == "ssh":
+                    live_proc = await DaytonaProcess.from_sandbox_env(env)
+                    logger.info("Using SSH transport for %s on Daytona", agent)
+                else:
+                    live_proc = await DaytonaPtyProcess.from_sandbox_env(env)
+                    logger.info("Using PTY transport for Daytona sandbox")
             else:
                 is_dind = hasattr(env, "_strategy") and hasattr(
                     env._strategy, "_compose_cmd"
@@ -555,15 +657,18 @@ async def connect_acp(
             acp_client = ACPClient(transport)
             await acp_client.connect()
 
-            init_result = await asyncio.wait_for(acp_client.initialize(), timeout=60)
+            init_result = await _wait_for_acp_handshake(
+                acp_client.initialize(),
+                phase="initialize",
+            )
             agent_name = (
                 init_result.agent_info.name if init_result.agent_info else agent
             )
             logger.info(f"ACP agent: {agent_name}")
 
-            session = await asyncio.wait_for(
+            session = await _wait_for_acp_handshake(
                 acp_client.session_new(cwd=agent_cwd, mcp_servers=mcp_servers),
-                timeout=60,
+                phase="session_new",
             )
             logger.info(f"Session: {session.session_id}")
             break
@@ -596,6 +701,7 @@ async def connect_acp(
             agent_env=agent_env,
             reasoning_effort=reasoning_effort,
         )
+        await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
     except Exception:
         with contextlib.suppress(Exception):
             await acp_client.close()

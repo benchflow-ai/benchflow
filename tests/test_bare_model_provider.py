@@ -289,3 +289,54 @@ class TestResolveBareModelPrefix:
         """Without generic envs, builtin/unknown ids resolve exactly as before."""
         assert _resolve_bare_model_prefix(model) == expected
         assert setup_spy == []
+
+
+def test_set_model_failure_acks_and_emits_thought_without_crashing(monkeypatch):
+    # Contract for PR #871's openclaw set_model swallow: a provider-resolution /
+    # config-write failure must NOT crash the shim (rc=1). It must still ACK the
+    # request AND surface the real cause on the trajectory (agent_thought) so the
+    # failure is not indistinguishable downstream from a genuine provider outage.
+    import benchflow.agents.openclaw_acp_shim as shim
+
+    monkeypatch.setattr(shim, "setup_openai_auth", lambda: None)
+    monkeypatch.setattr(shim, "setup_gcloud_adc", lambda: None)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("config set exploded")
+
+    monkeypatch.setattr(shim.subprocess, "run", _boom)
+
+    inbox = iter(
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "session/set_model",
+                "params": {"modelId": "deepseek/deepseek-v4-flash"},
+            }
+        ]
+    )
+
+    def _fake_recv():
+        try:
+            return next(inbox)
+        except StopIteration:
+            raise EOFError from None
+
+    sent: list = []
+    monkeypatch.setattr(shim, "recv", _fake_recv)
+    monkeypatch.setattr(shim, "send", sent.append)
+
+    shim.main()  # must return normally — no rc=1 crash
+
+    acks = [m for m in sent if m.get("id") == 7 and "result" in m]
+    assert acks == [{"jsonrpc": "2.0", "id": 7, "result": {}}]
+    assert not any(m.get("id") == 7 and "error" in m for m in sent)
+
+    thoughts = [
+        m
+        for m in sent
+        if m.get("method") == "session/update"
+        and m["params"]["update"].get("sessionUpdate") == "agent_thought"
+    ]
+    assert any("config set exploded" in t["params"]["update"]["text"] for t in thoughts)

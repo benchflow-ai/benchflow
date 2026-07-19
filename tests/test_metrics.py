@@ -423,3 +423,32 @@ def test_collect_metrics_usage_aggregation_mixed_telemetry(tmp_path):
     assert summary["total_cost_usd"] == 0.003
     assert summary["avg_cost_per_trial_usd"] == 0.0015
     assert summary["telemetry_coverage"] == 2 / 3
+
+
+def test_usage_source_type_contract_tracks_trusted_sources():
+    """Guards the fix from PR #858 against usage_source_type drifting from the trusted source contract."""
+    from typing import get_args
+
+    from benchflow.usage_tracking import (
+        TRUSTED_USAGE_SOURCES,
+        USAGE_SOURCE_AGENT_NATIVE_ACP,
+        USAGE_SOURCE_PROVIDER_RESPONSE,
+        USAGE_SOURCE_UNAVAILABLE,
+        UsageSource,
+        normalize_usage_source,
+    )
+
+    assert set(get_args(UsageSource)) == {
+        USAGE_SOURCE_PROVIDER_RESPONSE,
+        USAGE_SOURCE_AGENT_NATIVE_ACP,
+        USAGE_SOURCE_UNAVAILABLE,
+    }
+    assert {
+        USAGE_SOURCE_PROVIDER_RESPONSE,
+        USAGE_SOURCE_AGENT_NATIVE_ACP,
+    } == TRUSTED_USAGE_SOURCES
+    assert normalize_usage_source(USAGE_SOURCE_AGENT_NATIVE_ACP) == (
+        USAGE_SOURCE_AGENT_NATIVE_ACP
+    )
+    with pytest.raises(ValueError, match="usage_source must be one of"):
+        normalize_usage_source("new_unregistered_source")

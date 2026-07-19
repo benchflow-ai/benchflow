@@ -1,5 +1,6 @@
 """Tests for path lockdown — _validate_locked_path, _resolve_locked_paths, lockdown_paths."""
 
+import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -384,11 +385,88 @@ class TestPrivDropCommand:
         """Single quotes in agent_launch don't break the command."""
         cmd = build_priv_drop_cmd("agent --prompt 'hello world'", "agent")
         assert "hello world" in cmd
-        assert cmd.count("if ") == 1
-        assert cmd.count(" fi") == 1
+        subprocess.run(["bash", "-n", "-c", cmd], check=True)
 
     def test_custom_sandbox_user(self):
         cmd = build_priv_drop_cmd("my-agent", "bench-user")
         assert "--reuid=bench-user" in cmd
         assert "su -l bench-user" in cmd
         assert "/home/bench-user" in cmd
+
+    def test_privilege_drop_does_not_install_firewall_during_acp_bootstrap(self):
+        """Guards PR #921 against blocking OpenHands before ACP initialize."""
+        cmd = build_priv_drop_cmd("my-agent", "agent")
+
+        assert "iptables" not in cmd
+        subprocess.run(["bash", "-n", "-c", cmd], check=True)
+
+
+class TestAgentEgressFirewall:
+    """External egress is blocked after ACP bootstrap but before prompting."""
+
+    def test_firewall_allows_loopback_and_rejects_ipv4_and_ipv6_egress(self):
+        from benchflow.sandbox.lockdown import _agent_egress_firewall_cmd
+
+        cmd = _agent_egress_firewall_cmd("agent")
+
+        assert "apt-get install -y -qq iptables" in cmd
+        assert "dnf -y install iptables" in cmd
+        assert "apk add --no-cache iptables" in cmd
+        assert "agent_uid=$(id -u agent)" in cmd
+        assert '-o lo -m owner --uid-owner "$agent_uid" -j ACCEPT' in cmd
+        assert '--uid-owner "$agent_uid" -j REJECT' in cmd
+        assert "ip6tables -C OUTPUT -o lo" in cmd
+        assert "IPv6 enabled but ip6tables unavailable" in cmd
+        subprocess.run(["bash", "-n", "-c", cmd], check=True)
+
+    async def test_policy_is_skipped_when_web_tools_are_allowed(self):
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock()
+
+        await enforce_agent_egress_firewall(
+            env,
+            "agent",
+            {"LLM_BASE_URL": "http://127.0.0.1:1234"},
+        )
+
+        env.exec.assert_not_awaited()
+
+    async def test_policy_requires_loopback_proxy_and_runs_as_root(self):
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock(return_value=MagicMock(return_code=0))
+
+        await enforce_agent_egress_firewall(
+            env,
+            "agent",
+            {
+                "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                "LLM_BASE_URL": "http://127.0.0.1:1234",
+            },
+        )
+
+        env.exec.assert_awaited_once()
+        (_cmd,) = env.exec.await_args.args
+        assert "iptables -C OUTPUT -o lo" in _cmd
+        assert env.exec.await_args.kwargs == {"user": "root", "timeout_sec": 120}
+
+    async def test_policy_rejects_non_loopback_proxy(self):
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="loopback LLM_BASE_URL"):
+            await enforce_agent_egress_firewall(
+                env,
+                "agent",
+                {
+                    "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                    "LLM_BASE_URL": "https://api.openai.com/v1",
+                },
+            )
+
+        env.exec.assert_not_awaited()

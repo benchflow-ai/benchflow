@@ -18,7 +18,16 @@ import pytest
 from benchflow.acp.client import ACPClient
 from benchflow.acp.transport import Transport
 from benchflow.acp.types import McpServerSpec
-from benchflow.rollout import Rollout, RolloutConfig, _task_mcp_specs
+from benchflow.agents.registry import AGENTS, AgentConfig
+from benchflow.rollout import (
+    Role,
+    Rollout,
+    RolloutConfig,
+    _install_native_task_mcp_config,
+    _openhands_mcp_config,
+    _task_mcp_specs,
+    _task_mcp_specs_for_agent,
+)
 from benchflow.task.config import MCPServerConfig
 
 
@@ -89,15 +98,156 @@ def _task_with_mcp(*configs: MCPServerConfig) -> SimpleNamespace:
 def test_task_mcp_specs_maps_each_transport() -> None:
     """streamable-http → http; stdio/sse pass through; fields carried across."""
     task = _task_with_mcp(
-        MCPServerConfig(name="pw", transport="stdio", command="npx", args=["-y", "x"]),
+        MCPServerConfig(
+            name="pw",
+            transport="stdio",
+            command="npx",
+            args=["-y", "x"],
+            cwd="/workspace",
+        ),
         MCPServerConfig(name="r", transport="sse", url="http://x/sse"),
         MCPServerConfig(name="h", transport="streamable-http", url="http://x/mcp"),
     )
     assert [spec.to_new_session_param() for spec in _task_mcp_specs(task)] == [
-        {"name": "pw", "command": "npx", "args": ["-y", "x"], "env": []},
+        {
+            "name": "pw",
+            "command": "npx",
+            "args": ["-y", "x"],
+            "env": [],
+            "cwd": "/workspace",
+        },
         {"type": "sse", "name": "r", "url": "http://x/sse", "headers": []},
         {"type": "http", "name": "h", "url": "http://x/mcp", "headers": []},
     ]
+
+
+def test_task_mcp_specs_carries_openhands_tool_filters() -> None:
+    """Guards MCP Atlas adapter work against invalid raw ACP tool filters."""
+    task = _task_with_mcp(
+        MCPServerConfig(
+            name="atlas",
+            transport="streamable-http",
+            url="http://localhost:18765/mcp",
+            headers={"x-run": "smoke"},
+            tools=["search", "fetch"],
+            include_tags=["safe"],
+            exclude_tags=["admin"],
+        )
+    )
+
+    assert [spec.to_new_session_param() for spec in _task_mcp_specs(task)] == [
+        {
+            "type": "http",
+            "name": "atlas",
+            "url": "http://localhost:18765/mcp",
+            "headers": [{"name": "x-run", "value": "smoke"}],
+            "_meta": {
+                "benchflow": {
+                    "mcp_tool_filters": {
+                        "tools": ["search", "fetch"],
+                        "include_tags": ["safe"],
+                        "exclude_tags": ["admin"],
+                    }
+                }
+            },
+        }
+    ]
+
+
+def test_openhands_mcp_config_uses_fastmcp_shape() -> None:
+    """Guards native OpenHands MCP config against ACP/FastMCP shape drift."""
+    task = _task_with_mcp(
+        MCPServerConfig(
+            name="atlas",
+            transport="streamable-http",
+            url="http://localhost:18765/mcp",
+            headers={"x-run": "smoke"},
+            tools=["search", "fetch"],
+        ),
+        MCPServerConfig(
+            name="local",
+            transport="stdio",
+            command="python",
+            args=["server.py"],
+            cwd="/workspace/agent_workspace",
+            env={"TOKEN": "abc"},
+            exclude_tags=["unsafe"],
+        ),
+    )
+
+    assert _openhands_mcp_config(task) == {
+        "mcpServers": {
+            "atlas": {
+                "url": "http://localhost:18765/mcp",
+                "transport": "http",
+                "headers": {"x-run": "smoke"},
+                "enabled": True,
+                "tools": ["search", "fetch"],
+            },
+            "local": {
+                "command": "python",
+                "args": ["server.py"],
+                "cwd": "/workspace/agent_workspace",
+                "env": {"TOKEN": "abc"},
+                "transport": "stdio",
+                "enabled": True,
+                "exclude_tags": ["unsafe"],
+            },
+        }
+    }
+
+
+def test_openhands_mcp_servers_are_not_sent_over_acp() -> None:
+    """OpenHands loads task MCP config from ~/.openhands/mcp.json, not session/new."""
+    task = _task_with_mcp(
+        MCPServerConfig(name="h", transport="streamable-http", url="http://x/mcp")
+    )
+
+    assert _task_mcp_specs_for_agent("openhands", task) == []
+    assert len(_task_mcp_specs_for_agent("claude-agent-acp", task)) == 1
+
+
+def test_native_config_mcp_routing_is_registry_driven() -> None:
+    """Guards PR #878's rollout-kernel cleanup against agent-name branching."""
+    task = _task_with_mcp(
+        MCPServerConfig(name="h", transport="streamable-http", url="http://x/mcp")
+    )
+    native_cfg = AgentConfig(
+        name="custom-native",
+        install_cmd=":",
+        launch_cmd="custom-native",
+        task_mcp_transport="native-config",
+        task_mcp_config_path=".custom/mcp.json",
+    )
+    acp_cfg = AgentConfig(name="custom-acp", install_cmd=":", launch_cmd="custom-acp")
+
+    assert _task_mcp_specs_for_agent("custom-native", task, native_cfg) == []
+    assert len(_task_mcp_specs_for_agent("custom-acp", task, acp_cfg)) == 1
+
+
+@pytest.mark.asyncio
+async def test_native_task_mcp_config_installer_uses_registry_path() -> None:
+    """Native task-MCP config is installed via AgentConfig, not an OpenHands branch."""
+    task = _task_with_mcp(
+        MCPServerConfig(name="h", transport="streamable-http", url="http://x/mcp")
+    )
+    agent_cfg = AgentConfig(
+        name="custom-native",
+        install_cmd=":",
+        launch_cmd="custom-native",
+        task_mcp_transport="native-config",
+        task_mcp_config_path=".custom/mcp.json",
+    )
+    env = MagicMock()
+    env.exec = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    await _install_native_task_mcp_config(
+        env, task, agent_cfg=agent_cfg, cred_home="/home/agent", owner="agent"
+    )
+
+    uploaded_path = env.upload_file.await_args.args[1]
+    assert uploaded_path == "/home/agent/.custom/mcp.json"
 
 
 def test_task_mcp_specs_handles_absent_config() -> None:
@@ -229,3 +379,33 @@ async def test_connect_threads_task_mcp_servers_into_connect_acp(tmp_path) -> No
             "env": [],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_connect_as_omits_openhands_mcp_servers_from_acp(tmp_path) -> None:
+    """Guards the role execution path used by single-shot OpenHands scenes."""
+    cfg = RolloutConfig(task_path=tmp_path / "task", agent="openhands", model="qwen")
+    trial = Rollout.__new__(Rollout)
+    trial._config = cfg
+    trial._env = {}
+    trial._rollout_dir = tmp_path
+    trial._timing = {}
+    trial._agent_cwd = "/app"
+    trial._agent_cfg = AGENTS["openhands"]
+    trial._agent_launch = "openhands"
+    trial._phase = "installed"
+    trial._disallow_web_tools = False
+    trial._task = _task_with_mcp(
+        MCPServerConfig(name="atlas", transport="streamable-http", url="http://x/mcp")
+    )
+    trial._planes = _fake_planes()
+    trial._planes.agent_launch.return_value = "openhands"
+    trial._planes.resolve_agent_env.side_effect = lambda _agent, _model, env: env or {}
+    trial._planes.install_agent = AsyncMock(return_value=AGENTS["openhands"])
+    trial._planes.write_credential_files = AsyncMock()
+    trial._planes.upload_subscription_auth = AsyncMock()
+    trial._planes.apply_web_tool_policy = AsyncMock()
+
+    await trial.connect_as(Role(name="agent", agent="openhands", model="qwen"))
+
+    assert trial._planes.connect_acp.await_args.kwargs["mcp_servers"] == []

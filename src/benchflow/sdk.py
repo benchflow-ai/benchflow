@@ -67,19 +67,8 @@ class SDK:
     def _resolve_prompts(
         task_path: Path,
         prompts: list[str | None] | None,
-        skills_dir: str | Path | None = None,
-        task_skills_dir: str | Path | None = None,
-        skill_nudge: str = "",
-        agent: str | None = None,
     ) -> list[str]:
-        return _resolve_prompts(
-            task_path,
-            prompts,
-            skills_dir=skills_dir,
-            task_skills_dir=task_skills_dir,
-            skill_nudge=skill_nudge,
-            agent=agent,
-        )
+        return _resolve_prompts(task_path, prompts)
 
     @staticmethod
     def _build_result(
@@ -180,6 +169,7 @@ class SDK:
         sandbox_setup_timeout: int = 120,
         pre_agent_hooks: list | None = None,
         context_root: str | Path | None = None,
+        base_image_override: str | None = None,
         skill_mode: str = SKILL_MODE_NO_SKILL,
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
@@ -229,6 +219,7 @@ class SDK:
             sandbox_setup_timeout=sandbox_setup_timeout,
             pre_agent_hooks=pre_agent_hooks,
             context_root=context_root,
+            base_image_override=base_image_override,
             skill_mode=skill_mode,
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,

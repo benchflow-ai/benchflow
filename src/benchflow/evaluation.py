@@ -52,6 +52,8 @@ from benchflow._utils.scoring import (
     PIPE_CLOSED,
     PROVIDER_AUTH,
     PROVIDER_RATE_LIMIT,
+    PROVIDER_REJECTED,
+    SANDBOX_SETUP,
     SUSPECTED_API_ERROR,
     VERIFIER_DEP_INSTALL,
     VERIFIER_INFRA,
@@ -80,6 +82,12 @@ from benchflow.skill_policy import (
     SKILL_MODE_SELF_GEN,
     SKILL_MODE_WITH_SKILL,
     normalize_skill_mode,
+)
+from benchflow.task.discovery import (
+    is_task_dir as _is_structural_task_dir,
+)
+from benchflow.task.discovery import (
+    resolve_task_collection_root,
 )
 from benchflow.trajectories.tree import RolloutNode
 from benchflow.usage_tracking import UsageTrackingConfig
@@ -135,7 +143,7 @@ _SENTINEL: Any = object()  # default value for _sdk; tests replace with AsyncMoc
 
 def _is_task_dir(path: Path) -> bool:
     if not (path / "task.md").exists():
-        return (path / "task.toml").exists()
+        return _is_structural_task_dir(path)
     from benchflow._utils.task_authoring import check_task
 
     return check_task(path) == []
@@ -195,7 +203,12 @@ class RetryConfig:
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
     exclude_categories: set[str] = field(
-        default_factory=lambda: {"timeout", PROVIDER_AUTH, PROVIDER_RATE_LIMIT}
+        default_factory=lambda: {
+            "timeout",
+            PROVIDER_AUTH,
+            PROVIDER_RATE_LIMIT,
+            PROVIDER_REJECTED,
+        }
     )
 
     @classmethod
@@ -252,7 +265,7 @@ class RetryConfig:
             return True
         if self.retry_on_idle_timeout and category == IDLE_TIMEOUT:
             return True
-        if self.retry_on_infra and category == INFRA_ERROR:
+        if self.retry_on_infra and category in {INFRA_ERROR, SANDBOX_SETUP}:
             return True
         if category == API_ERROR:
             # Transient-only: rate limit / provider 5xx self-heal on backoff;
@@ -482,6 +495,7 @@ class EvaluationConfig:
     skip_agent_install: bool = False
     agent_idle_timeout: int | None = 600
     context_root: str | None = None
+    base_image_override: str | None = None
     exclude_tasks: set[str] = field(default_factory=set)
     include_tasks: set[str] = field(default_factory=set)
     skill_mode: str = SKILL_MODE_NO_SKILL
@@ -647,9 +661,13 @@ class Evaluation:
         on_task_start: Callable[[str], None] | None = None,
         on_plan: Callable[[int, int, int, tuple[int, int, int]], None] | None = None,
     ):
-        self._tasks_dir = Path(tasks_dir)
+        self._tasks_dir = resolve_task_collection_root(tasks_dir)
         self._jobs_dir = Path(jobs_dir)
         self._config = config or EvaluationConfig()
+        if self._config.source_provenance is None:
+            from benchflow._utils.hf_datasets import load_source_sidecar
+
+            self._config.source_provenance = load_source_sidecar(self._tasks_dir)
         self._job_name = job_name or self._resolve_job_name(self._jobs_dir)
         self._on_result = on_result
         # UI-progress hooks (the CLI live dashboard; None everywhere else). Fired
@@ -781,6 +799,7 @@ class Evaluation:
             ensure_tasks,
             resolve_source_with_metadata,
         )
+        from benchflow.adapters.source import adapt_resolved_source_if_needed
 
         # New two-field format: source.repo + source.path
         source_provenance = None
@@ -801,6 +820,7 @@ class Evaluation:
                 path=src.get("path"),
                 ref=src.get("ref"),
             )
+            resolved = adapt_resolved_source_if_needed(resolved)
             tasks_dir = resolved.path
             source_provenance = resolved.provenance
         elif "tasks_dir" in raw:
@@ -857,6 +877,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            context_root=raw.get("context_root"),
+            base_image_override=raw.get("base_image_override"),
             exclude_tasks=exclude,
             include_tasks=include,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -951,6 +973,8 @@ class Evaluation:
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
+            context_root=raw.get("context_root"),
+            base_image_override=raw.get("base_image_override"),
             include_tasks=include,
             exclude_tasks=exclude,
             skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),
@@ -1210,6 +1234,7 @@ class Evaluation:
             skip_agent_install=cfg.skip_agent_install,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
+            base_image_override=cfg.base_image_override,
             skill_mode=skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -1256,6 +1281,7 @@ class Evaluation:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
+            base_image_override=cfg.base_image_override,
             skill_mode=cfg.skill_mode,
             skill_creator_dir=cfg.skill_creator_dir,
             self_gen_no_internet=cfg.self_gen_no_internet,
@@ -1860,6 +1886,12 @@ class Evaluation:
             write_job_adp_jsonl(job_dir)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Job-level ADP aggregation failed: %s", e)
+        try:
+            from benchflow.trajectories.results import write_job_results_jsonl
+
+            write_job_results_jsonl(job_dir)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Job-level results.jsonl aggregation failed: %s", e)
 
         # Per-diagnostic summary warnings — driven by the registry so a
         # new diagnostic class adds its warning automatically (issue #503).

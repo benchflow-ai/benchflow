@@ -25,6 +25,12 @@ from benchflow.trajectories.export import (
     write_job_verifiers_jsonl,
     write_rollout_verifiers_jsonl,
 )
+from benchflow.trajectories.export_prime_sft import validate_prime_sft_jsonl
+from benchflow.trajectories.results import (
+    JOB_RESULTS_ERRORS_FILENAME,
+    _training_success_exchange_indices,
+    write_job_results_jsonl,
+)
 
 _FAKE_GEMINI_KEY = "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"
 _FAKE_HEADER_SECRET = "plainSecretNoPrefix123"
@@ -74,6 +80,74 @@ def _secret_bearing_acp_trajectory() -> list[dict]:
             ],
         },
     ]
+
+
+def _llm_exchange(
+    *,
+    messages: list[dict] | None = None,
+    assistant: dict | None = None,
+    tools: list[dict] | None = None,
+) -> dict:
+    prompt = messages or [
+        {"role": "system", "content": "You are a tool-using agent."},
+        {"role": "user", "content": "List files."},
+    ]
+    completion = [
+        assistant
+        or {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": '{"command":"ls"}',
+                    },
+                }
+            ],
+        }
+    ]
+    tool_defs = tools or [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run shell commands.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+    return {
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "model": "openai-compatible-model",
+                "messages": prompt,
+                "tools": tool_defs,
+            },
+        },
+        "response": {
+            "status_code": 200,
+            "body": {
+                "id": "chatcmpl-test",
+                "model": "openai-compatible-model",
+                "choices": [{"message": assistant or completion[0]}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 3,
+                    "total_tokens": 13,
+                },
+            },
+        },
+        "duration_ms": 10,
+    }
 
 
 def _assert_no_trainer_secret_leak(text: str) -> None:
@@ -213,6 +287,35 @@ def test_write_rollout_verifiers_jsonl_redacts_trajectory_secrets(tmp_path):
     json.loads(text)
 
 
+def test_write_rollout_verifiers_jsonl_preserves_secret_named_booleans(tmp_path):
+    rollout_dir = tmp_path / "rollout-bool-redaction"
+    rollout_dir.mkdir()
+    record = write_rollout_verifiers_jsonl(
+        rollout_dir,
+        task_id="t-secret-bool",
+        prompts=["Inspect the security report."],
+        trajectory=[
+            {
+                "type": "tool_call",
+                "tool_call_id": "tc1",
+                "kind": "execute",
+                "title": "check report",
+                "status": "completed",
+                "content": [
+                    {"text": '{"leaked_credentials": false, "leaked_kind": null}'}
+                ],
+            }
+        ],
+        rewards={"reward": 1.0},
+        model="m",
+        environment="bench",
+    )
+
+    artifact = rollout_dir / ROLLOUT_ARTIFACT_RELPATH
+    parsed = json.loads(artifact.read_text())
+    assert parsed == record
+
+
 # job-level aggregation
 
 
@@ -326,6 +429,790 @@ def test_build_rollout_result_emits_trainer_artifact(tmp_path):
     assert parsed["reward"] == 1.0
     assert parsed["info"]["task_id"] == "archive-alice"
     assert parsed["info"]["model"] == "claude-haiku-4-5"
+
+
+def test_build_rollout_result_emits_verifiers_shaped_results_jsonl(tmp_path):
+    """Guards PR #828: every rollout writes root results.jsonl for Prime-RL."""
+    rollout_dir = tmp_path / "rollout-results"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(_llm_exchange()) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={
+            "reward": 1.0,
+            "exact_match": 1.0,
+            "metrics": {"created_event": 1},
+            "details": {"api_calls": 2},
+        },
+        started_at=datetime.now(),
+        timing={},
+        n_input_tokens=10,
+        n_output_tokens=3,
+        total_tokens=13,
+    )
+
+    artifact = rollout_dir / "results.jsonl"
+    assert artifact.exists()
+    row = json.loads(artifact.read_text())
+    assert row["prompt"] == [{"role": "user", "content": "List files."}]
+    assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert row["tool_defs"][0]["function"]["name"] == "terminal"
+    assert row["info"]["training_ready"] is True
+    assert row["info"]["training_ready_reason"] is None
+    assert row["reward"] == 1.0
+    assert row["metrics"]["exact_match"] == 1.0
+    assert row["metrics"]["created_event"] == 1.0
+    assert row["info"]["reward_details"] == {"api_calls": 2}
+    assert row["token_usage"]["final_input_tokens"] == 10.0
+    assert row["token_usage"]["final_output_tokens"] == 3.0
+    assert row["token_usage"]["total_tokens"] == 13.0
+    assert row["trajectory"][0]["tokens"] is None
+    assert row["trajectory"][0]["prompt"] == [
+        {"role": "system", "content": "You are a tool-using agent."},
+        {"role": "user", "content": "List files."},
+    ]
+    assert row["trajectory"][0]["completion"] == row["completion"]
+    assert row["error"] is None
+    assert row["is_completed"] is True
+    assert row["stop_condition"] == "agent_completed"
+
+
+def test_results_jsonl_fails_closed_on_agent_error_with_llm_steps(tmp_path):
+    """Guards PR #828 review: errored rollouts are never training-ready rows."""
+    rollout_dir = tmp_path / "rollout-agent-error"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(_llm_exchange()) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error="agent crashed",
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 0.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "agent_error"
+    assert row["error"]["error"] == "agent_error"
+    assert row["is_completed"] is False
+    assert row["stop_condition"] == "agent_error"
+
+
+def test_results_jsonl_fails_closed_on_partial_rollout_with_llm_steps(tmp_path):
+    """Guards PR #828 review: partial rollouts are never training-ready rows."""
+    rollout_dir = tmp_path / "rollout-partial"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(_llm_exchange()) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=True,
+        trajectory_source="partial_acp",
+        rewards={"reward": 0.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "partial_trajectory"
+    assert row["error"]["error"] == "partial_trajectory"
+    assert row["is_completed"] is False
+    assert row["is_truncated"] is True
+    assert row["stop_condition"] == "partial_trajectory"
+
+
+def test_results_jsonl_uses_canonical_prime_sft_normalization(tmp_path):
+    """Guards PR #828 review: runtime rows do not trust callback-only messages."""
+    rollout_dir = tmp_path / "rollout-normalized"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    exchange = _llm_exchange(
+        messages=[
+            {"role": "system", "content": "Primary system prompt."},
+            {"role": "system", "content": "Second system prompt."},
+            {"role": "user", "content": "List files."},
+        ]
+    )
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(exchange) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    artifact = rollout_dir / "results.jsonl"
+    row = json.loads(artifact.read_text())
+    assert row["prompt"] == [{"role": "user", "content": "List files."}]
+    assert row["trajectory"][0]["prompt"][0]["role"] == "system"
+    assert row["trajectory"][0]["prompt"][1]["role"] == "user"
+    assert row["info"]["training_ready"] is True
+    assert validate_prime_sft_jsonl(artifact, expected_rows=1)["ok"] is True
+
+
+def test_results_jsonl_keeps_all_repaired_exchanges_and_disabled_truncation(
+    tmp_path,
+):
+    """Guards PR #921 MAX canary against silent exchange loss."""
+    rollout_dir = tmp_path / "rollout-max-multi-exchange"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    first = _llm_exchange()
+    first["response"]["body"]["truncation"] = "disabled"
+    second = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"ls"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "README.md"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "pyproject.toml",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    second["response"]["body"]["truncation"] = "disabled"
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(first) + "\n" + json.dumps(second) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+        total_tokens=26,
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 2
+    assert all(step["is_truncated"] is False for step in row["trajectory"])
+    assert {tool["function"]["name"] for tool in row["tool_defs"]} == {"terminal"}
+    assert row["completion"][0]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert row["completion"][1] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "README.md\npyproject.toml",
+    }
+    assert row["completion"][-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_results_jsonl_fails_closed_when_successful_exchange_is_omitted(tmp_path):
+    """Guards PR #921 MAX canary against green rows with dropped exchanges."""
+    rollout_dir = tmp_path / "rollout-invalid-later-exchange"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    invalid = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {"role": "tool", "tool_call_id": "orphan", "content": "README.md"},
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(_llm_exchange()) + "\n" + json.dumps(invalid) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "export_error"
+    assert "Successful LLM exchanges were omitted" in row["error"]["error_chain_str"]
+
+
+def test_results_jsonl_excludes_recovered_incomplete_provider_exchange(tmp_path):
+    """Guards PR #921 MAX canary content-filter recovery semantics."""
+    rollout_dir = tmp_path / "rollout-recovered-incomplete"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    incomplete = _llm_exchange()
+    incomplete["response"]["body"].update(
+        {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "content_filter"},
+            "truncation": "disabled",
+        }
+    )
+    completed = _llm_exchange(assistant={"role": "assistant", "content": "Recovered."})
+    completed["response"]["body"].update(
+        {
+            "status": "completed",
+            "incomplete_details": None,
+            "truncation": "disabled",
+        }
+    )
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(incomplete) + "\n" + json.dumps(completed) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 1
+    assert row["trajectory"][0]["extras"]["exchange_index"] == 1
+    assert row["trajectory"][0]["is_truncated"] is False
+
+
+def test_results_jsonl_keeps_latest_completed_duplicate_request(tmp_path):
+    """Guards PR #921 MAX canary against late retry race responses."""
+    rollout_dir = tmp_path / "rollout-duplicate-completed-request"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    abandoned = _llm_exchange(
+        assistant={"role": "assistant", "content": "Abandoned response."}
+    )
+    consumed = _llm_exchange(
+        assistant={"role": "assistant", "content": "Consumed retry."}
+    )
+    assert abandoned["request"]["body"] == consumed["request"]["body"]
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(abandoned) + "\n" + json.dumps(consumed) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["info"]["training_ready"] is True
+    assert len(row["trajectory"]) == 1
+    assert row["trajectory"][0]["extras"]["exchange_index"] == 1
+    assert row["completion"] == [{"role": "assistant", "content": "Consumed retry."}]
+
+
+def test_results_jsonl_prefers_duplicate_consumed_by_later_request(tmp_path):
+    """Guards PR #921 against keeping a late abandoned response."""
+    rollout_dir = tmp_path / "rollout-consumed-duplicate-request"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    consumed = _llm_exchange()
+    consumed["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_consumed"
+    )
+    abandoned = _llm_exchange()
+    abandoned["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_abandoned"
+    )
+    followup = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_consumed",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"ls"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_consumed",
+                "content": "README.md",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Done."},
+    )
+    assert consumed["request"]["body"] == abandoned["request"]["body"]
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in (consumed, abandoned, followup)) + "\n"
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert [step["extras"]["exchange_index"] for step in row["trajectory"]] == [
+        0,
+        2,
+    ]
+
+
+def test_results_drop_unique_late_unconsumed_nonterminal_retry():
+    """Guards PR #921 against the adaptive-cruise exchange-59 regression."""
+    consumed = _llm_exchange()
+    consumed["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_consumed"
+    )
+    followup = _llm_exchange(
+        messages=[
+            {"role": "user", "content": "List files."},
+            consumed["response"]["body"]["choices"][0]["message"],
+            {
+                "role": "tool",
+                "tool_call_id": "call_consumed",
+                "content": "README.md",
+            },
+        ],
+        assistant={"role": "assistant", "content": "Continuing."},
+    )
+    late = _llm_exchange()
+    late["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Late retry request."}
+    )
+    late["response"]["body"]["choices"][0]["message"]["tool_calls"][0]["id"] = (
+        "call_late"
+    )
+    terminal = _llm_exchange(
+        assistant={
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_finish",
+                    "type": "function",
+                    "function": {"name": "finish", "arguments": "{}"},
+                }
+            ],
+        }
+    )
+    terminal["request"]["body"]["messages"].append(
+        {"role": "user", "content": "Final response."}
+    )
+
+    assert _training_success_exchange_indices([consumed, followup, late, terminal]) == {
+        0,
+        1,
+        3,
+    }
+
+
+def test_results_jsonl_preserves_llm_exchange_metadata(tmp_path):
+    """Guards PR #925: trainer conversion retains LLM call purpose metadata."""
+    rollout_dir = tmp_path / "rollout-call-purpose"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    exchange = _llm_exchange()
+    exchange["metadata"] = {
+        "call_purpose": "agent",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+    }
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(exchange) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="opencode",
+        agent_name="OpenCode",
+        model="glm/glm-5.1",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["trajectory"][0]["extras"] == {
+        "source": "llm_trajectory",
+        "tracking_source": "litellm_callback",
+        "exchange_index": 0,
+        "call_purpose": "agent",
+        "request_model": "benchflow-glm-5.1",
+        "provider_model": "openai/glm-5.1",
+    }
+
+
+def test_results_jsonl_redacts_without_corrupting_secret_named_booleans(tmp_path):
+    """Secret-carrier field names must not turn JSON booleans into bare tokens."""
+    rollout_dir = tmp_path / "rollout-redaction-bool"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "llm_trajectory.jsonl").write_text(json.dumps(_llm_exchange()) + "\n")
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="auth-phishing-token-exfil",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["Check for leaked credentials."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={
+            "reward": 1.0,
+            "details": {"leaked_credentials": False, "leaked_kind": None},
+        },
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    artifact = rollout_dir / "results.jsonl"
+    row = json.loads(artifact.read_text())
+    assert row["info"]["reward_details"] == {
+        "leaked_credentials": False,
+        "leaked_kind": None,
+    }
+    assert validate_prime_sft_jsonl(artifact, expected_rows=1)["ok"] is True
+
+
+def test_results_jsonl_fails_closed_on_malformed_llm_jsonl(tmp_path):
+    """Guards PR #828 review: truncated LLM JSONL cannot yield training rows."""
+    rollout_dir = tmp_path / "rollout-truncated"
+    rollout_dir.mkdir()
+    traj_dir = rollout_dir / "trajectory"
+    traj_dir.mkdir()
+    (traj_dir / "llm_trajectory.jsonl").write_text(
+        json.dumps(_llm_exchange()) + "\n" + '{"request":\n'
+    )
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="list-files",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="openai-compatible-model",
+        n_tool_calls=1,
+        prompts=["List files."],
+        error=None,
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["completion"] is None
+    assert row["info"]["training_ready"] is False
+    assert row["info"]["training_ready_reason"] == "invalid_llm_trajectory_jsonl"
+    assert row["error"]["error"] == "export_error"
+    assert "line 2: invalid JSON" in row["error"]["error_chain_str"]
+    assert row["is_completed"] is False
+    assert row["stop_condition"] == "export_error"
+
+
+def test_build_rollout_result_results_jsonl_is_unhealthy_without_llm(tmp_path):
+    """Guards PR #828: results.jsonl never falls back to ACP for training data."""
+    rollout_dir = tmp_path / "rollout-error"
+    rollout_dir.mkdir()
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="broken-task",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="m",
+        n_tool_calls=0,
+        prompts=["Solve this."],
+        error="agent crashed",
+        verifier_error=None,
+        trajectory=[],
+        partial_trajectory=True,
+        trajectory_source="partial_acp",
+        rewards=None,
+        started_at=datetime.now(),
+        timing={},
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["prompt"] == [{"role": "user", "content": "Solve this."}]
+    assert row["completion"] is None
+    assert row["trajectory"] == []
+    assert row["reward"] == 0.0
+    assert row["error"]["error"] == "agent_error"
+    assert row["info"]["training_ready"] is False
+    assert (
+        row["info"]["training_ready_reason"]
+        == "missing_healthy_structured_llm_trajectory"
+    )
+    assert row["is_completed"] is False
+    assert row["is_truncated"] is True
+    assert row["stop_condition"] == "partial_trajectory"
+
+
+def test_results_jsonl_token_usage_falls_back_to_provider_total(tmp_path):
+    """Guards PR #828: total-only telemetry still feeds Prime-RL token batches."""
+    rollout_dir = tmp_path / "rollout-total-only"
+    rollout_dir.mkdir()
+
+    _build_rollout_result(
+        rollout_dir,
+        task_name="token-total-task",
+        rollout_name="r1",
+        agent="openhands",
+        agent_name="OpenHands",
+        model="m",
+        n_tool_calls=1,
+        prompts=["Say done."],
+        error=None,
+        verifier_error=None,
+        trajectory=[{"type": "agent_message", "text": "Done."}],
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards={"reward": 1.0},
+        started_at=datetime.now(),
+        timing={},
+        n_input_tokens=0,
+        n_output_tokens=0,
+        total_tokens=123,
+    )
+
+    row = json.loads((rollout_dir / "results.jsonl").read_text())
+    assert row["error"]["error"] == "missing_llm_trajectory"
+    assert row["info"]["training_ready"] is False
+    assert row["token_usage"] == {
+        "input_tokens": 123.0,
+        "output_tokens": 0.0,
+        "final_input_tokens": 123.0,
+        "final_output_tokens": 0.0,
+        "total_tokens": 123.0,
+    }
+
+
+def test_write_job_results_jsonl_groups_example_ids_by_task(tmp_path):
+    """Guards PR #828: job results group rollouts by task, not default 0."""
+    job_dir = tmp_path / "job"
+    rollout_specs = [
+        ("task-a", "task-a__trial-1"),
+        ("task-a", "task-a__trial-2"),
+        ("task-b", "task-b__trial-1"),
+    ]
+    for task_name, rollout_name in rollout_specs:
+        rollout_dir = job_dir / rollout_name
+        rollout_dir.mkdir(parents=True)
+        traj_dir = rollout_dir / "trajectory"
+        traj_dir.mkdir()
+        (traj_dir / "llm_trajectory.jsonl").write_text(
+            json.dumps(_llm_exchange()) + "\n"
+        )
+        _build_rollout_result(
+            rollout_dir,
+            task_name=task_name,
+            rollout_name=rollout_name,
+            agent="openhands",
+            agent_name="OpenHands",
+            model="openai-compatible-model",
+            n_tool_calls=1,
+            prompts=["List files."],
+            error=None,
+            verifier_error=None,
+            trajectory=_acp_trajectory(),
+            partial_trajectory=False,
+            trajectory_source="acp",
+            rewards={"reward": 1.0},
+            started_at=datetime.now(),
+            timing={},
+        )
+
+    out = write_job_results_jsonl(job_dir)
+
+    assert out == job_dir / "results.jsonl"
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert [row["info"]["task_id"] for row in rows] == ["task-a", "task-a", "task-b"]
+    assert [row["example_id"] for row in rows] == [0, 0, 1]
+    assert not (job_dir / JOB_RESULTS_ERRORS_FILENAME).exists()
+
+
+def test_write_job_results_jsonl_surfaces_skipped_malformed_rows(tmp_path):
+    job_dir = tmp_path / "job"
+    good = job_dir / "task-a__good"
+    bad = job_dir / "task-b__bad"
+    good.mkdir(parents=True)
+    bad.mkdir(parents=True)
+    (good / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "do it"}],
+                "completion": [{"role": "assistant", "content": "done"}],
+                "reward": 1.0,
+                "info": {"task_id": "task-a"},
+            }
+        )
+        + "\n"
+    )
+    (bad / "results.jsonl").write_text(
+        '{"prompt": [], "completion": [], "leaked_credentials": ***REDACTED***}\n'
+    )
+
+    out = write_job_results_jsonl(job_dir)
+
+    assert out == job_dir / "results.jsonl"
+    assert len(out.read_text().splitlines()) == 1
+    errors = json.loads((job_dir / JOB_RESULTS_ERRORS_FILENAME).read_text())
+    assert errors["error"] == "skipped_results_artifact_rows"
+    assert errors["skipped_count"] == 1
+    assert errors["skipped"][0]["error"] == "invalid_results_artifact_json"
 
 
 def test_build_rollout_result_emits_atif_and_adp(tmp_path):

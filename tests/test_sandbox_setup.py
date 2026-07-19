@@ -8,6 +8,7 @@ import pytest
 
 from benchflow.agents.registry import get_sandbox_home_dirs
 from benchflow.sandbox.lockdown import setup_sandbox_user
+from benchflow.sandbox.setup import override_dockerfile_base_image
 
 
 async def _run_setup_sandbox_user(
@@ -28,6 +29,35 @@ def _assert_conditional_legacy_symlink(cmd: str, *, source: str, dest: str) -> N
         rf"if \[ -e [\"']?{re.escape(source)}[\"']? \].*ln -s(?:f|[a-zA-Z-])* [\"']?{re.escape(source)}[\"']? [\"']?{re.escape(dest)}[\"']?.*fi",
         cmd,
     ), f"expected explicit symlink from {source} to {dest} in setup command: {cmd}"
+
+
+def test_override_dockerfile_base_image_rewrites_from_lines(tmp_path):
+    task = tmp_path / "task"
+    env = task / "environment"
+    env.mkdir(parents=True)
+    dockerfile = env / "Dockerfile"
+    dockerfile.write_text(
+        "\n".join(
+            [
+                "FROM --platform=$BUILDPLATFORM ghcr.io/benchflow-ai/env-0-base:latest AS base",
+                "RUN echo base",
+                "FROM ghcr.io/benchflow-ai/env-0-base:latest",
+            ]
+        )
+        + "\n"
+    )
+
+    rewritten = override_dockerfile_base_image(
+        task, "ghcr.io/oliver-dowhiz/env-0-base:latest"
+    )
+
+    assert rewritten == 2
+    assert dockerfile.read_text() == (
+        "FROM --platform=$BUILDPLATFORM "
+        "ghcr.io/oliver-dowhiz/env-0-base:latest AS base\n"
+        "RUN echo base\n"
+        "FROM ghcr.io/oliver-dowhiz/env-0-base:latest\n"
+    )
 
 
 def _get_copy_loop_dirs(cmd: str) -> list[str]:
@@ -58,6 +88,15 @@ class TestSetupSandboxUser:
         assert "mkdir -p /home/agent/.local/bin" not in cmd
         assert "chown -R agent:agent /home/agent" in cmd
         assert f"chown -R agent:agent {shlex.quote('/app')}" in cmd
+
+    @pytest.mark.asyncio
+    async def test_setup_command_grants_declared_top_level_output_roots(self):
+        """Guards PR #921 against root-owned /output breaking non-root agents."""
+        cmd, _ = await _run_setup_sandbox_user()
+
+        assert "for d in /output /outputs; do" in cmd
+        assert '[ -d "$d" ] && [ ! -L "$d" ]' in cmd
+        assert 'chown -R agent:agent "$d"' in cmd
 
     @pytest.mark.asyncio
     async def test_setup_command_keeps_heavy_root_tool_dirs_on_shared_paths(self):

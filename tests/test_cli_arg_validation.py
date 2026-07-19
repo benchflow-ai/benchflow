@@ -140,6 +140,36 @@ def test_eval_run_context_root_threads_to_evaluation_config(tmp_path: Path):
     assert captured["context_root"] == str(context_root)
 
 
+def test_eval_run_base_image_override_threads_to_evaluation_config(tmp_path: Path):
+    """Historical env-0 reruns can declare their base-image namespace swap."""
+    task = _task_dir(tmp_path)
+    captured: dict[str, str | None] = {}
+
+    async def capture_base_image_override(self):
+        captured["base_image_override"] = self._config.base_image_override
+        return SimpleNamespace(
+            passed=1, total=1, score=1.0, errored=0, verifier_errored=0
+        )
+
+    with patch.object(Evaluation, "run", new=capture_base_image_override):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "run",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                "oracle",
+                "--base-image-override",
+                "ghcr.io/oliver-dowhiz/env-0-base:latest",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert captured["base_image_override"] == "ghcr.io/oliver-dowhiz/env-0-base:latest"
+
+
 def test_eval_run_context_root_missing_clean_error(tmp_path: Path):
     """Guards PR #816 against typoed --context-root paths failing in rollout."""
     task = _task_dir(tmp_path)
@@ -159,6 +189,27 @@ def test_eval_run_context_root_missing_clean_error(tmp_path: Path):
         )
     assert result.exit_code == 1
     assert "--context-root not found" in result.stderr
+    assert "Traceback (most recent call last)" not in result.output
+
+
+def test_eval_run_base_image_override_rejects_whitespace(tmp_path: Path):
+    task = _task_dir(tmp_path)
+    with patch.object(Evaluation, "run", new=_fake_run_pass):
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "run",
+                "--tasks-dir",
+                str(task),
+                "--agent",
+                "oracle",
+                "--base-image-override",
+                "not an image",
+            ],
+        )
+    assert result.exit_code == 1
+    assert "--base-image-override must be a non-empty image reference" in result.stderr
     assert "Traceback (most recent call last)" not in result.output
 
 

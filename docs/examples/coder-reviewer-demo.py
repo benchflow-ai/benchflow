@@ -9,7 +9,7 @@ Demonstrates:
   - Standard bf.run(RolloutConfig) API — same path for single or multi-agent
 
 Requirements:
-  - uv tool install --upgrade benchflow, or run from a checkout with uv run
+  - uv tool install --python 3.12 --upgrade benchflow, or run from a checkout with uv run
   - GEMINI_API_KEY or DAYTONA_API_KEY set
   - A BenchFlow task directory (e.g. benchflow-ai/skillsbench/tasks/edit-pdf)
 

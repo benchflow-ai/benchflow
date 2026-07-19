@@ -9,6 +9,7 @@ from benchflow.eval_sharding import (
     EvalShardPlan,
     _aggregate_result,
     _config_payload,
+    _worker_payload_artifact,
     plan_eval_shards,
 )
 from benchflow.eval_worker import _evaluation_config
@@ -70,6 +71,41 @@ def test_worker_payload_without_loop_strategy_stays_none() -> None:
 
     assert payload["loop_strategy"] is None
     assert _evaluation_config(json.loads(json.dumps(payload))).loop_strategy is None
+
+
+def test_worker_payload_artifact_redacts_agent_env_secrets() -> None:
+    config = EvaluationConfig(
+        agent_env={
+            "OPENAI_API_KEY": "sk-secret",
+            "BENCHFLOW_PROVIDER_API_KEY": "provider-secret",
+            "NORMAL_VAR": "keep-me",
+            "OPENAI_BASE_URL": "http://127.0.0.1:30000/v1",
+        }
+    )
+    shard = EvalShard(index=0, task_names=("task-a",), concurrency=1)
+    raw = {
+        "tasks_dir": "/tasks",
+        "jobs_dir": "/jobs",
+        "result_path": "/result.json",
+        "config": _config_payload(config, shard=shard),
+    }
+
+    artifact = _worker_payload_artifact(raw)
+    artifact_text = json.dumps(artifact)
+
+    assert raw["config"]["agent_env"]["OPENAI_API_KEY"] == "sk-secret"
+    assert "sk-secret" not in artifact_text
+    assert "provider-secret" not in artifact_text
+    assert artifact["config"]["agent_env"] == {
+        "NORMAL_VAR": "keep-me",
+        "OPENAI_BASE_URL": "http://127.0.0.1:30000/v1",
+    }
+    assert artifact["config"]["agent_env_keys"] == [
+        "BENCHFLOW_PROVIDER_API_KEY",
+        "NORMAL_VAR",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+    ]
 
 
 def test_worker_payload_rejects_unparsed_loop_strategy() -> None:
@@ -166,6 +202,10 @@ def test_worker_sharded_summary_includes_numeric_score_ratios(tmp_path) -> None:
     )
 
     summary = json.loads((tmp_path / "summary.json").read_text())
+    advertised_summary = json.loads(
+        (tmp_path / "worker-sharded" / "summary.json").read_text()
+    )
     assert result.score == pytest.approx(1 / 3)
     assert summary["score_ratio"] == pytest.approx(1 / 3)
     assert summary["score_excl_errors_ratio"] == pytest.approx(1 / 2)
+    assert advertised_summary == summary

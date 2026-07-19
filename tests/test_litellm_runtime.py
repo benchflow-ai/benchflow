@@ -83,6 +83,35 @@ async def test_host_litellm_rewrites_codex_env(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_opencode_required_skills_reach_proxy_not_agent(monkeypatch):
+    """Guards the OpenCode first-request catalog gate from PR #919."""
+    starts = []
+
+    async def fake_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:32123", kwargs["route"])
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
+    updated, _runtime = await ensure_litellm_runtime(
+        agent="opencode",
+        agent_env={"OPENAI_API_KEY": "sk-test"},
+        model="openai/gpt-4.1-mini",
+        runtime=None,
+        environment="docker",
+        session_id="run-skill-gate",
+        required_skill_names=("mesh-analysis",),
+    )
+
+    proxy_env = starts[0]["agent_env"]
+    assert proxy_env["BENCHFLOW_SKILL_CATALOG_GATE_AGENT"] == "opencode"
+    assert json.loads(proxy_env["BENCHFLOW_REQUIRED_SKILL_NAMES_JSON"]) == [
+        "mesh-analysis"
+    ]
+    assert "BENCHFLOW_SKILL_CATALOG_GATE_AGENT" not in updated
+    assert "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON" not in updated
+
+
+@pytest.mark.asyncio
 async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypatch):
     async def fake_start(**kwargs):
         return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])

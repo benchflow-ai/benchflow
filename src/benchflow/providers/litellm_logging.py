@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from benchflow.trajectories.call_purpose import infer_call_purpose
 from benchflow.trajectories.types import (
     LLMExchange,
     LLMRequest,
@@ -16,7 +17,7 @@ from benchflow.trajectories.types import (
 from benchflow.usage_tracking import usage_unavailable
 
 _PROVIDER_AUTH_STATUS_CODES = (401, 403)
-_PROVIDER_FAILURE_STATUS_CODES = (*_PROVIDER_AUTH_STATUS_CODES, 429, 503)
+_PROVIDER_FAILURE_STATUS_CODES = (400, 401, 402, 403, 404, 408, 422, 429, 500, 503)
 _STATUS_KEYS = {
     "httpstatus",
     "httpstatuscode",
@@ -29,6 +30,9 @@ _STATUS_KEYS = {
     "response_status",
     "response_status_code",
 }
+# Keep free-text matching narrower than structured status-code handling. Broad
+# codes like 400 or 500 are too common in tracebacks and payload snippets to infer
+# provider failure unless they arrive through a real status field.
 _PROVIDER_FAILURE_STATUS_RE = re.compile(r"\b(401|403|429|503)\b")
 _PROVIDER_AUTH_HINT_RE = re.compile(
     r"\b("
@@ -61,6 +65,18 @@ _PROVIDER_UNAVAILABLE_HINT_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_CONTEXT_LIMIT_HINT_RE = re.compile(
+    r"\b("
+    r"context[-_ ]?(?:length|window)|"
+    r"context_length_exceeded|"
+    r"contextwindowexceeded|"
+    r"max(?:imum)?[_ -]?model[_ -]?len|"
+    r"prompt is too long|"
+    r"requested token count exceeds|"
+    r"maximum context"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def callback_module_source() -> str:
@@ -70,6 +86,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import traceback
 from datetime import datetime, timezone
@@ -77,6 +94,70 @@ from typing import Any
 
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
+
+
+_skill_catalog_gate_passed = False
+
+
+def _required_skill_names() -> tuple[str, ...]:
+    raw = os.environ.get("BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", "")
+    if not raw:
+        return ()
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "experiment_fidelity/skill_catalog_gate_config_invalid"
+        ) from exc
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise RuntimeError("experiment_fidelity/skill_catalog_gate_config_invalid")
+    return tuple(sorted(set(values)))
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(item.get("text", ""))
+            for item in content
+            if isinstance(item, dict)
+        )
+    return ""
+
+
+def _opencode_catalog_names(data: dict[str, Any]) -> set[str]:
+    system = "\n".join(
+        _message_text(message.get("content"))
+        for message in data.get("messages") or []
+        if isinstance(message, dict) and message.get("role") == "system"
+    )
+    match = re.search(
+        r"<available_skills>(.*?)</available_skills>", system, flags=re.DOTALL
+    )
+    if not match:
+        return set()
+    return set(re.findall(r"<name>\s*([^<]+?)\s*</name>", match.group(1)))
+
+
+def _gate_opencode_skill_catalog(data: dict[str, Any]) -> None:
+    global _skill_catalog_gate_passed
+    if _skill_catalog_gate_passed:
+        return
+    if os.environ.get("BENCHFLOW_SKILL_CATALOG_GATE_AGENT") != "opencode":
+        return
+    expected = _required_skill_names()
+    if not expected:
+        return
+    visible = _opencode_catalog_names(data)
+    missing = sorted(set(expected) - visible)
+    if missing:
+        raise RuntimeError(
+            "experiment_fidelity/skill_catalog_missing: "
+            f"missing={','.join(missing)} expected={','.join(expected)} "
+            f"visible={','.join(sorted(visible))}"
+        )
+    _skill_catalog_gate_passed = True
 
 
 def _jsonable(value: Any) -> Any:
@@ -114,7 +195,41 @@ def _usage_from_response(response: Any) -> Any:
     return None
 
 
+def _failure_detail(response_obj: Any, exception: Any) -> Any:
+    # On a deterministic provider reject (e.g. a context-window overflow,
+    # #830) litellm fires the failure hook with response_obj=None and the real
+    # cause in kwargs['exception']. Fall back to it so error.type/message carry
+    # the upstream reason instead of the literal 'NoneType'/'None'. A non-None
+    # response_obj still wins, so the existing success-shaped-failure path is
+    # unchanged; both None degrades gracefully to the old behavior.
+    return response_obj if response_obj is not None else exception
+
+
+def _failure_traceback(detail: Any) -> str:
+    # ``format_exc()`` reflects the exception that is CURRENTLY ACTIVE when the
+    # callback fires. For the #830 case (litellm calls the hook from inside its
+    # except block) that IS ``detail``, so the traceback agrees with the
+    # exception-derived error.message. But if litellm clears the exception
+    # context first, ``format_exc()`` returns the ``'NoneType: None'`` sentinel
+    # while ``detail`` (recovered from kwargs['exception']) still holds the real
+    # cause — format that exception directly so the traceback doesn't go blank
+    # under a meaningful error.message (#830).
+    tb = traceback.format_exc()
+    if isinstance(detail, BaseException) and tb.startswith("NoneType: None"):
+        tb = "".join(
+            traceback.format_exception(type(detail), detail, detail.__traceback__)
+        )
+    return tb[-2000:]
+
+
 class BenchFlowLiteLLMLogger(CustomLogger):
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+        if isinstance(data, dict) and data.get("messages") is not None and "input" in data:
+            cleaned = dict(data)
+            cleaned.pop("input", None)
+            return cleaned
+        return None
+
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
         if not path:
@@ -141,6 +256,12 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 value = kwargs.get(key)
             if value is None:
                 value = litellm_params.get(key)
+            if value is not None:
+                request_body[key] = value
+        for key in ("logprobs", "top_logprobs"):
+            value = optional_params.get(key)
+            if value is None:
+                value = kwargs.get(key)
             if value is not None:
                 request_body[key] = value
         request_body = {k: v for k, v in request_body.items() if v is not None}
@@ -177,6 +298,59 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             "duration_ms": max((getattr(end_time, "timestamp", lambda: time.time())() - getattr(start_time, "timestamp", lambda: time.time())()) * 1000, 0),
         }
 
+    async def async_pre_call_hook(
+        self, user_api_key_dict, cache, data, call_type
+    ):
+        if not isinstance(data, dict):
+            return None
+
+        _gate_opencode_skill_catalog(data)
+
+        cleaned = data
+
+        # Chat-completions backends reject the Responses-compatible ``input``
+        # mirror when ``messages`` is already present. Copy before changing so
+        # LiteLLM callers do not observe in-place mutation.
+        if data.get("messages") is not None and data.get("input") is not None:
+            cleaned = dict(cleaned)
+            cleaned.pop("input", None)
+
+        # Drop non-"function" tools before they reach a chat-only backend. A
+        # responses-API client (codex) sends tools the Responses wire allows but
+        # chat completions does not, e.g. a {"type": "namespace"} tool. When the
+        # proxy bridges /v1/responses to /chat/completions for a chat-only backend
+        # (deepseek, vllm), that stray tool makes the backend reject the whole
+        # request ("unknown variant namespace, expected function"). The dropped
+        # tools cannot be represented on the chat wire anyway; the function tools
+        # (shell, file IO, ...) survive untouched.
+        tools = cleaned.get("tools")
+        if isinstance(tools, list):
+            kept = [
+                t
+                for t in tools
+                if not isinstance(t, dict) or t.get("type", "function") == "function"
+            ]
+            if len(kept) != len(tools):
+                if cleaned is data:
+                    cleaned = dict(data)
+                cleaned["tools"] = kept
+
+        capture_logprobs = (
+            os.environ.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if (
+            capture_logprobs
+            and call_type in {"completion", "acompletion"}
+            and cleaned.get("messages") is not None
+        ):
+            if cleaned is data:
+                cleaned = dict(data)
+            cleaned["logprobs"] = True
+        if cleaned is data:
+            return None
+        return cleaned
+
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         record = self._base_record(kwargs, start_time, end_time)
         response = _jsonable(response_obj)
@@ -212,14 +386,15 @@ class BenchFlowLiteLLMLogger(CustomLogger):
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         record = self._base_record(kwargs, start_time, end_time)
+        detail = _failure_detail(response_obj, (kwargs or {}).get("exception"))
         record.update(
             {
                 "event": "failure",
                 "response": _jsonable(response_obj),
                 "error": {
-                    "type": type(response_obj).__name__,
-                    "message": str(response_obj),
-                    "traceback": traceback.format_exc()[-2000:],
+                    "type": type(detail).__name__,
+                    "message": str(detail),
+                    "traceback": _failure_traceback(detail),
                 },
             }
         )
@@ -264,6 +439,30 @@ def _record_response_body(record: dict[str, Any]) -> dict[str, Any]:
     if record.get("event") == "failure":
         body.setdefault("error", record.get("error") or {"message": "LiteLLM error"})
     return body
+
+
+def _exchange_metadata(
+    record: dict[str, Any],
+    *,
+    request_body: dict[str, Any],
+    agent_name: str,
+) -> dict[str, Any]:
+    metadata = {
+        key: record.get(key)
+        for key in (
+            "request_model",
+            "provider_model",
+            "model_group",
+            "call_type",
+            "input_shape",
+        )
+        if record.get(key) is not None
+    }
+    metadata["call_purpose"] = infer_call_purpose(
+        agent_name=agent_name,
+        request_body=request_body,
+    )
+    return metadata
 
 
 def _coerce_provider_failure_status(value: Any) -> int | None:
@@ -313,7 +512,25 @@ def _flatten_failure_text(value: Any) -> str:
     return str(value)
 
 
+def _flatten_context_traceback_text(value: Any) -> str:
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key, nested in value.items():
+            if str(key).lower() == "traceback":
+                parts.append(str(nested))
+            else:
+                nested_text = _flatten_context_traceback_text(nested)
+                if nested_text:
+                    parts.append(nested_text)
+        return " ".join(parts)
+    if isinstance(value, list | tuple):
+        return " ".join(_flatten_context_traceback_text(item) for item in value)
+    return ""
+
+
 def _text_provider_failure_status(text: str) -> int | None:
+    if _CONTEXT_LIMIT_HINT_RE.search(text):
+        return 400
     match = _PROVIDER_FAILURE_STATUS_RE.search(text)
     status = int(match.group(1)) if match is not None else None
     if status in _PROVIDER_AUTH_STATUS_CODES:
@@ -337,11 +554,18 @@ def _provider_failure_status_from_failure_record(record: dict[str, Any]) -> int 
         "error": record.get("error"),
         "response": record.get("response"),
     }
+    text = _flatten_failure_text(failure_payload)
+    if _CONTEXT_LIMIT_HINT_RE.search(text):
+        return 400
+
+    traceback_text = _flatten_context_traceback_text(failure_payload)
+    if _CONTEXT_LIMIT_HINT_RE.search(traceback_text):
+        return 400
+
     status = _explicit_provider_failure_status(failure_payload)
     if status is not None:
         return status
 
-    text = _flatten_failure_text(failure_payload)
     return _text_provider_failure_status(text)
 
 
@@ -386,6 +610,11 @@ def trajectory_from_litellm_callback_log(
                     body=response_body,
                 ),
                 duration_ms=float(record.get("duration_ms") or 0.0),
+                metadata=_exchange_metadata(
+                    record,
+                    request_body=request_body,
+                    agent_name=agent_name,
+                ),
             )
         )
         cost = record.get("response_cost")

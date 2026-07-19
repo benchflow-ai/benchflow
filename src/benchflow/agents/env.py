@@ -414,7 +414,15 @@ def uses_native_subscription_auth(
             or check_subscription_auth(agent, required_key)
         )
 
-    if agent == "claude-agent-acp":
+    # Registry-driven Claude-CLI gate: any agent whose subscription_auth
+    # substitutes ANTHROPIC_API_KEY runs the Claude Code CLI and can take
+    # OAuth/subscription auth natively (claude-agent-acp, omnigent claude-*).
+    claude_cfg = AGENTS.get(agent)
+    if (
+        claude_cfg is not None
+        and claude_cfg.subscription_auth is not None
+        and claude_cfg.subscription_auth.replaces_env == "ANTHROPIC_API_KEY"
+    ):
         if agent_env.get("ANTHROPIC_API_KEY"):
             return False
         if model is not None:
@@ -590,6 +598,14 @@ def _configure_codex_custom_provider(
 ) -> None:
     """Expose BenchFlow provider routing through Codex's native config model."""
     if agent != "codex-acp" or not model:
+        return
+
+    # Native ChatGPT subscription auth must keep Codex on its built-in `openai`
+    # provider (chatgpt auth mode). A custom model_provider injected here carries
+    # env_key=OPENAI_API_KEY + wire_api=responses against api.openai.com, which
+    # forces API-key mode and makes Codex demand OPENAI_API_KEY -- defeating the
+    # subscription path. Verified by ACP repro.
+    if uses_native_subscription_auth(agent, model, agent_env):
         return
 
     base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(

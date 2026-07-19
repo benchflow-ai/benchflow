@@ -308,6 +308,25 @@ class TestResolvePrompts:
         assert "Internet access is disabled" not in result[0]
 
 
+class TestPromptPrefix:
+    def test_prefix_is_prepended_to_every_resolved_prompt(self):
+        from benchflow.rollout._setup import _apply_prompt_prefix
+
+        assert _apply_prompt_prefix(
+            ["First task prompt", "Second task prompt"],
+            "Do not inspect hidden evaluator assets.",
+        ) == [
+            "Do not inspect hidden evaluator assets.\n\nFirst task prompt",
+            "Do not inspect hidden evaluator assets.\n\nSecond task prompt",
+        ]
+
+    def test_none_preserves_prompt_list_identity(self):
+        from benchflow.rollout._setup import _apply_prompt_prefix
+
+        prompts = ["Task prompt"]
+        assert _apply_prompt_prefix(prompts, None) is prompts
+
+
 # _init_trial
 
 
@@ -408,6 +427,7 @@ class TestWriteConfig:
             "agent",
             "model",
             "environment",
+            "acp_transport",
             "skill_mode",
             "skill_source",
             "requested_skills_dir",
@@ -430,12 +450,33 @@ class TestWriteConfig:
         assert data["task_path"] == "foo"
         assert data["model"] == "claude-haiku-4-5-20251001"
         assert data["environment"] == "docker"
+        assert data["acp_transport"] == "docker-stdio"
         assert data["skill_mode"] == "no-skill"
         assert data["include_task_skills"] is False
         assert data["effective_skills_dir"] is None
         assert data["sandbox_setup_timeout"] == 33
         assert data["timeout_sec"] == 300
         assert data["scenes"] == []
+
+    def test_config_json_records_daytona_ssh_transport(self, tmp_path, monkeypatch):
+        """Guards PR #921 so audits can prove the selected Daytona transport."""
+        monkeypatch.setenv("BENCHFLOW_DAYTONA_ACP_TRANSPORT", "ssh")
+
+        self._write(
+            tmp_path,
+            task_path=Path("/tasks/foo"),
+            agent="openhands",
+            model="azure-foundry-openai/gpt-5.6-sol",
+            environment="daytona",
+            sandbox_user="agent",
+            context_root=None,
+            timeout=115200,
+            started_at=datetime(2026, 7, 13, 17, 0),
+            agent_env={},
+        )
+
+        data = json.loads((tmp_path / "config.json").read_text())
+        assert data["acp_transport"] == "ssh"
 
     def test_config_json_includes_scene_role_metadata(self, tmp_path):
         """Multi-role scene metadata is recorded without leaking env values."""

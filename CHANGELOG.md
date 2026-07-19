@@ -2,13 +2,122 @@
 
 ## [Unreleased]
 
+### Added
+- **Native TRL tool-calling SFT export.** `bench train convert --format
+  trl-sft` emits conversational prompt/completion rows with a `tools` column,
+  excludes OpenCode title/summary helper calls, and accepts rollout trees,
+  canonical `results.jsonl`, or existing TRL JSONL. `bench train validate
+  --format trl-sft` can render rows with a pinned tokenizer and fail closed on
+  missing assistant masks or overlength samples. Tokenizer-aware
+  `--context-policy message-window` keeps the harness/task prefix and the
+  longest complete recent assistant/tool suffix when exact rows exceed the
+  student context window. (#925)
+- **LLM call-purpose provenance.** Captured LLM exchanges retain provider/model
+  metadata and classify agent, title, summary, compaction, and helper calls;
+  `results.jsonl` carries the metadata on each trajectory step. (#925)
+
+## 0.6.5 — 2026-07-10
+
+### Added
+- **Reproducible evaluation artifact workflows.** `bench eval run` can emit
+  task/run manifests, trajectory-health summaries, canonical one-rollout-per-task
+  selections, materialized trainer inputs, repeated model matrices, and
+  Hugging Face dataset uploads with source provenance. (#844, #907)
+- **Prime-RL supervised fine-tuning integration.** `bench train validate` and
+  `bench train run sft --backend prime-rl` add fail-closed trainer-row checks,
+  local/Hugging Face dataset staging, publishing hooks, and compatibility
+  controls for reproducing the Mobile300 PR828 training recipe. (#842–#865)
+- **Native external benchmark adapters.** BenchFlow can materialize MCP Atlas
+  and Toolathlon sources, credential-backed task packages, and the service
+  sidecars required by their hosted runtimes. (#878, #885, #889)
+- **Registry-driven agent extension.** Agent packages can autoload through
+  `benchflow.agents` entry points or declarative manifests, including namespace
+  shorthand for externally registered agents. (#873, #877)
+- **BenchFlow-native GRPO/TRL pipeline.** Adds reusable `TaskRuntime`, the
+  optional `BenchFlowSpec` TRL adapter, selective Hugging Face task snapshots,
+  paired `bench eval compare-lift` reporting, and an end-to-end GRPO runbook.
+  (#901–#907)
+
+### Changed
+- BenchFlow CLI and SDK installations now explicitly require Python 3.12 or
+  newer, with `uv tool install --python 3.12` as the recommended CLI path.
+  (#899)
+
+### Fixed
+- Hardened LiteLLM and provider routing across Responses/chat bridges, Gemini
+  custom endpoints, Claude OAuth, Harvey LAB, OpenHands Azure reasoning effort,
+  diagnostics, and parallel ACP shim startup. (#868, #871, #879–#881, #886,
+  #888, #911)
+- Stabilized Daytona execution for Toolathlon and ACP agents, including DinD
+  retries, PTY handling, orphan-free long-command heartbeats, and Gemini's SSH
+  transport fallback. (#890, #892–#896, #910, #912)
+- Tightened trajectory and Prime-SFT artifact integrity with secret redaction,
+  tool-call validation, repaired results conversion, and reproducible
+  compatibility controls. (#849–#865)
+
+### Removed
+- **`BENCHFLOW_SKILL_NUDGE` skill prompt nudge.** The optional prompt injection
+  that prepended mounted-skill names/descriptions/bodies to the task
+  instruction (#207) is gone. Setting the environment variable now has no
+  effect: prompt resolution never reads skill directories, and mounted skills
+  reach agents only through their native skill paths. This keeps prompts
+  identical across skill modes and closes off accidental prompt-level skill
+  leakage. (#908)
+
+## 0.6.4 — 2026-06-27
+
+### Added
+- **Environment and config as run-time axes on `bench eval run`.** `--state`
+  binds the environment (S-axis) per run — inline JSON, a registry
+  `name@version` resolved through the environment registry, or a manifest path
+  (takes precedence over `--environment-manifest`). `--config-override` overlays
+  the task config (C-axis) — inline JSON/YAML/TOML or `@file`, deep-merged into
+  each task's resolved config. `--config` also gains a `--run-config` alias.
+  (#790)
+- **Content-addressed environment binding.** Registry environment resolution is
+  content-addressed — `env_hash = sha256(manifest)` — so a `name@version`
+  resolves to an exact, pinned environment that is recorded for replay; the
+  C-axis `--config-override` is likewise persisted with its content hash and the
+  applied patch. Every rollout is attributable to the precise world and config
+  it ran against. (#790)
+- **MLE-bench adapter.** Adds an MLE-bench benchmark adapter, parity fixture, and
+  task plumbing for running and auditing MLE-bench through BenchFlow. (#792)
+- **Agent adapter skill.** Adds the canonical adapter skill under `.agents/skills`
+  for harness-side adapter work. (#793)
+- **Prime-RL SFT export.** Adds `bench train convert prime-sft` support for
+  exporting BenchFlow trajectories into Prime SFT-ready JSONL artifacts. (#828)
+
 ### Changed
 - **`bench continue` is now `bench eval continue`.** The command (and its
   `continue-batch` companion) moved under the `eval` group, where it is now
   discoverable in `bench eval --help` alongside `run`/`adopt`. The original
   top-level `bench continue` / `bench continue-batch` remain as hidden,
   deprecated aliases (they print a deprecation notice) so existing scripts keep
-  working.
+  working. (#800)
+- **Routable agents always go through the LiteLLM usage proxy.** OpenCode-family
+  and pi-acp model calls now stay on the proxy path so token usage, cost, and
+  trajectory capture are preserved consistently. (#797, #803, #820)
+- **Agent manifest loading is now the additive decoupling path.** The core agent
+  manifest loader and Omnigent/session-factory seam are gated in while preserving
+  existing ACP manifests and byte-identical parity coverage. (#825, #836, #837)
+
+### Fixed
+- Resolved the sharded and run-config paths so the S-axis environment and C-axis
+  config overlay are applied consistently in `bench eval run`. (#804)
+- Added `bench eval run --context-root` plumbing and early validation for missing
+  paths. (#816)
+- Fixed verifier-error resume logging and streaming `claude-agent-acp`
+  trajectory emission so failed or streamed runs retain the expected evidence.
+  (#819, #839)
+- Resolved bare model IDs to their provider, avoided pi-acp context-window retry
+  storms, and kept provider failure causes visible while preserving redaction.
+  (#805, #831, #834, #835)
+- Preserved Codex subscription-auth behavior and auth-file permissions in the
+  launcher path. (#825)
+- Rejected `.git` and `file://` source paths with clear errors. (#822)
+- Hardened experiment-review and integration gates around missing trajectories,
+  summaryless roots, file-editor false positives, and L3 review calibration.
+  (#802, #806, #807, #808, #809, #810, #811, #812, #814, #817, #821, #823, #824)
 
 ## 0.6.3 — 2026-06-16
 

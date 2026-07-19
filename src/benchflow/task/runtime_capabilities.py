@@ -221,13 +221,6 @@ def _append_config_issues(
             reason="GPU scheduling is parsed but not capability-gated",
             sandbox=sandbox,
         )
-    if env.healthcheck is not None:
-        _issue(
-            unsupported,
-            path="environment.healthcheck",
-            reason="environment healthchecks are parsed but not runtime-gated",
-            sandbox=sandbox,
-        )
     _append_workdir_issue(
         unsupported,
         workdir=env.workdir,

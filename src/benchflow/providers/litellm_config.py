@@ -18,9 +18,13 @@ from benchflow.agents.providers import (
 AZURE_API_VERSION_ENV = "AZURE_API_VERSION"
 AZURE_DEFAULT_API_VERSION = "preview"
 BEDROCK_THINKING_EFFORT_ENV = "BENCHFLOW_BEDROCK_THINKING_EFFORT"
+PROVIDER_REASONING_EFFORT_ENV = "BENCHFLOW_REASONING_EFFORT"
 LITELLM_MODEL_ALIAS_ENV = "BENCHFLOW_LITELLM_MODEL_ALIAS"
 LITELLM_MODEL_VIA_ENV = "BENCHFLOW_LITELLM_MODEL_VIA_ENV"
 LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
+_PROVIDER_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
 
 # Per-token USD prices for models LiteLLM's built-in ``model_cost`` does not
 # already know (custom OpenAI-compatible endpoints such as private vLLM servers
@@ -164,6 +168,20 @@ def _registered_api_key_ref(cfg: ProviderConfig) -> str | None:
     return None
 
 
+def _provider_reasoning_effort(env: dict[str, str]) -> str | None:
+    """Return an explicitly requested gateway-side reasoning effort."""
+    raw = (
+        env.get(PROVIDER_REASONING_EFFORT_ENV) or env.get("LLM_REASONING_EFFORT") or ""
+    )
+    effort = raw.strip().lower()
+    if not effort:
+        return None
+    if effort not in _PROVIDER_REASONING_EFFORTS:
+        allowed = ", ".join(sorted(_PROVIDER_REASONING_EFFORTS))
+        raise ValueError(f"{PROVIDER_REASONING_EFFORT_ENV} must be one of: {allowed}")
+    return effort
+
+
 def _bedrock_thinking_effort(model: str, env: dict[str, str]) -> str | None:
     if not _BEDROCK_ADAPTIVE_THINKING_RE.search(model):
         return None
@@ -213,6 +231,9 @@ def _route_registered_provider(
             "api_base": api_base,
             "api_version": env.get(AZURE_API_VERSION_ENV, AZURE_DEFAULT_API_VERSION),
         }
+        effort = _provider_reasoning_effort(env)
+        if effort:
+            params["reasoning_effort"] = effort
         return LiteLLMRoute(
             requested_model=model,
             model_alias=safe_model_alias(model),
@@ -345,8 +366,17 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
         required = ("OPENAI_API_KEY",)
 
     params: dict[str, str | int | float | bool] = {"model": upstream}
+    if upstream.lower().startswith("gemini/"):
+        explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
+        explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
+        if explicit_api_base:
+            params["api_base"] = explicit_api_base
+            if explicit_api_key:
+                params["api_key"] = _env_ref("BENCHFLOW_PROVIDER_API_KEY")
+                required = ("BENCHFLOW_PROVIDER_API_KEY",)
+
     key = required[0] if required else None
-    if key:
+    if key and "api_key" not in params:
         params["api_key"] = _env_ref(key)
     return LiteLLMRoute(
         requested_model=model,
@@ -383,12 +413,50 @@ def litellm_proxy_config(
             model_list.append(
                 {"model_name": model_name, "litellm_params": dict(params)}
             )
+
+    # Responses-API bridge entries. A responses-only client (e.g. the codex CLI,
+    # which dropped the chat wire) hits /v1/responses, but a chat-only OpenAI-
+    # compatible backend (deepseek, vllm) has no /responses endpoint — LiteLLM's
+    # native responses path then 404s the model. Register the same model under an
+    # ``openai/chat_completions/<name>`` model_name whose UPSTREAM carries that
+    # prefix; LiteLLM strips it and bridges responses→chat_completions
+    # (use_chat_completions_api), so /v1/responses reaches the chat backend. Only
+    # for openai/-prefixed upstreams (chat-only); native-responses providers are
+    # untouched, and the bridge names are never sent on the /chat route.
+    upstream = str(params.get("model", ""))
+    if upstream.startswith("openai/") and bare_requested:
+        bridge_params = {**params, "model": f"openai/chat_completions/{bare_requested}"}
+        existing = {entry["model_name"] for entry in model_list}
+        # Non-slashed bridge model_names (the codex CLI mis-parses a slashed model
+        # id and then sends no request); the prefix that triggers the bridge lives
+        # on the UPSTREAM (bridge_params["model"]), not the client-facing name.
+        for name in (route.model_alias, bare_requested):
+            bridge_name = f"{name}-responses-bridge"
+            if bridge_name not in existing:
+                existing.add(bridge_name)
+                model_list.append(
+                    {"model_name": bridge_name, "litellm_params": dict(bridge_params)}
+                )
     return {
         "model_list": model_list,
         "general_settings": {"master_key": master_key},
+        "router_settings": {
+            # BenchFlow owns task-level retry classification. Keep LiteLLM from
+            # multiplying deterministic provider rejects into proxy-local retry
+            # storms or deployment cooldown fast-fails (#830).
+            "num_retries": 0,
+            "disable_cooldowns": True,
+        },
         "litellm_settings": {
             "callbacks": [f"{callback_module}.proxy_handler_instance"],
             "drop_params": True,
             "set_verbose": False,
+            # Force the anthropic /v1/messages bridge onto /chat/completions.
+            # LiteLLM routes openai/-prefixed upstreams (e.g. the vllm
+            # provider) through its Responses-API adapter, whose *streaming*
+            # path never fires the success callback -- so streaming
+            # claude-agent-acp rollouts produced no llm_trajectory.jsonl
+            # (#833). /chat/completions logs success correctly.
+            "use_chat_completions_url_for_anthropic_messages": True,
         },
     }

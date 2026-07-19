@@ -101,6 +101,7 @@ class EvalCreateRequest:
     sandbox_user: str | None = "agent"
     sandbox_setup_timeout: int = 120
     context_root: Path | None = None
+    base_image_override: str | None = None
     skills_dir: Path | None = None
     skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: Path | None = None
@@ -112,6 +113,21 @@ class EvalCreateRequest:
     dataset: str | None = None
     registry: str | None = None
     ignore_bench_version: bool = False
+    task_manifest_out: Path | None = None
+    run_config_out: Path | None = None
+    health_summary_out: Path | None = None
+    expected_tasks: int | None = None
+    canonicalize: str = "none"
+    canonical_selection_out: Path | None = None
+    canonical_jobs_dir: Path | None = None
+    retry_policy: str = "default"
+    retry_attempts: int | None = None
+    retry_concurrency: int | None = None
+    publish_hf: str | None = None
+    hf_prefix: str | None = None
+    hf_public_read_check: bool = False
+    matrix: Path | None = None
+    trials: int = 1
 
 
 @dataclass
@@ -177,6 +193,7 @@ class EvalPlan:
             sandbox_user=self.sandbox_user,
             sandbox_setup_timeout=req.sandbox_setup_timeout,
             context_root=str(req.context_root) if req.context_root else None,
+            base_image_override=req.base_image_override,
             skills_dir=str(req.skills_dir) if req.skills_dir else None,
             skill_mode=req.skill_mode,
             skill_creator_dir=(
@@ -239,10 +256,38 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError("--registry requires --dataset")
     if request.ignore_bench_version and not request.dataset:
         raise EvalPlanError("--ignore-bench-version requires --dataset")
+    if request.matrix is not None and not request.tasks_dir:
+        raise EvalPlanError("--matrix currently requires --tasks-dir")
+    if request.trials < 1:
+        raise EvalPlanError("--trials must be >= 1")
+    if request.expected_tasks is not None and request.expected_tasks < 1:
+        raise EvalPlanError("--expected-tasks must be >= 1")
+    if request.canonicalize not in {"none", "one-healthy-per-task"}:
+        raise EvalPlanError("--canonicalize must be 'none' or 'one-healthy-per-task'")
+    if request.canonical_selection_out and request.canonicalize == "none":
+        raise EvalPlanError("--canonical-selection-out requires --canonicalize")
+    if request.canonical_jobs_dir and not request.canonical_selection_out:
+        raise EvalPlanError("--canonical-jobs-dir requires --canonical-selection-out")
+    if request.retry_policy not in {"default", "unscored-only"}:
+        raise EvalPlanError("--retry-policy must be 'default' or 'unscored-only'")
+    if request.retry_attempts is not None and request.retry_attempts < 0:
+        raise EvalPlanError("--retry-attempts must be >= 0")
+    if request.retry_concurrency is not None and request.retry_concurrency < 1:
+        raise EvalPlanError("--retry-concurrency must be >= 1")
+    if request.hf_prefix and not request.publish_hf:
+        raise EvalPlanError("--hf-prefix requires --publish-hf")
     if request.tasks_dir and not Path(request.tasks_dir).exists():
         raise EvalPlanError(f"--tasks-dir not found: {request.tasks_dir}")
+    if request.matrix is not None and not Path(request.matrix).is_file():
+        raise EvalPlanError(f"--matrix not found: {request.matrix}")
     if request.context_root and not Path(request.context_root).is_dir():
         raise EvalPlanError(f"--context-root not found: {request.context_root}")
+    if request.base_image_override is not None:
+        image = request.base_image_override.strip()
+        if not image or any(char.isspace() for char in image):
+            raise EvalPlanError(
+                "--base-image-override must be a non-empty image reference"
+            )
     # Validate --config here so a typo'd / missing / non-file path becomes a clean
     # CLI error instead of a raw FileNotFoundError/IsADirectoryError traceback from
     # the bare open() in Evaluation.from_yaml.

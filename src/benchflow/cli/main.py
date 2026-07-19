@@ -48,11 +48,14 @@ from benchflow.cli.agent import register_agent
 from benchflow.cli.arena import register_arena
 from benchflow.cli.continue_cmd import register_continue
 from benchflow.cli.environment import register_environment
+from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_eval
+from benchflow.cli.eval_lift import register_eval_lift
 from benchflow.cli.hub import register_hub
 from benchflow.cli.monitor import register_monitor
 from benchflow.cli.sandbox import register_sandbox
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
+from benchflow.cli.train import register_train
 from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
 from benchflow.sandbox.providers import providers_phrase
@@ -194,6 +197,7 @@ app.add_typer(eval_app, name="eval", rich_help_panel="Core")
 # Canonical single `bench eval adopt` command (eval is the universal benchmark
 # entry point; adopt makes a foreign benchmark runnable).
 register_eval_adopt(eval_app)
+register_eval_lift(eval_app)
 
 
 @eval_app.command("run")
@@ -468,6 +472,16 @@ def eval_run(
             ),
         ),
     ] = None,
+    base_image_override: Annotated[
+        str | None,
+        typer.Option(
+            "--base-image-override",
+            help=(
+                "Rewrite task Dockerfile FROM images on the runtime task copy. "
+                "Use only for reproducing runs whose base image moved namespaces."
+            ),
+        ),
+    ] = None,
     skills_dir: Annotated[
         Path | None,
         typer.Option("--skills-dir", help="Skills directory to deploy"),
@@ -544,6 +558,87 @@ def eval_run(
             "range it was validated against. Only valid with --dataset.",
         ),
     ] = False,
+    task_manifest_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--task-manifest-out", help="Write selected task-set manifest JSON"
+        ),
+    ] = None,
+    run_config_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--run-config-out", help="Write redacted normalized run config JSON"
+        ),
+    ] = None,
+    health_summary_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--health-summary-out", help="Write trajectory health summary JSON"
+        ),
+    ] = None,
+    expected_tasks: Annotated[
+        int | None,
+        typer.Option(
+            "--expected-tasks", help="Fail unless the selected task count matches"
+        ),
+    ] = None,
+    canonicalize: Annotated[
+        str,
+        typer.Option(
+            "--canonicalize",
+            help="Canonicalization policy: none or one-healthy-per-task",
+        ),
+    ] = "none",
+    canonical_selection_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--canonical-selection-out",
+            help="Write canonical rollout-selection JSON",
+        ),
+    ] = None,
+    canonical_jobs_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--canonical-jobs-dir",
+            help="Materialize selected rollout dirs for trainer conversion",
+        ),
+    ] = None,
+    retry_policy: Annotated[
+        str,
+        typer.Option("--retry-policy", help="Retry policy: default or unscored-only"),
+    ] = "default",
+    retry_attempts: Annotated[
+        int | None,
+        typer.Option("--retry-attempts", help="Reserved retry-attempt override"),
+    ] = None,
+    retry_concurrency: Annotated[
+        int | None,
+        typer.Option("--retry-concurrency", help="Reserved retry concurrency"),
+    ] = None,
+    publish_hf: Annotated[
+        str | None,
+        typer.Option(
+            "--publish-hf", help="Upload final eval artifacts to a HF dataset repo"
+        ),
+    ] = None,
+    hf_prefix: Annotated[
+        str | None,
+        typer.Option("--hf-prefix", help="Path prefix in the HF repo"),
+    ] = None,
+    hf_public_read_check: Annotated[
+        bool,
+        typer.Option(
+            "--hf-public-read-check", help="Verify public HF reads after upload"
+        ),
+    ] = False,
+    matrix: Annotated[
+        Path | None,
+        typer.Option("--matrix", help="YAML model matrix for repeated evals"),
+    ] = None,
+    trials: Annotated[
+        int,
+        typer.Option("--trials", help="Number of trials for --matrix"),
+    ] = 1,
 ) -> None:
     """Run an evaluation — single task or batch.
 
@@ -606,6 +701,7 @@ def eval_run(
         sandbox_user=sandbox_user,
         sandbox_setup_timeout=sandbox_setup_timeout,
         context_root=context_root,
+        base_image_override=base_image_override,
         skills_dir=skills_dir,
         skill_mode=skill_mode,
         skill_creator_dir=skill_creator_dir,
@@ -617,6 +713,21 @@ def eval_run(
         dataset=dataset,
         registry=registry,
         ignore_bench_version=ignore_bench_version,
+        task_manifest_out=task_manifest_out,
+        run_config_out=run_config_out,
+        health_summary_out=health_summary_out,
+        expected_tasks=expected_tasks,
+        canonicalize=canonicalize,
+        canonical_selection_out=canonical_selection_out,
+        canonical_jobs_dir=canonical_jobs_dir,
+        retry_policy=retry_policy,
+        retry_attempts=retry_attempts,
+        retry_concurrency=retry_concurrency,
+        publish_hf=publish_hf,
+        hf_prefix=hf_prefix,
+        hf_public_read_check=hf_public_read_check,
+        matrix=matrix,
+        trials=trials,
     )
     # --source-path/--source-ref only apply to --source-repo; otherwise they're
     # silently ignored (e.g. `--dataset X --source-ref abc` drops the ref).
@@ -646,11 +757,13 @@ def eval_run(
         import subprocess
 
         from benchflow._utils.benchmark_repos import resolve_source_with_metadata
+        from benchflow.adapters.source import adapt_resolved_source_if_needed
 
         try:
             resolved = resolve_source_with_metadata(
                 source_repo, path=source_path, ref=source_ref
             )
+            resolved = adapt_resolved_source_if_needed(resolved)
         except (subprocess.CalledProcessError, OSError, ValueError, RuntimeError) as e:
             # A clone failure (missing/private repo, bad --source-ref, auth,
             # network) otherwise escapes as a raw traceback — unlike the sibling
@@ -672,7 +785,10 @@ def eval_run(
             # dumps a raw NotADirectoryError, unlike sandbox create / eval metrics.
             print_error(f"Not a directory: {tasks_dir}")
             raise typer.Exit(1)
-        run_batch_eval(plan, tasks_dir, plan.make_eval_config())
+        if matrix is not None:
+            run_matrix_eval(plan, tasks_dir, run_batch_eval)
+        else:
+            run_batch_eval(plan, tasks_dir, plan.make_eval_config())
     elif dataset:
         from benchflow._utils.dataset_registry import (
             DEFAULT_REGISTRY_SOURCE,
@@ -758,8 +874,17 @@ def run_batch_eval(
     """
     from benchflow.eval_sharding import ShardWorkerError
     from benchflow.evaluation import EmptyTaskSelectionError, Evaluation
+    from benchflow.task.discovery import resolve_task_collection_root
+
+    task_collection_dir = resolve_task_collection_root(resolved_tasks_dir)
+    if eval_config.source_provenance is None:
+        from benchflow._utils.hf_datasets import load_source_sidecar
+
+        eval_config.source_provenance = load_source_sidecar(task_collection_dir)
 
     try:
+        if plan.request.retry_attempts is not None:
+            eval_config.retry.max_retries = plan.request.retry_attempts
         if plan.request.worker_concurrency is None:
             # One Evaluation construction; the live dashboard contributes hooks +
             # a context manager on a TTY, and a null context + no hooks otherwise
@@ -769,7 +894,7 @@ def run_batch_eval(
             if progress_enabled(console):
                 live = LiveEvalProgress(
                     console,
-                    label=_eval_label(plan, resolved_tasks_dir),
+                    label=_eval_label(plan, task_collection_dir),
                     agent=eval_config.agent,
                     model=eval_config.model,
                     sandbox=eval_config.environment,
@@ -783,7 +908,7 @@ def run_batch_eval(
             with run_ctx:
                 result = asyncio.run(
                     Evaluation(
-                        tasks_dir=str(resolved_tasks_dir),
+                        tasks_dir=str(task_collection_dir),
                         jobs_dir=plan.output_jobs_dir,
                         config=eval_config,
                         **hooks,
@@ -794,7 +919,7 @@ def run_batch_eval(
 
             result = asyncio.run(
                 run_sharded_evaluation(
-                    tasks_dir=resolved_tasks_dir,
+                    tasks_dir=task_collection_dir,
                     jobs_dir=Path(plan.output_jobs_dir),
                     config=eval_config,
                     worker_concurrency=plan.request.worker_concurrency,
@@ -811,6 +936,7 @@ def run_batch_eval(
 
     job_name = getattr(result, "job_name", None)
     job_dir = Path(plan.output_jobs_dir) / job_name if job_name else None
+    postprocess_eval_artifacts(plan, task_collection_dir, eval_config, job_dir)
     _report_eval_result(result, job_dir)
     _exit_if_evaluation_had_errors(result)
     return result
@@ -1183,6 +1309,7 @@ def eval_view(
 register_continue(eval_app, alias_app=app)
 register_skills(app)
 register_tasks(app)
+register_train(app)
 register_hub(app)
 register_agent(app)
 register_adopt_deprecated(app)

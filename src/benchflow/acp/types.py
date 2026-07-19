@@ -140,36 +140,66 @@ class McpServerSpec(BaseModel):
     shape onto the exact per-transport dict ``session/new`` expects: every
     variant carries ``name``; stdio adds ``command``/``args``/``env`` and omits
     the ``type`` discriminator (the SDK's ``McpServerStdio`` has none); sse/http
-    add ``url``/``headers`` and keep ``type``.
+    add ``url``/``headers`` and keep ``type``. BenchFlow stores task-authored
+    env/header maps as dictionaries for ergonomics, then projects them to ACP's
+    list-of-name/value wire shape. Benchmark-specific MCP tool filters are kept
+    under ACP ``_meta`` so they do not violate the standard server schema.
     """
 
     name: str  # required on every ACP variant; the rest are transport-dependent
     type: str = "stdio"
     command: str | None = None
     args: list[str] = Field(default_factory=list)
-    env: list[dict[str, str]] = Field(default_factory=list)
+    cwd: str | None = None
+    env: dict[str, str] = Field(default_factory=dict)
     url: str | None = None
-    headers: list[dict[str, str]] = Field(default_factory=list)
+    headers: dict[str, str] = Field(default_factory=dict)
+    tools: list[str] | None = None
+    include_tags: list[str] | None = None
+    exclude_tags: list[str] | None = None
+
+    @staticmethod
+    def _mapping_to_name_value(mapping: dict[str, str]) -> list[dict[str, str]]:
+        return [{"name": name, "value": value} for name, value in mapping.items()]
+
+    def _meta_param(self) -> dict[str, Any]:
+        filters: dict[str, list[str]] = {}
+        if self.tools is not None:
+            filters["tools"] = list(self.tools)
+        if self.include_tags is not None:
+            filters["include_tags"] = list(self.include_tags)
+        if self.exclude_tags is not None:
+            filters["exclude_tags"] = list(self.exclude_tags)
+        if not filters:
+            return {}
+        return {"_meta": {"benchflow": {"mcp_tool_filters": filters}}}
 
     def to_new_session_param(self) -> dict[str, Any]:
         """Project onto the per-transport ``session/new`` server dict.
 
         stdio servers carry ``command``/``args``/``env`` and no ``type``; sse and
         http servers carry ``url``/``headers`` and the ``type`` discriminator.
-        The result is shaped for the SDK's discriminated ``mcp_servers`` union.
+        Header and env maps are projected to ACP's required list shape, and
+        non-standard BenchFlow filter hints are carried under ``_meta``.
         """
+        meta = self._meta_param()
         if self.type == "stdio":
-            return {
+            payload = {
                 "name": self.name,
                 "command": self.command,
                 "args": list(self.args),
-                "env": list(self.env),
+                "env": self._mapping_to_name_value(self.env),
+                **meta,
             }
+            if self.cwd is not None:
+                payload["cwd"] = self.cwd
+            return payload
         return {
             "type": self.type,
             "name": self.name,
             "url": self.url,
-            "headers": list(self.headers),
+            "headers": self._mapping_to_name_value(self.headers),
+            **meta,
         }
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import inspect
 import json
@@ -49,6 +50,7 @@ from benchflow.providers.litellm_logging import (
     trajectory_from_litellm_callback_log,
 )
 from benchflow.sandbox.providers import OFF_BOX_MODEL_PROVIDERS
+from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
 
@@ -67,6 +69,10 @@ _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 # it's ignored) and `NO_DOCS=true` so the docs route is skipped regardless of the
 # inherited environment.
 _PROXY_DOCS_DISABLE_ENV = {"DOCS_URL": "", "NO_DOCS": "true"}
+_SKILL_CATALOG_GATE_AGENT_ENV = "BENCHFLOW_SKILL_CATALOG_GATE_AGENT"
+_REQUIRED_SKILL_NAMES_ENV = "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON"
+_LIVE_CAPTURE_CHUNK_BYTES = 24 * 1024
+_LIVE_CAPTURE_INTERVAL_SEC = 1.0
 
 # Agents that speak a provider-native wire protocol the LiteLLM proxy does not
 # expose on its OpenAI/Anthropic surfaces. Routing them through the proxy would
@@ -92,6 +98,8 @@ class LiteLLMProcess:
 
     route: LiteLLMRoute
     trajectory: Trajectory | None
+    session_id: str
+    agent_name: str
 
     @property
     def base_url(self) -> str:
@@ -102,6 +110,84 @@ class LiteLLMProcess:
 
     async def is_running(self) -> bool:
         raise NotImplementedError
+
+    def start_live_capture(self, path: Path) -> None:
+        """Mirror completed callback records into a redacted local artifact."""
+        existing_path = getattr(self, "_live_trajectory_path", None)
+        task = getattr(self, "_live_capture_task", None)
+        if existing_path == Path(path) and task is not None and not task.done():
+            return
+        if task is not None and not task.done():
+            task.cancel()
+        self._live_trajectory_path = Path(path)
+        self._live_writer = LiveLLMTrajectoryWriter(Path(path))
+        self._live_trajectory = Trajectory(
+            session_id=self.session_id,
+            agent_name=self.agent_name,
+        )
+        self._live_callback_offset = 0
+        self._live_callback_remainder = b""
+        self._live_capture_task = asyncio.create_task(self._live_capture_loop())
+
+    async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
+        raise NotImplementedError
+
+    async def _capture_live_records(self) -> None:
+        trajectory = getattr(self, "_live_trajectory", None)
+        writer = getattr(self, "_live_writer", None)
+        if trajectory is None or writer is None:
+            return
+
+        changed = False
+        for _ in range(64):
+            offset = int(getattr(self, "_live_callback_offset", 0))
+            chunk = await self._read_callback_chunk(offset, _LIVE_CAPTURE_CHUNK_BYTES)
+            if not chunk:
+                break
+            self._live_callback_offset = offset + len(chunk)
+            data = getattr(self, "_live_callback_remainder", b"") + chunk
+            lines = data.split(b"\n")
+            self._live_callback_remainder = lines.pop()
+            for raw_line in lines:
+                if not raw_line.strip():
+                    continue
+                parsed = trajectory_from_litellm_callback_log(
+                    raw_line.decode("utf-8", errors="replace"),
+                    session_id=self.session_id,
+                    agent_name=self.agent_name,
+                )
+                if parsed.exchanges:
+                    trajectory.exchanges.extend(parsed.exchanges)
+                    changed = True
+            if len(chunk) < _LIVE_CAPTURE_CHUNK_BYTES:
+                break
+        if changed:
+            writer.write(trajectory)
+
+    async def _live_capture_loop(self) -> None:
+        while True:
+            try:
+                await self._capture_live_records()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Live LLM trajectory mirror failed: %s", exc)
+            await asyncio.sleep(_LIVE_CAPTURE_INTERVAL_SEC)
+
+    async def _stop_live_capture(self) -> None:
+        task = getattr(self, "_live_capture_task", None)
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            self._live_capture_task = None
+        with contextlib.suppress(Exception):
+            await self._capture_live_records()
+
+    def _reconcile_live_capture(self) -> None:
+        writer = getattr(self, "_live_writer", None)
+        if writer is not None:
+            writer.reconcile(self.trajectory)
 
 
 class HostLiteLLMProcess(LiteLLMProcess):
@@ -137,6 +223,7 @@ class HostLiteLLMProcess(LiteLLMProcess):
         return self.process.poll() is None
 
     async def stop(self) -> None:
+        await self._stop_live_capture()
         await _await_log_stable(self._log_size)
         if self.process.poll() is None:
             self.process.terminate()
@@ -146,6 +233,7 @@ class HostLiteLLMProcess(LiteLLMProcess):
                 self.process.kill()
                 await asyncio.to_thread(self.process.wait, 10)
         self._load_callback_log()
+        self._reconcile_live_capture()
         with contextlib.suppress(Exception):
             shutil.rmtree(self.runtime_dir, ignore_errors=True)
 
@@ -154,6 +242,17 @@ class HostLiteLLMProcess(LiteLLMProcess):
             return self.log_path.stat().st_size
         except OSError:
             return -1
+
+    async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
+        def _read() -> bytes:
+            try:
+                with self.log_path.open("rb") as handle:
+                    handle.seek(offset)
+                    return handle.read(limit)
+            except OSError:
+                return b""
+
+        return await asyncio.to_thread(_read)
 
     def _load_callback_log(self) -> None:
         if not self.log_path.exists():
@@ -221,6 +320,7 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         return result.return_code == 0 and (result.stdout or "").strip() == "yes"
 
     async def stop(self) -> None:
+        await self._stop_live_capture()
         await _await_log_stable(self._remote_log_size)
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
@@ -232,6 +332,7 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
                 timeout_sec=10,
             )
         await self._load_callback_log()
+        self._reconcile_live_capture()
         with contextlib.suppress(Exception):
             await self.sandbox.exec(
                 f"rm -rf {shlex.quote(self.runtime_dir)}", timeout_sec=10
@@ -245,6 +346,23 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             )
             return int((result.stdout or "-1").strip() or -1)
         return -1
+
+    async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
+        command = (
+            f"dd if={shlex.quote(self.log_path)} bs=1 skip={offset} count={limit} "
+            "2>/dev/null | base64 -w 0"
+        )
+        # Daytona otherwise retains one session wrapper shell for every
+        # one-second live-capture poll. Long MAX rollouts can accumulate
+        # thousands of orphaned shells and eventually wedge the agent's own
+        # terminal calls. Providers without a transient-exec path keep the
+        # existing behavior.
+        execute = getattr(self.sandbox, "exec_transient", self.sandbox.exec)
+        result = await execute(command, timeout_sec=10)
+        encoded = (result.stdout or "").strip()
+        if result.return_code != 0 or not encoded:
+            return b""
+        return base64.b64decode(encoded, validate=True)
 
     async def _load_callback_log(self) -> None:
         text = ""
@@ -420,9 +538,40 @@ def _write_runtime_files(
     return config_path, callback_path, patch_path
 
 
-async def _poll_host_health(process: HostLiteLLMProcess) -> None:
+# How long to wait for the *host* per-run LiteLLM proxy to become healthy.
+# litellm's cold start runs tens of seconds, and when many runs launch in parallel
+# (max-parallel sweeps) the proxies cold-start simultaneously and contend for CPU,
+# pushing well past a fixed ~30s budget — the old ``range(120)`` x 0.25s. That
+# surfaced as "LiteLLM did not become healthy: All connection attempts failed" for
+# otherwise-fine agents on Docker under load. Use a generous, time-based, env-tunable
+# deadline so a slow-but-fine proxy is not killed; a genuine crash still fails fast
+# via the process-exit check below.
+#
+# Scope: this deadline covers host and sandbox LiteLLM readiness. The sandbox
+# pollers also use it as their overall deadline; a single slow Daytona
+# ``sandbox.exec`` probe is treated as one failed attempt, not a fatal startup
+# failure.
+def _health_deadline_sec() -> float:
+    # Parse defensively: a malformed BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC must not
+    # crash ``import benchflow``. Floor at one poll cycle so a 0/negative value still
+    # checks process liveness and attempts health once instead of raising immediately.
+    try:
+        deadline = float(os.environ.get("BENCHFLOW_LITELLM_HEALTH_TIMEOUT_SEC", "180"))
+    except (TypeError, ValueError):
+        deadline = 180.0
+    return max(deadline, 1.0)
+
+
+_HEALTH_DEADLINE_SEC = _health_deadline_sec()
+
+
+async def _poll_host_health(
+    process: HostLiteLLMProcess, deadline_s: float = _HEALTH_DEADLINE_SEC
+) -> None:
     last_error = ""
-    for _ in range(120):
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while loop.time() - start < deadline_s:
         if process.process.poll() is not None:
             raise RuntimeError(
                 "LiteLLM exited before becoming healthy.\n" + process.log_tail()
@@ -437,7 +586,8 @@ async def _poll_host_health(process: HostLiteLLMProcess) -> None:
             last_error = str(exc)
         await asyncio.sleep(0.25)
     raise RuntimeError(
-        f"LiteLLM did not become healthy: {last_error}\n{process.log_tail()}"
+        f"LiteLLM did not become healthy after {deadline_s:.0f}s: "
+        f"{last_error}\n{process.log_tail()}"
     )
 
 
@@ -628,7 +778,9 @@ async def _upload_runtime_files_to_sandbox(
     return paths
 
 
-async def _ensure_sandbox_litellm(sandbox: Any, *, venv_dir: str) -> str:
+async def _ensure_sandbox_litellm(
+    sandbox: Any, *, venv_dir: str, install_timeout_sec: int = 600
+) -> str:
     vq = shlex.quote(venv_dir)
     # Prefer uv to bootstrap the venv: many sandbox base images ship a python3
     # without ensurepip and marked externally-managed (PEP 668), where both
@@ -663,7 +815,7 @@ import litellm
 print(litellm.__version__ if hasattr(litellm, "__version__") else "ok")
 PY
 """
-    result = await sandbox.exec(command, timeout_sec=600)
+    result = await sandbox.exec(command, timeout_sec=install_timeout_sec)
     if result.return_code != 0:
         raise RuntimeError(_exec_details("install LiteLLM in sandbox", result))
     return f"{venv_dir}/bin/python"
@@ -674,21 +826,27 @@ async def _wait_for_sandbox_state(
     *,
     state_path: str,
     stderr_path: str,
+    deadline_s: float = _HEALTH_DEADLINE_SEC,
 ) -> dict[str, Any]:
     last_output = ""
-    for _ in range(120):
-        result = await sandbox.exec(
-            f"cat {shlex.quote(state_path)} 2>/dev/null || true",
-            timeout_sec=5,
-        )
-        last_output = (result.stdout or "").strip()
-        if last_output:
-            try:
-                state = json.loads(last_output)
-                if int(state.get("port") or 0) > 0:
-                    return state
-            except (TypeError, ValueError, json.JSONDecodeError):
-                pass
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while loop.time() - start < deadline_s:
+        try:
+            result = await sandbox.exec(
+                f"cat {shlex.quote(state_path)} 2>/dev/null || true",
+                timeout_sec=5,
+            )
+            last_output = (result.stdout or "").strip()
+            if last_output:
+                try:
+                    state = json.loads(last_output)
+                    if int(state.get("port") or 0) > 0:
+                        return state
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+        except Exception as exc:
+            last_output = str(exc)
         await asyncio.sleep(0.25)
     stderr = await sandbox.exec(
         f"tail -c 4000 {shlex.quote(stderr_path)} 2>/dev/null || true",
@@ -701,7 +859,12 @@ async def _wait_for_sandbox_state(
 
 
 async def _poll_sandbox_health(
-    sandbox: Any, *, python: str, port: int, stderr_path: str
+    sandbox: Any,
+    *,
+    python: str,
+    port: int,
+    stderr_path: str,
+    deadline_s: float = _HEALTH_DEADLINE_SEC,
 ) -> None:
     probe = (
         f"{shlex.quote(python)} - <<'PY'\n"
@@ -713,10 +876,15 @@ async def _poll_sandbox_health(
         "    urllib.request.urlopen(url.replace('/health/liveliness','/health'), timeout=2).read()\n"
         "PY"
     )
-    for _ in range(120):
-        result = await sandbox.exec(probe, timeout_sec=5)
-        if result.return_code == 0:
-            return
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while loop.time() - start < deadline_s:
+        try:
+            result = await sandbox.exec(probe, timeout_sec=5)
+            if result.return_code == 0:
+                return
+        except Exception:
+            pass
         await asyncio.sleep(0.25)
     stderr = await sandbox.exec(
         f"tail -c 4000 {shlex.quote(stderr_path)} 2>/dev/null || true",
@@ -746,6 +914,7 @@ async def _start_sandbox_litellm(
     agent_env: dict[str, str],
     session_id: str,
     agent_name: str,
+    install_timeout_sec: int = 600,
 ) -> SandboxLiteLLMProcess:
     token = uuid4().hex[:16]
     runtime_dir = f"{LITELLM_SANDBOX_ROOT}/{token}"
@@ -755,7 +924,9 @@ async def _start_sandbox_litellm(
         runtime_dir=runtime_dir,
         config=config,
     )
-    python = await _ensure_sandbox_litellm(sandbox, venv_dir=paths["venv"])
+    python = await _ensure_sandbox_litellm(
+        sandbox, venv_dir=paths["venv"], install_timeout_sec=install_timeout_sec
+    )
     env = dict(agent_env)
     env.update(
         {
@@ -991,6 +1162,19 @@ def _apply_litellm_agent_env(
     return updated
 
 
+def _litellm_proxy_env(
+    *, agent: str, agent_env: dict[str, str], required_skill_names: tuple[str, ...]
+) -> dict[str, str]:
+    updated = dict(agent_env)
+    updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
+    updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
+    expected = sorted(set(required_skill_names))
+    if agent == "opencode" and expected:
+        updated[_SKILL_CATALOG_GATE_AGENT_ENV] = agent
+        updated[_REQUIRED_SKILL_NAMES_ENV] = json.dumps(expected)
+    return updated
+
+
 def _wire_litellm_agent_env(
     *,
     agent: str,
@@ -1000,6 +1184,8 @@ def _wire_litellm_agent_env(
     master_key: str,
 ) -> dict[str, str]:
     updated = dict(agent_env)
+    updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
+    updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
     # Isolation: the agent must reach providers only through the proxy. Drop raw
     # upstream provider secrets AND endpoints so a compromised or curious agent
     # cannot bypass the gateway (and its usage metering) or read live keys. The
@@ -1022,6 +1208,24 @@ def _wire_litellm_agent_env(
             LITELLM_MASTER_KEY_ENV: master_key,
         }
     )
+    # Generic model-via-env: an agent whose registration maps
+    # BENCHFLOW_PROVIDER_MODEL into an agent-native env var AND declares
+    # supports_acp_set_model=False states, in data, that launch/env config owns
+    # model selection. Set the via-env flag so the ACP layer
+    # (_model_selection_owned_by_env) skips driving set_model AND any
+    # capability-advertised model config option — several agents (qwen-code,
+    # kilo, dimcode, ...) validate foreign model ids against their own catalog
+    # and reject the gateway alias with -32603. This generalizes the hardcoded
+    # codex-acp/openhands/claude-agent-acp branches below to every agent that
+    # declares the env-owned-model shape (e.g. the benchflow-ai/agents
+    # manifests), instead of growing the special-case list per agent.
+    _cfg = AGENTS.get(agent)
+    if (
+        _cfg is not None
+        and not _cfg.supports_acp_set_model
+        and _cfg.env_mapping.get("BENCHFLOW_PROVIDER_MODEL")
+    ):
+        updated[LITELLM_MODEL_VIA_ENV] = "1"
     if agent == "codex-acp":
         updated["OPENAI_BASE_URL"] = openai_base_url
         updated["OPENAI_API_KEY"] = master_key
@@ -1119,6 +1323,9 @@ async def ensure_litellm_runtime(
     session_id: str = "",
     usage_tracking: UsageTrackingConfig | dict[str, Any] | str | None = None,
     sandbox: Any | None = None,
+    sandbox_setup_timeout: int = 120,
+    required_skill_names: tuple[str, ...] = (),
+    live_trajectory_path: Path | None = None,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1180,12 +1387,19 @@ async def ensure_litellm_runtime(
         agent_env.get(LITELLM_MASTER_KEY_ENV)
         or f"sk-benchflow-{secrets.token_urlsafe(24)}"
     )
-    config_key = f"{environment}:{route.config_key}:{agent}:{session_id}"
+    skill_gate_key = json.dumps(
+        sorted(set(required_skill_names)), separators=(",", ":")
+    )
+    config_key = (
+        f"{environment}:{route.config_key}:{agent}:{session_id}:{skill_gate_key}"
+    )
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
         if getattr(runtime, "config_key", None) == config_key and server is not None:
             is_running = await server.is_running()
             if is_running:
+                if live_trajectory_path is not None:
+                    server.start_live_capture(live_trajectory_path)
                 return (
                     _apply_litellm_agent_env(
                         agent=agent,
@@ -1199,20 +1413,26 @@ async def ensure_litellm_runtime(
         await stop_litellm_runtime(runtime)
 
     try:
+        proxy_env = _litellm_proxy_env(
+            agent=agent,
+            agent_env=agent_env,
+            required_skill_names=required_skill_names,
+        )
         if environment in _SANDBOX_LOCAL_ENVIRONMENTS:
             server = await _start_sandbox_litellm(
                 sandbox=sandbox,
                 route=route,
                 master_key=master_key,
-                agent_env=agent_env,
+                agent_env=proxy_env,
                 session_id=session_id,
                 agent_name=agent,
+                install_timeout_sec=max(600, int(sandbox_setup_timeout)),
             )
         else:
             server = await _start_host_litellm(
                 route=route,
                 master_key=master_key,
-                agent_env=agent_env,
+                agent_env=proxy_env,
                 environment=environment,
                 session_id=session_id,
                 agent_name=agent,
@@ -1238,6 +1458,8 @@ async def ensure_litellm_runtime(
         config_key=config_key,
         master_key=master_key,
     )
+    if live_trajectory_path is not None:
+        server.start_live_capture(live_trajectory_path)
     return (
         _apply_litellm_agent_env(
             agent=agent,

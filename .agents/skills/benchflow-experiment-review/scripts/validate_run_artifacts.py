@@ -11,6 +11,8 @@ BenchFlow model result:
   contains agent-side events.
 - trajectory/llm_trajectory.jsonl exists, is non-empty, parses as JSONL, and
   contains real provider request and response records.
+- results.jsonl exists, is non-empty, parses as JSONL, and contains a
+  Prime-RL/Verifiers-shaped training-readiness row backed by the LLM trajectory.
 - token usage, timing, and tool usage metadata are present.
 
 Any violation makes that rollout unhealthy. The script exits 1 if any checked
@@ -36,6 +38,27 @@ TOKEN_KEYS = {
     "promptTokenCount",
     "candidatesTokenCount",
     "totalTokenCount",
+}
+
+ALLOWED_MESSAGE_ROLES = {"system", "user", "assistant", "tool"}
+BANNED_TRAINING_ROW_KEYS = {
+    "gold",
+    "gold_solution",
+    "verify_source",
+    "tools_py",
+    "initial_db",
+    "db_json",
+    "target_constants",
+    "private_reasoning",
+    "reasoning_content",
+    "thinking_blocks",
+}
+BANNED_MESSAGE_KEYS = {
+    "reasoning_content",
+    "thinking_blocks",
+    "private_reasoning",
+    "provider_specific_fields",
+    "function_call",
 }
 
 INFRA_ERROR_MARKERS = (
@@ -115,6 +138,10 @@ def has_token_usage(value: Any) -> bool:
             ):
                 return True
     return False
+
+
+def positive_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
 
 
 def numeric_token_total(result: dict[str, Any]) -> int | None:
@@ -223,6 +250,7 @@ def validate_llm(
     issues: list[str] = []
     request_count = 0
     response_count = 0
+    completed_candidates: list[tuple[int, str, bool]] = []
     error_count = 0
     usage_count = 0
     for index, row in enumerate(rows, start=1):
@@ -239,6 +267,27 @@ def validate_llm(
             body = response.get("body")
             if isinstance(body, dict):
                 response_count += 1
+                response_status = body.get("status")
+                completed = (
+                    response.get("status_code") == 200
+                    and response_status in {None, "completed"}
+                    and not body.get("incomplete_details")
+                )
+                if completed:
+                    signature = json.dumps(
+                        (
+                            request.get("body")
+                            if isinstance(request, dict)
+                            and isinstance(request.get("body"), dict)
+                            else {}
+                        ),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    completed_candidates.append(
+                        (index - 1, signature, has_token_usage(body))
+                    )
                 if has_token_usage(body):
                     usage_count += 1
             else:
@@ -255,12 +304,439 @@ def validate_llm(
         )
     if usage_count == 0:
         issues.append(f"{path}: no provider token usage in response bodies")
+    candidates_by_request: dict[str, list[tuple[int, bool]]] = {}
+    for index, signature, has_usage in completed_candidates:
+        candidates_by_request.setdefault(signature, []).append((index, has_usage))
+    request_bodies = [
+        json.dumps(
+            (
+                request.get("body")
+                if isinstance(request := row.get("request"), dict)
+                and isinstance(request.get("body"), dict)
+                else {}
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        for row in rows
+    ]
+    selected: list[tuple[int, bool]] = []
+    for candidates in candidates_by_request.values():
+        consumed = [
+            candidate
+            for candidate in candidates
+            if response_consumed_by_later_request(rows, request_bodies, candidate[0])
+        ]
+        if consumed:
+            selected.append(max(consumed))
+            continue
+        safe_unconsumed = [
+            candidate
+            for candidate in candidates
+            if response_safe_without_later_consumption(rows, candidate[0])
+        ]
+        if safe_unconsumed:
+            selected.append(max(safe_unconsumed))
+    selected.sort()
+    successful_exchange_indices = [index for index, _ in selected]
+    successful_response_count = len(selected)
+    successful_usage_count = sum(1 for _, has_usage in selected if has_usage)
+    if successful_response_count and successful_usage_count < successful_response_count:
+        issues.append(
+            f"{path}: completed responses with usage {successful_usage_count} < "
+            f"completed responses {successful_response_count}"
+        )
     return issues, {
         "requests": request_count,
         "responses": response_count,
+        "successful_responses": successful_response_count,
+        "successful_exchange_indices": successful_exchange_indices,
+        "successful_responses_with_usage": successful_usage_count,
+        "deduplicated_completed_responses": (
+            len(completed_candidates) - successful_response_count
+        ),
         "errors": error_count,
         "responses_with_usage": usage_count,
     }
+
+
+def response_consumed_by_later_request(
+    rows: list[dict[str, Any]],
+    request_bodies: list[str],
+    exchange_idx: int,
+) -> bool:
+    response = rows[exchange_idx].get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    call_ids = response_call_ids(body if isinstance(body, dict) else {})
+    return bool(
+        call_ids
+        and any(
+            any(call_id in request_body for call_id in call_ids)
+            for request_body in request_bodies[exchange_idx + 1 :]
+        )
+    )
+
+
+def response_call_ids(body: dict[str, Any]) -> set[str]:
+    return {call_id for call_id, _ in response_tool_calls(body)}
+
+
+def response_safe_without_later_consumption(
+    rows: list[dict[str, Any]], exchange_idx: int
+) -> bool:
+    row = rows[exchange_idx]
+    response = row.get("response")
+    body = response.get("body") if isinstance(response, dict) else {}
+    calls = response_tool_calls(body if isinstance(body, dict) else {})
+    if not calls or all(name == "finish" for _, name in calls):
+        return True
+    return not any(
+        isinstance(request := later.get("request"), dict)
+        and isinstance(request.get("body"), dict)
+        for later in rows[exchange_idx + 1 :]
+    )
+
+
+def response_tool_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
+    calls = [
+        (
+            str(item.get("call_id") or item.get("id")),
+            str(item.get("name")) if item.get("name") else None,
+        )
+        for item in body.get("output") or []
+        if isinstance(item, dict)
+        and item.get("type") in {"function_call", "tool_call"}
+        and (item.get("call_id") or item.get("id"))
+    ]
+    choices = body.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            message = choice.get("message") if isinstance(choice, dict) else None
+            if not isinstance(message, dict):
+                continue
+            calls.extend(
+                (
+                    str(call.get("id") or call.get("tool_call_id")),
+                    (
+                        str(function.get("name"))
+                        if isinstance(function := call.get("function"), dict)
+                        and function.get("name")
+                        else str(call.get("name"))
+                        if call.get("name")
+                        else None
+                    ),
+                )
+                for call in message.get("tool_calls") or []
+                if isinstance(call, dict)
+                and (call.get("id") or call.get("tool_call_id"))
+            )
+    message = body.get("message")
+    if isinstance(message, dict):
+        calls.extend(
+            (
+                str(call.get("id") or call.get("tool_call_id")),
+                (
+                    str(function.get("name"))
+                    if isinstance(function := call.get("function"), dict)
+                    and function.get("name")
+                    else str(call.get("name"))
+                    if call.get("name")
+                    else None
+                ),
+            )
+            for call in message.get("tool_calls") or []
+            if isinstance(call, dict) and (call.get("id") or call.get("tool_call_id"))
+        )
+    return calls
+
+
+def result_has_terminal_error(result: dict[str, Any]) -> bool:
+    if result.get("error") or result.get("verifier_error"):
+        return True
+    return result.get("partial_trajectory") is True
+
+
+def normalize_training_messages(
+    row: dict[str, Any], row_path: str, issues: list[str]
+) -> list[dict[str, Any]]:
+    messages = row.get("messages")
+    if messages is None:
+        prompt = row.get("prompt")
+        completion = row.get("completion")
+        if isinstance(prompt, list) and isinstance(completion, list):
+            messages = prompt + completion
+    if not isinstance(messages, list) or not messages:
+        issues.append(f"{row_path}: missing non-empty messages or prompt+completion")
+        return []
+    typed: list[dict[str, Any]] = []
+    for idx, message in enumerate(messages):
+        if not isinstance(message, dict):
+            issues.append(f"{row_path}: messages[{idx}] must be an object")
+            continue
+        typed.append(message)
+    return typed
+
+
+def validate_training_messages(
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[Any] | None,
+    row_path: str,
+) -> list[str]:
+    issues: list[str] = []
+    for idx, message in enumerate(messages):
+        leaked = sorted(BANNED_MESSAGE_KEYS.intersection(message))
+        if leaked:
+            issues.append(
+                f"{row_path}: messages[{idx}] has banned keys: {', '.join(leaked)}"
+            )
+        role = message.get("role")
+        if role not in ALLOWED_MESSAGE_ROLES:
+            issues.append(f"{row_path}: messages[{idx}].role invalid: {role!r}")
+        if role == "system" and idx != 0:
+            issues.append(
+                f"{row_path}: system message must be at index 0, got index {idx}"
+            )
+        if "content" not in message and "tool_calls" not in message:
+            issues.append(f"{row_path}: messages[{idx}] needs content or tool_calls")
+        if message.get("tool_calls") and role != "assistant":
+            issues.append(f"{row_path}: only assistant messages may contain tool_calls")
+        if role == "tool" and not message.get("tool_call_id"):
+            issues.append(f"{row_path}: tool message requires tool_call_id")
+
+    if not any(message.get("role") == "assistant" for message in messages):
+        issues.append(f"{row_path}: no assistant message")
+    has_tool_calls = any(bool(message.get("tool_calls")) for message in messages)
+    if has_tool_calls and not tools:
+        issues.append(
+            f"{row_path}: assistant tool_calls require non-empty tool_defs/tools"
+        )
+    if tools is not None:
+        for idx, tool in enumerate(tools):
+            if not isinstance(tool, dict):
+                issues.append(f"{row_path}: tool_defs[{idx}] must be an object")
+    return issues
+
+
+def normalize_tool_defs(
+    row: dict[str, Any], row_path: str
+) -> tuple[list[Any] | None, str | None]:
+    tools = row.get("tool_defs", row.get("tools"))
+    if tools is None:
+        return None, None
+    if isinstance(tools, str):
+        try:
+            tools = json.loads(tools)
+        except json.JSONDecodeError as exc:
+            return None, f"{row_path}: tool_defs/tools is not valid JSON: {exc.msg}"
+    if not isinstance(tools, list):
+        return None, f"{row_path}: tool_defs/tools must be a list"
+    return tools, None
+
+
+def validate_results_row(
+    row: dict[str, Any],
+    *,
+    row_path: str,
+    result: dict[str, Any],
+    llm_summary: dict[str, Any] | None,
+) -> list[str]:
+    issues: list[str] = []
+    leaked = sorted(BANNED_TRAINING_ROW_KEYS.intersection(row))
+    if leaked:
+        issues.append(f"{row_path}: banned leakage keys present: {', '.join(leaked)}")
+
+    info = row.get("info")
+    if not isinstance(info, dict):
+        issues.append(f"{row_path}: missing object info")
+        info = {}
+    task_name = result.get("task_name")
+    row_task = info.get("task_id") or info.get("task_name") or row.get("task_name")
+    if task_name and row_task and str(task_name) != str(row_task):
+        issues.append(
+            f"{row_path}: task mismatch result={task_name!r} row={row_task!r}"
+        )
+
+    training_ready = info.get("training_ready")
+    if not isinstance(training_ready, bool):
+        issues.append(f"{row_path}: info.training_ready must be boolean")
+    if result_has_terminal_error(result) and training_ready:
+        issues.append(
+            f"{row_path}: terminal errored/partial rollout marked training_ready=true"
+        )
+    if not result_has_terminal_error(result) and training_ready is False:
+        issues.append(f"{row_path}: healthy rollout marked training_ready=false")
+
+    row_error = row.get("error")
+    if training_ready:
+        if row_error is not None:
+            issues.append(f"{row_path}: training_ready row carries non-null error")
+        if info.get("training_ready_reason") is not None:
+            issues.append(
+                f"{row_path}: training_ready row has non-null training_ready_reason"
+            )
+        if row.get("is_completed") is not True:
+            issues.append(f"{row_path}: training_ready row is not completed")
+        if row.get("is_truncated") is True:
+            issues.append(f"{row_path}: training_ready row is truncated")
+        if row.get("stop_condition") not in {None, "agent_completed"}:
+            issues.append(
+                f"{row_path}: unexpected stop_condition for training-ready row"
+            )
+    else:
+        if not info.get("training_ready_reason"):
+            issues.append(
+                f"{row_path}: non-training-ready row lacks training_ready_reason"
+            )
+        if row_error is None:
+            issues.append(f"{row_path}: non-training-ready row lacks error payload")
+
+    messages = normalize_training_messages(row, row_path, issues)
+    tools, tool_error = normalize_tool_defs(row, row_path)
+    if tool_error:
+        issues.append(tool_error)
+    issues.extend(validate_training_messages(messages, tools=tools, row_path=row_path))
+
+    if training_ready:
+        for field in ("prompt", "completion", "trajectory"):
+            value = row.get(field)
+            if not isinstance(value, list) or not value:
+                issues.append(
+                    f"{row_path}: training_ready row missing non-empty {field}"
+                )
+        trajectory = row.get("trajectory")
+        if isinstance(trajectory, list):
+            successful_responses = (
+                int(llm_summary.get("successful_responses", 0)) if llm_summary else 0
+            )
+            if successful_responses and len(trajectory) != successful_responses:
+                issues.append(
+                    f"{row_path}: results trajectory steps {len(trajectory)} != "
+                    f"successful LLM responses {successful_responses}"
+                )
+            expected_indices = (
+                set(llm_summary.get("successful_exchange_indices", []))
+                if llm_summary
+                else set()
+            )
+            observed_indices: set[int] = set()
+            for idx, step in enumerate(trajectory):
+                if not isinstance(step, dict):
+                    issues.append(f"{row_path}: trajectory[{idx}] must be an object")
+                    continue
+                if not isinstance(step.get("prompt"), list) or not isinstance(
+                    step.get("completion"), list
+                ):
+                    issues.append(
+                        f"{row_path}: trajectory[{idx}] missing prompt/completion lists"
+                    )
+                extras = step.get("extras")
+                if (
+                    isinstance(extras, dict)
+                    and extras.get("source") != "llm_trajectory"
+                ):
+                    issues.append(
+                        f"{row_path}: trajectory[{idx}] source is not llm_trajectory"
+                    )
+                if isinstance(extras, dict) and isinstance(
+                    extras.get("exchange_index"), int
+                ):
+                    observed_indices.add(extras["exchange_index"])
+                if step.get("is_truncated") is True:
+                    issues.append(
+                        f"{row_path}: trajectory[{idx}] is incorrectly truncated"
+                    )
+                step_messages = []
+                for field in ("prompt", "completion"):
+                    value = step.get(field)
+                    if isinstance(value, list):
+                        step_messages.extend(
+                            message for message in value if isinstance(message, dict)
+                        )
+                issues.extend(
+                    validate_training_messages(
+                        step_messages,
+                        tools=tools,
+                        row_path=f"{row_path}: trajectory[{idx}]",
+                    )
+                )
+            if expected_indices and observed_indices != expected_indices:
+                issues.append(
+                    f"{row_path}: results exchange indices "
+                    f"{sorted(observed_indices)} != successful LLM exchange indices "
+                    f"{sorted(expected_indices)}"
+                )
+        token_usage = row.get("token_usage")
+        if not isinstance(token_usage, dict):
+            issues.append(f"{row_path}: missing object token_usage")
+        else:
+            has_total = positive_number(token_usage.get("total_tokens"))
+            has_input = positive_number(
+                token_usage.get("final_input_tokens")
+            ) or positive_number(token_usage.get("input_tokens"))
+            has_output = positive_number(
+                token_usage.get("final_output_tokens")
+            ) or positive_number(token_usage.get("output_tokens"))
+            if not (has_total or has_input):
+                issues.append(f"{row_path}: missing positive input/total token usage")
+            if not (has_total or has_output):
+                issues.append(f"{row_path}: missing positive output/total token usage")
+        metrics = row.get("metrics")
+        if not isinstance(metrics, dict):
+            issues.append(f"{row_path}: missing object metrics")
+        elif not positive_number(metrics.get("n_tool_calls")) and tool_usage_count(
+            result
+        ):
+            issues.append(f"{row_path}: metrics missing positive n_tool_calls")
+        if row.get("reward") is None and row.get("score") is None:
+            issues.append(f"{row_path}: missing reward/score")
+
+    return issues
+
+
+def validate_results_jsonl(
+    root: Path,
+    *,
+    result: dict[str, Any],
+    llm_summary: dict[str, Any] | None,
+) -> tuple[list[str], dict[str, Any]]:
+    path = root / "results.jsonl"
+    if not path.is_file():
+        return [f"missing required artifact: {path}"], {}
+    rows, row_issues = read_jsonl(path)
+    issues = list(row_issues)
+    if len(rows) != 1:
+        issues.append(
+            f"{path}: expected exactly one rollout results row, got {len(rows)}"
+        )
+    for idx, row in enumerate(rows, start=1):
+        issues.extend(
+            validate_results_row(
+                row,
+                row_path=f"{path}:{idx}",
+                result=result,
+                llm_summary=llm_summary,
+            )
+        )
+    summary = {
+        "rows": len(rows),
+        "training_ready": sum(
+            1
+            for row in rows
+            if isinstance(row.get("info"), dict)
+            and row["info"].get("training_ready") is True
+        ),
+        "rows_with_tool_calls": sum(
+            1
+            for row in rows
+            if any(
+                isinstance(message, dict) and bool(message.get("tool_calls"))
+                for message in normalize_training_messages(row, str(path), [])
+            )
+        ),
+    }
+    return issues, summary
 
 
 def load_run_config(root: Path) -> dict[str, Any] | None:
@@ -291,6 +767,7 @@ def validate_rollout(
     acp_path = root / "trajectory" / "acp_trajectory.jsonl"
     llm_path = root / "trajectory" / "llm_trajectory.jsonl"
     artifact_summary: dict[str, Any] = {}
+    llm_summary: dict[str, Any] | None = None
 
     if not acp_path.is_file():
         issues.append(f"missing required artifact: {acp_path}")
@@ -311,6 +788,15 @@ def validate_rollout(
         issues.extend(llm_health_issues)
         artifact_summary["llm_exchanges"] = len(llm_rows)
         artifact_summary["llm"] = llm_summary
+
+    results_issues, results_summary = validate_results_jsonl(
+        root,
+        result=result,
+        llm_summary=llm_summary,
+    )
+    issues.extend(results_issues)
+    if results_summary:
+        artifact_summary["results"] = results_summary
 
     tokens = numeric_token_total(result)
     if not tokens or tokens <= 0:

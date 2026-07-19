@@ -18,6 +18,7 @@ Does not own:
 
 import logging
 import shlex
+from collections.abc import Sequence
 from pathlib import Path
 
 from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS, AgentConfig
@@ -126,6 +127,7 @@ async def _link_skill_paths(
     home: str,
     cwd: str,
     sandbox_user: str | None,
+    expected_skill_names: Sequence[str] = (),
 ) -> int:
     """Link one shared skills tree into each configured discovery path."""
     _VALID_PREFIXES = ("$HOME/", "$WORKSPACE/")
@@ -134,12 +136,29 @@ async def _link_skill_paths(
             raise ValueError(f"skill_path {sp!r} must start with $HOME/ or $WORKSPACE/")
 
     parts = []
+    expected = tuple(sorted(set(expected_skill_names)))
+    expected_text = "\n".join(expected)
     for sp in skill_paths:
         prefix = home if sp.startswith("$HOME/") else cwd
         expanded = sp.replace("$HOME", home).replace("$WORKSPACE", cwd)
         leaf = expanded if source == expanded else str(Path(expanded).parent)
         chain = _intermediate_dirs(prefix, leaf) if sandbox_user else []
         parts.append(_skill_link_cmd(source, expanded, sandbox_user, chain))
+        q_source = shlex.quote(source)
+        q_expanded = shlex.quote(expanded)
+        parts.append(
+            f"test -d {q_source} && test -d {q_expanded}"
+            ' && source_catalog="$(find -L '
+            f"{q_source} -mindepth 2 -maxdepth 2 -type f -name SKILL.md "
+            "-printf '%h\\n' | sed 's#.*/##' | LC_ALL=C sort -u)" + '"'
+            ' && actual="$(find -L '
+            f"{q_expanded} -mindepth 2 -maxdepth 2 -type f -name SKILL.md "
+            "-printf '%h\\n' | sed 's#.*/##' | LC_ALL=C sort -u)" + '"'
+            ' && test "$actual" = "$source_catalog"'
+        )
+        if expected:
+            q_expected = shlex.quote(expected_text)
+            parts.append(f'test "$source_catalog" = {q_expected}')
     if parts:
         cmd = " && ".join(parts)
         result = await env.exec(cmd, timeout_sec=15)
@@ -154,10 +173,15 @@ async def _link_skill_paths(
                 details.append(f"stdout: {stdout}")
             if stderr:
                 details.append(f"stderr: {stderr}")
+            if expected:
+                raise RuntimeError(
+                    "experiment_fidelity/skill_deployment_missing: "
+                    f"expected={','.join(expected)}; {'; '.join(details)}"
+                )
             raise RuntimeError(
                 f"Failed to link skills from {source}: {'; '.join(details)}"
             )
-    return len(parts)
+    return len(skill_paths) if parts else 0
 
 
 def effective_install_timeout(
@@ -286,6 +310,11 @@ async def deploy_skills(
     skills_sandbox_dir: str | None = None,
 ) -> None:
     """Deploy and distribute skills into sandbox."""
+    expected_skill_names = (
+        tuple(sorted(path.parent.name for path in Path(skills_dir).glob("*/SKILL.md")))
+        if skills_dir
+        else ()
+    )
     target_skills_dir = (
         validate_container_mount_path(skills_sandbox_dir or "/skills")
         if skills_dir or skills_sandbox_dir
@@ -331,6 +360,7 @@ async def deploy_skills(
             home,
             agent_cwd,
             sandbox_user,
+            expected_skill_names,
         )
         label = agent_cfg.name if agent_cfg else "oracle"
         if count:

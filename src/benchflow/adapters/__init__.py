@@ -36,6 +36,7 @@ from benchflow.adapters.ors import (
     to_ors_reward,
     write_ors_tool_outputs_jsonl,
 )
+from benchflow.adapters.source import adapt_resolved_source_if_needed
 
 __all__ = [
     "HarborAdapter",
@@ -44,6 +45,7 @@ __all__ = [
     "InspectAdapter",
     "ORSAdapter",
     "detect_adapter",
+    "adapt_resolved_source_if_needed",
     "from_harbor_task",
     "materialize_inbound_task_md",
     "manifest_from_task_config",
