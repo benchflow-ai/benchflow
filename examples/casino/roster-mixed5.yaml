@@ -1,0 +1,7 @@
+# heterogeneous 5-agent floor: 3 proxy seats (deepseek-v4-pro) + 2 native-auth seats
+agents:
+  - { agent: pi-acp,           model: deepseek/deepseek-v4-pro, count: 1, instructions: prompts/aggressive.md }
+  - { agent: openhands,        model: deepseek/deepseek-v4-pro, count: 1, instructions: prompts/aggressive.md }
+  - { agent: opencode,         model: deepseek/deepseek-v4-pro, count: 1, instructions: prompts/aggressive.md }
+  - { agent: codex-acp,        model: gpt-5.5,                  count: 1, instructions: prompts/aggressive.md }
+  - { agent: claude-agent-acp, model: claude-opus-4-8,           count: 1, instructions: prompts/aggressive.md }

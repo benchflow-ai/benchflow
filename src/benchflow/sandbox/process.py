@@ -259,6 +259,10 @@ class DockerProcess(LiveProcess):
         self._project_dir = project_dir
         self._compose_files = compose_files
         self._service = service
+        # Unique per process: N agents may run concurrently in ONE shared
+        # container (the arena concurrent floor), so a fixed path would race —
+        # one agent's `source && rm` deletes the file another is about to source.
+        self._env_path = f"/tmp/.benchflow_env_{uuid.uuid4().hex[:16]}"
 
     @classmethod
     def from_sandbox_env(cls, env: Any, service: str = "main") -> "DockerProcess":
@@ -318,8 +322,6 @@ class DockerProcess(LiveProcess):
                 logger.debug("Could not inspect docker context", exc_info=True)
         return proc_env
 
-    _ENV_PATH = "/tmp/.benchflow_env"
-
     async def _write_env_to_container(
         self,
         env: dict[str, str],
@@ -335,7 +337,7 @@ class DockerProcess(LiveProcess):
                 self._service,
                 "bash",
                 "-c",
-                f"cat > {self._ENV_PATH} && chmod 600 {self._ENV_PATH}",
+                f"cat > {self._env_path} && chmod 600 {self._env_path}",
             ]
         )
         proc = await asyncio.create_subprocess_exec(
@@ -366,7 +368,13 @@ class DockerProcess(LiveProcess):
         # and avoids `--env-file` (not supported in all Compose versions).
         if env:
             await self._write_env_to_container(env, proc_env)
-            command = f"source {self._ENV_PATH} && rm -f {self._ENV_PATH} && {command}"
+            # trap-based cleanup (parity with the Daytona path): the env file is
+            # removed even if `source` fails or the process is signalled, so a
+            # per-uuid file can't leak in a long-lived reused container.
+            command = (
+                f"trap 'rm -f {self._env_path}' EXIT; "
+                f"source {self._env_path} && {command}"
+            )
 
         cmd = self._compose_cmd()
         cmd.extend(["exec", "-i", "-T"])
@@ -429,6 +437,23 @@ class DaytonaProcess(LiveProcess):
                 )
                 f.write("  TCPKeepAlive yes\n")
                 f.write("  LogLevel ERROR\n")
+                # Keepalive: the ACP agent's stdio rides this long-lived SSH
+                # session, which goes SILENT during think-gaps (LLM calls) — with
+                # no traffic the gateway/NAT idle-drops it and the agent's stdout
+                # hits EOF ("Process closed stdout / remote session killed"),
+                # killing the seat mid-play on daytona while docker (a local pipe)
+                # is fine. Probe every 15s and tolerate ~2min of silence so a
+                # concurrent multi-agent floor survives its think-gaps.
+                f.write("  ServerAliveInterval 15\n")
+                f.write("  ServerAliveCountMax 8\n")
+                f.write("  TCPKeepAlive yes\n")
+                # Connect resilience: 5 seats open SSH sessions concurrently at
+                # startup; the initial handshake occasionally races (agent not yet
+                # listening → stdout closes → a connect-time drop the ACP retry then
+                # recovers). Retry the SSH connect and give it a real timeout so the
+                # first attempt is more likely to land — fewer retries, cleaner logs.
+                f.write("  ConnectTimeout 30\n")
+                f.write("  ConnectionAttempts 3\n")
             os.chmod(path, 0o600)
         except Exception:
             with contextlib.suppress(Exception):

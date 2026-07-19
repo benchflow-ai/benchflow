@@ -20,7 +20,10 @@ class TestAgentSubscriptionAuth:
         assert sa is not None
         assert sa.replaces_env == "ANTHROPIC_API_KEY"
         assert ".claude/.credentials.json" in sa.detect_file
-        assert len(sa.files) == 1
+        assert [f.host_path for f in sa.files] == [
+            "~/.claude/.credentials.json",
+            "~/.claude.json",
+        ]
 
     def test_codex_subscription_auth(self):
         cfg = AGENTS["codex-acp"]

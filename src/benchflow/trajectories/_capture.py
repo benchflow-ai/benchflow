@@ -68,32 +68,33 @@ def _events_to_trajectory(events: list[dict]) -> list[dict]:
     """
     out: list[dict] = []
     for event in events:
+        row: dict | None = None
         if event["type"] == "tool_call":
             tc = event["record"]
-            out.append(
-                {
-                    "type": "tool_call",
-                    "tool_call_id": tc.tool_call_id,
-                    "kind": tc.kind,
-                    "title": tc.title,
-                    "status": tc.status.value,
-                    "content": tc.content,
-                }
-            )
+            row = {
+                "type": "tool_call",
+                "tool_call_id": tc.tool_call_id,
+                "kind": tc.kind,
+                "title": tc.title,
+                "status": tc.status.value,
+                "content": tc.content,
+            }
         elif event["type"] in ("user_message", "agent_message", "agent_thought"):
-            out.append({"type": event["type"], "text": event["text"]})
+            row = {"type": event["type"], "text": event["text"]}
         elif event["type"] == "agent_timeout":
-            out.append(
-                {
-                    "type": "agent_timeout",
-                    "reason": event["reason"],
-                    "timeout_sec": event["timeout_sec"],
-                    "pending_tool_call_ids": event["pending_tool_call_ids"],
-                    "terminal_trajectory_complete": event[
-                        "terminal_trajectory_complete"
-                    ],
-                }
-            )
+            row = {
+                "type": "agent_timeout",
+                "reason": event["reason"],
+                "timeout_sec": event["timeout_sec"],
+                "pending_tool_call_ids": event["pending_tool_call_ids"],
+                "terminal_trajectory_complete": event["terminal_trajectory_complete"],
+            }
+        if row is not None:
+            # Arrival timestamp (client-stamped — the ACP wire has none).
+            # Conditional so rows without a stamp keep their legacy shape.
+            if (ts := event.get("ts")) is not None:
+                row["ts"] = ts
+            out.append(row)
     return out
 
 

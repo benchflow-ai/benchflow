@@ -1,0 +1,2 @@
+agents:
+  - { agent: openhands, model: deepseek/deepseek-v4-flash, count: 2, instructions: prompts/aggressive.md }

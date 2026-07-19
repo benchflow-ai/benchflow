@@ -1,6 +1,7 @@
 """ACP session lifecycle management."""
 
 import logging
+import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -193,7 +194,7 @@ class ACPSession:
         """Record a user prompt. Call before sending each ACP prompt."""
         self._events_active = True
         self._flush_agent_text()
-        self.events.append({"type": "user_message", "text": text})
+        self.events.append({"type": "user_message", "text": text, "ts": time.time()})
         self._notify_change()
 
     def mark_prompt_end(self) -> None:
@@ -223,6 +224,7 @@ class ACPSession:
         self.events.append(
             {
                 "type": "agent_timeout",
+                "ts": time.time(),
                 "reason": "wall_clock_timeout",
                 "timeout_sec": timeout_sec,
                 "pending_tool_call_ids": list(pending_tool_call_ids),
@@ -293,7 +295,9 @@ class ACPSession:
             )
             self.tool_calls.append(record)
             self._tool_call_map[record.tool_call_id] = record
-            self.events.append({"type": "tool_call", "record": record})
+            self.events.append(
+                {"type": "tool_call", "record": record, "ts": time.time()}
+            )
 
         elif update_type == "tool_call_update":
             tc_id = update.get("toolCallId", "")
@@ -309,7 +313,9 @@ class ACPSession:
                 )
                 self.tool_calls.append(record)
                 self._tool_call_map[tc_id] = record
-                self.events.append({"type": "tool_call", "record": record})
+                self.events.append(
+                    {"type": "tool_call", "record": record, "ts": time.time()}
+                )
             try:
                 status = ToolCallStatus(update.get("status", "in_progress"))
             except ValueError:
@@ -331,28 +337,36 @@ class ACPSession:
             if content.get("type") == "text":
                 text = content.get("text", "")
                 self.message_chunks.append(text)
-                self._pending_text.append({"type": "agent_message", "text": text})
+                self._pending_text.append(
+                    {"type": "agent_message", "text": text, "ts": time.time()}
+                )
 
         elif update_type == "text_update":
             # Used by openclaw shim — full text (not chunked)
             text = update.get("text", "")
             if text:
                 self.message_chunks.append(text)
-                self._pending_text.append({"type": "agent_message", "text": text})
+                self._pending_text.append(
+                    {"type": "agent_message", "text": text, "ts": time.time()}
+                )
 
         elif update_type == "agent_thought":
             # Used by openclaw shim — full thought (not chunked)
             text = update.get("text", "")
             if text:
                 self.thought_chunks.append(text)
-                self._pending_text.append({"type": "agent_thought", "text": text})
+                self._pending_text.append(
+                    {"type": "agent_thought", "text": text, "ts": time.time()}
+                )
 
         elif update_type == "agent_thought_chunk":
             content = update.get("content", {})
             if content.get("type") == "text":
                 text = content.get("text", "")
                 self.thought_chunks.append(text)
-                self._pending_text.append({"type": "agent_thought", "text": text})
+                self._pending_text.append(
+                    {"type": "agent_thought", "text": text, "ts": time.time()}
+                )
 
         self._notify_change()
 

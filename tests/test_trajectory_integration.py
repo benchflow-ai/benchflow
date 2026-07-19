@@ -44,7 +44,9 @@ class TestExecutePromptsTrajectory:
 
             types = [e["type"] for e in trajectory]
             assert "user_message" in types
-            assert trajectory[0] == {"type": "user_message", "text": "Solve the task"}
+            assert trajectory[0]["type"] == "user_message"
+            assert trajectory[0]["text"] == "Solve the task"
+            assert trajectory[0]["ts"] > 0  # arrival-stamped client-side
             assert n_tools == 1
         finally:
             await client.close()
@@ -179,7 +181,9 @@ class TestTrajectoryJsonlSerialization:
 
             jsonl_lines = [json.dumps(e, default=str) for e in trajectory]
             first_event = json.loads(jsonl_lines[0])
-            assert first_event == {"type": "user_message", "text": "Hello"}
+            assert first_event["type"] == "user_message"
+            assert first_event["text"] == "Hello"
+            assert first_event["ts"] > 0  # arrival-stamped client-side
         finally:
             await client.close()
 
