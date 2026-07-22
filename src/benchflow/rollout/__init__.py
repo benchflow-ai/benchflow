@@ -1886,6 +1886,7 @@ class Rollout:
             finally:
                 self._usage_runtime = None
 
+        self._collect_native_acp_usage()
         self._finalize_usage_metrics()
         self._enforce_required_usage_tracking()
 
