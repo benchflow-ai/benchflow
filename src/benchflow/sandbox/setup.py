@@ -703,8 +703,8 @@ def _create_sandbox_environment(
 
     env_config = effective_shared_network_config(
         task.config.environment,
-        task.config.agent,
-        task.config.verifier,
+        getattr(task.config, "agent", None),
+        getattr(task.config, "verifier", None),
     )
     environment_dir = task_path / "environment"
     if not environment_dir.exists():
