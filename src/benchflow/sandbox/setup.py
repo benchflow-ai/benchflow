@@ -699,7 +699,13 @@ def _create_sandbox_environment(
     persistent env overlay so the values reach the container's entrypoint
     via compose and every subsequent ``sandbox.exec`` call.
     """
-    env_config = task.config.environment
+    from benchflow.sandbox.network_policy import effective_shared_network_config
+
+    env_config = effective_shared_network_config(
+        task.config.environment,
+        task.config.agent,
+        task.config.verifier,
+    )
     environment_dir = task_path / "environment"
     if not environment_dir.exists():
         environment_dir = task.paths.environment_dir

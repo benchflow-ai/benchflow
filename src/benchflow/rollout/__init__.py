@@ -1171,9 +1171,10 @@ class Rollout:
         )
 
         extra: tuple[str, ...] = ()
-        decision = resolve_network_decision(
-            self._task.config.environment, self._config.environment
+        task_env_config = getattr(
+            self._env, "task_env_config", self._task.config.environment
         )
+        decision = resolve_network_decision(task_env_config, self._config.environment)
         if decision.policy is not EffectivePolicy.OPEN and decision.model_lane:
             # Allowlist the model provider host so the agent can reach it
             # directly over HTTPS under a restrictive policy. Hermetic tasks

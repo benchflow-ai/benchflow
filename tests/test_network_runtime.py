@@ -5,6 +5,8 @@ host-side usage proxy under a restrictive policy, and the docker relock plan.
 Tests exercise pure decision functions through public interfaces.
 """
 
+import pytest
+
 from benchflow.task.config import SandboxConfig
 
 # ---- Fix #2: daytona fail-closed enforcement -------------------------------
@@ -69,6 +71,40 @@ def test_proxy_unavailable_is_fatal():
     assert not proxy_unavailable_is_fatal(usage_mode="auto", network_restrictive=False)
     # 'off' is an explicit opt-out — the caller owns provider reachability
     assert not proxy_unavailable_is_fatal(usage_mode="off", network_restrictive=True)
+
+
+@pytest.mark.asyncio
+async def test_rollout_lockdown_uses_effective_sandbox_task_env_config():
+    """Guards PR #785: role-level restrictions must drive relock at launch."""
+    from types import SimpleNamespace
+
+    from benchflow.rollout import Rollout
+    from benchflow.task.config import TaskConfig
+
+    calls = []
+
+    class _Env:
+        task_env_config = SandboxConfig(
+            network_mode="no-network", allow_model_endpoint=False
+        )
+
+        def relock_network(self, *, extra_allowed_hosts=()):
+            calls.append(extra_allowed_hosts)
+            return {}
+
+    rollout = Rollout.__new__(Rollout)
+    rollout._env = _Env()
+    rollout._task = SimpleNamespace(
+        config=TaskConfig.model_validate({"environment": {"network_mode": "public"}})
+    )
+    rollout._config = SimpleNamespace(
+        environment="docker", primary_model="openai/gpt-4o"
+    )
+    rollout._agent_env = {}
+
+    await Rollout._lock_down_network(rollout)
+
+    assert calls == [()]
 
 
 # ---- Fix #1b: relock fail-closed verification (greptile P1) ------------------
@@ -238,8 +274,6 @@ def test_daytona_plan_rejects_empty_resolution():
 
 import logging  # noqa: E402
 
-import pytest  # noqa: E402
-
 
 def _make_daytona_stub(task_env_config):
     from benchflow.sandbox.daytona import DaytonaSandbox
@@ -331,13 +365,52 @@ async def test_daytona_relock_fails_closed_if_canary_still_reachable(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_daytona_relock_noop_for_non_allowlist():
+async def test_daytona_relock_noop_for_public_policy():
     from benchflow.task.config import SandboxConfig
 
-    sb, applied = _make_daytona_stub(SandboxConfig(network_mode="no-network"))
+    sb, applied = _make_daytona_stub(SandboxConfig(network_mode="public"))
     out = await sb.relock_network()
     assert out == {}
     assert applied == {}  # update_network_settings never called
+
+
+@pytest.mark.asyncio
+async def test_daytona_relock_no_network_model_lane_allowlists_provider(monkeypatch):
+    """Guards PR #785: Daytona no-network needs a post-install model lane."""
+    from benchflow.sandbox import network_policy
+    from benchflow.task.config import SandboxConfig
+
+    sb, applied = _make_daytona_stub(SandboxConfig(network_mode="no-network"))
+    seen = {}
+
+    def _plan(hosts, *, model_host, resolve=None):
+        seen["hosts"] = hosts
+        seen["model_host"] = model_host
+        return network_policy.DaytonaAllowlistPlan(cidrs=("3.3.3.3/32",))
+
+    monkeypatch.setattr(network_policy, "plan_daytona_allowlist", _plan)
+
+    async def _unreachable(canary=None):
+        return False
+
+    sb._egress_reachable = _unreachable
+    await sb.relock_network(extra_allowed_hosts=("api.model.test",))
+
+    assert seen == {"hosts": (), "model_host": "api.model.test"}
+    assert applied["allow_list"] == "3.3.3.3/32"
+
+
+@pytest.mark.asyncio
+async def test_daytona_relock_no_network_hermetic_uses_platform_block_all():
+    """Guards PR #785: fully hermetic Daytona no-network stays block-all."""
+    from benchflow.task.config import SandboxConfig
+
+    sb, applied = _make_daytona_stub(
+        SandboxConfig(network_mode="no-network", allow_model_endpoint=False)
+    )
+    out = await sb.relock_network()
+    assert out == {}
+    assert applied == {}
 
 
 @pytest.mark.asyncio
@@ -752,6 +825,36 @@ def test_pick_canary_avoids_allowlisted_ip():
     # a host resolved to 1.1.1.1 is allowlisted -> canary must move off it
     assert _pick_canary(("1.1.1.1/32",)) == "8.8.8.8"
     assert _pick_canary(("1.1.1.1/32", "8.8.8.8/32")) == "9.9.9.9"
+    first_ten = (
+        "1.1.1.1/32",
+        "8.8.8.8/32",
+        "9.9.9.9/32",
+        "1.0.0.1/32",
+        "8.8.4.4/32",
+        "9.9.9.10/32",
+        "208.67.222.222/32",
+        "208.67.220.220/32",
+        "64.6.64.6/32",
+        "64.6.65.6/32",
+    )
+    assert _pick_canary(first_ten) == "76.76.2.0"
+
+
+def test_daytona_start_block_all_allows_model_lane_relock():
+    """Guards PR #785: no-network+model lane must not pre-block install."""
+    from benchflow.sandbox.daytona import _start_with_platform_block_all
+    from benchflow.task.config import SandboxConfig
+
+    assert (
+        _start_with_platform_block_all(SandboxConfig(network_mode="no-network"))
+        is False
+    )
+    assert (
+        _start_with_platform_block_all(
+            SandboxConfig(network_mode="no-network", allow_model_endpoint=False)
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio

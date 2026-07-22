@@ -79,8 +79,9 @@ from benchflow.sandbox.daytona_reaper import (
 from benchflow.sandbox.daytona_strategies import _DaytonaDirect, _DaytonaStrategy
 from benchflow.sandbox.metadata import persist_sandbox_info
 from benchflow.sandbox.network_policy import (
+    EffectivePolicy,
     blockall_enforcement_violation,
-    network_blocks_all,
+    resolve_network_decision,
 )
 from benchflow.sandbox.protocol import (
     SandboxImage,
@@ -110,6 +111,19 @@ _EGRESS_CANARY_PORT = 443
 
 def _pick_canary(cidrs: tuple[str, ...]) -> str:
     return pick_daytona_canary(cidrs)
+
+
+def _start_with_platform_block_all(task_env_config: SandboxConfig) -> bool:
+    """Whether Daytona should create the sandbox with platform block-all.
+
+    For no-network tasks that keep the model lane enabled, the runtime starts
+    open for install and later relocks to a provider-only CIDR allowlist. Creating
+    the sandbox with block-all would prevent that post-install model lane from
+    being provisioned.
+    """
+
+    decision = resolve_network_decision(task_env_config, "daytona")
+    return decision.policy is EffectivePolicy.BLOCK_ALL and not decision.model_lane
 
 
 def _ensure_daytona_anyio_compat() -> None:
@@ -376,14 +390,14 @@ class DaytonaSandbox(BaseSandbox):
         self._snapshot_template_name = snapshot_template_name
         if network_block_all is not None:
             self._network_block_all = network_block_all
-            expected = network_blocks_all(task_env_config, "daytona")
+            expected = _start_with_platform_block_all(task_env_config)
             if network_block_all != expected:
                 self.logger.warning(
                     f"network_block_all={network_block_all} overrides task config "
                     f"allow_internet={task_env_config.allow_internet}"
                 )
         else:
-            self._network_block_all = network_blocks_all(task_env_config, "daytona")
+            self._network_block_all = _start_with_platform_block_all(task_env_config)
 
         self._sandbox: AsyncSandbox | None = None  # pyright: ignore[reportInvalidTypeForm]
         self._client_manager: DaytonaClientManager | None = None

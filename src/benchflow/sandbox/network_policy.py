@@ -110,6 +110,60 @@ def resolve_network_decision(
     return NetworkDecision(EffectivePolicy.OPEN)
 
 
+def effective_shared_network_config(
+    env_config: SandboxConfig, *role_configs: object
+) -> SandboxConfig:
+    """Collapse role network overrides into the shared sandbox policy.
+
+    Agent and verifier network policies are parsed as role-level overrides, but
+    today's runtime executes them in the same sandbox after a single post-install
+    lockdown. Until phase-specific relock is implemented, the safe shared policy
+    is the most restrictive declared policy: any no-network override wins;
+    otherwise allowlist hosts are unioned and enforced instead of silently
+    running open.
+    """
+
+    base_mode = resolve_network_mode(env_config)
+    effective_mode = base_mode
+    allowed_hosts: list[str] = []
+    changed = False
+
+    if base_mode is NetworkMode.ALLOWLIST:
+        allowed_hosts.extend(env_config.allowed_hosts or ())
+    elif base_mode is NetworkMode.NO_NETWORK:
+        changed = env_config.network_mode is not NetworkMode.NO_NETWORK
+
+    for role in role_configs:
+        role_mode = getattr(role, "network_mode", None)
+        if role_mode is None or role_mode is NetworkMode.PUBLIC:
+            continue
+        changed = True
+        if role_mode is NetworkMode.NO_NETWORK:
+            effective_mode = NetworkMode.NO_NETWORK
+            allowed_hosts = []
+            break
+        if (
+            role_mode is NetworkMode.ALLOWLIST
+            and effective_mode is not NetworkMode.NO_NETWORK
+        ):
+            effective_mode = NetworkMode.ALLOWLIST
+            for host in tuple(getattr(role, "allowed_hosts", None) or ()):
+                if host not in allowed_hosts:
+                    allowed_hosts.append(host)
+
+    if not changed and effective_mode is base_mode:
+        return env_config
+
+    data = env_config.model_dump(mode="python")
+    data["network_mode"] = effective_mode
+    data["allowed_hosts"] = (
+        allowed_hosts if effective_mode is NetworkMode.ALLOWLIST else None
+    )
+    if effective_mode is NetworkMode.NO_NETWORK:
+        data["allow_internet"] = False
+    return SandboxConfig.model_validate(data)
+
+
 def network_blocks_all(env_config: SandboxConfig, sandbox: str) -> bool:
     """Back-compat shim for the historic ``not allow_internet`` block-all gate."""
     return (

@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from benchflow.sandbox import _egress_proxy
-from benchflow.task.config import SandboxConfig
+from benchflow.task.config import AgentConfig, SandboxConfig, VerifierConfig
 
 
 def test_allowlist_accepts_leading_wildcard():
@@ -126,3 +126,32 @@ def test_resolve_model_lane_opt_out():
         SandboxConfig(network_mode="no-network", allow_model_endpoint=False), "docker"
     )
     assert d.model_lane is False
+
+
+def test_effective_shared_policy_honors_agent_and_verifier_allowlists():
+    """Guards PR #785: role network policies must reach the shared sandbox."""
+    from benchflow.sandbox.network_policy import effective_shared_network_config
+
+    out = effective_shared_network_config(
+        SandboxConfig(),
+        AgentConfig(network_mode="allowlist", allowed_hosts=["api.example.com"]),
+        VerifierConfig(network_mode="allowlist", allowed_hosts=["verify.example.com"]),
+    )
+
+    assert out.network_mode == "allowlist"
+    assert out.allowed_hosts == ["api.example.com", "verify.example.com"]
+
+
+def test_effective_shared_policy_no_network_wins_over_public_environment():
+    """Guards PR #785: terminal agent/verifier no-network must not run open."""
+    from benchflow.sandbox.network_policy import effective_shared_network_config
+
+    out = effective_shared_network_config(
+        SandboxConfig(),
+        AgentConfig(network_mode="no-network"),
+        VerifierConfig(),
+    )
+
+    assert out.network_mode == "no-network"
+    assert out.allowed_hosts is None
+    assert out.allow_internet is False

@@ -9,7 +9,19 @@ from benchflow.sandbox import network_policy
 from benchflow.sandbox.protocol import SandboxStartupError
 
 _EGRESS_CANARY_PORT = 443
-_CANARY_CANDIDATES = ("1.1.1.1", "8.8.8.8", "9.9.9.9")
+_CANARY_CANDIDATES = (
+    "1.1.1.1",
+    "8.8.8.8",
+    "9.9.9.9",
+    "1.0.0.1",
+    "8.8.4.4",
+    "9.9.9.10",
+    "208.67.222.222",
+    "208.67.220.220",
+    "64.6.64.6",
+    "64.6.65.6",
+    "76.76.2.0",
+)
 
 
 def pick_daytona_canary(cidrs: tuple[str, ...]) -> str:
@@ -17,7 +29,10 @@ def pick_daytona_canary(cidrs: tuple[str, ...]) -> str:
     for host in _CANARY_CANDIDATES:
         if f"{host}/32" not in cidrs:
             return host
-    return _CANARY_CANDIDATES[0]
+    raise SandboxStartupError(
+        "daytona enforcement canary pool is fully allowlisted; cannot prove a "
+        "non-allowlisted host is blocked"
+    )
 
 
 async def relock_daytona_network(
@@ -29,7 +44,12 @@ async def relock_daytona_network(
     decision = network_policy.resolve_network_decision(
         sandbox_wrapper.task_env_config, "daytona"
     )
-    if decision.policy is not network_policy.EffectivePolicy.ALLOWLIST:
+    applies_allowlist = decision.policy is network_policy.EffectivePolicy.ALLOWLIST
+    applies_model_lane_only = (
+        decision.policy is network_policy.EffectivePolicy.BLOCK_ALL
+        and decision.model_lane
+    )
+    if not (applies_allowlist or applies_model_lane_only):
         return {}
     if sandbox_wrapper._compose_mode:
         # DinD: update_network_settings governs the OUTER sandbox, but the
