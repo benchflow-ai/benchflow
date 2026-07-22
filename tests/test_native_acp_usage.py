@@ -94,7 +94,7 @@ def test_rollout_native_acp_usage_uses_cumulative_deltas():
 
 
 def test_acp_session_records_usage_from_session_update():
-    """Guards #933: ACP timeout accounting can use pre-cancel update usage."""
+    """Guards PR #934 / issue #933: timeout accounting uses update usage."""
     from benchflow.acp.session import ACPSession
 
     session = ACPSession("session-1")
@@ -126,7 +126,7 @@ def test_acp_session_records_usage_from_session_update():
 
 @pytest.mark.asyncio
 async def test_cleanup_collects_update_usage_after_timed_out_prompt(tmp_path):
-    """Guards #933: timed-out ACP prompts do not lose streamed token usage."""
+    """Guards PR #934 / issue #933: cleanup preserves streamed usage."""
     from benchflow.acp.session import ACPSession
     from benchflow.rollout import Rollout, RolloutConfig
     from benchflow.rollout._usage import _zero_native_acp_usage_metrics
@@ -160,17 +160,15 @@ async def test_cleanup_collects_update_usage_after_timed_out_prompt(tmp_path):
     rollout._usage_metrics = {"usage_source": "unavailable"}
     rollout._native_usage_checkpoint = None
     rollout._native_usage_metrics = _zero_native_acp_usage_metrics()
+    rollout._agent_launch = ""
     rollout._env = None
     rollout._environment = None
+    rollout._error = None
     rollout._config = RolloutConfig(task_path=tmp_path)
-
-    async def fake_disconnect():
-        return None
-
-    rollout.disconnect = fake_disconnect
 
     await rollout.cleanup()
 
+    assert rollout._session is None
     assert rollout._usage_metrics == {
         "n_input_tokens": 20,
         "n_output_tokens": 7,

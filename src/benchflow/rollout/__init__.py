@@ -1828,6 +1828,7 @@ class Rollout:
     async def cleanup(self) -> None:
         """Close ACP client and stop the environment."""
         self._capture_partial_acp_trajectory()
+        self._collect_native_acp_usage()
         await self.disconnect()
 
         if self._env and self._config.export_generated_skills_to:
@@ -1886,7 +1887,6 @@ class Rollout:
             finally:
                 self._usage_runtime = None
 
-        self._collect_native_acp_usage()
         self._finalize_usage_metrics()
         self._enforce_required_usage_tracking()
 
