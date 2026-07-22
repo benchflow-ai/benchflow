@@ -233,11 +233,21 @@ class ACPSession:
 
     def record_prompt_usage(self, usage: object | None) -> None:
         """Record cumulative ACP token usage returned by session/prompt."""
+        if self._record_usage_snapshot(usage):
+            self._notify_change()
+
+    def _record_usage_snapshot(self, usage: object | None) -> bool:
         snapshot = normalize_acp_usage(usage)
         if snapshot is None:
-            return
+            return False
         self.usage_snapshots.append(snapshot)
-        self._notify_change()
+        return True
+
+    def _record_update_usage(self, update: dict) -> bool:
+        snapshot_source = update.get("usage")
+        if snapshot_source is not None and self._record_usage_snapshot(snapshot_source):
+            return True
+        return self._record_usage_snapshot(update)
 
     def latest_usage_totals(self) -> ACPUsageSnapshot | None:
         """Return the latest cumulative ACP usage snapshot, if any."""
@@ -274,12 +284,15 @@ class ACPSession:
         """Process a session/update notification."""
         self._events_active = True
         update_type = update.get("sessionUpdate")
+        usage_recorded = self._record_update_usage(update)
         # Unknown update types (future ACP versions, agent-specific
         # extensions) mutate no state and must not trigger a no-op
         # snapshot. Mark events_active so the snapshot path stays on
-        # the modern branch, but skip _notify_change for unrecognized
-        # types.
+        # the modern branch, but only notify for unrecognized types when they
+        # carried usage telemetry.
         if update_type not in self._RECOGNIZED_UPDATE_TYPES:
+            if usage_recorded:
+                self._notify_change()
             return
 
         if update_type == "tool_call":
