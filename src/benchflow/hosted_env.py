@@ -33,6 +33,7 @@ from benchflow._utils.result_metadata import (
     trajectory_summary_from_events,
 )
 from benchflow._utils.reward_events import build_rewards_jsonl_events
+from benchflow._utils.timestamps import artifact_timestamp
 from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.rewards.validation import is_valid_reward_number
 from benchflow.trajectories.types import redact_acp_trajectory_jsonl
@@ -560,9 +561,9 @@ def _write_run_artifacts(
         "agent": config.agent or None,
         "agent_name": "verifiers",
         "model": result.normalized_model or result.model or None,
-        "n_tool_calls": result.total_tool_calls or 0,
-        "n_prompts": len(prompts),
         "agent_result": agent_result,
+        "n_tool_calls": agent_result["n_tool_calls"],
+        "n_prompts": agent_result["n_prompts"],
         "final_metrics": final_metrics_from_agent_result(agent_result),
         "trajectory_summary": trajectory_summary_from_events(
             trajectory,
@@ -583,8 +584,8 @@ def _write_run_artifacts(
         **RolloutDiagnostics().to_result_fields(),
         "partial_trajectory": False,
         "trajectory_source": "hosted_env" if trajectory else None,
-        "started_at": str(started_at),
-        "finished_at": str(finished_at),
+        "started_at": artifact_timestamp(started_at),
+        "finished_at": artifact_timestamp(finished_at),
         "timing": timing,
         "scenes": [],
         "source": source_provenance,
@@ -607,7 +608,7 @@ def _write_run_artifacts(
         "timeout_sec": None,
         "concurrency": config.concurrency,
         "agent_idle_timeout_sec": None,
-        "started_at": str(started_at),
+        "started_at": artifact_timestamp(started_at),
         "agent_env": {},
         "scenes": [],
         "source": source_provenance,
