@@ -1378,6 +1378,14 @@ async def ensure_litellm_runtime(
         assert sandbox is not None
         task_env_config = sandbox.task_env_config
         decision = resolve_network_decision(task_env_config, environment)
+        if usage_cfg.mode == "required":
+            raise RuntimeError(
+                "Token usage tracking is required, but restrictive "
+                f"network_mode on {environment!r} skips the LiteLLM proxy and "
+                "would leave the run without guaranteed provider token usage. "
+                "Use usage_tracking='auto'/'off' for direct-provider restrictive "
+                "runs, or relax the network policy so the proxy can run."
+            )
         if not decision.model_lane:
             raise RuntimeError(
                 f"Restrictive network_mode on {environment!r} has "

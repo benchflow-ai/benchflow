@@ -356,4 +356,12 @@ class _DaytonaDirect(_DaytonaStrategy):
             labels=_benchflow_owned_labels(),
         )
         await env._create_sandbox(params=params)
+        if env._network_block_all:
+            verify = getattr(env, "_verify_network_enforcement", None)
+            if verify is not None:
+                await verify()
+        else:
+            await env.relock_network(
+                extra_allowed_hosts=tuple(getattr(env, "_extra_allowed_hosts", ()))
+            )
         env.logger.info(f"Snapshot restored: {image.ref}")

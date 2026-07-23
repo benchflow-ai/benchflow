@@ -51,6 +51,8 @@ async def relock_daytona_network(
     )
     if not (applies_allowlist or applies_model_lane_only):
         return {}
+    if decision.model_lane:
+        sandbox_wrapper._extra_allowed_hosts = tuple(extra_allowed_hosts)
     if sandbox_wrapper._compose_mode:
         # DinD: update_network_settings governs the OUTER sandbox, but the
         # agent runs in inner containers whose egress is ungoverned. Fail closed.
@@ -63,6 +65,21 @@ async def relock_daytona_network(
     model_host = (
         extra_allowed_hosts[0] if decision.model_lane and extra_allowed_hosts else None
     )
+    sandbox = sandbox_wrapper._require_sandbox()
+    if applies_model_lane_only and model_host is None:
+        await sandbox.update_network_settings(network_block_all=True)
+        if network_policy.blockall_enforcement_violation(
+            block_all=True,
+            canary_reachable=await sandbox_wrapper._egress_reachable(),
+        ):
+            raise SandboxStartupError(
+                "daytona applied network_block_all after install, but the "
+                "sandbox could not confirm the egress canary is blocked; "
+                "failing closed"
+            )
+        sandbox_wrapper.logger.info("relock_network: BLOCK_ALL applied (daytona)")
+        return {}
+
     plan = network_policy.plan_daytona_allowlist(
         decision.allowed_hosts, model_host=model_host
     )
@@ -81,7 +98,6 @@ async def relock_daytona_network(
             timeout_sec=20,
         )
 
-    sandbox = sandbox_wrapper._require_sandbox()
     await sandbox.update_network_settings(network_allow_list=",".join(plan.cidrs))
 
     canary = pick_daytona_canary(plan.cidrs)

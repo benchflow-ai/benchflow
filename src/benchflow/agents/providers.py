@@ -504,6 +504,16 @@ def provider_host_for_model(model: str, env: dict[str, str]) -> str | None:
     if found is None:
         return None
     _, cfg = found
+    explicit_base_url = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
+    explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
+    if explicit_base_url and (explicit_api_key or not cfg.base_url):
+        host = urlparse(
+            explicit_base_url
+            if "://" in explicit_base_url
+            else f"https://{explicit_base_url}"
+        ).hostname
+        if host:
+            return host
     try:
         url = resolve_base_url(cfg, env)
     except KeyError:
