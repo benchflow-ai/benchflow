@@ -101,7 +101,7 @@ def _classify(result) -> str:
 
 
 def test_hosted_env_writes_contract_result_json(tmp_path, monkeypatch):
-    """Guards issue #528 and PR #419: hosted result.json keeps the contract."""
+    """Guards PR #928 / issue #528 and PR #419: hosted result.json contract."""
     result = _run(tmp_path, monkeypatch)
     payload = json.loads((result.run_dir / "result.json").read_text())
 

@@ -8,10 +8,9 @@ from datetime import UTC, datetime
 def artifact_timestamp(value: datetime | None) -> str | None:
     """Return a timezone-aware ISO 8601 timestamp for JSON artifacts.
 
-    Legacy rollout paths sometimes pass naive ``datetime`` values. Persisting
-    them with ``str(datetime)`` produced a space-separated timestamp without an
-    offset, so downstream consumers could not compare artifacts reliably. Treat
-    naive values as UTC at the artifact boundary and emit a compact ``Z`` suffix.
+    Runtime paths should pass UTC-aware values at source. Legacy tests and
+    artifact repair paths may still pass naive ``datetime`` values; treat those
+    as already-UTC for compatibility and emit a compact ``Z`` suffix.
     """
     if value is None:
         return None

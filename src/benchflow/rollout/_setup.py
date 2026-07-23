@@ -29,7 +29,7 @@ import re
 import shlex
 import tempfile
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -269,7 +269,7 @@ def _init_rollout(
     rollout_name = rollout_name or f"{task_path.name}__{uuid4().hex[:8]}"
     rollout_dir = Path(jobs_dir) / job_name / rollout_name
     rollout_paths = RolloutPaths(rollout_dir=rollout_dir)
-    started_at = datetime.now()
+    started_at = datetime.now(UTC)
     rollout_dir.mkdir(parents=True, exist_ok=True)
     for subdir in ("agent", "verifier", "artifacts", "trajectory"):
         (rollout_dir / subdir).mkdir(exist_ok=True)
