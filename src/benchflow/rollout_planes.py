@@ -54,10 +54,14 @@ class DefaultRolloutPlanes:
     """Default bindings for the four concrete planes."""
 
     def agent_launch(self, agent: str, *, disallow_web_tools: bool) -> str:
-        launch = AGENT_LAUNCH.get(agent, agent)
+        agent_cfg = AGENTS.get(agent)
+        launch = (
+            agent_cfg.launch_override_cmd
+            if agent_cfg and agent_cfg.launch_override_cmd
+            else AGENT_LAUNCH.get(agent, agent)
+        )
         if not disallow_web_tools:
             return launch
-        agent_cfg = AGENTS.get(agent)
         if agent_cfg and agent_cfg.disallow_web_tools_launch_suffix:
             return launch + agent_cfg.disallow_web_tools_launch_suffix
         return launch
