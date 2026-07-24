@@ -83,9 +83,6 @@ def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
 
     original_env = MagicMock()
     original_env.allow_internet = False
-    copied_env = MagicMock()
-    copied_env.allow_internet = False
-    original_env.model_copy.return_value = copied_env
     task = SimpleNamespace(
         paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
         config=SimpleNamespace(environment=original_env),
@@ -101,9 +98,10 @@ def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
             preserve_agent_network=True,
         )
 
-    assert copied_env.allow_internet is True
-    assert original_env.allow_internet is False
-    assert docker_env.call_args.kwargs["task_env_config"] is copied_env
+    # Docker preserves the restrictive policy: the model lane (not a public lift)
+    # carries model access, so no copy is made and the original env passes through.
+    original_env.model_copy.assert_not_called()
+    assert docker_env.call_args.kwargs["task_env_config"] is original_env
 
 
 def test_create_environment_keeps_oracle_network_policy(tmp_path):

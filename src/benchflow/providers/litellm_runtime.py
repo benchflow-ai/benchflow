@@ -49,6 +49,10 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
+from benchflow.sandbox.network_policy import (
+    network_is_restrictive,
+    resolve_network_decision,
+)
 from benchflow.sandbox.providers import OFF_BOX_MODEL_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import Trajectory
@@ -1355,6 +1359,61 @@ async def ensure_litellm_runtime(
             )
         return await _skip_litellm_runtime(agent_env, runtime)
     assert model is not None
+
+    network_restrictive = bool(
+        sandbox is not None
+        and getattr(sandbox, "task_env_config", None) is not None
+        and network_is_restrictive(sandbox.task_env_config, environment)
+    )
+
+    if network_restrictive and environment in ("docker", "daytona"):
+        # The benchflow LiteLLM usage proxy is fragile under a restrictive
+        # policy: on docker it is reached over the plain-HTTP egress-proxy
+        # forwarding path; on daytona it must pip-install in-sandbox AFTER the
+        # allowlist is applied (pypi is not allowlisted -> install fails). In
+        # both cases the agent instead reaches the provider DIRECTLY over
+        # HTTPS — but only if the model lane was allowed and the provider host
+        # was actually allowlisted. A task with allow_model_endpoint=false
+        # intentionally has no model lane; skipping the proxy would launch an
+        # agent whose model CONNECT cannot ever succeed. Likewise, lockdown
+        # allowlists exactly provider_host_for_model(model); if that is None the
+        # host can't have been allowlisted. Fail closed with an actionable
+        # message in both cases instead of surfacing a later ACP -32603.
+        from benchflow.agents.providers import provider_host_for_model
+
+        assert sandbox is not None
+        task_env_config = sandbox.task_env_config
+        decision = resolve_network_decision(task_env_config, environment)
+        if usage_cfg.mode == "required":
+            raise RuntimeError(
+                "Token usage tracking is required, but restrictive "
+                f"network_mode on {environment!r} skips the LiteLLM proxy and "
+                "would leave the run without guaranteed provider token usage. "
+                "Use usage_tracking='auto'/'off' for direct-provider restrictive "
+                "runs, or relax the network policy so the proxy can run."
+            )
+        if not decision.model_lane:
+            raise RuntimeError(
+                f"Restrictive network_mode on {environment!r} has "
+                "allow_model_endpoint=false, so the model endpoint is not "
+                "reachable. Enable allow_model_endpoint or relax the network "
+                "policy for model-backed agents."
+            )
+        if provider_host_for_model(model, agent_env) is None:
+            raise RuntimeError(
+                f"Restrictive network_mode on {environment!r}: cannot resolve a "
+                f"provider host for model {model!r} to allowlist it, so the agent "
+                "could not reach the model directly. Use a registered provider "
+                "prefix (e.g. 'deepseek/<model>') or relax the network policy."
+            )
+        return await _skip_litellm_runtime(
+            agent_env,
+            runtime,
+            reason=(
+                f"restrictive {environment} policy: direct-provider over HTTPS "
+                "(provider host allowlisted)"
+            ),
+        )
 
     if environment in _SANDBOX_LOCAL_ENVIRONMENTS and sandbox is None:
         raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")

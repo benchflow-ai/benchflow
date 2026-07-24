@@ -203,6 +203,12 @@ class DockerSandbox(BaseSandbox):
         self._use_prebuilt = False
 
         self._compose_task_env: dict[str, str] = {}
+        # Install-before-lockdown: the restrictive network policy is applied by
+        # relock_network() AFTER the agent installs, not at sandbox start.
+        self._network_locked = False
+        #: Extra hosts unioned into the egress allowlist at relock (the model
+        #: provider host, so the agent reaches it directly over HTTPS).
+        self._extra_allowed_hosts: tuple[str, ...] = ()
         if task_env_config.env and self._uses_compose:
             self._compose_task_env = resolve_env_vars(task_env_config.env)
 
@@ -260,10 +266,26 @@ class DockerSandbox(BaseSandbox):
         if self._mounts_compose_path:
             paths.append(self._mounts_compose_path)
 
-        if not self.task_env_config.allow_internet:
-            paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
-
+        paths.extend(self._network_policy_compose_paths())
         return paths
+
+    def _network_policy_compose_paths(self) -> list[Path]:
+        from benchflow.sandbox.docker_network_lockdown import (
+            docker_network_policy_compose_paths,
+        )
+
+        return docker_network_policy_compose_paths(self)
+
+    async def relock_network(
+        self, extra_allowed_hosts: tuple[str, ...] = ()
+    ) -> dict[str, str]:
+        from benchflow.sandbox.docker_network_lockdown import relock_docker_network
+
+        return await relock_docker_network(
+            self,
+            compose_project_name=_sanitize_docker_compose_project_name(self.session_id),
+            extra_allowed_hosts=extra_allowed_hosts,
+        )
 
     def _docker_compose_env(self) -> dict[str, str]:
         env = self._env_vars.to_env_dict(include_os_env=True)
@@ -718,6 +740,14 @@ class DockerSandbox(BaseSandbox):
                 f"DockerSandbox.restore cannot consume a {image.provider!r} "
                 f"snapshot (got ref={image.ref!r}); snapshots are not portable "
                 "across providers."
+            )
+        from benchflow.sandbox.network_policy import network_is_restrictive
+
+        if network_is_restrictive(self.task_env_config, "docker"):
+            raise SandboxSnapshotNotSupported(
+                "DockerSandbox.restore is not supported under restrictive "
+                "network policies yet; restoring onto the public compose bridge "
+                "would bypass the active network_mode enforcement."
             )
 
         container_id = await self._main_container_id()

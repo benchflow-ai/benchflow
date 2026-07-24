@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from benchflow.rollout import Role, Rollout, RolloutConfig
+from benchflow.task.config import SandboxConfig
 
 
 @pytest.mark.asyncio
@@ -115,3 +116,70 @@ async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
     await rollout.connect_as(role)
 
     assert calls == ["litellm", "acp"]
+
+
+@pytest.mark.asyncio
+async def test_trial_connect_as_extends_restrictive_model_lane_for_role(
+    tmp_path: Path,
+):
+    """Guards PR #785: scene roles that switch providers must relock the lane."""
+    rollout = Rollout.__new__(Rollout)
+    rollout._config = RolloutConfig(
+        task_path=tmp_path / "task",
+        agent="codex-acp",
+        model="openai/gpt-4.1-mini",
+        environment="daytona",
+        agent_env={"OPENAI_API_KEY": "sk-openai"},
+    )
+    rollout._rollout_dir = tmp_path
+    rollout._rollout_name = "rollout"
+    rollout._agent_cwd = "/workspace"
+    rollout._usage_runtime = None
+    rollout._timing = {}
+    rollout._disallow_web_tools = False
+    rollout._agent_cfg = SimpleNamespace()
+    rollout._reapply_ask_user_handler = lambda: None
+    rollout._attach_trajectory_writer = lambda _rollout_dir: None
+    relock_calls = []
+
+    class _Env:
+        task_env_config = SandboxConfig(network_mode="no-network")
+        _extra_allowed_hosts = ("api.openai.com",)
+
+        def relock_network(self, *, extra_allowed_hosts=()):
+            relock_calls.append(extra_allowed_hosts)
+            self._extra_allowed_hosts = extra_allowed_hosts
+            return {}
+
+    rollout._env = _Env()
+    role = Role(
+        name="reviewer",
+        agent="codex-acp",
+        model="deepseek/deepseek-v4-flash",
+        env={"DEEPSEEK_API_KEY": "sk-deepseek"},
+    )
+    calls: list[str] = []
+
+    async def fake_litellm(**kwargs):
+        calls.append("litellm")
+        assert kwargs["model"] == "deepseek/deepseek-v4-flash"
+        return kwargs["agent_env"], None
+
+    async def fake_connect_acp(**kwargs):
+        calls.append("acp")
+        return (AsyncMock(), AsyncMock(), AsyncMock(), "codex-acp")
+
+    rollout._planes = SimpleNamespace(
+        agent_launch=lambda agent, disallow_web_tools: agent,
+        resolve_agent_env=lambda agent, model, env: dict(env or {}),
+        ensure_litellm_runtime=fake_litellm,
+        write_credential_files=AsyncMock(),
+        upload_subscription_auth=AsyncMock(),
+        apply_web_tool_policy=AsyncMock(),
+        connect_acp=fake_connect_acp,
+    )
+
+    await rollout.connect_as(role)
+
+    assert calls == ["litellm", "acp"]
+    assert relock_calls == [("api.openai.com", "api.deepseek.com")]

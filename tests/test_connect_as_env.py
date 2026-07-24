@@ -141,6 +141,31 @@ class TestConnectAsEnvMerge:
         assert captured["env"] == {}
 
     @pytest.mark.asyncio
+    async def test_lockdown_proxy_env_reaches_agent(self, _mock_trial):
+        """Egress proxy env from network lockdown must reach the agent launched
+        via connect_as. Under a restrictive docker policy the container is on an
+        internal-only network and reaches the allowlisted provider only through
+        the bf-egress sidecar (HTTPS_PROXY). The scene/role path rebuilds
+        agent_env from config, so it must re-merge the lockdown proxy env or the
+        agent's LLM client gets "Connection error". Regression for that path."""
+        proxy = {
+            "HTTP_PROXY": "http://bf-egress:8080",
+            "HTTPS_PROXY": "http://bf-egress:8080",
+            "http_proxy": "http://bf-egress:8080",
+            "https_proxy": "http://bf-egress:8080",
+            "NO_PROXY": "localhost,127.0.0.1",
+            "no_proxy": "localhost,127.0.0.1",
+        }
+        _mock_trial._lockdown_proxy_env = dict(proxy)
+        role = _mock_trial._config.scenes[0].roles[0]
+        await _mock_trial.connect_as(role)
+
+        sent = _mock_trial._planes.connect_acp.await_args.kwargs["agent_env"]
+        assert sent.get("HTTPS_PROXY") == "http://bf-egress:8080"
+        assert sent.get("https_proxy") == "http://bf-egress:8080"
+        assert sent.get("NO_PROXY") == "localhost,127.0.0.1"
+
+    @pytest.mark.asyncio
     async def test_same_agent_different_model_refreshes_credentials(self, _mock_trial):
         """Guards ENG-91 P0 same-agent role credential refresh regression."""
         from benchflow.rollout import Role

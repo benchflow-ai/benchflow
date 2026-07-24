@@ -113,6 +113,54 @@ a minimal authored file and its canonical form never drift apart.
 
 ---
 
+## Network policy
+
+`network_mode` (on `[environment]`, and optionally per-`agent`/`verifier`)
+controls outbound network access. It is the authoritative field; the legacy
+`allow_internet` boolean is deprecated and derived from it.
+
+| `network_mode` | Behavior | `allowed_hosts` |
+|---|---|---|
+| `public` *(default)* | Unrestricted egress | must be omitted |
+| `no-network` | Container fully detached from the network | must be omitted |
+| `allowlist` | Egress confined to `allowed_hosts` | required, non-empty |
+
+```yaml
+environment:
+  network_mode: allowlist
+  allowed_hosts: [pypi.org, files.pythonhosted.org]
+```
+
+**Enforcement**
+
+- `no-network` and `public` are enforced on every sandbox.
+- `allowlist` is enforced on **`docker`** and **`daytona`**. Docker puts the
+  container on an internal network and routes HTTP(S) through a proxy sidecar
+  that forwards only to `allowed_hosts`; anything else has no route off-box
+  (default deny). Daytona enforces exact-host allowlists by resolving hosts to
+  IPv4 `/32` CIDRs at lockdown time and pinning those hosts in `/etc/hosts`.
+  Because Daytona's control is IP-based, wildcard hosts are rejected at
+  preflight, and unresolvable or over-limit allowlists fail closed at lockdown
+  with a clear error. Sandboxes without per-host egress control reject
+  `allowlist` at preflight rather than run unrestricted.
+- **Model access under a restrictive policy.** An agent run still needs the
+  model API. On restrictive `docker`/`daytona` runs, BenchFlow can add the model
+  provider host to the enforced lane so the agent reaches the model without
+  opening general internet access. Set `allow_model_endpoint: false` on
+  `[environment]` (default `true`) to close that lane for a fully hermetic,
+  no-model run. Sandboxes without restrictive-lane support still lift the
+  sandbox policy to `public` for web-disabled agent runs, with the no-web policy
+  enforced at the agent layer.
+
+`allowed_hosts` entries are hostnames only (no scheme, port, or path) and match
+the host exactly or as a parent domain (`example.com` matches `api.example.com`).
+A single leading `*.` label is also allowed: `*.example.com` matches subdomains
+at any depth (`api.example.com`, `a.b.example.com`) but **not** the bare apex
+`example.com`. The wildcard must be the leading label only — `a.*.com`,
+`*example.com`, and `ex*mple.com` are rejected at parse time.
+
+For the full mode/mechanism taxonomy and credits to the platforms this design draws on, see [Network access: design and prior art](./network-mode-prior-art.md).
+
 ## Prompt body and prompts/ sidecars
 
 The body below the frontmatter is the base prompt — free-form markdown, no

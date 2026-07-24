@@ -42,6 +42,7 @@ import base64
 import contextlib
 import fcntl
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -664,6 +665,12 @@ class Rollout:
         self._ask_user_handler_set: bool = False
         self._agent_name: str = ""
         self._active_role: Role | None = None
+        #: Egress proxy env (HTTP(S)_PROXY -> bf-egress sidecar) produced by
+        #: the network lockdown. Empty unless a restrictive docker policy is
+        #: active. The scene/role path (connect_as) rebuilds agent_env from
+        #: config, so it must re-merge this or the agent can't reach the
+        #: allowlisted provider (the internal-only net has no direct route).
+        self._lockdown_proxy_env: dict[str, str] = {}
         # Cursors into the live ACP session's cumulative trajectory and
         # tool-call totals so execute() and the partial-capture path extend
         # only the delta since the last read. Reset per session in
@@ -1082,6 +1089,7 @@ class Rollout:
                     self._env, cfg.generated_skills_root, cfg.sandbox_user
                 )
             await self._planes.lockdown_paths(self._env, self._effective_locked)
+            await self._lock_down_network()
             self._phase = "installed"
             return
 
@@ -1149,7 +1157,84 @@ class Rollout:
             )
         await self._planes.lockdown_paths(self._env, self._effective_locked)
 
+        await self._lock_down_network()
         self._phase = "installed"
+
+    def _model_lane_extra_hosts(
+        self, *, model: str | None, agent_env: dict[str, str]
+    ) -> tuple[str, ...]:
+        """Provider hosts to add to a restrictive sandbox's model lane."""
+        if not model:
+            return ()
+
+        task_env_config = getattr(self._env, "task_env_config", None)
+        if task_env_config is None:
+            task = getattr(self, "_task", None)
+            task_env_config = getattr(
+                getattr(task, "config", None), "environment", None
+            )
+        if task_env_config is None:
+            return ()
+
+        from benchflow.sandbox.network_policy import (
+            EffectivePolicy,
+            resolve_network_decision,
+        )
+
+        decision = resolve_network_decision(task_env_config, self._config.environment)
+        if decision.policy is EffectivePolicy.OPEN or not decision.model_lane:
+            return ()
+
+        # Allowlist the model provider host so the agent can reach it directly
+        # over HTTPS under a restrictive policy. Hermetic tasks set
+        # allow_model_endpoint=false, so they intentionally skip this.
+        from benchflow.agents.providers import provider_host_for_model
+
+        host = provider_host_for_model(model, agent_env)
+        return (host,) if host else ()
+
+    async def _lock_down_network(self) -> None:
+        """Apply the task's restrictive network policy after agent install
+        (install-before-lockdown). Docker swaps the container onto an internal
+        network + egress sidecar and returns the proxy env the agent must use;
+        other sandboxes no-op. Merges the returned proxy env into the agent env.
+        """
+        relock = getattr(self._env, "relock_network", None)
+        if relock is None:
+            return
+        extra = self._model_lane_extra_hosts(
+            model=self._config.primary_model,
+            agent_env=self._agent_env,
+        )
+        proxy_env = relock(extra_allowed_hosts=extra)
+        if inspect.isawaitable(proxy_env):
+            proxy_env = await proxy_env
+        # Tolerate mock sandboxes in tests: only merge a real dict result.
+        if isinstance(proxy_env, dict) and proxy_env:
+            self._lockdown_proxy_env = dict(proxy_env)
+            self._agent_env = {**self._agent_env, **proxy_env}
+
+    async def _extend_network_model_lane_for_role(
+        self, *, model: str | None, agent_env: dict[str, str]
+    ) -> None:
+        """Relock restrictive sandboxes when a scene role switches provider."""
+        relock = getattr(self._env, "relock_network", None)
+        if relock is None:
+            return
+        hosts = self._model_lane_extra_hosts(model=model, agent_env=agent_env)
+        if not hosts:
+            return
+
+        existing = tuple(getattr(self._env, "_extra_allowed_hosts", ()))
+        extra = tuple(dict.fromkeys((*existing, *hosts)))
+        if extra == existing:
+            return
+
+        proxy_env = relock(extra_allowed_hosts=extra)
+        if inspect.isawaitable(proxy_env):
+            proxy_env = await proxy_env
+        if isinstance(proxy_env, dict) and proxy_env:
+            self._lockdown_proxy_env = dict(proxy_env)
 
     # Phase 3b: CONNECT (ACP session — re-entrant)
 
@@ -2152,6 +2237,18 @@ class Rollout:
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
         )
+        await self._extend_network_model_lane_for_role(
+            model=role.model,
+            agent_env=agent_env,
+        )
+        # The network lockdown (install-before-lockdown) put the container on
+        # an internal-only net reachable off-box only through the bf-egress
+        # proxy. resolve_agent_env above rebuilt agent_env from config and
+        # dropped that proxy env, so re-merge it here or the agent's LLM
+        # client hits a connection error reaching the allowlisted provider.
+        lockdown_proxy_env = getattr(self, "_lockdown_proxy_env", None)
+        if lockdown_proxy_env:
+            agent_env = {**agent_env, **lockdown_proxy_env}
 
         role_agent_differs = role.agent != cfg.primary_agent
         needs_role_credentials = (

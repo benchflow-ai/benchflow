@@ -56,3 +56,4 @@ Known residual risk:
 
 - [`progressive-disclosure.md`](./progressive-disclosure.md) — soft-verify (the relaxed hardening used between rounds in multi-round trials).
 - [`task-authoring.md`](./task-authoring.md) — the task config schema, including the `[verifier.hardening]` opt-outs.
+- [`network-mode-prior-art.md`](./network-mode-prior-art.md) — network-access design model, mode/mechanism taxonomy, and credits to prior-art platforms.

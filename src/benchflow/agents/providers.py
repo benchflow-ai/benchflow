@@ -484,6 +484,45 @@ def resolve_base_url(
     return url.format_map(replacements)
 
 
+def provider_host_for_model(model: str, env: dict[str, str]) -> str | None:
+    """Hostname of a model's resolved provider base_url, or ``None``.
+
+    Used to allowlist the model provider's host under a restrictive network
+    policy so the agent can reach it directly over HTTPS (a clean CONNECT
+    tunnel). Returns ``None`` when the model has no registered provider prefix
+    or the provider's base_url env is unset — don't guess; leave the allowlist
+    unchanged.
+    """
+    from urllib.parse import urlparse
+
+    # A bare id (prefix already stripped, e.g. 'deepseek-v4-flash') no longer
+    # matches find_provider; consult the bare-model registry so the host still
+    # resolves and gets allowlisted (otherwise a restrictive run can't reach it).
+    found = find_provider(model) or find_provider_for_bare_model(
+        strip_provider_prefix(model)
+    )
+    if found is None:
+        return None
+    _, cfg = found
+    explicit_base_url = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
+    explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
+    if explicit_base_url and (explicit_api_key or not cfg.base_url):
+        host = urlparse(
+            explicit_base_url
+            if "://" in explicit_base_url
+            else f"https://{explicit_base_url}"
+        ).hostname
+        if host:
+            return host
+    try:
+        url = resolve_base_url(cfg, env)
+    except KeyError:
+        return None
+    if not url:
+        return None
+    return urlparse(url if "://" in url else f"https://{url}").hostname
+
+
 def strip_provider_prefix(model: str) -> str:
     """Strip a *registered* provider prefix. Unregistered inputs pass through.
 
