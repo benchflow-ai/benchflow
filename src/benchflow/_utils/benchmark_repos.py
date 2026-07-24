@@ -47,19 +47,30 @@ class ResolvedSource:
     provenance: dict[str, Any]
 
 
-def _repo_root() -> Path:
-    """Find the repo root via .git directory."""
+def _repo_root() -> Path | None:
+    """Find the enclosing git checkout root, or None outside one."""
     d = Path.cwd()
     while d != d.parent:
         if (d / ".git").exists():
             return d
         d = d.parent
-    return Path.cwd()
+    return None
 
 
 def _cache_dir() -> Path:
-    """Return the local cache directory for cloned dataset repos."""
-    return _repo_root() / ".cache" / "datasets"
+    """Local cache directory for cloned dataset/catalog repos.
+
+    Inside a git checkout: ``<repo>/.cache/datasets`` (the dev workflow).
+    Outside one: the user cache (``$XDG_CACHE_HOME``/``~/.cache``) — NEVER
+    the working directory, which a pip-installed ``bench`` would otherwise
+    pollute with multi-hundred-MB clones.
+    """
+    root = _repo_root()
+    if root is not None:
+        return root / ".cache" / "datasets"
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".cache"
+    return base / "benchflow" / "datasets"
 
 
 @contextmanager
@@ -155,7 +166,7 @@ def _clone_repo_unlocked(org: str, repo: str, ref: str | None = None) -> Path:
     try:
         if clone_tmp.exists():
             shutil.rmtree(clone_tmp)
-        cmd = ["git", "clone", "--depth", "1"]
+        cmd = ["git", "clone", "--quiet", "--depth", "1"]
         if ref and not _looks_like_commit_sha(ref):
             cmd.extend(["--branch", ref])
         cmd.extend([url, str(clone_tmp)])
@@ -485,6 +496,9 @@ def infer_task_source_provenance(task_path: Path) -> dict[str, Any] | None:
                     }
 
     repo_root = _repo_root()
+    if repo_root is None:
+        # Not inside a git checkout: no repo provenance to derive.
+        return None
     try:
         rel = task_resolved.relative_to(repo_root.resolve(strict=False))
     except ValueError:

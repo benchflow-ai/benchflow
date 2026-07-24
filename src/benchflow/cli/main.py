@@ -50,6 +50,7 @@ from benchflow.cli.environment import register_environment
 from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_eval
 from benchflow.cli.eval_lift import register_eval_lift
 from benchflow.cli.hub import register_hub
+from benchflow.cli.init_cmd import register_init
 from benchflow.cli.monitor import register_monitor
 from benchflow.cli.sandbox import register_sandbox
 from benchflow.cli.skills import register_skills
@@ -111,6 +112,12 @@ def _cli_main(
     ] = None,
 ) -> None:
     """The universal environment framework — run, author, and adopt agent benchmarks."""
+    # Credentials saved by `bench init` fill env gaps for every subcommand;
+    # anything already exported wins (setdefault semantics).
+    from benchflow import onboarding
+    from benchflow.cli.init_cmd import benchflow_home
+
+    onboarding.load_env_file(benchflow_home() / ".env")
 
 
 def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
@@ -1227,6 +1234,7 @@ register_tasks(app)
 register_train(app)
 register_hub(app)
 register_agent(app)
+register_init(app)
 register_adopt_deprecated(app)
 register_sandbox(app)
 register_environment(app)
