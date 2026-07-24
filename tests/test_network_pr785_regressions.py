@@ -76,6 +76,39 @@ async def test_daytona_relock_no_network_without_model_host_blocks_all():
 
 
 @pytest.mark.asyncio
+async def test_daytona_relock_threads_every_model_lane_host(monkeypatch):
+    """Guards PR #785: Daytona role-provider relock must keep every host."""
+    from benchflow.sandbox import network_policy
+
+    sb, applied = _make_daytona_stub(
+        SandboxConfig(network_mode="allowlist", allowed_hosts=["task.example.test"])
+    )
+    seen = {}
+
+    def _plan(hosts, *, model_host, resolve=None):
+        seen["hosts"] = hosts
+        seen["model_host"] = model_host
+        return network_policy.DaytonaAllowlistPlan(
+            cidrs=("10.0.0.1/32", "10.0.0.2/32", "10.0.0.3/32")
+        )
+
+    monkeypatch.setattr(network_policy, "plan_daytona_allowlist", _plan)
+
+    async def _unreachable(canary=None):
+        return False
+
+    sb._egress_reachable = _unreachable
+    await sb.relock_network(extra_allowed_hosts=("api.openai.com", "api.deepseek.com"))
+
+    assert seen == {
+        "hosts": ("task.example.test", "api.openai.com", "api.deepseek.com"),
+        "model_host": None,
+    }
+    assert sb._extra_allowed_hosts == ("api.openai.com", "api.deepseek.com")
+    assert applied["allow_list"] == "10.0.0.1/32,10.0.0.2/32,10.0.0.3/32"
+
+
+@pytest.mark.asyncio
 async def test_daytona_restore_relocks_restrictive_allowlist(monkeypatch):
     """Guards PR #785: Daytona snapshot restore must reapply network allowlists."""
     from benchflow.sandbox import daytona

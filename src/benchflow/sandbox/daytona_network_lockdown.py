@@ -62,11 +62,11 @@ async def relock_daytona_network(
             "'docker' sandbox or 'no-network'"
         )
 
-    model_host = (
-        extra_allowed_hosts[0] if decision.model_lane and extra_allowed_hosts else None
+    model_hosts = (
+        tuple(dict.fromkeys(extra_allowed_hosts)) if decision.model_lane else ()
     )
     sandbox = sandbox_wrapper._require_sandbox()
-    if applies_model_lane_only and model_host is None:
+    if applies_model_lane_only and not model_hosts:
         await sandbox.update_network_settings(network_block_all=True)
         if network_policy.blockall_enforcement_violation(
             block_all=True,
@@ -80,9 +80,8 @@ async def relock_daytona_network(
         sandbox_wrapper.logger.info("relock_network: BLOCK_ALL applied (daytona)")
         return {}
 
-    plan = network_policy.plan_daytona_allowlist(
-        decision.allowed_hosts, model_host=model_host
-    )
+    plan_hosts = tuple(dict.fromkeys((*decision.allowed_hosts, *model_hosts)))
+    plan = network_policy.plan_daytona_allowlist(plan_hosts, model_host=None)
     if not plan.enforceable:
         raise SandboxStartupError(
             f"daytona cannot enforce network_mode='allowlist': {plan.reject_reason}"

@@ -396,7 +396,7 @@ async def test_daytona_relock_no_network_model_lane_allowlists_provider(monkeypa
     sb._egress_reachable = _unreachable
     await sb.relock_network(extra_allowed_hosts=("api.model.test",))
 
-    assert seen == {"hosts": (), "model_host": "api.model.test"}
+    assert seen == {"hosts": ("api.model.test",), "model_host": None}
     assert applied["allow_list"] == "3.3.3.3/32"
 
 
