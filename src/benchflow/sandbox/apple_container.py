@@ -164,8 +164,10 @@ class AppleContainerSandbox(BaseSandbox):
         result = await _run_cli(
             "build",
             "--no-cache",
-            "-f", str(dockerfile),
-            "-t", tag,
+            "-f",
+            str(dockerfile),
+            "-t",
+            tag,
             str(self.environment_dir),
             timeout=build_timeout,
         )
@@ -193,9 +195,12 @@ class AppleContainerSandbox(BaseSandbox):
 
         cmd_args = [
             "run",
-            "--name", self._container_name,
-            "-c", str(cpus),
-            "-m", f"{memory_mb}M",
+            "--name",
+            self._container_name,
+            "-c",
+            str(cpus),
+            "-m",
+            f"{memory_mb}M",
         ]
 
         # Environment variables
@@ -212,35 +217,40 @@ class AppleContainerSandbox(BaseSandbox):
             for sub in ("verifier", "agent", "artifacts"):
                 os.makedirs(logs_dir / sub, exist_ok=True)
                 os.chmod(logs_dir / sub, 0o777)
-            cmd_args.extend([
-                "--mount", f"type=bind,source={logs_dir},target=/logs"
-            ])
+            cmd_args.extend(["--mount", f"type=bind,source={logs_dir},target=/logs"])
 
         # Mount environment dir as working directory
         if self.environment_dir.exists():
-            cmd_args.extend([
-                "--mount",
-                f"type=bind,source={self.environment_dir},target=/app",
-            ])
+            cmd_args.extend(
+                [
+                    "--mount",
+                    f"type=bind,source={self.environment_dir},target=/app",
+                ]
+            )
 
         # Skills directory mount
         skills_dir = self.task_env_config.skills_dir
         if skills_dir and Path(skills_dir).exists():
-            cmd_args.extend([
-                "--mount", f"type=bind,source={skills_dir},target=/skills"
-            ])
+            cmd_args.extend(
+                ["--mount", f"type=bind,source={skills_dir},target=/skills"]
+            )
 
-        cmd_args.extend([
-            "--entrypoint", "/bin/sh",
-            image,
-            "-c", "sleep infinity || while :; do sleep 3600; done",
-        ])
+        cmd_args.extend(
+            [
+                "--entrypoint",
+                "/bin/sh",
+                image,
+                "-c",
+                "sleep infinity || while :; do sleep 3600; done",
+            ]
+        )
 
         # Launch backgrounded VM — stdout/stderr to log file, NOT PIPE
         log_path = Path(f"/tmp/{self._container_name}.log")
         self._log_file = open(log_path, "w")  # noqa: SIM115 — closed in stop()
         self._bg_proc = await asyncio.create_subprocess_exec(
-            "container", *cmd_args,
+            "container",
+            *cmd_args,
             stdout=self._log_file,
             stderr=self._log_file,
         )
@@ -250,9 +260,7 @@ class AppleContainerSandbox(BaseSandbox):
         ready = False
         while asyncio.get_event_loop().time() < deadline:
             try:
-                result = await _run_cli(
-                    "exec", self._container_name, "true", timeout=5
-                )
+                result = await _run_cli("exec", self._container_name, "true", timeout=5)
                 if result.return_code == 0:
                     ready = True
                     break
@@ -279,7 +287,8 @@ class AppleContainerSandbox(BaseSandbox):
             self.logger.error(
                 "Container %s exited early with code %d (128 = kalloc crash). "
                 "Reboot may be required.",
-                self._container_name, returncode,
+                self._container_name,
+                returncode,
             )
 
     async def exec(
@@ -344,20 +353,25 @@ class AppleContainerSandbox(BaseSandbox):
         target_dir = os.path.dirname(target_path) or "/"
         cmd = f"mkdir -p {shlex.quote(target_dir)} && base64 -d > {shlex.quote(target_path)}"
         result = await _run_cli(
-            "exec", "-i", self._container_name, "sh", "-c", cmd,
+            "exec",
+            "-i",
+            self._container_name,
+            "sh",
+            "-c",
+            cmd,
             stdin_data=encoded.encode(),
             timeout=60,
         )
         if result.return_code != 0:
-            raise RuntimeError(
-                f"upload_file failed: {result.stderr or result.stdout}"
-            )
+            raise RuntimeError(f"upload_file failed: {result.stderr or result.stdout}")
 
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"
     ) -> None:
         if service != "main":
-            raise ValueError("apple-container is single-container; service must be 'main'.")
+            raise ValueError(
+                "apple-container is single-container; service must be 'main'."
+            )
         source_dir = Path(source_dir)
         if not self._container_name:
             raise RuntimeError("Container not started.")
@@ -389,9 +403,7 @@ class AppleContainerSandbox(BaseSandbox):
                 tasks.append(_upload_one(src, rel))
         await asyncio.gather(*tasks)
 
-    async def download_file(
-        self, source_path: str, target_path: Path | str
-    ) -> None:
+    async def download_file(self, source_path: str, target_path: Path | str) -> None:
         target_path = Path(target_path)
         if not self._container_name:
             raise RuntimeError("Container not started.")
@@ -405,8 +417,10 @@ class AppleContainerSandbox(BaseSandbox):
 
         # Fallback: base64 through exec stdout
         result = await _run_cli(
-            "exec", self._container_name,
-            "base64", source_path,
+            "exec",
+            self._container_name,
+            "base64",
+            source_path,
             timeout=60,
         )
         if result.return_code != 0:
@@ -420,7 +434,9 @@ class AppleContainerSandbox(BaseSandbox):
         self, source_dir: str, target_dir: Path | str, service: str = "main"
     ) -> None:
         if service != "main":
-            raise ValueError("apple-container is single-container; service must be 'main'.")
+            raise ValueError(
+                "apple-container is single-container; service must be 'main'."
+            )
         target_dir = Path(target_dir)
         if not self._container_name:
             raise RuntimeError("Container not started.")
@@ -499,6 +515,6 @@ class AppleContainerSandbox(BaseSandbox):
             if container_path == prefix:
                 return host_base
             if container_path.startswith(prefix + "/"):
-                rel = container_path[len(prefix) + 1:]
+                rel = container_path[len(prefix) + 1 :]
                 return host_base / rel
         return None

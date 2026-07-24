@@ -152,9 +152,15 @@ class TestPreflight:
     def test_rejects_exhausted_kalloc(self):
         with (
             patch("benchflow.sandbox.apple_container.sys") as mock_sys,
-            patch("benchflow.sandbox.apple_container.shutil.which", return_value="/usr/bin/container"),
+            patch(
+                "benchflow.sandbox.apple_container.shutil.which",
+                return_value="/usr/bin/container",
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
-            patch("benchflow.sandbox.apple_container._kalloc_headroom", return_value=(7_900_000, 100_000)),
+            patch(
+                "benchflow.sandbox.apple_container._kalloc_headroom",
+                return_value=(7_900_000, 100_000),
+            ),
             patch("benchflow.sandbox.apple_container._disk_free_gb", return_value=50.0),
         ):
             mock_sys.platform = "darwin"
@@ -166,10 +172,14 @@ class TestPreflight:
 
 
 class TestValidateDefinition:
-    def test_rejects_amd64_dockerfile(self, tmp_path, mock_rollout_paths, mock_env_config):
+    def test_rejects_amd64_dockerfile(
+        self, tmp_path, mock_rollout_paths, mock_env_config
+    ):
         env_dir = tmp_path / "env"
         env_dir.mkdir()
-        (env_dir / "Dockerfile").write_text("FROM --platform=linux/amd64 ubuntu:24.04\n")
+        (env_dir / "Dockerfile").write_text(
+            "FROM --platform=linux/amd64 ubuntu:24.04\n"
+        )
         with (
             patch.object(AppleContainerSandbox, "preflight"),
             pytest.raises(ValueError, match="arm64"),
@@ -182,7 +192,9 @@ class TestValidateDefinition:
                 task_env_config=mock_env_config,
             )
 
-    def test_rejects_no_dockerfile_no_image(self, tmp_path, mock_rollout_paths, mock_env_config):
+    def test_rejects_no_dockerfile_no_image(
+        self, tmp_path, mock_rollout_paths, mock_env_config
+    ):
         env_dir = tmp_path / "env"
         env_dir.mkdir()
         mock_env_config.docker_image = None
@@ -206,7 +218,9 @@ class TestExec:
     @pytest.mark.asyncio
     async def test_basic_exec_argv(self, sandbox):
         with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(stdout="ok\n", stderr=None, return_code=0)
+            mock_cli.return_value = ExecResult(
+                stdout="ok\n", stderr=None, return_code=0
+            )
             result = await sandbox.exec("echo hello")
         mock_cli.assert_called_once_with(
             "exec", "bf_sess-001", "sh", "-c", "echo hello", timeout=None
@@ -217,7 +231,9 @@ class TestExec:
     @pytest.mark.asyncio
     async def test_exec_with_cwd(self, sandbox):
         with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(stdout="/app\n", stderr=None, return_code=0)
+            mock_cli.return_value = ExecResult(
+                stdout="/app\n", stderr=None, return_code=0
+            )
             await sandbox.exec("pwd", cwd="/app")
         args = mock_cli.call_args[0]
         assert "cd /app && pwd" in args[4]
@@ -225,7 +241,9 @@ class TestExec:
     @pytest.mark.asyncio
     async def test_exec_with_user(self, sandbox):
         with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(stdout="uid=1000\n", stderr=None, return_code=0)
+            mock_cli.return_value = ExecResult(
+                stdout="uid=1000\n", stderr=None, return_code=0
+            )
             await sandbox.exec("id", user="testuser")
         args = mock_cli.call_args[0]
         assert "su testuser -s /bin/sh -c" in args[4]
@@ -248,8 +266,13 @@ class TestExec:
     @pytest.mark.asyncio
     async def test_exec_timeout_triggers_cleanup(self, sandbox):
         with (
-            patch("benchflow.sandbox.apple_container._run_cli", side_effect=asyncio.TimeoutError),
-            patch.object(sandbox, "_force_cleanup", new_callable=AsyncMock) as mock_cleanup,
+            patch(
+                "benchflow.sandbox.apple_container._run_cli",
+                side_effect=asyncio.TimeoutError,
+            ),
+            patch.object(
+                sandbox, "_force_cleanup", new_callable=AsyncMock
+            ) as mock_cleanup,
             pytest.raises(RuntimeError, match="timed out"),
         ):
             await sandbox.exec("sleep 999", timeout_sec=5)
@@ -297,7 +320,9 @@ class TestFileTransfer:
         encoded = base64.b64encode(content).decode()
         target = tmp_path / "out.bin"
         with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(stdout=encoded, stderr=None, return_code=0)
+            mock_cli.return_value = ExecResult(
+                stdout=encoded, stderr=None, return_code=0
+            )
             await sandbox.download_file("/opt/data.bin", target)
         args = mock_cli.call_args[0]
         assert args[0] == "exec"

@@ -36,14 +36,17 @@ def test_providers_phrase_is_byte_identical() -> None:
     # The refactor must be behavior-preserving for every help/error string that
     # used to hand-write this phrase.
     assert providers_phrase() == "docker, daytona, modal, or apple-container"
-    assert providers_phrase(quote=True) == "'docker', 'daytona', 'modal', or 'apple-container'"
+    assert (
+        providers_phrase(quote=True)
+        == "'docker', 'daytona', 'modal', or 'apple-container'"
+    )
 
 
 def test_off_box_subset_is_exactly_the_cloud_providers() -> None:
     # apple-container runs on-box (host macOS micro-VM), so the off-box set is
     # only the cloud providers. Adding a provider must deliberately decide its
     # off_box_model flag — this test locks the current set.
-    assert OFF_BOX_MODEL_PROVIDERS == {"daytona", "modal"}
+    assert {"daytona", "modal"} == OFF_BOX_MODEL_PROVIDERS
 
 
 def test_no_divergent_provider_set_literal_outside_the_registry() -> None:
