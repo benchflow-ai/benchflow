@@ -224,7 +224,7 @@ def normalize_dataset_input(
 
 
 def _ping_headers(prov_name: str, protocol: str, key: str) -> dict[str, str]:
-    if protocol == "openai-completions":
+    if protocol in {"openai-completions", "openai-responses"}:
         if prov_name.startswith("azure-foundry-"):
             return {"api-key": key}
         return {"Authorization": f"Bearer {key}"}
@@ -249,14 +249,35 @@ def _openai_completion_token_limit(bare_model: str) -> dict[str, int]:
 
 def _run_path_env(model: str, env: dict[str, str], agent: str | None) -> dict[str, str]:
     """Normalize a check env with the same resolver used before real runs."""
+    normalized, _ = _run_path_env_result(model, env, agent)
+    return normalized
+
+
+def _run_path_env_result(
+    model: str, env: dict[str, str], agent: str | None
+) -> tuple[dict[str, str], CheckResult | None]:
+    """Normalize run env and preserve resolver failures as doctor rows."""
     if not agent:
-        return dict(env)
+        return dict(env), None
     from benchflow.agents.env import resolve_agent_env
 
     try:
-        return resolve_agent_env(agent, model, env)
-    except Exception:
-        return dict(env)
+        return resolve_agent_env(agent, model, env), None
+    except Exception as exc:
+        return dict(env), CheckResult(
+            "run path env",
+            False,
+            _sanitize(f"{type(exc).__name__}: {exc}"),
+        )
+
+
+def _agent_api_protocol(agent: str | None) -> str:
+    if not agent:
+        return ""
+    from benchflow.agents.registry import AGENTS
+
+    cfg = AGENTS.get(agent)
+    return (cfg.api_protocol or "") if cfg else ""
 
 
 def saved_setup_env_updates(
@@ -278,15 +299,20 @@ def saved_setup_env_updates(
     return saved
 
 
-def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
+def model_ping(
+    model: str,
+    env: dict[str, str],
+    transport=None,
+    agent: str | None = None,
+) -> CheckResult:
     """Verify key + model id + endpoint with one minimal completion.
 
     GET /models is not used: it can 200 while the actual route is broken
     (wrong model id, upstream 5xx) — a minimal completion is the cheapest
     request that exercises the full path. The endpoint uses the same
-    resolve_base_url + path-segment join as the run path, but prefers the
-    openai-completions endpoint when a provider has several — it validates
-    the key/route, not necessarily the endpoint the chosen agent will use.
+    resolve_base_url + path-segment join as the run path. When a selected
+    agent declares a provider protocol, ping that protocol so doctor/init do
+    not green-light a wire path the agent will never call.
     Provider classes the ping cannot exercise (ADC, Bedrock bearer auth) are
     skipped honestly instead of reported as failures.
     """
@@ -324,23 +350,53 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
 
     endpoints = cfg.all_endpoints
     bare_model = strip_provider_prefix(model)
-    if "openai-completions" in endpoints:
+    agent_protocol = _agent_api_protocol(agent)
+    if agent_protocol:
+        protocols = [agent_protocol]
+    else:
+        protocols = [
+            protocol
+            for protocol in (
+                "openai-completions",
+                "anthropic-messages",
+                "openai-responses",
+            )
+            if protocol in endpoints
+        ]
+    protocol = protocols[0] if protocols else ""
+    if protocol and protocol not in endpoints:
+        return CheckResult(
+            name,
+            False,
+            "selected agent requires provider protocol"
+            f" {protocol!r}, but provider exposes {sorted(endpoints)}",
+        )
+    if protocol == "openai-completions":
         protocol = "openai-completions"
-        path, ok_field = "/chat/completions", "choices"
+        path, ok_fields = "/chat/completions", {"choices"}
         headers = _ping_headers(prov_name, protocol, key)
         payload = {
             "model": bare_model,
             "messages": [{"role": "user", "content": "ping"}],
             **_openai_completion_token_limit(bare_model),
         }
-    elif "anthropic-messages" in endpoints:
+    elif protocol == "anthropic-messages":
         protocol = "anthropic-messages"
-        path, ok_field = "/v1/messages", "content"
+        path, ok_fields = "/v1/messages", {"content"}
         headers = _ping_headers(prov_name, protocol, key)
         payload = {
             "model": bare_model,
             "messages": [{"role": "user", "content": "ping"}],
             "max_tokens": 1,
+        }
+    elif protocol == "openai-responses":
+        protocol = "openai-responses"
+        path, ok_fields = "/responses", {"id", "output", "output_text"}
+        headers = _ping_headers(prov_name, protocol, key)
+        payload = {
+            "model": bare_model,
+            "input": "ping",
+            "max_output_tokens": 8,
         }
     else:
         return CheckResult(
@@ -371,7 +427,7 @@ def model_ping(model: str, env: dict[str, str], transport=None) -> CheckResult:
             body = resp.json()
         except ValueError:
             body = None
-        if isinstance(body, dict) and ok_field in body:
+        if isinstance(body, dict) and any(field in body for field in ok_fields):
             return CheckResult(name, True, f"1-token completion OK ({url})")
         return CheckResult(
             name,
@@ -398,8 +454,10 @@ def run_doctor(
     subscription setup must not be failed by checks that only understand API
     keys.
     """
-    env = _run_path_env(model, env, agent)
+    env, run_env_error = _run_path_env_result(model, env, agent)
     results: list[CheckResult] = []
+    if run_env_error:
+        results.append(run_env_error)
     if sandbox == "docker":
         from benchflow.sandbox.docker import DockerSandbox
 
@@ -491,7 +549,7 @@ def run_doctor(
             )
         )
     if not skip_ping:
-        results.append(model_ping(model, env, transport=ping_transport))
+        results.append(model_ping(model, env, transport=ping_transport, agent=agent))
     return results
 
 

@@ -318,6 +318,34 @@ class TestModelPingProviderClasses:
         assert not result.ok
         assert "\x1b" not in result.detail and "\x07" not in result.detail
 
+    def test_agent_protocol_ping_uses_responses_endpoint(self):
+        """Guards PR #883: doctor/init must ping the selected agent's wire API."""
+        import httpx
+
+        seen = {}
+
+        def handler(request):
+            import json
+
+            seen["url"] = str(request.url)
+            seen["json"] = json.loads(request.content)
+            return httpx.Response(200, json={"output": []})
+
+        result = onboarding.model_ping(
+            "openai/gpt-5.4-mini",
+            env={"OPENAI_API_KEY": "sk"},
+            transport=httpx.MockTransport(handler),
+            agent="codex-acp",
+        )
+
+        assert result.ok, result.detail
+        assert seen["url"] == "https://api.openai.com/v1/responses"
+        assert seen["json"] == {
+            "model": "gpt-5.4-mini",
+            "input": "ping",
+            "max_output_tokens": 8,
+        }
+
 
 class TestDoctorHardening:
     def test_doctor_reuses_run_path_azure_endpoint_normalization(self, monkeypatch):
@@ -382,6 +410,24 @@ class TestDoctorHardening:
         )
         row = next(r for r in results if "ANTHROPIC_API_KEY" in r.name)
         assert not row.ok  # key absent -> honest red row, not "no provider"
+
+    def test_doctor_reports_run_path_env_resolution_failure(self, monkeypatch):
+        """Guards PR #883: resolver failures must not become a green doctor."""
+        monkeypatch.setattr(
+            "benchflow.sandbox.docker.DockerSandbox.preflight", lambda: None
+        )
+
+        results = onboarding.run_doctor(
+            model="deepseek/deepseek-v4-flash",
+            sandbox="docker",
+            env={"DEEPSEEK_API_KEY": "sk"},
+            agent="codex-acp",
+            skip_ping=True,
+        )
+
+        row = next(r for r in results if r.name == "run path env")
+        assert not row.ok
+        assert "requires provider protocol" in row.detail
 
 
 class TestEnvFileDataSafety:
