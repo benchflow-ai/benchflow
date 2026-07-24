@@ -28,21 +28,22 @@ _REGISTRY = _SRC / "sandbox" / "providers.py"
 def test_registry_is_the_single_source_of_truth() -> None:
     # Locks the current set + docker-first order; adding a provider is then a
     # deliberate edit here + a test update, never a silent scatter.
-    assert SANDBOX_PROVIDERS == ("docker", "daytona", "modal")
+    assert SANDBOX_PROVIDERS == ("docker", "daytona", "modal", "apple-container")
     assert frozenset(SANDBOX_PROVIDERS) == SANDBOX_PROVIDER_SET
 
 
 def test_providers_phrase_is_byte_identical() -> None:
     # The refactor must be behavior-preserving for every help/error string that
     # used to hand-write this phrase.
-    assert providers_phrase() == "docker, daytona, or modal"
-    assert providers_phrase(quote=True) == "'docker', 'daytona', or 'modal'"
+    assert providers_phrase() == "docker, daytona, modal, or apple-container"
+    assert providers_phrase(quote=True) == "'docker', 'daytona', 'modal', or 'apple-container'"
 
 
-def test_off_box_subset_is_exactly_the_non_docker_providers() -> None:
-    # The two former {daytona, modal} frozensets are now derived; this locks the
-    # property so a 4th provider can't silently miss the off-box routing.
-    assert SANDBOX_PROVIDER_SET - {"docker"} == OFF_BOX_MODEL_PROVIDERS
+def test_off_box_subset_is_exactly_the_cloud_providers() -> None:
+    # apple-container runs on-box (host macOS micro-VM), so the off-box set is
+    # only the cloud providers. Adding a provider must deliberately decide its
+    # off_box_model flag — this test locks the current set.
+    assert OFF_BOX_MODEL_PROVIDERS == {"daytona", "modal"}
 
 
 def test_no_divergent_provider_set_literal_outside_the_registry() -> None:
