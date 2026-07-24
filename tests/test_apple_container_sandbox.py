@@ -28,9 +28,10 @@ from benchflow.sandbox.apple_container import (
 @pytest.fixture
 def mock_rollout_paths(tmp_path):
     paths = MagicMock()
-    paths.verifier_dir = tmp_path / "verifier"
-    paths.agent_dir = tmp_path / "agent"
-    paths.artifacts_dir = tmp_path / "artifacts"
+    paths.rollout_dir = tmp_path / "rollout"
+    paths.verifier_dir = tmp_path / "rollout" / "verifier"
+    paths.agent_dir = tmp_path / "rollout" / "agent"
+    paths.artifacts_dir = tmp_path / "rollout" / "artifacts"
     return paths
 
 
@@ -373,9 +374,10 @@ class TestIntegrationLifecycle:
         config.gpus = None
 
         paths = MagicMock()
-        paths.verifier_dir = tmp_path / "logs" / "verifier"
-        paths.agent_dir = tmp_path / "logs" / "agent"
-        paths.artifacts_dir = tmp_path / "logs" / "artifacts"
+        paths.rollout_dir = tmp_path / "rollout"
+        paths.verifier_dir = tmp_path / "rollout" / "verifier"
+        paths.agent_dir = tmp_path / "rollout" / "agent"
+        paths.artifacts_dir = tmp_path / "rollout" / "artifacts"
 
         AppleContainerSandbox.preflight()
         sb = AppleContainerSandbox(

@@ -204,18 +204,17 @@ class AppleContainerSandbox(BaseSandbox):
             for k, v in env.items():
                 cmd_args.extend(["-e", f"{k}={v}"])
 
-        # Bind mounts for rollout paths
+        # Bind mount: rollout_dir as /logs so subdirectories (verifier/, agent/,
+        # artifacts/) are regular dirs inside the mount — chmod works on them
+        # unlike the mount point itself. Output lands where benchflow expects.
         if self.rollout_paths:
-            mounts = [
-                (str(self.rollout_paths.verifier_dir), "/logs/verifier"),
-                (str(self.rollout_paths.agent_dir), "/logs/agent"),
-                (str(self.rollout_paths.artifacts_dir), "/logs/artifacts"),
-            ]
-            for host_path, container_path in mounts:
-                os.makedirs(host_path, exist_ok=True)
-                cmd_args.extend([
-                    "--mount", f"type=bind,source={host_path},target={container_path}"
-                ])
+            logs_dir = self.rollout_paths.rollout_dir
+            for sub in ("verifier", "agent", "artifacts"):
+                os.makedirs(logs_dir / sub, exist_ok=True)
+                os.chmod(logs_dir / sub, 0o777)
+            cmd_args.extend([
+                "--mount", f"type=bind,source={logs_dir},target=/logs"
+            ])
 
         # Mount environment dir as working directory
         if self.environment_dir.exists():
@@ -495,9 +494,7 @@ class AppleContainerSandbox(BaseSandbox):
         """Map a container path to host path if it's under a bind mount."""
         mount_map: dict[str, Path] = {"/app": self.environment_dir}
         if self.rollout_paths:
-            mount_map["/logs/verifier"] = self.rollout_paths.verifier_dir
-            mount_map["/logs/agent"] = self.rollout_paths.agent_dir
-            mount_map["/logs/artifacts"] = self.rollout_paths.artifacts_dir
+            mount_map["/logs"] = self.rollout_paths.rollout_dir
         for prefix, host_base in mount_map.items():
             if container_path == prefix:
                 return host_base
