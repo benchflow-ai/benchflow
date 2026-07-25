@@ -34,12 +34,12 @@ This backend makes `bench eval run --sandbox apple-container` work natively on M
 | `src/benchflow/sandbox/providers.py` | Registry entry: `SandboxProvider("apple-container", ...)` |
 | `src/benchflow/sandbox/setup.py` | Factory dispatch: `elif sandbox_type == "apple-container"` |
 | `pyproject.toml` | Empty extra `sandbox-apple-container = []` (uses system CLI, no SDK) |
-| `tests/test_apple_container_sandbox.py` | 28 unit tests (mocked subprocess, runs on any platform) + gated integration test |
+| `tests/test_apple_container_sandbox.py` | 31 unit tests (mocked subprocess, runs on any platform) + gated integration test |
 | `tests/test_sandbox_provider_registry_drift.py` | Updated assertions for 4-provider registry |
 
 ## Testing
 
-**Unit tests (28, any platform):**
+**Unit tests (31, any platform):**
 - kalloc zprint parsing (healthy, exhausted, failure)
 - Dockerfile arm64 validation (clean, `--platform=linux/amd64`, `x86_64`)
 - Preflight gates (non-darwin, missing CLI, kalloc exhausted)
