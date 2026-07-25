@@ -68,14 +68,15 @@ class TestEvalCreateRouting:
             pytest.param(["environment", "create", "--help"], id="environment-create"),
         ],
     )
-    def test_sandbox_help_matches_v04_supported_backends(self, command):
-        """Guards ENG-92 CLI help does not advertise future sandbox backends."""
+    def test_sandbox_help_matches_registered_backends(self, command):
+        """Guards ENG-92 CLI help against drifting from the sandbox registry."""
         from benchflow.cli.main import app
+        from benchflow.sandbox.providers import providers_phrase
 
         result = CliRunner().invoke(app, command)
 
         assert result.exit_code == 0
-        assert "Sandbox: docker, daytona, or modal" in result.stdout
+        assert f"Sandbox: {providers_phrase()}" in result.stdout
         assert "firecracker" not in result.stdout.lower()
         assert "kubernetes" not in result.stdout.lower()
         assert "k8s" not in result.stdout.lower()

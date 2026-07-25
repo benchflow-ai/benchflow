@@ -64,6 +64,7 @@ $ bench eval run --tasks-dir tasks/sales-pivot-analysis --agent oracle --sandbox
 - **kalloc.1024 leak:** Each container start/stop leaks ~100k kernel zone elements. After ~10-12 evaluations, reboot to reclaim. The backend detects exhaustion and fails fast with actionable guidance.
 - **No snapshot support.** `supports_snapshot=False` — Branch substrate requires Docker or Daytona.
 - **Single-container only.** Multi-service (vulhub-style) tasks require the Docker backend.
+- **Public-network tasks only for now.** Tasks declaring `network_mode = "no-network"` fail closed because the backend does not yet enforce VM network isolation.
 
 ## Test plan
 

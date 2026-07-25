@@ -14,7 +14,8 @@ import shlex
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import TextIO
 
 from benchflow.sandbox._base import BaseSandbox, ExecResult, wrap_command_with_env_file
 
@@ -36,7 +37,7 @@ def _kalloc_headroom() -> tuple[int, int]:
             if line.startswith("data.kalloc.1024"):
                 parts = line.split()
                 if len(parts) >= 7:
-                    elts = int(parts[6])
+                    elts = int(parts[4])
                     return elts, _KALLOC_THRESHOLD - elts
     except (subprocess.TimeoutExpired, ValueError, IndexError, OSError):
         pass
@@ -95,7 +96,7 @@ class AppleContainerSandbox(BaseSandbox):
     _container_name: str | None = None
     _bg_proc: asyncio.subprocess.Process | None = None
     _watcher_task: asyncio.Task | None = None
-    _log_file: object | None = None
+    _log_file: TextIO | None = None
 
     @property
     def is_mounted(self) -> bool:
@@ -148,6 +149,12 @@ class AppleContainerSandbox(BaseSandbox):
                 f"Dockerfile at {dockerfile} contains amd64/x86_64 references. "
                 "Apple Container only supports arm64 images. Remove --platform "
                 "flags and architecture-specific references."
+            )
+        if not self.task_env_config.allow_internet:
+            raise ValueError(
+                "apple-container does not currently enforce no-network sandboxing. "
+                "Use docker, daytona, or modal for tasks that require "
+                "environment.network_mode='no-network'."
             )
 
     def _image_tag(self) -> str:
@@ -218,15 +225,6 @@ class AppleContainerSandbox(BaseSandbox):
                 os.makedirs(logs_dir / sub, exist_ok=True)
                 os.chmod(logs_dir / sub, 0o777)
             cmd_args.extend(["--mount", f"type=bind,source={logs_dir},target=/logs"])
-
-        # Mount environment dir as working directory
-        if self.environment_dir.exists():
-            cmd_args.extend(
-                [
-                    "--mount",
-                    f"type=bind,source={self.environment_dir},target=/app",
-                ]
-            )
 
         # Skills directory mount
         skills_dir = self.task_env_config.skills_dir
@@ -508,13 +506,32 @@ class AppleContainerSandbox(BaseSandbox):
 
     def _mounted_host_path(self, container_path: str) -> Path | None:
         """Map a container path to host path if it's under a bind mount."""
-        mount_map: dict[str, Path] = {"/app": self.environment_dir}
+        mount_map: dict[str, Path] = {}
         if self.rollout_paths:
             mount_map["/logs"] = self.rollout_paths.rollout_dir
+        path = PurePosixPath(container_path)
+        if not path.is_absolute():
+            return None
         for prefix, host_base in mount_map.items():
-            if container_path == prefix:
-                return host_base
-            if container_path.startswith(prefix + "/"):
-                rel = container_path[len(prefix) + 1 :]
-                return host_base / rel
+            prefix_path = PurePosixPath(prefix)
+            prefix_parts = prefix_path.parts
+            if path == prefix_path:
+                rel_parts: tuple[str, ...] = ()
+            elif path.parts[: len(prefix_parts)] == prefix_parts:
+                rel_parts = path.parts[len(prefix_parts) :]
+            else:
+                continue
+            if any(part == ".." for part in rel_parts):
+                raise ValueError(
+                    f"Unsafe mounted path escapes {prefix}: {container_path!r}"
+                )
+            host_root = host_base.resolve()
+            candidate = host_root.joinpath(*rel_parts).resolve(strict=False)
+            try:
+                candidate.relative_to(host_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Unsafe mounted path escapes {prefix}: {container_path!r}"
+                ) from exc
+            return candidate
         return None

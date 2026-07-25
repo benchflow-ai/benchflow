@@ -261,6 +261,13 @@ def _append_network_issue(
     mode: NetworkMode | None,
     sandbox: str,
 ) -> None:
+    if sandbox == "apple-container" and mode == NetworkMode.NO_NETWORK:
+        _issue(
+            unsupported,
+            path=path,
+            reason="network_mode='no-network' is not enforced by apple-container",
+            sandbox=sandbox,
+        )
     if mode == NetworkMode.ALLOWLIST:
         _issue(
             unsupported,

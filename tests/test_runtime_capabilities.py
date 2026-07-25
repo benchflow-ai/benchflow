@@ -159,7 +159,21 @@ def test_validator_reports_unknown_sandbox_backend() -> None:
     assert [(issue.path, issue.reason) for issue in issues] == [
         (
             "sandbox",
-            "unknown sandbox backend; use docker, daytona, or modal",
+            "unknown sandbox backend; use docker, daytona, modal, or apple-container",
+        )
+    ]
+
+
+def test_validator_reports_apple_container_no_network_gap() -> None:
+    """Guards PR #936 against silently launching no-network tasks on Apple Container."""
+    config = TaskConfig.model_validate({"environment": {"network_mode": "no-network"}})
+
+    issues = validate_task_runtime_support(config, sandbox="apple-container")
+
+    assert [(issue.path, issue.reason) for issue in issues] == [
+        (
+            "environment.network_mode",
+            "network_mode='no-network' is not enforced by apple-container",
         )
     ]
 

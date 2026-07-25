@@ -44,6 +44,8 @@ def mock_env_config():
     config.env = None
     config.skills_dir = None
     config.build_timeout_sec = 60
+    config.allow_internet = True
+    config.network_mode = "public"
     config.storage_mb = None
     config.gpus = None
     return config
@@ -89,8 +91,8 @@ class TestKallocHeadroom:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout=zprint_output)
             elts, headroom = _kalloc_headroom()
-        assert elts == 8000000
-        assert headroom == 0
+        assert elts == 5000000
+        assert headroom == 3000000
 
     def test_healthy_headroom(self):
         zprint_output = "data.kalloc.1024          3000000    3000000       1024   3000000   0  3000000\n"
@@ -210,6 +212,59 @@ class TestValidateDefinition:
                 task_env_config=mock_env_config,
             )
 
+    def test_rejects_no_network_config(
+        self, tmp_path, mock_rollout_paths, mock_env_config
+    ):
+        """Guards PR #936 against silently running no-network tasks with public egress."""
+        env_dir = tmp_path / "env"
+        env_dir.mkdir()
+        (env_dir / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        mock_env_config.allow_internet = False
+        mock_env_config.network_mode = "no-network"
+        with (
+            patch.object(AppleContainerSandbox, "preflight"),
+            pytest.raises(ValueError, match="does not currently enforce no-network"),
+        ):
+            AppleContainerSandbox(
+                environment_dir=env_dir,
+                environment_name="no-network-task",
+                session_id="s1",
+                rollout_paths=mock_rollout_paths,
+                task_env_config=mock_env_config,
+            )
+
+
+# --- Start/lifecycle contract ---
+
+
+class TestStart:
+    @pytest.mark.asyncio
+    async def test_start_mounts_logs_but_not_app(self, sandbox):
+        """Guards PR #936 against mounting task sources over /app."""
+        with (
+            patch.object(sandbox, "_build_image", new_callable=AsyncMock) as mock_build,
+            patch(
+                "benchflow.sandbox.apple_container._kalloc_headroom",
+                return_value=(3_000_000, 5_000_000),
+            ),
+            patch("benchflow.sandbox.apple_container._run_cli") as mock_cli,
+            patch(
+                "benchflow.sandbox.apple_container.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_subproc,
+        ):
+            mock_build.return_value = "ubuntu:24.04"
+            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
+            mock_subproc.return_value = _mock_proc()
+
+            await sandbox.start(force_build=False)
+
+        launched_args = mock_subproc.call_args.args
+        assert launched_args[:2] == ("container", "run")
+        joined = "\n".join(str(arg) for arg in launched_args)
+        assert "target=/logs" in joined
+        assert "target=/app" not in joined
+
 
 # --- Exec argv construction ---
 
@@ -292,6 +347,22 @@ class TestFileTransfer:
         mock_copy.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_upload_to_app_uses_exec_not_host_copy(self, sandbox, tmp_path):
+        """Guards PR #936 against writing agent files back into the task source tree."""
+        src = tmp_path / "src.txt"
+        src.write_text("data")
+        with (
+            patch("shutil.copy2") as mock_copy,
+            patch("benchflow.sandbox.apple_container._run_cli") as mock_cli,
+        ):
+            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
+            await sandbox.upload_file(src, "/app/out.txt")
+
+        mock_copy.assert_not_called()
+        args = mock_cli.call_args[0]
+        assert args[:3] == ("exec", "-i", "bf_sess-001")
+
+    @pytest.mark.asyncio
     async def test_upload_to_unmounted_uses_exec_i(self, sandbox, tmp_path):
         src = tmp_path / "src.txt"
         src.write_text("hello")
@@ -313,6 +384,11 @@ class TestFileTransfer:
         with patch("shutil.copy2") as mock_copy:
             await sandbox.download_file("/logs/verifier/reward.txt", target)
         mock_copy.assert_called_once()
+
+    def test_mounted_path_rejects_parent_traversal(self, sandbox):
+        """Guards PR #936 against /logs host-path escape through .. segments."""
+        with pytest.raises(ValueError, match="Unsafe mounted path escapes /logs"):
+            sandbox._mounted_host_path("/logs/../../outside")
 
     @pytest.mark.asyncio
     async def test_download_from_unmounted_uses_base64(self, sandbox, tmp_path):
