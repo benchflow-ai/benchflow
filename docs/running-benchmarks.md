@@ -348,11 +348,13 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 | Daytona | `--sandbox daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
 | Modal | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
 
-Apple Container uses macOS's `container` CLI. It currently supports public-network,
-single-container arm64 tasks, has no snapshot support, and should be run at low
-concurrency because macOS leaks `data.kalloc.1024` elements across VM starts. Use
-Docker, Daytona, or Modal for `network_mode = "no-network"`, multi-service, snapshot,
-or high-concurrency runs.
+Apple Container requires Apple Container 1.1+ on Apple Silicon and runs the model
+proxy inside each VM. It supports public-network, single-container arm64 tasks and
+has no snapshot support. BenchFlow serializes Apple rollouts within each process
+and blocks new VMs when the live `data.kalloc.1024` headroom is unsafe. Avoid
+running concurrent BenchFlow processes, because the macOS allocation leak is
+system-wide. Use Docker, Daytona, or Modal for `network_mode = "no-network"`,
+multi-service, snapshot, or high-concurrency runs.
 
 For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 

@@ -19,6 +19,14 @@ against this registry rather than re-listing the names.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
+
+
+class ModelProxyLocation(StrEnum):
+    """Where BenchFlow runs the mandatory LiteLLM proxy for a sandbox."""
+
+    HOST = "host"
+    SANDBOX = "sandbox"
 
 
 @dataclass(frozen=True)
@@ -26,17 +34,33 @@ class SandboxProvider:
     """One sandbox backend and the facts that were previously duplicated."""
 
     name: str
-    extra: str | None  # pip/uv optional-dependency extra; None for built-in docker
-    off_box_model: bool  # model traffic exits the sandbox → host proxy (not docker)
+    extra: str | None  # pip/uv optional-dependency extra; None when none is needed
+    model_proxy: ModelProxyLocation
+
+    @property
+    def off_box_model(self) -> bool:
+        """Backward-compatible alias for the old, ambiguously named flag."""
+
+        return self.model_proxy is ModelProxyLocation.SANDBOX
 
 
 # Ordered, docker-first. This tuple is the ONLY place the set is spelled out.
 _PROVIDERS: tuple[SandboxProvider, ...] = (
-    SandboxProvider("docker", extra=None, off_box_model=False),
-    SandboxProvider("daytona", extra="sandbox-daytona", off_box_model=True),
-    SandboxProvider("modal", extra="sandbox-modal", off_box_model=True),
+    SandboxProvider("docker", extra=None, model_proxy=ModelProxyLocation.HOST),
     SandboxProvider(
-        "apple-container", extra="sandbox-apple-container", off_box_model=False
+        "daytona",
+        extra="sandbox-daytona",
+        model_proxy=ModelProxyLocation.SANDBOX,
+    ),
+    SandboxProvider(
+        "modal",
+        extra="sandbox-modal",
+        model_proxy=ModelProxyLocation.SANDBOX,
+    ),
+    SandboxProvider(
+        "apple-container",
+        extra=None,
+        model_proxy=ModelProxyLocation.SANDBOX,
     ),
 )
 
@@ -50,10 +74,12 @@ SANDBOX_PROVIDER_SET: frozenset[str] = frozenset(SANDBOX_PROVIDERS)
 OPTIONAL_SANDBOX_EXTRAS: dict[str, str] = {
     p.name: p.extra for p in _PROVIDERS if p.extra is not None
 }
-#: Providers whose model traffic must reach the host proxy off-box (≡ non-docker).
-OFF_BOX_MODEL_PROVIDERS: frozenset[str] = frozenset(
-    p.name for p in _PROVIDERS if p.off_box_model
+#: Providers whose LiteLLM proxy must run inside the sandbox.
+SANDBOX_MODEL_PROXY_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if p.model_proxy is ModelProxyLocation.SANDBOX
 )
+# Backward-compatible import alias. New code uses the literal placement contract.
+OFF_BOX_MODEL_PROVIDERS = SANDBOX_MODEL_PROXY_PROVIDERS
 
 
 def is_known_provider(name: str) -> bool:
@@ -62,7 +88,7 @@ def is_known_provider(name: str) -> bool:
 
 
 def provider_extra(name: str) -> str | None:
-    """The optional-dependency extra for ``name`` (None for docker/unknown)."""
+    """The optional-dependency extra for ``name`` (None if absent/unknown)."""
     p = PROVIDERS_BY_NAME.get(name)
     return p.extra if p else None
 

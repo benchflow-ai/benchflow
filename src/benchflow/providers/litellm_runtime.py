@@ -49,7 +49,7 @@ from benchflow.providers.litellm_logging import (
     extract_usage_from_trajectory,
     trajectory_from_litellm_callback_log,
 )
-from benchflow.sandbox.providers import OFF_BOX_MODEL_PROVIDERS
+from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
@@ -80,9 +80,10 @@ _LIVE_CAPTURE_INTERVAL_SEC = 1.0
 # GenerateContent format), so they talk to their provider directly and report
 # usage_source='unavailable'. ``oracle`` has no model at all.
 _NATIVE_PROTOCOL_AGENTS = frozenset({"oracle", "gemini"})
-# Providers whose model traffic exits the sandbox to the host proxy (≡ non-docker);
-# derived from the canonical registry so it can't drift from the provider set.
-_SANDBOX_LOCAL_ENVIRONMENTS = OFF_BOX_MODEL_PROVIDERS
+# Providers whose mandatory LiteLLM proxy runs inside the sandbox. Keeping this
+# placement policy in the canonical provider registry prevents a new backend from
+# accidentally handing an in-sandbox agent a host-loopback endpoint.
+_SANDBOX_LOCAL_ENVIRONMENTS = SANDBOX_MODEL_PROXY_PROVIDERS
 
 
 @dataclass(frozen=True)

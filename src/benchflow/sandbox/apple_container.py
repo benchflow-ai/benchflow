@@ -1,47 +1,119 @@
 """Apple Container sandbox backend using macOS Virtualization.framework.
 
-Uses the system `container` CLI to run tasks in lightweight micro-VMs.
-Requires macOS with Apple Silicon and the container system service running.
+The backend targets Apple Container 1.1+ on Apple silicon. It delegates process
+placement, detached lifecycle, and file transfer to the native CLI instead of
+reimplementing those primitives with host subprocess state or shell pipelines.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
+import json
 import os
+import platform
 import re
 import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
-from typing import TextIO
 
 from benchflow.sandbox._base import BaseSandbox, ExecResult, wrap_command_with_env_file
 
-_KALLOC_THRESHOLD = 8_000_000
+_MIN_CONTAINER_VERSION = (1, 1, 0)
+_KALLOC_SAFE_LIMIT = 3_000_000
 _KALLOC_MIN_HEADROOM = 200_000
 _DISK_MIN_GB = 5.0
 _STARTUP_TIMEOUT = 30
 _STOP_TIMEOUT = 30
-_AMD64_PATTERN = re.compile(r"amd64|x86_64|--platform=linux/amd64", re.IGNORECASE)
+
+# Apple Container currently leaks data.kalloc.1024 allocations across VM
+# lifecycles. One active sandbox per BenchFlow process keeps the headroom check
+# and launch atomic and matches the provider's documented safety envelope.
+_RUN_SLOT = asyncio.Semaphore(1)
+
+
+def _parse_version(value: str) -> tuple[int, int, int] | None:
+    match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)", value)
+    if not match:
+        return None
+    return (
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3)),
+    )
+
+
+def _container_cli_version() -> tuple[int, int, int] | None:
+    """Read the Apple Container CLI version from its machine-readable output."""
+
+    try:
+        result = subprocess.run(
+            ["container", "system", "version", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, OSError, subprocess.TimeoutExpired):
+        return None
+
+    rows = payload if isinstance(payload, list) else [payload]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        app_name = str(row.get("appName", "")).lower()
+        if app_name in {"container", "container cli"}:
+            return _parse_version(str(row.get("version", "")))
+    return None
 
 
 def _kalloc_headroom() -> tuple[int, int]:
-    """Return (current_elements, headroom) for data.kalloc.1024 zone."""
+    """Return current in-use elements and safe headroom for data.kalloc.1024.
+
+    macOS 26 ``zprint`` emits this row shape when headings are disabled:
+
+    ``name elem_size cur_size max_size cur_elts max_elts cur_inuse ...``
+
+    ``cur_inuse`` is the live allocation count relevant to the Apple Container
+    VM leak. Keeping the real schema in this parser avoids the fictional
+    ``elems/maxelts`` fixture that previously selected the wrong column.
+    """
+
     try:
-        out = subprocess.run(
-            ["zprint"], capture_output=True, text=True, timeout=5
-        ).stdout
-        for line in out.splitlines():
-            if line.startswith("data.kalloc.1024"):
-                parts = line.split()
-                if len(parts) >= 7:
-                    elts = int(parts[4])
-                    return elts, _KALLOC_THRESHOLD - elts
-    except (subprocess.TimeoutExpired, ValueError, IndexError, OSError):
+        result = subprocess.run(
+            ["zprint", "-H", "-L", "data.kalloc.1024"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return -1, -1
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if parts and parts[0] == "data.kalloc.1024" and len(parts) >= 7:
+                current_inuse = int(parts[6])
+                return current_inuse, _KALLOC_SAFE_LIMIT - current_inuse
+    except (OSError, subprocess.TimeoutExpired, ValueError):
         pass
     return -1, -1
+
+
+def _require_kalloc_headroom() -> None:
+    current, headroom = _kalloc_headroom()
+    if current < 0:
+        raise RuntimeError(
+            "Unable to read data.kalloc.1024 usage from zprint. "
+            "Apple Container launch is blocked because VM headroom cannot be verified."
+        )
+    if headroom < _KALLOC_MIN_HEADROOM:
+        raise RuntimeError(
+            "data.kalloc.1024 is near the safe Apple Container limit "
+            f"(in_use={current}, headroom={headroom}). Reboot your Mac before "
+            "starting another sandbox."
+        )
 
 
 def _disk_free_gb() -> float:
@@ -49,24 +121,16 @@ def _disk_free_gb() -> float:
     return usage.free / (1024**3)
 
 
-def _dockerfile_is_arm64_clean(path: Path) -> bool:
-    """Reject Dockerfiles with amd64/x86_64 assumptions."""
-    try:
-        content = path.read_text()
-        return not _AMD64_PATTERN.search(content)
-    except OSError:
-        return True
-
-
 async def _run_cli(
     *args: str,
     timeout: float | None = None,
     stdin_data: bytes | None = None,
 ) -> ExecResult:
-    """Run a `container` CLI command asynchronously."""
-    cmd = ["container", *args]
+    """Run an Apple ``container`` CLI command asynchronously."""
+
     proc = await asyncio.create_subprocess_exec(
-        *cmd,
+        "container",
+        *args,
         stdin=asyncio.subprocess.PIPE if stdin_data is not None else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -82,21 +146,19 @@ async def _run_cli(
     return ExecResult(
         stdout=stdout.decode(errors="replace") if stdout else None,
         stderr=stderr.decode(errors="replace") if stderr else None,
-        return_code=proc.returncode or 0,
+        return_code=proc.returncode if proc.returncode is not None else 1,
     )
 
 
-class AppleContainerSandbox(BaseSandbox):
-    """Sandbox backend using Apple's `container` CLI (Virtualization.framework micro-VMs).
+def _failure_output(result: ExecResult) -> str:
+    return (result.stderr or result.stdout or "no command output").strip()
 
-    Runs each task in an isolated arm64 Linux micro-VM. The VM stays alive
-    via `sleep infinity` and commands are executed through `container exec`.
-    """
+
+class AppleContainerSandbox(BaseSandbox):
+    """Sandbox backend for Apple Container 1.1+ micro-VMs."""
 
     _container_name: str | None = None
-    _bg_proc: asyncio.subprocess.Process | None = None
-    _watcher_task: asyncio.Task | None = None
-    _log_file: TextIO | None = None
+    _holds_run_slot: bool = False
 
     @property
     def is_mounted(self) -> bool:
@@ -112,28 +174,47 @@ class AppleContainerSandbox(BaseSandbox):
             raise RuntimeError(
                 "apple-container sandbox requires macOS (Virtualization.framework)"
             )
+        if platform.machine().lower() not in {"arm64", "aarch64"}:
+            raise RuntimeError("apple-container sandbox requires Apple silicon")
         if not shutil.which("container"):
             raise RuntimeError(
-                "container CLI not found. Install Apple Container: "
-                "https://developer.apple.com/documentation/virtualization"
+                "container CLI not found. Install Apple Container 1.1 or newer: "
+                "https://github.com/apple/container/releases"
             )
-        result = subprocess.run(
-            ["container", "ls"], capture_output=True, text=True, timeout=10
-        )
+
+        version = _container_cli_version()
+        if version is None:
+            raise RuntimeError(
+                "Unable to determine Apple Container CLI version with "
+                "`container system version --format json`."
+            )
+        if version < _MIN_CONTAINER_VERSION:
+            actual = ".".join(str(part) for part in version)
+            required = ".".join(str(part) for part in _MIN_CONTAINER_VERSION)
+            raise RuntimeError(
+                f"Apple Container {required}+ is required; found {actual}. "
+                "Upgrade with `/usr/local/bin/update-container.sh`."
+            )
+
+        try:
+            result = subprocess.run(
+                ["container", "ls"], capture_output=True, text=True, timeout=10
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(
+                f"Unable to query the Apple Container service: {exc}"
+            ) from exc
         if result.returncode != 0:
             raise RuntimeError(
-                f"container system not running. Start it with: container system start\n"
+                "container system not running. Start it with: container system start\n"
                 f"Error: {result.stderr.strip()}"
             )
-        _, headroom = _kalloc_headroom()
-        if headroom >= 0 and headroom < _KALLOC_MIN_HEADROOM:
+
+        _require_kalloc_headroom()
+        free_gb = _disk_free_gb()
+        if free_gb < _DISK_MIN_GB:
             raise RuntimeError(
-                f"kalloc zone nearly exhausted (headroom={headroom}). "
-                "Reboot your Mac to reclaim kernel memory before running containers."
-            )
-        if _disk_free_gb() < _DISK_MIN_GB:
-            raise RuntimeError(
-                f"Insufficient disk space ({_disk_free_gb():.1f}GB free, "
+                f"Insufficient disk space ({free_gb:.1f}GB free, "
                 f"need >{_DISK_MIN_GB}GB for container images and VM storage."
             )
 
@@ -144,16 +225,6 @@ class AppleContainerSandbox(BaseSandbox):
                 f"No Dockerfile found in {self.environment_dir} and no "
                 "docker_image specified in task config."
             )
-        if (
-            dockerfile.exists()
-            and not self.task_env_config.docker_image
-            and not _dockerfile_is_arm64_clean(dockerfile)
-        ):
-            raise ValueError(
-                f"Dockerfile at {dockerfile} contains amd64/x86_64 references. "
-                "Apple Container only supports arm64 images. Remove --platform "
-                "flags and architecture-specific references."
-            )
         if not self.task_env_config.allow_internet:
             raise ValueError(
                 "apple-container does not currently enforce no-network sandboxing. "
@@ -162,12 +233,11 @@ class AppleContainerSandbox(BaseSandbox):
             )
 
     def _image_tag(self) -> str:
-        return f"bf__{self.environment_name}".replace("/", "_").replace(":", "_")
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", self.environment_name)
+        return f"bf__{safe_name}"
 
     async def _resolve_image(self, *, force_build: bool) -> str:
-        tag = self._image_tag()
         dockerfile = self.environment_dir / "Dockerfile"
-
         if self.task_env_config.docker_image and not force_build:
             return self.task_env_config.docker_image
         if not dockerfile.exists():
@@ -175,130 +245,115 @@ class AppleContainerSandbox(BaseSandbox):
                 f"No Dockerfile found in {self.environment_dir}; "
                 "cannot force-build apple-container image."
             )
-        if not _dockerfile_is_arm64_clean(dockerfile):
-            raise ValueError(
-                f"Dockerfile at {dockerfile} contains amd64/x86_64 references. "
-                "Apple Container only supports arm64 images. Remove --platform "
-                "flags and architecture-specific references."
-            )
 
-        build_timeout = self.task_env_config.build_timeout_sec
+        args = ["build"]
+        if force_build:
+            args.append("--no-cache")
+        args.extend(
+            [
+                "--platform",
+                "linux/arm64",
+                "-f",
+                str(dockerfile),
+                "-t",
+                self._image_tag(),
+                str(self.environment_dir),
+            ]
+        )
         result = await _run_cli(
-            "build",
-            "--no-cache",
-            "-f",
-            str(dockerfile),
-            "-t",
-            tag,
-            str(self.environment_dir),
-            timeout=build_timeout,
+            *args,
+            timeout=self.task_env_config.build_timeout_sec,
         )
         if result.return_code != 0:
             raise RuntimeError(
                 f"container build failed (exit {result.return_code}):\n"
-                f"{result.stderr or result.stdout}"
+                f"{_failure_output(result)}"
             )
-        return tag
+        return self._image_tag()
+
+    def _release_run_slot(self) -> None:
+        if self._holds_run_slot:
+            self._holds_run_slot = False
+            _RUN_SLOT.release()
 
     async def start(self, force_build: bool) -> None:
-        _, headroom = _kalloc_headroom()
-        if headroom >= 0 and headroom < _KALLOC_MIN_HEADROOM:
-            raise RuntimeError(
-                f"kalloc headroom too low ({headroom}). Reboot required."
-            )
+        if self._holds_run_slot or self._container_name is not None:
+            raise RuntimeError("Apple Container sandbox is already started.")
 
-        image = await self._resolve_image(force_build=force_build)
-        self._container_name = f"bf_{self.session_id}".replace("/", "_")[:63]
+        await _RUN_SLOT.acquire()
+        self._holds_run_slot = True
+        try:
+            _require_kalloc_headroom()
+            image = await self._resolve_image(force_build=force_build)
+            safe_session = re.sub(r"[^a-zA-Z0-9_.-]+", "_", self.session_id)
+            self._container_name = f"bf_{safe_session}"[:63]
 
-        cpus = self.task_env_config.cpus or 2
-        memory_mb = self.task_env_config.memory_mb or 2048
-
-        cmd_args = [
-            "run",
-            "--name",
-            self._container_name,
-            "-c",
-            str(cpus),
-            "-m",
-            f"{memory_mb}M",
-        ]
-
-        # Persistent/task env is injected through the canonical env-file wrapper
-        # on every exec call. The long-lived background process only keeps the
-        # VM alive, so placing secrets on the container-run argv is unnecessary.
-
-        # Bind mount: rollout_dir as /logs so subdirectories (verifier/, agent/,
-        # artifacts/) are regular dirs inside the mount — chmod works on them
-        # unlike the mount point itself. Output lands where benchflow expects.
-        if self.rollout_paths:
-            logs_dir = self.rollout_paths.rollout_dir
-            for sub in ("verifier", "agent", "artifacts"):
-                os.makedirs(logs_dir / sub, exist_ok=True)
-                os.chmod(logs_dir / sub, 0o777)
-            cmd_args.extend(["--mount", f"type=bind,source={logs_dir},target=/logs"])
-
-        # Skills directory mount
-        skills_dir = self.task_env_config.skills_dir
-        if skills_dir and Path(skills_dir).exists():
-            cmd_args.extend(
-                ["--mount", f"type=bind,source={skills_dir},target=/skills"]
-            )
-
-        cmd_args.extend(
-            [
-                "--entrypoint",
-                "/bin/sh",
-                image,
-                "-c",
-                "sleep infinity || while :; do sleep 3600; done",
-            ]
-        )
-
-        # Launch backgrounded VM — stdout/stderr to log file, NOT PIPE
-        log_path = Path(f"/tmp/{self._container_name}.log")
-        self._log_file = open(log_path, "w")  # noqa: SIM115 — closed in stop()
-        self._bg_proc = await asyncio.create_subprocess_exec(
-            "container",
-            *cmd_args,
-            stdout=self._log_file,
-            stderr=self._log_file,
-        )
-
-        # Readiness poll
-        deadline = asyncio.get_event_loop().time() + _STARTUP_TIMEOUT
-        ready = False
-        while asyncio.get_event_loop().time() < deadline:
-            try:
-                result = await _run_cli("exec", self._container_name, "true", timeout=5)
-                if result.return_code == 0:
-                    ready = True
-                    break
-            except (TimeoutError, OSError):
-                pass
-            await asyncio.sleep(0.5)
-
-        if not ready:
-            await self._force_cleanup()
-            raise RuntimeError(
-                f"Container {self._container_name} did not become ready "
-                f"within {_STARTUP_TIMEOUT}s. Check /tmp/{self._container_name}.log"
-            )
-
-        self._watcher_task = asyncio.create_task(self._watch_process())
-        self.logger.info("Started container %s (image=%s)", self._container_name, image)
-
-    async def _watch_process(self) -> None:
-        """Detect early VM exit (e.g., kalloc crash = exit 128)."""
-        if self._bg_proc is None:
-            return
-        returncode = await self._bg_proc.wait()
-        if returncode != 0 and self._container_name:
-            self.logger.error(
-                "Container %s exited early with code %d (128 = kalloc crash). "
-                "Reboot may be required.",
+            cmd_args = [
+                "run",
+                "--detach",
+                "--name",
                 self._container_name,
-                returncode,
+                "--platform",
+                "linux/arm64",
+                "-c",
+                str(self.task_env_config.cpus or 2),
+                "-m",
+                f"{self.task_env_config.memory_mb or 2048}M",
+            ]
+
+            if self.rollout_paths:
+                logs_dir = self.rollout_paths.rollout_dir
+                for sub in ("verifier", "agent", "artifacts"):
+                    os.makedirs(logs_dir / sub, exist_ok=True)
+                    os.chmod(logs_dir / sub, 0o777)
+                cmd_args.extend(
+                    ["--mount", f"type=bind,source={logs_dir},target=/logs"]
+                )
+
+            cmd_args.extend(
+                [
+                    "--entrypoint",
+                    "/bin/sh",
+                    image,
+                    "-c",
+                    "sleep infinity || while :; do sleep 3600; done",
+                ]
             )
+            result = await _run_cli(
+                *cmd_args,
+                timeout=self.task_env_config.build_timeout_sec,
+            )
+            if result.return_code != 0:
+                raise RuntimeError(
+                    f"container run failed (exit {result.return_code}):\n"
+                    f"{_failure_output(result)}"
+                )
+
+            deadline = asyncio.get_running_loop().time() + _STARTUP_TIMEOUT
+            while asyncio.get_running_loop().time() < deadline:
+                try:
+                    ready = await _run_cli(
+                        "exec", self._container_name, "true", timeout=5
+                    )
+                    if ready.return_code == 0:
+                        self.logger.info(
+                            "Started container %s (image=%s)",
+                            self._container_name,
+                            image,
+                        )
+                        return
+                except (TimeoutError, OSError):
+                    pass
+                await asyncio.sleep(0.5)
+
+            logs = await _run_cli("logs", self._container_name, timeout=10)
+            raise RuntimeError(
+                f"Container {self._container_name} did not become ready within "
+                f"{_STARTUP_TIMEOUT}s: {_failure_output(logs)}"
+            )
+        except BaseException:
+            await self._force_cleanup()
+            raise
 
     async def exec(
         self,
@@ -318,61 +373,62 @@ class AppleContainerSandbox(BaseSandbox):
             raise RuntimeError("Container not started. Call start() first.")
 
         wrapped = command
-        if cwd:
-            wrapped = f"cd {shlex.quote(cwd)} && {wrapped}"
-
         merged_env = self._merge_env(env)
         if merged_env:
             wrapped = wrap_command_with_env_file(
                 merged_env, wrapped, env_path_prefix="/tmp/.bf_env_"
             )
 
+        args = ["exec"]
+        if cwd:
+            args.extend(["--workdir", cwd])
         resolved_user = self._resolve_user(user)
         if resolved_user is not None:
-            wrapped = f"su {resolved_user} -s /bin/sh -c {shlex.quote(wrapped)}"
+            args.extend(["--user", str(resolved_user)])
+        args.extend([self._container_name, "sh", "-c", wrapped])
 
-        args = ["exec", self._container_name, "sh", "-c", wrapped]
         try:
-            result = await _run_cli(*args, timeout=timeout_sec)
+            return await _run_cli(*args, timeout=timeout_sec)
         except TimeoutError:
             self.logger.error(
-                "exec timed out after %ss, stopping container", timeout_sec
+                "exec timed out after %ss, removing container", timeout_sec
             )
             await self._force_cleanup()
             raise RuntimeError(
                 f"Command timed out after {timeout_sec}s: {command[:100]}"
             ) from None
-        return result
+
+    async def _copy(
+        self, source: str, destination: str, *, operation: str, timeout: float = 120
+    ) -> None:
+        result = await _run_cli("cp", source, destination, timeout=timeout)
+        if result.return_code != 0:
+            raise RuntimeError(f"{operation} failed: {_failure_output(result)}")
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
-        source_path = Path(source_path)
+        source = Path(source_path)
         if not self._container_name:
             raise RuntimeError("Container not started.")
 
-        # Check if target is under a mounted path (zero-copy via virtiofs)
         host_path = self._mounted_host_path(target_path)
         if host_path is not None:
-            os.makedirs(host_path.parent, exist_ok=True)
-            shutil.copy2(source_path, host_path)
+            host_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, host_path)
             return
 
-        # Fallback: base64 through exec -i (stdin)
-        data = source_path.read_bytes()
-        encoded = base64.b64encode(data).decode()
-        target_dir = os.path.dirname(target_path) or "/"
-        cmd = f"mkdir -p {shlex.quote(target_dir)} && base64 -d > {shlex.quote(target_path)}"
-        result = await _run_cli(
-            "exec",
-            "-i",
-            self._container_name,
-            "sh",
-            "-c",
-            cmd,
-            stdin_data=encoded.encode(),
-            timeout=60,
+        target_parent = str(PurePosixPath(target_path).parent)
+        prep = await self.exec(
+            f"mkdir -p {shlex.quote(target_parent)}", timeout_sec=30, user="root"
         )
-        if result.return_code != 0:
-            raise RuntimeError(f"upload_file failed: {result.stderr or result.stdout}")
+        if prep.return_code != 0:
+            raise RuntimeError(
+                f"upload_file destination prep failed: {_failure_output(prep)}"
+            )
+        await self._copy(
+            str(source),
+            f"{self._container_name}:{target_path}",
+            operation="upload_file",
+        )
 
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"
@@ -381,63 +437,56 @@ class AppleContainerSandbox(BaseSandbox):
             raise ValueError(
                 "apple-container is single-container; service must be 'main'."
             )
-        source_dir = Path(source_dir)
+        source = Path(source_dir)
+        if not source.is_dir():
+            raise FileNotFoundError(f"Source directory {source} does not exist")
         if not self._container_name:
             raise RuntimeError("Container not started.")
 
-        # Check if target is under a mounted path
         host_path = self._mounted_host_path(target_dir)
         if host_path is not None:
             if host_path.exists():
                 shutil.rmtree(host_path)
-            shutil.copytree(source_dir, host_path)
+            shutil.copytree(source, host_path)
             return
 
-        # Walk and upload file-by-file
-        await self.exec(f"mkdir -p {shlex.quote(target_dir)}", timeout_sec=10)
-        sem = asyncio.Semaphore(4)
-
-        async def _upload_one(src: Path, rel: str) -> None:
-            async with sem:
-                dst = f"{target_dir}/{rel}"
-                await self.upload_file(src, dst)
-
-        tasks = []
-        for root, _dirs, files in os.walk(source_dir):
-            for fname in files:
-                src = Path(root) / fname
-                if src.is_symlink():
-                    continue
-                rel = str(src.relative_to(source_dir))
-                tasks.append(_upload_one(src, rel))
-        await asyncio.gather(*tasks)
+        prep = await self.exec(
+            f"mkdir -p {shlex.quote(target_dir)}", timeout_sec=30, user="root"
+        )
+        if prep.return_code != 0:
+            raise RuntimeError(
+                f"upload_dir destination prep failed: {_failure_output(prep)}"
+            )
+        # Apple ``container cp source/ existing-target`` nests ``source`` under
+        # the target. BenchFlow's upload_dir contract copies the directory's
+        # contents, so copy each immediate child through the native primitive.
+        # This includes dotfiles and preserves nested subtrees without a shell
+        # archive/base64 transport.
+        destination = f"{self._container_name}:{target_dir.rstrip('/')}/"
+        for child in sorted(source.iterdir(), key=lambda path: path.name):
+            await self._copy(
+                str(child),
+                destination,
+                operation=f"upload_dir ({child.name})",
+            )
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
-        target_path = Path(target_path)
+        target = Path(target_path)
         if not self._container_name:
             raise RuntimeError("Container not started.")
 
-        # Check if source is under a mounted path
         host_path = self._mounted_host_path(source_path)
         if host_path is not None:
-            os.makedirs(target_path.parent, exist_ok=True)
-            shutil.copy2(host_path, target_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(host_path, target)
             return
 
-        # Fallback: base64 through exec stdout
-        result = await _run_cli(
-            "exec",
-            self._container_name,
-            "base64",
-            source_path,
-            timeout=60,
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await self._copy(
+            f"{self._container_name}:{source_path}",
+            str(target),
+            operation="download_file",
         )
-        if result.return_code != 0:
-            raise RuntimeError(
-                f"download_file failed: {result.stderr or result.stdout}"
-            )
-        os.makedirs(target_path.parent, exist_ok=True)
-        target_path.write_bytes(base64.b64decode(result.stdout or ""))
 
     async def download_dir(
         self, source_dir: str, target_dir: Path | str, service: str = "main"
@@ -446,100 +495,112 @@ class AppleContainerSandbox(BaseSandbox):
             raise ValueError(
                 "apple-container is single-container; service must be 'main'."
             )
-        target_dir = Path(target_dir)
+        target = Path(target_dir)
         if not self._container_name:
             raise RuntimeError("Container not started.")
 
-        # Check if source is under a mounted path
         host_path = self._mounted_host_path(source_dir)
         if host_path is not None:
-            if target_dir.exists():
-                shutil.rmtree(target_dir)
-            shutil.copytree(host_path, target_dir)
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(host_path, target)
             return
 
-        # List files and download concurrently
-        result = await self.exec(
-            f"find {shlex.quote(source_dir)} -type f", timeout_sec=30
+        if target.exists():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await self._copy(
+            f"{self._container_name}:{source_dir}",
+            str(target),
+            operation="download_dir",
         )
-        if result.return_code != 0 or not result.stdout:
-            return
-
-        files = [f for f in result.stdout.strip().splitlines() if f]
-        sem = asyncio.Semaphore(4)
-
-        async def _download_one(container_path: str) -> None:
-            async with sem:
-                rel = container_path.removeprefix(source_dir).lstrip("/")
-                local = target_dir / rel
-                await self.download_file(container_path, local)
-
-        await asyncio.gather(*[_download_one(f) for f in files])
 
     async def stop(self, delete: bool) -> None:
-        if self._watcher_task and not self._watcher_task.done():
-            self._watcher_task.cancel()
-            self._watcher_task = None
-
-        if self._container_name:
-            await _run_cli("stop", self._container_name, timeout=_STOP_TIMEOUT)
-            if delete:
-                await _run_cli("rm", self._container_name, timeout=10)
-            self.logger.info("Stopped container %s", self._container_name)
-
-        if self._bg_proc and self._bg_proc.returncode is None:
-            self._bg_proc.terminate()
+        name = self._container_name
+        try:
+            if not name:
+                return
             try:
-                await asyncio.wait_for(self._bg_proc.wait(), timeout=5)
-            except TimeoutError:
-                self._bg_proc.kill()
-                await self._bg_proc.wait()
-        self._bg_proc = None
+                stopped = await _run_cli(
+                    "stop", "--time", "5", name, timeout=_STOP_TIMEOUT
+                )
+                if stopped.return_code != 0:
+                    self.logger.warning(
+                        "Failed to stop Apple container %s cleanly: %s",
+                        name,
+                        _failure_output(stopped),
+                    )
+            except (TimeoutError, OSError) as exc:
+                self.logger.warning(
+                    "Apple container %s stop failed; continuing cleanup: %s",
+                    name,
+                    exc,
+                )
 
-        if self._log_file:
-            self._log_file.close()
-            self._log_file = None
-
-        if delete:
-            self._container_name = None
+            if delete:
+                try:
+                    removed = await _run_cli("rm", "--force", name, timeout=10)
+                    if removed.return_code != 0:
+                        self.logger.warning(
+                            "Failed to remove Apple container %s: %s",
+                            name,
+                            _failure_output(removed),
+                        )
+                except (TimeoutError, OSError) as exc:
+                    self.logger.warning(
+                        "Apple container %s removal failed: %s", name, exc
+                    )
+                self._container_name = None
+            self.logger.info("Stopped container %s", name)
+        finally:
+            self._release_run_slot()
 
     async def _force_cleanup(self) -> None:
-        """Emergency cleanup on timeout or crash."""
-        if self._container_name:
-            await _run_cli("stop", self._container_name, timeout=10)
-            await _run_cli("rm", self._container_name, timeout=10)
-        if self._bg_proc and self._bg_proc.returncode is None:
-            self._bg_proc.kill()
-            await self._bg_proc.wait()
+        """Best-effort atomic cleanup after startup or execution failure."""
+
+        name = self._container_name
+        try:
+            if name:
+                try:
+                    result = await _run_cli("rm", "--force", name, timeout=10)
+                    if result.return_code != 0:
+                        self.logger.warning(
+                            "Forced Apple container cleanup failed for %s: %s",
+                            name,
+                            _failure_output(result),
+                        )
+                except (TimeoutError, OSError) as exc:
+                    self.logger.warning(
+                        "Forced Apple container cleanup failed for %s: %s", name, exc
+                    )
+        finally:
+            self._container_name = None
+            self._release_run_slot()
 
     def _mounted_host_path(self, container_path: str) -> Path | None:
-        """Map a container path to host path if it's under a bind mount."""
-        mount_map: dict[str, Path] = {}
-        if self.rollout_paths:
-            mount_map["/logs"] = self.rollout_paths.rollout_dir
+        """Map a container path to a host path when it is under ``/logs``."""
+
+        if not self.rollout_paths:
+            return None
         path = PurePosixPath(container_path)
+        prefix = PurePosixPath("/logs")
         if not path.is_absolute():
             return None
-        for prefix, host_base in mount_map.items():
-            prefix_path = PurePosixPath(prefix)
-            prefix_parts = prefix_path.parts
-            if path == prefix_path:
-                rel_parts: tuple[str, ...] = ()
-            elif path.parts[: len(prefix_parts)] == prefix_parts:
-                rel_parts = path.parts[len(prefix_parts) :]
-            else:
-                continue
-            if any(part == ".." for part in rel_parts):
-                raise ValueError(
-                    f"Unsafe mounted path escapes {prefix}: {container_path!r}"
-                )
-            host_root = host_base.resolve()
-            candidate = host_root.joinpath(*rel_parts).resolve(strict=False)
-            try:
-                candidate.relative_to(host_root)
-            except ValueError as exc:
-                raise ValueError(
-                    f"Unsafe mounted path escapes {prefix}: {container_path!r}"
-                ) from exc
-            return candidate
-        return None
+        if path == prefix:
+            rel_parts: tuple[str, ...] = ()
+        elif path.parts[: len(prefix.parts)] == prefix.parts:
+            rel_parts = path.parts[len(prefix.parts) :]
+        else:
+            return None
+        if any(part == ".." for part in rel_parts):
+            raise ValueError(f"Unsafe mounted path escapes /logs: {container_path!r}")
+
+        host_root = self.rollout_paths.rollout_dir.resolve()
+        candidate = host_root.joinpath(*rel_parts).resolve(strict=False)
+        try:
+            candidate.relative_to(host_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Unsafe mounted path escapes /logs: {container_path!r}"
+            ) from exc
+        return candidate

@@ -1,9 +1,9 @@
 """Drift guard for the canonical sandbox-provider registry (dev-ex #14).
 
 Before ``benchflow.sandbox.providers`` the set ``{docker, daytona, modal}`` (and
-its ``{daytona, modal}`` off-box subset) was hand-copied across ~10 sites with no
+its model-proxy placement subset) was hand-copied across ~10 sites with no
 single source of truth. These tests fail if (a) a literal provider set reappears
-outside the registry, (b) the derived facts (phrase, extras, off-box subset) go
+outside the registry, (b) the derived facts (phrase, extras, proxy placement) go
 stale, or (c) the registry and the dispatch table drift apart.
 """
 
@@ -16,8 +16,11 @@ from pathlib import Path
 from benchflow.sandbox.providers import (
     OFF_BOX_MODEL_PROVIDERS,
     OPTIONAL_SANDBOX_EXTRAS,
+    PROVIDERS_BY_NAME,
+    SANDBOX_MODEL_PROXY_PROVIDERS,
     SANDBOX_PROVIDER_SET,
     SANDBOX_PROVIDERS,
+    ModelProxyLocation,
     providers_phrase,
 )
 
@@ -42,11 +45,17 @@ def test_providers_phrase_is_byte_identical() -> None:
     )
 
 
-def test_off_box_subset_is_exactly_the_cloud_providers() -> None:
-    # apple-container runs on-box (host macOS micro-VM), so the off-box set is
-    # only the cloud providers. Adding a provider must deliberately decide its
-    # off_box_model flag — this test locks the current set.
-    assert {"daytona", "modal"} == OFF_BOX_MODEL_PROVIDERS
+def test_model_proxy_placement_is_explicit_for_every_provider() -> None:
+    """Guards PR #936 against routing host loopback into an Apple VM."""
+
+    assert PROVIDERS_BY_NAME["docker"].model_proxy is ModelProxyLocation.HOST
+    for provider in ("daytona", "modal", "apple-container"):
+        assert PROVIDERS_BY_NAME[provider].model_proxy is ModelProxyLocation.SANDBOX
+    assert (
+        frozenset({"daytona", "modal", "apple-container"})
+        == SANDBOX_MODEL_PROXY_PROVIDERS
+    )
+    assert OFF_BOX_MODEL_PROVIDERS is SANDBOX_MODEL_PROXY_PROVIDERS
 
 
 def test_no_divergent_provider_set_literal_outside_the_registry() -> None:
@@ -85,8 +94,11 @@ def test_optional_extras_match_pyproject() -> None:
         f"registry extras {set(OPTIONAL_SANDBOX_EXTRAS.values())} not all declared "
         f"in pyproject optional-dependencies {declared}"
     )
-    # Every off-box provider needs an extra (docker is built in, needs none).
-    assert set(OPTIONAL_SANDBOX_EXTRAS) == SANDBOX_PROVIDER_SET - {"docker"}
+    # Apple Container is a system CLI backend, so it needs no Python extra.
+    assert OPTIONAL_SANDBOX_EXTRAS == {
+        "daytona": "sandbox-daytona",
+        "modal": "sandbox-modal",
+    }
 
 
 def test_every_registry_provider_has_a_dispatch_branch() -> None:

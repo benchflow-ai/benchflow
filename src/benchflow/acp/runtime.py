@@ -46,7 +46,12 @@ from benchflow.sandbox.lockdown import (
     build_priv_drop_cmd,
     enforce_agent_egress_firewall,
 )
-from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
+from benchflow.sandbox.process import (
+    AppleContainerProcess,
+    DaytonaProcess,
+    DaytonaPtyProcess,
+    DockerProcess,
+)
 from benchflow.trajectories._capture import _capture_session_trajectory
 
 # Re-exported for backwards compatibility — tests and downstream code
@@ -574,6 +579,8 @@ async def connect_acp(
         try:
             if environment == "docker":
                 live_proc = DockerProcess.from_sandbox_env(env)
+            elif environment == "apple-container":
+                live_proc = AppleContainerProcess.from_sandbox_env(env)
             elif environment == "daytona":
                 transport_name = selected_acp_transport(
                     agent=agent,

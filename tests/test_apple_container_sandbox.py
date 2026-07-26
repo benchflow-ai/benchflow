@@ -1,607 +1,578 @@
-"""Unit tests for the Apple Container sandbox backend.
+"""Tests for the Apple Container sandbox backend.
 
-All tests mock asyncio.create_subprocess_exec so they run on any platform
-(no macOS or container CLI required). Integration tests requiring a real
-container runtime are gated at the bottom.
+Unit tests exercise argv and lifecycle contracts without requiring macOS. The
+integration test at the bottom is gated on a real Apple Container installation.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
+import json
 import shutil
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from benchflow.sandbox import apple_container as apple_mod
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.apple_container import (
     AppleContainerSandbox,
-    _dockerfile_is_arm64_clean,
+    _container_cli_version,
     _kalloc_headroom,
+    _parse_version,
 )
+from benchflow.task.config import NetworkMode, SandboxConfig
+from benchflow.task.paths import RolloutPaths
 
-# --- Fixtures ---
 
+@pytest.fixture(autouse=True)
+def isolated_run_slot(monkeypatch):
+    """Give each test an unclaimed process-local lifecycle slot."""
 
-@pytest.fixture
-def mock_rollout_paths(tmp_path):
-    paths = MagicMock()
-    paths.rollout_dir = tmp_path / "rollout"
-    paths.verifier_dir = tmp_path / "rollout" / "verifier"
-    paths.agent_dir = tmp_path / "rollout" / "agent"
-    paths.artifacts_dir = tmp_path / "rollout" / "artifacts"
-    return paths
+    monkeypatch.setattr(apple_mod, "_RUN_SLOT", asyncio.Semaphore(1))
 
 
 @pytest.fixture
-def mock_env_config():
-    config = MagicMock()
-    config.cpus = 2
-    config.memory_mb = 1024
-    config.docker_image = None
-    config.env = None
-    config.skills_dir = None
-    config.build_timeout_sec = 60
-    config.allow_internet = True
-    config.network_mode = "public"
-    config.storage_mb = None
-    config.gpus = None
-    return config
+def make_sandbox(tmp_path):
+    sandboxes: list[AppleContainerSandbox] = []
 
-
-@pytest.fixture
-def sandbox(tmp_path, mock_rollout_paths, mock_env_config):
-    env_dir = tmp_path / "environment"
-    env_dir.mkdir()
-    (env_dir / "Dockerfile").write_text("FROM ubuntu:24.04\nRUN echo hi\n")
-    with patch.object(AppleContainerSandbox, "preflight"):
-        sb = AppleContainerSandbox(
-            environment_dir=env_dir,
-            environment_name="test-task",
-            session_id="sess-001",
-            rollout_paths=mock_rollout_paths,
-            task_env_config=mock_env_config,
-        )
-    sb._container_name = "bf_sess-001"
-    return sb
-
-
-def _mock_proc(returncode=0, stdout=b"", stderr=b""):
-    proc = AsyncMock()
-    proc.returncode = returncode
-    proc.communicate = AsyncMock(return_value=(stdout, stderr))
-    proc.kill = MagicMock()
-    proc.terminate = MagicMock()
-    proc.wait = AsyncMock(return_value=returncode)
-    return proc
-
-
-# --- kalloc parsing ---
-
-
-class TestKallocHeadroom:
-    def test_parses_zprint_output(self):
-        zprint_output = (
-            "Zone                          cur      alloc       size     elems  fl  maxelts\n"
-            "data.kalloc.1024          5000000    5000000       1024   5000000   0  8000000\n"
-            "data.kalloc.2048          1000000    1000000       2048   1000000   0  4000000\n"
-        )
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout=zprint_output)
-            elts, headroom = _kalloc_headroom()
-        assert elts == 5000000
-        assert headroom == 3000000
-
-    def test_healthy_headroom(self):
-        zprint_output = "data.kalloc.1024          3000000    3000000       1024   3000000   0  3000000\n"
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout=zprint_output)
-            elts, headroom = _kalloc_headroom()
-        assert elts == 3000000
-        assert headroom == 5000000
-
-    def test_zprint_failure_returns_negative(self):
-        with patch("subprocess.run", side_effect=OSError("no zprint")):
-            elts, headroom = _kalloc_headroom()
-        assert elts == -1
-        assert headroom == -1
-
-
-# --- Dockerfile arm64 validation ---
-
-
-class TestDockerfileArm64:
-    def test_clean_dockerfile(self, tmp_path):
-        df = tmp_path / "Dockerfile"
-        df.write_text("FROM ubuntu:24.04\nRUN apt-get install -y curl\n")
-        assert _dockerfile_is_arm64_clean(df) is True
-
-    def test_rejects_platform_amd64(self, tmp_path):
-        df = tmp_path / "Dockerfile"
-        df.write_text("FROM --platform=linux/amd64 ubuntu:24.04\n")
-        assert _dockerfile_is_arm64_clean(df) is False
-
-    def test_rejects_x86_64_reference(self, tmp_path):
-        df = tmp_path / "Dockerfile"
-        df.write_text("FROM ubuntu:24.04\nRUN dpkg --add-architecture x86_64\n")
-        assert _dockerfile_is_arm64_clean(df) is False
-
-    def test_missing_file_is_clean(self, tmp_path):
-        assert _dockerfile_is_arm64_clean(tmp_path / "nonexistent") is True
-
-
-# --- Preflight ---
-
-
-class TestPreflight:
-    def test_rejects_non_darwin(self):
-        with patch("benchflow.sandbox.apple_container.sys") as mock_sys:
-            mock_sys.platform = "linux"
-            with pytest.raises(RuntimeError, match="requires macOS"):
-                AppleContainerSandbox.preflight()
-
-    def test_rejects_missing_container_cli(self):
-        with (
-            patch("benchflow.sandbox.apple_container.sys") as mock_sys,
-            patch("benchflow.sandbox.apple_container.shutil.which", return_value=None),
-        ):
-            mock_sys.platform = "darwin"
-            with pytest.raises(RuntimeError, match="container CLI not found"):
-                AppleContainerSandbox.preflight()
-
-    def test_rejects_exhausted_kalloc(self):
-        with (
-            patch("benchflow.sandbox.apple_container.sys") as mock_sys,
-            patch(
-                "benchflow.sandbox.apple_container.shutil.which",
-                return_value="/usr/bin/container",
-            ),
-            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
-            patch(
-                "benchflow.sandbox.apple_container._kalloc_headroom",
-                return_value=(7_900_000, 100_000),
-            ),
-            patch("benchflow.sandbox.apple_container._disk_free_gb", return_value=50.0),
-        ):
-            mock_sys.platform = "darwin"
-            with pytest.raises(RuntimeError, match="kalloc zone nearly exhausted"):
-                AppleContainerSandbox.preflight()
-
-
-# --- Validation ---
-
-
-class TestValidateDefinition:
-    def test_rejects_amd64_dockerfile(
-        self, tmp_path, mock_rollout_paths, mock_env_config
-    ):
-        env_dir = tmp_path / "env"
+    def make(
+        *,
+        image: str | None = None,
+        skills_dir: str | None = None,
+        allow_internet: bool = True,
+        network_mode: NetworkMode = NetworkMode.PUBLIC,
+        session_id: str = "sess-001",
+    ) -> AppleContainerSandbox:
+        index = len(sandboxes)
+        env_dir = tmp_path / f"environment-{index}"
         env_dir.mkdir()
-        (env_dir / "Dockerfile").write_text(
-            "FROM --platform=linux/amd64 ubuntu:24.04\n"
+        (env_dir / "Dockerfile").write_text("FROM ubuntu:24.04\nRUN echo hi\n")
+        rollout_dir = tmp_path / f"rollout-{index}"
+        paths = RolloutPaths(rollout_dir)
+        config = SandboxConfig(
+            cpus=2,
+            memory_mb=1024,
+            docker_image=image,
+            skills_dir=skills_dir,
+            build_timeout_sec=60,
+            allow_internet=allow_internet,
+            network_mode=network_mode,
         )
-        with (
-            patch.object(AppleContainerSandbox, "preflight"),
-            pytest.raises(ValueError, match="arm64"),
-        ):
-            AppleContainerSandbox(
-                environment_dir=env_dir,
-                environment_name="bad-task",
-                session_id="s1",
-                rollout_paths=mock_rollout_paths,
-                task_env_config=mock_env_config,
-            )
-
-    def test_allows_prebuilt_image_with_non_arm64_dockerfile(
-        self, tmp_path, mock_rollout_paths, mock_env_config
-    ):
-        """Guards PR #936: prebuilt images win unless force_build is requested."""
-        env_dir = tmp_path / "env"
-        env_dir.mkdir()
-        (env_dir / "Dockerfile").write_text(
-            "FROM --platform=linux/amd64 ubuntu:24.04\n"
-        )
-        mock_env_config.docker_image = "ubuntu:24.04"
         with patch.object(AppleContainerSandbox, "preflight"):
-            AppleContainerSandbox(
+            sandbox = AppleContainerSandbox(
                 environment_dir=env_dir,
-                environment_name="prebuilt-task",
-                session_id="s1",
-                rollout_paths=mock_rollout_paths,
-                task_env_config=mock_env_config,
+                environment_name="test-task",
+                session_id=session_id,
+                rollout_paths=paths,
+                task_env_config=config,
+            )
+        sandboxes.append(sandbox)
+        return sandbox
+
+    return make
+
+
+def _success(stdout: str = "") -> ExecResult:
+    return ExecResult(stdout=stdout, stderr=None, return_code=0)
+
+
+def _started(make_sandbox) -> AppleContainerSandbox:
+    sandbox = make_sandbox()
+    sandbox._container_name = "bf_sess-001"
+    return sandbox
+
+
+class TestVersionAndPreflight:
+    def test_parse_version_accepts_release_text(self):
+        """Guards PR #936 against rejecting Apple Container release output."""
+
+        assert _parse_version("container CLI version 1.1.0") == (1, 1, 0)
+        assert _parse_version("invalid") is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"appName": "container", "version": "1.1.0"},
+            [
+                {"appName": "container-apiserver", "version": "1.1.0"},
+                {"appName": "container CLI", "version": "1.1.0"},
+            ],
+        ],
+    )
+    def test_cli_version_handles_old_and_current_json_shapes(self, payload):
+        """Guards PR #936 across Apple Container version output shape changes."""
+
+        completed = MagicMock(returncode=0, stdout=json.dumps(payload))
+        with patch("subprocess.run", return_value=completed):
+            assert _container_cli_version() == (1, 1, 0)
+
+    def test_kalloc_parser_reads_live_cur_inuse_column(self):
+        """Guards PR #936 against selecting cur-size instead of cur-inuse."""
+
+        output = (
+            "data.kalloc.1024 1024 0K 0K 0 0 1934 0K 0\n"
+            "data.kalloc.2048 2048 0K 0K 0 0 99 0K 0\n"
+        )
+        completed = MagicMock(returncode=0, stdout=output)
+        with patch("subprocess.run", return_value=completed) as run:
+            current, headroom = _kalloc_headroom()
+        assert current == 1934
+        assert headroom == 3_000_000 - 1934
+        run.assert_called_once_with(
+            ["zprint", "-H", "-L", "data.kalloc.1024"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    def test_kalloc_parser_fails_closed_on_unknown_shape(self):
+        """Guards PR #936 against trusting an unknown zprint schema."""
+
+        completed = MagicMock(returncode=0, stdout="unrecognized output\n")
+        with patch("subprocess.run", return_value=completed):
+            assert _kalloc_headroom() == (-1, -1)
+
+    def test_preflight_rejects_non_darwin(self, monkeypatch):
+        """Guards PR #936 against selecting Apple Container off macOS."""
+
+        monkeypatch.setattr(apple_mod.sys, "platform", "linux")
+        with pytest.raises(RuntimeError, match="requires macOS"):
+            AppleContainerSandbox.preflight()
+
+    def test_preflight_rejects_non_apple_silicon(self, monkeypatch):
+        """Guards PR #936 against selecting Apple Container on Intel Macs."""
+
+        monkeypatch.setattr(apple_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(apple_mod.platform, "machine", lambda: "x86_64")
+        with pytest.raises(RuntimeError, match="requires Apple silicon"):
+            AppleContainerSandbox.preflight()
+
+    def test_preflight_rejects_old_cli(self, monkeypatch):
+        """Guards PR #936 against using unsupported native CLI behavior."""
+
+        monkeypatch.setattr(apple_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(apple_mod.platform, "machine", lambda: "arm64")
+        monkeypatch.setattr(apple_mod.shutil, "which", lambda _name: "/bin/container")
+        monkeypatch.setattr(apple_mod, "_container_cli_version", lambda: (1, 0, 0))
+        with pytest.raises(RuntimeError, match=r"1\.1\.0\+ is required"):
+            AppleContainerSandbox.preflight()
+
+    def test_preflight_fails_closed_when_kalloc_is_unreadable(self, monkeypatch):
+        """Guards PR #936 against launching when VM leak headroom is unknown."""
+
+        monkeypatch.setattr(apple_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(apple_mod.platform, "machine", lambda: "arm64")
+        monkeypatch.setattr(apple_mod.shutil, "which", lambda _name: "/bin/container")
+        monkeypatch.setattr(apple_mod, "_container_cli_version", lambda: (1, 1, 0))
+        monkeypatch.setattr(
+            apple_mod.subprocess,
+            "run",
+            lambda *_args, **_kwargs: MagicMock(returncode=0, stderr=""),
+        )
+        monkeypatch.setattr(apple_mod, "_kalloc_headroom", lambda: (-1, -1))
+        with pytest.raises(RuntimeError, match="cannot be verified"):
+            AppleContainerSandbox.preflight()
+
+    def test_preflight_rejects_low_kalloc_headroom(self, monkeypatch):
+        """Guards PR #936 against crossing Apple's documented crash region."""
+
+        monkeypatch.setattr(apple_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(apple_mod.platform, "machine", lambda: "arm64")
+        monkeypatch.setattr(apple_mod.shutil, "which", lambda _name: "/bin/container")
+        monkeypatch.setattr(apple_mod, "_container_cli_version", lambda: (1, 1, 0))
+        monkeypatch.setattr(
+            apple_mod.subprocess,
+            "run",
+            lambda *_args, **_kwargs: MagicMock(returncode=0, stderr=""),
+        )
+        monkeypatch.setattr(apple_mod, "_kalloc_headroom", lambda: (2_850_000, 150_000))
+        with pytest.raises(RuntimeError, match="Reboot your Mac"):
+            AppleContainerSandbox.preflight()
+
+
+class TestDefinitionAndBuild:
+    def test_rejects_missing_dockerfile_and_image(self, make_sandbox, tmp_path):
+        """Guards PR #936 against launching without an image definition."""
+
+        sandbox = make_sandbox(image="ubuntu:24.04")
+        sandbox.environment_dir.joinpath("Dockerfile").unlink()
+        sandbox.task_env_config.docker_image = None
+        with pytest.raises(ValueError, match="No Dockerfile"):
+            sandbox._validate_definition()
+
+    def test_rejects_no_network(self, make_sandbox):
+        """Guards PR #936 against claiming unenforced network isolation."""
+
+        with pytest.raises(ValueError, match="does not currently enforce no-network"):
+            make_sandbox(
+                allow_internet=False,
+                network_mode=NetworkMode.NO_NETWORK,
             )
 
-    def test_rejects_no_dockerfile_no_image(
-        self, tmp_path, mock_rollout_paths, mock_env_config
-    ):
-        env_dir = tmp_path / "env"
-        env_dir.mkdir()
-        mock_env_config.docker_image = None
-        with (
-            patch.object(AppleContainerSandbox, "preflight"),
-            pytest.raises(ValueError, match="No Dockerfile"),
-        ):
-            AppleContainerSandbox(
-                environment_dir=env_dir,
-                environment_name="empty-task",
-                session_id="s1",
-                rollout_paths=mock_rollout_paths,
-                task_env_config=mock_env_config,
-            )
-
-    def test_rejects_no_network_config(
-        self, tmp_path, mock_rollout_paths, mock_env_config
-    ):
-        """Guards PR #936 against silently running no-network tasks with public egress."""
-        env_dir = tmp_path / "env"
-        env_dir.mkdir()
-        (env_dir / "Dockerfile").write_text("FROM ubuntu:24.04\n")
-        mock_env_config.allow_internet = False
-        mock_env_config.network_mode = "no-network"
-        with (
-            patch.object(AppleContainerSandbox, "preflight"),
-            pytest.raises(ValueError, match="does not currently enforce no-network"),
-        ):
-            AppleContainerSandbox(
-                environment_dir=env_dir,
-                environment_name="no-network-task",
-                session_id="s1",
-                rollout_paths=mock_rollout_paths,
-                task_env_config=mock_env_config,
-            )
-
-
-# --- Start/lifecycle contract ---
-
-
-class TestStart:
     @pytest.mark.asyncio
-    async def test_start_mounts_logs_but_not_app(self, sandbox):
-        """Guards PR #936 against mounting task sources over /app."""
-        with (
-            patch.object(
-                sandbox, "_resolve_image", new_callable=AsyncMock
-            ) as mock_resolve,
-            patch(
-                "benchflow.sandbox.apple_container._kalloc_headroom",
-                return_value=(3_000_000, 5_000_000),
-            ),
-            patch("benchflow.sandbox.apple_container._run_cli") as mock_cli,
-            patch(
-                "benchflow.sandbox.apple_container.asyncio.create_subprocess_exec",
-                new_callable=AsyncMock,
-            ) as mock_subproc,
-        ):
-            mock_resolve.return_value = "ubuntu:24.04"
-            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
-            mock_subproc.return_value = _mock_proc()
+    async def test_prebuilt_image_wins_without_force_build(self, make_sandbox):
+        """Guards PR #936 against rebuilding an explicitly configured image."""
 
+        sandbox = make_sandbox(image="ubuntu:24.04")
+        with patch.object(apple_mod, "_run_cli", new_callable=AsyncMock) as run:
+            assert await sandbox._resolve_image(force_build=False) == "ubuntu:24.04"
+        run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("force_build", [False, True])
+    async def test_build_is_native_arm64_and_cache_policy_is_explicit(
+        self, make_sandbox, force_build
+    ):
+        """Guards PR #936 against forced cache misses and amd64 VM failures."""
+
+        sandbox = make_sandbox()
+        with patch.object(
+            apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+        ) as run:
+            image = await sandbox._resolve_image(force_build=force_build)
+        assert image == "bf__test-task"
+        call = run.await_args
+        assert call is not None
+        args = call.args
+        assert args[0] == "build"
+        assert args[args.index("--platform") + 1] == "linux/arm64"
+        assert ("--no-cache" in args) is force_build
+
+
+class TestStartAndLifecycle:
+    @pytest.mark.asyncio
+    async def test_start_uses_detach_and_only_mounts_logs(self, make_sandbox):
+        """Guards PR #936 against task-source and skills host mutation."""
+
+        sandbox = make_sandbox(skills_dir="/skills")
+        with (
+            patch.object(apple_mod, "_require_kalloc_headroom"),
+            patch.object(
+                sandbox,
+                "_resolve_image",
+                new_callable=AsyncMock,
+                return_value="ubuntu:24.04",
+            ),
+            patch.object(
+                apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+            ) as run,
+        ):
             await sandbox.start(force_build=False)
 
-        launched_args = mock_subproc.call_args.args
-        assert launched_args[:2] == ("container", "run")
-        joined = "\n".join(str(arg) for arg in launched_args)
+        launch = run.await_args_list[0].args
+        assert launch[:2] == ("run", "--detach")
+        joined = "\n".join(launch)
         assert "target=/logs" in joined
         assert "target=/app" not in joined
+        assert "/skills" not in joined
+        assert "--platform\nlinux/arm64" in joined
 
     @pytest.mark.asyncio
-    async def test_start_does_not_put_persistent_env_on_run_argv(self, sandbox):
-        """Guards PR #936 against exposing provider keys in host process argv."""
+    async def test_start_does_not_put_provider_secrets_on_run_argv(self, make_sandbox):
+        """Guards PR #936 against exposing model credentials in host process argv."""
+
+        sandbox = make_sandbox()
         sandbox._persistent_env = {"API_KEY": "sk-secret-123"}
         with (
+            patch.object(apple_mod, "_require_kalloc_headroom"),
             patch.object(
-                sandbox, "_resolve_image", new_callable=AsyncMock
-            ) as mock_resolve,
-            patch(
-                "benchflow.sandbox.apple_container._kalloc_headroom",
-                return_value=(3_000_000, 5_000_000),
-            ),
-            patch("benchflow.sandbox.apple_container._run_cli") as mock_cli,
-            patch(
-                "benchflow.sandbox.apple_container.asyncio.create_subprocess_exec",
+                sandbox,
+                "_resolve_image",
                 new_callable=AsyncMock,
-            ) as mock_subproc,
+                return_value="ubuntu:24.04",
+            ),
+            patch.object(
+                apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+            ) as run,
         ):
-            mock_resolve.return_value = "ubuntu:24.04"
-            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
-            mock_subproc.return_value = _mock_proc()
-
             await sandbox.start(force_build=False)
-
-        launched_args = mock_subproc.call_args.args
-        joined = "\n".join(str(arg) for arg in launched_args)
-        assert "sk-secret-123" not in joined
-        assert "-e" not in launched_args
+        launch = run.await_args_list[0].args
+        assert "sk-secret-123" not in "\n".join(launch)
+        assert "-e" not in launch
 
     @pytest.mark.asyncio
-    async def test_start_passes_force_build_to_image_resolution(self, sandbox):
-        """Guards PR #936 against ignoring Rollout.force_build on Apple Container."""
+    async def test_start_failure_releases_process_slot(self, make_sandbox):
+        """Guards PR #936 against permanently wedging later Apple rollouts."""
+
+        sandbox = make_sandbox()
         with (
+            patch.object(apple_mod, "_require_kalloc_headroom"),
             patch.object(
-                sandbox, "_resolve_image", new_callable=AsyncMock
-            ) as mock_resolve,
-            patch(
-                "benchflow.sandbox.apple_container._kalloc_headroom",
-                return_value=(3_000_000, 5_000_000),
-            ),
-            patch("benchflow.sandbox.apple_container._run_cli") as mock_cli,
-            patch(
-                "benchflow.sandbox.apple_container.asyncio.create_subprocess_exec",
+                sandbox,
+                "_resolve_image",
                 new_callable=AsyncMock,
-            ) as mock_subproc,
+                return_value="ubuntu:24.04",
+            ),
+            patch.object(
+                apple_mod,
+                "_run_cli",
+                new_callable=AsyncMock,
+                return_value=ExecResult(
+                    stdout=None, stderr="launch failed", return_code=1
+                ),
+            ),
+            pytest.raises(RuntimeError, match="launch failed"),
         ):
-            mock_resolve.return_value = "ubuntu:24.04"
-            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
-            mock_subproc.return_value = _mock_proc()
-
-            await sandbox.start(force_build=True)
-
-        mock_resolve.assert_awaited_once_with(force_build=True)
+            await sandbox.start(force_build=False)
+        assert not apple_mod._RUN_SLOT.locked()
+        assert sandbox.sandbox_id is None
 
     @pytest.mark.asyncio
-    async def test_resolve_image_uses_prebuilt_without_force_build(self, sandbox):
-        """Guards PR #936: manifest/prebuilt docker_image beats local Dockerfile."""
-        sandbox.task_env_config.docker_image = "ubuntu:24.04"
-        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            image = await sandbox._resolve_image(force_build=False)
-        assert image == "ubuntu:24.04"
-        mock_cli.assert_not_called()
+    async def test_only_one_sandbox_is_active_per_process(self, make_sandbox):
+        """Guards PR #936 by making the kalloc safety limit enforceable."""
+
+        first = make_sandbox(session_id="first")
+        second = make_sandbox(session_id="second")
+        with (
+            patch.object(apple_mod, "_require_kalloc_headroom"),
+            patch.object(
+                AppleContainerSandbox,
+                "_resolve_image",
+                new_callable=AsyncMock,
+                return_value="ubuntu:24.04",
+            ),
+            patch.object(
+                apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+            ),
+        ):
+            await first.start(force_build=False)
+            second_start = asyncio.create_task(second.start(force_build=False))
+            await asyncio.sleep(0)
+            assert not second_start.done()
+            await first.stop(delete=True)
+            await asyncio.wait_for(second_start, timeout=1)
+            await second.stop(delete=True)
+        assert not apple_mod._RUN_SLOT.locked()
 
     @pytest.mark.asyncio
-    async def test_resolve_image_builds_when_force_build_is_true(self, sandbox):
-        """Guards PR #936: force_build still rebuilds from the local Dockerfile."""
-        sandbox.task_env_config.docker_image = "ubuntu:24.04"
-        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
-            image = await sandbox._resolve_image(force_build=True)
-        assert image == "bf__test-task"
-        args = mock_cli.call_args[0]
-        assert args[:4] == (
-            "build",
-            "--no-cache",
-            "-f",
-            str(sandbox.environment_dir / "Dockerfile"),
-        )
-        assert ("stop", "buildkit") not in [c[0] for c in mock_cli.call_args_list]
+    async def test_stop_uses_native_stop_and_force_remove(self, make_sandbox):
+        """Guards PR #936 against leaking VMs or stopping global BuildKit."""
 
-
-# --- Exec argv construction ---
+        sandbox = _started(make_sandbox)
+        sandbox._holds_run_slot = True
+        await apple_mod._RUN_SLOT.acquire()
+        with patch.object(
+            apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+        ) as run:
+            await sandbox.stop(delete=True)
+        calls = [call.args for call in run.await_args_list]
+        assert ("stop", "--time", "5", "bf_sess-001") in calls
+        assert ("rm", "--force", "bf_sess-001") in calls
+        assert all("buildkit" not in call for call in calls)
+        assert sandbox.sandbox_id is None
+        assert not apple_mod._RUN_SLOT.locked()
 
 
 class TestExec:
     @pytest.mark.asyncio
-    async def test_basic_exec_argv(self, sandbox):
-        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(
-                stdout="ok\n", stderr=None, return_code=0
-            )
-            result = await sandbox.exec("echo hello")
-        mock_cli.assert_called_once_with(
-            "exec", "bf_sess-001", "sh", "-c", "echo hello", timeout=None
+    async def test_exec_uses_native_workdir_and_user_flags(self, make_sandbox):
+        """Guards PR #936 against shell-injected cwd/user and missing native flags."""
+
+        sandbox = _started(make_sandbox)
+        hostile_user = "worker; touch /tmp/pwned"
+        hostile_cwd = "/app/a path; touch /tmp/pwned"
+        with patch.object(
+            apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+        ) as run:
+            await sandbox.exec("printf ok", cwd=hostile_cwd, user=hostile_user)
+        run.assert_awaited_once_with(
+            "exec",
+            "--workdir",
+            hostile_cwd,
+            "--user",
+            hostile_user,
+            "bf_sess-001",
+            "sh",
+            "-c",
+            "printf ok",
+            timeout=None,
         )
-        assert result.stdout == "ok\n"
-        assert result.return_code == 0
 
     @pytest.mark.asyncio
-    async def test_exec_with_cwd(self, sandbox):
-        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(
-                stdout="/app\n", stderr=None, return_code=0
-            )
-            await sandbox.exec("pwd", cwd="/app")
-        args = mock_cli.call_args[0]
-        assert "cd /app && pwd" in args[4]
+    async def test_exec_preserves_numeric_user(self, make_sandbox):
+        """Guards PR #936 against dropping valid numeric user identities."""
+
+        sandbox = _started(make_sandbox)
+        with patch.object(
+            apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+        ) as run:
+            await sandbox.exec("id", user=1000)
+        call = run.await_args
+        assert call is not None
+        assert call.args[1:3] == ("--user", "1000")
 
     @pytest.mark.asyncio
-    async def test_exec_with_user(self, sandbox):
-        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(
-                stdout="uid=1000\n", stderr=None, return_code=0
-            )
-            await sandbox.exec("id", user="testuser")
-        args = mock_cli.call_args[0]
-        assert "su testuser -s /bin/sh -c" in args[4]
+    async def test_exec_redacts_environment_secret(self, make_sandbox):
+        """Guards PR #936 against exposing exec secrets in host argv."""
 
-    @pytest.mark.asyncio
-    async def test_exec_with_env_redacts_secrets(self, sandbox):
-        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
+        sandbox = _started(make_sandbox)
+        with patch.object(
+            apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+        ) as run:
             await sandbox.exec("run.sh", env={"API_KEY": "sk-secret-123"})
-        args = mock_cli.call_args[0]
-        cmd = args[4]
-        assert "sk-secret-123" not in cmd
-        assert "base64 -d" in cmd
+        call = run.await_args
+        assert call is not None
+        argv = call.args
+        assert "sk-secret-123" not in "\n".join(argv)
+        assert "base64 -d" in argv[-1]
 
     @pytest.mark.asyncio
-    async def test_exec_rejects_non_main_service(self, sandbox):
+    async def test_exec_rejects_non_main_service(self, make_sandbox):
+        sandbox = _started(make_sandbox)
         with pytest.raises(ValueError, match="single-container"):
-            await sandbox.exec("echo hi", service="target")
+            await sandbox.exec("true", service="target")
 
     @pytest.mark.asyncio
-    async def test_exec_timeout_triggers_cleanup(self, sandbox):
+    async def test_exec_timeout_forces_cleanup(self, make_sandbox):
+        """Guards PR #936 against retaining a VM after an exec timeout."""
+
+        sandbox = _started(make_sandbox)
         with (
-            patch(
-                "benchflow.sandbox.apple_container._run_cli",
-                side_effect=asyncio.TimeoutError,
-            ),
             patch.object(
-                sandbox, "_force_cleanup", new_callable=AsyncMock
-            ) as mock_cleanup,
+                apple_mod, "_run_cli", new_callable=AsyncMock, side_effect=TimeoutError
+            ),
+            patch.object(sandbox, "_force_cleanup", new_callable=AsyncMock) as cleanup,
             pytest.raises(RuntimeError, match="timed out"),
         ):
             await sandbox.exec("sleep 999", timeout_sec=5)
-        mock_cleanup.assert_called_once()
-
-
-# --- Upload/Download routing ---
+        cleanup.assert_awaited_once()
 
 
 class TestFileTransfer:
     @pytest.mark.asyncio
-    async def test_upload_to_mounted_path_is_host_copy(self, sandbox, tmp_path):
-        src = tmp_path / "src.txt"
-        src.write_text("data")
-        with patch("shutil.copy2") as mock_copy:
-            await sandbox.upload_file(src, "/logs/verifier/out.txt")
-        mock_copy.assert_called_once()
+    async def test_mounted_upload_is_host_copy(self, make_sandbox, tmp_path):
+        """Guards PR #936 by retaining the established /logs fast path."""
+
+        sandbox = _started(make_sandbox)
+        source = tmp_path / "source.txt"
+        source.write_text("data")
+        with patch.object(apple_mod.shutil, "copy2") as copy:
+            await sandbox.upload_file(source, "/logs/verifier/out.txt")
+        assert sandbox.rollout_paths is not None
+        copy.assert_called_once_with(
+            source, sandbox.rollout_paths.rollout_dir / "verifier" / "out.txt"
+        )
 
     @pytest.mark.asyncio
-    async def test_upload_to_app_uses_exec_not_host_copy(self, sandbox, tmp_path):
-        """Guards PR #936 against writing agent files back into the task source tree."""
-        src = tmp_path / "src.txt"
-        src.write_text("data")
-        with (
-            patch("shutil.copy2") as mock_copy,
-            patch("benchflow.sandbox.apple_container._run_cli") as mock_cli,
-        ):
-            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
-            await sandbox.upload_file(src, "/app/out.txt")
+    async def test_unmounted_upload_uses_native_copy(self, make_sandbox, tmp_path):
+        """Guards PR #936 against base64 file transfer and host task mutation."""
 
-        mock_copy.assert_not_called()
-        args = mock_cli.call_args[0]
-        assert args[:3] == ("exec", "-i", "bf_sess-001")
-
-    @pytest.mark.asyncio
-    async def test_upload_to_unmounted_uses_exec_i(self, sandbox, tmp_path):
-        src = tmp_path / "src.txt"
-        src.write_text("hello")
-        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
-            await sandbox.upload_file(src, "/opt/data.txt")
-        args = mock_cli.call_args[0]
-        assert args[0] == "exec"
-        assert args[1] == "-i"
-        assert "base64 -d" in args[5]
-        assert mock_cli.call_args[1]["stdin_data"] is not None
+        sandbox = _started(make_sandbox)
+        source = tmp_path / "source.txt"
+        source.write_text("data")
+        with patch.object(
+            apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+        ) as run:
+            await sandbox.upload_file(source, "/app/out.txt")
+        calls = [call.args for call in run.await_args_list]
+        assert calls[-1] == ("cp", str(source), "bf_sess-001:/app/out.txt")
+        assert all("base64" not in "\n".join(call) for call in calls)
 
     @pytest.mark.asyncio
-    async def test_download_from_mounted_path_is_host_copy(self, sandbox, tmp_path):
-        host_file = sandbox.rollout_paths.verifier_dir / "reward.txt"
-        host_file.parent.mkdir(parents=True, exist_ok=True)
-        host_file.write_text("1.0")
-        target = tmp_path / "downloaded.txt"
-        with patch("shutil.copy2") as mock_copy:
-            await sandbox.download_file("/logs/verifier/reward.txt", target)
-        mock_copy.assert_called_once()
+    async def test_upload_dir_uses_native_copy(self, make_sandbox, tmp_path):
+        """Guards PR #936 against nesting the host directory under its target."""
 
-    def test_mounted_path_rejects_parent_traversal(self, sandbox):
-        """Guards PR #936 against /logs host-path escape through .. segments."""
-        with pytest.raises(ValueError, match="Unsafe mounted path escapes /logs"):
-            sandbox._mounted_host_path("/logs/../../outside")
+        sandbox = _started(make_sandbox)
+        source = tmp_path / "source"
+        source.mkdir()
+        source.joinpath("file.txt").write_text("data")
+        source.joinpath("nested").mkdir()
+        source.joinpath("nested", "child.txt").write_text("nested data")
+        with patch.object(
+            apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+        ) as run:
+            await sandbox.upload_dir(source, "/skills")
+        copy_calls = [call.args for call in run.await_args_list if call.args[0] == "cp"]
+        assert copy_calls == [
+            ("cp", str(source / "file.txt"), "bf_sess-001:/skills/"),
+            ("cp", str(source / "nested"), "bf_sess-001:/skills/"),
+        ]
 
     @pytest.mark.asyncio
-    async def test_download_from_unmounted_uses_base64(self, sandbox, tmp_path):
-        content = b"binary content"
-        encoded = base64.b64encode(content).decode()
+    async def test_unmounted_download_uses_native_copy(self, make_sandbox, tmp_path):
+        """Guards PR #936 against shell-encoded downloads from the VM."""
+
+        sandbox = _started(make_sandbox)
         target = tmp_path / "out.bin"
-        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(
-                stdout=encoded, stderr=None, return_code=0
-            )
+        with patch.object(
+            apple_mod, "_run_cli", new_callable=AsyncMock, return_value=_success()
+        ) as run:
             await sandbox.download_file("/opt/data.bin", target)
-        args = mock_cli.call_args[0]
-        assert args[0] == "exec"
-        assert args[1] == "bf_sess-001"
-        assert args[2] == "base64"
-        assert target.read_bytes() == content
+        run.assert_awaited_once_with(
+            "cp",
+            "bf_sess-001:/opt/data.bin",
+            str(target),
+            timeout=120,
+        )
 
+    def test_mounted_path_rejects_parent_traversal(self, make_sandbox):
+        """Guards PR #936 against escaping the rollout directory through /logs."""
 
-# --- Stop ---
-
-
-class TestStop:
-    @pytest.mark.asyncio
-    async def test_stop_calls_container_stop_and_rm(self, sandbox):
-        sandbox._bg_proc = _mock_proc()
-        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
-            await sandbox.stop(delete=True)
-        calls = [c[0] for c in mock_cli.call_args_list]
-        assert ("stop", "bf_sess-001") in calls
-        assert ("rm", "bf_sess-001") in calls
-        assert ("stop", "buildkit") not in calls
-        assert sandbox._container_name is None
-
-    @pytest.mark.asyncio
-    async def test_stop_without_delete_keeps_name(self, sandbox):
-        sandbox._bg_proc = _mock_proc()
-        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
-            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
-            await sandbox.stop(delete=False)
-        calls = [c[0] for c in mock_cli.call_args_list]
-        assert ("stop", "bf_sess-001") in calls
-        assert ("rm", "bf_sess-001") not in calls
-        assert ("stop", "buildkit") not in calls
-        assert sandbox._container_name == "bf_sess-001"
-
-
-# --- Properties ---
+        sandbox = _started(make_sandbox)
+        with pytest.raises(ValueError, match="Unsafe mounted path"):
+            sandbox._mounted_host_path("/logs/../../outside")
 
 
 class TestProperties:
-    def test_is_mounted(self, sandbox):
+    def test_backend_properties(self, make_sandbox):
+        """Guards PR #936 by preserving the common sandbox capability contract."""
+
+        sandbox = _started(make_sandbox)
         assert sandbox.is_mounted is True
-
-    def test_sandbox_id(self, sandbox):
         assert sandbox.sandbox_id == "bf_sess-001"
-
-    def test_supports_snapshot_false(self, sandbox):
         assert sandbox.supports_snapshot is False
-
-
-# --- Integration test (macOS only) ---
 
 
 @pytest.mark.skipif(
     sys.platform != "darwin" or not shutil.which("container"),
-    reason="Requires macOS with container CLI",
+    reason="Requires macOS with Apple Container 1.1+",
 )
 @pytest.mark.asyncio
-class TestIntegrationLifecycle:
-    """Full lifecycle test against a real container. Gated to macOS."""
+async def test_real_apple_container_lifecycle_and_copy(tmp_path):
+    """Guards PR #936 with a real detached lifecycle, exec, and native copy."""
 
-    async def test_full_lifecycle(self, tmp_path):
-        env_dir = tmp_path / "env"
-        env_dir.mkdir()
-        (env_dir / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+    environment_dir = tmp_path / "environment"
+    environment_dir.mkdir()
+    environment_dir.joinpath("Dockerfile").write_text("FROM ubuntu:24.04\n")
+    rollout_dir = tmp_path / "rollout"
+    paths = RolloutPaths(rollout_dir)
+    config = SandboxConfig(
+        cpus=1,
+        memory_mb=512,
+        docker_image="ubuntu:24.04",
+        build_timeout_sec=120,
+        allow_internet=True,
+        network_mode=NetworkMode.PUBLIC,
+    )
 
-        config = MagicMock()
-        config.cpus = 1
-        config.memory_mb = 512
-        config.docker_image = "ubuntu:24.04"
-        config.env = None
-        config.skills_dir = None
-        config.build_timeout_sec = 60
-        config.storage_mb = None
-        config.gpus = None
+    AppleContainerSandbox.preflight()
+    sandbox = AppleContainerSandbox(
+        environment_dir=environment_dir,
+        environment_name="integration-test",
+        session_id="integration-936",
+        rollout_paths=paths,
+        task_env_config=config,
+    )
+    try:
+        await sandbox.start(force_build=False)
+        result = await sandbox.exec("printf hello", timeout_sec=10)
+        assert result == ExecResult(stdout="hello", stderr=None, return_code=0)
 
-        paths = MagicMock()
-        paths.rollout_dir = tmp_path / "rollout"
-        paths.verifier_dir = tmp_path / "rollout" / "verifier"
-        paths.agent_dir = tmp_path / "rollout" / "agent"
-        paths.artifacts_dir = tmp_path / "rollout" / "artifacts"
+        source = tmp_path / "upload.txt"
+        source.write_text("uploaded content")
+        await sandbox.upload_file(source, "/tmp/upload.txt")
+        downloaded = tmp_path / "downloaded.txt"
+        await sandbox.download_file("/tmp/upload.txt", downloaded)
+        assert downloaded.read_text() == "uploaded content"
 
-        AppleContainerSandbox.preflight()
-        sb = AppleContainerSandbox(
-            environment_dir=env_dir,
-            environment_name="integration-test",
-            session_id="integ-001",
-            rollout_paths=paths,
-            task_env_config=config,
-        )
-        try:
-            await sb.start(force_build=False)
-            result = await sb.exec("echo hello", timeout_sec=10)
-            assert result.return_code == 0
-            assert "hello" in (result.stdout or "")
-
-            # Upload via exec -i
-            src = tmp_path / "upload.txt"
-            src.write_text("uploaded content")
-            await sb.upload_file(src, "/tmp/upload.txt")
-            result = await sb.exec("cat /tmp/upload.txt", timeout_sec=10)
-            assert "uploaded content" in (result.stdout or "")
-        finally:
-            await sb.stop(delete=True)
+        source_dir = tmp_path / "upload-dir"
+        source_dir.mkdir()
+        source_dir.joinpath("nested").mkdir()
+        source_dir.joinpath("nested", "child.txt").write_text("nested content")
+        await sandbox.upload_dir(source_dir, "/tmp/dir-target")
+        result = await sandbox.exec("cat /tmp/dir-target/nested/child.txt")
+        assert result.stdout == "nested content"
+    finally:
+        await sandbox.stop(delete=True)

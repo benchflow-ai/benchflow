@@ -39,9 +39,10 @@ def test_build_agent_env_points_at_proxy():
 
 
 def test_select_proxy_mode_uses_sandbox_for_remote_environments():
-    """Guards PR #648 follow-up: Daytona cannot reach host-loopback replay."""
+    """Guards PR #648 and #936 against unreachable host-loopback replay."""
     assert select_proxy_mode("auto", "daytona") == "sandbox"
     assert select_proxy_mode("auto", "modal") == "sandbox"
+    assert select_proxy_mode("auto", "apple-container") == "sandbox"
     assert select_proxy_mode("auto", "docker") == "host"
     assert select_proxy_mode("host", "daytona") == "host"
 

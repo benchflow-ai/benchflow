@@ -70,7 +70,6 @@ sandbox-modal = [
     "modal>=0.73",
     "tenacity>=8.0",
 ]
-sandbox-apple-container = []
 bedrock = [
     "boto3>=1.40",
 ]
