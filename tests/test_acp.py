@@ -1217,6 +1217,45 @@ class TestConnectAcpModelSelection:
         mock_acp.set_config_option.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_apple_container_uses_native_live_process(self, tmp_path):
+        """Guards PR #936 against treating Apple Container as Daytona."""
+
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        mock_env = MagicMock()
+        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
+        live_process = MagicMock()
+
+        with (
+            patch(
+                "benchflow.acp.runtime.AppleContainerProcess.from_sandbox_env",
+                return_value=live_process,
+            ) as apple_process,
+            patch(
+                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
+                new_callable=AsyncMock,
+            ) as daytona_process,
+            patch("benchflow.acp.runtime.ContainerTransport") as transport,
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=mock_env,
+                agent="codex-acp",
+                agent_launch="codex-acp",
+                agent_env={},
+                sandbox_user=None,
+                model=None,
+                rollout_dir=tmp_path,
+                environment="apple-container",
+                agent_cwd="/root",
+            )
+
+        apple_process.assert_called_once_with(mock_env)
+        daytona_process.assert_not_awaited()
+        assert transport.call_args.kwargs["container_process"] is live_process
+
+    @pytest.mark.asyncio
     async def test_daytona_dind_uses_pty_transport(self, tmp_path):
         """Daytona compose tasks use PTY transport to avoid SSH pipe-closed failures."""
         from benchflow.acp.runtime import connect_acp

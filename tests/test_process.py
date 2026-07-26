@@ -1,5 +1,6 @@
 """Tests for process.py env handling (no Docker required)."""
 
+import asyncio
 import os
 import shlex
 import subprocess
@@ -8,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess, DockerProcess
+from benchflow.sandbox.process import (
+    AppleContainerProcess,
+    DaytonaProcess,
+    DaytonaPtyProcess,
+    DockerProcess,
+)
 
 
 class _FakeStdin:
@@ -324,6 +330,90 @@ class TestDockerProcessEnv:
         assert (
             f"export SINGLE_QUOTE={shlex.quote('it' + chr(39) + 's a test')}" in content
         )
+
+
+class TestAppleContainerProcess:
+    @staticmethod
+    def _fake_exec(calls, inputs):
+        async def fake_exec(*args, **kwargs):
+            calls.append((args, kwargs))
+
+            async def communicate(data=None):
+                if data is not None:
+                    inputs.append(data)
+                return b"", b""
+
+            return _FakeProcess(communicate=communicate)
+
+        return fake_exec
+
+    def test_from_sandbox_env_requires_started_container(self):
+        """Guards PR #936 against silently selecting a nonexistent VM."""
+
+        with pytest.raises(RuntimeError, match="not started"):
+            AppleContainerProcess.from_sandbox_env(MagicMock(_container_name=None))
+
+    @pytest.mark.asyncio
+    async def test_native_exec_is_interactive_and_uses_workdir(self):
+        """Guards PR #936 by preserving the bidirectional ACP stdio contract."""
+
+        calls = []
+        inputs = []
+        with patch(
+            "benchflow.sandbox.process.asyncio.create_subprocess_exec",
+            side_effect=self._fake_exec(calls, inputs),
+        ):
+            proc = AppleContainerProcess("bf_run")
+            await proc.start("codex-acp", cwd="/root")
+
+        assert len(calls) == 1
+        assert calls[0][0] == (
+            "container",
+            "exec",
+            "--interactive",
+            "--workdir",
+            "/root",
+            "bf_run",
+            "bash",
+            "-c",
+            "codex-acp",
+        )
+        assert calls[0][1]["stdin"] is asyncio.subprocess.PIPE
+        assert calls[0][1]["stdout"] is asyncio.subprocess.PIPE
+
+    @pytest.mark.asyncio
+    async def test_secret_env_uses_stdin_not_process_argv(self):
+        """Guards PR #936 against exposing provider keys in host process args."""
+
+        calls = []
+        inputs = []
+        with patch(
+            "benchflow.sandbox.process.asyncio.create_subprocess_exec",
+            side_effect=self._fake_exec(calls, inputs),
+        ):
+            proc = AppleContainerProcess("bf_run")
+            await proc.start(
+                "codex-acp",
+                env={"API_KEY": "sk-secret; still-one-value"},
+            )
+
+        assert len(calls) == 2
+        assert "sk-secret" not in "\n".join(
+            str(arg) for call_args, _kwargs in calls for arg in call_args
+        )
+        assert inputs == [b"export API_KEY='sk-secret; still-one-value'\n"]
+        write_args = calls[0][0]
+        assert write_args[:5] == (
+            "container",
+            "exec",
+            "--interactive",
+            "--user",
+            "root",
+        )
+        main_command = calls[1][0][-1]
+        assert ". /tmp/.benchflow_agent_env_" in main_command
+        assert "rm -f /tmp/.benchflow_agent_env_" in main_command
+        assert main_command.endswith("&& codex-acp")
 
 
 class TestDaytonaProcessEnvFilePath:

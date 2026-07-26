@@ -158,9 +158,43 @@ async def test_daytona_uses_sandbox_local_litellm(monkeypatch):
     )
 
     assert starts[0]["sandbox"] is sandbox
+    assert provider_runtime is not None
     assert provider_runtime.base_url == "http://127.0.0.1:45678"
     assert updated["LLM_BASE_URL"] == "http://127.0.0.1:45678/v1"
     assert updated["LLM_MODEL"].startswith("openai/benchflow-aws-bedrock")
+
+
+@pytest.mark.asyncio
+async def test_apple_container_uses_sandbox_local_litellm(monkeypatch):
+    """Guards PR #936 against handing the VM a host-loopback model endpoint."""
+
+    starts = []
+
+    async def fake_sandbox_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    async def unexpected_host_start(**_kwargs):
+        raise AssertionError("Apple Container must not use a host-local proxy")
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", unexpected_host_start)
+    sandbox = SimpleNamespace()
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="openhands",
+        agent_env={"OPENAI_API_KEY": "sk-test"},
+        model="openai/gpt-4.1-mini",
+        runtime=None,
+        environment="apple-container",
+        session_id="run-936",
+        sandbox=sandbox,
+    )
+
+    assert starts[0]["sandbox"] is sandbox
+    assert provider_runtime is not None
+    assert provider_runtime.base_url == "http://127.0.0.1:45678"
+    assert updated["LLM_BASE_URL"] == "http://127.0.0.1:45678/v1"
 
 
 @pytest.mark.asyncio

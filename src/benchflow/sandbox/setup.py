@@ -781,6 +781,18 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             persistent_env=manifest_env or None,
         )
+    elif sandbox_type == "apple-container":
+        from benchflow.sandbox.apple_container import AppleContainerSandbox
+
+        AppleContainerSandbox.preflight()
+        return AppleContainerSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
     else:
         raise ValueError(
             f"Unknown sandbox_type: {sandbox_type!r} (use {providers_phrase(quote=True)})"

@@ -344,8 +344,17 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 | Sandbox | Flag | Best for |
 |---------|------|----------|
 | Docker | `--sandbox docker` | Local development, small runs (≤10 tasks) |
+| Apple Container | `--sandbox apple-container` | Local Apple Silicon macOS runs without Docker Desktop |
 | Daytona | `--sandbox daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
 | Modal | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
+
+Apple Container requires Apple Container 1.1+ on Apple Silicon and runs the model
+proxy inside each VM. It supports public-network, single-container arm64 tasks and
+has no snapshot support. BenchFlow serializes Apple rollouts within each process
+and blocks new VMs when the live `data.kalloc.1024` headroom is unsafe. Avoid
+running concurrent BenchFlow processes, because the macOS allocation leak is
+system-wide. Use Docker, Daytona, or Modal for `network_mode = "no-network"`,
+multi-service, snapshot, or high-concurrency runs.
 
 For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 
