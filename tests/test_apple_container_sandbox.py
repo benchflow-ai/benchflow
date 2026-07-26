@@ -194,6 +194,25 @@ class TestValidateDefinition:
                 task_env_config=mock_env_config,
             )
 
+    def test_allows_prebuilt_image_with_non_arm64_dockerfile(
+        self, tmp_path, mock_rollout_paths, mock_env_config
+    ):
+        """Guards PR #936: prebuilt images win unless force_build is requested."""
+        env_dir = tmp_path / "env"
+        env_dir.mkdir()
+        (env_dir / "Dockerfile").write_text(
+            "FROM --platform=linux/amd64 ubuntu:24.04\n"
+        )
+        mock_env_config.docker_image = "ubuntu:24.04"
+        with patch.object(AppleContainerSandbox, "preflight"):
+            AppleContainerSandbox(
+                environment_dir=env_dir,
+                environment_name="prebuilt-task",
+                session_id="s1",
+                rollout_paths=mock_rollout_paths,
+                task_env_config=mock_env_config,
+            )
+
     def test_rejects_no_dockerfile_no_image(
         self, tmp_path, mock_rollout_paths, mock_env_config
     ):
@@ -242,7 +261,9 @@ class TestStart:
     async def test_start_mounts_logs_but_not_app(self, sandbox):
         """Guards PR #936 against mounting task sources over /app."""
         with (
-            patch.object(sandbox, "_build_image", new_callable=AsyncMock) as mock_build,
+            patch.object(
+                sandbox, "_resolve_image", new_callable=AsyncMock
+            ) as mock_resolve,
             patch(
                 "benchflow.sandbox.apple_container._kalloc_headroom",
                 return_value=(3_000_000, 5_000_000),
@@ -253,7 +274,7 @@ class TestStart:
                 new_callable=AsyncMock,
             ) as mock_subproc,
         ):
-            mock_build.return_value = "ubuntu:24.04"
+            mock_resolve.return_value = "ubuntu:24.04"
             mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
             mock_subproc.return_value = _mock_proc()
 
@@ -264,6 +285,86 @@ class TestStart:
         joined = "\n".join(str(arg) for arg in launched_args)
         assert "target=/logs" in joined
         assert "target=/app" not in joined
+
+    @pytest.mark.asyncio
+    async def test_start_does_not_put_persistent_env_on_run_argv(self, sandbox):
+        """Guards PR #936 against exposing provider keys in host process argv."""
+        sandbox._persistent_env = {"API_KEY": "sk-secret-123"}
+        with (
+            patch.object(
+                sandbox, "_resolve_image", new_callable=AsyncMock
+            ) as mock_resolve,
+            patch(
+                "benchflow.sandbox.apple_container._kalloc_headroom",
+                return_value=(3_000_000, 5_000_000),
+            ),
+            patch("benchflow.sandbox.apple_container._run_cli") as mock_cli,
+            patch(
+                "benchflow.sandbox.apple_container.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_subproc,
+        ):
+            mock_resolve.return_value = "ubuntu:24.04"
+            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
+            mock_subproc.return_value = _mock_proc()
+
+            await sandbox.start(force_build=False)
+
+        launched_args = mock_subproc.call_args.args
+        joined = "\n".join(str(arg) for arg in launched_args)
+        assert "sk-secret-123" not in joined
+        assert "-e" not in launched_args
+
+    @pytest.mark.asyncio
+    async def test_start_passes_force_build_to_image_resolution(self, sandbox):
+        """Guards PR #936 against ignoring Rollout.force_build on Apple Container."""
+        with (
+            patch.object(
+                sandbox, "_resolve_image", new_callable=AsyncMock
+            ) as mock_resolve,
+            patch(
+                "benchflow.sandbox.apple_container._kalloc_headroom",
+                return_value=(3_000_000, 5_000_000),
+            ),
+            patch("benchflow.sandbox.apple_container._run_cli") as mock_cli,
+            patch(
+                "benchflow.sandbox.apple_container.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_subproc,
+        ):
+            mock_resolve.return_value = "ubuntu:24.04"
+            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
+            mock_subproc.return_value = _mock_proc()
+
+            await sandbox.start(force_build=True)
+
+        mock_resolve.assert_awaited_once_with(force_build=True)
+
+    @pytest.mark.asyncio
+    async def test_resolve_image_uses_prebuilt_without_force_build(self, sandbox):
+        """Guards PR #936: manifest/prebuilt docker_image beats local Dockerfile."""
+        sandbox.task_env_config.docker_image = "ubuntu:24.04"
+        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
+            image = await sandbox._resolve_image(force_build=False)
+        assert image == "ubuntu:24.04"
+        mock_cli.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resolve_image_builds_when_force_build_is_true(self, sandbox):
+        """Guards PR #936: force_build still rebuilds from the local Dockerfile."""
+        sandbox.task_env_config.docker_image = "ubuntu:24.04"
+        with patch("benchflow.sandbox.apple_container._run_cli") as mock_cli:
+            mock_cli.return_value = ExecResult(stdout="", stderr=None, return_code=0)
+            image = await sandbox._resolve_image(force_build=True)
+        assert image == "bf__test-task"
+        args = mock_cli.call_args[0]
+        assert args[:4] == (
+            "build",
+            "--no-cache",
+            "-f",
+            str(sandbox.environment_dir / "Dockerfile"),
+        )
+        assert ("stop", "buildkit") not in [c[0] for c in mock_cli.call_args_list]
 
 
 # --- Exec argv construction ---
@@ -420,6 +521,7 @@ class TestStop:
         calls = [c[0] for c in mock_cli.call_args_list]
         assert ("stop", "bf_sess-001") in calls
         assert ("rm", "bf_sess-001") in calls
+        assert ("stop", "buildkit") not in calls
         assert sandbox._container_name is None
 
     @pytest.mark.asyncio
@@ -431,6 +533,7 @@ class TestStop:
         calls = [c[0] for c in mock_cli.call_args_list]
         assert ("stop", "bf_sess-001") in calls
         assert ("rm", "bf_sess-001") not in calls
+        assert ("stop", "buildkit") not in calls
         assert sandbox._container_name == "bf_sess-001"
 
 

@@ -144,7 +144,11 @@ class AppleContainerSandbox(BaseSandbox):
                 f"No Dockerfile found in {self.environment_dir} and no "
                 "docker_image specified in task config."
             )
-        if dockerfile.exists() and not _dockerfile_is_arm64_clean(dockerfile):
+        if (
+            dockerfile.exists()
+            and not self.task_env_config.docker_image
+            and not _dockerfile_is_arm64_clean(dockerfile)
+        ):
             raise ValueError(
                 f"Dockerfile at {dockerfile} contains amd64/x86_64 references. "
                 "Apple Container only supports arm64 images. Remove --platform "
@@ -160,12 +164,23 @@ class AppleContainerSandbox(BaseSandbox):
     def _image_tag(self) -> str:
         return f"bf__{self.environment_name}".replace("/", "_").replace(":", "_")
 
-    async def _build_image(self) -> str:
+    async def _resolve_image(self, *, force_build: bool) -> str:
         tag = self._image_tag()
         dockerfile = self.environment_dir / "Dockerfile"
 
-        if self.task_env_config.docker_image and not dockerfile.exists():
+        if self.task_env_config.docker_image and not force_build:
             return self.task_env_config.docker_image
+        if not dockerfile.exists():
+            raise ValueError(
+                f"No Dockerfile found in {self.environment_dir}; "
+                "cannot force-build apple-container image."
+            )
+        if not _dockerfile_is_arm64_clean(dockerfile):
+            raise ValueError(
+                f"Dockerfile at {dockerfile} contains amd64/x86_64 references. "
+                "Apple Container only supports arm64 images. Remove --platform "
+                "flags and architecture-specific references."
+            )
 
         build_timeout = self.task_env_config.build_timeout_sec
         result = await _run_cli(
@@ -183,8 +198,6 @@ class AppleContainerSandbox(BaseSandbox):
                 f"container build failed (exit {result.return_code}):\n"
                 f"{result.stderr or result.stdout}"
             )
-        # BuildKit VM is spawned by build; stop it to free resources
-        await _run_cli("stop", "buildkit", timeout=10)
         return tag
 
     async def start(self, force_build: bool) -> None:
@@ -194,7 +207,7 @@ class AppleContainerSandbox(BaseSandbox):
                 f"kalloc headroom too low ({headroom}). Reboot required."
             )
 
-        image = await self._build_image()
+        image = await self._resolve_image(force_build=force_build)
         self._container_name = f"bf_{self.session_id}".replace("/", "_")[:63]
 
         cpus = self.task_env_config.cpus or 2
@@ -210,11 +223,9 @@ class AppleContainerSandbox(BaseSandbox):
             f"{memory_mb}M",
         ]
 
-        # Environment variables
-        env = self._merge_env(None)
-        if env:
-            for k, v in env.items():
-                cmd_args.extend(["-e", f"{k}={v}"])
+        # Persistent/task env is injected through the canonical env-file wrapper
+        # on every exec call. The long-lived background process only keeps the
+        # VM alive, so placing secrets on the container-run argv is unnecessary.
 
         # Bind mount: rollout_dir as /logs so subdirectories (verifier/, agent/,
         # artifacts/) are regular dirs inside the mount — chmod works on them
@@ -488,9 +499,6 @@ class AppleContainerSandbox(BaseSandbox):
         if self._log_file:
             self._log_file.close()
             self._log_file = None
-
-        # Best-effort BuildKit cleanup
-        await _run_cli("stop", "buildkit", timeout=5)
 
         if delete:
             self._container_name = None

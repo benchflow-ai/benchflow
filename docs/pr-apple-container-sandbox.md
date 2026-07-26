@@ -25,6 +25,8 @@ This backend makes `bench eval run --sandbox apple-container` work natively on M
 | kalloc gate | Preflight + per-start check; aborts with "reboot required" | ~100k elements leak per start/stop cycle; crash at ~3M |
 | Architecture | arm64 only; rejects Dockerfiles with amd64/x86_64 references | No `--platform` flag in `container build` |
 | Concurrency | Recommended `--concurrency 1` | kalloc leak limits to ~10-12 containers between reboots |
+| Image selection | Prebuilt `docker_image` wins unless `force_build=True` | Matches Docker/Daytona manifest-image behavior |
+| Env handling | Persistent env is injected through exec-time env files | Avoids placing provider keys on the host `container run` argv |
 
 ## Changes
 
@@ -34,18 +36,20 @@ This backend makes `bench eval run --sandbox apple-container` work natively on M
 | `src/benchflow/sandbox/providers.py` | Registry entry: `SandboxProvider("apple-container", ...)` |
 | `src/benchflow/sandbox/setup.py` | Factory dispatch: `elif sandbox_type == "apple-container"` |
 | `pyproject.toml` | Empty extra `sandbox-apple-container = []` (uses system CLI, no SDK) |
-| `tests/test_apple_container_sandbox.py` | 31 unit tests (mocked subprocess, runs on any platform) + gated integration test |
+| `tests/test_apple_container_sandbox.py` | 36 unit tests (mocked subprocess, runs on any platform) + gated integration test |
 | `tests/test_sandbox_provider_registry_drift.py` | Updated assertions for 4-provider registry |
 
 ## Testing
 
-**Unit tests (31, any platform):**
+**Unit tests (36, any platform):**
 - kalloc zprint parsing (healthy, exhausted, failure)
 - Dockerfile arm64 validation (clean, `--platform=linux/amd64`, `x86_64`)
+- Image selection (`docker_image` by default, local build with `force_build=True`)
 - Preflight gates (non-darwin, missing CLI, kalloc exhausted)
 - Exec argv construction (basic, cwd, user, env redaction, service rejection, timeout→cleanup)
+- Start argv redaction for persistent environment values
 - File transfer routing (mounted→host copy, unmounted→base64 via `exec -i`)
-- Stop lifecycle (with/without delete)
+- Stop lifecycle (with/without delete, no global BuildKit stop)
 - Properties (`is_mounted=True`, `supports_snapshot=False`)
 
 **Integration test (macOS-gated, skipped in CI):**
@@ -65,10 +69,12 @@ $ bench eval run --tasks-dir tasks/sales-pivot-analysis --agent oracle --sandbox
 - **No snapshot support.** `supports_snapshot=False` — Branch substrate requires Docker or Daytona.
 - **Single-container only.** Multi-service (vulhub-style) tasks require the Docker backend.
 - **Public-network tasks only for now.** Tasks declaring `network_mode = "no-network"` fail closed because the backend does not yet enforce VM network isolation.
+- **Prebuilt images by default.** If `environment.docker_image` is set, Apple Container runs that image unless the caller passes `force_build=True`.
+- **BuildKit is global.** The backend does not stop the `buildkit` VM automatically; stopping it could interrupt another concurrent Apple Container build.
 
 ## Test plan
 
-- [x] 28 unit tests pass on any platform (no macOS required)
+- [x] 36 unit tests pass on any platform (no macOS required)
 - [x] 6 provider registry drift tests pass
 - [x] Integration lifecycle test passes on macOS with container CLI
 - [x] E2E oracle evaluation: `sales-pivot-analysis` → reward=1.0

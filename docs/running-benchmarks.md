@@ -344,8 +344,15 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 | Sandbox | Flag | Best for |
 |---------|------|----------|
 | Docker | `--sandbox docker` | Local development, small runs (≤10 tasks) |
+| Apple Container | `--sandbox apple-container` | Local Apple Silicon macOS runs without Docker Desktop |
 | Daytona | `--sandbox daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
 | Modal | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
+
+Apple Container uses macOS's `container` CLI. It currently supports public-network,
+single-container arm64 tasks, has no snapshot support, and should be run at low
+concurrency because macOS leaks `data.kalloc.1024` elements across VM starts. Use
+Docker, Daytona, or Modal for `network_mode = "no-network"`, multi-service, snapshot,
+or high-concurrency runs.
 
 For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 
