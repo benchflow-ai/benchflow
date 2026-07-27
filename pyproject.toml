@@ -108,6 +108,10 @@ build-backend = "hatchling.build"
 only-include = [
     "src",
     "tests",
+    # `tests/test_dep_cooldown.py` does `from tools.lock import ...`, so the
+    # sdist must ship `tools` too or the test suite fails to import from a
+    # source distribution.
+    "tools",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
@@ -185,3 +189,29 @@ exclude = [
     "src/benchflow/rewards/rubric_config.py",
     "src/benchflow/experimental/mcp/reviewer_server.py",
 ]
+
+[tool.uv]
+# The per-package cooldown override (`exclude-newer-package` below) is only
+# honored by uv >= 0.8.4. Pin a floor so an older uv can't silently ignore the
+# override table and resolve a different (vulnerable / un-vetted) lock.
+required-version = ">=0.8.4"
+# Dependency cooldown (hard rule): never resolve to a release younger than ~7
+# days. `exclude-newer` caps every `uv lock` at this timestamp. Don't hand-edit
+# it — run `python tools/lock.py` to set it to `now - 7d` and re-lock in one
+# step (the value stays static so CI's `uv sync --locked` is deterministic; the
+# helper just rolls it forward). The CI check `tests/test_dep_cooldown.py` fails
+# if this date is ever within the last 7 days.
+#
+# Security exception: a freshly-published CVE fix (younger than the cap) is
+# allowed via a per-package override in `exclude-newer-package` below, with a
+# matching machine-checkable rationale in
+# `[tool.benchflow.dependency-cooldown.override-rationale]`. The CI gate fails
+# missing/stale rationales and stale overrides once their package cutoff ages
+# past the cooldown window, so they cannot become a permanent package allowlist.
+exclude-newer = "2026-07-06T00:00:00Z"
+
+[tool.uv.exclude-newer-package]
+trl = "2026-07-10T00:00:00Z"
+
+[tool.benchflow.dependency-cooldown.override-rationale]
+trl = "Temporary mainline compatibility override: the TRL-SFT export extra requires trl>=1.8.0, and 1.8.0 was published after the current global cooldown cutoff. Remove once the release ages past the cooldown window."
