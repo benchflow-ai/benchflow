@@ -1,0 +1,1 @@
+../../../verifier/test.sh

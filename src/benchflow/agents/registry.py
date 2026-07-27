@@ -292,6 +292,10 @@ _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text(
 # Path to the deepagents ACP shim (runs LangChain's create_deep_agent as an ACP agent)
 _DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text()
 
+# Path to the medical-assistant ACP shim (runs a LangGraph supervisor→specialists
+# medical graph — the Multi-Agent-Medical-Assistant pattern — as an ACP agent)
+_MEDICAL_SHIM = (Path(__file__).parent / "medical_acp_shim.py").read_text()
+
 
 def _json_settings_merge(path: str, mutator: str) -> str:
     """Idempotent JSON-settings merge as a one-line bash snippet."""
@@ -501,6 +505,11 @@ class AgentConfig:
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
     disallow_web_tools_launch_suffix: str = ""
+    instruction_filename: str = "AGENTS.md"
+    # The conventional per-agent instruction file this agent reads from its cwd
+    # (claude-agent-acp → CLAUDE.md, gemini → GEMINI.md, everything else →
+    # AGENTS.md). The concurrent-floor runner writes each seat's `instructions:`
+    # body into <cwd>/<instruction_filename> before launch.
     # How task-declared MCP servers are delivered to the agent:
     # "acp" sends them in session/new; "native-config" writes an agent-specific
     # config file before launch (for agents whose ACP server drops/reformats
@@ -517,16 +526,17 @@ AGENTS: dict[str, AgentConfig] = {
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
-        # Pinned to 0.40.0: the config-option wiring below (set_config_option +
-        # the "model"/"effort" ids) targets this version's ACP protocol (sdk
-        # 0.24, which dropped session/set_model). The option ids are coupled to
-        # this pin — re-verify them when bumping. runtime.py uses
+        # Pinned to 0.55.0: the config-option wiring below (set_config_option +
+        # the "model"/"effort" ids) targets this package version's ACP protocol.
+        # The option ids are coupled to this pin — re-verify them when bumping.
+        # runtime.py uses
         # capability-first dispatch for the rest of the family.
         install_cmd=_js_agent_install(
-            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
+            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.55.0"
         ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
+        instruction_filename="CLAUDE.md",
         requires_env=["ANTHROPIC_API_KEY"],
         api_protocol="anthropic-messages",
         env_mapping={
@@ -541,6 +551,9 @@ AGENTS: dict[str, AgentConfig] = {
                 HostAuthFile(
                     "~/.claude/.credentials.json", "{home}/.claude/.credentials.json"
                 ),
+                # Account state (model entitlements): without it the adapter's
+                # model catalog omits gated models (e.g. fable) and rejects them.
+                HostAuthFile("~/.claude.json", "{home}/.claude.json"),
             ],
         ),
         disallow_web_tools_setup_cmd=_json_settings_merge(
@@ -653,6 +666,7 @@ AGENTS: dict[str, AgentConfig] = {
         install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
         launch_cmd=_js_agent_launch("gemini", "--acp --yolo"),
         protocol="acp",
+        instruction_filename="GEMINI.md",
         # The Gemini CLI reads GEMINI_API_KEY natively. GOOGLE_API_KEY is
         # accepted as an alias: auto_inherit_env mirrors it both ways so users
         # can set either one. Advertise GEMINI_API_KEY here so `agent show`
@@ -870,6 +884,45 @@ AGENTS: dict[str, AgentConfig] = {
         # directly (set unconditionally by resolve_provider_env when the model
         # carries a registered provider prefix), with DEEPSEEK_* as a fallback
         # (auto_inherit_env propagates those).
+    ),
+    "medical-assistant": AgentConfig(
+        name="medical-assistant",
+        description="Multi-Agent Medical Assistant — a LangGraph supervisor→"
+        "specialists graph (router → KB/web specialists → confidence-gated handoff "
+        "→ output guardrail), the Multi-Agent-Medical-Assistant pattern, run via "
+        "ACP shim driving deepseek-v4-pro through the OpenAI-compatible provider",
+        install_cmd=(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            # Pinned interpreter via uv (same pattern as deepagents/openhands): task
+            # base images ship Python as old as 3.6/3.8, but langgraph needs >=3.11.
+            "( command -v curl >/dev/null 2>&1 || "
+            f"  {_apt_install('curl', 'ca-certificates')} ) && "
+            "( command -v uv >/dev/null 2>&1 || "
+            "  ( curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 ) ) && "
+            'export PATH="$HOME/.local/bin:$PATH" && '
+            "uv venv --python 3.12 /opt/benchflow/medical-venv && "
+            # langgraph drives the StateGraph; langchain-openai is the OpenAI-
+            # compatible chat model for deepseek-v4-pro.
+            "uv pip install -q --python /opt/benchflow/medical-venv/bin/python "
+            "langgraph langchain-openai && "
+            "chmod -R a+rX /opt/benchflow/medical-venv && "
+            "chmod o+x /root /root/.local /root/.local/share "
+            "/root/.local/share/uv /root/.local/share/uv/python 2>/dev/null; "
+            + _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/medical-acp-shim", _MEDICAL_SHIM
+            )
+            # Verify langgraph imports through the pinned venv (mirrors deepagents'
+            # import check) so a failed install fails loudly here, not at launch.
+            + " && /opt/benchflow/medical-venv/bin/python -c "
+            "'import langgraph, langchain_openai' >/dev/null 2>&1"
+        ),
+        launch_cmd=(
+            f"/opt/benchflow/medical-venv/bin/python {_BENCHFLOW_BIN_PREFIX}/medical-acp-shim"
+        ),
+        protocol="acp",
+        requires_env=[],  # inferred from --model at runtime (DEEPSEEK_API_KEY, etc.)
+        # api_protocol / env_mapping intentionally empty — the shim builds an
+        # OpenAI-compatible ChatOpenAI from BENCHFLOW_PROVIDER_* (DEEPSEEK_* fallback).
     ),
     "openhands": AgentConfig(
         name="openhands",
@@ -1174,6 +1227,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
+        instruction_filename=config.instruction_filename,
         task_mcp_transport=config.task_mcp_transport,
         task_mcp_config_path=config.task_mcp_config_path,
     )
@@ -1368,6 +1422,7 @@ def register_agent(
     disallow_web_tools_setup_cmd: str = "",
     disallow_web_tools_owned_paths: list[str] | None = None,
     disallow_web_tools_launch_suffix: str = "",
+    instruction_filename: str = "AGENTS.md",
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -1407,6 +1462,7 @@ def register_agent(
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
+        instruction_filename=instruction_filename,
     )
     AGENTS[name] = config
     AGENT_INSTALLERS[name] = install_cmd

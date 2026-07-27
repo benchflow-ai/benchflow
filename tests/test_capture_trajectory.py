@@ -697,7 +697,9 @@ class TestFlushArrivalOrder:
 
         result = _capture_session_trajectory(session)
         assert len(result) == 1
-        assert result[0] == {"type": "user_message", "text": "Solve it"}
+        assert result[0]["type"] == "user_message"
+        assert result[0]["text"] == "Solve it"
+        assert result[0]["ts"] > 0  # rows are arrival-stamped client-side
 
     def test_pending_cleared_between_flushes(self) -> None:
         """Chunks after a flush go into a fresh pending list."""
@@ -737,3 +739,58 @@ class TestFlushArrivalOrder:
         ]
         assert result[1]["text"] == "before tool"
         assert result[3]["text"] == "after tool"
+
+
+class TestArrivalTimestamps:
+    """ACP carries no timestamps on the wire — rows are stamped client-side at
+    arrival so think-gaps and turn latency are reconstructable."""
+
+    def test_rows_carry_arrival_ts(self):
+        import time
+
+        t0 = time.time()
+        session = ACPSession("s1")
+        session.record_user_prompt("play")
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "thinking about it"},
+            }
+        )
+        session.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "t1",
+                "title": "casino observe",
+                "kind": "execute",
+            }
+        )
+        rows = _capture_session_trajectory(session)
+        assert [r["type"] for r in rows] == [
+            "user_message",
+            "agent_message",
+            "tool_call",
+        ]
+        for r in rows:
+            assert t0 <= r["ts"] <= time.time(), r
+        ts = [r["ts"] for r in rows]
+        assert ts == sorted(ts)
+
+    def test_merged_chunks_keep_first_arrival_ts(self):
+        session = ACPSession("s1")
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "a"},
+            }
+        )
+        first_ts = session._pending_text[0]["ts"]
+        session.handle_update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "b"},
+            }
+        )
+        rows = _capture_session_trajectory(session)
+        assert rows[0]["text"] == "ab"
+        assert rows[0]["ts"] == first_ts  # TTFT semantics: first chunk arrival

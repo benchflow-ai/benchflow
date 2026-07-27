@@ -1,0 +1,57 @@
+# benchmark.yaml — standard benchmark descriptor for BenchFlow.
+#
+# Every benchmark in benchmarks/<name>/ ships this file. It declares what the
+# benchmark is, where it comes from, how tasks are verified, and how it runs.
+
+name: medical-assistant
+description: "Multi-Agent Medical Assistant — a LangGraph supervisor→specialists agent (router → KB/web specialists → confidence-gated handoff → output guardrail) hosted by BenchFlow and answering clinical drug-safety questions"
+url: https://github.com/souvikmajumder26/Multi-Agent-Medical-Assistant
+repo: https://github.com/souvikmajumder26/Multi-Agent-Medical-Assistant
+author: "souvikmajumder26 (pattern); BenchFlow (adapter)"
+converted_by: BenchFlow
+
+# ── Tasks ────────────────────────────────────────────────────────────
+tasks:
+  count: 3
+  categories:
+    - medical-qa
+  tags: [medical-assistant, langgraph, multi-agent, qa, drug-safety]
+  splits:
+    main: 3
+
+# ── What is hosted ───────────────────────────────────────────────────
+# The agent is the Multi-Agent-Medical-Assistant PATTERN: a real langgraph
+# StateGraph with a supervisor/router, a KB (RAG-style) specialist, a web-search
+# specialist, a confidence-gated handoff, and an output guardrail. It runs as a
+# BenchFlow ACP-shim agent (agent: medical-assistant) whose LLM is deepseek-v4-pro
+# routed through the LiteLLM proxy.
+hosting:
+  agent: medical-assistant            # registered in src/benchflow/agents/registry.py
+  shim: src/benchflow/agents/medical_acp_shim.py
+  graph_nodes: [supervisor, retrieve_kb, web_search, answer, guardrail]
+  # The upstream's heavy stack (Azure embeddings, Qdrant, torch CV weights,
+  # Tavily) is OUT OF SCOPE on the deepseek-only proxy path — the RAG corpus is
+  # replaced by a small in-process knowledge base so the full router→specialists→
+  # handoff→guardrail control flow runs end-to-end. The CV/imaging specialists and
+  # live web search are not included.
+  faithful_to_upstream: control-flow   # router + specialists + confidence handoff + guardrail
+  not_included: [azure-embeddings, qdrant-rag, cv-imaging-weights, tavily-web-search]
+
+# ── Verification ─────────────────────────────────────────────────────
+verification:
+  method: deterministic_script
+  reward: proportional                 # matched_keyword_groups / total_groups
+  aggregation: per-task
+  detail: >
+    Each task ships ground_truth.json with keyword groups (OR within a group,
+    AND across groups). The agent writes its answer to /app/answer.md; tests/test.sh
+    scores it and writes reward to /logs/verifier/reward.txt. No LLM judge.
+  anti_cheat: false
+
+# ── Environment ──────────────────────────────────────────────────────
+environment:
+  base_image: "python:3.12-slim"
+  platform: linux/amd64
+  allow_internet: true                 # agent install (PyPI/uv) + proxy reachability
+  cpus: 1
+  memory_mb: 2048

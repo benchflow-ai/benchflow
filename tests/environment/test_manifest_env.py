@@ -426,10 +426,13 @@ async def test_provision_baseline_capture_failure_surfaces():
 def test_service_start_command_fully_detaches():
     svc = CLAWS.services[0]
     cmd = service_start_command(svc)
-    assert cmd.startswith("nohup ")
+    # setsid (new session) + nohup (HUP) + full fd detach — so Daytona's session
+    # command exit_code resolves instead of wedging on the daemon's process tree.
+    assert cmd.startswith("setsid nohup ")
     assert svc.command in cmd
     assert "</dev/null" in cmd
     assert f">{service_log_path(svc.name)}" in cmd
+    assert cmd.rstrip().endswith("&")
     assert "2>&1" in cmd
     assert cmd.endswith("&")
     assert "disown" not in cmd  # bash/zsh-only builtin; sandbox shell is sh/dash

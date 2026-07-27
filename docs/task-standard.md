@@ -685,6 +685,43 @@ Richer team semantics such as role membership enforcement, summaries, handoff
 artifacts, parallel teams, branch routing, and full trajectory sharing are
 parsed as draft surface but must fail closed until a runtime owns them.
 
+### Multi-agent trajectory tracking (target, G7)
+
+A multi-agent interaction (`multi-agent-sequential`, `arena-concurrent`, or a
+hosted multi-agent framework) must produce **one trace tree**, not one
+undifferentiated `llm_trajectory.jsonl`. Every surveyed observability standard
+(OpenTelemetry GenAI, LangSmith, Langfuse, OpenLLMetry) models a run as a tree of
+**typed spans joined by parent pointers**, with per-agent identity carried *on each
+call* — never as a flat event log, and never as one-file-per-agent (which keeps
+identity by filename but discards the relationships). See
+[`reference/multi-agent-trajectory.md`](reference/multi-agent-trajectory.md).
+
+Because BenchFlow's provider proxy sits **outside** the agent process, agent
+context cannot be recovered post-hoc: each proxied raw-LLM call MUST carry it in
+the request `metadata` (verified to survive intact to the LiteLLM callback). The
+contract:
+
+| `metadata` field | meaning | OTel analogue |
+|---|---|---|
+| `bf.agent_id` / `bf.agent_name` | the calling agent/node | `gen_ai.agent.id` / `gen_ai.agent.name` |
+| `bf.span_kind` | `chat` \| `invoke_agent` \| `execute_tool` \| `invoke_workflow` | `gen_ai.operation.name` |
+| `bf.parent_agent_id` / `bf.run_id` | parent pointer + this call's id (reconstruct the tree) | `parent_run_id` / `dotted_order` |
+| `bf.session_id` | real conversation/seat id — **never synthesized** | `gen_ai.conversation.id` |
+
+The LiteLLM callback records these as a span row; the trajectory importer rebuilds
+the tree from `bf.parent_agent_id` / `bf.run_id`. The callback captures **any**
+`bf.*` key generically, so richer dimensions (`bf.role`, `bf.scene`,
+`bf.turn_index`, `bf.team_id`, `bf.framework`, `bf.framework_node_id`,
+`bf.trace_id`) need no further code. A **uniform adapter** (`detect` / `prepare` /
+`run` / `collect` under a `benchflow.multi_agent` block, with `capture_raw_llm:
+required` failing closed and `agent_graph.json` for relations) maps each framework's
+native per-agent + parent context (LangGraph `run_id`/`parent_run_id`; OpenAI Agents
+SDK root span; Omnigent's conversation tree) onto this one schema — BenchFlow does
+not adopt any single framework as *the* host. Runtime is deferred (G7); the contract
+is declared so multi-agent tasks parse without loss. See
+[`reference/multi-agent-trajectory.md`](reference/multi-agent-trajectory.md) for the
+full vocabulary + adapter protocol.
+
 Simulated users and nudges should be explicit about runtime type:
 
 ```yaml
@@ -847,6 +884,7 @@ Current implementation status:
 | `reward.json` precedence | yes | partial | prefer JSON when present and reject both-present mismatches |
 | metrics aggregate policy | yes | partial | `mean`, `weighted_mean`, and `weighted_sum`; richer engines remain target work |
 | `arena-concurrent` interaction (G4) | no | no | add interaction-mode schema now; A2A bridge for the agent-under-test + concurrently-running assessor at M2 |
+| multi-agent trajectory tracking (G7) | no | no | per-call `bf.*` agent-attribution metadata on proxied raw-LLM calls (verified to reach the callback) → one structured trace tree; callback records agent/parent/conversation, importer rebuilds the tree; uniform per-framework metadata shim; M1/M2 |
 | hybrid reward envelope (G1) | partial | no | declared cross-surface product/sum of factors; M1 |
 | GAIN aggregation (G2) | no | no | dynamic live baseline + ceiling; M1 |
 | leaderboard-submission (G5) | partial | no | hosted / hidden external scorer with durable result record; M1 |

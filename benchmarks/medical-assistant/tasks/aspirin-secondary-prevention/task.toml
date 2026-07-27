@@ -1,0 +1,18 @@
+version = "1.0"
+
+[metadata]
+author_name = "benchflow"
+difficulty = "easy"
+category = "medical-qa"
+tags = ["medical-assistant", "langgraph", "multi-agent", "qa"]
+
+[agent]
+timeout_sec = 600
+
+[verifier]
+timeout_sec = 120
+
+[environment]
+cpus = 1
+memory_mb = 2048
+allow_internet = true

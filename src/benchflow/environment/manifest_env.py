@@ -28,6 +28,7 @@ httpx) remains the platform layer.
 from __future__ import annotations
 
 import contextlib
+import logging
 import shlex
 from pathlib import PurePosixPath
 from typing import Any
@@ -44,6 +45,8 @@ from benchflow.environment.protocol import (
 # Bounded guard for the detached-start exec. The start command backgrounds the
 # service and returns immediately, so this only bounds sandbox transport
 # stalls — readiness() owns how long the service may take to become healthy.
+logger = logging.getLogger(__name__)
+
 _SERVICE_START_TIMEOUT_SEC = 15
 
 
@@ -66,8 +69,17 @@ def service_start_command(svc: ServiceSpec) -> str:
     that is a bash/zsh builtin, absent from the ``sh``/dash shell sandbox
     execs run under. The manifest's ``command`` is a single command line and
     is used verbatim, matching clawbench's ``_build_service_hooks`` shape.
+
+    ``setsid`` additionally moves the service into its OWN session/process group.
+    Daytona's ``_poll_response`` waits on the session command's process TREE, so a
+    uvicorn-style service (e.g. the casino ``casino-service``) that merely
+    backgrounds still keeps that tree alive and wedges the exec to its 15s timeout
+    even with the fd redirects — the same manifest passes on Docker. ``setsid``
+    severs the tree so the start returns immediately; it's in util-linux (present
+    in the slim images these services build on) and is a no-op stronger-detach for
+    services that already detached cleanly (e.g. clawbench's).
     """
-    return f"nohup {svc.command} </dev/null >{service_log_path(svc.name)} 2>&1 &"
+    return f"setsid nohup {svc.command} </dev/null >{service_log_path(svc.name)} 2>&1 &"
 
 
 class EnvironmentSnapshotError(RuntimeError):
@@ -155,10 +167,26 @@ class ManifestEnvironment:
         :func:`service_start_command`. The service's output is retrievable at
         :func:`service_log_path` for its name.
         """
-        await self._sandbox.exec(
-            service_start_command(svc),
-            timeout_sec=_SERVICE_START_TIMEOUT_SEC,
-        )
+        try:
+            await self._sandbox.exec(
+                service_start_command(svc),
+                timeout_sec=_SERVICE_START_TIMEOUT_SEC,
+            )
+        except RuntimeError as exc:
+            # A fully-detached daemon (uvicorn casino-service) keeps Daytona's
+            # session-command exit_code from ever resolving (BF-6), so the start
+            # exec "times out" even though the service IS launching. That's the
+            # expected daytona shape — readiness() below is the real gate, so a
+            # genuine start failure surfaces there, not here. (On Docker the exec
+            # returns immediately and this never fires.) Only swallow the timeout;
+            # re-raise anything else.
+            if "timed out" not in str(exc).lower():
+                raise
+            logger.info(
+                "service %r start exec did not resolve (detached daemon on "
+                "daytona) — verifying via readiness()",
+                svc.name,
+            )
 
     async def readiness(self) -> ReadinessProbe:
         """Poll each service's health endpoint from inside the sandbox.

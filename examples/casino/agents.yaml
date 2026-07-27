@@ -1,0 +1,22 @@
+# Native concurrent multi-agent casino roster for `bench eval run --agents`.
+#
+#   set -a; . ~/sb-run.env; set +a        # DEEPSEEK_API_KEY for the proxy seat
+#   bench eval run \
+#     --agents examples/casino/agents.yaml \
+#     --environment-manifest benchmarks/casinobench/environment.toml \
+#     --sandbox docker --drive auto-loop \
+#     --url-env CASINO_URL --seat-env CASINOBENCH_SEAT_ID \
+#     --standings-path /_admin/standings --events-path /_admin/events \
+#     --service-env CASINO_MULTIPLAYER=1 \
+#     --jobs-dir out/native-floor/casino
+#
+# This file is intentionally agents-only. Task/service/sandbox/out/drive/prompt
+# are standard `bench eval run` flags, not roster fields.
+
+agents:
+  # No `name:` means the seat/player id defaults to <agent>-<model>.
+  # Subscription seats (codex/claude oauth) produce ACP trajectories only.
+  - { agent: codex-acp, model: gpt-5.5, count: 2, instructions: prompts/aggressive.md }
+  - { agent: claude-agent-acp, model: claude-sonnet-4-6, count: 2, instructions: prompts/cautious.md }
+  # Proxy seats route through a per-seat LiteLLM proxy and produce raw + ACP trajectories.
+  - { agent: deepagents, model: deepseek/deepseek-v4-pro, instructions: prompts/aggressive.md }

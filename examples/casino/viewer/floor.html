@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BenchFlow · Casino Floor — live agents</title>
+<style>
+  :root{
+    --bg:#0e0a14; --panel:#181020; --edge:#2c1d3a; --gold:#e7c66b; --gold-dim:#9c8233;
+    --ink:#f4ecdf; --muted:#9a8aa0; --up:#5fd08a; --down:#e2607a; --chip:#241634;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,#1d1130,#0e0a14);
+    color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:baseline;gap:14px;padding:18px 22px;border-bottom:1px solid var(--edge)}
+  header h1{font-size:20px;margin:0;letter-spacing:.3px}
+  header h1 b{color:var(--gold)}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px}
+  .live{background:var(--up);box-shadow:0 0 8px var(--up);animation:pulse 1.4s infinite}
+  .ended{background:var(--muted)}
+  @keyframes pulse{50%{opacity:.35}}
+  .sub{color:var(--muted);font-size:13px}
+  main{max-width:1080px;margin:0 auto;padding:20px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+  .agent{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:14px 16px;
+    cursor:pointer;transition:transform .08s,border-color .15s}
+  .agent:hover{transform:translateY(-2px);border-color:var(--gold-dim)}
+  .agent.sel{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset}
+  .agent .name{font-weight:600;letter-spacing:.2px}
+  .agent .meta{color:var(--muted);font-size:12px;margin-top:2px}
+  .chips{font:600 26px/1 var(--mono);margin-top:10px}
+  .chips small{font-size:12px;color:var(--muted);font-weight:400}
+  .delta{font:600 13px/1 var(--mono);margin-left:8px}
+  .delta.up{color:var(--up)} .delta.down{color:var(--down)}
+  .pill{display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--edge);
+    color:var(--muted);margin-top:8px}
+  .pill.ok{color:var(--up);border-color:#234} .pill.err{color:var(--down);border-color:#422}
+  details{background:var(--panel);border:1px solid var(--edge);border-radius:12px;margin-top:16px}
+  details>summary{cursor:pointer;padding:12px 16px;font-weight:600;list-style:none;display:flex;
+    align-items:center;gap:8px;user-select:none}
+  details>summary::-webkit-details-marker{display:none}
+  details>summary::before{content:"▸";color:var(--gold);transition:transform .15s}
+  details[open]>summary::before{transform:rotate(90deg)}
+  .body{padding:0 16px 14px}
+  .traj .turn{border-top:1px solid var(--edge);padding:10px 0}
+  .role{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--gold-dim)}
+  .think{white-space:pre-wrap;color:var(--ink);margin-top:3px}
+  .tool{font-family:var(--mono);font-size:12.5px;background:var(--chip);border:1px solid var(--edge);
+    border-radius:8px;padding:7px 10px;margin-top:6px;white-space:pre-wrap;color:#cfe8d6}
+  .log{font-family:var(--mono);font-size:12.5px;max-height:340px;overflow:auto}
+  .log .ev{padding:3px 0;border-bottom:1px dotted var(--edge);color:var(--muted)}
+  .log .ev b{color:var(--ink)}
+  .empty{color:var(--muted);padding:8px 0}
+  .hint{color:var(--muted);font-size:12px;margin:6px 0 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>BenchFlow <b>Casino Floor</b></h1>
+  <span id="status" class="sub"><span class="dot ended"></span>connecting…</span>
+  <span id="pot" class="sub" style="margin-left:auto"></span>
+</header>
+<main>
+  <div id="agents" class="grid"></div>
+
+  <details id="trajBox">
+    <summary>Agent trajectory <span id="trajWho" class="sub" style="font-weight:400"></span></summary>
+    <div class="body"><div id="traj" class="traj"><div class="empty">Click an agent above to see its raw trajectory (thinking + every <code>casino</code> call).</div></div></div>
+  </details>
+
+  <details id="logBox">
+    <summary>Floor log <span id="logCount" class="sub" style="font-weight:400"></span></summary>
+    <div class="body"><div id="log" class="log"></div></div>
+  </details>
+  <p class="hint">Auto-updates every 3s · click an agent card to drill into its trajectory · sections fold/expand.</p>
+</main>
+
+<script>
+const START = 1000;
+let selected = null, agentsCache = [];
+
+function fmtDelta(d){ const s = d>0?'+':''; return `<span class="delta ${d>=0?'up':'down'}">${s}${d}</span>`; }
+
+function renderAgents(st){
+  agentsCache = st.agents || [];
+  const el = document.getElementById('agents');
+  el.innerHTML = agentsCache.map(a=>{
+    const d = (a.chips ?? START) - START;
+    const cls = a.status==='ok' ? 'ok' : (a.status && a.status.startsWith('error') ? 'err' : '');
+    const label = a.status==='ok' ? 'finished' : (cls==='err' ? 'timed out / err' : 'playing');
+    return `<div class="agent ${selected===a.seat?'sel':''}" data-seat="${a.seat}">
+      <div class="name">${a.seat}</div>
+      <div class="meta">${a.agent} · ${a.model}</div>
+      <div class="chips">${a.chips ?? '—'}<small> chips</small>${fmtDelta(d)}</div>
+      <span class="pill ${cls}">${label} · ${a.tool_calls||0} moves</span>
+    </div>`;
+  }).join('') || '<div class="empty">no agents yet…</div>';
+  el.querySelectorAll('.agent').forEach(c=>c.onclick=()=>selectAgent(c.dataset.seat));
+}
+
+async function selectAgent(seat){
+  selected = seat;
+  document.querySelectorAll('.agent').forEach(c=>c.classList.toggle('sel',c.dataset.seat===seat));
+  document.getElementById('trajWho').textContent = '· '+seat;
+  document.getElementById('trajBox').open = true;
+  const box = document.getElementById('traj');
+  box.innerHTML = '<div class="empty">loading…</div>';
+  try{
+    const t = await fetch('traj/'+seat+'.json?ts='+Date.now()).then(r=>r.json());
+    if(!t.length){ box.innerHTML='<div class="empty">no trajectory captured for this agent yet.</div>'; return; }
+    box.innerHTML = t.map(turn=>{
+      if(turn.type==='tool_call'){
+        const c = (turn.command||turn.content||turn.text||JSON.stringify(turn)).toString();
+        return `<div class="turn"><div class="role">tool · ${turn.kind||'casino'}</div><div class="tool">${esc(c)}</div></div>`;
+      }
+      const role = turn.type==='user_message'?'task':turn.type==='agent_message'?'agent':turn.type;
+      return `<div class="turn"><div class="role">${role}</div><div class="think">${esc(turn.text||turn.content||'')}</div></div>`;
+    }).join('');
+  }catch(e){ box.innerHTML='<div class="empty">trajectory not available.</div>'; }
+}
+
+function renderLog(st){
+  const evs = st.events || [];
+  document.getElementById('logCount').textContent = '· '+evs.length+' events';
+  document.getElementById('log').innerHTML = evs.slice(-300).reverse().map(e=>
+    `<div class="ev"><b>${e.seat||e.actor||''}</b> ${esc(e.text||e.action||JSON.stringify(e))}</div>`
+  ).join('') || '<div class="empty">no events yet…</div>';
+}
+
+function esc(s){ return (s??'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+let iv = null;
+async function tick(){
+  try{
+    const st = await fetch('state.json?ts='+Date.now()).then(r=>r.json());
+    const live = !!st.running;
+    document.getElementById('status').innerHTML =
+      `<span class="dot ${live?'live':'ended'}"></span>${live?'LIVE · agents playing':'run ended'} · updated ${st.updated||''}`;
+    const tot = Object.values(st.standings||{}).reduce((a,b)=>a+b,0);
+    document.getElementById('pot').textContent = (st.agents?.length||0)+' agents · '+tot+' chips on the floor';
+    renderAgents(st); renderLog(st);
+    if(selected && live) selectAgent(selected);  // only auto-refresh trajectory while the run is live
+    if(!live && iv){ clearInterval(iv); iv = null;  // finished run is static — stop polling (no flashing)
+      document.querySelector('.hint').textContent = 'Run ended · static snapshot · click an agent card to drill into its trajectory · sections fold/expand.'; }
+  }catch(e){ document.getElementById('status').innerHTML='<span class="dot ended"></span>waiting for run…'; }
+}
+tick(); iv = setInterval(tick, 3000);
+</script>
+</body>
+</html>

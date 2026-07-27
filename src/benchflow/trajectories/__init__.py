@@ -13,6 +13,7 @@ module, not in this package), since it consumes ACP session updates
 rather than HTTP / OTLP traffic.
 """
 
+from .agents import AgentNode, AgentTree, build_agent_tree
 from .tree import RolloutNode, RolloutTree, Step, branch_points, trajectory
 from .types import LLMExchange, LLMRequest, LLMResponse, Trajectory
 
@@ -22,6 +23,9 @@ __all__ = [
     "LLMRequest",
     "LLMResponse",
     "Trajectory",
+    "AgentNode",
+    "AgentTree",
+    "build_agent_tree",
     # tree-native Rollout data model
     "RolloutNode",
     "RolloutTree",

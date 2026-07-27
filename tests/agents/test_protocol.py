@@ -147,7 +147,9 @@ def test_adapter_steps_reflects_acp_session_events():
     client._session = session
 
     adapter = ACPSessionAdapter(client)
-    assert adapter.steps == [{"type": "user_message", "text": "first instruction"}]
+    assert len(adapter.steps) == 1
+    assert adapter.steps[0]["type"] == "user_message"
+    assert adapter.steps[0]["text"] == "first instruction"
 
 
 def test_adapter_steps_empty_without_session():

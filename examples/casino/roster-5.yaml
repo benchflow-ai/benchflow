@@ -1,0 +1,3 @@
+# 5-agent floor for daytona↔docker parity: deepagents (proxy) on deepseek-v4-flash
+agents:
+  - { agent: deepagents, model: deepseek/deepseek-v4-flash, count: 5, instructions: prompts/aggressive.md }

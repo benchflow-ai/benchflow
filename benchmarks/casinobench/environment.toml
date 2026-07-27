@@ -1,0 +1,46 @@
+# CasinoBench — Environment-plane manifest (in-sandbox, ClawsBench-style).
+#
+# The casino mock-service runs INSIDE the rollout's own sandbox (env-0 style),
+# NOT as a host subprocess. BenchFlow's ManifestEnvironment starts it before the
+# agent, health-gates it on /health, and the agent reaches it on localhost:9001
+# via the `casino` CLI. The ACP backends are baked into the same base image so
+# competing seats can run in the same shared sandbox. Run a task with:
+#   bench eval run --tasks-dir benchmarks/casinobench/tasks/blackjack \
+#     --environment-manifest benchmarks/casinobench/environment.toml \
+#     --agents roster.yaml
+
+# One ready-to-run image serves every game (selected by CASINOBENCH_GAME), so
+# this is `image` (the run target), not `base_image` (which only names what
+# per-task images are built FROM and is NOT runnable on its own —
+# resolve_manifest_image returns it as None).
+[environment]
+name = "casinobench"
+# Published, versioned base image. The casinobench publish-base-image CI builds it
+# on each release tag and pushes to BOTH the env0 ACR (this tag — the registry
+# Daytona is authed to pull) and ghcr (for org-authed consumers). --sandbox daytona
+# pulls this ACR tag via Image.base(); --sandbox docker uses the same tag built
+# locally (docker build -t <this tag> …), so there's no drift between "built
+# locally" and "what Daytona pulls".
+image = "ghcr.io/yiminnn/casinobench-base:2.0.6"
+owns_lifecycle = false                    # the framework starts the service below
+isolation = "per_task"
+
+[environment.task_selection]
+mechanism = "env_var"
+key = "CASINOBENCH_GAME"
+
+[environment.readiness]
+timeout_sec = 60
+
+# Forward the per-task game/seed into the service process.
+# BENCHFLOW_SEED is deliberately NOT forwarded: a seat with the world seed can
+# compute the deterministic roulette spin from (seed, table_id, hand) and bet the
+# winning number. The multiplayer World now draws a secret random seed of its own.
+[environment.forward_env]
+keys = ["CASINOBENCH_GAME", "CASINOBENCH_HANDS"]
+
+[[environment.services]]
+name = "casino"
+command = "casino-service"     # uvicorn on $CASINO_PORT (9001)
+port = 9001
+health_path = "/health"
