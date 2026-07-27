@@ -379,6 +379,29 @@ registers it as an agent runtime. The image is tagged by content digest, so a
 task whose environment has not changed reuses the pushed layers and the
 existing runtime instead of paying for a rebuild.
 
+#### Building without Docker
+
+By default BenchFlow builds with a local Docker daemon when one is running,
+and otherwise builds on **AWS CodeBuild** — so the backend works on a machine
+with no container runtime at all, and from CI or Windows. Set a CodeBuild
+service role to enable the remote path:
+
+```bash
+export BENCHFLOW_AGENTCORE_CODEBUILD_ROLE_ARN="arn:aws:iam::<account>:role/<build-role>"
+```
+
+That role must be assumable by `codebuild.amazonaws.com` and able to push to
+ECR, read the build bucket, and write CloudWatch logs. Your own credentials
+need `codebuild:*` and S3 access. BenchFlow creates the CodeBuild project and
+an `benchflow-agentcore-build-<account>-<region>` bucket on first use (build
+contexts expire after a day); override the bucket with
+`BENCHFLOW_AGENTCORE_BUILD_BUCKET`.
+
+Builds run on a Graviton worker, so `linux/arm64` is native — no qemu. Force
+either strategy with `BENCHFLOW_AGENTCORE_BUILDER=docker|codebuild|auto`.
+A remote build takes roughly 40s versus roughly 20s locally on Apple silicon;
+either way it happens once per distinct task image, not once per rollout.
+
 BenchFlow also appends a small HTTP responder to the image and makes it the
 entrypoint. AgentCore refuses command execution for a session whose container
 does not answer `GET /ping` on port 8080, and task images know nothing about
@@ -401,6 +424,11 @@ BenchFlow builds and registers once per distinct task image (keyed by a digest
 of the build context) and every trial and skill arm of that image opens another
 session against the shared runtime. Concurrency is therefore bounded by
 sessions, not by how many images you have.
+
+Measured against the live service: 60 concurrent rollouts of one task ran on a
+single runtime in ~30s wall clock with no throttling and no failures (median
+session start ~15s). The session-creation rate quota (400/min) is the first
+thing you would hit, well before the 5,000 concurrent-session ceiling.
 
 Two quotas to check before a big run:
 

@@ -48,7 +48,6 @@ import base64
 import io
 import os
 import shlex
-import shutil
 import subprocess
 import tarfile
 import threading
@@ -57,6 +56,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from benchflow._paths import iter_safe_tree
+from benchflow.sandbox import agentcore_builder as builders
 from benchflow.sandbox import agentcore_provisioning as provisioning
 from benchflow.sandbox._base import BaseSandbox, ExecResult, wrap_command_with_env_file
 from benchflow.sandbox.protocol import SandboxStartupError
@@ -206,10 +206,17 @@ class AgentCoreSandbox(BaseSandbox):
                 f"variables. Underlying error: {exc}"
             ) from exc
 
-        if not shutil.which("docker"):
+        # Docker is not required: without a local daemon, images are built on
+        # AWS CodeBuild instead. Only flag the case where neither route is
+        # usable, so the run fails now rather than at the first build.
+        if not builders.docker_available() and not os.environ.get(
+            builders.ENV_CODEBUILD_ROLE
+        ):
             raise SystemExit(
-                "AgentCore builds task images locally and pushes them to ECR, "
-                "which requires the docker CLI on PATH."
+                "AgentCore needs a way to build task images. Either start a "
+                "local Docker daemon, or set "
+                f"{builders.ENV_CODEBUILD_ROLE} to a CodeBuild service role so "
+                "images can be built in AWS without Docker."
             )
 
     def _validate_definition(self) -> None:
@@ -309,78 +316,24 @@ class AgentCoreSandbox(BaseSandbox):
         return await provisioning.once(cache_key, _publish)
 
     async def _build_and_push(self, image_uri: str, *, force_build: bool) -> None:
-        build_context, dockerfile, shim = self._materialize_build_context()
-        build_args = [
-            "docker",
-            "build",
-            "--platform",
-            "linux/arm64",
-            "-f",
-            str(dockerfile),
-            "-t",
-            image_uri,
-        ]
-        if force_build:
-            build_args.append("--no-cache")
-        build_args.append(str(build_context))
-
-        try:
-            result = await asyncio.to_thread(
-                _run, *build_args, timeout=self.task_env_config.build_timeout_sec
-            )
-        finally:
-            # The generated Dockerfile and shim only exist for the build. The
-            # build context is the task's own environment directory, so leaving
-            # them behind would litter the caller's task tree.
-            for path in (dockerfile, shim):
-                path.unlink(missing_ok=True)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"docker build failed (exit {result.returncode}):\n"
-                f"{(result.stderr or result.stdout or '').strip()[:4000]}"
-            )
-
-        await self._reject_oversized_image(image_uri)
-
-        registry = self._ecr_registry()
-        await asyncio.to_thread(self._docker_login, registry)
-        push = await asyncio.to_thread(_run, "docker", "push", image_uri, timeout=1800)
-        if push.returncode != 0:
-            raise RuntimeError(
-                f"docker push to ECR failed (exit {push.returncode}):\n"
-                f"{(push.stderr or push.stdout or '').strip()[:4000]}"
-            )
-        self.logger.info("Pushed AgentCore image %s", image_uri)
-
-    async def _reject_oversized_image(self, image_uri: str) -> None:
-        """Fail before push when the image exceeds AgentCore's hard 2 GB cap."""
-        inspect = await asyncio.to_thread(
-            _run, "docker", "image", "inspect", "-f", "{{.Size}}", image_uri
+        builder = builders.select_builder(
+            self._client,
+            account_id=self._resolve_account_id(),
+            region=self.region,
         )
-        raw = (inspect.stdout or "").strip()
-        if inspect.returncode != 0 or not raw.isdigit():
-            # Can't measure — let the push proceed rather than block on a
-            # diagnostic that failed for an unrelated reason.
-            self.logger.debug("Could not measure image size for %s", image_uri)
-            return
-        message = provisioning.image_size_error(int(raw), image_uri)
-        if message:
-            raise SandboxStartupError(message, sandbox_id=image_uri)
-
-    def _materialize_build_context(self) -> tuple[Path, Path, Path]:
-        """Return (context_dir, dockerfile, shim) for an image with the shim.
-
-        The task's own Dockerfile is left untouched on disk; the shim is
-        appended into a *generated* Dockerfile inside the same build context so
-        relative ``COPY`` paths keep resolving. Both generated files are
-        transient — the caller removes them once the build finishes.
-        """
-        context = self.environment_dir
-        shim_path = context / provisioning.GENERATED_SHIM
-        shim_path.write_text(_PING_SHIM)
-        generated = context / provisioning.GENERATED_DOCKERFILE
-        generated.write_text(self._generated_dockerfile_text())
-        return context, generated, shim_path
+        self.logger.info("Building %s via %s", image_uri, builder.name)
+        await builder.build_and_push(
+            builders.BuildRequest(
+                context_dir=self.environment_dir,
+                dockerfile_text=self._generated_dockerfile_text(),
+                shim_text=_PING_SHIM,
+                image_uri=image_uri,
+                registry=self._ecr_registry(),
+                region=self.region,
+                force_build=force_build,
+                timeout_sec=self.task_env_config.build_timeout_sec,
+            )
+        )
 
     def _generated_dockerfile_text(self) -> str:
         """The Dockerfile BenchFlow actually builds, as text.
@@ -425,20 +378,6 @@ class AgentCoreSandbox(BaseSandbox):
             return True
         except ClientError:
             return False
-
-    def _docker_login(self, registry: str) -> None:
-        token = self._client("ecr").get_authorization_token()
-        blob = token["authorizationData"][0]["authorizationToken"]
-        _user, password = base64.b64decode(blob).decode().split(":", 1)
-        proc = subprocess.run(
-            ["docker", "login", "--username", "AWS", "--password-stdin", registry],
-            input=password,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"ECR docker login failed: {(proc.stderr or '')[:1000]}")
 
     async def _ensure_runtime(self, image_uri: str) -> str:
         """Resolve the shared agent runtime for *image_uri*, creating it once.

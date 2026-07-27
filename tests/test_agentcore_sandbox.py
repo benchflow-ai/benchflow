@@ -19,6 +19,7 @@ The live end-to-end path is exercised separately by
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
 import tarfile
 from unittest.mock import MagicMock, patch
@@ -302,38 +303,57 @@ class TestFileTransfer:
 
 
 class TestImagePreparation:
-    def test_generated_dockerfile_adds_the_ping_shim(self, sandbox, tmp_path):
+    def _request(self, sandbox):
+        from benchflow.sandbox import agentcore_builder as builders
+        from benchflow.sandbox.agentcore import _PING_SHIM
+
+        return builders.BuildRequest(
+            context_dir=sandbox.environment_dir,
+            dockerfile_text=sandbox._generated_dockerfile_text(),
+            shim_text=_PING_SHIM,
+            image_uri="reg/repo:tag",
+            registry="reg",
+            region="us-west-2",
+            force_build=False,
+            timeout_sec=None,
+        )
+
+    def test_generated_dockerfile_adds_the_ping_shim(self, sandbox):
         """Without a /ping responder the microVM 500s on every command."""
-        context, dockerfile, shim = sandbox._materialize_build_context()
-        text = dockerfile.read_text()
+        text = sandbox._generated_dockerfile_text()
 
         assert "FROM python:3.12-slim" in text
         assert "benchflow_agentcore_shim.py" in text
         assert "EXPOSE 8080" in text
-        assert shim.exists()
-        assert shim.parent == context
 
     def test_task_dockerfile_is_not_modified_in_place(self, sandbox, tmp_path):
+        from benchflow.sandbox import agentcore_builder as builders
+
         original = (tmp_path / "Dockerfile").read_text()
-        sandbox._materialize_build_context()
+        with builders.materialized(self._request(sandbox)) as dockerfile:
+            assert dockerfile.exists()
+            assert (tmp_path / "Dockerfile").read_text() == original
 
-        assert (tmp_path / "Dockerfile").read_text() == original
+    def test_generated_files_never_survive_the_build(self, sandbox, tmp_path):
+        """The build context is the task's own directory; don't litter it."""
+        from benchflow.sandbox import agentcore_builder as builders
 
-    @pytest.mark.asyncio
-    async def test_build_leaves_no_generated_files_in_the_task_tree(
+        before = {p.name for p in tmp_path.iterdir()}
+        with builders.materialized(self._request(sandbox)):
+            assert {p.name for p in tmp_path.iterdir()} != before
+
+        assert {p.name for p in tmp_path.iterdir()} == before
+
+    def test_generated_files_are_cleaned_up_after_a_failed_build(
         self, sandbox, tmp_path
     ):
-        """The build context is the task's own directory; don't litter it."""
+        """A build that raises must not leave scaffolding behind either."""
+        from benchflow.sandbox import agentcore_builder as builders
+
         before = {p.name for p in tmp_path.iterdir()}
-
-        async def _to_thread(fn, *args, **kwargs):
-            return MagicMock(returncode=0, stdout="sha256:" + "a" * 64, stderr="")
-
-        with (
-            patch("benchflow.sandbox.agentcore.asyncio.to_thread", new=_to_thread),
-            patch.object(sandbox, "_ecr_registry", return_value="reg"),
-        ):
-            await sandbox._publish_image(force_build=False)
+        with contextlib.suppress(RuntimeError):  # noqa: SIM117
+            with builders.materialized(self._request(sandbox)):
+                raise RuntimeError("build blew up")
 
         assert {p.name for p in tmp_path.iterdir()} == before
 
@@ -345,9 +365,8 @@ class TestImagePreparation:
             rollout_paths=None,
             task_env_config=SandboxConfig(docker_image="python:3.12-slim"),
         )
-        _context, dockerfile, _shim = env._materialize_build_context()
 
-        assert "FROM python:3.12-slim" in dockerfile.read_text()
+        assert "FROM python:3.12-slim" in env._generated_dockerfile_text()
 
 
 class TestCapabilityGating:
