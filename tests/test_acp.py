@@ -957,10 +957,6 @@ class TestConnectAcpModelSelection:
 
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -986,10 +982,6 @@ class TestConnectAcpModelSelection:
         mock_acp = self._make_mocks()
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1015,10 +1007,6 @@ class TestConnectAcpModelSelection:
         mock_acp = self._make_mocks()
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1043,10 +1031,6 @@ class TestConnectAcpModelSelection:
         mock_acp = self._make_mocks()
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1076,10 +1060,6 @@ class TestConnectAcpModelSelection:
         mock_env.exec.return_value = MagicMock(return_code=0, stdout="", stderr="")
 
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch(
                 "benchflow.acp.runtime.ContainerTransport",
                 return_value=MagicMock(),
@@ -1122,10 +1102,6 @@ class TestConnectAcpModelSelection:
         }
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1155,10 +1131,6 @@ class TestConnectAcpModelSelection:
         ]
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1189,10 +1161,6 @@ class TestConnectAcpModelSelection:
         mock_acp.session_new.return_value.config_options = [{"id": "model"}]
         mock_env = AsyncMock()
         with (
-            patch(
-                "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-                return_value=MagicMock(),
-            ),
             patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1217,25 +1185,24 @@ class TestConnectAcpModelSelection:
         mock_acp.set_config_option.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_apple_container_uses_native_live_process(self, tmp_path):
-        """Guards PR #936 against treating Apple Container as Daytona."""
+    async def test_connect_acp_delegates_transport_to_the_sandbox(self, tmp_path):
+        """connect_acp asks the sandbox for its transport and wires it through.
 
+        Per-backend transport selection moved onto the sandbox objects; the
+        cases that used to be asserted here (Apple Container vs Daytona,
+        PTY vs SSH, the gemini and BENCHFLOW_DAYTONA_ACP_TRANSPORT overrides)
+        now live in ``tests/test_sandbox_live_process.py``. What this layer
+        still owns is the delegation itself.
+        """
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
+        live_process = MagicMock()
         mock_env = MagicMock()
         mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
-        live_process = MagicMock()
+        mock_env.live_process = AsyncMock(return_value=live_process)
 
         with (
-            patch(
-                "benchflow.acp.runtime.AppleContainerProcess.from_sandbox_env",
-                return_value=live_process,
-            ) as apple_process,
-            patch(
-                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-            ) as daytona_process,
             patch("benchflow.acp.runtime.ContainerTransport") as transport,
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
@@ -1251,207 +1218,8 @@ class TestConnectAcpModelSelection:
                 agent_cwd="/root",
             )
 
-        apple_process.assert_called_once_with(mock_env)
-        daytona_process.assert_not_awaited()
+        mock_env.live_process.assert_awaited_once_with(agent="codex-acp")
         assert transport.call_args.kwargs["container_process"] is live_process
-
-    @pytest.mark.asyncio
-    async def test_daytona_dind_uses_pty_transport(self, tmp_path):
-        """Daytona compose tasks use PTY transport to avoid SSH pipe-closed failures."""
-        from benchflow.acp.runtime import connect_acp
-
-        mock_acp = self._make_mocks()
-        mock_env = MagicMock()
-        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
-        mock_env._strategy = MagicMock()
-        mock_env._strategy._compose_cmd = MagicMock(return_value="docker compose -p t")
-
-        with (
-            patch(
-                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_pty,
-            patch(
-                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_ssh,
-            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
-            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
-        ):
-            await connect_acp(
-                env=mock_env,
-                agent="test-agent",
-                agent_launch="test-agent",
-                agent_env={},
-                sandbox_user=None,
-                model=None,
-                rollout_dir=tmp_path,
-                environment="daytona",
-                agent_cwd="/app",
-            )
-
-        mock_pty.assert_awaited_once_with(mock_env)
-        mock_ssh.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_daytona_direct_uses_pty_transport(self, tmp_path):
-        """Direct Daytona tasks also use PTY transport, not SSH pipes."""
-        from benchflow.acp.runtime import connect_acp
-
-        mock_acp = self._make_mocks()
-        mock_env = MagicMock()
-        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
-
-        with (
-            patch(
-                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_pty,
-            patch(
-                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_ssh,
-            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
-            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
-        ):
-            await connect_acp(
-                env=mock_env,
-                agent="test-agent",
-                agent_launch="test-agent",
-                agent_env={},
-                sandbox_user=None,
-                model=None,
-                rollout_dir=tmp_path,
-                environment="daytona",
-                agent_cwd="/app",
-            )
-
-        mock_pty.assert_awaited_once_with(mock_env)
-        mock_ssh.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_daytona_direct_can_opt_into_ssh_transport(
-        self, tmp_path, monkeypatch
-    ):
-        """Guards PR #921 fallback for PTY post-tool controller deadlocks."""
-        from benchflow.acp.runtime import connect_acp
-
-        monkeypatch.setenv("BENCHFLOW_DAYTONA_ACP_TRANSPORT", "ssh")
-        mock_acp = self._make_mocks()
-        mock_env = MagicMock()
-        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
-
-        with (
-            patch(
-                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_pty,
-            patch(
-                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_ssh,
-            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
-            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
-        ):
-            await connect_acp(
-                env=mock_env,
-                agent="openhands",
-                agent_launch="openhands acp",
-                agent_env={},
-                sandbox_user=None,
-                model=None,
-                rollout_dir=tmp_path,
-                environment="daytona",
-                agent_cwd="/app",
-            )
-
-        mock_ssh.assert_awaited_once_with(mock_env)
-        mock_pty.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_invalid_daytona_transport_falls_back_to_pty(
-        self, tmp_path, monkeypatch
-    ):
-        """Guards PR #921 against invalid transport config disabling Daytona."""
-        from benchflow.acp.runtime import connect_acp
-
-        monkeypatch.setenv("BENCHFLOW_DAYTONA_ACP_TRANSPORT", "invalid")
-        mock_acp = self._make_mocks()
-        mock_env = MagicMock()
-        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
-
-        with (
-            patch(
-                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_pty,
-            patch(
-                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_ssh,
-            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
-            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
-        ):
-            await connect_acp(
-                env=mock_env,
-                agent="openhands",
-                agent_launch="openhands acp",
-                agent_env={},
-                sandbox_user=None,
-                model=None,
-                rollout_dir=tmp_path,
-                environment="daytona",
-                agent_cwd="/app",
-            )
-
-        mock_pty.assert_awaited_once_with(mock_env)
-        mock_ssh.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_daytona_gemini_uses_ssh_transport(self, tmp_path):
-        """Guards the Gemini regression introduced by PR #896's PTY migration."""
-        from benchflow.acp.runtime import connect_acp
-
-        mock_acp = self._make_mocks()
-        mock_env = MagicMock()
-        mock_env.exec = AsyncMock(return_value=MagicMock(return_code=1, stdout=""))
-
-        with (
-            patch(
-                "benchflow.acp.runtime.DaytonaPtyProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_pty,
-            patch(
-                "benchflow.acp.runtime.DaytonaProcess.from_sandbox_env",
-                new_callable=AsyncMock,
-                return_value=MagicMock(),
-            ) as mock_ssh,
-            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
-            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
-        ):
-            await connect_acp(
-                env=mock_env,
-                agent="gemini",
-                agent_launch="gemini --acp --yolo",
-                agent_env={"GEMINI_API_KEY": "test"},
-                sandbox_user=None,
-                model="gemini-3.1-flash-lite",
-                rollout_dir=tmp_path,
-                environment="daytona",
-                agent_cwd="/app",
-            )
-
-        mock_ssh.assert_awaited_once_with(mock_env)
-        mock_pty.assert_not_awaited()
 
 
 class TestSandboxStartupDiagnostics:
@@ -1586,7 +1354,7 @@ class TestTransportErrorDiagnostics:
         """``LiveProcess.readline`` raises ``TransportClosedError`` with the
         structured ``process_exit_code`` filled in (issue #504)."""
         from benchflow.diagnostics import TransportClosedError
-        from benchflow.sandbox.process import LiveProcess
+        from benchflow.sandbox.process import SubprocessLiveProcess
 
         class _StubProcess:
             def __init__(self) -> None:
@@ -1601,7 +1369,7 @@ class TestTransportErrorDiagnostics:
             async def read(self, _n: int) -> bytes:
                 return b"Connection to sandbox lost"
 
-        class _LP(LiveProcess):
+        class _LP(SubprocessLiveProcess):
             async def start(
                 self, command, env=None, cwd=None
             ) -> None:  # pragma: no cover - unused
@@ -1624,7 +1392,7 @@ class TestTransportErrorDiagnostics:
         """rc=None ⇒ remote session was killed; the diagnostic must carry
         the pid and the ``remote_session_killed`` diagnosis (issue #504)."""
         from benchflow.diagnostics import TransportClosedError
-        from benchflow.sandbox.process import LiveProcess
+        from benchflow.sandbox.process import SubprocessLiveProcess
 
         class _StubProcess:
             def __init__(self) -> None:
@@ -1636,7 +1404,7 @@ class TestTransportErrorDiagnostics:
             async def readline(self) -> bytes:
                 return b""
 
-        class _LP(LiveProcess):
+        class _LP(SubprocessLiveProcess):
             async def start(
                 self, command, env=None, cwd=None
             ) -> None:  # pragma: no cover - unused

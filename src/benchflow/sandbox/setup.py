@@ -781,6 +781,23 @@ def _create_sandbox_environment(
             task_env_config=env_config,
             persistent_env=manifest_env or None,
         )
+    elif sandbox_type == "agentcore":
+        try:
+            import bedrock_agentcore  # noqa: F401
+        except ImportError as exc:
+            _raise_missing_optional_sandbox_dependency("agentcore", exc)
+
+        from benchflow.sandbox.agentcore import AgentCoreSandbox
+
+        AgentCoreSandbox.preflight()
+        return AgentCoreSandbox(
+            environment_dir=environment_dir,
+            environment_name=task_path.name,
+            session_id=rollout_name,
+            rollout_paths=rollout_paths,
+            task_env_config=env_config,
+            persistent_env=manifest_env or None,
+        )
     elif sandbox_type == "apple-container":
         from benchflow.sandbox.apple_container import AppleContainerSandbox
 

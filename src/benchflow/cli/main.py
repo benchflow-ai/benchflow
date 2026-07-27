@@ -586,10 +586,11 @@ def eval_run(
         typer.Option("--trials", help="Number of trials for --matrix"),
     ] = 1,
 ) -> None:
-    """Run an evaluation — single task or batch.
-
-    Sandbox: docker, daytona, modal, or apple-container.
-    """
+    # The supported --sandbox values are rendered from the provider registry
+    # into that option's own help text. This docstring used to hand-copy them
+    # ("docker, daytona, modal, or apple-container") and went stale the moment
+    # a backend was added, so it no longer repeats them.
+    """Run an evaluation — single task or batch."""
     _apply_dotenv_to_process_env()
 
     request = EvalCreateRequest(

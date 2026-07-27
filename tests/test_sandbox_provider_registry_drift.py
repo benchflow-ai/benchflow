@@ -31,17 +31,22 @@ _REGISTRY = _SRC / "sandbox" / "providers.py"
 def test_registry_is_the_single_source_of_truth() -> None:
     # Locks the current set + docker-first order; adding a provider is then a
     # deliberate edit here + a test update, never a silent scatter.
-    assert SANDBOX_PROVIDERS == ("docker", "daytona", "modal", "apple-container")
+    assert SANDBOX_PROVIDERS == (
+        "docker",
+        "daytona",
+        "modal",
+        "apple-container",
+        "agentcore",
+    )
     assert frozenset(SANDBOX_PROVIDERS) == SANDBOX_PROVIDER_SET
 
 
 def test_providers_phrase_is_byte_identical() -> None:
     # The refactor must be behavior-preserving for every help/error string that
     # used to hand-write this phrase.
-    assert providers_phrase() == "docker, daytona, modal, or apple-container"
-    assert (
-        providers_phrase(quote=True)
-        == "'docker', 'daytona', 'modal', or 'apple-container'"
+    assert providers_phrase() == "docker, daytona, modal, apple-container, or agentcore"
+    assert providers_phrase(quote=True) == (
+        "'docker', 'daytona', 'modal', 'apple-container', or 'agentcore'"
     )
 
 
@@ -49,10 +54,10 @@ def test_model_proxy_placement_is_explicit_for_every_provider() -> None:
     """Guards PR #936 against routing host loopback into an Apple VM."""
 
     assert PROVIDERS_BY_NAME["docker"].model_proxy is ModelProxyLocation.HOST
-    for provider in ("daytona", "modal", "apple-container"):
+    for provider in ("daytona", "modal", "apple-container", "agentcore"):
         assert PROVIDERS_BY_NAME[provider].model_proxy is ModelProxyLocation.SANDBOX
     assert (
-        frozenset({"daytona", "modal", "apple-container"})
+        frozenset({"daytona", "modal", "apple-container", "agentcore"})
         == SANDBOX_MODEL_PROXY_PROVIDERS
     )
     assert OFF_BOX_MODEL_PROVIDERS is SANDBOX_MODEL_PROXY_PROVIDERS
@@ -98,6 +103,7 @@ def test_optional_extras_match_pyproject() -> None:
     assert OPTIONAL_SANDBOX_EXTRAS == {
         "daytona": "sandbox-daytona",
         "modal": "sandbox-modal",
+        "agentcore": "sandbox-agentcore",
     }
 
 

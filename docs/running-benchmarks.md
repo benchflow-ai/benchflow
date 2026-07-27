@@ -347,6 +347,7 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 | Apple Container | `--sandbox apple-container` | Local Apple Silicon macOS runs without Docker Desktop |
 | Daytona | `--sandbox daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
 | Modal | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
+| AgentCore | `--sandbox agentcore` | AWS-native isolated microVMs (needs AWS credentials) |
 
 Apple Container requires Apple Container 1.1+ on Apple Silicon and runs the model
 proxy inside each VM. It supports public-network, single-container arm64 tasks and
@@ -355,6 +356,42 @@ and blocks new VMs when the live `data.kalloc.1024` headroom is unsafe. Avoid
 running concurrent BenchFlow processes, because the macOS allocation leak is
 system-wide. Use Docker, Daytona, or Modal for `network_mode = "no-network"`,
 multi-service, snapshot, or high-concurrency runs.
+
+### Amazon Bedrock AgentCore
+
+`--sandbox agentcore` runs each rollout in an AgentCore Runtime microVM.
+Install the extra and point BenchFlow at an execution role:
+
+```bash
+pip install 'benchflow[sandbox-agentcore]'
+export BENCHFLOW_AGENTCORE_ROLE_ARN="arn:aws:iam::<account>:role/<role>"
+export BENCHFLOW_AGENTCORE_REGION="us-west-2"   # optional, this is the default
+```
+
+The role must be assumable by `bedrock-agentcore.amazonaws.com` and able to
+pull from ECR and write CloudWatch logs. Your own credentials additionally need
+`bedrock-agentcore:*` and ECR push permissions.
+
+Unlike the other backends, AgentCore cannot take a container image directly:
+BenchFlow builds the task image for `linux/arm64`, pushes it to ECR (repository
+`benchflow-agentcore`, override with `BENCHFLOW_AGENTCORE_ECR_REPOSITORY`), and
+registers it as an agent runtime. The image is tagged by content digest, so a
+task whose environment has not changed reuses the pushed layers and the
+existing runtime instead of paying for a rebuild.
+
+BenchFlow also appends a small HTTP responder to the image and makes it the
+entrypoint. AgentCore refuses command execution for a session whose container
+does not answer `GET /ping` on port 8080, and task images know nothing about
+AgentCore, so this shim is what makes an ordinary task image runnable.
+
+Constraints: `linux/arm64` only, single container (no compose/multi-service
+tasks), no snapshot support, and `network_mode = "no-network"` is **not**
+enforceable — AgentCore's network mode is either `PUBLIC` or `VPC`, so
+BenchFlow refuses no-network tasks on this backend rather than running them
+unisolated. The model proxy runs inside the sandbox, as on Daytona and Modal.
+Sessions default to a 15-minute idle timeout and an 8-hour lifetime; override
+with `BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC` / `BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC`
+if agent turns are long enough to risk reclamation mid-run.
 
 For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 

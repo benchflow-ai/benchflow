@@ -15,7 +15,11 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
-from benchflow.sandbox.providers import SANDBOX_PROVIDER_SET, providers_phrase
+from benchflow.sandbox.providers import (
+    NO_NETWORK_UNSUPPORTED_PROVIDERS,
+    SANDBOX_PROVIDER_SET,
+    providers_phrase,
+)
 from benchflow.task.config import (
     NetworkMode,
     TaskConfig,
@@ -261,11 +265,11 @@ def _append_network_issue(
     mode: NetworkMode | None,
     sandbox: str,
 ) -> None:
-    if sandbox == "apple-container" and mode == NetworkMode.NO_NETWORK:
+    if mode == NetworkMode.NO_NETWORK and sandbox in NO_NETWORK_UNSUPPORTED_PROVIDERS:
         _issue(
             unsupported,
             path=path,
-            reason="network_mode='no-network' is not enforced by apple-container",
+            reason=f"network_mode='no-network' is not enforced by {sandbox}",
             sandbox=sandbox,
         )
     if mode == NetworkMode.ALLOWLIST:
