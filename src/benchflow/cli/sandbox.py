@@ -124,24 +124,82 @@ def sandbox_list_local() -> None:
     console.print(f"\n[bold]{total} sandbox(es)[/bold]")
 
 
-def sandbox_cleanup(*, dry_run: bool, max_age_minutes: int) -> None:
-    """Clean up orphaned Daytona sandboxes.
+def _cleanup_agentcore_runtimes(*, dry_run: bool, max_age_minutes: int) -> bool:
+    """Reap stale AgentCore runtimes. False when AgentCore is not in play.
 
-    Like ``sandbox list``, this is a no-op (not an error) when the optional
-    Daytona SDK is absent: only Daytona has persistent sandboxes to reap.
+    AgentCore runtimes are shared across rollouts and intentionally outlive the
+    run that created them, so unlike Docker they accumulate — and *Total Agents
+    per Account* defaults to only 100.
+
+    Gated on ``BENCHFLOW_AGENTCORE_ROLE_ARN`` rather than merely on an
+    importable SDK. ``boto3`` arrives with several unrelated extras, so without
+    this gate ``bench sandbox cleanup`` would reach out to AWS on any machine
+    that happens to have credentials configured — including during tests.
     """
-    if not _daytona_sdk_available():
-        console.print(
-            "Nothing to clean up. The Daytona SDK is not installed "
-            "([cyan]uv sync --extra sandbox-daytona[/cyan]); only Daytona has "
-            "persistent sandboxes to reap. Docker sandboxes are torn down per run."
-        )
-        return
-    from benchflow.cli import main as cli_main
+    import os
 
-    cli_main._cleanup_daytona_sandboxes(
-        dry_run=dry_run, max_age_minutes=max_age_minutes
-    )
+    if not os.environ.get("BENCHFLOW_AGENTCORE_ROLE_ARN"):
+        return False
+    try:
+        import boto3
+
+        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
+    except ImportError:
+        return False
+
+    region = os.environ.get("BENCHFLOW_AGENTCORE_REGION") or "us-west-2"
+    try:
+        control = boto3.Session(region_name=region).client("bedrock-agentcore-control")
+        report = reap_stale_runtimes(
+            control, max_age_minutes=max_age_minutes, dry_run=dry_run
+        )
+    except Exception as exc:
+        # Missing/expired credentials are a "nothing to do here", not a crash
+        # in the middle of a cleanup that may still have Daytona work to do.
+        print_error(f"Skipping AgentCore cleanup: {exc}")
+        return False
+
+    verb = "Would delete" if dry_run else "Deleted"
+    console.print(f"AgentCore ({region}): {report.summary()}")
+    if report.deleted:
+        console.print(f"  {verb}: {', '.join(report.deleted)}")
+    return True
+
+
+def sandbox_cleanup(*, dry_run: bool, max_age_minutes: int) -> None:
+    """Clean up orphaned Daytona sandboxes and stale AgentCore runtimes.
+
+    Both are opt-in extras, so a missing SDK is a no-op rather than an error;
+    only these two backends leave anything behind between runs. Docker
+    sandboxes are torn down per run.
+    """
+    cleaned_any = False
+
+    if _daytona_sdk_available():
+        from benchflow.cli import main as cli_main
+
+        try:
+            cli_main._cleanup_daytona_sandboxes(
+                dry_run=dry_run, max_age_minutes=max_age_minutes
+            )
+            cleaned_any = True
+        except (Exception, typer.Exit) as exc:
+            # The Daytona SDK is installed but unusable (typically no
+            # DAYTONA_API_KEY). Report and continue: a second backend may still
+            # have resources to reclaim, and aborting here would silently leave
+            # them behind — AgentCore runtimes consume a 100-per-account quota.
+            print_error(f"Skipping Daytona cleanup: {exc}")
+
+    if _cleanup_agentcore_runtimes(dry_run=dry_run, max_age_minutes=max_age_minutes):
+        cleaned_any = True
+
+    if not cleaned_any:
+        console.print(
+            "Nothing to clean up. Neither the Daytona SDK "
+            "([cyan]uv sync --extra sandbox-daytona[/cyan]) nor the AgentCore "
+            "extra ([cyan]uv sync --extra sandbox-agentcore[/cyan]) is "
+            "installed; only those backends leave resources between runs."
+        )
 
 
 def register_sandbox(app: typer.Typer) -> None:

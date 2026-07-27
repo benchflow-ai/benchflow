@@ -5,11 +5,18 @@ Docker/Modal/Daytona it does not take an image per run: an image must first be
 pushed to ECR and registered as an *agent runtime* (a control-plane resource
 with its own ARN), after which sessions are invoked against that ARN.
 
-BenchFlow therefore provisions per task: build the task's image for
-``linux/arm64``, push it to ECR under a tag derived from the image's content
-digest, and reuse (or create) the agent runtime bound to that tag. The digest
-tag is what makes repeat runs cheap — the second task with an unchanged
-environment reuses both the ECR layer set and the runtime.
+**A rollout is a session, not a runtime.** One registered runtime hosts many
+concurrent sessions, each an isolated microVM with its own filesystem, and the
+account quotas are lopsided in exactly that direction: 5000 concurrent
+sessions against 100 total runtimes, with ``CreateAgentRuntime`` limited to
+5/s. So the image and the runtime are built **once per distinct task image**
+— keyed by a digest of the build context, and shared by every trial and skill
+arm that resolves to it — while sessions are what scale out. That sharing is
+what makes this backend usable for a large parallel matrix; see
+``agentcore_provisioning`` for the single-flight machinery.
+
+Runtimes therefore outlive the rollout that first needed them, like a built
+Docker image, and are reclaimed by age via ``bench sandbox cleanup``.
 
 Two facts about the platform shape this module, both established by direct
 experiment against the live service rather than from the docs:
@@ -38,10 +45,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import io
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -52,6 +57,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from benchflow._paths import iter_safe_tree
+from benchflow.sandbox import agentcore_provisioning as provisioning
 from benchflow.sandbox._base import BaseSandbox, ExecResult, wrap_command_with_env_file
 from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.task.config import SandboxConfig
@@ -72,7 +78,6 @@ _SESSION_WARMUP_MAX_BACKOFF_SEC = 30.0
 # and the wrapper adds shell scaffolding, so keep a wide margin.
 _MAX_INLINE_UPLOAD_BYTES = 24 * 1024
 _MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
-_ECR_TAG_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
 # ``_PING_SHIM`` implements the plain HTTP contract (GET /ping,
 # POST /invocations), so register the runtime as HTTP rather than relying on
 # whatever the service currently defaults to.
@@ -162,7 +167,6 @@ class AgentCoreSandbox(BaseSandbox):
         self.runtime_arn: str | None = None
         self.runtime_session_id: str | None = None
         self._runtime_id: str | None = None
-        self._created_runtime = False
         self._account_id: str | None = None
         self._clients: dict[str, Any] = {}
         self._client_lock = threading.Lock()
@@ -248,10 +252,6 @@ class AgentCoreSandbox(BaseSandbox):
     def _ecr_registry(self) -> str:
         return f"{self._resolve_account_id()}.dkr.ecr.{self.region}.amazonaws.com"
 
-    def _image_tag(self) -> str:
-        safe = _ECR_TAG_RE.sub("_", self.environment_name)[:80]
-        return f"bf-{safe}".lower()
-
     async def start(self, force_build: bool) -> None:
         try:
             image_uri = await self._publish_image(force_build=force_build)
@@ -275,13 +275,41 @@ class AgentCoreSandbox(BaseSandbox):
                 build_timeout_sec=self.task_env_config.build_timeout_sec,
             ) from exc
 
-    async def _publish_image(self, *, force_build: bool) -> str:
-        """Build the task image with the ping shim and push it to ECR."""
-        build_context, dockerfile, shim = self._materialize_build_context()
-        registry = self._ecr_registry()
-        repo = self._ecr_repository
-        local_tag = self._image_tag()
+    def _image_identity(self) -> tuple[str, str]:
+        """``(context digest, ECR tag)`` for this task's image.
 
+        Computed from the build context's *contents* before anything is built,
+        so concurrent rollouts of the same task agree on the tag without each
+        running a build to discover it.
+        """
+        digest = provisioning.build_context_digest(
+            self.environment_dir, self._generated_dockerfile_text()
+        )
+        return digest, provisioning.image_tag(self.environment_name, digest)
+
+    async def _publish_image(self, *, force_build: bool) -> str:
+        """Build the task image with the ping shim and push it to ECR.
+
+        Deduplicated process-wide by content digest: a fan-out of rollouts over
+        one task builds and pushes exactly once, and every later run of an
+        unchanged task skips the build entirely on the ECR existence check.
+        """
+        _digest, tag = self._image_identity()
+        image_uri = f"{self._ecr_registry()}/{self._ecr_repository}:{tag}"
+        cache_key = f"image:{image_uri}:{force_build}"
+
+        async def _publish() -> str:
+            await asyncio.to_thread(self._ensure_ecr_repository)
+            if not force_build and await asyncio.to_thread(self._ecr_image_exists, tag):
+                self.logger.info("Reusing published AgentCore image %s", image_uri)
+                return image_uri
+            await self._build_and_push(image_uri, force_build=force_build)
+            return image_uri
+
+        return await provisioning.once(cache_key, _publish)
+
+    async def _build_and_push(self, image_uri: str, *, force_build: bool) -> None:
+        build_context, dockerfile, shim = self._materialize_build_context()
         build_args = [
             "docker",
             "build",
@@ -290,7 +318,7 @@ class AgentCoreSandbox(BaseSandbox):
             "-f",
             str(dockerfile),
             "-t",
-            local_tag,
+            image_uri,
         ]
         if force_build:
             build_args.append("--no-cache")
@@ -312,28 +340,10 @@ class AgentCoreSandbox(BaseSandbox):
                 f"{(result.stderr or result.stdout or '').strip()[:4000]}"
             )
 
-        # Tag by image content digest so an unchanged environment reuses the
-        # already-pushed layers and the already-registered agent runtime.
-        digest = await asyncio.to_thread(
-            _run, "docker", "images", "--no-trunc", "--quiet", local_tag
-        )
-        content_id = (digest.stdout or "").strip().replace("sha256:", "")[:32]
-        if not content_id:
-            content_id = hashlib.sha256(local_tag.encode()).hexdigest()[:32]
-        remote_tag = f"{local_tag}-{content_id}"
-        image_uri = f"{registry}/{repo}:{remote_tag}"
+        await self._reject_oversized_image(image_uri)
 
-        await asyncio.to_thread(self._ensure_ecr_repository)
-        if not force_build and await asyncio.to_thread(
-            self._ecr_image_exists, remote_tag
-        ):
-            self.logger.info("Reusing published AgentCore image %s", image_uri)
-            return image_uri
-
+        registry = self._ecr_registry()
         await asyncio.to_thread(self._docker_login, registry)
-        retag = await asyncio.to_thread(_run, "docker", "tag", local_tag, image_uri)
-        if retag.returncode != 0:
-            raise RuntimeError(f"docker tag failed: {(retag.stderr or '')[:2000]}")
         push = await asyncio.to_thread(_run, "docker", "push", image_uri, timeout=1800)
         if push.returncode != 0:
             raise RuntimeError(
@@ -341,7 +351,21 @@ class AgentCoreSandbox(BaseSandbox):
                 f"{(push.stderr or push.stdout or '').strip()[:4000]}"
             )
         self.logger.info("Pushed AgentCore image %s", image_uri)
-        return image_uri
+
+    async def _reject_oversized_image(self, image_uri: str) -> None:
+        """Fail before push when the image exceeds AgentCore's hard 2 GB cap."""
+        inspect = await asyncio.to_thread(
+            _run, "docker", "image", "inspect", "-f", "{{.Size}}", image_uri
+        )
+        raw = (inspect.stdout or "").strip()
+        if inspect.returncode != 0 or not raw.isdigit():
+            # Can't measure — let the push proceed rather than block on a
+            # diagnostic that failed for an unrelated reason.
+            self.logger.debug("Could not measure image size for %s", image_uri)
+            return
+        message = provisioning.image_size_error(int(raw), image_uri)
+        if message:
+            raise SandboxStartupError(message, sandbox_id=image_uri)
 
     def _materialize_build_context(self) -> tuple[Path, Path, Path]:
         """Return (context_dir, dockerfile, shim) for an image with the shim.
@@ -352,27 +376,34 @@ class AgentCoreSandbox(BaseSandbox):
         transient — the caller removes them once the build finishes.
         """
         context = self.environment_dir
-        base_dockerfile = context / "Dockerfile"
+        shim_path = context / provisioning.GENERATED_SHIM
+        shim_path.write_text(_PING_SHIM)
+        generated = context / provisioning.GENERATED_DOCKERFILE
+        generated.write_text(self._generated_dockerfile_text())
+        return context, generated, shim_path
+
+    def _generated_dockerfile_text(self) -> str:
+        """The Dockerfile BenchFlow actually builds, as text.
+
+        Kept separate from writing it so the image digest can be computed from
+        the same bytes without touching the task tree.
+        """
         if self.task_env_config.docker_image:
             base = f"FROM {self.task_env_config.docker_image}\n"
         else:
-            base = base_dockerfile.read_text()
-
-        shim_path = context / ".benchflow_agentcore_shim.py"
-        shim_path.write_text(_PING_SHIM)
-        generated = context / "Dockerfile.benchflow-agentcore"
-        generated.write_text(
+            base = (self.environment_dir / "Dockerfile").read_text()
+        return (
             base
             + "\n"
             + "# --- BenchFlow AgentCore runtime contract ---\n"
             + "# AgentCore refuses command execution for a session whose\n"
             + "# container does not answer GET /ping on :8080.\n"
-            + "COPY .benchflow_agentcore_shim.py /opt/benchflow_agentcore_shim.py\n"
+            + f"COPY {provisioning.GENERATED_SHIM} "
+            + "/opt/benchflow_agentcore_shim.py\n"
             + "EXPOSE 8080\n"
             + "ENTRYPOINT []\n"
             + 'CMD ["python3", "/opt/benchflow_agentcore_shim.py"]\n'
         )
-        return context, generated, shim_path
 
     def _ensure_ecr_repository(self) -> None:
         from botocore.exceptions import ClientError
@@ -409,54 +440,77 @@ class AgentCoreSandbox(BaseSandbox):
         if proc.returncode != 0:
             raise RuntimeError(f"ECR docker login failed: {(proc.stderr or '')[:1000]}")
 
-    def _runtime_name(self) -> str:
-        # AgentCore runtime names allow [A-Za-z][A-Za-z0-9_]*.
-        safe = re.sub(r"[^a-zA-Z0-9_]+", "_", f"bf_{self.environment_name}")
-        return safe[:48]
-
     async def _ensure_runtime(self, image_uri: str) -> str:
-        """Reuse the agent runtime bound to *image_uri*, or create it."""
-        control = self._client("bedrock-agentcore-control")
-        name = self._runtime_name()
+        """Resolve the shared agent runtime for *image_uri*, creating it once.
 
-        existing = await asyncio.to_thread(self._find_runtime, control, name)
-        if existing is not None:
-            arn, runtime_id, current_image = existing
-            self._runtime_id = runtime_id
-            if current_image == image_uri:
-                await asyncio.to_thread(self._wait_ready, control, runtime_id)
-                self.logger.info("Reusing AgentCore runtime %s", arn)
-                return arn
-            await asyncio.to_thread(
-                control.update_agent_runtime,
-                agentRuntimeId=runtime_id,
+        The runtime is named after the image's content digest, so every rollout
+        of that image — each trial, and both skill arms when their images match
+        — resolves to the same runtime and simply opens another session against
+        it. Keying on the task name instead meant concurrent trials raced to
+        create one runtime and the first to finish deleted it while the others
+        were still running.
+        """
+        digest, _tag = self._image_identity()
+        name = provisioning.runtime_name(self.environment_name, digest)
+
+        async def _create() -> tuple[str, str]:
+            return await self._create_or_adopt_runtime(name, image_uri)
+
+        arn, runtime_id = await provisioning.once(f"runtime:{name}", _create)
+        self._runtime_id = runtime_id
+        return arn
+
+    async def _create_or_adopt_runtime(
+        self, name: str, image_uri: str
+    ) -> tuple[str, str]:
+        """Create the runtime, or adopt an equivalent one that already exists.
+
+        Attempting the create first and falling back on conflict keeps the
+        common path off ``ListAgentRuntimes``, whose 5/s quota would otherwise
+        throttle a large matrix run before it started.
+        """
+        from botocore.exceptions import ClientError
+
+        control = self._client("bedrock-agentcore-control")
+        try:
+            created = await asyncio.to_thread(
+                control.create_agent_runtime,
+                agentRuntimeName=name,
                 agentRuntimeArtifact={
                     "containerConfiguration": {"containerUri": image_uri}
                 },
                 roleArn=self._require_role_arn(),
                 networkConfiguration={"networkMode": "PUBLIC"},
                 protocolConfiguration=_PROTOCOL_CONFIGURATION,
+                lifecycleConfiguration=self._lifecycle_configuration(),
+                description=f"BenchFlow sandbox for {self.environment_name}",
+                tags={
+                    provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE,
+                    "benchflow-task": self.environment_name[:120],
+                },
             )
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code not in {"ConflictException", "ValidationException"}:
+                raise
+            existing = await asyncio.to_thread(
+                provisioning.find_runtime_by_name, control, name
+            )
+            if existing is None:
+                raise
+            arn, runtime_id, _image = existing
             await asyncio.to_thread(self._wait_ready, control, runtime_id)
-            self.logger.info("Updated AgentCore runtime %s to %s", arn, image_uri)
-            return arn
+            self.logger.info("Adopted existing AgentCore runtime %s", arn)
+            return arn, runtime_id
 
-        created = await asyncio.to_thread(
-            control.create_agent_runtime,
-            agentRuntimeName=name,
-            agentRuntimeArtifact={
-                "containerConfiguration": {"containerUri": image_uri}
-            },
-            roleArn=self._require_role_arn(),
-            networkConfiguration={"networkMode": "PUBLIC"},
-            protocolConfiguration=_PROTOCOL_CONFIGURATION,
-            lifecycleConfiguration=self._lifecycle_configuration(),
-            description=f"BenchFlow sandbox for {self.environment_name}",
+        runtime_id = created["agentRuntimeId"]
+        await asyncio.to_thread(self._wait_ready, control, runtime_id)
+        self.logger.info(
+            "Registered AgentCore runtime %s for %s",
+            created["agentRuntimeArn"],
+            image_uri,
         )
-        self._created_runtime = True
-        self._runtime_id = created["agentRuntimeId"]
-        await asyncio.to_thread(self._wait_ready, control, created["agentRuntimeId"])
-        return created["agentRuntimeArn"]
+        return created["agentRuntimeArn"], runtime_id
 
     def _lifecycle_configuration(self) -> dict[str, int]:
         """Session idle/lifetime caps.
@@ -483,19 +537,6 @@ class AgentCoreSandbox(BaseSandbox):
             f"{_ENV_ROLE_ARN} to a role that bedrock-agentcore.amazonaws.com "
             "can assume and that can pull from ECR and write CloudWatch logs."
         )
-
-    @staticmethod
-    def _find_runtime(control: Any, name: str) -> tuple[str, str, str | None] | None:
-        paginator_pages = control.list_agent_runtimes()
-        for runtime in paginator_pages.get("agentRuntimes", []):
-            if runtime.get("agentRuntimeName") != name:
-                continue
-            runtime_id = runtime["agentRuntimeId"]
-            detail = control.get_agent_runtime(agentRuntimeId=runtime_id)
-            artifact = detail.get("agentRuntimeArtifact") or {}
-            image = (artifact.get("containerConfiguration") or {}).get("containerUri")
-            return detail["agentRuntimeArn"], runtime_id, image
-        return None
 
     @staticmethod
     def _wait_ready(control: Any, runtime_id: str) -> None:
@@ -573,9 +614,20 @@ class AgentCoreSandbox(BaseSandbox):
         )
 
     async def stop(self, delete: bool) -> None:
-        await self._safe_teardown(delete_runtime=delete)
+        """End this rollout's session. The runtime is shared and outlives it.
 
-    async def _safe_teardown(self, *, delete_runtime: bool = True) -> None:
+        A rollout owns a *session*, not a runtime: concurrent trials of the
+        same task run as separate sessions against one registered runtime, so
+        deleting the runtime here would tear down sandboxes still in use — and
+        would also burn the 5/s ``DeleteAgentRuntime``/``CreateAgentRuntime``
+        quotas re-registering it for the next rollout.
+
+        Runtimes are therefore left in place, like a built Docker image, and
+        reclaimed by age with ``bench sandbox cleanup --sandbox agentcore``.
+        """
+        await self._safe_teardown()
+
+    async def _safe_teardown(self) -> None:
         if self.runtime_arn and self.runtime_session_id:
             try:
                 await asyncio.to_thread(
@@ -587,19 +639,6 @@ class AgentCoreSandbox(BaseSandbox):
             except Exception as exc:
                 self.logger.warning("Failed to stop AgentCore session: %s", exc)
             self.runtime_session_id = None
-
-        if delete_runtime and self._created_runtime and self._runtime_id:
-            try:
-                await asyncio.to_thread(
-                    self._client("bedrock-agentcore-control").delete_agent_runtime,
-                    agentRuntimeId=self._runtime_id,
-                )
-                self.logger.info("Deleted AgentCore runtime %s", self._runtime_id)
-            except Exception as exc:
-                self.logger.warning("Failed to delete AgentCore runtime: %s", exc)
-            self._runtime_id = None
-            self.runtime_arn = None
-            self._created_runtime = False
 
     # ------------------------------------------------------------------ exec
 

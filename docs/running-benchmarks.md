@@ -393,6 +393,40 @@ Sessions default to a 15-minute idle timeout and an 8-hour lifetime; override
 with `BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC` / `BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC`
 if agent turns are long enough to risk reclamation mid-run.
 
+**Running a large matrix.** A rollout is a *session*, not a runtime: one
+registered runtime hosts many concurrent, filesystem-isolated microVMs. The
+account quotas point the same way — 5,000 concurrent *Active Session Workloads*
+against only 100 *Total Agents*, with `CreateAgentRuntime` limited to 5/s. So
+BenchFlow builds and registers once per distinct task image (keyed by a digest
+of the build context) and every trial and skill arm of that image opens another
+session against the shared runtime. Concurrency is therefore bounded by
+sessions, not by how many images you have.
+
+Two quotas to check before a big run:
+
+| Quota | Default | Adjustable |
+|---|---|---|
+| Active Session Workloads per account | 5,000 | yes |
+| Total Agents (runtimes) per account | 100 | yes |
+| **Max image size** | **2 GB** | **no** |
+
+A full 88-task × 2-skill-arm matrix is 176 distinct images, over the default
+100-runtime cap — request an increase first. The 2 GB image limit is a hard
+service quota: heavy environments (LaTeX, Playwright, large model snapshots)
+cannot run here at all, and BenchFlow fails the build with a message naming the
+cap rather than letting it surface later as an opaque runtime error. Run those
+tasks on Docker or Daytona.
+
+Runtimes are shared, so they deliberately outlive the run that created them —
+like a built Docker image. Reclaim them by age:
+
+```bash
+bench sandbox cleanup --max-age 1440
+```
+
+Only runtimes tagged `benchflow-managed` are ever deleted, and cleanup is a
+no-op unless `BENCHFLOW_AGENTCORE_ROLE_ARN` is set.
+
 For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 
 ```bash
