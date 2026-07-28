@@ -13,7 +13,8 @@ import asyncio
 import os
 import re
 import shlex
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -104,6 +105,21 @@ def _runtime_client(shell):
     client = MagicMock()
     client.open_shell.return_value = _ShellContext(shell)
     return client
+
+
+def _runtime_sdk(shell):
+    """Install the optional AgentCore SDK modules for one transport test."""
+    package = ModuleType("bedrock_agentcore")
+    runtime = ModuleType("bedrock_agentcore.runtime")
+    runtime.AgentCoreRuntimeClient = MagicMock(return_value=_runtime_client(shell))
+    package.runtime = runtime
+    return patch.dict(
+        sys.modules,
+        {
+            "bedrock_agentcore": package,
+            "bedrock_agentcore.runtime": runtime,
+        },
+    )
 
 
 def _process(shell):
@@ -260,10 +276,7 @@ class TestEnvHandling:
         proc = _process(shell)
         proc._sandbox.write_text_file = AsyncMock(return_value=True)
 
-        with patch(
-            "bedrock_agentcore.runtime.AgentCoreRuntimeClient",
-            return_value=_runtime_client(shell),
-        ):
+        with _runtime_sdk(shell):
             await proc.start("agent --serve", env={"API_KEY": "hunter2"}, cwd="/work")
 
         launch = shell.sent[1]
@@ -327,10 +340,7 @@ class TestEnvHandling:
         proc._sandbox.exec = AsyncMock()
 
         with (
-            patch(
-                "bedrock_agentcore.runtime.AgentCoreRuntimeClient",
-                return_value=_runtime_client(shell),
-            ),
+            _runtime_sdk(shell),
             pytest.raises(ConnectionResetError, match="launch socket"),
         ):
             await proc.start("agent --serve", env={"API_KEY": "hunter2"})
@@ -421,10 +431,7 @@ class TestHalfCloseGuard:
         proc = _process(shell)
 
         with (
-            patch(
-                "bedrock_agentcore.runtime.AgentCoreRuntimeClient",
-                return_value=_runtime_client(shell),
-            ),
+            _runtime_sdk(shell),
             pytest.raises(TransportClosedError) as excinfo,
         ):
             await proc.start("agent --serve")
