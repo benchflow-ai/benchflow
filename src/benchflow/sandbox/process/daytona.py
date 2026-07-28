@@ -1,30 +1,27 @@
-"""Live stdio connection to a process inside a sandbox.
+"""Live stdio to a Daytona sandbox — SSH subprocess and PTY WebSocket variants."""
 
-Provides a bidirectional pipe (send lines in, read lines out) needed for
-ACP agents running inside containers. Implementations:
-
-- DockerProcess: uses `docker compose exec -i` (local Docker)
-- AppleContainerProcess: uses `container exec -i` (Apple Container)
-- DaytonaProcess: uses SSH to a Daytona sandbox
-"""
+from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
 import os
-import re
 import shlex
 import tempfile
 import uuid
-from abc import ABC, abstractmethod
 from typing import Any
+
+from benchflow.sandbox.process._base import (
+    _BOOTSTRAP_DONE,
+    _BUFFER_LIMIT,
+    _DIAG_TRUNCATE,
+    _ENV_KEY_RE,
+    LiveProcess,
+    SubprocessLiveProcess,
+)
 
 logger = logging.getLogger(__name__)
 
-_BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB readline buffer
-_DIAG_TRUNCATE = 2000  # max chars for diagnostic stderr in error messages
-_BOOTSTRAP_DONE = "__BENCHFLOW_BOOTSTRAP_DONE__"
-_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DAYTONA_PTY_READLINE_TIMEOUT_ENV = "BENCHFLOW_DAYTONA_PTY_READLINE_TIMEOUT"
 _DAYTONA_PTY_READLINE_TIMEOUT_DEFAULT_SEC = 900.0
 _DAYTONA_SSH_ACCESS_TTL_MINUTES = 48 * 60
@@ -120,361 +117,7 @@ async def _bootstrap_daytona_env_file(
         )
 
 
-async def drain_oversized_line(reader: asyncio.StreamReader) -> int:
-    """Drain an oversized line from *reader* after a buffer overflow.
-
-    Clears the internal buffer and attempts to skip ahead to the next
-    newline.  Returns the number of bytes discarded.
-    """
-    # Reach into asyncio.StreamReader internals to clear the buffer after
-    # a LimitOverrunError. There's no public API for this; the private
-    # attributes are stable across Python 3.10+.
-    skipped = len(reader._buffer)  # ty: ignore[unresolved-attribute]
-    reader._buffer.clear()  # ty: ignore[unresolved-attribute]
-    reader._maybe_resume_transport()  # ty: ignore[unresolved-attribute]
-    try:
-        await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5)
-    except Exception:
-        logger.debug("Could not find next newline after buffer overflow")
-    return skipped
-
-
-class LiveProcess(ABC):
-    """Abstract live stdin/stdout connection to a process inside a sandbox."""
-
-    _process: asyncio.subprocess.Process | None = None
-
-    @abstractmethod
-    async def start(
-        self,
-        command: str,
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-    ) -> None:
-        """Start the process with live stdin/stdout."""
-
-    async def readline(self) -> bytes:
-        """Read one line from stdout."""
-        if not self._process or not self._process.stdout:
-            raise RuntimeError("Process not started")
-        try:
-            line = await self._process.stdout.readline()
-        except (ValueError, asyncio.LimitOverrunError) as e:
-            # Buffer overflow — line exceeds _BUFFER_LIMIT.
-            skipped = await drain_oversized_line(self._process.stdout)
-            logger.warning(f"Skipped oversized line ({skipped} bytes): {e}")
-            # Return empty line — caller will retry readline
-            return b""
-        if not line:
-            stderr_text = ""
-            if self._process and self._process.stderr:
-                try:
-                    stderr_bytes = await asyncio.wait_for(
-                        self._process.stderr.read(8192), timeout=2
-                    )
-                    stderr_text = stderr_bytes.decode(errors="replace").strip()
-                except Exception:
-                    logger.debug("Could not read stderr from closed process")
-            rc = self._process.returncode if self._process else None
-            # Diagnose: rc=None with closed stdout usually means the *transport*
-            # died (SSH/Daytona idle sleep, container killed) while the local
-            # subprocess wrapper is still alive. rc set means the local process
-            # actually exited. Surfacing the distinction makes the failure
-            # actionable instead of cryptic.
-            pid = self._process.pid if self._process else None
-            if rc is None:
-                hint = (
-                    f"Local subprocess (pid={pid}) is still alive but its "
-                    "stdout/transport closed. This usually means the remote "
-                    "container or SSH session was killed (e.g. Daytona idle "
-                    "sleep, agent hung with no output)."
-                )
-                diagnosis = "remote_session_killed"
-            else:
-                hint = f"Local subprocess exited with rc={rc} before stdout closed."
-                diagnosis = "process_exited"
-            msg = f"Process closed stdout (rc={rc}): {hint}"
-            stderr_snippet: str | None = None
-            if stderr_text:
-                stderr_snippet = stderr_text[:_DIAG_TRUNCATE]
-                msg += f"\nstderr: {stderr_snippet}"
-            # Raise a structured TransportClosedError at the source so
-            # downstream code (rollout._build_rollout_result) doesn't have
-            # to regex-parse the human-readable message back into fields
-            # (issue #504).
-            from benchflow.diagnostics import (
-                TransportClosedDiagnostic,
-                TransportClosedError,
-            )
-
-            raise TransportClosedError(
-                msg,
-                TransportClosedDiagnostic(
-                    raw_message=msg[:500],
-                    process_exit_code=rc,
-                    process_pid=pid,
-                    transport_diagnosis=diagnosis,
-                    stderr_snippet=stderr_snippet,
-                ),
-            )
-        return line
-
-    async def writeline(self, data: str) -> None:
-        """Write one line to stdin."""
-        if not self._process or not self._process.stdin:
-            raise RuntimeError("Process not started")
-        self._process.stdin.write((data + "\n").encode())
-        await self._process.stdin.drain()
-
-    async def close(self) -> None:
-        """Terminate the process (idempotent — safe to call after process death)."""
-        if self._process:
-            if self._process.stdin:
-                with contextlib.suppress(OSError):  # already closed
-                    self._process.stdin.close()
-            if self._process.returncode is None:
-                self._process.terminate()
-                try:
-                    await asyncio.wait_for(self._process.wait(), timeout=5)
-                except TimeoutError:
-                    self._process.kill()
-                    await self._process.wait()
-            logger.info("Process terminated")
-
-    @property
-    def is_running(self) -> bool:
-        return self._process is not None and self._process.returncode is None
-
-
-class DockerProcess(LiveProcess):
-    """Live stdin/stdout via `docker compose exec -i`."""
-
-    def __init__(
-        self,
-        project_name: str,
-        project_dir: str,
-        compose_files: list[str],
-        service: str = "main",
-    ):
-        self._project_name = project_name
-        self._project_dir = project_dir
-        self._compose_files = compose_files
-        self._service = service
-
-    @classmethod
-    def from_sandbox_env(cls, env: Any, service: str = "main") -> "DockerProcess":
-        """Create from a sandbox environment (DockerSandbox).
-
-        ``service`` selects which compose service the agent process runs
-        in. Defaults to ``"main"``. Multi-container (vulhub-style) tasks
-        may run the agent in a dedicated attacker container — e.g. a Kali
-        service — while keeping target containers separate (#248).
-        """
-        project_name = env.session_id.lower().replace(".", "-")
-        project_dir = str(env.environment_dir.resolve().absolute())
-        compose_files = [str(p.resolve().absolute()) for p in env._docker_compose_paths]
-        return cls(
-            project_name=project_name,
-            project_dir=project_dir,
-            compose_files=compose_files,
-            service=service,
-        )
-
-    def _compose_cmd(self) -> list[str]:
-        """Base docker compose command with project/file flags."""
-        cmd = [
-            "docker",
-            "compose",
-            "-p",
-            self._project_name,
-            "--project-directory",
-            self._project_dir,
-        ]
-        for f in self._compose_files:
-            cmd.extend(["-f", f])
-        return cmd
-
-    def _host_env(self) -> dict[str, str]:
-        """Host process env with DOCKER_HOST resolved if needed."""
-        proc_env = os.environ.copy()
-        if not proc_env.get("DOCKER_HOST"):
-            import subprocess
-
-            try:
-                r = subprocess.run(
-                    [
-                        "docker",
-                        "context",
-                        "inspect",
-                        "--format",
-                        "{{.Endpoints.docker.Host}}",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if r.returncode == 0 and r.stdout.strip():
-                    proc_env["DOCKER_HOST"] = r.stdout.strip()
-            except Exception:
-                logger.debug("Could not inspect docker context", exc_info=True)
-        return proc_env
-
-    _ENV_PATH = "/tmp/.benchflow_env"
-
-    async def _write_env_to_container(
-        self,
-        env: dict[str, str],
-        proc_env: dict[str, str],
-    ) -> None:
-        """Write env vars to a file inside the container (not visible in ps aux)."""
-        lines = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
-        write_cmd = self._compose_cmd()
-        write_cmd.extend(
-            [
-                "exec",
-                "-T",
-                self._service,
-                "bash",
-                "-c",
-                f"cat > {self._ENV_PATH} && chmod 600 {self._ENV_PATH}",
-            ]
-        )
-        proc = await asyncio.create_subprocess_exec(
-            *write_cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=proc_env,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(lines.encode()), timeout=30)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"Failed to write env file in container (rc={proc.returncode}): "
-                f"{stderr.decode()[:500]}"
-            )
-        logger.debug("Env file written inside container (%d vars)", len(env))
-
-    async def start(
-        self,
-        command: str,
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-    ) -> None:
-        proc_env = self._host_env()
-
-        # Write env vars to a file inside the container, then source it
-        # in the main command. This keeps secrets off `ps aux` on the host
-        # and avoids `--env-file` (not supported in all Compose versions).
-        if env:
-            await self._write_env_to_container(env, proc_env)
-            command = f"source {self._ENV_PATH} && rm -f {self._ENV_PATH} && {command}"
-
-        cmd = self._compose_cmd()
-        cmd.extend(["exec", "-i", "-T"])
-        if cwd:
-            cmd.extend(["-w", cwd])
-        cmd.extend([self._service, "bash", "-c", command])
-
-        logger.debug(f"DockerProcess: {' '.join(cmd[:10])}...")
-        self._process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=proc_env,
-            limit=_BUFFER_LIMIT,
-        )
-        logger.info(
-            f"Docker process started (pid={self._process.pid}, "
-            f"project={self._project_name})"
-        )
-
-
-class AppleContainerProcess(LiveProcess):
-    """Live stdin/stdout through Apple Container's native exec transport."""
-
-    def __init__(self, container_name: str):
-        self._container_name = container_name
-        self._env_path = f"/tmp/.benchflow_agent_env_{uuid.uuid4().hex[:16]}"
-
-    @classmethod
-    def from_sandbox_env(cls, env: Any) -> "AppleContainerProcess":
-        """Create from a started AppleContainerSandbox."""
-
-        container_name = getattr(env, "_container_name", None)
-        if not isinstance(container_name, str) or not container_name:
-            raise RuntimeError("Apple Container sandbox not started")
-        return cls(container_name)
-
-    async def _write_env_to_container(self, env: dict[str, str]) -> None:
-        invalid = [key for key in env if not _ENV_KEY_RE.match(key)]
-        if invalid:
-            raise ValueError(
-                "Invalid environment variable name(s): " + ", ".join(sorted(invalid))
-            )
-
-        lines = "".join(
-            f"export {key}={shlex.quote(value)}\n" for key, value in env.items()
-        )
-        env_path = shlex.quote(self._env_path)
-        proc = await asyncio.create_subprocess_exec(
-            "container",
-            "exec",
-            "--interactive",
-            "--user",
-            "root",
-            self._container_name,
-            "sh",
-            "-c",
-            f"cat > {env_path} && chmod 600 {env_path}",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            _, stderr = await asyncio.wait_for(
-                proc.communicate(lines.encode()), timeout=30
-            )
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "Failed to write agent env in Apple container "
-                f"(rc={proc.returncode}): {stderr.decode(errors='replace')[:500]}"
-            )
-
-    async def start(
-        self,
-        command: str,
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-    ) -> None:
-        if env:
-            await self._write_env_to_container(env)
-            env_path = shlex.quote(self._env_path)
-            command = f". {env_path} && rm -f {env_path} && {command}"
-
-        args = ["container", "exec", "--interactive"]
-        if cwd:
-            args.extend(["--workdir", cwd])
-        args.extend([self._container_name, "bash", "-c", command])
-        self._process = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_BUFFER_LIMIT,
-        )
-        logger.info(
-            "Apple Container process started (pid=%s, container=%s)",
-            self._process.pid,
-            self._container_name,
-        )
-
-
-class DaytonaProcess(LiveProcess):
+class DaytonaProcess(SubprocessLiveProcess):
     """Live stdin/stdout via SSH to a Daytona sandbox.
 
     For DinD (compose) sandboxes, the SSH connects to the VM and then
@@ -549,7 +192,7 @@ class DaytonaProcess(LiveProcess):
         self._unlink_ssh_config(path)
 
     @classmethod
-    async def from_sandbox_env(cls, env: Any) -> "DaytonaProcess":
+    async def from_sandbox_env(cls, env: Any) -> DaytonaProcess:
         """Create from a sandbox environment (DaytonaSandbox)."""
         sandbox = env._sandbox
         if not sandbox:
@@ -761,7 +404,6 @@ class DaytonaPtyProcess(LiveProcess):
     direct sandboxes run the agent command directly in the PTY shell.
     """
 
-    _process = None  # Not used — override readline/writeline/close
     _START_MARKER_TIMEOUT_SEC = 120
 
     def __init__(self, sandbox: Any, compose_cmd_prefix: str, compose_cmd_base: str):
@@ -776,7 +418,7 @@ class DaytonaPtyProcess(LiveProcess):
         self._remote_script_path: str | None = None
 
     @classmethod
-    async def from_sandbox_env(cls, env: Any) -> "DaytonaPtyProcess":
+    async def from_sandbox_env(cls, env: Any) -> DaytonaPtyProcess:
         sandbox = env._sandbox
         if not sandbox:
             raise RuntimeError("Daytona sandbox not started")

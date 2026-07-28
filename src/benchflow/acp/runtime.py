@@ -46,12 +46,6 @@ from benchflow.sandbox.lockdown import (
     build_priv_drop_cmd,
     enforce_agent_egress_firewall,
 )
-from benchflow.sandbox.process import (
-    AppleContainerProcess,
-    DaytonaProcess,
-    DaytonaPtyProcess,
-    DockerProcess,
-)
 from benchflow.trajectories._capture import _capture_session_trajectory
 
 # Re-exported for backwards compatibility — tests and downstream code
@@ -577,30 +571,13 @@ async def connect_acp(
             await asyncio.sleep(delay)
 
         try:
-            if environment == "docker":
-                live_proc = DockerProcess.from_sandbox_env(env)
-            elif environment == "apple-container":
-                live_proc = AppleContainerProcess.from_sandbox_env(env)
-            elif environment == "daytona":
-                transport_name = selected_acp_transport(
-                    agent=agent,
-                    environment=environment,
-                )
-                if transport_name == "ssh":
-                    live_proc = await DaytonaProcess.from_sandbox_env(env)
-                    logger.info("Using SSH transport for %s on Daytona", agent)
-                else:
-                    live_proc = await DaytonaPtyProcess.from_sandbox_env(env)
-                    logger.info("Using PTY transport for Daytona sandbox")
-            else:
-                is_dind = hasattr(env, "_strategy") and hasattr(
-                    env._strategy, "_compose_cmd"
-                )
-                if is_dind:
-                    live_proc = await DaytonaPtyProcess.from_sandbox_env(env)
-                    logger.info("Using PTY transport for DinD compose task")
-                else:
-                    live_proc = await DaytonaProcess.from_sandbox_env(env)
+            # The sandbox owns its transport: it knows how to reach into
+            # itself, so there is no provider-name branch here. Backends with
+            # no live-process transport raise an actionable NotImplementedError
+            # from BaseSandbox.live_process rather than silently receiving
+            # another backend's transport (Modal previously fell through to
+            # DaytonaProcess and failed deep inside SSH setup).
+            live_proc = await env.live_process(agent=agent)
 
             agent_log = rollout_dir / "agent" / f"{agent.replace('-', '_')}.txt"
             transport = ContainerTransport(

@@ -218,10 +218,6 @@ async def test_connect_acp_returns_session_adapter_bound_to_client(tmp_path) -> 
     mock_env = AsyncMock()
     with (
         patch(
-            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-            return_value=MagicMock(),
-        ),
-        patch(
             "benchflow.acp.runtime.ContainerTransport",
             return_value=MagicMock(),
         ),

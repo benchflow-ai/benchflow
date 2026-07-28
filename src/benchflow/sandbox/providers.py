@@ -36,6 +36,14 @@ class SandboxProvider:
     name: str
     extra: str | None  # pip/uv optional-dependency extra; None when none is needed
     model_proxy: ModelProxyLocation
+    #: Whether the backend can actually enforce ``network_mode = "no-network"``.
+    #: Declared here so the runtime capability gate reads a fact off the
+    #: registry instead of growing a ``sandbox == "<name>"`` special case per
+    #: backend that cannot isolate the network.
+    enforces_no_network: bool = True
+    #: Whether the backend can run a task's docker-compose side services.
+    #: ``False`` means a multi-service task must be refused, not run partially.
+    supports_compose: bool = False
 
     @property
     def off_box_model(self) -> bool:
@@ -46,11 +54,18 @@ class SandboxProvider:
 
 # Ordered, docker-first. This tuple is the ONLY place the set is spelled out.
 _PROVIDERS: tuple[SandboxProvider, ...] = (
-    SandboxProvider("docker", extra=None, model_proxy=ModelProxyLocation.HOST),
+    SandboxProvider(
+        "docker",
+        extra=None,
+        model_proxy=ModelProxyLocation.HOST,
+        supports_compose=True,
+    ),
     SandboxProvider(
         "daytona",
         extra="sandbox-daytona",
         model_proxy=ModelProxyLocation.SANDBOX,
+        # The DinD strategy runs compose inside the sandbox VM.
+        supports_compose=True,
     ),
     SandboxProvider(
         "modal",
@@ -61,6 +76,16 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         "apple-container",
         extra=None,
         model_proxy=ModelProxyLocation.SANDBOX,
+        enforces_no_network=False,
+    ),
+    SandboxProvider(
+        "agentcore",
+        extra="sandbox-agentcore",
+        model_proxy=ModelProxyLocation.SANDBOX,
+        # AgentCore's CreateAgentRuntime networkConfiguration.networkMode only
+        # accepts PUBLIC or VPC — there is no isolated mode, so a no-network
+        # task cannot be honored here.
+        enforces_no_network=False,
     ),
 )
 
@@ -80,6 +105,16 @@ SANDBOX_MODEL_PROXY_PROVIDERS: frozenset[str] = frozenset(
 )
 # Backward-compatible import alias. New code uses the literal placement contract.
 OFF_BOX_MODEL_PROVIDERS = SANDBOX_MODEL_PROXY_PROVIDERS
+
+
+#: Providers that run exactly one container and cannot host compose services.
+SINGLE_CONTAINER_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if not p.supports_compose
+)
+#: Providers that cannot enforce ``network_mode = "no-network"``.
+NO_NETWORK_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if not p.enforces_no_network
+)
 
 
 def is_known_provider(name: str) -> bool:

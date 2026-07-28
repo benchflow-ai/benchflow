@@ -17,8 +17,12 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from benchflow.sandbox._base import BaseSandbox, ExecResult, wrap_command_with_env_file
+
+if TYPE_CHECKING:
+    from benchflow.sandbox.process import LiveProcess
 
 _MIN_CONTAINER_VERSION = (1, 1, 0)
 _KALLOC_SAFE_LIMIT = 3_000_000
@@ -167,6 +171,11 @@ class AppleContainerSandbox(BaseSandbox):
     @property
     def sandbox_id(self) -> str | None:
         return self._container_name
+
+    async def live_process(self, *, agent: str | None = None) -> LiveProcess:
+        from benchflow.sandbox.process import AppleContainerProcess
+
+        return AppleContainerProcess.from_sandbox_env(self)
 
     @classmethod
     def preflight(cls) -> None:

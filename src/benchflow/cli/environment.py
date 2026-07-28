@@ -145,7 +145,12 @@ def register_environment(app: typer.Typer) -> None:
             bool, typer.Option("--dry-run", help="List sandboxes without deleting")
         ] = False,
         max_age_minutes: Annotated[
-            int, typer.Option("--max-age", help="Delete sandboxes older than N minutes")
+            int,
+            typer.Option(
+                "--max-age",
+                min=0,
+                help="Delete sandboxes older than N minutes",
+            ),
         ] = 1440,
     ) -> None:
         """Deprecated; use `bench sandbox cleanup`."""

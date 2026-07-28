@@ -14,7 +14,7 @@ import re
 import shlex
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -23,6 +23,9 @@ from benchflow.sandbox.protocol import SandboxImage, SandboxSnapshotNotSupported
 from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths
+
+if TYPE_CHECKING:
+    from benchflow.sandbox.process import LiveProcess
 
 logger = logging.getLogger("benchflow")
 
@@ -385,6 +388,37 @@ class BaseSandbox(ABC):
 
     async def attach(self) -> None:
         raise NotImplementedError("This environment does not support attaching.")
+
+    async def live_process(self, *, agent: str | None = None) -> LiveProcess:
+        """Open the bidirectional line pipe an ACP agent speaks over.
+
+        ``agent`` names the agent being launched; backends that pick a
+        transport per agent (Daytona: SSH for gemini, PTY otherwise) use it.
+
+        Each backend knows how to reach into its own sandbox, so the transport
+        choice belongs here rather than in a provider-name ``if/elif`` at the
+        ACP layer — that chain had to re-derive the backend from a string while
+        already holding this object, and sniff private attributes
+        (``env._strategy``) to tell Daytona's variants apart.
+
+        Backends with no live-process transport (Modal) leave this default in
+        place and fail with an actionable message instead of being handed
+        another backend's transport.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not provide a live agent transport, so "
+            "it cannot host an ACP agent. Use a backend that implements "
+            "live_process() (docker, daytona, apple-container, agentcore)."
+        )
+
+    def configure_agent_timeout(self, timeout_sec: int) -> None:
+        """Receive the rollout's effective agent wall-clock budget.
+
+        Most backends do not need this hint. Providers whose remote session has
+        its own lifecycle cap can override it so the infrastructure does not
+        expire before BenchFlow's agent budget does.
+        """
+        return None
 
     # Container-level snapshot/restore (Branch substrate)
     #

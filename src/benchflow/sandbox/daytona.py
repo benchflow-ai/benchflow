@@ -14,7 +14,7 @@ import importlib
 import logging
 import shlex
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 try:
@@ -84,6 +84,9 @@ from benchflow.sandbox.protocol import (
 )
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths
+
+if TYPE_CHECKING:
+    from benchflow.sandbox.process import LiveProcess
 
 # ``SandboxStartupError`` used to live in this module. It now lives in
 # ``benchflow.sandbox.protocol`` so a base install without the
@@ -908,6 +911,23 @@ class DaytonaSandbox(BaseSandbox):
         if service != "main":
             return await super().is_file(path, user=user, service=service)
         return await self._strategy.is_file(path, user=self._resolve_user(user))
+
+    async def live_process(self, *, agent: str | None = None) -> LiveProcess:
+        """Pick the Daytona ACP transport (PTY by default, SSH for gemini).
+
+        Selection lives here rather than at the ACP layer so the choice and the
+        provenance string reported by ``selected_acp_transport`` stay derived
+        from the same helper.
+        """
+        from benchflow.acp.selection import selected_acp_transport
+        from benchflow.sandbox.process import DaytonaProcess, DaytonaPtyProcess
+
+        transport = selected_acp_transport(agent=agent or "", environment="daytona")
+        if transport == "ssh":
+            logger.info("Using SSH transport for %s on Daytona", agent)
+            return await DaytonaProcess.from_sandbox_env(self)
+        logger.info("Using PTY transport for Daytona sandbox")
+        return await DaytonaPtyProcess.from_sandbox_env(self)
 
     async def attach(self) -> None:
         return await self._strategy.attach()

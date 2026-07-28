@@ -956,6 +956,13 @@ class Rollout:
             self._timeout = int(cfg.timeout)
         else:
             self._timeout = int(self._task.config.agent.timeout_sec or 0)
+        # Look on the type, not via instance getattr: permissive proxies and
+        # AsyncMock-based test sandboxes manufacture arbitrary attributes,
+        # which would turn this optional synchronous hook into an un-awaited
+        # fake coroutine.
+        configure_timeout = getattr(type(self._env), "configure_agent_timeout", None)
+        if callable(configure_timeout):
+            configure_timeout(self._env, self._timeout)
 
         _write_config(
             self._rollout_dir,

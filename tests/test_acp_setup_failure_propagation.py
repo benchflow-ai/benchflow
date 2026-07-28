@@ -47,10 +47,6 @@ async def test_set_model_failure_aborts_rollout(tmp_path) -> None:
     mock_env = AsyncMock()
 
     with (
-        patch(
-            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-            return_value=MagicMock(),
-        ),
         patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         pytest.raises(RuntimeError, match="Failed to set model"),
@@ -82,10 +78,6 @@ async def test_config_option_failure_aborts_rollout(tmp_path) -> None:
     mock_env = AsyncMock()
 
     with (
-        patch(
-            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-            return_value=MagicMock(),
-        ),
         patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         pytest.raises(RuntimeError, match="Failed to set ACP model config option"),
@@ -116,10 +108,6 @@ async def test_set_model_timeout_aborts_rollout(tmp_path) -> None:
     mock_env = AsyncMock()
 
     with (
-        patch(
-            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-            return_value=MagicMock(),
-        ),
         patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         pytest.raises(RuntimeError, match="Failed to set model"),
@@ -148,10 +136,6 @@ async def test_set_model_success_still_returns_session(tmp_path) -> None:
     mock_env = AsyncMock()
 
     with (
-        patch(
-            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-            return_value=MagicMock(),
-        ),
         patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
     ):
@@ -186,10 +170,6 @@ async def test_no_model_does_not_call_set_model(tmp_path) -> None:
     mock_env = AsyncMock()
 
     with (
-        patch(
-            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-            return_value=MagicMock(),
-        ),
         patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
     ):
@@ -220,10 +200,6 @@ async def test_initialize_timeout_is_transport_failure_not_agent_timeout(
     mock_env = AsyncMock()
 
     with (
-        patch(
-            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-            return_value=MagicMock(),
-        ),
         patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         patch("benchflow.acp.runtime.asyncio.sleep", new_callable=AsyncMock),
@@ -264,10 +240,6 @@ async def test_no_web_firewall_runs_after_session_new_before_return(tmp_path) ->
     mock_env = AsyncMock()
 
     with (
-        patch(
-            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-            return_value=MagicMock(),
-        ),
         patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         patch(

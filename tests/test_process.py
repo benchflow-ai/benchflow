@@ -360,7 +360,7 @@ class TestAppleContainerProcess:
         calls = []
         inputs = []
         with patch(
-            "benchflow.sandbox.process.asyncio.create_subprocess_exec",
+            "benchflow.sandbox.process.apple.asyncio.create_subprocess_exec",
             side_effect=self._fake_exec(calls, inputs),
         ):
             proc = AppleContainerProcess("bf_run")
@@ -388,7 +388,7 @@ class TestAppleContainerProcess:
         calls = []
         inputs = []
         with patch(
-            "benchflow.sandbox.process.asyncio.create_subprocess_exec",
+            "benchflow.sandbox.process.apple.asyncio.create_subprocess_exec",
             side_effect=self._fake_exec(calls, inputs),
         ):
             proc = AppleContainerProcess("bf_run")

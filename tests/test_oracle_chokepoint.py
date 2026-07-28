@@ -34,6 +34,16 @@ def _plain_cli_output(output: str) -> str:
     return ANSI_ESCAPE_RE.sub("", output)
 
 
+# Rich draws help panels with box-drawing borders and hard-wraps long option
+# help across lines. Removing the borders and collapsing whitespace recovers
+# the logical text so assertions can match a phrase that happens to wrap.
+_BOX_DRAWING_RE = re.compile(r"[─-╿]")
+
+
+def _unwrapped_cli_output(output: str) -> str:
+    return " ".join(_BOX_DRAWING_RE.sub(" ", _plain_cli_output(output)).split())
+
+
 class TestEvalCreateRouting:
     """`bench eval run` must dispatch to cli/main.py:eval_run.
 
@@ -76,7 +86,12 @@ class TestEvalCreateRouting:
         result = CliRunner().invoke(app, command)
 
         assert result.exit_code == 0
-        assert f"Sandbox: {providers_phrase()}" in result.stdout
+        # Rich wraps the options box at the terminal width, so once enough
+        # providers are registered the phrase spans lines and picks up the
+        # box border between them. Strip the borders and collapse whitespace
+        # so this stays a test about the provider list rather than about how
+        # wide the terminal happened to be.
+        assert f"Sandbox: {providers_phrase()}" in _unwrapped_cli_output(result.stdout)
         assert "firecracker" not in result.stdout.lower()
         assert "kubernetes" not in result.stdout.lower()
         assert "k8s" not in result.stdout.lower()

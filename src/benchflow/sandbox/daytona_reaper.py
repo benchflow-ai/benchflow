@@ -172,6 +172,20 @@ def reap_stale_sandboxes(
     ``{"found", "deleted", "skipped", "failed"}`` (``found`` counts every
     sandbox listed; foreign ones fall into ``skipped``).
     """
+    for name, value in (
+        ("max_age_minutes", max_age_minutes),
+        ("failed_max_age_minutes", failed_max_age_minutes),
+        ("min_idle_minutes", min_idle_minutes),
+    ):
+        if value < 0:
+            # A negative age moves the cutoff into the future, so every
+            # sandbox — including one that is STARTED and serving a run —
+            # looks past its TTL and is selected for deletion.
+            raise ValueError(
+                f"{name} must be >= 0, got {value}. A negative age would "
+                "select every sandbox, including running ones."
+            )
+
     from datetime import UTC, datetime
 
     if client is None:

@@ -43,10 +43,6 @@ def _make_mocks(config_options=None, model_state=None):
 @contextlib.contextmanager
 def _runtime_patches(mock_acp):
     with (
-        patch(
-            "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
-            return_value=MagicMock(),
-        ),
         patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
         patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
     ):

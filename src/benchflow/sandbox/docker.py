@@ -18,7 +18,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 
@@ -40,6 +40,9 @@ from benchflow.sandbox.protocol import SandboxImage
 from benchflow.task.config import SandboxConfig
 from benchflow.task.env import resolve_env_vars
 from benchflow.task.paths import RolloutPaths, SandboxPaths
+
+if TYPE_CHECKING:
+    from benchflow.sandbox.process import LiveProcess
 
 logger = logging.getLogger("benchflow")
 
@@ -866,6 +869,11 @@ class DockerSandbox(BaseSandbox):
         return wrap_command_with_env_file(
             env, command, env_path_prefix=cls._ENV_FILE_PREFIX
         )
+
+    async def live_process(self, *, agent: str | None = None) -> LiveProcess:
+        from benchflow.sandbox.process import DockerProcess
+
+        return DockerProcess.from_sandbox_env(self)
 
     async def attach(self) -> None:
         variables = " ".join(

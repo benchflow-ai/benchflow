@@ -159,7 +159,8 @@ def test_validator_reports_unknown_sandbox_backend() -> None:
     assert [(issue.path, issue.reason) for issue in issues] == [
         (
             "sandbox",
-            "unknown sandbox backend; use docker, daytona, modal, or apple-container",
+            "unknown sandbox backend; use docker, daytona, modal, apple-container, "
+            "or agentcore",
         )
     ]
 

@@ -347,6 +347,7 @@ The **Harvey LAB harness** agent is special — it runs Harvey LAB's own agent l
 | Apple Container | `--sandbox apple-container` | Local Apple Silicon macOS runs without Docker Desktop |
 | Daytona | `--sandbox daytona` | Cloud runs with concurrency (needs `DAYTONA_API_KEY`) |
 | Modal | `--sandbox modal` | Serverless, high concurrency (needs Modal auth) |
+| AgentCore | `--sandbox agentcore` | AWS-native isolated microVMs (needs AWS credentials) |
 
 Apple Container requires Apple Container 1.1+ on Apple Silicon and runs the model
 proxy inside each VM. It supports public-network, single-container arm64 tasks and
@@ -355,6 +356,104 @@ and blocks new VMs when the live `data.kalloc.1024` headroom is unsafe. Avoid
 running concurrent BenchFlow processes, because the macOS allocation leak is
 system-wide. Use Docker, Daytona, or Modal for `network_mode = "no-network"`,
 multi-service, snapshot, or high-concurrency runs.
+
+### Amazon Bedrock AgentCore
+
+`--sandbox agentcore` runs each rollout in an AgentCore Runtime microVM.
+Install the extra and point BenchFlow at an execution role:
+
+```bash
+pip install 'benchflow[sandbox-agentcore]'
+export BENCHFLOW_AGENTCORE_ROLE_ARN="arn:aws:iam::<account>:role/<role>"
+export BENCHFLOW_AGENTCORE_REGION="us-west-2"   # optional, this is the default
+```
+
+The role must be assumable by `bedrock-agentcore.amazonaws.com` and able to
+pull from ECR and write CloudWatch logs. Your own credentials additionally need
+`bedrock-agentcore:*` and ECR push permissions.
+
+Unlike the other backends, AgentCore cannot take a container image directly:
+BenchFlow builds the task image for `linux/arm64`, pushes it to ECR (repository
+`benchflow-agentcore`, override with `BENCHFLOW_AGENTCORE_ECR_REPOSITORY`), and
+registers it as an agent runtime. The image is tagged by content digest, so a
+task whose environment has not changed reuses the pushed layers and the
+existing runtime instead of paying for a rebuild.
+
+#### Building without Docker
+
+By default BenchFlow builds with a local Docker daemon when one is running,
+and otherwise builds on **AWS CodeBuild** — so the backend works on a machine
+with no container runtime at all, and from CI or Windows. Set a CodeBuild
+service role to enable the remote path:
+
+```bash
+export BENCHFLOW_AGENTCORE_CODEBUILD_ROLE_ARN="arn:aws:iam::<account>:role/<build-role>"
+```
+
+That role must be assumable by `codebuild.amazonaws.com` and able to push to
+ECR, read the build bucket, and write CloudWatch logs. Your own credentials
+need `codebuild:*` and S3 access. BenchFlow creates the CodeBuild project and
+an `benchflow-agentcore-build-<account>-<region>` bucket on first use (build
+contexts expire after a day); override the bucket with
+`BENCHFLOW_AGENTCORE_BUILD_BUCKET`.
+
+Builds run on a Graviton worker, so `linux/arm64` is native — no qemu. Force
+either strategy with `BENCHFLOW_AGENTCORE_BUILDER=docker|codebuild|auto`.
+A remote build takes roughly 40s versus roughly 20s locally on Apple silicon;
+either way it happens once per distinct task image, not once per rollout.
+
+BenchFlow also appends a small HTTP responder to the image and makes it the
+entrypoint. AgentCore refuses command execution for a session whose container
+does not answer `GET /ping` on port 8080, and task images know nothing about
+AgentCore, so this shim is what makes an ordinary task image runnable.
+
+Constraints: `linux/arm64` only, single container (no compose/multi-service
+tasks), no snapshot support, and `network_mode = "no-network"` is **not**
+enforceable — AgentCore's network mode is either `PUBLIC` or `VPC`, so
+BenchFlow refuses no-network tasks on this backend rather than running them
+unisolated. The model proxy runs inside the sandbox, as on Daytona and Modal.
+Sessions default to a 15-minute idle timeout and an 8-hour lifetime; override
+with `BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC` / `BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC`
+if agent turns are long enough to risk reclamation mid-run.
+
+**Running a large matrix.** A rollout is a *session*, not a runtime: one
+registered runtime hosts many concurrent, filesystem-isolated microVMs. The
+account quotas point the same way — 5,000 concurrent *Active Session Workloads*
+against only 100 *Total Agents*, with `CreateAgentRuntime` limited to 5/s. So
+BenchFlow builds and registers once per distinct task image (keyed by a digest
+of the build context) and every trial and skill arm of that image opens another
+session against the shared runtime. Concurrency is therefore bounded by
+sessions, not by how many images you have.
+
+Measured against the live service: 60 concurrent rollouts of one task ran on a
+single runtime in ~30s wall clock with no throttling and no failures (median
+session start ~15s). The session-creation rate quota (400/min) is the first
+thing you would hit, well before the 5,000 concurrent-session ceiling.
+
+Two quotas to check before a big run:
+
+| Quota | Default | Adjustable |
+|---|---|---|
+| Active Session Workloads per account | 5,000 | yes |
+| Total Agents (runtimes) per account | 100 | yes |
+| **Max image size** | **2 GB** | **no** |
+
+A full 88-task × 2-skill-arm matrix is 176 distinct images, over the default
+100-runtime cap — request an increase first. The 2 GB image limit is a hard
+service quota: heavy environments (LaTeX, Playwright, large model snapshots)
+cannot run here at all, and BenchFlow fails the build with a message naming the
+cap rather than letting it surface later as an opaque runtime error. Run those
+tasks on Docker or Daytona.
+
+Runtimes are shared, so they deliberately outlive the run that created them —
+like a built Docker image. Reclaim them by age:
+
+```bash
+bench sandbox cleanup --max-age 1440
+```
+
+Only runtimes tagged `benchflow-managed` are ever deleted, and cleanup is a
+no-op unless `BENCHFLOW_AGENTCORE_ROLE_ARN` is set.
 
 For large-scale runs (100+ tasks), use Daytona or Modal with high concurrency:
 
