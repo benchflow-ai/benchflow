@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import shlex
 import uuid
 from typing import Any
@@ -37,6 +38,7 @@ _READER_ENDED = object()
 _START_MARKER_TIMEOUT_SEC = 180
 _READLINE_TIMEOUT_ENV = "BENCHFLOW_AGENTCORE_READLINE_TIMEOUT"
 _READLINE_TIMEOUT_DEFAULT_SEC = 900.0
+_ANSI_CSI_RE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def _readline_timeout_sec() -> float:
@@ -115,7 +117,13 @@ class AgentCoreProcess(LiveProcess):
                 self._partial += payload
                 while b"\n" in self._partial:
                     line, self._partial = self._partial.split(b"\n", 1)
-                    await self._line_buffer.put(line.replace(b"\r", b"") + b"\n")
+                    # Bash/readline emits bracketed-paste CSI sequences when a
+                    # command takes over the PTY, including a standalone
+                    # ``ESC[?2004l`` *after* the startup marker. Those bytes
+                    # are terminal state, never ACP JSON-RPC.
+                    line = _ANSI_CSI_RE.sub(b"", line.replace(b"\r", b""))
+                    if line:
+                        await self._line_buffer.put(line + b"\n")
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
@@ -296,7 +304,13 @@ class AgentCoreProcess(LiveProcess):
                         transport_diagnosis="remote_session_killed",
                     ),
                 ) from self._failure
-            if marker in line.decode(errors="replace"):
+            # The PTY echoes the entire `stty ...; echo '<marker>'` command
+            # before echo suppression takes effect. Substring matching accepts
+            # that echoed command and releases startup too early, putting the
+            # prompt/command noise into ACP's JSON-RPC stream. The real marker
+            # is its own line, possibly wrapped in bracketed-paste ANSI codes.
+            text = _ANSI_CSI_RE.sub(b"", line).decode(errors="replace").strip()
+            if text == marker:
                 return
 
     def _clear_buffered_output(self) -> None:

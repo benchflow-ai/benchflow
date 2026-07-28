@@ -10,14 +10,18 @@ parser sees as traffic).
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import shlex
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from benchflow.diagnostics import TransportClosedError
+from benchflow.sandbox.agentcore import AgentCoreSandbox
 from benchflow.sandbox.process.agentcore import AgentCoreProcess
+from benchflow.task.config import SandboxConfig
 
 
 def _frame(payload: bytes, channel: str = "STDOUT"):
@@ -272,6 +276,35 @@ class TestEnvHandling:
         await proc.close()
 
     @pytest.mark.asyncio
+    async def test_echoed_marker_command_does_not_complete_startup(self):
+        """Guards PR #937: PTY command echo is not the nonce response."""
+        proc = _process(_FakeShell([]))
+        marker = "__BENCHFLOW_ACP_deadbeef__"
+        await proc._line_buffer.put(
+            f"root@host:/# stty raw -echo; echo '{marker}'\n".encode()
+        )
+        await proc._line_buffer.put(f"\x1b[?2004l{marker}\r\n".encode())
+
+        await proc._await_marker(marker)
+
+        assert proc._line_buffer.empty()
+
+    @pytest.mark.asyncio
+    async def test_terminal_only_line_after_marker_never_reaches_acp(self):
+        """Guards PR #937: bracketed-paste state is not JSON-RPC input."""
+        proc = _process(
+            _FakeShell(
+                [
+                    _frame(b"\x1b[?2004l\r\n"),
+                    _frame(b'{"jsonrpc":"2.0","id":7}\r\n'),
+                ]
+            )
+        )
+        proc._reader_task = asyncio.create_task(proc._drain_frames())
+
+        assert await proc.readline() == b'{"jsonrpc":"2.0","id":7}\n'
+
+    @pytest.mark.asyncio
     async def test_failed_staging_best_effort_deletes_the_partial_file(self):
         """Guards PR #937 when write succeeds but chmod reports failure."""
         proc = _process(_FakeShell([]))
@@ -398,3 +431,47 @@ class TestHalfCloseGuard:
 
         assert len(shell.sent) == 1
         assert excinfo.value.diagnostic.transport_diagnosis == "remote_session_killed"
+
+
+@pytest.mark.skipif(
+    os.environ.get("BENCHFLOW_AGENTCORE_LIVE_TEST") != "1",
+    reason="live AWS test; set BENCHFLOW_AGENTCORE_LIVE_TEST=1 to run",
+)
+@pytest.mark.asyncio
+async def test_real_agentcore_shell_transport(tmp_path):
+    """Guards PR #937 end to end: real WebSocket stdin/stdout/env/cwd/cleanup."""
+    (tmp_path / "Dockerfile").write_text(
+        "FROM python:3.12-slim\nRUN echo baked > /baked.txt\n"
+    )
+    env = AgentCoreSandbox(
+        environment_dir=tmp_path,
+        environment_name="live-canary",
+        session_id="live-transport",
+        rollout_paths=None,
+        task_env_config=SandboxConfig(),
+    )
+    await env.start(force_build=False)
+    process = await env.live_process()
+    program = (
+        "import os,sys;"
+        "print('READY:'+os.getcwd()+':'+os.environ['BF_LIVE_SECRET'], flush=True);"
+        "[(print('ECHO:'+line.rstrip('\\\\n'), flush=True)) for line in sys.stdin]"
+    )
+    try:
+        await process.start(
+            f"python3 -u -c {shlex.quote(program)}",
+            env={"BF_LIVE_SECRET": "value with spaces"},
+            cwd="/tmp",
+        )
+        assert await process.readline() == b"READY:/tmp:value with spaces\n"
+        await process.writeline("hello-agentcore")
+        assert await process.readline() == b"ECHO:hello-agentcore\n"
+
+        staged = await env.exec(
+            "find /tmp -maxdepth 1 -name '.benchflow_agent_env_*' -print"
+        )
+        assert staged.return_code == 0
+        assert not (staged.stdout or "").strip()
+    finally:
+        await process.close()
+        await env.stop(delete=True)

@@ -460,9 +460,9 @@ class TestCapabilityGating:
 async def test_real_agentcore_lifecycle(tmp_path):
     """End-to-end against the live service: build, run, transfer, tear down.
 
-    Requires AWS credentials with bedrock-agentcore and ECR access, a docker
-    daemon, and BENCHFLOW_AGENTCORE_ROLE_ARN pointing at the runtime execution
-    role.
+    Requires AWS credentials with bedrock-agentcore and ECR access,
+    BENCHFLOW_AGENTCORE_ROLE_ARN pointing at the runtime execution role, and
+    either Docker or BENCHFLOW_AGENTCORE_CODEBUILD_ROLE_ARN.
     """
     (tmp_path / "Dockerfile").write_text(
         "FROM python:3.12-slim\nRUN echo baked > /baked.txt\n"
