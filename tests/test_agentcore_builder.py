@@ -498,6 +498,31 @@ class TestDockerIgnoreParity:
 class TestBuildLifecycle:
     """Remote and local builders fail closed and clean up after themselves."""
 
+    def test_s3_control_conflict_is_retried(self):
+        """Guards PR #937: parallel builders hit live AWS OperationAborted."""
+        from botocore.exceptions import ClientError
+
+        operation = MagicMock(
+            side_effect=[
+                ClientError(
+                    {
+                        "Error": {
+                            "Code": "OperationAborted",
+                            "Message": "conflicting conditional operation",
+                        }
+                    },
+                    "PutBucketLifecycleConfiguration",
+                ),
+                None,
+            ]
+        )
+
+        with patch.object(builders.time, "sleep") as sleep:
+            builders.CodeBuildBuilder._retry_s3_mutation(operation, Bucket="build")
+
+        assert operation.call_count == 2
+        sleep.assert_called_once_with(builders._S3_CONTROL_RETRY_DELAYS_SEC[0])
+
     def test_bucket_hardening_preserves_existing_lifecycle_rules(self):
         """Guards PR #937: hardening a shared bucket must not erase its policies."""
         s3 = MagicMock()

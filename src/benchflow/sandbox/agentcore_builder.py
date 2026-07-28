@@ -50,6 +50,7 @@ CODEBUILD_IMAGE = "aws/codebuild/amazonlinux-aarch64-standard:3.0"
 CODEBUILD_COMPUTE = "BUILD_GENERAL1_LARGE"
 _CODEBUILD_POLL_SEC = 10
 _CODEBUILD_TIMEOUT_MIN = 60
+_S3_CONTROL_RETRY_DELAYS_SEC = (0.25, 0.5, 1.0, 2.0)
 
 
 @dataclass(frozen=True)
@@ -402,7 +403,8 @@ class CodeBuildBuilder:
                 }:
                     raise
 
-        s3.put_public_access_block(
+        self._retry_s3_mutation(
+            s3.put_public_access_block,
             Bucket=self._bucket,
             PublicAccessBlockConfiguration={
                 "BlockPublicAcls": True,
@@ -431,10 +433,32 @@ class CodeBuildBuilder:
         # Preserve operator-owned lifecycle rules on a custom/shared bucket.
         # put_bucket_lifecycle_configuration replaces the entire document.
         rules.append(lifecycle_rule)
-        s3.put_bucket_lifecycle_configuration(
+        self._retry_s3_mutation(
+            s3.put_bucket_lifecycle_configuration,
             Bucket=self._bucket,
             LifecycleConfiguration={"Rules": rules},
         )
+
+    @staticmethod
+    def _retry_s3_mutation(operation: Any, **kwargs: Any) -> None:
+        """Retry S3's transient control-plane conflict across build processes."""
+        from botocore.exceptions import ClientError
+
+        for attempt, delay in enumerate((*_S3_CONTROL_RETRY_DELAYS_SEC, None)):
+            try:
+                operation(**kwargs)
+                return
+            except ClientError as exc:
+                code = exc.response["Error"]["Code"]
+                if code != "OperationAborted" or delay is None:
+                    raise
+                logger.warning(
+                    "S3 control-plane mutation conflicted (attempt %d); "
+                    "retrying in %.2fs",
+                    attempt + 1,
+                    delay,
+                )
+                time.sleep(delay)
 
     def _ensure_project(self) -> None:
         from botocore.exceptions import ClientError
