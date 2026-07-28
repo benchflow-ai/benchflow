@@ -27,7 +27,8 @@ import asyncio
 import hashlib
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -81,23 +82,71 @@ def reset_cache() -> None:
     _KEY_LOCKS.clear()
 
 
+def _dockerignore_matcher(context_dir: Path) -> Callable[[str], bool]:
+    """Compile ``.dockerignore`` into a predicate over context-relative paths.
+
+    Docker semantics: one pattern per line, ``#`` comments, ``!`` re-includes,
+    and the last matching rule wins. ``fnmatch`` is close enough for the
+    patterns tasks actually use, with an added prefix rule so a directory
+    pattern excludes everything beneath it.
+    """
+    ignore_file = context_dir / ".dockerignore"
+    if not ignore_file.is_file():
+        return lambda _relative: False
+
+    rules: list[tuple[str, bool]] = []
+    for raw in ignore_file.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        negated = line.startswith("!")
+        pattern = line.lstrip("!").strip().rstrip("/")
+        if pattern:
+            rules.append((pattern, negated))
+
+    def matches(relative: str) -> bool:
+        ignored = False
+        for pattern, negated in rules:
+            if fnmatch(relative, pattern) or relative.startswith(pattern + "/"):
+                ignored = not negated
+        return ignored
+
+    return matches
+
+
+def iter_context_files(context_dir: Path) -> Iterator[tuple[Path, str]]:
+    """The canonical Docker build context: ``(absolute path, relative path)``.
+
+    Used by **both** the image digest and the CodeBuild upload so the two views
+    cannot drift. They previously did: the local Docker daemon honored
+    ``.dockerignore`` while the remote path zipped and uploaded every regular
+    file, which shipped ignored files — including secrets — into S3 and also
+    let an ignored file change the image identity.
+
+    Symlinks are skipped so a task-controlled link cannot pull host files into
+    the image or the upload (#411).
+    """
+    ignored = _dockerignore_matcher(context_dir)
+    for path in sorted(context_dir.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = path.relative_to(context_dir).as_posix()
+        if relative in _GENERATED_NAMES or ignored(relative):
+            continue
+        yield path, relative
+
+
 def build_context_digest(context_dir: Path, dockerfile_text: str) -> str:
     """Content digest of everything that determines the built image.
 
     Hashes file *contents* rather than paths and mtimes on purpose: BenchFlow
     copies tasks into temporary directories before a run, so any identity based
     on location or timestamp would change every run and defeat image reuse
-    entirely. Symlinks are skipped for the same reason they are skipped on
-    upload (#411) — they must not pull host files into the image identity.
+    entirely.
     """
     digest = hashlib.sha256()
     digest.update(dockerfile_text.encode())
-    for path in sorted(context_dir.rglob("*")):
-        if path.is_symlink() or not path.is_file():
-            continue
-        relative = path.relative_to(context_dir).as_posix()
-        if relative in _GENERATED_NAMES:
-            continue
+    for path, relative in iter_context_files(context_dir):
         digest.update(relative.encode())
         digest.update(b"\0")
         digest.update(hashlib.sha256(path.read_bytes()).digest())

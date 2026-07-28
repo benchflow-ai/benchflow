@@ -15,6 +15,7 @@ is never touched.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -42,6 +43,25 @@ class ReapReport:
             f"unmanaged={self.skipped_unmanaged} recent={self.skipped_recent} "
             f"errors={len(self.errors)}"
         )
+
+
+def _runtime_timestamp(runtime: Mapping[str, Any]) -> datetime | None:
+    """Best available age signal for a runtime, or None if there is none.
+
+    ``ListAgentRuntimes`` returns **only** ``lastUpdatedAt`` — there is no
+    ``createdAt`` in the list shape, though ``GetAgentRuntime`` has both.
+    Reading the wrong field silently yielded ``None`` for every runtime, which
+    skipped the age comparison entirely and made a one-day cleanup delete
+    minutes-old runtimes out from under a running matrix.
+
+    Returning None here means "age unknown", and the caller must treat that as
+    not-stale rather than as stale.
+    """
+    for field_name in ("createdAt", "lastUpdatedAt"):
+        value = runtime.get(field_name)
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=UTC)
+    return None
 
 
 def _is_benchflow_managed(control: Any, arn: str) -> bool:
@@ -80,12 +100,13 @@ def reap_stale_runtimes(
                 report.skipped_unmanaged += 1
                 continue
 
-            created = runtime.get("createdAt")
-            if isinstance(created, datetime):
-                stamp = created if created.tzinfo else created.replace(tzinfo=UTC)
-                if stamp > cutoff:
-                    report.skipped_recent += 1
-                    continue
+            stamp = _runtime_timestamp(runtime)
+            if stamp is None or stamp > cutoff:
+                # No usable age means we cannot prove the runtime is stale, and
+                # a runtime in use by a live matrix looks exactly like one that
+                # is idle. Fail closed.
+                report.skipped_recent += 1
+                continue
 
             if dry_run:
                 report.deleted.append(runtime_id)

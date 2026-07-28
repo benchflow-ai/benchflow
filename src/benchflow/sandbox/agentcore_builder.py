@@ -285,14 +285,16 @@ class CodeBuildBuilder:
             materialized(request),
             zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive,
         ):
-            for path in sorted(request.context_dir.rglob("*")):
-                if path.is_symlink() or not path.is_file():
-                    # Symlinks are skipped for the same reason as on upload
-                    # (#411): they must not pull host files into the image.
-                    continue
-                archive.write(
-                    path, arcname=path.relative_to(request.context_dir).as_posix()
-                )
+            for path, relative in provisioning.iter_context_files(request.context_dir):
+                archive.write(path, arcname=relative)
+            # The generated scaffolding is excluded from the canonical walk
+            # (it must not affect image identity), so add it explicitly —
+            # CodeBuild only ever sees this archive.
+            for generated in (
+                provisioning.GENERATED_DOCKERFILE,
+                provisioning.GENERATED_SHIM,
+            ):
+                archive.write(request.context_dir / generated, arcname=generated)
         return buffer.getvalue()
 
     def _ensure_bucket(self) -> None:

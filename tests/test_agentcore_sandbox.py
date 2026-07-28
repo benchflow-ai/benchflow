@@ -21,7 +21,10 @@ from __future__ import annotations
 import base64
 import contextlib
 import os
+import re
+import shlex
 import tarfile
+from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -254,6 +257,24 @@ class TestFileTransfer:
         assert len(commands) < 13
         assert any("tar -xzf" in c for c in commands)
 
+    @staticmethod
+    def _extract_staged_archive(commands: list[str]) -> tarfile.TarFile:
+        """Rebuild the tar that upload_dir actually streamed to the sandbox.
+
+        ``_upload_via_tar`` base64-encodes the archive into ``printf`` commands,
+        so asserting against the raw command text can never observe the
+        archive's contents — a regression that started following symlinks would
+        have passed. Decode the staged chunks back into the real tar instead.
+        """
+        encoded = "".join(
+            match.group(1)
+            for command in commands
+            if (match := re.search(r"printf %s (\S+) >>? /tmp/", command))
+        )
+        # shlex.quote may wrap the chunk; strip the quoting before decoding.
+        encoded = "".join(shlex.split(encoded)) if encoded else ""
+        return tarfile.open(fileobj=BytesIO(base64.b64decode(encoded)), mode="r:gz")
+
     @pytest.mark.asyncio
     async def test_upload_dir_skips_symlinks(self, sandbox, tmp_path):
         """Guards #411: a task symlink must not exfiltrate host files."""
@@ -273,8 +294,16 @@ class TestFileTransfer:
         with patch.object(sandbox, "exec", side_effect=_record):
             await sandbox.upload_dir(source, "/workspace")
 
-        blob = "".join(staged)
-        assert "do not ship me" not in blob
+        with self._extract_staged_archive(staged) as tar:
+            names = tar.getnames()
+            payloads = {
+                name: (tar.extractfile(name) or BytesIO()).read() for name in names
+            }
+
+        # Positive control: the archive really was inspected, not empty.
+        assert any(name.endswith("real.txt") for name in names)
+        assert not any(name.endswith("link.txt") for name in names)
+        assert all(b"do not ship me" not in blob for blob in payloads.values())
 
     @pytest.mark.asyncio
     async def test_download_dir_extracts_the_returned_archive(self, sandbox, tmp_path):

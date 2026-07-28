@@ -15,9 +15,11 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
+from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.providers import (
     NO_NETWORK_UNSUPPORTED_PROVIDERS,
     SANDBOX_PROVIDER_SET,
+    SINGLE_CONTAINER_PROVIDERS,
     providers_phrase,
 )
 from benchflow.task.config import (
@@ -514,6 +516,35 @@ def _append_layout_issues(
         sandbox=sandbox,
     )
     _append_verifier_strategy_issue(unsupported, paths=paths, sandbox=sandbox)
+    _append_compose_issue(unsupported, task_dir=task_dir, sandbox=sandbox)
+
+
+def _append_compose_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    task_dir: Path,
+    sandbox: str,
+) -> None:
+    """Refuse a multi-service task on a backend that runs one container.
+
+    Such a task would otherwise launch with its side services missing, and the
+    resulting failure would be attributed to the agent rather than reported as
+    an environment the backend cannot host.
+    """
+    if sandbox not in SINGLE_CONTAINER_PROVIDERS:
+        return
+    compose = compose_definition_path(task_dir / "environment")
+    if compose is None:
+        return
+    _issue(
+        unsupported,
+        path=f"environment/{compose.name}",
+        reason=(
+            f"multi-service compose topologies are not supported by {sandbox}; "
+            "use the docker or daytona sandbox"
+        ),
+        sandbox=sandbox,
+    )
 
 
 def _append_verifier_strategy_issue(

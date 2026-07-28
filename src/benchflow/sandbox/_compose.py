@@ -28,6 +28,28 @@ _COMPOSE_UP_NETWORK_RACE_ERROR = re.compile(
 )
 
 
+#: Filenames Docker Compose recognizes for a task-supplied topology.
+COMPOSE_DEFINITION_NAMES = (
+    "docker-compose.yaml",
+    "docker-compose.yml",
+    "compose.yaml",
+    "compose.yml",
+)
+
+
+def compose_definition_path(environment_dir: Path) -> Path | None:
+    """The task's own compose file in *environment_dir*, if it has one.
+
+    Single-container backends use this to refuse a multi-service task up front
+    rather than silently building only the agent's container.
+    """
+    for name in COMPOSE_DEFINITION_NAMES:
+        candidate = environment_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def is_compose_up_network_race_error(message: str) -> bool:
     """Return whether *message* is a retryable compose-up network create race."""
     return bool(_COMPOSE_UP_NETWORK_RACE_ERROR.search(message))

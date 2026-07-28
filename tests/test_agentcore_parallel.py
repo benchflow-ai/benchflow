@@ -113,6 +113,11 @@ class TestSingleFlight:
             patch.object(AgentCoreSandbox, "_ensure_ecr_repository"),
             patch.object(AgentCoreSandbox, "_ecr_image_exists", return_value=False),
             patch.object(AgentCoreSandbox, "_build_and_push", new=_build),
+            patch.object(
+                AgentCoreSandbox,
+                "_resolve_image_digest",
+                lambda self, tag: f"reg/repo@sha256:{tag}",
+            ),
         ):
             sandboxes = [_sandbox(task_dir, session=f"run-{i}") for i in range(20)]
             uris = await asyncio.gather(
@@ -157,6 +162,11 @@ class TestSingleFlight:
             patch.object(AgentCoreSandbox, "_ensure_ecr_repository"),
             patch.object(AgentCoreSandbox, "_ecr_image_exists", return_value=False),
             patch.object(AgentCoreSandbox, "_build_and_push", new=_flaky),
+            patch.object(
+                AgentCoreSandbox,
+                "_resolve_image_digest",
+                lambda self, tag: f"reg/repo@sha256:{tag}",
+            ),
         ):
             env = _sandbox(task_dir)
             with pytest.raises(RuntimeError, match="transient throttle"):
@@ -354,3 +364,211 @@ class TestCleanupCommandGating:
         sandbox_cli.sandbox_cleanup(dry_run=True, max_age_minutes=60)
 
         assert calls == ["agentcore"]
+
+
+class TestAwsResponseShapeConformance:
+    """Pin the mocked shapes to the SDK's real ones.
+
+    Every fixture in this file invents AWS responses. When an invented shape
+    drifts from the service model the tests keep passing while production
+    breaks — which is exactly how the reaper came to read a ``createdAt`` that
+    ``ListAgentRuntimes`` never returns, and so deleted fresh runtimes.
+    """
+
+    def _shape(self, operation, member=None):
+        boto3 = pytest.importorskip("boto3")
+        client = boto3.Session(region_name="us-west-2").client(
+            "bedrock-agentcore-control",
+            aws_access_key_id="x",
+            aws_secret_access_key="y",
+        )
+        shape = client.meta.service_model.operation_model(operation).output_shape
+        return shape.members[member].member if member else shape
+
+    def test_list_agent_runtimes_has_no_created_at(self):
+        """The field the reaper originally keyed on does not exist here."""
+        members = self._shape("ListAgentRuntimes", "agentRuntimes").members
+
+        assert "lastUpdatedAt" in members
+        assert "createdAt" not in members
+
+    def test_get_agent_runtime_carries_the_bound_image(self):
+        """The adoption check reads this to refuse a mismatched runtime."""
+        members = self._shape("GetAgentRuntime").members
+
+        assert "agentRuntimeArtifact" in members
+        container = members["agentRuntimeArtifact"].members["containerConfiguration"]
+        assert "containerUri" in container.members
+
+
+class TestReaperAgeHandling:
+    def _control(self, runtimes, tags):
+        control = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"agentRuntimes": runtimes}]
+        control.get_paginator.return_value = paginator
+        control.list_tags_for_resource.side_effect = lambda resourceArn: {
+            "tags": tags.get(resourceArn, {})
+        }
+        return control
+
+    def _managed(self, arn):
+        return {arn: {provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE}}
+
+    def test_fresh_runtime_in_the_real_list_shape_is_kept(self):
+        """Reproduces the reported P1 with the shape AWS actually returns.
+
+        ``ListAgentRuntimes`` has only ``lastUpdatedAt``; keying on
+        ``createdAt`` yielded None, skipped the age comparison, and selected a
+        minutes-old runtime for deletion under a one-day policy.
+        """
+        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
+
+        runtimes = [
+            {
+                "agentRuntimeArn": "arn:mine",
+                "agentRuntimeId": "mine",
+                "agentRuntimeName": "bf_x",
+                "lastUpdatedAt": datetime.now(UTC) - timedelta(minutes=3),
+                "status": "READY",
+            }
+        ]
+        control = self._control(runtimes, self._managed("arn:mine"))
+
+        report = reap_stale_runtimes(control, max_age_minutes=1440, dry_run=True)
+
+        assert report.deleted == []
+        assert report.skipped_recent == 1
+
+    def test_runtime_with_no_timestamp_is_kept(self):
+        """Unknown age must never be read as 'old enough to delete'."""
+        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
+
+        control = self._control(
+            [{"agentRuntimeArn": "arn:mine", "agentRuntimeId": "mine"}],
+            self._managed("arn:mine"),
+        )
+
+        report = reap_stale_runtimes(control, max_age_minutes=1440)
+
+        assert report.deleted == []
+        assert report.skipped_recent == 1
+        control.delete_agent_runtime.assert_not_called()
+
+    def test_genuinely_old_runtime_in_the_real_shape_is_reaped(self):
+        """The positive control: cleanup must still do its job."""
+        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
+
+        control = self._control(
+            [
+                {
+                    "agentRuntimeArn": "arn:mine",
+                    "agentRuntimeId": "mine",
+                    "lastUpdatedAt": datetime.now(UTC) - timedelta(days=3),
+                }
+            ],
+            self._managed("arn:mine"),
+        )
+
+        report = reap_stale_runtimes(control, max_age_minutes=1440)
+
+        assert report.deleted == ["mine"]
+
+
+class TestRuntimeImageBinding:
+    @pytest.mark.asyncio
+    async def test_a_runtime_bound_to_another_image_is_updated(
+        self, tmp_path, monkeypatch
+    ):
+        """Adopting a stale runtime would run the agent in the wrong environment."""
+        from botocore.exceptions import ClientError
+
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        env = _sandbox(_make_task(tmp_path))
+        control = MagicMock()
+        control.create_agent_runtime.side_effect = ClientError(
+            {"Error": {"Code": "ConflictException", "Message": "exists"}},
+            "CreateAgentRuntime",
+        )
+        control.get_agent_runtime.return_value = {
+            "status": "READY",
+            "agentRuntimeArtifact": {
+                "containerConfiguration": {"containerUri": "new.example/repo@sha256:b"}
+            },
+        }
+
+        with (
+            patch.object(env, "_client", return_value=control),
+            patch.object(
+                provisioning,
+                "find_runtime_by_name",
+                return_value=("arn:rt", "rt-1", "old.example/repo@sha256:a"),
+            ),
+        ):
+            arn, _rid = await env._create_or_adopt_runtime(
+                "bf_x", "new.example/repo@sha256:b"
+            )
+
+        assert arn == "arn:rt"
+        control.update_agent_runtime.assert_called_once()
+        sent = control.update_agent_runtime.call_args.kwargs
+        assert (
+            sent["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"]
+            == "new.example/repo@sha256:b"
+        )
+
+    def test_adoption_fails_closed_when_the_image_still_mismatches(self):
+        """If the update did not take, refuse rather than run the wrong image."""
+        from benchflow.sandbox.agentcore import AgentCoreSandbox
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        control = MagicMock()
+        control.get_agent_runtime.return_value = {
+            "agentRuntimeArtifact": {
+                "containerConfiguration": {"containerUri": "old.example/repo@sha256:a"}
+            }
+        }
+
+        with pytest.raises(SandboxStartupError, match="wrong image"):
+            AgentCoreSandbox._verify_runtime_image(
+                control, "rt-1", "new.example/repo@sha256:b"
+            )
+
+
+class TestComposeRejection:
+    def test_compose_task_is_refused_at_construction(self, tmp_path):
+        """One container cannot host a task's side services."""
+        task_dir = _make_task(tmp_path)
+        (task_dir / "docker-compose.yaml").write_text("services:\n  target: {}\n")
+
+        with pytest.raises(ValueError, match="single-container"):
+            _sandbox(task_dir)
+
+    def test_compose_task_is_refused_by_the_capability_gate(self, tmp_path):
+        """Fail during planning, before any image is built."""
+        from benchflow.task.config import TaskConfig
+        from benchflow.task.runtime_capabilities import validate_task_runtime_support
+
+        (tmp_path / "environment").mkdir()
+        (tmp_path / "environment" / "Dockerfile").write_text("FROM scratch\n")
+        (tmp_path / "environment" / "compose.yaml").write_text("services: {}\n")
+
+        issues = validate_task_runtime_support(
+            TaskConfig.model_validate({}), sandbox="agentcore", task_dir=tmp_path
+        )
+
+        assert any("compose" in issue.reason for issue in issues)
+
+    def test_docker_still_accepts_compose_tasks(self, tmp_path):
+        """The gate must not regress the backends that do support compose."""
+        from benchflow.task.config import TaskConfig
+        from benchflow.task.runtime_capabilities import validate_task_runtime_support
+
+        (tmp_path / "environment").mkdir()
+        (tmp_path / "environment" / "docker-compose.yaml").write_text("services: {}\n")
+
+        issues = validate_task_runtime_support(
+            TaskConfig.model_validate({}), sandbox="docker", task_dir=tmp_path
+        )
+
+        assert not any("compose" in issue.reason for issue in issues)

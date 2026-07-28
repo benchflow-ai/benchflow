@@ -48,7 +48,6 @@ import base64
 import io
 import os
 import shlex
-import subprocess
 import tarfile
 import threading
 import uuid
@@ -59,6 +58,7 @@ from benchflow._paths import iter_safe_tree
 from benchflow.sandbox import agentcore_builder as builders
 from benchflow.sandbox import agentcore_provisioning as provisioning
 from benchflow.sandbox._base import BaseSandbox, ExecResult, wrap_command_with_env_file
+from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths
@@ -130,12 +130,6 @@ class _Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     HTTPServer(("0.0.0.0", 8080), _Handler).serve_forever()
 '''
-
-
-def _run(*args: str, timeout: float | None = None, cwd: str | None = None):
-    return subprocess.run(
-        args, capture_output=True, text=True, timeout=timeout, cwd=cwd
-    )
 
 
 class AgentCoreSandbox(BaseSandbox):
@@ -226,6 +220,18 @@ class AgentCoreSandbox(BaseSandbox):
                 f"No Dockerfile found in {self.environment_dir} and no "
                 "docker_image specified in task config."
             )
+        compose = compose_definition_path(self.environment_dir)
+        if compose is not None:
+            # AgentCore builds and runs exactly one container. Accepting a
+            # compose task would launch the agent's container without its side
+            # services, and the resulting failure would be scored against the
+            # agent rather than reported as an unsupported environment.
+            raise ValueError(
+                f"{compose.name} found in {self.environment_dir}: AgentCore is a "
+                "single-container backend and cannot start compose side "
+                "services. Run multi-service tasks on the docker or daytona "
+                "sandbox."
+            )
 
     # ------------------------------------------------------------- lifecycle
 
@@ -295,25 +301,46 @@ class AgentCoreSandbox(BaseSandbox):
         return digest, provisioning.image_tag(self.environment_name, digest)
 
     async def _publish_image(self, *, force_build: bool) -> str:
-        """Build the task image with the ping shim and push it to ECR.
+        """Build and push the task image, returning its **immutable** URI.
 
         Deduplicated process-wide by content digest: a fan-out of rollouts over
         one task builds and pushes exactly once, and every later run of an
         unchanged task skips the build entirely on the ECR existence check.
+
+        The value returned is ``repo@sha256:...``, not ``repo:tag``. A tag is
+        mutable — ``force_build``, a rebased base image, or a repository change
+        can all move it — so binding a runtime to a tag makes the runtime's
+        contents unknowable after the fact. The registry digest pins exactly
+        the bytes that were pushed.
         """
         _digest, tag = self._image_identity()
-        image_uri = f"{self._ecr_registry()}/{self._ecr_repository}:{tag}"
-        cache_key = f"image:{image_uri}:{force_build}"
+        tagged_uri = f"{self._ecr_registry()}/{self._ecr_repository}:{tag}"
+        cache_key = f"image:{tagged_uri}:{force_build}"
 
         async def _publish() -> str:
             await asyncio.to_thread(self._ensure_ecr_repository)
-            if not force_build and await asyncio.to_thread(self._ecr_image_exists, tag):
-                self.logger.info("Reusing published AgentCore image %s", image_uri)
-                return image_uri
-            await self._build_and_push(image_uri, force_build=force_build)
-            return image_uri
+            if force_build or not await asyncio.to_thread(self._ecr_image_exists, tag):
+                await self._build_and_push(tagged_uri, force_build=force_build)
+            else:
+                self.logger.info("Reusing published AgentCore image %s", tagged_uri)
+            return await asyncio.to_thread(self._resolve_image_digest, tag)
 
         return await provisioning.once(cache_key, _publish)
+
+    def _resolve_image_digest(self, tag: str) -> str:
+        """Resolve *tag* to the immutable ``repo@sha256:...`` reference."""
+        response = self._client("ecr").describe_images(
+            repositoryName=self._ecr_repository, imageIds=[{"imageTag": tag}]
+        )
+        details = response.get("imageDetails") or []
+        if not details or not details[0].get("imageDigest"):
+            raise RuntimeError(
+                f"ECR did not report a digest for {self._ecr_repository}:{tag}; "
+                "cannot bind an AgentCore runtime to a verifiable image."
+            )
+        return (
+            f"{self._ecr_registry()}/{self._ecr_repository}@{details[0]['imageDigest']}"
+        )
 
     async def _build_and_push(self, image_uri: str, *, force_build: bool) -> None:
         builder = builders.select_builder(
@@ -437,8 +464,33 @@ class AgentCoreSandbox(BaseSandbox):
             )
             if existing is None:
                 raise
-            arn, runtime_id, _image = existing
+            arn, runtime_id, current_image = existing
+            if current_image != image_uri:
+                # Adopting a runtime bound to different bytes would silently run
+                # the wrong environment. The name encodes the build-context
+                # digest, but that is not the same as the pushed image: a
+                # repository change or a force rebuild can move what the name
+                # resolves to. Re-point the runtime and wait for it to settle.
+                self.logger.warning(
+                    "AgentCore runtime %s points at %s, not %s — updating",
+                    arn,
+                    current_image,
+                    image_uri,
+                )
+                await asyncio.to_thread(
+                    control.update_agent_runtime,
+                    agentRuntimeId=runtime_id,
+                    agentRuntimeArtifact={
+                        "containerConfiguration": {"containerUri": image_uri}
+                    },
+                    roleArn=self._require_role_arn(),
+                    networkConfiguration={"networkMode": "PUBLIC"},
+                    protocolConfiguration=_PROTOCOL_CONFIGURATION,
+                )
             await asyncio.to_thread(self._wait_ready, control, runtime_id)
+            await asyncio.to_thread(
+                self._verify_runtime_image, control, runtime_id, image_uri
+            )
             self.logger.info("Adopted existing AgentCore runtime %s", arn)
             return arn, runtime_id
 
@@ -450,6 +502,25 @@ class AgentCoreSandbox(BaseSandbox):
             image_uri,
         )
         return created["agentRuntimeArn"], runtime_id
+
+    @staticmethod
+    def _verify_runtime_image(control: Any, runtime_id: str, image_uri: str) -> None:
+        """Fail closed if the runtime is not bound to the image we expect.
+
+        The adoption path is the one place a runtime can predate this process,
+        so it is the one place a mismatch could otherwise go unnoticed and run
+        an agent against the wrong environment.
+        """
+        detail = control.get_agent_runtime(agentRuntimeId=runtime_id)
+        artifact = detail.get("agentRuntimeArtifact") or {}
+        bound = (artifact.get("containerConfiguration") or {}).get("containerUri")
+        if bound != image_uri:
+            raise SandboxStartupError(
+                f"AgentCore runtime {runtime_id} is bound to {bound!r} but this "
+                f"task needs {image_uri!r}. Refusing to run against the wrong "
+                "image.",
+                sandbox_id=runtime_id,
+            )
 
     def _lifecycle_configuration(self) -> dict[str, int]:
         """Session idle/lifetime caps.

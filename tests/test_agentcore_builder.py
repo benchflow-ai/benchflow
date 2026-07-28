@@ -173,3 +173,66 @@ class TestCodeBuildPackaging:
         blob = builder._package(_request(tmp_path))
 
         assert zipfile.is_zipfile(BytesIO(blob))
+
+
+class TestDockerIgnoreParity:
+    """The remote path must see the same context Docker would.
+
+    The local daemon honors .dockerignore natively; the CodeBuild path builds
+    its own file list. When those diverged, ignored files — including secrets —
+    were zipped and uploaded to S3, and an ignored file also perturbed the
+    image identity.
+    """
+
+    def _context(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim\n")
+        (tmp_path / "keep.txt").write_text("keep me")
+        (tmp_path / "secret.env").write_text("SUPER_SECRET=hunter2")
+        (tmp_path / "cache").mkdir()
+        (tmp_path / "cache" / "big.bin").write_text("x" * 64)
+        (tmp_path / ".dockerignore").write_text("secret.env\ncache/\n")
+        return tmp_path
+
+    def test_ignored_files_are_not_uploaded(self, tmp_path):
+        context = self._context(tmp_path)
+        builder = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")
+
+        blob = builder._package(_request(context))
+
+        with zipfile.ZipFile(BytesIO(blob)) as archive:
+            names = set(archive.namelist())
+            payloads = b"".join(archive.read(n) for n in names)
+
+        assert "secret.env" not in names
+        assert not any(n.startswith("cache/") for n in names)
+        assert b"hunter2" not in payloads
+        # Positive control: the archive is real and non-ignored files survive.
+        assert "keep.txt" in names
+
+    def test_ignored_files_do_not_change_image_identity(self, tmp_path):
+        """An ignored file cannot affect the build, so it must not affect the tag."""
+        from benchflow.sandbox import agentcore_provisioning as provisioning
+
+        context = self._context(tmp_path)
+        before = provisioning.build_context_digest(context, "FROM python:3.12-slim\n")
+
+        (context / "secret.env").write_text("SUPER_SECRET=rotated")
+
+        assert (
+            provisioning.build_context_digest(context, "FROM python:3.12-slim\n")
+            == before
+        )
+
+    def test_negation_re_includes_a_file(self, tmp_path):
+        """`!pattern` is Docker's re-include rule; last match wins."""
+        from benchflow.sandbox import agentcore_provisioning as provisioning
+
+        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+        (tmp_path / "a.log").write_text("drop")
+        (tmp_path / "keep.log").write_text("keep")
+        (tmp_path / ".dockerignore").write_text("*.log\n!keep.log\n")
+
+        relatives = {rel for _p, rel in provisioning.iter_context_files(tmp_path)}
+
+        assert "a.log" not in relatives
+        assert "keep.log" in relatives
