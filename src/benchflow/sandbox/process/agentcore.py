@@ -148,7 +148,11 @@ class AgentCoreProcess(LiveProcess):
         name = str(name).strip().upper()
         if not name:
             return True
-        return "STDOUT" in name
+        # Enum reprs arrive as "SHELLCHANNEL.STDOUT"; compare the final
+        # component *exactly*. Substring membership admitted NOT_STDOUT and
+        # STDOUT_METADATA, which contradicts the fail-closed rule even though
+        # today's SDK happens not to define such names.
+        return name.rsplit(".", 1)[-1] == "STDOUT"
 
     def _log_non_stdout(self, frame: Any) -> None:
         payload = frame.payload
@@ -322,8 +326,14 @@ class AgentCoreProcess(LiveProcess):
         return line
 
     async def writeline(self, data: str) -> None:
-        if not self._shell or self._closed:
-            raise RuntimeError("AgentCore shell not started")
+        if not self.is_running:
+            # Half-close guard: ContainerTransport.send() does not pre-check
+            # liveness, so without this an ACP request is handed to a socket
+            # whose read side is already gone and the reply can never arrive.
+            raise RuntimeError(
+                "AgentCore shell is not running (reader ended); refusing to "
+                "send to a half-closed transport"
+            )
         await self._shell.send(data + "\n")
 
     async def close(self) -> None:

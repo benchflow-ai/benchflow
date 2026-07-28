@@ -224,6 +224,21 @@ class AgentCoreSandbox(BaseSandbox):
                 f"No Dockerfile found in {self.environment_dir} and no "
                 "docker_image specified in task config."
             )
+        for reserved in (
+            provisioning.GENERATED_DOCKERFILE,
+            provisioning.GENERATED_SHIM,
+        ):
+            if (self.environment_dir / reserved).exists():
+                # BenchFlow writes these into the caller's own task directory
+                # and removes them afterwards. A task shipping a file at either
+                # path would be overwritten and then permanently deleted, and
+                # the canonical context walk skips both names, so the collision
+                # would also cache-hit as if the task file did not exist.
+                raise ValueError(
+                    f"{reserved} already exists in {self.environment_dir}. "
+                    "That path is reserved by the AgentCore backend, which "
+                    "would overwrite and then delete it. Rename the task file."
+                )
         compose = compose_definition_path(self.environment_dir)
         if compose is not None:
             # AgentCore builds and runs exactly one container. Accepting a
@@ -547,15 +562,18 @@ class AgentCoreSandbox(BaseSandbox):
         window = float(
             max(lifecycle["maxLifetime"], lifecycle["idleRuntimeSessionTimeout"])
         )
-        if not provisioning.lease_needs_renewal(
-            self.runtime_arn, window, time.monotonic()
-        ):
+        now = time.monotonic()
+        if not provisioning.lease_needs_renewal(self.runtime_arn, window, now):
             return
         await asyncio.to_thread(
             self._write_lease,
             self._client("bedrock-agentcore-control"),
             self.runtime_arn,
         )
+        # Only now — a failed write must leave the throttle untouched so the
+        # next rollout retries instead of running on a lease that was never
+        # extended.
+        provisioning.mark_lease_renewed(self.runtime_arn, now)
 
     def _write_lease(self, control: Any, runtime_arn: str) -> None:
         """Mark the runtime as possibly-in-use until the session window closes.

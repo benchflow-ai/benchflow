@@ -8,9 +8,11 @@ CodeBuild on a Graviton worker when no daemon is reachable.
 
 from __future__ import annotations
 
+import asyncio
+import time
 import zipfile
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -250,7 +252,10 @@ class TestDockerIgnoreParity:
         assert "keep.log" in relatives
 
     def test_character_classes_are_honoured(self, tmp_path):
-        """`secret[0-9].pem` is a valid Docker pattern; missing it leaks to S3."""
+        """`secret[0-9].pem` is a valid Docker pattern; missing it leaks to S3.
+
+        Guards PR #937.
+        """
         from benchflow.sandbox import agentcore_provisioning as provisioning
 
         (tmp_path / "Dockerfile").write_text("FROM scratch\n")
@@ -266,7 +271,10 @@ class TestDockerIgnoreParity:
         assert "secretX.pem" in relatives
 
     def test_permission_bits_change_image_identity(self, tmp_path):
-        """0600 and 0644 build different containers from identical bytes."""
+        """0600 and 0644 build different containers from identical bytes.
+
+        Guards PR #937.
+        """
         import os
 
         from benchflow.sandbox import agentcore_provisioning as provisioning
@@ -285,7 +293,10 @@ class TestDockerIgnoreParity:
         assert len({readable, private, executable}) == 3
 
     def test_shim_bytes_change_image_identity(self, tmp_path):
-        """The shim is the image entrypoint; an upgrade must not reuse the old."""
+        """The shim is the image entrypoint; an upgrade must not reuse the old.
+
+        Guards PR #937.
+        """
         from benchflow.sandbox import agentcore_provisioning as provisioning
 
         (tmp_path / "Dockerfile").write_text("FROM scratch\n")
@@ -295,19 +306,42 @@ class TestDockerIgnoreParity:
         ) != provisioning.build_context_digest(tmp_path, "DF", "shim-v2")
 
     def test_identity_fields_cannot_be_confused(self, tmp_path):
-        """Length-prefixed framing: no path can imitate another field."""
+        """Length-prefixed framing kills a real digest collision.
+
+        Guards PR #937. The superseded scheme concatenated the Dockerfile, a
+        fixed ``\0shim\0`` separator, and the shim with no lengths, so a shim
+        containing that separator could be re-split as a different
+        (dockerfile, shim) pair with an identical digest — two different images
+        sharing one identity, and so one runtime.
+
+        The first assertion pins that the chosen inputs genuinely collided
+        before; without it this test could pass against the old scheme too.
+        """
+        import hashlib
+
         from benchflow.sandbox import agentcore_provisioning as provisioning
 
-        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
-        (tmp_path / "shim").write_text("x")
+        def superseded_framing(dockerfile: str, shim: str) -> str:
+            digest = hashlib.sha256()
+            digest.update(dockerfile.encode())
+            digest.update(b"\0shim\0")
+            digest.update(shim.encode())
+            return digest.hexdigest()
 
+        first = ("A", "B\0shim\0C")
+        second = ("A\0shim\0B", "C")
+
+        assert superseded_framing(*first) == superseded_framing(*second)
         assert provisioning.build_context_digest(
-            tmp_path, "DF", "abc"
-        ) != provisioning.build_context_digest(tmp_path, "DFabc", "")
+            tmp_path, *first
+        ) != provisioning.build_context_digest(tmp_path, *second)
 
     @pytest.mark.asyncio
     async def test_unmeasurable_image_is_not_pushed(self, tmp_path):
-        """Failing open pushes an image that may exceed the hard 2 GB cap."""
+        """Failing open pushes an image that may exceed the hard 2 GB cap.
+
+        Guards PR #937.
+        """
         from benchflow.sandbox.protocol import SandboxStartupError
 
         builder = builders.LocalDockerBuilder(MagicMock())
@@ -321,3 +355,70 @@ class TestDockerIgnoreParity:
             pytest.raises(SandboxStartupError, match="Could not measure"),
         ):
             await builder._reject_oversized("repo:tag")
+
+    @pytest.mark.asyncio
+    async def test_failed_context_cleanup_is_warned_not_hidden(self, tmp_path, caplog):
+        """Guards PR #937: a retained context can hold source and credentials.
+
+        Bucket hardening and the one-day lifecycle bound the exposure, so this
+        must not fail the build — but at DEBUG the retained object is invisible
+        for that entire day.
+        """
+        import logging
+
+        builder = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")
+        s3 = MagicMock()
+        s3.delete_object.side_effect = RuntimeError("AccessDenied")
+
+        with (
+            patch.object(builder, "_client", return_value=s3),
+            patch.object(builder, "_ensure_bucket"),
+            patch.object(builder, "_ensure_project"),
+            patch.object(builder, "_run_build", new=AsyncMock()),
+            caplog.at_level(logging.WARNING, logger="benchflow.agentcore-builder"),
+        ):
+            await builder.build_and_push(_request(tmp_path))
+
+        assert any(
+            "Could not delete uploaded build context" in r.message
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_failure_diagnostics_do_not_block_the_event_loop(self, tmp_path):
+        """Guards PR #937: one failed build must not stall other provisioning.
+
+        `_build_failure` fetches CloudWatch logs; running it inline on the loop
+        froze every concurrent coroutine for the duration of that fetch.
+        """
+        builder = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")
+        codebuild = MagicMock()
+        codebuild.start_build.return_value = {"build": {"id": "b:1"}}
+        codebuild.batch_get_builds.return_value = {
+            "builds": [{"id": "b:1", "buildStatus": "FAILED", "phases": []}]
+        }
+
+        def _slow_log_tail(_self, _build):
+            time.sleep(0.25)
+            return "boom"
+
+        ticks = 0
+
+        async def _ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        with (
+            patch.object(builder, "_client", return_value=codebuild),
+            patch.object(builders, "_CODEBUILD_POLL_SEC", 0),
+            patch.object(builders.CodeBuildBuilder, "_log_tail", _slow_log_tail),
+        ):
+            beat = asyncio.create_task(_ticker())
+            with pytest.raises(RuntimeError, match="CodeBuild"):
+                await builder._run_build(_request(tmp_path), "contexts/x.zip")
+            beat.cancel()
+
+        # A blocking diagnostic starved the ticker to ~1 tick.
+        assert ticks > 5

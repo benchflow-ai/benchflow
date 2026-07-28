@@ -281,7 +281,17 @@ class CodeBuildBuilder:
                     self._client("s3").delete_object, Bucket=self._bucket, Key=key
                 )
             except Exception as exc:
-                logger.debug("Could not delete build context %s: %s", key, exc)
+                # The archive can carry task source and credentials. Bucket
+                # hardening and the one-day lifecycle bound the exposure, so
+                # this must not replace a successful build result — but at
+                # DEBUG a retained context is invisible for that whole day.
+                logger.warning(
+                    "Could not delete uploaded build context s3://%s/%s: %s. "
+                    "It will expire with the bucket lifecycle policy.",
+                    self._bucket,
+                    key,
+                    exc,
+                )
 
     def _package(self, request: BuildRequest) -> bytes:
         """Zip the build context with the generated Dockerfile and shim inside.
@@ -424,7 +434,7 @@ class CodeBuildBuilder:
             if build["buildStatus"] == "SUCCEEDED":
                 logger.info("Pushed AgentCore image %s (codebuild)", request.image_uri)
                 return
-            raise self._build_failure(build, request.image_uri)
+            raise await asyncio.to_thread(self._build_failure, build, request.image_uri)
         raise TimeoutError(
             f"CodeBuild {build_id} did not finish within the build timeout"
         )

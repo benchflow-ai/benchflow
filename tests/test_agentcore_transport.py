@@ -185,3 +185,75 @@ class TestEnvHandling:
         body = proc._sandbox.write_text_file.call_args.args[1]
         assert "hunter2" in body
         assert proc._sandbox.write_text_file.call_args.kwargs["mode"] == "600"
+
+
+class TestAdversarialChannelNames:
+    """Guards PR #937: typed channels are matched exactly, not by substring."""
+
+    @pytest.mark.parametrize("name", ["NOT_STDOUT", "STDOUT_METADATA", "METRICS"])
+    def test_colliding_typed_names_are_not_stdout(self, name):
+        """Substring membership admitted these; only STDOUT may be ACP input."""
+        assert AgentCoreProcess._is_stdout(_frame(b"x\n", channel=name)) is False
+
+    @pytest.mark.parametrize("name", ["STDOUT", "ShellChannel.STDOUT", " stdout "])
+    def test_genuine_stdout_is_accepted(self, name):
+        """Enum-qualified and case/space variants must still deliver."""
+        assert AgentCoreProcess._is_stdout(_frame(b"x\n", channel=name)) is True
+
+    @pytest.mark.asyncio
+    async def test_a_colliding_name_never_reaches_readline(self):
+        proc = _process(
+            _FakeShell(
+                [
+                    _frame(b"impersonating\n", channel="NOT_STDOUT"),
+                    _frame(b'{"jsonrpc":"2.0","id":9}\n'),
+                ]
+            )
+        )
+        proc._reader_task = asyncio.create_task(proc._drain_frames())
+
+        assert (
+            await asyncio.wait_for(proc.readline(), timeout=2)
+            == b'{"jsonrpc":"2.0","id":9}\n'
+        )
+
+
+class TestHalfCloseGuard:
+    """Guards PR #937: no writes to a transport whose read side is gone."""
+
+    @pytest.mark.asyncio
+    async def test_writeline_refuses_after_clean_eof(self):
+        """ContainerTransport.send() does not pre-check liveness.
+
+        Without this guard an ACP request is handed to a dead socket and its
+        reply can never arrive, so the run stalls instead of failing.
+        """
+        shell = _FakeShell([])
+        proc = _process(shell)
+        await proc._drain_frames()
+
+        with pytest.raises(RuntimeError, match="not running"):
+            await proc.writeline("lost-message")
+
+        assert shell.sent == []
+
+    @pytest.mark.asyncio
+    async def test_writeline_refuses_after_reader_error(self):
+        shell = _FakeShell([], error=ConnectionResetError("socket died"))
+        proc = _process(shell)
+        await proc._drain_frames()
+
+        with pytest.raises(RuntimeError, match="not running"):
+            await proc.writeline("lost-message")
+
+        assert shell.sent == []
+
+    @pytest.mark.asyncio
+    async def test_writeline_works_while_the_reader_is_alive(self):
+        """Positive control: the guard must not break normal operation."""
+        shell = _FakeShell([_frame(b"hi\n")])
+        proc = _process(shell)
+
+        await proc.writeline("ping")
+
+        assert shell.sent == ["ping\n"]

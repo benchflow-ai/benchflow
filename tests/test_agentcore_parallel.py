@@ -807,7 +807,10 @@ class TestLeaseIntegrity:
 
     @pytest.mark.asyncio
     async def test_a_failed_lease_write_aborts_the_launch(self, tmp_path, monkeypatch):
-        """Swallowing it starts a session on a runtime cleanup may delete."""
+        """Swallowing it starts a session on a runtime cleanup may delete.
+
+        Guards PR #937.
+        """
         from benchflow.sandbox.protocol import SandboxStartupError
 
         monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
@@ -826,7 +829,10 @@ class TestLeaseIntegrity:
             await env._create_or_adopt_runtime("bf_x", "repo@sha256:a")
 
     def test_a_managed_runtime_without_a_lease_is_not_deleted(self):
-        """Every provisioned runtime is leased, so an unleased one is unexplained."""
+        """Every provisioned runtime is leased, so an unleased one is unexplained.
+
+        Guards PR #937.
+        """
         from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
 
         control = MagicMock()
@@ -853,17 +859,24 @@ class TestLeaseIntegrity:
         assert report.skipped_active == 1
 
     def test_renewal_is_due_again_after_the_throttle_window(self):
-        """Cache-hit rollouts must refresh, or a long matrix outlives its lease."""
+        """Cache-hit rollouts must refresh, or a long matrix outlives its lease.
+
+        Guards PR #937.
+        """
         window = 7200.0
         arn = "arn:renew"
 
         assert provisioning.lease_needs_renewal(arn, window, 0.0) is True
+        provisioning.mark_lease_renewed(arn, 0.0)
         assert provisioning.lease_needs_renewal(arn, window, 10.0) is False
         assert provisioning.lease_needs_renewal(arn, window, window) is True
 
     @pytest.mark.asyncio
     async def test_every_rollout_renews_when_due(self, tmp_path, monkeypatch):
-        """Provisioning is memoized, so renewal cannot live only in creation."""
+        """Provisioning is memoized, so renewal cannot live only in creation.
+
+        Guards PR #937.
+        """
         monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
         env = _sandbox(_make_task(tmp_path))
         env.runtime_arn = "arn:rt-renew-probe"
@@ -920,7 +933,10 @@ class TestAdoptionContract:
         ],
     )
     def test_a_differing_contract_is_refused(self, field, value):
-        """Right image, wrong contract: wrong permissions, egress, or shell."""
+        """Right image, wrong contract: wrong permissions, egress, or shell.
+
+        Guards PR #937.
+        """
         from benchflow.sandbox.protocol import SandboxStartupError
 
         with pytest.raises(SandboxStartupError, match="does not match"):
@@ -930,8 +946,8 @@ class TestAdoptionContract:
 class TestDeprecatedCleanupAliasIsSafe:
     """`bench environment cleanup` reaches the same destructive code.
 
-    Guarding only the new command left the deprecated alias able to select
-    STARTED sandboxes for deletion via a negative age.
+    Guards PR #937. Guarding only the new command left the deprecated alias
+    able to select STARTED sandboxes for deletion via a negative age.
     """
 
     def test_negative_age_is_rejected_by_the_daytona_reaper(self):
@@ -968,3 +984,113 @@ class TestDeprecatedCleanupAliasIsSafe:
         result = CliRunner().invoke(app, [command, "cleanup", "--max-age", "-1"])
 
         assert result.exit_code != 0
+
+
+class TestLeaseRenewalRetry:
+    """Guards PR #937: a failed renewal must not be throttled as a success."""
+
+    def _sandbox_with_control(self, tmp_path, control):
+        env = _sandbox(_make_task(tmp_path))
+        env.runtime_arn = "arn:retry-probe"
+        return env
+
+    @pytest.mark.asyncio
+    async def test_a_failed_renewal_retries_immediately(self, tmp_path, monkeypatch):
+        """The throttle recorded the attempt, not the write.
+
+        A first renewal that raised still advanced the window, so the retry
+        that would have fixed it made zero tag_resource calls and the rollout
+        continued against the un-extended lease.
+        """
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        env = self._sandbox_with_control(tmp_path, None)
+        control = MagicMock()
+        control.tag_resource.side_effect = RuntimeError("AccessDenied")
+
+        with (
+            patch.object(env, "_client", return_value=control),
+            pytest.raises(SandboxStartupError),
+        ):
+            await env._renew_lease()
+
+        # AWS recovers; the very next attempt must actually call AWS.
+        control.tag_resource.side_effect = None
+        with patch.object(env, "_client", return_value=control):
+            await env._renew_lease()
+
+        assert control.tag_resource.call_count == 2
+
+    def test_the_throttle_only_advances_on_success(self):
+        """Guards PR #937: the predicate must record nothing by itself."""
+        arn = "arn:pure-predicate"
+        window = 7200.0
+
+        assert provisioning.lease_needs_renewal(arn, window, 0.0) is True
+        # Still due — checking is not renewing.
+        assert provisioning.lease_needs_renewal(arn, window, 1.0) is True
+
+        provisioning.mark_lease_renewed(arn, 1.0)
+
+        assert provisioning.lease_needs_renewal(arn, window, 2.0) is False
+
+    @pytest.mark.asyncio
+    async def test_start_renews_before_warming_the_session(self, tmp_path, monkeypatch):
+        """Guards PR #937: renewal must be wired into start(), not just callable.
+
+        Provisioning is memoized, so a cache-hit rollout reaches neither the
+        create nor the adopt path; if start() did not renew, the lease would
+        only ever be written by the first rollout of an image.
+        """
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        env = _sandbox(_make_task(tmp_path))
+        order: list[str] = []
+
+        async def _publish(*, force_build):
+            return "repo@sha256:a"
+
+        async def _ensure(image_uri):
+            env.runtime_arn = "arn:started"
+            return "arn:started"
+
+        async def _renew():
+            order.append("renew")
+
+        async def _warm():
+            order.append("warm")
+
+        with (
+            patch.object(env, "_publish_image", side_effect=_publish),
+            patch.object(env, "_ensure_runtime", side_effect=_ensure),
+            patch.object(env, "_renew_lease", side_effect=_renew),
+            patch.object(env, "_warm_session", side_effect=_warm),
+        ):
+            await env.start(force_build=False)
+
+        assert order == ["renew", "warm"]
+
+
+class TestReservedPathsArePreserved:
+    """Guards PR #937: never clobber a task file at a generated path."""
+
+    @pytest.mark.parametrize(
+        "reserved",
+        ["Dockerfile.benchflow-agentcore", ".benchflow_agentcore_shim.py"],
+    )
+    def test_a_colliding_task_file_is_refused(self, tmp_path, reserved):
+        """These are written into the caller's tree and then deleted.
+
+        A task shipping either name lost its file permanently, and because the
+        canonical walk skips both names the collision also cache-hit as though
+        the task file did not exist.
+        """
+        task_dir = _make_task(tmp_path)
+        original = "important task content\n"
+        (task_dir / reserved).write_text(original)
+
+        with pytest.raises(ValueError, match="reserved"):
+            _sandbox(task_dir)
+
+        # The refusal must happen before anything touches the file.
+        assert (task_dir / reserved).read_text() == original

@@ -102,13 +102,21 @@ def lease_needs_renewal(runtime_arn: str, window_seconds: float, now: float) -> 
     Renewal is throttled to a quarter of the lease window so the refresh costs
     a handful of control-plane calls per runtime per run rather than one per
     rollout (``TagResource`` shares the tight control-plane budget).
+
+    Pure predicate: it records nothing. The throttle is only advanced by
+    :func:`mark_lease_renewed` after a write actually lands, so a failed
+    renewal cannot be remembered as a successful one and suppress the retry
+    that would have fixed it.
     """
-    interval = max(window_seconds / 4, 60.0)
     last = _LEASE_RENEWED.get(runtime_arn)
-    if last is not None and now - last < interval:
-        return False
+    if last is None:
+        return True
+    return (now - last) >= max(window_seconds / 4, 60.0)
+
+
+def mark_lease_renewed(runtime_arn: str, now: float) -> None:
+    """Record a lease write that succeeded."""
     _LEASE_RENEWED[runtime_arn] = now
-    return True
 
 
 def _translate_ignore_pattern(pattern: str) -> re.Pattern[str]:
