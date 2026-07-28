@@ -1150,6 +1150,12 @@ class Rollout:
             self._agent_cwd,
             skills_sandbox_dir=self._effective_skills_sandbox_dir,
         )
+        if cfg.recorded_skill_mode == SKILL_MODE_NO_SKILL:
+            # Verify the condition rather than assume it: a stale image can
+            # carry skills that no deployment path in this rollout put there.
+            await self._planes.assert_no_skill_isolation(
+                self._env, self._agent_cfg, cfg.sandbox_user
+            )
         if cfg.export_generated_skills_to:
             await _ensure_sandbox_dir(
                 self._env, cfg.generated_skills_root, cfg.sandbox_user

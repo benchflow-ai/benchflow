@@ -20,6 +20,7 @@ from benchflow.agents.env import resolve_agent_env
 from benchflow.agents.install import (
     _link_skill_paths,
     apply_web_tool_policy,
+    assert_no_skill_isolation,
     deploy_skills,
     install_agent,
 )
@@ -145,6 +146,9 @@ class DefaultRolloutPlanes:
 
     async def deploy_skills(self, *args: Any, **kwargs: Any) -> None:
         await deploy_skills(*args, **kwargs)
+
+    async def assert_no_skill_isolation(self, *args: Any, **kwargs: Any) -> None:
+        await assert_no_skill_isolation(*args, **kwargs)
 
     async def lockdown_paths(self, env: Any, locked_paths: list[str]) -> None:
         await lockdown_paths(env, locked_paths)
