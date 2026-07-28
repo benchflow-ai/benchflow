@@ -20,7 +20,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from benchflow.sandbox.agentcore_provisioning import MANAGED_TAG, MANAGED_VALUE
+from benchflow.sandbox.agentcore_provisioning import (
+    LEASE_TAG,
+    MANAGED_TAG,
+    MANAGED_VALUE,
+)
 
 logger = logging.getLogger("benchflow").getChild("agentcore-reaper")
 
@@ -35,13 +39,14 @@ class ReapReport:
     deleted: list[str] = field(default_factory=list)
     skipped_unmanaged: int = 0
     skipped_recent: int = 0
+    skipped_active: int = 0
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         return (
             f"scanned={self.scanned} deleted={len(self.deleted)} "
             f"unmanaged={self.skipped_unmanaged} recent={self.skipped_recent} "
-            f"errors={len(self.errors)}"
+            f"active={self.skipped_active} errors={len(self.errors)}"
         )
 
 
@@ -64,18 +69,37 @@ def _runtime_timestamp(runtime: Mapping[str, Any]) -> datetime | None:
     return None
 
 
-def _is_benchflow_managed(control: Any, arn: str) -> bool:
-    """True only when the runtime carries BenchFlow's managed tag.
+def _read_tags(control: Any, arn: str) -> dict[str, str] | None:
+    """Tags for *arn*, or None when they cannot be read.
 
-    Fails closed: if the tags cannot be read, the runtime is treated as
-    someone else's and left alone.
+    None means "cannot prove anything about this runtime", which every caller
+    must treat as a reason to leave it alone.
     """
     try:
-        tags = control.list_tags_for_resource(resourceArn=arn).get("tags", {})
+        return control.list_tags_for_resource(resourceArn=arn).get("tags", {})
     except Exception:
         logger.debug("Could not read tags for %s; leaving it alone", arn)
+        return None
+
+
+def _lease_is_active(tags: Mapping[str, str], now: datetime) -> bool:
+    """Whether a runtime is still leased, and so must not be deleted.
+
+    A malformed lease counts as active. Cleanup is destructive and there is no
+    API to enumerate active sessions, so an unparseable lease is a reason to
+    stop, not to proceed.
+    """
+    raw = tags.get(LEASE_TAG)
+    if not raw:
         return False
-    return tags.get(MANAGED_TAG) == MANAGED_VALUE
+    try:
+        until = datetime.fromisoformat(raw)
+    except ValueError:
+        logger.warning("Unparseable AgentCore lease %r; treating as active", raw)
+        return True
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=UTC)
+    return until > now
 
 
 def reap_stale_runtimes(
@@ -85,9 +109,23 @@ def reap_stale_runtimes(
     dry_run: bool = False,
     now: datetime | None = None,
 ) -> ReapReport:
-    """Delete BenchFlow-managed runtimes older than *max_age_minutes*."""
+    """Delete BenchFlow-managed runtimes older than *max_age_minutes*.
+
+    Two independent gates must both pass: the runtime's lease must have
+    expired, and its control-plane age must exceed *max_age_minutes*. The lease
+    exists because session traffic does not move ``lastUpdatedAt``, so age
+    alone cannot tell an idle runtime from one serving a matrix right now.
+    """
+    if max_age_minutes < 0:
+        # A negative age puts the cutoff in the future, which makes every
+        # runtime — including one created a second ago — look stale.
+        raise ValueError(
+            f"max_age_minutes must be >= 0, got {max_age_minutes}. A negative "
+            "age would select every runtime, including active ones."
+        )
     report = ReapReport()
-    cutoff = (now or datetime.now(UTC)) - timedelta(minutes=max_age_minutes)
+    moment = now or datetime.now(UTC)
+    cutoff = moment - timedelta(minutes=max_age_minutes)
 
     for page in control.get_paginator("list_agent_runtimes").paginate():
         for runtime in page.get("agentRuntimes", []):
@@ -96,8 +134,12 @@ def reap_stale_runtimes(
             runtime_id = runtime.get("agentRuntimeId")
             if not arn or not runtime_id:
                 continue
-            if not _is_benchflow_managed(control, arn):
+            tags = _read_tags(control, arn)
+            if tags is None or tags.get(MANAGED_TAG) != MANAGED_VALUE:
                 report.skipped_unmanaged += 1
+                continue
+            if _lease_is_active(tags, moment):
+                report.skipped_active += 1
                 continue
 
             stamp = _runtime_timestamp(runtime)

@@ -495,6 +495,7 @@ class TestRuntimeImageBinding:
             "agentRuntimeArtifact": {
                 "containerConfiguration": {"containerUri": "new.example/repo@sha256:b"}
             },
+            "lifecycleConfiguration": env._lifecycle_configuration(),
         }
 
         with (
@@ -526,13 +527,91 @@ class TestRuntimeImageBinding:
         control.get_agent_runtime.return_value = {
             "agentRuntimeArtifact": {
                 "containerConfiguration": {"containerUri": "old.example/repo@sha256:a"}
-            }
+            },
+            "lifecycleConfiguration": {
+                "idleRuntimeSessionTimeout": 900,
+                "maxLifetime": 28800,
+            },
         }
 
         with pytest.raises(SandboxStartupError, match="wrong image"):
-            AgentCoreSandbox._verify_runtime_image(
-                control, "rt-1", "new.example/repo@sha256:b"
+            AgentCoreSandbox._verify_adopted_runtime(
+                control,
+                "rt-1",
+                "new.example/repo@sha256:b",
+                {"idleRuntimeSessionTimeout": 900, "maxLifetime": 28800},
             )
+
+    def test_adoption_fails_closed_when_lifecycle_drifted(self):
+        """An adopted runtime on service defaults reclaims sessions early.
+
+        Live-observed: an update that omits lifecycleConfiguration silently
+        resets a configured 600/7200 window to the 900/28800 defaults.
+        """
+        from benchflow.sandbox.agentcore import AgentCoreSandbox
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        control = MagicMock()
+        control.get_agent_runtime.return_value = {
+            "agentRuntimeArtifact": {
+                "containerConfiguration": {"containerUri": "repo@sha256:a"}
+            },
+            "lifecycleConfiguration": {
+                "idleRuntimeSessionTimeout": 900,
+                "maxLifetime": 28800,
+            },
+        }
+
+        with pytest.raises(SandboxStartupError, match="lifecycle"):
+            AgentCoreSandbox._verify_adopted_runtime(
+                control,
+                "rt-1",
+                "repo@sha256:a",
+                {"idleRuntimeSessionTimeout": 600, "maxLifetime": 7200},
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_preserves_the_configured_lifecycle(
+        self, tmp_path, monkeypatch
+    ):
+        """The rebind must carry lifecycle, or AWS resets it to defaults."""
+        from botocore.exceptions import ClientError
+
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC", "600")
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC", "7200")
+        env = _sandbox(_make_task(tmp_path))
+        control = MagicMock()
+        control.create_agent_runtime.side_effect = ClientError(
+            {"Error": {"Code": "ConflictException", "Message": "exists"}},
+            "CreateAgentRuntime",
+        )
+        control.get_agent_runtime.return_value = {
+            "status": "READY",
+            "agentRuntimeArtifact": {
+                "containerConfiguration": {"containerUri": "repo@sha256:new"}
+            },
+            "lifecycleConfiguration": {
+                "idleRuntimeSessionTimeout": 600,
+                "maxLifetime": 7200,
+            },
+        }
+
+        with (
+            patch.object(env, "_client", return_value=control),
+            patch.object(
+                provisioning,
+                "find_runtime_by_name",
+                return_value=("arn:rt", "rt-1", "repo@sha256:old"),
+            ),
+        ):
+            await env._create_or_adopt_runtime("bf_x", "repo@sha256:new")
+
+        sent = control.update_agent_runtime.call_args.kwargs
+        assert sent["lifecycleConfiguration"] == {
+            "idleRuntimeSessionTimeout": 600,
+            "maxLifetime": 7200,
+        }
 
 
 class TestComposeRejection:
@@ -572,3 +651,112 @@ class TestComposeRejection:
         )
 
         assert not any("compose" in issue.reason for issue in issues)
+
+
+class TestLeaseProtectsActiveRuntimes:
+    """Runtime age is not a session-activity signal.
+
+    Session traffic does not move a runtime's ``lastUpdatedAt``, and there is
+    no API that enumerates a runtime's active sessions (``ListSessions`` is
+    Memory-scoped). An old runtime serving a matrix right now is therefore
+    indistinguishable from an idle one by age alone — which is how cleanup
+    selected a runtime whose session was mid-command. The lease is the explicit
+    contract that closes that gap.
+    """
+
+    def _control(self, tags):
+        control = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {
+                "agentRuntimes": [
+                    {
+                        "agentRuntimeArn": "arn:mine",
+                        "agentRuntimeId": "mine",
+                        # Deliberately ancient: age alone would select it.
+                        "lastUpdatedAt": datetime.now(UTC) - timedelta(days=30),
+                    }
+                ]
+            }
+        ]
+        control.get_paginator.return_value = paginator
+        control.list_tags_for_resource.return_value = {"tags": tags}
+        return control
+
+    def _managed(self, **extra):
+        return {provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE, **extra}
+
+    def test_an_old_but_leased_runtime_is_not_deleted(self):
+        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
+
+        future = (datetime.now(UTC) + timedelta(hours=4)).isoformat()
+        control = self._control(self._managed(**{provisioning.LEASE_TAG: future}))
+
+        report = reap_stale_runtimes(control, max_age_minutes=0)
+
+        assert report.deleted == []
+        assert report.skipped_active == 1
+        control.delete_agent_runtime.assert_not_called()
+
+    def test_an_expired_lease_allows_reaping(self):
+        """Positive control: the lease must not block cleanup forever."""
+        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
+
+        past = (datetime.now(UTC) - timedelta(hours=4)).isoformat()
+        control = self._control(self._managed(**{provisioning.LEASE_TAG: past}))
+
+        report = reap_stale_runtimes(control, max_age_minutes=0)
+
+        assert report.deleted == ["mine"]
+
+    def test_an_unparseable_lease_is_treated_as_active(self):
+        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
+
+        control = self._control(self._managed(**{provisioning.LEASE_TAG: "soon"}))
+
+        report = reap_stale_runtimes(control, max_age_minutes=0)
+
+        assert report.deleted == []
+        assert report.skipped_active == 1
+
+    def test_unreadable_tags_are_never_deleted(self):
+        """No tags means no proof of anything, including that it is ours."""
+        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
+
+        control = self._control({})
+        control.list_tags_for_resource.side_effect = RuntimeError("denied")
+
+        report = reap_stale_runtimes(control, max_age_minutes=0)
+
+        assert report.deleted == []
+        assert report.skipped_unmanaged == 1
+
+    def test_negative_age_is_rejected(self):
+        """A sign mistake must not reach delete_agent_runtime."""
+        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
+
+        control = self._control(self._managed())
+
+        with pytest.raises(ValueError, match="must be >= 0"):
+            reap_stale_runtimes(control, max_age_minutes=-1)
+
+        control.delete_agent_runtime.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provisioning_writes_a_lease(self, tmp_path, monkeypatch):
+        """Without this the reaper has no activity signal at all."""
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        env = _sandbox(_make_task(tmp_path))
+        control = MagicMock()
+        control.create_agent_runtime.return_value = {
+            "agentRuntimeId": "rt-1",
+            "agentRuntimeArn": "arn:rt",
+        }
+        control.get_agent_runtime.return_value = {"status": "READY"}
+
+        with patch.object(env, "_client", return_value=control):
+            await env._create_or_adopt_runtime("bf_x", "repo@sha256:a")
+
+        tags = control.tag_resource.call_args.kwargs["tags"]
+        assert provisioning.LEASE_TAG in tags
+        assert datetime.fromisoformat(tags[provisioning.LEASE_TAG]) > datetime.now(UTC)

@@ -211,10 +211,13 @@ _BUILDSPEC = {
                 f"docker build --platform linux/arm64 "
                 f"-f {provisioning.GENERATED_DOCKERFILE} -t $BF_IMAGE_URI .",
                 'SIZE=$(docker image inspect -f "{{.Size}}" $BF_IMAGE_URI)',
-                "MB=$((SIZE / 1048576))",
-                'echo "benchflow: image size ${MB} MB"',
-                f'if [ "$MB" -gt {provisioning.MAX_IMAGE_MB} ]; then '
-                f'echo "BENCHFLOW_IMAGE_TOO_LARGE ${{MB}}"; exit 1; fi',
+                'echo "benchflow: image size $((SIZE / 1048576)) MB"',
+                # Compare raw bytes, not floored megabytes: an image of
+                # exactly the cap plus one byte floors to the cap and would
+                # slip past a megabyte comparison that image_size_error()
+                # correctly rejects.
+                f'if [ "$SIZE" -gt {provisioning.MAX_IMAGE_MB * 1024 * 1024} ]; '
+                'then echo "BENCHFLOW_IMAGE_TOO_LARGE $SIZE"; exit 1; fi',
                 "docker push $BF_IMAGE_URI",
             ]
         },
@@ -298,61 +301,64 @@ class CodeBuildBuilder:
         return buffer.getvalue()
 
     def _ensure_bucket(self) -> None:
+        """Create the build bucket if needed, and always assert its controls.
+
+        Hardening runs on every call, not only on creation. An existing bucket
+        — one a previous run created before these controls existed, or one the
+        operator pointed us at — would otherwise keep uploaded build contexts
+        public-by-default and un-expiring forever. Build contexts can contain
+        task source and credentials, so failing to establish those controls is
+        a stop condition, not a warning.
+        """
         from botocore.exceptions import ClientError
 
         s3 = self._client("s3")
         try:
             s3.head_bucket(Bucket=self._bucket)
-            return
-        except ClientError:
-            pass
-        kwargs: dict[str, Any] = {"Bucket": self._bucket}
-        if self._region != "us-east-1":
-            kwargs["CreateBucketConfiguration"] = {"LocationConstraint": self._region}
-        try:
-            s3.create_bucket(**kwargs)
         except ClientError as exc:
-            if exc.response["Error"]["Code"] not in {
-                "BucketAlreadyOwnedByYou",
-                "BucketAlreadyExists",
-            }:
+            code = str(exc.response["Error"].get("Code", ""))
+            if code not in {"404", "NoSuchBucket", "NotFound"}:
+                # 403 and throttling are not "absent" — creating over them
+                # would fail confusingly and mask the real problem.
                 raise
-        for call, kw in (
-            (
-                s3.put_public_access_block,
-                {
-                    "Bucket": self._bucket,
-                    "PublicAccessBlockConfiguration": {
-                        "BlockPublicAcls": True,
-                        "IgnorePublicAcls": True,
-                        "BlockPublicPolicy": True,
-                        "RestrictPublicBuckets": True,
-                    },
-                },
-            ),
-            (
-                s3.put_bucket_lifecycle_configuration,
-                {
-                    "Bucket": self._bucket,
-                    # Build contexts are consumed within minutes; expiring them
-                    # keeps a benchmark run from accruing storage cost forever.
-                    "LifecycleConfiguration": {
-                        "Rules": [
-                            {
-                                "ID": "benchflow-expire-build-contexts",
-                                "Status": "Enabled",
-                                "Filter": {"Prefix": "contexts/"},
-                                "Expiration": {"Days": 1},
-                            }
-                        ]
-                    },
-                },
-            ),
-        ):
+            kwargs: dict[str, Any] = {"Bucket": self._bucket}
+            if self._region != "us-east-1":
+                kwargs["CreateBucketConfiguration"] = {
+                    "LocationConstraint": self._region
+                }
             try:
-                call(**kw)
-            except Exception as exc:
-                logger.debug("Bucket hardening step skipped: %s", exc)
+                s3.create_bucket(**kwargs)
+            except ClientError as create_exc:
+                if create_exc.response["Error"]["Code"] not in {
+                    "BucketAlreadyOwnedByYou",
+                    "BucketAlreadyExists",
+                }:
+                    raise
+
+        s3.put_public_access_block(
+            Bucket=self._bucket,
+            PublicAccessBlockConfiguration={
+                "BlockPublicAcls": True,
+                "IgnorePublicAcls": True,
+                "BlockPublicPolicy": True,
+                "RestrictPublicBuckets": True,
+            },
+        )
+        s3.put_bucket_lifecycle_configuration(
+            Bucket=self._bucket,
+            # Build contexts are consumed within minutes; expiring them keeps a
+            # benchmark run from accruing storage cost — and exposure — forever.
+            LifecycleConfiguration={
+                "Rules": [
+                    {
+                        "ID": "benchflow-expire-build-contexts",
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": "contexts/"},
+                        "Expiration": {"Days": 1},
+                    }
+                ]
+            },
+        )
 
     def _ensure_project(self) -> None:
         from botocore.exceptions import ClientError

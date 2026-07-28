@@ -127,16 +127,28 @@ class TestCodeBuildPackaging:
 
     def test_buildspec_enforces_the_image_size_cap_remotely(self):
         """The 2 GB cap must be caught on the worker, before the push."""
-        from benchflow.sandbox import agentcore_provisioning as provisioning
-
         commands = " ".join(builders._BUILDSPEC["phases"]["build"]["commands"])
 
-        assert str(provisioning.MAX_IMAGE_MB) in commands
         assert "BENCHFLOW_IMAGE_TOO_LARGE" in commands
         # The push must come after the gate, or an oversized image still lands.
         assert commands.index("BENCHFLOW_IMAGE_TOO_LARGE") < commands.index(
             "docker push"
         )
+
+    def test_buildspec_gate_compares_bytes_not_floored_megabytes(self):
+        """Cap + 1 byte floors to the cap and would slip a megabyte compare.
+
+        The remote gate must reject exactly what image_size_error() rejects.
+        """
+        from benchflow.sandbox import agentcore_provisioning as provisioning
+
+        cap_bytes = provisioning.MAX_IMAGE_MB * 1024 * 1024
+        commands = " ".join(builders._BUILDSPEC["phases"]["build"]["commands"])
+
+        assert f'"$SIZE" -gt {cap_bytes}' in commands
+        # Local and remote gates must agree on the boundary.
+        assert provisioning.image_size_error(cap_bytes, "img") is None
+        assert provisioning.image_size_error(cap_bytes + 1, "img") is not None
 
     def test_buildspec_builds_arm64(self):
         """AgentCore runs arm64 only; an x86 image would fail opaquely."""

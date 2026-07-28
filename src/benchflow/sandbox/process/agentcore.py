@@ -27,6 +27,13 @@ from benchflow.sandbox.process._base import LiveProcess
 
 logger = logging.getLogger(__name__)
 
+#: Channels the AgentCore shell multiplexes alongside agent stdout. Forwarding
+#: these into the ACP stream would let a diagnostic be parsed as JSON-RPC.
+_SIDE_CHANNELS = ("STDERR", "STATUS", "CLOSE")
+
+#: Queue sentinel meaning "the frame reader has ended"; see _drain_frames.
+_READER_ENDED = object()
+
 _START_MARKER_TIMEOUT_SEC = 180
 _READLINE_TIMEOUT_ENV = "BENCHFLOW_AGENTCORE_READLINE_TIMEOUT"
 _READLINE_TIMEOUT_DEFAULT_SEC = 900.0
@@ -67,10 +74,11 @@ class AgentCoreProcess(LiveProcess):
         self._region = region
         self._shell: Any = None
         self._reader_task: asyncio.Task[None] | None = None
-        self._line_buffer: asyncio.Queue[bytes] = asyncio.Queue()
+        self._line_buffer: asyncio.Queue[Any] = asyncio.Queue()
         self._partial = b""
         self._closed = False
         self._failure: BaseException | None = None
+        self._reader_done = False
 
     @classmethod
     def from_sandbox_env(cls, env: Any) -> AgentCoreProcess:
@@ -87,9 +95,18 @@ class AgentCoreProcess(LiveProcess):
         )
 
     async def _drain_frames(self) -> None:
-        """Frame WebSocket payloads into newline-terminated lines."""
+        """Frame STDOUT payloads into newline-terminated lines.
+
+        Only the STDOUT channel becomes ACP input. The shell multiplexes
+        STDERR and lifecycle channels over the same socket, and forwarding
+        those verbatim would let a diagnostic line enter the JSON-RPC stream
+        and corrupt — or impersonate — protocol traffic.
+        """
         try:
             async for frame in self._shell:
+                if not self._is_stdout(frame):
+                    self._log_non_stdout(frame)
+                    continue
                 payload = frame.payload
                 if isinstance(payload, str):
                     payload = payload.encode()
@@ -102,11 +119,40 @@ class AgentCoreProcess(LiveProcess):
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
-            # Record rather than raise: this runs in a background task whose
-            # exception would otherwise be swallowed, leaving readline() to
-            # hang until its timeout instead of reporting the real cause.
             self._failure = exc
             logger.warning("AgentCore shell reader stopped: %s", exc)
+        finally:
+            # Wake any waiting readline() right now. Without this sentinel a
+            # dead transport surfaces only when the read timeout expires, so an
+            # infrastructure disconnect becomes a 15-minute silent hang.
+            self._reader_done = True
+            with contextlib.suppress(Exception):
+                self._line_buffer.put_nowait(_READER_ENDED)
+
+    @staticmethod
+    def _is_stdout(frame: Any) -> bool:
+        """Whether *frame* carries agent stdout rather than a side channel.
+
+        Side channels are named explicitly and everything else is treated as
+        agent output. The inverse — allowing only a recognized ``STDOUT`` —
+        would mute the agent entirely against an SDK that emits a single
+        undifferentiated stream, turning a cosmetic mismatch into a total
+        transport failure.
+        """
+        channel = getattr(frame, "channel", None)
+        name = str(getattr(channel, "name", None) or channel or "").upper()
+        return not any(side in name for side in _SIDE_CHANNELS)
+
+    def _log_non_stdout(self, frame: Any) -> None:
+        payload = frame.payload
+        if isinstance(payload, bytes):
+            payload = payload.decode(errors="replace")
+        if payload and payload.strip():
+            logger.debug(
+                "AgentCore shell %s: %s",
+                getattr(frame.channel, "name", frame.channel),
+                payload.strip()[:500],
+            )
 
     async def _write_env_file(self, env: dict[str, str]) -> str:
         """Materialize *env* as a mode-0600 file inside the session container.
@@ -223,19 +269,25 @@ class AgentCoreProcess(LiveProcess):
             raise _closed("AgentCore shell closed", "pty_error")
         timeout = _readline_timeout_sec()
         try:
-            return await asyncio.wait_for(self._line_buffer.get(), timeout=timeout)
+            line = await asyncio.wait_for(self._line_buffer.get(), timeout=timeout)
         except TimeoutError as e:
-            # A dead reader task means the WebSocket dropped; report that rather
-            # than the timeout, which would misattribute an infra failure to a
-            # silent agent.
+            raise _closed(
+                f"AgentCore shell readline timeout ({timeout:g}s)", "pty_error"
+            ) from e
+        if line is _READER_ENDED:
+            # The reader finished — either an error or a clean EOF. Both mean
+            # the transport is gone, and both must surface now rather than at
+            # the read timeout.
             if self._failure is not None:
                 raise _closed(
                     f"AgentCore shell transport failed: {self._failure}",
                     "remote_session_killed",
                 ) from self._failure
             raise _closed(
-                f"AgentCore shell readline timeout ({timeout:g}s)", "pty_error"
-            ) from e
+                "AgentCore shell closed by the remote session",
+                "remote_session_killed",
+            )
+        return line
 
     async def writeline(self, data: str) -> None:
         if not self._shell or self._closed:
@@ -257,4 +309,10 @@ class AgentCoreProcess(LiveProcess):
 
     @property
     def is_running(self) -> bool:
-        return self._shell is not None and not self._closed
+        """Liveness includes the reader: a dead reader is a dead transport."""
+        return (
+            self._shell is not None
+            and not self._closed
+            and not self._reader_done
+            and self._failure is None
+        )

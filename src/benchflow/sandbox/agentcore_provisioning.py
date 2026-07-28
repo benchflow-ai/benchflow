@@ -28,7 +28,6 @@ import hashlib
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterator
-from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +43,12 @@ _GENERATED_NAMES = frozenset({GENERATED_DOCKERFILE, GENERATED_SHIM})
 # resources apart from anything else in the account.
 MANAGED_TAG = "benchflow-managed"
 MANAGED_VALUE = "1"
+#: Tag holding an ISO-8601 instant until which a runtime must not be reaped.
+#: There is no API to enumerate a runtime's active sessions — ``ListSessions``
+#: is Memory-scoped — and session traffic does not move the runtime's
+#: ``lastUpdatedAt``. A lease written at provisioning time is therefore the
+#: only signal cleanup has that a runtime may still be serving a matrix.
+LEASE_TAG = "benchflow-lease-until"
 
 # Not adjustable per AWS service quotas: "Maximum size (in MB) for a Docker
 # image in an AgentCore Runtime" = 2048.
@@ -82,32 +87,63 @@ def reset_cache() -> None:
     _KEY_LOCKS.clear()
 
 
+def _translate_ignore_pattern(pattern: str) -> re.Pattern[str]:
+    """Compile one ``.dockerignore`` pattern to a regex over relative paths.
+
+    Follows Docker's matcher rather than approximating it with ``fnmatch``:
+    leading and trailing separators are stripped (so ``/secret.env`` is the
+    root file, not an absolute path that never matches), ``*`` and ``?`` stop
+    at a separator, and ``**`` spans zero or more path segments. Approximating
+    these let ``/secret.env`` and ``**/*.pem`` through, which uploaded root
+    secrets to S3.
+    """
+    cleaned = pattern.strip().strip("/")
+    segments = cleaned.split("/")
+    regex = ""
+    for index, segment in enumerate(segments):
+        last = index == len(segments) - 1
+        if segment == "**":
+            regex += "(?:.*)?" if last else "(?:[^/]+/)*"
+            continue
+        for char in segment:
+            if char == "*":
+                regex += "[^/]*"
+            elif char == "?":
+                regex += "[^/]"
+            else:
+                regex += re.escape(char)
+        if not last:
+            regex += "/"
+    return re.compile(f"^{regex}$")
+
+
 def _dockerignore_matcher(context_dir: Path) -> Callable[[str], bool]:
     """Compile ``.dockerignore`` into a predicate over context-relative paths.
 
-    Docker semantics: one pattern per line, ``#`` comments, ``!`` re-includes,
-    and the last matching rule wins. ``fnmatch`` is close enough for the
-    patterns tasks actually use, with an added prefix rule so a directory
-    pattern excludes everything beneath it.
+    Docker semantics: ``#`` comments, ``!`` re-includes, last matching rule
+    wins, and a rule matching a directory excludes everything beneath it.
     """
     ignore_file = context_dir / ".dockerignore"
     if not ignore_file.is_file():
         return lambda _relative: False
 
-    rules: list[tuple[str, bool]] = []
+    rules: list[tuple[re.Pattern[str], bool]] = []
     for raw in ignore_file.read_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         negated = line.startswith("!")
-        pattern = line.lstrip("!").strip().rstrip("/")
-        if pattern:
-            rules.append((pattern, negated))
+        body = line.lstrip("!").strip()
+        if body.strip("/"):
+            rules.append((_translate_ignore_pattern(body), negated))
 
     def matches(relative: str) -> bool:
+        # A rule that matches an ancestor directory excludes its contents.
+        segments = relative.split("/")
+        candidates = ["/".join(segments[: i + 1]) for i in range(len(segments))]
         ignored = False
-        for pattern, negated in rules:
-            if fnmatch(relative, pattern) or relative.startswith(pattern + "/"):
+        for compiled, negated in rules:
+            if any(compiled.match(candidate) for candidate in candidates):
                 ignored = not negated
         return ignored
 
@@ -136,19 +172,29 @@ def iter_context_files(context_dir: Path) -> Iterator[tuple[Path, str]]:
         yield path, relative
 
 
-def build_context_digest(context_dir: Path, dockerfile_text: str) -> str:
+def build_context_digest(
+    context_dir: Path, dockerfile_text: str, shim_text: str = ""
+) -> str:
     """Content digest of everything that determines the built image.
 
     Hashes file *contents* rather than paths and mtimes on purpose: BenchFlow
     copies tasks into temporary directories before a run, so any identity based
     on location or timestamp would change every run and defeat image reuse
     entirely.
+
+    ``shim_text`` and the executable mode bit are part of the identity because
+    both change the built image: the shim is copied in as the entrypoint, and
+    an ``entrypoint.sh`` flipped from 0644 to 0755 produces a different
+    container even though every byte of content is unchanged.
     """
     digest = hashlib.sha256()
     digest.update(dockerfile_text.encode())
+    digest.update(b"\0shim\0")
+    digest.update(shim_text.encode())
     for path, relative in iter_context_files(context_dir):
         digest.update(relative.encode())
         digest.update(b"\0")
+        digest.update(b"x" if path.stat().st_mode & 0o111 else b"-")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
 

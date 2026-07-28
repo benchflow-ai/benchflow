@@ -51,6 +51,7 @@ import shlex
 import tarfile
 import threading
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -296,7 +297,7 @@ class AgentCoreSandbox(BaseSandbox):
         running a build to discover it.
         """
         digest = provisioning.build_context_digest(
-            self.environment_dir, self._generated_dockerfile_text()
+            self.environment_dir, self._generated_dockerfile_text(), _PING_SHIM
         )
         return digest, provisioning.image_tag(self.environment_name, digest)
 
@@ -396,6 +397,11 @@ class AgentCoreSandbox(BaseSandbox):
                 raise
 
     def _ecr_image_exists(self, tag: str) -> bool:
+        """True when *tag* is present. Only a real miss counts as a miss.
+
+        Treating access-denied or throttling as "not found" would start a
+        doomed build and bury the actual AWS error.
+        """
         from botocore.exceptions import ClientError
 
         try:
@@ -403,8 +409,13 @@ class AgentCoreSandbox(BaseSandbox):
                 repositoryName=self._ecr_repository, imageIds=[{"imageTag": tag}]
             )
             return True
-        except ClientError:
-            return False
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] in {
+                "ImageNotFoundException",
+                "RepositoryNotFoundException",
+            }:
+                return False
+            raise
 
     async def _ensure_runtime(self, image_uri: str) -> str:
         """Resolve the shared agent runtime for *image_uri*, creating it once.
@@ -422,7 +433,12 @@ class AgentCoreSandbox(BaseSandbox):
         async def _create() -> tuple[str, str]:
             return await self._create_or_adopt_runtime(name, image_uri)
 
-        arn, runtime_id = await provisioning.once(f"runtime:{name}", _create)
+        # Keyed on the image as well as the name: with only the name, a
+        # force-rebuild that pushes new bytes under the same context identity
+        # hits the memo and silently skips compare/update/verify.
+        arn, runtime_id = await provisioning.once(
+            f"runtime:{name}:{image_uri}", _create
+        )
         self._runtime_id = runtime_id
         return arn
 
@@ -465,6 +481,7 @@ class AgentCoreSandbox(BaseSandbox):
             if existing is None:
                 raise
             arn, runtime_id, current_image = existing
+            await asyncio.to_thread(self._write_lease, control, arn)
             if current_image != image_uri:
                 # Adopting a runtime bound to different bytes would silently run
                 # the wrong environment. The name encodes the build-context
@@ -486,15 +503,24 @@ class AgentCoreSandbox(BaseSandbox):
                     roleArn=self._require_role_arn(),
                     networkConfiguration={"networkMode": "PUBLIC"},
                     protocolConfiguration=_PROTOCOL_CONFIGURATION,
+                    # Omitting this resets idle/max-lifetime to the service
+                    # defaults, silently discarding the caller's configured
+                    # window and reclaiming long sessions early.
+                    lifecycleConfiguration=self._lifecycle_configuration(),
                 )
             await asyncio.to_thread(self._wait_ready, control, runtime_id)
             await asyncio.to_thread(
-                self._verify_runtime_image, control, runtime_id, image_uri
+                self._verify_adopted_runtime,
+                control,
+                runtime_id,
+                image_uri,
+                self._lifecycle_configuration(),
             )
             self.logger.info("Adopted existing AgentCore runtime %s", arn)
             return arn, runtime_id
 
         runtime_id = created["agentRuntimeId"]
+        await asyncio.to_thread(self._write_lease, control, created["agentRuntimeArn"])
         await asyncio.to_thread(self._wait_ready, control, runtime_id)
         self.logger.info(
             "Registered AgentCore runtime %s for %s",
@@ -503,13 +529,46 @@ class AgentCoreSandbox(BaseSandbox):
         )
         return created["agentRuntimeArn"], runtime_id
 
-    @staticmethod
-    def _verify_runtime_image(control: Any, runtime_id: str, image_uri: str) -> None:
-        """Fail closed if the runtime is not bound to the image we expect.
+    def _write_lease(self, control: Any, runtime_arn: str) -> None:
+        """Mark the runtime as possibly-in-use until the session window closes.
 
-        The adoption path is the one place a runtime can predate this process,
-        so it is the one place a mismatch could otherwise go unnoticed and run
-        an agent against the wrong environment.
+        There is no API that enumerates a runtime's active sessions
+        (``ListSessions`` is Memory-scoped), and session traffic does not move
+        the runtime's ``lastUpdatedAt`` — so control-plane age alone cannot
+        distinguish an idle runtime from one serving a matrix right now.
+
+        The lease is the explicit contract that closes that gap: it extends to
+        the longest a session started now could still be alive, and cleanup
+        refuses to touch a runtime whose lease has not expired. Written once
+        per runtime per process (provisioning is single-flighted), so it costs
+        nothing per rollout.
+        """
+        lifecycle = self._lifecycle_configuration()
+        window = max(lifecycle["maxLifetime"], lifecycle["idleRuntimeSessionTimeout"])
+        until = datetime.now(UTC) + timedelta(seconds=window)
+        try:
+            control.tag_resource(
+                resourceArn=runtime_arn,
+                tags={provisioning.LEASE_TAG: until.isoformat()},
+            )
+        except Exception as exc:
+            # A runtime without a readable lease is treated as in-use by the
+            # reaper, so a failure here is conservative, not dangerous.
+            self.logger.warning("Could not write AgentCore lease: %s", exc)
+
+    @staticmethod
+    def _verify_adopted_runtime(
+        control: Any,
+        runtime_id: str,
+        image_uri: str,
+        lifecycle: dict[str, int],
+    ) -> None:
+        """Fail closed unless the adopted runtime matches what this run needs.
+
+        Adoption is the one path where a runtime can predate this process, so
+        it is the one path where a mismatch could otherwise go unnoticed — an
+        agent run against the wrong image, or against a shorter session window
+        than the caller configured.
         """
         detail = control.get_agent_runtime(agentRuntimeId=runtime_id)
         artifact = detail.get("agentRuntimeArtifact") or {}
@@ -519,6 +578,19 @@ class AgentCoreSandbox(BaseSandbox):
                 f"AgentCore runtime {runtime_id} is bound to {bound!r} but this "
                 f"task needs {image_uri!r}. Refusing to run against the wrong "
                 "image.",
+                sandbox_id=runtime_id,
+            )
+        actual = detail.get("lifecycleConfiguration") or {}
+        drifted = {
+            key: (actual.get(key), value)
+            for key, value in lifecycle.items()
+            if actual.get(key) != value
+        }
+        if drifted:
+            raise SandboxStartupError(
+                f"AgentCore runtime {runtime_id} lifecycle is {actual}, not the "
+                f"configured {lifecycle} (drift: {drifted}). Sessions could be "
+                "reclaimed earlier than this run expects.",
                 sandbox_id=runtime_id,
             )
 
