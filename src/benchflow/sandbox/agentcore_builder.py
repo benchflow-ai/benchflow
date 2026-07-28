@@ -24,6 +24,7 @@ import io
 import json
 import logging
 import os
+import random
 import shutil
 import subprocess
 import tempfile
@@ -50,7 +51,8 @@ CODEBUILD_IMAGE = "aws/codebuild/amazonlinux-aarch64-standard:3.0"
 CODEBUILD_COMPUTE = "BUILD_GENERAL1_LARGE"
 _CODEBUILD_POLL_SEC = 10
 _CODEBUILD_TIMEOUT_MIN = 60
-_S3_CONTROL_RETRY_DELAYS_SEC = (0.25, 0.5, 1.0, 2.0)
+_S3_CONTROL_RETRY_DELAYS_SEC = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+_S3_RETRY_JITTER = random.SystemRandom()
 
 
 @dataclass(frozen=True)
@@ -452,13 +454,14 @@ class CodeBuildBuilder:
                 code = exc.response["Error"]["Code"]
                 if code != "OperationAborted" or delay is None:
                     raise
+                jittered = _S3_RETRY_JITTER.uniform(delay * 0.5, delay * 1.5)
                 logger.warning(
                     "S3 control-plane mutation conflicted (attempt %d); "
                     "retrying in %.2fs",
                     attempt + 1,
-                    delay,
+                    jittered,
                 )
-                time.sleep(delay)
+                time.sleep(jittered)
 
     def _ensure_project(self) -> None:
         from botocore.exceptions import ClientError

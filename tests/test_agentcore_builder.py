@@ -517,7 +517,14 @@ class TestBuildLifecycle:
             ]
         )
 
-        with patch.object(builders.time, "sleep") as sleep:
+        with (
+            patch.object(
+                builders._S3_RETRY_JITTER,
+                "uniform",
+                return_value=builders._S3_CONTROL_RETRY_DELAYS_SEC[0],
+            ),
+            patch.object(builders.time, "sleep") as sleep,
+        ):
             builders.CodeBuildBuilder._retry_s3_mutation(operation, Bucket="build")
 
         assert operation.call_count == 2
