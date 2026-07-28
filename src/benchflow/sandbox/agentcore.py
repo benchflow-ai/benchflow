@@ -26,7 +26,7 @@ experiment against the live service rather than from the docs:
    ``InvokeAgentRuntimeCommand`` against it fails with a 500 from the runtime.
    Serving ``GET /ping`` on port 8080 fixes it. Task images know nothing about
    AgentCore, so BenchFlow appends a tiny stdlib-only responder to the image
-   and makes it the entrypoint (see ``_PING_SHIM``).
+   and makes it the entrypoint (see ``agentcore_image.PING_SHIM``).
 2. **Command execution and the interactive shell share one session.** A file
    written by ``exec()`` is visible to the agent running under
    ``open_shell()`` when both use the same ``runtimeSessionId``, which is what
@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import io
 import os
 import shlex
@@ -61,6 +62,7 @@ from benchflow.sandbox import agentcore_builder as builders
 from benchflow.sandbox import agentcore_provisioning as provisioning
 from benchflow.sandbox._base import BaseSandbox, ExecResult, wrap_command_with_env_file
 from benchflow.sandbox._compose import compose_definition_path
+from benchflow.sandbox.agentcore_image import AgentCoreImagePublisher
 from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths
@@ -76,11 +78,13 @@ _RUNTIME_POLL_INTERVAL_SEC = 5
 _SESSION_WARMUP_ATTEMPTS = 8
 _SESSION_WARMUP_BACKOFF_SEC = 4.0
 _SESSION_WARMUP_MAX_BACKOFF_SEC = 30.0
+_LIFECYCLE_MIN_SEC = 60
+_LIFECYCLE_MAX_SEC = 28800
 # The service caps a single command payload at 64 KB. Base64 inflates by 4/3,
 # and the wrapper adds shell scaffolding, so keep a wide margin.
 _MAX_INLINE_UPLOAD_BYTES = 24 * 1024
 _MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
-# ``_PING_SHIM`` implements the plain HTTP contract (GET /ping,
+# ``PING_SHIM`` implements the plain HTTP contract (GET /ping,
 # POST /invocations), so register the runtime as HTTP rather than relying on
 # whatever the service currently defaults to.
 _PROTOCOL_CONFIGURATION = {"serverProtocol": "HTTP"}
@@ -93,47 +97,6 @@ _ENV_ROLE_ARN = "BENCHFLOW_AGENTCORE_ROLE_ARN"
 _ENV_ECR_REPOSITORY = "BENCHFLOW_AGENTCORE_ECR_REPOSITORY"
 _ENV_IDLE_TIMEOUT = "BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC"
 _ENV_MAX_LIFETIME = "BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC"
-
-# Stdlib-only responder for the AgentCore Runtime HTTP contract. Kept
-# dependency-free so it runs on any task base image that has a `python3`.
-_PING_SHIM = '''\
-"""BenchFlow shim: satisfies the AgentCore Runtime HTTP contract.
-
-AgentCore refuses to service InvokeAgentRuntimeCommand for a session whose
-container does not answer this contract, so BenchFlow injects this responder
-as the image entrypoint. It does no work beyond staying alive and replying;
-the agent itself is launched later over the shell WebSocket.
-"""
-import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-
-class _Handler(BaseHTTPRequestHandler):
-    def _reply(self, code, payload):
-        body = json.dumps(payload).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        if self.path.rstrip("/") in ("/ping", ""):
-            self._reply(200, {"status": "Healthy"})
-        else:
-            self._reply(404, {"error": "not found"})
-
-    def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        self._reply(200, {"result": "benchflow-sandbox"})
-
-    def log_message(self, *_args):
-        return
-
-
-if __name__ == "__main__":
-    HTTPServer(("0.0.0.0", 8080), _Handler).serve_forever()
-'''
 
 
 class AgentCoreSandbox(BaseSandbox):
@@ -158,16 +121,23 @@ class AgentCoreSandbox(BaseSandbox):
             **kwargs,
         )
         self.region = os.environ.get(_ENV_REGION) or _DEFAULT_REGION
-        self._ecr_repository = (
-            os.environ.get(_ENV_ECR_REPOSITORY) or _DEFAULT_ECR_REPOSITORY
-        )
+        ecr_repository = os.environ.get(_ENV_ECR_REPOSITORY) or _DEFAULT_ECR_REPOSITORY
         self._role_arn = os.environ.get(_ENV_ROLE_ARN)
+        self._agent_timeout_sec = 0
         self.runtime_arn: str | None = None
         self.runtime_session_id: str | None = None
         self._runtime_id: str | None = None
-        self._account_id: str | None = None
         self._clients: dict[str, Any] = {}
         self._client_lock = threading.Lock()
+        self._images = AgentCoreImagePublisher(
+            environment_dir=environment_dir,
+            environment_name=environment_name,
+            task_env_config=task_env_config,
+            region=self.region,
+            ecr_repository=ecr_repository,
+            client_factory=self._client,
+            logger=self.logger,
+        )
 
     # ---------------------------------------------------------------- config
 
@@ -219,25 +189,27 @@ class AgentCoreSandbox(BaseSandbox):
 
     def _validate_definition(self) -> None:
         dockerfile = self.environment_dir / "Dockerfile"
-        if not dockerfile.exists() and not self.task_env_config.docker_image:
+        if not self.task_env_config.docker_image and (
+            not os.path.lexists(dockerfile)
+            or dockerfile.is_symlink()
+            or not dockerfile.is_file()
+        ):
             raise ValueError(
-                f"No Dockerfile found in {self.environment_dir} and no "
-                "docker_image specified in task config."
+                f"{dockerfile} must be a regular, non-symlink Dockerfile "
+                "when no docker_image is specified."
             )
         for reserved in (
             provisioning.GENERATED_DOCKERFILE,
             provisioning.GENERATED_SHIM,
         ):
-            if (self.environment_dir / reserved).exists():
-                # BenchFlow writes these into the caller's own task directory
-                # and removes them afterwards. A task shipping a file at either
-                # path would be overwritten and then permanently deleted, and
-                # the canonical context walk skips both names, so the collision
-                # would also cache-hit as if the task file did not exist.
+            if os.path.lexists(self.environment_dir / reserved):
+                # Staging owns these names and the canonical walk excludes
+                # them. Accepting a task file here would silently replace it
+                # with backend scaffolding and cache-hit as if it did not exist.
                 raise ValueError(
                     f"{reserved} already exists in {self.environment_dir}. "
-                    "That path is reserved by the AgentCore backend, which "
-                    "would overwrite and then delete it. Rename the task file."
+                    "That path is reserved by the AgentCore backend. Rename "
+                    "the task file."
                 )
         compose = compose_definition_path(self.environment_dir)
         if compose is not None:
@@ -276,17 +248,9 @@ class AgentCoreSandbox(BaseSandbox):
                 self._clients[service] = cached
         return cached
 
-    def _resolve_account_id(self) -> str:
-        if self._account_id is None:
-            self._account_id = self._client("sts").get_caller_identity()["Account"]
-        return self._account_id
-
-    def _ecr_registry(self) -> str:
-        return f"{self._resolve_account_id()}.dkr.ecr.{self.region}.amazonaws.com"
-
     async def start(self, force_build: bool) -> None:
         try:
-            image_uri = await self._publish_image(force_build=force_build)
+            image_uri = await self._images.publish(force_build=force_build)
             self.runtime_arn = await self._ensure_runtime(image_uri)
             # AgentCore requires a session id of at least 33 characters.
             self.runtime_session_id = f"{uuid.uuid4()}-{uuid.uuid4().hex[:8]}"
@@ -311,134 +275,6 @@ class AgentCoreSandbox(BaseSandbox):
                 build_timeout_sec=self.task_env_config.build_timeout_sec,
             ) from exc
 
-    def _image_identity(self) -> tuple[str, str]:
-        """``(context digest, ECR tag)`` for this task's image.
-
-        Computed from the build context's *contents* before anything is built,
-        so concurrent rollouts of the same task agree on the tag without each
-        running a build to discover it.
-        """
-        digest = provisioning.build_context_digest(
-            self.environment_dir, self._generated_dockerfile_text(), _PING_SHIM
-        )
-        return digest, provisioning.image_tag(self.environment_name, digest)
-
-    async def _publish_image(self, *, force_build: bool) -> str:
-        """Build and push the task image, returning its **immutable** URI.
-
-        Deduplicated process-wide by content digest: a fan-out of rollouts over
-        one task builds and pushes exactly once, and every later run of an
-        unchanged task skips the build entirely on the ECR existence check.
-
-        The value returned is ``repo@sha256:...``, not ``repo:tag``. A tag is
-        mutable — ``force_build``, a rebased base image, or a repository change
-        can all move it — so binding a runtime to a tag makes the runtime's
-        contents unknowable after the fact. The registry digest pins exactly
-        the bytes that were pushed.
-        """
-        _digest, tag = self._image_identity()
-        tagged_uri = f"{self._ecr_registry()}/{self._ecr_repository}:{tag}"
-        cache_key = f"image:{tagged_uri}:{force_build}"
-
-        async def _publish() -> str:
-            await asyncio.to_thread(self._ensure_ecr_repository)
-            if force_build or not await asyncio.to_thread(self._ecr_image_exists, tag):
-                await self._build_and_push(tagged_uri, force_build=force_build)
-            else:
-                self.logger.info("Reusing published AgentCore image %s", tagged_uri)
-            return await asyncio.to_thread(self._resolve_image_digest, tag)
-
-        return await provisioning.once(cache_key, _publish)
-
-    def _resolve_image_digest(self, tag: str) -> str:
-        """Resolve *tag* to the immutable ``repo@sha256:...`` reference."""
-        response = self._client("ecr").describe_images(
-            repositoryName=self._ecr_repository, imageIds=[{"imageTag": tag}]
-        )
-        details = response.get("imageDetails") or []
-        if not details or not details[0].get("imageDigest"):
-            raise RuntimeError(
-                f"ECR did not report a digest for {self._ecr_repository}:{tag}; "
-                "cannot bind an AgentCore runtime to a verifiable image."
-            )
-        return (
-            f"{self._ecr_registry()}/{self._ecr_repository}@{details[0]['imageDigest']}"
-        )
-
-    async def _build_and_push(self, image_uri: str, *, force_build: bool) -> None:
-        builder = builders.select_builder(
-            self._client,
-            account_id=self._resolve_account_id(),
-            region=self.region,
-        )
-        self.logger.info("Building %s via %s", image_uri, builder.name)
-        await builder.build_and_push(
-            builders.BuildRequest(
-                context_dir=self.environment_dir,
-                dockerfile_text=self._generated_dockerfile_text(),
-                shim_text=_PING_SHIM,
-                image_uri=image_uri,
-                registry=self._ecr_registry(),
-                region=self.region,
-                force_build=force_build,
-                timeout_sec=self.task_env_config.build_timeout_sec,
-            )
-        )
-
-    def _generated_dockerfile_text(self) -> str:
-        """The Dockerfile BenchFlow actually builds, as text.
-
-        Kept separate from writing it so the image digest can be computed from
-        the same bytes without touching the task tree.
-        """
-        if self.task_env_config.docker_image:
-            base = f"FROM {self.task_env_config.docker_image}\n"
-        else:
-            base = (self.environment_dir / "Dockerfile").read_text()
-        return (
-            base
-            + "\n"
-            + "# --- BenchFlow AgentCore runtime contract ---\n"
-            + "# AgentCore refuses command execution for a session whose\n"
-            + "# container does not answer GET /ping on :8080.\n"
-            + f"COPY {provisioning.GENERATED_SHIM} "
-            + "/opt/benchflow_agentcore_shim.py\n"
-            + "EXPOSE 8080\n"
-            + "ENTRYPOINT []\n"
-            + 'CMD ["python3", "/opt/benchflow_agentcore_shim.py"]\n'
-        )
-
-    def _ensure_ecr_repository(self) -> None:
-        from botocore.exceptions import ClientError
-
-        ecr = self._client("ecr")
-        try:
-            ecr.create_repository(repositoryName=self._ecr_repository)
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "RepositoryAlreadyExistsException":
-                raise
-
-    def _ecr_image_exists(self, tag: str) -> bool:
-        """True when *tag* is present. Only a real miss counts as a miss.
-
-        Treating access-denied or throttling as "not found" would start a
-        doomed build and bury the actual AWS error.
-        """
-        from botocore.exceptions import ClientError
-
-        try:
-            self._client("ecr").describe_images(
-                repositoryName=self._ecr_repository, imageIds=[{"imageTag": tag}]
-            )
-            return True
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] in {
-                "ImageNotFoundException",
-                "RepositoryNotFoundException",
-            }:
-                return False
-            raise
-
     async def _ensure_runtime(self, image_uri: str) -> str:
         """Resolve the shared agent runtime for *image_uri*, creating it once.
 
@@ -449,7 +285,7 @@ class AgentCoreSandbox(BaseSandbox):
         create one runtime and the first to finish deleted it while the others
         were still running.
         """
-        digest, _tag = self._image_identity()
+        digest, _tag = self._images.identity()
         name = provisioning.runtime_name(self.environment_name, digest)
 
         async def _create() -> tuple[str, str]:
@@ -504,6 +340,7 @@ class AgentCoreSandbox(BaseSandbox):
                 raise
             arn, runtime_id, current_image = existing
             await asyncio.to_thread(self._write_lease, control, arn)
+            provisioning.mark_lease_renewed(arn, time.monotonic())
             if current_image != image_uri:
                 # Adopting a runtime bound to different bytes would silently run
                 # the wrong environment. The name encodes the build-context
@@ -546,6 +383,7 @@ class AgentCoreSandbox(BaseSandbox):
 
         runtime_id = created["agentRuntimeId"]
         await asyncio.to_thread(self._write_lease, control, created["agentRuntimeArn"])
+        provisioning.mark_lease_renewed(created["agentRuntimeArn"], time.monotonic())
         await asyncio.to_thread(self._wait_ready, control, runtime_id)
         self.logger.info(
             "Registered AgentCore runtime %s for %s",
@@ -562,18 +400,21 @@ class AgentCoreSandbox(BaseSandbox):
         window = float(
             max(lifecycle["maxLifetime"], lifecycle["idleRuntimeSessionTimeout"])
         )
-        now = time.monotonic()
-        if not provisioning.lease_needs_renewal(self.runtime_arn, window, now):
-            return
-        await asyncio.to_thread(
-            self._write_lease,
-            self._client("bedrock-agentcore-control"),
-            self.runtime_arn,
+        runtime_arn = self.runtime_arn
+
+        async def _write() -> None:
+            await asyncio.to_thread(
+                self._write_lease,
+                self._client("bedrock-agentcore-control"),
+                runtime_arn,
+            )
+
+        await provisioning.renew_lease(
+            runtime_arn,
+            window,
+            _write,
+            monotonic=time.monotonic,
         )
-        # Only now — a failed write must leave the throttle untouched so the
-        # next rollout retries instead of running on a lease that was never
-        # extended.
-        provisioning.mark_lease_renewed(self.runtime_arn, now)
 
     def _write_lease(self, control: Any, runtime_arn: str) -> None:
         """Mark the runtime as possibly-in-use until the session window closes.
@@ -583,15 +424,16 @@ class AgentCoreSandbox(BaseSandbox):
         the runtime's ``lastUpdatedAt`` — so control-plane age alone cannot
         distinguish an idle runtime from one serving a matrix right now.
 
-        The lease is the explicit contract that closes that gap: it extends to
-        the longest a session started now could still be alive, and cleanup
-        refuses to touch a runtime whose lease has not expired. Written once
-        per runtime per process (provisioning is single-flighted), so it costs
-        nothing per rollout.
+        The lease is the explicit contract that closes that gap. It extends
+        beyond the longest session window by one renewal interval: a rollout
+        admitted just before the throttle boundary may still live for the full
+        configured window, so a lease of only ``window`` seconds would expire
+        while that session was still legal.
         """
         lifecycle = self._lifecycle_configuration()
         window = max(lifecycle["maxLifetime"], lifecycle["idleRuntimeSessionTimeout"])
-        until = datetime.now(UTC) + timedelta(seconds=window)
+        duration = window + provisioning.lease_renewal_interval(float(window))
+        until = datetime.now(UTC) + timedelta(seconds=duration)
         try:
             control.tag_resource(
                 resourceArn=runtime_arn,
@@ -676,14 +518,34 @@ class AgentCoreSandbox(BaseSandbox):
         as a dead transport rather than as an infrastructure error. Default the
         idle window to the task's own agent timeout when that is larger.
         """
-        idle = int(os.environ.get(_ENV_IDLE_TIMEOUT) or 0) or max(
-            900, int(getattr(self.task_env_config, "agent_timeout_sec", 0) or 0)
-        )
-        lifetime = int(os.environ.get(_ENV_MAX_LIFETIME) or 0) or 28800
+
+        def _configured(name: str, default: int) -> int:
+            raw = os.environ.get(name)
+            if raw in {None, ""}:
+                value = default
+            else:
+                try:
+                    value = int(raw)
+                except ValueError as exc:
+                    raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+            if not _LIFECYCLE_MIN_SEC <= value <= _LIFECYCLE_MAX_SEC:
+                raise ValueError(
+                    f"{name} must be between {_LIFECYCLE_MIN_SEC} and "
+                    f"{_LIFECYCLE_MAX_SEC} seconds for AgentCore, got {value}."
+                )
+            return value
+
+        requested_idle = max(900, self._agent_timeout_sec)
+        idle = _configured(_ENV_IDLE_TIMEOUT, requested_idle)
+        lifetime = _configured(_ENV_MAX_LIFETIME, 28800)
         return {
             "idleRuntimeSessionTimeout": idle,
             "maxLifetime": lifetime,
         }
+
+    def configure_agent_timeout(self, timeout_sec: int) -> None:
+        """Keep the remote session alive for the effective rollout budget."""
+        self._agent_timeout_sec = max(0, int(timeout_sec))
 
     def _require_role_arn(self) -> str:
         if self._role_arn:
@@ -947,7 +809,6 @@ class AgentCoreSandbox(BaseSandbox):
             # bounded chunks instead of one oversized command.
             await self._upload_via_tar(
                 {source: PurePosixPath(target_path)},
-                root=source.parent,
             )
             return
         quoted = shlex.quote(target_path)
@@ -976,11 +837,9 @@ class AgentCoreSandbox(BaseSandbox):
         }
         await self.exec(f"mkdir -p {shlex.quote(target_dir)}", user="root")
         if members:
-            await self._upload_via_tar(members, root=source)
+            await self._upload_via_tar(members)
 
-    async def _upload_via_tar(
-        self, members: dict[Path, PurePosixPath], root: Path
-    ) -> None:
+    async def _upload_via_tar(self, members: dict[Path, PurePosixPath]) -> None:
         """Ship files as a single base64 tar stream, chunked under the cap.
 
         One archive per directory keeps this O(1) commands for the common case
@@ -1009,7 +868,8 @@ class AgentCoreSandbox(BaseSandbox):
                 )
 
         result = await self.exec(
-            f"base64 -d {staging} | tar -xzf - -C / && rm -f {staging}",
+            f"set -o pipefail; trap 'rm -f {staging}' EXIT; "
+            f"base64 -d {staging} | tar -xzf - -C /",
             timeout_sec=600,
             user="root",
         )
@@ -1026,7 +886,32 @@ class AgentCoreSandbox(BaseSandbox):
             raise RuntimeError(
                 f"AgentCore download_file failed: {(result.stderr or '')[:500]}"
             )
-        target.write_bytes(base64.b64decode((result.stdout or "").replace("\n", "")))
+        target.write_bytes(
+            self._decode_download_payload(result.stdout or "", kind="file")
+        )
+
+    @staticmethod
+    def _decode_download_payload(raw: str, *, kind: str) -> bytes:
+        """Decode one bounded, validated base64 command response."""
+        compact = "".join(raw.split())
+        max_encoded = 4 * ((_MAX_DOWNLOAD_BYTES + 2) // 3)
+        if len(compact) > max_encoded:
+            raise RuntimeError(
+                f"AgentCore download_{kind} encoded payload exceeds the "
+                f"{_MAX_DOWNLOAD_BYTES} byte cap; narrow the {kind}."
+            )
+        try:
+            blob = base64.b64decode(compact, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError(
+                f"AgentCore download_{kind} returned invalid base64"
+            ) from exc
+        if len(blob) > _MAX_DOWNLOAD_BYTES:
+            raise RuntimeError(
+                f"AgentCore download_{kind} payload {len(blob)} bytes exceeds "
+                f"the {_MAX_DOWNLOAD_BYTES} byte cap; narrow the {kind}."
+            )
+        return blob
 
     async def download_dir(
         self, source_dir: str, target_dir: Path | str, service: str = "main"
@@ -1045,11 +930,6 @@ class AgentCoreSandbox(BaseSandbox):
         raw = (result.stdout or "").strip()
         if not raw:
             return
-        blob = base64.b64decode(raw)
-        if len(blob) > _MAX_DOWNLOAD_BYTES:
-            raise RuntimeError(
-                f"AgentCore download_dir payload {len(blob)} bytes exceeds the "
-                f"{_MAX_DOWNLOAD_BYTES} byte cap; narrow the directory."
-            )
+        blob = self._decode_download_payload(raw, kind="directory")
         with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
             tar.extractall(target, filter="data")

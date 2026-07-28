@@ -23,7 +23,7 @@ import shlex
 import uuid
 from typing import Any
 
-from benchflow.sandbox.process._base import LiveProcess
+from benchflow.sandbox.process._base import _ENV_KEY_RE, LiveProcess
 
 logger = logging.getLogger(__name__)
 
@@ -173,10 +173,19 @@ class AgentCoreProcess(LiveProcess):
         text typed into the terminal, where the PTY would echo them straight
         back into the agent log.
         """
+        invalid = [key for key in env if not _ENV_KEY_RE.match(key)]
+        if invalid:
+            raise ValueError(
+                "Invalid environment variable name(s): " + ", ".join(sorted(invalid))
+            )
         remote_path = f"/tmp/.benchflow_agent_env_{uuid.uuid4().hex[:16]}"
         body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
         result = await self._sandbox.write_text_file(remote_path, body, mode="600")
         if result is False:
+            with contextlib.suppress(Exception):
+                await self._sandbox.exec(
+                    f"rm -f {shlex.quote(remote_path)}", timeout_sec=30
+                )
             raise RuntimeError("Failed to stage AgentCore agent env file")
         return remote_path
 
@@ -188,17 +197,7 @@ class AgentCoreProcess(LiveProcess):
     ) -> None:
         from bedrock_agentcore.runtime import AgentCoreRuntimeClient
 
-        parts: list[str] = []
-        if cwd:
-            parts.append(f"cd {shlex.quote(cwd)}")
-        if env:
-            remote_env_path = await self._write_env_file(env)
-            quoted = shlex.quote(remote_env_path)
-            parts.append(f". {quoted}")
-            parts.append(f"rm -f {quoted}")
-        parts.append(f"exec bash -lc {shlex.quote(command)}")
-        launch = " && ".join(parts)
-
+        remote_env_path: str | None = None
         client = AgentCoreRuntimeClient(region=self._region)
         shell = client.open_shell(
             runtime_arn=self._runtime_arn,
@@ -217,18 +216,47 @@ class AgentCoreProcess(LiveProcess):
             # ACP JSON-RPC frames routinely exceed the 4096-byte canonical-mode
             # line limit, and echo would feed the agent's own output back to it.
             marker = f"__BENCHFLOW_ACP_{uuid.uuid4().hex[:12]}__"
-            await self._shell.send(
+            await self._send(
                 "stty raw -echo 2>/dev/null || "
                 "stty -echo -icanon min 1 time 0 2>/dev/null || true; "
                 f"echo '{marker}'\n"
             )
             await self._await_marker(marker)
             self._clear_buffered_output()
-            await self._shell.send(launch + "\n")
+            if env:
+                remote_env_path = await self._write_env_file(env)
+            launch = self._launch_command(command, remote_env_path, cwd)
+            await self._send(launch + "\n")
         except BaseException:
+            if remote_env_path:
+                with contextlib.suppress(Exception):
+                    await self._sandbox.exec(
+                        f"rm -f {shlex.quote(remote_env_path)}", timeout_sec=30
+                    )
             await self.close()
             raise
         logger.info("AgentCore shell marker seen, agent starting")
+
+    @staticmethod
+    def _launch_command(
+        command: str, remote_env_path: str | None, cwd: str | None
+    ) -> str:
+        """Build a subshell launch that cannot strand a staged env file."""
+        parts: list[str] = []
+        if remote_env_path:
+            quoted = shlex.quote(remote_env_path)
+            # The subshell is essential: if ``cd`` or sourcing fails, it exits
+            # and runs the trap. The long-lived PTY shell itself stays alive.
+            parts.append(f"trap 'rm -f {quoted}' EXIT")
+        if cwd:
+            parts.append(f"cd {shlex.quote(cwd)}")
+        if remote_env_path:
+            quoted = shlex.quote(remote_env_path)
+            parts.append(f". {quoted}")
+            parts.append(f"rm -f {quoted}")
+            parts.append("trap - EXIT")
+        parts.append(f"exec bash -lc {shlex.quote(command)}")
+        return "( " + " && ".join(parts) + " )"
 
     async def _await_marker(self, marker: str) -> None:
         from benchflow.diagnostics import (
@@ -325,16 +353,33 @@ class AgentCoreProcess(LiveProcess):
             )
         return line
 
-    async def writeline(self, data: str) -> None:
+    def _closed_error(self, message: str):
+        from benchflow.diagnostics import (
+            TransportClosedDiagnostic,
+            TransportClosedError,
+        )
+
+        return TransportClosedError(
+            message,
+            TransportClosedDiagnostic(
+                raw_message=message[:500],
+                transport_diagnosis="remote_session_killed",
+            ),
+        )
+
+    async def _send(self, data: str) -> None:
         if not self.is_running:
             # Half-close guard: ContainerTransport.send() does not pre-check
             # liveness, so without this an ACP request is handed to a socket
             # whose read side is already gone and the reply can never arrive.
-            raise RuntimeError(
-                "AgentCore shell is not running (reader ended); refusing to "
-                "send to a half-closed transport"
+            raise self._closed_error(
+                "AgentCore shell is not running (reader ended); refusing to send "
+                "to a half-closed transport"
             )
-        await self._shell.send(data + "\n")
+        await self._shell.send(data)
+
+    async def writeline(self, data: str) -> None:
+        await self._send(data + "\n")
 
     async def close(self) -> None:
         self._closed = True

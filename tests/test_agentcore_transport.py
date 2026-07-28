@@ -10,8 +10,9 @@ parser sees as traffic).
 from __future__ import annotations
 
 import asyncio
+import re
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -48,6 +49,57 @@ class _FakeShell:
 
     async def close(self):
         return None
+
+
+class _MarkerShell:
+    """Emit the nonce from the first send, then stay open or cleanly EOF."""
+
+    def __init__(self, *, eof_after_marker: bool, fail_launch: bool = False):
+        self.eof_after_marker = eof_after_marker
+        self.fail_launch = fail_launch
+        self.sent: list[str] = []
+        self._marker_ready = asyncio.Event()
+        self._marker_emitted = False
+        self._closed = asyncio.Event()
+        self.shell_id = "fake-shell"
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._marker_emitted:
+            await self._marker_ready.wait()
+            self._marker_emitted = True
+            marker = re.search(r"(__BENCHFLOW_ACP_[0-9a-f]+__)", self.sent[0])
+            assert marker is not None
+            return _frame((marker.group(1) + "\n").encode())
+        if self.eof_after_marker:
+            raise StopAsyncIteration
+        await self._closed.wait()
+        raise StopAsyncIteration
+
+    async def send(self, data):
+        if self._marker_emitted and self.fail_launch:
+            raise ConnectionResetError("launch socket closed")
+        self.sent.append(data)
+        self._marker_ready.set()
+
+    async def close(self):
+        self._closed.set()
+
+
+class _ShellContext:
+    def __init__(self, shell):
+        self.shell = shell
+
+    async def __aenter__(self):
+        return self.shell
+
+
+def _runtime_client(shell):
+    client = MagicMock()
+    client.open_shell.return_value = _ShellContext(shell)
+    return client
 
 
 def _process(shell):
@@ -186,22 +238,91 @@ class TestEnvHandling:
         assert "hunter2" in body
         assert proc._sandbox.write_text_file.call_args.kwargs["mode"] == "600"
 
+    @pytest.mark.asyncio
+    async def test_invalid_env_names_are_refused_before_staging(self):
+        """Guards PR #937: invalid exports fail and can strand secret files."""
+        proc = _process(_FakeShell([]))
+        proc._sandbox.write_text_file = AsyncMock(return_value=True)
+
+        with pytest.raises(ValueError, match=r"BAD\.KEY"):
+            await proc._write_env_file({"BAD.KEY": "secret"})
+
+        proc._sandbox.write_text_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_env_cleanup_is_armed_before_cwd_and_removed_before_exec(self):
+        """Guards PR #937: every pre-launch failure must delete staged secrets."""
+        shell = _MarkerShell(eof_after_marker=False)
+        proc = _process(shell)
+        proc._sandbox.write_text_file = AsyncMock(return_value=True)
+
+        with patch(
+            "bedrock_agentcore.runtime.AgentCoreRuntimeClient",
+            return_value=_runtime_client(shell),
+        ):
+            await proc.start("agent --serve", env={"API_KEY": "hunter2"}, cwd="/work")
+
+        launch = shell.sent[1]
+        assert launch.startswith("( ") and launch.endswith(" )\n")
+        assert launch.index("trap 'rm -f") < launch.index("cd /work")
+        source = launch.index(". /tmp/.benchflow_agent_env_")
+        remove_after_source = launch.index("rm -f", source)
+        assert source < remove_after_source < launch.index("trap - EXIT")
+        assert "hunter2" not in launch
+        await proc.close()
+
+    @pytest.mark.asyncio
+    async def test_failed_staging_best_effort_deletes_the_partial_file(self):
+        """Guards PR #937 when write succeeds but chmod reports failure."""
+        proc = _process(_FakeShell([]))
+        proc._sandbox.write_text_file = AsyncMock(return_value=False)
+        proc._sandbox.exec = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="Failed to stage"):
+            await proc._write_env_file({"API_KEY": "hunter2"})
+
+        cleanup = proc._sandbox.exec.call_args.args[0]
+        assert cleanup.startswith("rm -f /tmp/.benchflow_agent_env_")
+        assert "hunter2" not in cleanup
+
+    @pytest.mark.asyncio
+    async def test_failed_launch_deletes_the_staged_env_file(self):
+        """Guards PR #937 when the shell dies after env staging."""
+        shell = _MarkerShell(eof_after_marker=False, fail_launch=True)
+        proc = _process(shell)
+        proc._sandbox.write_text_file = AsyncMock(return_value=True)
+        proc._sandbox.exec = AsyncMock()
+
+        with (
+            patch(
+                "bedrock_agentcore.runtime.AgentCoreRuntimeClient",
+                return_value=_runtime_client(shell),
+            ),
+            pytest.raises(ConnectionResetError, match="launch socket"),
+        ):
+            await proc.start("agent --serve", env={"API_KEY": "hunter2"})
+
+        cleanup = proc._sandbox.exec.call_args.args[0]
+        assert cleanup.startswith("rm -f /tmp/.benchflow_agent_env_")
+        assert "hunter2" not in cleanup
+
 
 class TestAdversarialChannelNames:
     """Guards PR #937: typed channels are matched exactly, not by substring."""
 
     @pytest.mark.parametrize("name", ["NOT_STDOUT", "STDOUT_METADATA", "METRICS"])
     def test_colliding_typed_names_are_not_stdout(self, name):
-        """Substring membership admitted these; only STDOUT may be ACP input."""
+        """Guards PR #937: substring collisions must not become ACP input."""
         assert AgentCoreProcess._is_stdout(_frame(b"x\n", channel=name)) is False
 
     @pytest.mark.parametrize("name", ["STDOUT", "ShellChannel.STDOUT", " stdout "])
     def test_genuine_stdout_is_accepted(self, name):
-        """Enum-qualified and case/space variants must still deliver."""
+        """Guards PR #937: genuine enum/name variants must still deliver."""
         assert AgentCoreProcess._is_stdout(_frame(b"x\n", channel=name)) is True
 
     @pytest.mark.asyncio
     async def test_a_colliding_name_never_reaches_readline(self):
+        """Guards PR #937 end to end against typed channel impersonation."""
         proc = _process(
             _FakeShell(
                 [
@@ -223,7 +344,7 @@ class TestHalfCloseGuard:
 
     @pytest.mark.asyncio
     async def test_writeline_refuses_after_clean_eof(self):
-        """ContainerTransport.send() does not pre-check liveness.
+        """Guards PR #937 because ContainerTransport does not pre-check liveness.
 
         Without this guard an ACP request is handed to a dead socket and its
         reply can never arrive, so the run stalls instead of failing.
@@ -232,28 +353,48 @@ class TestHalfCloseGuard:
         proc = _process(shell)
         await proc._drain_frames()
 
-        with pytest.raises(RuntimeError, match="not running"):
+        with pytest.raises(TransportClosedError, match="not running") as excinfo:
             await proc.writeline("lost-message")
 
         assert shell.sent == []
+        assert excinfo.value.diagnostic.transport_diagnosis == "remote_session_killed"
 
     @pytest.mark.asyncio
     async def test_writeline_refuses_after_reader_error(self):
+        """Guards PR #937 when the reader ends with an exception."""
         shell = _FakeShell([], error=ConnectionResetError("socket died"))
         proc = _process(shell)
         await proc._drain_frames()
 
-        with pytest.raises(RuntimeError, match="not running"):
+        with pytest.raises(TransportClosedError, match="not running"):
             await proc.writeline("lost-message")
 
         assert shell.sent == []
 
     @pytest.mark.asyncio
     async def test_writeline_works_while_the_reader_is_alive(self):
-        """Positive control: the guard must not break normal operation."""
+        """Guards PR #937: the half-close fix must preserve normal writes."""
         shell = _FakeShell([_frame(b"hi\n")])
         proc = _process(shell)
 
         await proc.writeline("ping")
 
         assert shell.sent == ["ping\n"]
+
+    @pytest.mark.asyncio
+    async def test_marker_then_eof_refuses_the_agent_launch(self):
+        """Guards PR #937: startup must use the half-close checked send path."""
+        shell = _MarkerShell(eof_after_marker=True)
+        proc = _process(shell)
+
+        with (
+            patch(
+                "bedrock_agentcore.runtime.AgentCoreRuntimeClient",
+                return_value=_runtime_client(shell),
+            ),
+            pytest.raises(TransportClosedError) as excinfo,
+        ):
+            await proc.start("agent --serve")
+
+        assert len(shell.sent) == 1
+        assert excinfo.value.diagnostic.transport_diagnosis == "remote_session_killed"

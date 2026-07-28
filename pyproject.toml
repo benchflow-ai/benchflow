@@ -41,6 +41,9 @@ classifiers = [
 [project.optional-dependencies]
 dev = [
     "pre-commit>=3.7",
+    # AgentCore's CodeBuild path must reproduce Docker's ignore rules in tests
+    # even when the optional AWS backend is not installed.
+    "pathspec>=0.12",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.7.0",
@@ -78,6 +81,8 @@ sandbox-agentcore = [
     # models the bedrock-agentcore/-control services.
     "bedrock-agentcore>=1.18",
     "boto3>=1.43.31",
+    # Docker-compatible build-context filtering without requiring a daemon.
+    "pathspec>=0.12",
 ]
 bedrock = [
     "boto3>=1.40",

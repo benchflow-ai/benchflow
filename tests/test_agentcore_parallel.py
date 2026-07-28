@@ -16,6 +16,7 @@ These tests pin the three properties that make a fan-out safe:
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +24,7 @@ import pytest
 
 from benchflow.sandbox import agentcore_provisioning as provisioning
 from benchflow.sandbox.agentcore import AgentCoreSandbox
+from benchflow.sandbox.agentcore_image import AgentCoreImagePublisher
 from benchflow.task.config import SandboxConfig
 
 
@@ -48,7 +50,7 @@ def _sandbox(task_dir, *, name="demo-task", session="run-1"):
         rollout_paths=None,
         task_env_config=SandboxConfig(),
     )
-    env._account_id = "123456789012"
+    env._images._account_id = "123456789012"
     return env
 
 
@@ -62,13 +64,13 @@ class TestImageIdentity:
         a = _make_task(tmp_path / "first")
         b = _make_task(tmp_path / "second")
 
-        assert _sandbox(a)._image_identity() == _sandbox(b)._image_identity()
+        assert _sandbox(a)._images.identity() == _sandbox(b)._images.identity()
 
     def test_identity_changes_when_the_environment_changes(self, tmp_path):
         a = _make_task(tmp_path / "a")
         b = _make_task(tmp_path / "b", dockerfile="FROM python:3.13-slim\n")
 
-        assert _sandbox(a)._image_identity() != _sandbox(b)._image_identity()
+        assert _sandbox(a)._images.identity() != _sandbox(b)._images.identity()
 
     def test_identity_changes_when_a_context_file_changes(self, tmp_path):
         """Skills baked into the image must produce a distinct image."""
@@ -77,7 +79,7 @@ class TestImageIdentity:
         (b / "skills").mkdir()
         (b / "skills" / "SKILL.md").write_text("# a skill")
 
-        assert _sandbox(a)._image_identity() != _sandbox(b)._image_identity()
+        assert _sandbox(a)._images.identity() != _sandbox(b)._images.identity()
 
     def test_runtime_name_follows_the_image_not_the_task_name(self, tmp_path):
         """Guards the delete-out-from-under-you bug in the first AgentCore cut.
@@ -110,18 +112,18 @@ class TestSingleFlight:
             await asyncio.sleep(0.01)
 
         with (
-            patch.object(AgentCoreSandbox, "_ensure_ecr_repository"),
-            patch.object(AgentCoreSandbox, "_ecr_image_exists", return_value=False),
-            patch.object(AgentCoreSandbox, "_build_and_push", new=_build),
+            patch.object(AgentCoreImagePublisher, "_ensure_ecr_repository"),
+            patch.object(AgentCoreImagePublisher, "_image_exists", return_value=False),
+            patch.object(AgentCoreImagePublisher, "_build_and_push", new=_build),
             patch.object(
-                AgentCoreSandbox,
+                AgentCoreImagePublisher,
                 "_resolve_image_digest",
                 lambda self, tag: f"reg/repo@sha256:{tag}",
             ),
         ):
             sandboxes = [_sandbox(task_dir, session=f"run-{i}") for i in range(20)]
             uris = await asyncio.gather(
-                *(s._publish_image(force_build=False) for s in sandboxes)
+                *(s._images.publish(force_build=False) for s in sandboxes)
             )
 
         assert builds["n"] == 1
@@ -159,19 +161,19 @@ class TestSingleFlight:
                 raise RuntimeError("transient throttle")
 
         with (
-            patch.object(AgentCoreSandbox, "_ensure_ecr_repository"),
-            patch.object(AgentCoreSandbox, "_ecr_image_exists", return_value=False),
-            patch.object(AgentCoreSandbox, "_build_and_push", new=_flaky),
+            patch.object(AgentCoreImagePublisher, "_ensure_ecr_repository"),
+            patch.object(AgentCoreImagePublisher, "_image_exists", return_value=False),
+            patch.object(AgentCoreImagePublisher, "_build_and_push", new=_flaky),
             patch.object(
-                AgentCoreSandbox,
+                AgentCoreImagePublisher,
                 "_resolve_image_digest",
                 lambda self, tag: f"reg/repo@sha256:{tag}",
             ),
         ):
             env = _sandbox(task_dir)
             with pytest.raises(RuntimeError, match="transient throttle"):
-                await env._publish_image(force_build=False)
-            await env._publish_image(force_build=False)
+                await env._images.publish(force_build=False)
+            await env._images.publish(force_build=False)
 
         assert calls["n"] == 2
 
@@ -211,293 +213,6 @@ class TestImageSizeGate:
         assert "2048" in message
         assert "not" in message and "adjustable" in message
         assert "daytona" in message
-
-
-class TestReaper:
-    def _control(self, runtimes, tags):
-        control = MagicMock()
-        paginator = MagicMock()
-        paginator.paginate.return_value = [{"agentRuntimes": runtimes}]
-        control.get_paginator.return_value = paginator
-        control.list_tags_for_resource.side_effect = lambda resourceArn: {
-            "tags": tags.get(resourceArn, {})
-        }
-        return control
-
-    def test_only_benchflow_managed_runtimes_are_reaped(self):
-        """Never delete something another tool created in the same account."""
-        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
-
-        old = datetime.now(UTC) - timedelta(days=3)
-        runtimes = [
-            {"agentRuntimeArn": "arn:mine", "agentRuntimeId": "mine", "createdAt": old},
-            {
-                "agentRuntimeArn": "arn:other",
-                "agentRuntimeId": "other",
-                "createdAt": old,
-            },
-        ]
-        expired = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-        control = self._control(
-            runtimes,
-            {
-                "arn:mine": {
-                    provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE,
-                    provisioning.LEASE_TAG: expired,
-                }
-            },
-        )
-
-        report = reap_stale_runtimes(control, max_age_minutes=60)
-
-        assert report.deleted == ["mine"]
-        assert report.skipped_unmanaged == 1
-
-    def test_recent_runtimes_are_kept(self):
-        """A runtime from a run still in flight must survive cleanup."""
-        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
-
-        runtimes = [
-            {
-                "agentRuntimeArn": "arn:mine",
-                "agentRuntimeId": "mine",
-                "createdAt": datetime.now(UTC) - timedelta(minutes=5),
-            }
-        ]
-        expired = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-        control = self._control(
-            runtimes,
-            {
-                "arn:mine": {
-                    provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE,
-                    provisioning.LEASE_TAG: expired,
-                }
-            },
-        )
-
-        report = reap_stale_runtimes(control, max_age_minutes=1440)
-
-        assert report.deleted == []
-        assert report.skipped_recent == 1
-        control.delete_agent_runtime.assert_not_called()
-
-    def test_dry_run_reports_without_deleting(self):
-        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
-
-        runtimes = [
-            {
-                "agentRuntimeArn": "arn:mine",
-                "agentRuntimeId": "mine",
-                "createdAt": datetime.now(UTC) - timedelta(days=3),
-            }
-        ]
-        expired = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-        control = self._control(
-            runtimes,
-            {
-                "arn:mine": {
-                    provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE,
-                    provisioning.LEASE_TAG: expired,
-                }
-            },
-        )
-
-        report = reap_stale_runtimes(control, max_age_minutes=60, dry_run=True)
-
-        assert report.deleted == ["mine"]
-        control.delete_agent_runtime.assert_not_called()
-
-    def test_unreadable_tags_fail_closed(self):
-        """If tags can't be read, assume it isn't ours."""
-        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
-
-        control = self._control(
-            [
-                {
-                    "agentRuntimeArn": "arn:x",
-                    "agentRuntimeId": "x",
-                    "createdAt": datetime.now(UTC) - timedelta(days=3),
-                }
-            ],
-            {},
-        )
-        control.list_tags_for_resource.side_effect = RuntimeError("denied")
-
-        report = reap_stale_runtimes(control, max_age_minutes=60)
-
-        assert report.deleted == []
-        assert report.skipped_unmanaged == 1
-
-
-class TestCleanupCommandGating:
-    """``bench sandbox cleanup`` must not phone AWS unless AgentCore is set up."""
-
-    def test_cleanup_is_inert_without_agentcore_configuration(self, monkeypatch):
-        """A dev machine with AWS credentials must not trigger a live call.
-
-        ``boto3`` ships with several unrelated extras, so importability is not
-        evidence that this account is being used for AgentCore runs.
-        """
-        from benchflow.cli.sandbox import _cleanup_agentcore_runtimes
-
-        monkeypatch.delenv("BENCHFLOW_AGENTCORE_ROLE_ARN", raising=False)
-        with patch("boto3.Session") as session:
-            assert (
-                _cleanup_agentcore_runtimes(dry_run=True, max_age_minutes=60) is False
-            )
-        session.assert_not_called()
-
-    def test_credential_failure_degrades_instead_of_crashing(self, monkeypatch):
-        """Cleanup may still have Daytona work to do; don't abort the command."""
-        from benchflow.cli.sandbox import _cleanup_agentcore_runtimes
-
-        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/x")
-        with patch("boto3.Session", side_effect=RuntimeError("no credentials")):
-            assert (
-                _cleanup_agentcore_runtimes(dry_run=True, max_age_minutes=60) is False
-            )
-
-    def test_daytona_failure_does_not_block_agentcore_cleanup(self, monkeypatch):
-        """One backend's broken credentials must not strand the other's resources.
-
-        The Daytona path exits when DAYTONA_API_KEY is missing; before this was
-        isolated it aborted the whole command, silently leaving AgentCore
-        runtimes to accumulate against a 100-per-account quota.
-        """
-        import typer
-
-        from benchflow.cli import sandbox as sandbox_cli
-
-        calls: list[str] = []
-        monkeypatch.setattr(sandbox_cli, "_daytona_sdk_available", lambda: True)
-        monkeypatch.setattr(
-            sandbox_cli,
-            "_cleanup_agentcore_runtimes",
-            lambda **kw: calls.append("agentcore") or True,
-        )
-        fake_main = MagicMock()
-        fake_main._cleanup_daytona_sandboxes.side_effect = typer.Exit(1)
-        monkeypatch.setitem(__import__("sys").modules, "benchflow.cli.main", fake_main)
-
-        sandbox_cli.sandbox_cleanup(dry_run=True, max_age_minutes=60)
-
-        assert calls == ["agentcore"]
-
-
-class TestAwsResponseShapeConformance:
-    """Pin the mocked shapes to the SDK's real ones.
-
-    Every fixture in this file invents AWS responses. When an invented shape
-    drifts from the service model the tests keep passing while production
-    breaks — which is exactly how the reaper came to read a ``createdAt`` that
-    ``ListAgentRuntimes`` never returns, and so deleted fresh runtimes.
-    """
-
-    def _shape(self, operation, member=None):
-        boto3 = pytest.importorskip("boto3")
-        client = boto3.Session(region_name="us-west-2").client(
-            "bedrock-agentcore-control",
-            aws_access_key_id="x",
-            aws_secret_access_key="y",
-        )
-        shape = client.meta.service_model.operation_model(operation).output_shape
-        return shape.members[member].member if member else shape
-
-    def test_list_agent_runtimes_has_no_created_at(self):
-        """The field the reaper originally keyed on does not exist here."""
-        members = self._shape("ListAgentRuntimes", "agentRuntimes").members
-
-        assert "lastUpdatedAt" in members
-        assert "createdAt" not in members
-
-    def test_get_agent_runtime_carries_the_bound_image(self):
-        """The adoption check reads this to refuse a mismatched runtime."""
-        members = self._shape("GetAgentRuntime").members
-
-        assert "agentRuntimeArtifact" in members
-        container = members["agentRuntimeArtifact"].members["containerConfiguration"]
-        assert "containerUri" in container.members
-
-
-class TestReaperAgeHandling:
-    def _control(self, runtimes, tags):
-        control = MagicMock()
-        paginator = MagicMock()
-        paginator.paginate.return_value = [{"agentRuntimes": runtimes}]
-        control.get_paginator.return_value = paginator
-        control.list_tags_for_resource.side_effect = lambda resourceArn: {
-            "tags": tags.get(resourceArn, {})
-        }
-        return control
-
-    def _managed(self, arn, *, leased_until=None):
-        """Managed tags. Default lease is expired, i.e. reapable."""
-        expiry = leased_until or (datetime.now(UTC) - timedelta(hours=1))
-        return {
-            arn: {
-                provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE,
-                provisioning.LEASE_TAG: expiry.isoformat(),
-            }
-        }
-
-    def test_fresh_runtime_in_the_real_list_shape_is_kept(self):
-        """Reproduces the reported P1 with the shape AWS actually returns.
-
-        ``ListAgentRuntimes`` has only ``lastUpdatedAt``; keying on
-        ``createdAt`` yielded None, skipped the age comparison, and selected a
-        minutes-old runtime for deletion under a one-day policy.
-        """
-        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
-
-        runtimes = [
-            {
-                "agentRuntimeArn": "arn:mine",
-                "agentRuntimeId": "mine",
-                "agentRuntimeName": "bf_x",
-                "lastUpdatedAt": datetime.now(UTC) - timedelta(minutes=3),
-                "status": "READY",
-            }
-        ]
-        control = self._control(runtimes, self._managed("arn:mine"))
-
-        report = reap_stale_runtimes(control, max_age_minutes=1440, dry_run=True)
-
-        assert report.deleted == []
-        assert report.skipped_recent == 1
-
-    def test_runtime_with_no_timestamp_is_kept(self):
-        """Unknown age must never be read as 'old enough to delete'."""
-        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
-
-        control = self._control(
-            [{"agentRuntimeArn": "arn:mine", "agentRuntimeId": "mine"}],
-            self._managed("arn:mine"),
-        )
-
-        report = reap_stale_runtimes(control, max_age_minutes=1440)
-
-        assert report.deleted == []
-        assert report.skipped_recent == 1
-        control.delete_agent_runtime.assert_not_called()
-
-    def test_genuinely_old_runtime_in_the_real_shape_is_reaped(self):
-        """The positive control: cleanup must still do its job."""
-        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
-
-        control = self._control(
-            [
-                {
-                    "agentRuntimeArn": "arn:mine",
-                    "agentRuntimeId": "mine",
-                    "lastUpdatedAt": datetime.now(UTC) - timedelta(days=3),
-                }
-            ],
-            self._managed("arn:mine"),
-        )
-
-        report = reap_stale_runtimes(control, max_age_minutes=1440)
-
-        assert report.deleted == ["mine"]
 
 
 class TestRuntimeImageBinding:
@@ -654,6 +369,42 @@ class TestRuntimeImageBinding:
         }
 
 
+class TestLifecycleConfiguration:
+    def test_effective_agent_timeout_expands_default_idle_window(self, tmp_path):
+        """Guards PR #937: long rollouts must not inherit the 15-minute default."""
+        env = _sandbox(_make_task(tmp_path))
+        env.configure_agent_timeout(1200)
+
+        assert env._lifecycle_configuration()["idleRuntimeSessionTimeout"] == 1200
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC", "59"),
+            ("BENCHFLOW_AGENTCORE_IDLE_TIMEOUT_SEC", "28801"),
+            ("BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC", "-1"),
+            ("BENCHFLOW_AGENTCORE_MAX_LIFETIME_SEC", "forever"),
+        ],
+    )
+    def test_invalid_service_bounds_fail_before_an_aws_call(
+        self, tmp_path, monkeypatch, name, value
+    ):
+        """Guards PR #937: reject invalid AgentCore lifecycle values actionably."""
+        monkeypatch.setenv(name, value)
+        env = _sandbox(_make_task(tmp_path))
+
+        with pytest.raises(ValueError, match=name):
+            env._lifecycle_configuration()
+
+    def test_task_timeout_above_agentcore_limit_is_not_silently_clamped(self, tmp_path):
+        """Guards PR #937: a backend that cannot honor the task must say so."""
+        env = _sandbox(_make_task(tmp_path))
+        env.configure_agent_timeout(28801)
+
+        with pytest.raises(ValueError, match="28800"):
+            env._lifecycle_configuration()
+
+
 class TestComposeRejection:
     def test_compose_task_is_refused_at_construction(self, tmp_path):
         """One container cannot host a task's side services."""
@@ -784,7 +535,7 @@ class TestLeaseProtectsActiveRuntimes:
 
     @pytest.mark.asyncio
     async def test_provisioning_writes_a_lease(self, tmp_path, monkeypatch):
-        """Without this the reaper has no activity signal at all."""
+        """Guards PR #937: initial lease covers the throttle boundary."""
         monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
         env = _sandbox(_make_task(tmp_path))
         control = MagicMock()
@@ -799,7 +550,19 @@ class TestLeaseProtectsActiveRuntimes:
 
         tags = control.tag_resource.call_args.kwargs["tags"]
         assert provisioning.LEASE_TAG in tags
-        assert datetime.fromisoformat(tags[provisioning.LEASE_TAG]) > datetime.now(UTC)
+        remaining = (
+            datetime.fromisoformat(tags[provisioning.LEASE_TAG]) - datetime.now(UTC)
+        ).total_seconds()
+        window = 28_800.0
+        assert remaining == pytest.approx(
+            window + provisioning.lease_renewal_interval(window), abs=2
+        )
+        # Successful create/adopt writes mark the throttle; the first fan-out
+        # must not immediately send a redundant TagResource call.
+        assert (
+            provisioning.lease_needs_renewal("arn:rt", window, time.monotonic())
+            is False
+        )
 
 
 class TestLeaseIntegrity:
@@ -888,6 +651,21 @@ class TestLeaseIntegrity:
         control.tag_resource.assert_called_once()
         assert provisioning.LEASE_TAG in control.tag_resource.call_args.kwargs["tags"]
 
+    @pytest.mark.asyncio
+    async def test_concurrent_due_rollouts_single_flight_the_lease(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards PR #937: due-check/write/mark must be atomic per runtime."""
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        env = _sandbox(_make_task(tmp_path))
+        env.runtime_arn = "arn:rt-concurrent-renewal"
+        control = MagicMock()
+
+        with patch.object(env, "_client", return_value=control):
+            await asyncio.gather(*(env._renew_lease() for _ in range(20)))
+
+        control.tag_resource.assert_called_once()
+
 
 class TestAdoptionContract:
     def _detail(self, **overrides):
@@ -951,6 +729,7 @@ class TestDeprecatedCleanupAliasIsSafe:
     """
 
     def test_negative_age_is_rejected_by_the_daytona_reaper(self):
+        """Guards PR #937 through the deprecated cleanup alias."""
         from benchflow.sandbox.daytona_reaper import reap_stale_sandboxes
 
         client = MagicMock()
@@ -969,6 +748,7 @@ class TestDeprecatedCleanupAliasIsSafe:
         ],
     )
     def test_every_age_knob_rejects_negatives(self, kwargs):
+        """Guards PR #937: no library age parameter may accept negatives."""
         from benchflow.sandbox.daytona_reaper import reap_stale_sandboxes
 
         with pytest.raises(ValueError, match="must be >= 0"):
@@ -976,7 +756,7 @@ class TestDeprecatedCleanupAliasIsSafe:
 
     @pytest.mark.parametrize("command", ["sandbox", "environment"])
     def test_cli_rejects_negative_max_age(self, command):
-        """Both the current command and the deprecated alias must refuse it."""
+        """Guards PR #937: both current and deprecated aliases must refuse it."""
         from typer.testing import CliRunner
 
         from benchflow.cli.main import app
@@ -996,7 +776,7 @@ class TestLeaseRenewalRetry:
 
     @pytest.mark.asyncio
     async def test_a_failed_renewal_retries_immediately(self, tmp_path, monkeypatch):
-        """The throttle recorded the attempt, not the write.
+        """Guards PR #937: the throttle must record the write, not the attempt.
 
         A first renewal that raised still advanced the window, so the retry
         that would have fixed it made zero tag_resource calls and the rollout
@@ -1061,7 +841,7 @@ class TestLeaseRenewalRetry:
             order.append("warm")
 
         with (
-            patch.object(env, "_publish_image", side_effect=_publish),
+            patch.object(env._images, "publish", side_effect=_publish),
             patch.object(env, "_ensure_runtime", side_effect=_ensure),
             patch.object(env, "_renew_lease", side_effect=_renew),
             patch.object(env, "_warm_session", side_effect=_warm),
@@ -1079,11 +859,11 @@ class TestReservedPathsArePreserved:
         ["Dockerfile.benchflow-agentcore", ".benchflow_agentcore_shim.py"],
     )
     def test_a_colliding_task_file_is_refused(self, tmp_path, reserved):
-        """These are written into the caller's tree and then deleted.
+        """Guards PR #937: generated names are an explicit backend contract.
 
-        A task shipping either name lost its file permanently, and because the
-        canonical walk skips both names the collision also cache-hit as though
-        the task file did not exist.
+        Staging no longer mutates the caller's tree, but a task shipping either
+        reserved name would still be excluded from the canonical context and
+        silently replaced by backend scaffolding without this refusal.
         """
         task_dir = _make_task(tmp_path)
         original = "important task content\n"
@@ -1094,3 +874,33 @@ class TestReservedPathsArePreserved:
 
         # The refusal must happen before anything touches the file.
         assert (task_dir / reserved).read_text() == original
+
+    @pytest.mark.parametrize(
+        "reserved",
+        ["Dockerfile.benchflow-agentcore", ".benchflow_agentcore_shim.py"],
+    )
+    def test_a_dangling_reserved_symlink_is_refused(self, tmp_path, reserved):
+        """Guards PR #937: ``Path.exists`` misses dangling symlinks."""
+        task_dir = _make_task(tmp_path)
+        external = tmp_path / "outside" / "missing"
+        (task_dir / reserved).symlink_to(external)
+
+        with pytest.raises(ValueError, match="reserved"):
+            _sandbox(task_dir)
+
+        assert not external.exists()
+
+    def test_a_symlinked_dockerfile_cannot_escape_the_context(self, tmp_path):
+        """Guards PR #937: external Dockerfile bytes must never reach AWS."""
+        task_dir = _make_task(tmp_path)
+        external = tmp_path / "outside.Dockerfile"
+        external.write_text("FROM scratch\nRUN echo EXTERNAL_SECRET\n")
+        dockerfile = task_dir / "Dockerfile"
+        dockerfile.unlink()
+        dockerfile.symlink_to(external)
+
+        with pytest.raises(ValueError, match="regular, non-symlink"):
+            _sandbox(task_dir)
+
+        with pytest.raises(ValueError, match="regular, non-symlink"):
+            provisioning.read_regular_text(dockerfile)

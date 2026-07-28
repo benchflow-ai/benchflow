@@ -9,9 +9,13 @@ CodeBuild on a Graviton worker when no daemon is reachable.
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
+import os
+import threading
 import time
 import zipfile
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,6 +37,18 @@ def _request(tmp_path, **overrides):
     )
     defaults.update(overrides)
     return builders.BuildRequest(**defaults)
+
+
+def _materialize_in_child(request, barrier, results):
+    """Hold one staged context open so another OS process overlaps it."""
+    with builders.materialized(request) as dockerfile:
+        results.put(
+            (
+                str(dockerfile.parent),
+                (dockerfile.parent / ".benchflow_agentcore_shim.py").read_text(),
+            )
+        )
+        barrier.wait(timeout=10)
 
 
 class TestBuilderSelection:
@@ -126,6 +142,103 @@ class TestCodeBuildPackaging:
 
         with zipfile.ZipFile(BytesIO(blob)) as archive:
             assert "link.txt" not in set(archive.namelist())
+
+    def test_empty_directories_are_packaged_and_change_identity(self, tmp_path):
+        """Guards PR #937: empty directories are real Docker context entries."""
+        from benchflow.sandbox import agentcore_provisioning as provisioning
+
+        request = _request(tmp_path)
+        before = provisioning.build_context_digest(
+            tmp_path, request.dockerfile_text, request.shim_text
+        )
+        (tmp_path / "empty").mkdir()
+        after = provisioning.build_context_digest(
+            tmp_path, request.dockerfile_text, request.shim_text
+        )
+
+        blob = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")._package(
+            request
+        )
+        with zipfile.ZipFile(BytesIO(blob)) as archive:
+            assert "empty/" in archive.namelist()
+        assert after != before
+
+    def test_parallel_processes_use_distinct_staging_contexts(self, tmp_path):
+        """Guards PR #937 against cross-process scaffold clobbering."""
+        if "fork" not in multiprocessing.get_all_start_methods():
+            pytest.skip("requires fork to overlap local staging contexts")
+        context = multiprocessing.get_context("fork")
+        barrier = context.Barrier(2)
+        results = context.Queue()
+        first = _request(tmp_path, shim_text="first")
+        second = _request(tmp_path, shim_text="second")
+        processes = [
+            context.Process(
+                target=_materialize_in_child,
+                args=(request, barrier, results),
+            )
+            for request in (first, second)
+        ]
+
+        for process in processes:
+            process.start()
+        observed = [results.get(timeout=10) for _ in processes]
+        for process in processes:
+            process.join(timeout=10)
+
+        assert all(process.exitcode == 0 for process in processes)
+        assert len({path for path, _shim in observed}) == 2
+        assert {shim for _path, shim in observed} == {"first", "second"}
+        assert all(not Path(path).exists() for path, _shim in observed)
+        assert not (tmp_path / ".benchflow_agentcore_shim.py").exists()
+
+    def test_partial_scaffold_write_cleans_the_staging_context(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards PR #937: a second generated-file write may fail."""
+        request = _request(tmp_path)
+        original = Path.write_text
+        staged: list[Path] = []
+
+        def _write(path, data, *args, **kwargs):
+            if path.name == builders.provisioning.GENERATED_SHIM:
+                staged.append(path.parent)
+            if path.name == builders.provisioning.GENERATED_DOCKERFILE:
+                raise OSError("disk full")
+            return original(path, data, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", _write)
+
+        with (
+            pytest.raises(OSError, match="disk full"),
+            builders.materialized(request),
+        ):
+            pass
+
+        assert staged and all(not path.exists() for path in staged)
+
+    def test_read_only_directories_stage_with_their_original_mode(self, tmp_path):
+        """Guards PR #937: applying 0555 before copying children breaks staging."""
+        request = _request(tmp_path)
+        readonly = tmp_path / "readonly"
+        readonly.mkdir()
+        (readonly / "payload.txt").write_text("payload")
+        os.chmod(readonly, 0o555)
+
+        try:
+            with builders.materialized(request) as dockerfile:
+                staged = dockerfile.parent / "readonly"
+                assert (staged / "payload.txt").read_text() == "payload"
+                assert staged.stat().st_mode & 0o777 == 0o555
+        finally:
+            os.chmod(readonly, 0o755)
+
+    def test_generated_file_modes_do_not_depend_on_host_umask(self, tmp_path):
+        """Guards PR #937: generated shim mode is part of the built image."""
+        with builders.materialized(_request(tmp_path)) as dockerfile:
+            shim = dockerfile.parent / ".benchflow_agentcore_shim.py"
+            assert dockerfile.stat().st_mode & 0o777 == 0o644
+            assert shim.stat().st_mode & 0o777 == 0o644
 
     def test_buildspec_enforces_the_image_size_cap_remotely(self):
         """The 2 GB cap must be caught on the worker, before the push."""
@@ -270,6 +383,51 @@ class TestDockerIgnoreParity:
         # Positive control: the class must not over-match.
         assert "secretX.pem" in relatives
 
+    @pytest.mark.parametrize(
+        ("pattern", "secret_name"),
+        [
+            ("foo/../secret.env", "secret.env"),
+            (r"\!secret.env", "!secret.env"),
+        ],
+    )
+    def test_docker_path_cleaning_and_escapes_do_not_leak(
+        self, tmp_path, pattern, secret_name
+    ):
+        """Guards PR #937 with patterns verified against Docker 29.3.0."""
+        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+        (tmp_path / ".dockerignore").write_text(pattern + "\n")
+        (tmp_path / secret_name).write_text("DO_NOT_UPLOAD")
+
+        blob = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")._package(
+            _request(tmp_path)
+        )
+
+        with zipfile.ZipFile(BytesIO(blob)) as archive:
+            assert secret_name not in archive.namelist()
+            assert b"DO_NOT_UPLOAD" not in b"".join(
+                archive.read(name)
+                for name in archive.namelist()
+                if not name.endswith("/")
+            )
+
+    def test_generated_dockerfile_specific_ignore_takes_precedence(self, tmp_path):
+        """Guards PR #937: Dockerfile-specific ignore overrides the root file."""
+        from benchflow.sandbox import agentcore_provisioning as provisioning
+
+        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+        (tmp_path / "secret.env").write_text("DO_NOT_UPLOAD")
+        (tmp_path / ".dockerignore").write_text("!secret.env\n")
+        (tmp_path / f"{provisioning.GENERATED_DOCKERFILE}.dockerignore").write_text(
+            "secret.env\n"
+        )
+
+        blob = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")._package(
+            _request(tmp_path)
+        )
+
+        with zipfile.ZipFile(BytesIO(blob)) as archive:
+            assert "secret.env" not in archive.namelist()
+
     def test_permission_bits_change_image_identity(self, tmp_path):
         """0600 and 0644 build different containers from identical bytes.
 
@@ -335,6 +493,63 @@ class TestDockerIgnoreParity:
         assert provisioning.build_context_digest(
             tmp_path, *first
         ) != provisioning.build_context_digest(tmp_path, *second)
+
+
+class TestBuildLifecycle:
+    """Remote and local builders fail closed and clean up after themselves."""
+
+    def test_bucket_hardening_preserves_existing_lifecycle_rules(self):
+        """Guards PR #937: hardening a shared bucket must not erase its policies."""
+        s3 = MagicMock()
+        s3.get_bucket_lifecycle_configuration.return_value = {
+            "Rules": [
+                {
+                    "ID": "operator-archive",
+                    "Status": "Enabled",
+                    "Filter": {"Prefix": "history/"},
+                    "Transition": {"Days": 30, "StorageClass": "GLACIER"},
+                },
+                {
+                    "ID": "benchflow-expire-build-contexts",
+                    "Status": "Disabled",
+                    "Filter": {"Prefix": "old/"},
+                    "Expiration": {"Days": 90},
+                },
+            ]
+        }
+        builder = builders.CodeBuildBuilder(lambda service: s3, "1", "us-west-2")
+
+        builder._ensure_bucket()
+
+        lifecycle = s3.put_bucket_lifecycle_configuration.call_args.kwargs[
+            "LifecycleConfiguration"
+        ]
+        assert [rule["ID"] for rule in lifecycle["Rules"]] == [
+            "operator-archive",
+            "benchflow-expire-build-contexts",
+        ]
+        assert lifecycle["Rules"][0]["Transition"]["StorageClass"] == "GLACIER"
+        assert lifecycle["Rules"][1]["Expiration"] == {"Days": 1}
+
+    def test_existing_codebuild_project_is_reconciled(self, monkeypatch):
+        """Guards PR #937: stale shared project settings must not run a wrong build."""
+        from botocore.exceptions import ClientError
+
+        monkeypatch.setenv(builders.ENV_CODEBUILD_ROLE, "arn:aws:iam::1:role/build")
+        codebuild = MagicMock()
+        codebuild.create_project.side_effect = ClientError(
+            {"Error": {"Code": "ResourceAlreadyExistsException", "Message": "exists"}},
+            "CreateProject",
+        )
+        builder = builders.CodeBuildBuilder(lambda service: codebuild, "1", "us-west-2")
+
+        builder._ensure_project()
+
+        config = codebuild.update_project.call_args.kwargs
+        assert config["name"] == builders.CODEBUILD_PROJECT
+        assert config["environment"]["type"] == "ARM_CONTAINER"
+        assert config["environment"]["privilegedMode"] is True
+        assert config["serviceRole"] == "arn:aws:iam::1:role/build"
 
     @pytest.mark.asyncio
     async def test_unmeasurable_image_is_not_pushed(self, tmp_path):
@@ -422,3 +637,131 @@ class TestDockerIgnoreParity:
 
         # A blocking diagnostic starved the ticker to ~1 tick.
         assert ticks > 5
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_upload_is_still_deleted(self, tmp_path):
+        """Guards PR #937 when S3 commits the upload but loses its response."""
+        builder = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")
+        s3 = MagicMock()
+        s3.put_object.side_effect = TimeoutError("response lost")
+
+        with (
+            patch.object(builder, "_client", return_value=s3),
+            patch.object(builder, "_ensure_bucket"),
+            pytest.raises(TimeoutError, match="response lost"),
+        ):
+            await builder.build_and_push(_request(tmp_path))
+
+        s3.delete_object.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_upload_finishes_before_context_deletion(self, tmp_path):
+        """Guards PR #937 against to_thread upload/delete reordering."""
+        builder = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")
+        s3 = MagicMock()
+        entered = threading.Event()
+        release = threading.Event()
+        calls: list[str] = []
+
+        def _put(**_kwargs):
+            entered.set()
+            release.wait(timeout=10)
+            calls.append("put")
+
+        s3.put_object.side_effect = _put
+        s3.delete_object.side_effect = lambda **_kwargs: calls.append("delete")
+
+        with (
+            patch.object(builder, "_client", return_value=s3),
+            patch.object(builder, "_ensure_bucket"),
+        ):
+            task = asyncio.create_task(builder.build_and_push(_request(tmp_path)))
+            await asyncio.to_thread(entered.wait, 10)
+            task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert calls == ["put", "delete"]
+
+    @pytest.mark.asyncio
+    async def test_timeout_stops_the_remote_build(self, tmp_path):
+        """Guards PR #937: a timed-out build must not keep running and push."""
+        builder = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")
+        codebuild = MagicMock()
+        codebuild.start_build.return_value = {"build": {"id": "b:timeout"}}
+        request = _request(tmp_path, timeout_sec=1)
+
+        with (
+            patch.object(builder, "_client", return_value=codebuild),
+            patch.object(
+                builders,
+                "time",
+                MagicMock(monotonic=MagicMock(side_effect=[0.0, 2.0])),
+            ),
+            pytest.raises(TimeoutError, match="did not finish"),
+        ):
+            await builder._run_build(request, "contexts/x.zip")
+
+        codebuild.stop_build.assert_called_once_with(id="b:timeout")
+
+    @pytest.mark.asyncio
+    async def test_cancellation_stops_build_before_deleting_context(self, tmp_path):
+        """Guards PR #937: stop the consumer before deleting its S3 source."""
+        builder = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")
+        s3 = MagicMock()
+        codebuild = MagicMock()
+        codebuild.start_build.return_value = {"build": {"id": "b:cancel"}}
+        codebuild.batch_get_builds.return_value = {
+            "builds": [{"id": "b:cancel", "buildStatus": "IN_PROGRESS"}]
+        }
+        calls: list[str] = []
+        codebuild.stop_build.side_effect = lambda **_kwargs: calls.append("stop")
+        s3.delete_object.side_effect = lambda **_kwargs: calls.append("delete")
+
+        def _client(service):
+            return codebuild if service == "codebuild" else s3
+
+        with (
+            patch.object(builder, "_client", side_effect=_client),
+            patch.object(builder, "_ensure_bucket"),
+            patch.object(builder, "_ensure_project"),
+            patch.object(builders, "_CODEBUILD_POLL_SEC", 0),
+        ):
+            task = asyncio.create_task(builder.build_and_push(_request(tmp_path)))
+            while not codebuild.batch_get_builds.called:
+                await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert calls == ["stop", "delete"]
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_start_recovers_id_and_stops_build(
+        self, tmp_path
+    ):
+        """Guards PR #937 when StartBuild succeeds after local cancellation."""
+        builder = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")
+        codebuild = MagicMock()
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _start(**_kwargs):
+            entered.set()
+            release.wait(timeout=10)
+            return {"build": {"id": "b:start-race"}}
+
+        codebuild.start_build.side_effect = _start
+
+        with patch.object(builder, "_client", return_value=codebuild):
+            task = asyncio.create_task(
+                builder._run_build(_request(tmp_path), "contexts/x.zip")
+            )
+            await asyncio.to_thread(entered.wait, 10)
+            task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        codebuild.stop_build.assert_called_once_with(id="b:start-race")

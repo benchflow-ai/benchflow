@@ -256,6 +256,9 @@ class TestFileTransfer:
         # mkdir + staged chunk(s) + one extract, not 13 uploads.
         assert len(commands) < 13
         assert any("tar -xzf" in c for c in commands)
+        extract = next(c for c in commands if "tar -xzf" in c)
+        assert "trap 'rm -f /tmp/.bf_upload_" in extract
+        assert "set -o pipefail" in extract
 
     @staticmethod
     def _extract_staged_archive(commands: list[str]) -> tarfile.TarFile:
@@ -330,16 +333,41 @@ class TestFileTransfer:
         with pytest.raises(ValueError, match="Refusing to inline"):
             await sandbox.write_text_file("/tmp/big", "x" * 200_000)
 
+    @pytest.mark.asyncio
+    async def test_oversized_file_download_is_refused_before_writing(
+        self, sandbox, tmp_path, monkeypatch
+    ):
+        """Guards PR #937: file downloads need the same memory cap as dirs."""
+        monkeypatch.setattr("benchflow.sandbox.agentcore._MAX_DOWNLOAD_BYTES", 8)
+        encoded = base64.b64encode(b"012345678").decode()
+
+        async def _exec(command, **kwargs):
+            return MagicMock(return_code=0, stdout=encoded, stderr="")
+
+        target = tmp_path / "too-large.bin"
+        with (
+            patch.object(sandbox, "exec", side_effect=_exec),
+            pytest.raises(RuntimeError, match="8 byte cap"),
+        ):
+            await sandbox.download_file("/remote/large", target)
+
+        assert not target.exists()
+
+    def test_invalid_download_base64_fails_closed(self, sandbox):
+        """Guards PR #937: corrupted provider output must not become a file."""
+        with pytest.raises(RuntimeError, match="invalid base64"):
+            sandbox._decode_download_payload("not@base64", kind="file")
+
 
 class TestImagePreparation:
     def _request(self, sandbox):
         from benchflow.sandbox import agentcore_builder as builders
-        from benchflow.sandbox.agentcore import _PING_SHIM
+        from benchflow.sandbox.agentcore_image import PING_SHIM
 
         return builders.BuildRequest(
             context_dir=sandbox.environment_dir,
-            dockerfile_text=sandbox._generated_dockerfile_text(),
-            shim_text=_PING_SHIM,
+            dockerfile_text=sandbox._images.generated_dockerfile_text(),
+            shim_text=PING_SHIM,
             image_uri="reg/repo:tag",
             registry="reg",
             region="us-west-2",
@@ -349,7 +377,7 @@ class TestImagePreparation:
 
     def test_generated_dockerfile_adds_the_ping_shim(self, sandbox):
         """Without a /ping responder the microVM 500s on every command."""
-        text = sandbox._generated_dockerfile_text()
+        text = sandbox._images.generated_dockerfile_text()
 
         assert "FROM python:3.12-slim" in text
         assert "benchflow_agentcore_shim.py" in text
@@ -361,15 +389,17 @@ class TestImagePreparation:
         original = (tmp_path / "Dockerfile").read_text()
         with builders.materialized(self._request(sandbox)) as dockerfile:
             assert dockerfile.exists()
+            assert dockerfile.parent != tmp_path
             assert (tmp_path / "Dockerfile").read_text() == original
 
     def test_generated_files_never_survive_the_build(self, sandbox, tmp_path):
-        """The build context is the task's own directory; don't litter it."""
+        """Guards PR #937: staging never mutates the caller's task directory."""
         from benchflow.sandbox import agentcore_builder as builders
 
         before = {p.name for p in tmp_path.iterdir()}
-        with builders.materialized(self._request(sandbox)):
-            assert {p.name for p in tmp_path.iterdir()} != before
+        with builders.materialized(self._request(sandbox)) as dockerfile:
+            assert {p.name for p in tmp_path.iterdir()} == before
+            assert (dockerfile.parent / ".benchflow_agentcore_shim.py").is_file()
 
         assert {p.name for p in tmp_path.iterdir()} == before
 
@@ -380,11 +410,14 @@ class TestImagePreparation:
         from benchflow.sandbox import agentcore_builder as builders
 
         before = {p.name for p in tmp_path.iterdir()}
+        staged = None
         with contextlib.suppress(RuntimeError):  # noqa: SIM117
-            with builders.materialized(self._request(sandbox)):
+            with builders.materialized(self._request(sandbox)) as dockerfile:
+                staged = dockerfile.parent
                 raise RuntimeError("build blew up")
 
         assert {p.name for p in tmp_path.iterdir()} == before
+        assert staged is not None and not staged.exists()
 
     def test_docker_image_config_is_honoured(self, tmp_path):
         env = AgentCoreSandbox(
@@ -395,7 +428,7 @@ class TestImagePreparation:
             task_env_config=SandboxConfig(docker_image="python:3.12-slim"),
         )
 
-        assert "FROM python:3.12-slim" in env._generated_dockerfile_text()
+        assert "FROM python:3.12-slim" in env._images.generated_dockerfile_text()
 
 
 class TestCapabilityGating:

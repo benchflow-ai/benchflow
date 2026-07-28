@@ -24,12 +24,14 @@ import io
 import json
 import logging
 import os
+import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 import zipfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -72,22 +74,49 @@ class Builder(Protocol):
 
 @contextmanager
 def materialized(request: BuildRequest) -> Iterator[Path]:
-    """Write the generated Dockerfile and shim, yield the Dockerfile, clean up.
+    """Yield a generated Dockerfile inside an isolated staged build context.
 
-    The build context is the task's own environment directory, so these files
-    must not survive the build — otherwise every run would litter the caller's
-    task tree.
+    Generated files never belong in the caller's task tree. Fixed filenames
+    there were vulnerable to dangling symlinks, partial-write cleanup, and
+    cross-process builds overwriting or unlinking each other's inputs. Each
+    build now receives a unique context containing exactly the canonical,
+    already-filtered entries plus BenchFlow's two generated files.
     """
-    context = request.context_dir
-    shim = context / provisioning.GENERATED_SHIM
-    dockerfile = context / provisioning.GENERATED_DOCKERFILE
-    shim.write_text(request.shim_text)
-    dockerfile.write_text(request.dockerfile_text)
-    try:
+    with tempfile.TemporaryDirectory(prefix="benchflow-agentcore-context-") as raw:
+        context = Path(raw)
+        directory_modes: list[tuple[Path, int]] = []
+        # Do not copy ignore-control files into the filtered staging tree: the
+        # local daemon/CodeBuild docker invocation would apply them a second
+        # time and could exclude BenchFlow's generated shim.
+        ignore_controls = {
+            ".dockerignore",
+            f"{provisioning.GENERATED_DOCKERFILE}.dockerignore",
+        }
+        for source, relative in provisioning.iter_context_entries(request.context_dir):
+            if relative in ignore_controls:
+                continue
+            target = context / relative
+            if source.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                # Apply restrictive directory modes only after descendants are
+                # copied; chmod(0555) here would make a valid read-only source
+                # directory impossible to stage.
+                directory_modes.append((target, source.stat().st_mode & 0o7777))
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target, follow_symlinks=False)
+
+        shim = context / provisioning.GENERATED_SHIM
+        dockerfile = context / provisioning.GENERATED_DOCKERFILE
+        shim.write_text(request.shim_text)
+        dockerfile.write_text(request.dockerfile_text)
+        # Generated modes are part of the image but not caller-controlled
+        # identity inputs, so make them deterministic across host umasks.
+        shim.chmod(0o644)
+        dockerfile.chmod(0o644)
+        for directory, mode in reversed(directory_modes):
+            directory.chmod(mode)
         yield dockerfile
-    finally:
-        for path in (dockerfile, shim):
-            path.unlink(missing_ok=True)
 
 
 def _run(*args: str, timeout: float | None = None, input_text: str | None = None):
@@ -128,6 +157,7 @@ class LocalDockerBuilder:
 
     async def build_and_push(self, request: BuildRequest) -> None:
         with materialized(request) as dockerfile:
+            context = dockerfile.parent
             args = [
                 "docker",
                 "build",
@@ -140,7 +170,7 @@ class LocalDockerBuilder:
             ]
             if request.force_build:
                 args.append("--no-cache")
-            args.append(str(request.context_dir))
+            args.append(str(context))
             result = await asyncio.to_thread(_run, *args, timeout=request.timeout_sec)
         if result.returncode != 0:
             raise RuntimeError(
@@ -266,13 +296,28 @@ class CodeBuildBuilder:
         key = f"contexts/{uuid.uuid4().hex}.zip"
         archive = await asyncio.to_thread(self._package, request)
         await asyncio.to_thread(self._ensure_bucket)
-        await asyncio.to_thread(
-            self._client("s3").put_object,
-            Bucket=self._bucket,
-            Key=key,
-            Body=archive,
-        )
         try:
+            # The upload belongs inside the cleanup scope. S3 can commit the
+            # object and lose the response; deleting the key even when
+            # put_object raises is the only safe handling of that ambiguity.
+            upload = asyncio.create_task(
+                asyncio.to_thread(
+                    self._client("s3").put_object,
+                    Bucket=self._bucket,
+                    Key=key,
+                    Body=archive,
+                )
+            )
+            try:
+                await asyncio.shield(upload)
+            except asyncio.CancelledError:
+                # to_thread cancellation does not stop the underlying upload.
+                # Wait for it to settle before the finally block deletes the
+                # key, or a late successful upload can recreate the object
+                # after cleanup.
+                with suppress(Exception):
+                    await upload
+                raise
             await asyncio.to_thread(self._ensure_project)
             await self._run_build(request, key)
         finally:
@@ -303,11 +348,15 @@ class CodeBuildBuilder:
         """
         buffer = io.BytesIO()
         with (
-            materialized(request),
+            materialized(request) as dockerfile,
             zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive,
         ):
-            for path, relative in provisioning.iter_context_files(request.context_dir):
-                archive.write(path, arcname=relative)
+            context = dockerfile.parent
+            for path, relative in provisioning.iter_context_entries(context):
+                archive.write(
+                    path,
+                    arcname=relative + "/" if path.is_dir() else relative,
+                )
             # The generated scaffolding is excluded from the canonical walk
             # (it must not affect image identity), so add it explicitly —
             # CodeBuild only ever sees this archive.
@@ -315,7 +364,7 @@ class CodeBuildBuilder:
                 provisioning.GENERATED_DOCKERFILE,
                 provisioning.GENERATED_SHIM,
             ):
-                archive.write(request.context_dir / generated, arcname=generated)
+                archive.write(context / generated, arcname=generated)
         return buffer.getvalue()
 
     def _ensure_bucket(self) -> None:
@@ -362,20 +411,29 @@ class CodeBuildBuilder:
                 "RestrictPublicBuckets": True,
             },
         )
+        lifecycle_rule = {
+            "ID": "benchflow-expire-build-contexts",
+            "Status": "Enabled",
+            "Filter": {"Prefix": "contexts/"},
+            "Expiration": {"Days": 1},
+        }
+        try:
+            existing = s3.get_bucket_lifecycle_configuration(Bucket=self._bucket)
+            rules = [
+                rule
+                for rule in existing.get("Rules", [])
+                if rule.get("ID") != lifecycle_rule["ID"]
+            ]
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "NoSuchLifecycleConfiguration":
+                raise
+            rules = []
+        # Preserve operator-owned lifecycle rules on a custom/shared bucket.
+        # put_bucket_lifecycle_configuration replaces the entire document.
+        rules.append(lifecycle_rule)
         s3.put_bucket_lifecycle_configuration(
             Bucket=self._bucket,
-            # Build contexts are consumed within minutes; expiring them keeps a
-            # benchmark run from accruing storage cost — and exposure — forever.
-            LifecycleConfiguration={
-                "Rules": [
-                    {
-                        "ID": "benchflow-expire-build-contexts",
-                        "Status": "Enabled",
-                        "Filter": {"Prefix": "contexts/"},
-                        "Expiration": {"Days": 1},
-                    }
-                ]
-            },
+            LifecycleConfiguration={"Rules": rules},
         )
 
     def _ensure_project(self) -> None:
@@ -400,21 +458,38 @@ class CodeBuildBuilder:
         except ClientError as exc:
             if exc.response["Error"]["Code"] != "ResourceAlreadyExistsException":
                 raise
+            # This project is shared across runs. Reconcile its mutable
+            # execution contract so an old project (or an operator edit)
+            # cannot silently switch us to x86, disable Docker, or retain a
+            # stale service role.
+            codebuild.update_project(name=CODEBUILD_PROJECT, **config)
+            logger.info("Updated CodeBuild project %s", CODEBUILD_PROJECT)
 
     async def _run_build(self, request: BuildRequest, key: str) -> None:
         codebuild = self._client("codebuild")
-        started = await asyncio.to_thread(
-            codebuild.start_build,
-            projectName=CODEBUILD_PROJECT,
-            sourceTypeOverride="S3",
-            sourceLocationOverride=f"{self._bucket}/{key}",
-            buildspecOverride=json.dumps(_BUILDSPEC),
-            environmentVariablesOverride=[
-                {"name": "BF_IMAGE_URI", "value": request.image_uri},
-                {"name": "BF_REGISTRY", "value": request.registry},
-            ],
-            timeoutInMinutesOverride=_CODEBUILD_TIMEOUT_MIN,
+        start = asyncio.create_task(
+            asyncio.to_thread(
+                codebuild.start_build,
+                projectName=CODEBUILD_PROJECT,
+                sourceTypeOverride="S3",
+                sourceLocationOverride=f"{self._bucket}/{key}",
+                buildspecOverride=json.dumps(_BUILDSPEC),
+                environmentVariablesOverride=[
+                    {"name": "BF_IMAGE_URI", "value": request.image_uri},
+                    {"name": "BF_REGISTRY", "value": request.registry},
+                ],
+                timeoutInMinutesOverride=_CODEBUILD_TIMEOUT_MIN,
+            )
         )
+        cancelled_during_start: asyncio.CancelledError | None = None
+        try:
+            started = await asyncio.shield(start)
+        except asyncio.CancelledError as exc:
+            # The API may have accepted the build even though our task was
+            # cancelled while waiting for its response. Recover the id before
+            # honoring cancellation so the remote build can be stopped.
+            cancelled_during_start = exc
+            started = await start
         build_id = started["build"]["id"]
         logger.info(
             "CodeBuild %s building %s (arm64, no local docker)",
@@ -422,22 +497,55 @@ class CodeBuildBuilder:
             request.image_uri,
         )
 
-        deadline = time.monotonic() + (
-            request.timeout_sec or _CODEBUILD_TIMEOUT_MIN * 60
-        )
-        while time.monotonic() < deadline:
-            await asyncio.sleep(_CODEBUILD_POLL_SEC)
-            builds = await asyncio.to_thread(codebuild.batch_get_builds, ids=[build_id])
-            build = builds["builds"][0]
-            if build["buildStatus"] == "IN_PROGRESS":
-                continue
-            if build["buildStatus"] == "SUCCEEDED":
-                logger.info("Pushed AgentCore image %s (codebuild)", request.image_uri)
-                return
-            raise await asyncio.to_thread(self._build_failure, build, request.image_uri)
-        raise TimeoutError(
-            f"CodeBuild {build_id} did not finish within the build timeout"
-        )
+        terminal = False
+
+        async def _stop_unfinished() -> None:
+            try:
+                await asyncio.to_thread(codebuild.stop_build, id=build_id)
+            except Exception as exc:
+                # Preserve the timeout/cancellation/provider error that caused
+                # the abort, while making a potentially still-running paid
+                # build visible to the operator.
+                logger.warning(
+                    "Could not stop unfinished CodeBuild %s: %s", build_id, exc
+                )
+
+        if cancelled_during_start is not None:
+            await asyncio.shield(_stop_unfinished())
+            raise cancelled_during_start
+
+        try:
+            deadline = time.monotonic() + (
+                request.timeout_sec or _CODEBUILD_TIMEOUT_MIN * 60
+            )
+            while time.monotonic() < deadline:
+                await asyncio.sleep(_CODEBUILD_POLL_SEC)
+                builds = await asyncio.to_thread(
+                    codebuild.batch_get_builds, ids=[build_id]
+                )
+                build = builds["builds"][0]
+                if build["buildStatus"] == "IN_PROGRESS":
+                    continue
+                terminal = True
+                if build["buildStatus"] == "SUCCEEDED":
+                    logger.info(
+                        "Pushed AgentCore image %s (codebuild)", request.image_uri
+                    )
+                    return
+                raise await asyncio.to_thread(
+                    self._build_failure, build, request.image_uri
+                )
+            raise TimeoutError(
+                f"CodeBuild {build_id} did not finish within the build timeout"
+            )
+        except asyncio.CancelledError:
+            if not terminal:
+                await asyncio.shield(_stop_unfinished())
+            raise
+        except Exception:
+            if not terminal:
+                await _stop_unfinished()
+            raise
 
     def _build_failure(self, build: dict[str, Any], image_uri: str) -> Exception:
         """Turn a failed build into the most specific error we can offer."""

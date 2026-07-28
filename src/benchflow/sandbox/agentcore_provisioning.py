@@ -26,10 +26,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
+import posixpath
 import re
+import stat
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
+
+from pathspec import GitIgnoreSpec
 
 logger = logging.getLogger("benchflow").getChild("agentcore")
 
@@ -59,6 +64,7 @@ _KEY_LOCKS: dict[str, asyncio.Lock] = {}
 _RESULTS: dict[str, Any] = {}
 #: runtime ARN -> monotonic time of the last lease refresh by this process.
 _LEASE_RENEWED: dict[str, float] = {}
+_LEASE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 async def once[T](key: str, factory: Callable[[], Awaitable[T]]) -> T:
@@ -88,6 +94,12 @@ def reset_cache() -> None:
     _RESULTS.clear()
     _KEY_LOCKS.clear()
     _LEASE_RENEWED.clear()
+    _LEASE_LOCKS.clear()
+
+
+def lease_renewal_interval(window_seconds: float) -> float:
+    """How often a process may refresh one runtime's lease."""
+    return max(window_seconds / 4, 60.0)
 
 
 def lease_needs_renewal(runtime_arn: str, window_seconds: float, now: float) -> bool:
@@ -111,7 +123,7 @@ def lease_needs_renewal(runtime_arn: str, window_seconds: float, now: float) -> 
     last = _LEASE_RENEWED.get(runtime_arn)
     if last is None:
         return True
-    return (now - last) >= max(window_seconds / 4, 60.0)
+    return (now - last) >= lease_renewal_interval(window_seconds)
 
 
 def mark_lease_renewed(runtime_arn: str, now: float) -> None:
@@ -119,98 +131,109 @@ def mark_lease_renewed(runtime_arn: str, now: float) -> None:
     _LEASE_RENEWED[runtime_arn] = now
 
 
-def _translate_ignore_pattern(pattern: str) -> re.Pattern[str]:
-    """Compile one ``.dockerignore`` pattern to a regex over relative paths.
+async def renew_lease(
+    runtime_arn: str,
+    window_seconds: float,
+    write: Callable[[], Awaitable[None]],
+    *,
+    monotonic: Callable[[], float],
+) -> bool:
+    """Single-flight a due lease refresh for one runtime.
 
-    Follows Docker's matcher rather than approximating it: leading and trailing
-    separators are stripped (so ``/secret.env`` is the root file, not an
-    absolute path that never matches), ``*`` and ``?`` stop at a separator,
-    ``**`` spans zero or more path segments, and ``[...]`` character classes
-    are honored. Approximating any of these leaks files Docker excludes into
-    the CodeBuild upload, which is a credential-exposure bug because that
-    archive goes to S3.
+    The due check is repeated under the per-runtime lock. Without that second
+    check, a fan-out of rollouts all observes the same stale timestamp before
+    the first AWS call completes and sends one ``TagResource`` per rollout.
+    The timestamp advances only after *write* succeeds, so a failed first call
+    leaves the immediate retry due.
     """
-    cleaned = pattern.strip().strip("/")
-    segments = cleaned.split("/")
-    regex = ""
-    for index, segment in enumerate(segments):
-        last = index == len(segments) - 1
-        if segment == "**":
-            regex += "(?:.*)?" if last else "(?:[^/]+/)*"
-            continue
-        regex += _translate_segment(segment)
-        if not last:
-            regex += "/"
-    return re.compile(f"^{regex}$")
+    now = monotonic()
+    if not lease_needs_renewal(runtime_arn, window_seconds, now):
+        return False
+    async with _GLOBAL_LOCK:
+        lock = _LEASE_LOCKS.setdefault(runtime_arn, asyncio.Lock())
+    async with lock:
+        now = monotonic()
+        if not lease_needs_renewal(runtime_arn, window_seconds, now):
+            return False
+        await write()
+        mark_lease_renewed(runtime_arn, monotonic())
+        return True
 
 
-def _translate_segment(segment: str) -> str:
-    """Translate one path segment's wildcards, including character classes."""
-    out = ""
-    index = 0
-    while index < len(segment):
-        char = segment[index]
-        if char == "*":
-            out += "[^/]*"
-        elif char == "?":
-            out += "[^/]"
-        elif char == "[":
-            close = segment.find("]", index + 2)
-            if close == -1:
-                # An unterminated class is a literal bracket, as in shell
-                # globbing — not a syntax error.
-                out += re.escape(char)
-            else:
-                body = segment[index + 1 : close]
-                negate = body[:1] in ("!", "^")
-                if negate:
-                    body = body[1:]
-                # Keep ranges intact; escape only what would change meaning.
-                body = body.replace("\\", "\\\\").replace("]", "\\]")
-                out += f"[{'^' if negate else ''}{body}]"
-                index = close + 1
-                continue
-        else:
-            out += re.escape(char)
-        index += 1
-    return out
+def read_regular_text(path: Path) -> str:
+    """Read a regular file without following a final symlink.
 
-
-def _dockerignore_matcher(context_dir: Path) -> Callable[[str], bool]:
-    """Compile ``.dockerignore`` into a predicate over context-relative paths.
-
-    Docker semantics: ``#`` comments, ``!`` re-includes, last matching rule
-    wins, and a rule matching a directory excludes everything beneath it.
+    Task-controlled Dockerfiles and ignore files are build inputs. Following a
+    symlink here would let the context escape even though the canonical walker
+    correctly skips symlinks.
     """
-    ignore_file = context_dir / ".dockerignore"
-    if not ignore_file.is_file():
-        return lambda _relative: False
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"{path} must be a regular, non-symlink file") from exc
+    try:
+        mode = os.fstat(fd).st_mode
+        if not stat.S_ISREG(mode):
+            raise ValueError(f"{path} must be a regular, non-symlink file")
+        with os.fdopen(fd, encoding="utf-8") as handle:
+            fd = -1
+            return handle.read()
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
-    rules: list[tuple[re.Pattern[str], bool]] = []
-    for raw in ignore_file.read_text().splitlines():
+
+def _active_ignore_file(context_dir: Path) -> Path | None:
+    """Return Docker's active ignore file for the generated Dockerfile."""
+    specific = context_dir / f"{GENERATED_DOCKERFILE}.dockerignore"
+    default = context_dir / ".dockerignore"
+    for candidate in (specific, default):
+        if os.path.lexists(candidate):
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ValueError(f"{candidate} must be a regular, non-symlink file")
+            return candidate
+    return None
+
+
+def _clean_dockerignore_lines(text: str) -> list[str]:
+    """Apply Docker's path-cleaning pass before wildcard matching."""
+    cleaned: list[str] = []
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         negated = line.startswith("!")
-        body = line.lstrip("!").strip()
-        if body.strip("/"):
-            rules.append((_translate_ignore_pattern(body), negated))
-
-    def matches(relative: str) -> bool:
-        # A rule that matches an ancestor directory excludes its contents.
-        segments = relative.split("/")
-        candidates = ["/".join(segments[: i + 1]) for i in range(len(segments))]
-        ignored = False
-        for compiled, negated in rules:
-            if any(compiled.match(candidate) for candidate in candidates):
-                ignored = not negated
-        return ignored
-
-    return matches
+        body = line[1:] if negated else line
+        # Backslash-escaped leading ``!``/``#`` are literals, not control
+        # markers; PathSpec understands those escapes after cleaning.
+        normalized = posixpath.normpath(body).strip("/")
+        if normalized in {"", "."}:
+            continue
+        cleaned.append(("!" if negated else "") + normalized)
+    return cleaned
 
 
-def iter_context_files(context_dir: Path) -> Iterator[tuple[Path, str]]:
-    """The canonical Docker build context: ``(absolute path, relative path)``.
+def _dockerignore_matcher(context_dir: Path) -> Callable[[str], bool]:
+    """Compile Docker-compatible ignore rules for the generated Dockerfile.
+
+    ``GitIgnoreSpec`` supplies the mature ``**``, character-class, escaped
+    leading ``!``/``#``, directory, and last-match-wins semantics. Docker's
+    own preprocessing difference is handled above by cleaning ``.``/``..`` and
+    leading/trailing separators first. A Dockerfile-specific ignore file takes
+    precedence over the root ``.dockerignore``, just like ``docker build -f``.
+    """
+    ignore_file = _active_ignore_file(context_dir)
+    if ignore_file is None:
+        return lambda _relative: False
+    spec = GitIgnoreSpec.from_lines(
+        _clean_dockerignore_lines(read_regular_text(ignore_file))
+    )
+    return spec.match_file
+
+
+def iter_context_entries(context_dir: Path) -> Iterator[tuple[Path, str]]:
+    """Canonical Docker build context entries, including empty directories.
 
     Used by **both** the image digest and the CodeBuild upload so the two views
     cannot drift. They previously did: the local Docker daemon honored
@@ -218,17 +241,32 @@ def iter_context_files(context_dir: Path) -> Iterator[tuple[Path, str]]:
     file, which shipped ignored files — including secrets — into S3 and also
     let an ignored file change the image identity.
 
-    Symlinks are skipped so a task-controlled link cannot pull host files into
-    the image or the upload (#411).
+    Symlinks and non-regular special files are skipped so a task-controlled
+    link cannot pull host files into the image or the upload (#411). Directory
+    entries are retained: an empty directory changes a real Docker context and
+    therefore must change both the digest and the CodeBuild ZIP.
     """
     ignored = _dockerignore_matcher(context_dir)
     for path in sorted(context_dir.rglob("*")):
-        if path.is_symlink() or not path.is_file():
+        if path.is_symlink():
             continue
         relative = path.relative_to(context_dir).as_posix()
-        if relative in _GENERATED_NAMES or ignored(relative):
+        if relative in _GENERATED_NAMES:
+            continue
+        if path.is_dir():
+            if not ignored(relative + "/"):
+                yield path, relative
+            continue
+        if not path.is_file() or ignored(relative):
             continue
         yield path, relative
+
+
+def iter_context_files(context_dir: Path) -> Iterator[tuple[Path, str]]:
+    """Compatibility iterator over regular files in the canonical context."""
+    for path, relative in iter_context_entries(context_dir):
+        if path.is_file():
+            yield path, relative
 
 
 def build_context_digest(
@@ -259,13 +297,13 @@ def build_context_digest(
 
     field(b"dockerfile", dockerfile_text.encode())
     field(b"shim", shim_text.encode())
-    for path, relative in iter_context_files(context_dir):
+    for path, relative in iter_context_entries(context_dir):
         field(b"path", relative.encode())
-        # Full permission bits, not just the executable flag: 0600 and 0644
-        # produce different containers, and a secret dropped to 0644 during an
-        # upgrade must not reuse the old image.
+        field(b"kind", b"dir" if path.is_dir() else b"file")
+        # Full permission bits, not just the executable flag.
         field(b"mode", format(path.stat().st_mode & 0o7777, "04o").encode())
-        field(b"blob", hashlib.sha256(path.read_bytes()).digest())
+        if path.is_file():
+            field(b"blob", hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
 
 

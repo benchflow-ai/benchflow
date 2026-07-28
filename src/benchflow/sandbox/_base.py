@@ -411,6 +411,15 @@ class BaseSandbox(ABC):
             "live_process() (docker, daytona, apple-container, agentcore)."
         )
 
+    def configure_agent_timeout(self, timeout_sec: int) -> None:
+        """Receive the rollout's effective agent wall-clock budget.
+
+        Most backends do not need this hint. Providers whose remote session has
+        its own lifecycle cap can override it so the infrastructure does not
+        expire before BenchFlow's agent budget does.
+        """
+        return None
+
     # Container-level snapshot/restore (Branch substrate)
     #
     # Part of the Sandbox contract (``docs/architecture.md``): the Branch
