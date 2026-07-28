@@ -239,5 +239,5 @@ def register_sandbox(app: typer.Typer) -> None:
             ),
         ] = 1440,
     ) -> None:
-        """Clean up orphaned Daytona sandboxes."""
+        """Clean up orphaned sandboxes and stale shared runtimes."""
         sandbox_cleanup(dry_run=dry_run, max_age_minutes=max_age_minutes)
