@@ -120,12 +120,56 @@ class TestChannelSeparation:
         assert line == b'{"jsonrpc":"2.0","id":1}\n'
 
     @pytest.mark.asyncio
-    async def test_unknown_channels_are_still_treated_as_stdout(self):
-        """Older SDKs emit one undifferentiated stream; don't mute the agent."""
-        proc = _process(_FakeShell([_frame(b"hello\n", channel="")]))
+    async def test_frames_without_channel_info_are_treated_as_stdout(self):
+        """An SDK emitting one undifferentiated stream must not be muted.
+
+        Requiring a recognized STDOUT would turn a naming mismatch into total
+        transport failure rather than a cosmetic one.
+        """
+        untyped = SimpleNamespace(payload=b"hello\n", channel=None)
+        proc = _process(_FakeShell([untyped]))
         proc._reader_task = asyncio.create_task(proc._drain_frames())
 
         assert await asyncio.wait_for(proc.readline(), timeout=2) == b"hello\n"
+
+    @pytest.mark.asyncio
+    async def test_a_typed_unknown_channel_never_reaches_the_acp_stream(self):
+        """A typed channel this code does not know is still a side channel.
+
+        Admitting it would put non-protocol bytes into JSON-RPC input, which is
+        how a diagnostic gets parsed as — or impersonates — protocol traffic.
+        """
+        proc = _process(
+            _FakeShell(
+                [
+                    _frame(b"telemetry blob\n", channel="METRICS"),
+                    _frame(b'{"jsonrpc":"2.0","id":7}\n'),
+                ]
+            )
+        )
+        proc._reader_task = asyncio.create_task(proc._drain_frames())
+
+        assert (
+            await asyncio.wait_for(proc.readline(), timeout=2)
+            == b'{"jsonrpc":"2.0","id":7}\n'
+        )
+
+    @pytest.mark.asyncio
+    async def test_shell_death_during_startup_does_not_hang(self):
+        """Startup drain must not swallow the end sentinel.
+
+        Discarding it strands the next readline for the full 900s timeout even
+        though the transport is already known to be gone.
+        """
+        proc = _process(_FakeShell([_frame(b"noise\n")]))
+        proc._reader_task = asyncio.create_task(proc._drain_frames())
+        await asyncio.sleep(0)
+        while not proc._reader_done:
+            await asyncio.sleep(0.01)
+        proc._clear_buffered_output()
+
+        with pytest.raises(TransportClosedError):
+            await asyncio.wait_for(proc.readline(), timeout=2)
 
 
 class TestEnvHandling:

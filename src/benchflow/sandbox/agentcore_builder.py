@@ -164,14 +164,22 @@ class LocalDockerBuilder:
         inspect = await asyncio.to_thread(
             _run, "docker", "image", "inspect", "-f", "{{.Size}}", image_uri
         )
+        from benchflow.sandbox.protocol import SandboxStartupError
+
         raw = (inspect.stdout or "").strip()
         if inspect.returncode != 0 or not raw.isdigit():
-            logger.debug("Could not measure image size for %s", image_uri)
-            return
+            # Failing open here pushes an image whose size is unknown; if it is
+            # over the hard 2 GB cap the failure resurfaces later as an opaque
+            # runtime error that reads as a task failure.
+            raise SandboxStartupError(
+                f"Could not measure the size of {image_uri} "
+                f"(docker image inspect exited {inspect.returncode}). Refusing "
+                "to push an image that cannot be checked against AgentCore's "
+                f"{provisioning.MAX_IMAGE_MB} MB limit.",
+                sandbox_id=image_uri,
+            )
         message = provisioning.image_size_error(int(raw), image_uri)
         if message:
-            from benchflow.sandbox.protocol import SandboxStartupError
-
             raise SandboxStartupError(message, sandbox_id=image_uri)
 
     def _login(self, registry: str) -> None:

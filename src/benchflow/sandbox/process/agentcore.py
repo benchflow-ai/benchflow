@@ -133,15 +133,22 @@ class AgentCoreProcess(LiveProcess):
     def _is_stdout(frame: Any) -> bool:
         """Whether *frame* carries agent stdout rather than a side channel.
 
-        Side channels are named explicitly and everything else is treated as
-        agent output. The inverse — allowing only a recognized ``STDOUT`` —
-        would mute the agent entirely against an SDK that emits a single
-        undifferentiated stream, turning a cosmetic mismatch into a total
-        transport failure.
+        A frame that carries **no** channel information is treated as agent
+        output, so an SDK emitting one undifferentiated stream is not muted.
+        A frame that *is* typed must be ``STDOUT`` — an unrecognized typed
+        channel is a side channel this code has not learned about yet, and
+        letting it through would put non-protocol bytes into JSON-RPC input.
         """
         channel = getattr(frame, "channel", None)
-        name = str(getattr(channel, "name", None) or channel or "").upper()
-        return not any(side in name for side in _SIDE_CHANNELS)
+        if channel is None:
+            return True
+        name = getattr(channel, "name", None)
+        if name is None:
+            name = str(channel)
+        name = str(name).strip().upper()
+        if not name:
+            return True
+        return "STDOUT" in name
 
     def _log_non_stdout(self, frame: Any) -> None:
         payload = frame.payload
@@ -242,14 +249,39 @@ class AgentCoreProcess(LiveProcess):
                         transport_diagnosis="pty_startup_timeout",
                     ),
                 ) from e
+            if line is _READER_ENDED:
+                # The shell died during startup. Without this the sentinel is
+                # consumed here (or cleared by the drain below) and the next
+                # readline waits out the full read timeout instead.
+                msg = (
+                    "AgentCore shell closed before the start marker "
+                    f"(session={self._session_id}): {self._failure or 'EOF'}"
+                )
+                raise TransportClosedError(
+                    msg,
+                    TransportClosedDiagnostic(
+                        raw_message=msg[:500],
+                        transport_diagnosis="remote_session_killed",
+                    ),
+                ) from self._failure
             if marker in line.decode(errors="replace"):
                 return
 
     def _clear_buffered_output(self) -> None:
+        """Drop pre-agent terminal noise, but never the end sentinel.
+
+        Discarding it would strand a later readline for the whole read timeout
+        even though the transport is already known to be gone.
+        """
         self._partial = b""
+        saw_end = False
         while not self._line_buffer.empty():
             with contextlib.suppress(asyncio.QueueEmpty):
-                self._line_buffer.get_nowait()
+                if self._line_buffer.get_nowait() is _READER_ENDED:
+                    saw_end = True
+        if saw_end or self._reader_done:
+            with contextlib.suppress(Exception):
+                self._line_buffer.put_nowait(_READER_ENDED)
 
     async def readline(self) -> bytes:
         from benchflow.diagnostics import (

@@ -57,6 +57,8 @@ MAX_IMAGE_MB = 2048
 _GLOBAL_LOCK = asyncio.Lock()
 _KEY_LOCKS: dict[str, asyncio.Lock] = {}
 _RESULTS: dict[str, Any] = {}
+#: runtime ARN -> monotonic time of the last lease refresh by this process.
+_LEASE_RENEWED: dict[str, float] = {}
 
 
 async def once[T](key: str, factory: Callable[[], Awaitable[T]]) -> T:
@@ -85,17 +87,40 @@ def reset_cache() -> None:
     """Drop memoized provisioning state (tests only)."""
     _RESULTS.clear()
     _KEY_LOCKS.clear()
+    _LEASE_RENEWED.clear()
+
+
+def lease_needs_renewal(runtime_arn: str, window_seconds: float, now: float) -> bool:
+    """Whether this process should refresh *runtime_arn*'s lease.
+
+    Provisioning is memoized, so only the first rollout of an image reaches the
+    creation path — every later rollout would inherit a lease that keeps aging
+    while it runs. A long or staggered matrix therefore ends up with active
+    sessions on an expired lease, which is the deletion hazard the lease exists
+    to prevent.
+
+    Renewal is throttled to a quarter of the lease window so the refresh costs
+    a handful of control-plane calls per runtime per run rather than one per
+    rollout (``TagResource`` shares the tight control-plane budget).
+    """
+    interval = max(window_seconds / 4, 60.0)
+    last = _LEASE_RENEWED.get(runtime_arn)
+    if last is not None and now - last < interval:
+        return False
+    _LEASE_RENEWED[runtime_arn] = now
+    return True
 
 
 def _translate_ignore_pattern(pattern: str) -> re.Pattern[str]:
     """Compile one ``.dockerignore`` pattern to a regex over relative paths.
 
-    Follows Docker's matcher rather than approximating it with ``fnmatch``:
-    leading and trailing separators are stripped (so ``/secret.env`` is the
-    root file, not an absolute path that never matches), ``*`` and ``?`` stop
-    at a separator, and ``**`` spans zero or more path segments. Approximating
-    these let ``/secret.env`` and ``**/*.pem`` through, which uploaded root
-    secrets to S3.
+    Follows Docker's matcher rather than approximating it: leading and trailing
+    separators are stripped (so ``/secret.env`` is the root file, not an
+    absolute path that never matches), ``*`` and ``?`` stop at a separator,
+    ``**`` spans zero or more path segments, and ``[...]`` character classes
+    are honored. Approximating any of these leaks files Docker excludes into
+    the CodeBuild upload, which is a credential-exposure bug because that
+    archive goes to S3.
     """
     cleaned = pattern.strip().strip("/")
     segments = cleaned.split("/")
@@ -105,16 +130,42 @@ def _translate_ignore_pattern(pattern: str) -> re.Pattern[str]:
         if segment == "**":
             regex += "(?:.*)?" if last else "(?:[^/]+/)*"
             continue
-        for char in segment:
-            if char == "*":
-                regex += "[^/]*"
-            elif char == "?":
-                regex += "[^/]"
-            else:
-                regex += re.escape(char)
+        regex += _translate_segment(segment)
         if not last:
             regex += "/"
     return re.compile(f"^{regex}$")
+
+
+def _translate_segment(segment: str) -> str:
+    """Translate one path segment's wildcards, including character classes."""
+    out = ""
+    index = 0
+    while index < len(segment):
+        char = segment[index]
+        if char == "*":
+            out += "[^/]*"
+        elif char == "?":
+            out += "[^/]"
+        elif char == "[":
+            close = segment.find("]", index + 2)
+            if close == -1:
+                # An unterminated class is a literal bracket, as in shell
+                # globbing — not a syntax error.
+                out += re.escape(char)
+            else:
+                body = segment[index + 1 : close]
+                negate = body[:1] in ("!", "^")
+                if negate:
+                    body = body[1:]
+                # Keep ranges intact; escape only what would change meaning.
+                body = body.replace("\\", "\\\\").replace("]", "\\]")
+                out += f"[{'^' if negate else ''}{body}]"
+                index = close + 1
+                continue
+        else:
+            out += re.escape(char)
+        index += 1
+    return out
 
 
 def _dockerignore_matcher(context_dir: Path) -> Callable[[str], bool]:
@@ -188,14 +239,25 @@ def build_context_digest(
     container even though every byte of content is unchanged.
     """
     digest = hashlib.sha256()
-    digest.update(dockerfile_text.encode())
-    digest.update(b"\0shim\0")
-    digest.update(shim_text.encode())
+
+    def field(label: bytes, payload: bytes) -> None:
+        # Length-prefixed fields: without this a file literally named "shim",
+        # or a path containing the separator byte, could be framed to produce
+        # the same digest as a different context.
+        digest.update(label)
+        digest.update(str(len(payload)).encode())
+        digest.update(b":")
+        digest.update(payload)
+
+    field(b"dockerfile", dockerfile_text.encode())
+    field(b"shim", shim_text.encode())
     for path, relative in iter_context_files(context_dir):
-        digest.update(relative.encode())
-        digest.update(b"\0")
-        digest.update(b"x" if path.stat().st_mode & 0o111 else b"-")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
+        field(b"path", relative.encode())
+        # Full permission bits, not just the executable flag: 0600 and 0644
+        # produce different containers, and a secret dropped to 0644 during an
+        # upgrade must not reuse the old image.
+        field(b"mode", format(path.stat().st_mode & 0o7777, "04o").encode())
+        field(b"blob", hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
 
 

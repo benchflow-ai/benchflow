@@ -248,3 +248,76 @@ class TestDockerIgnoreParity:
 
         assert "a.log" not in relatives
         assert "keep.log" in relatives
+
+    def test_character_classes_are_honoured(self, tmp_path):
+        """`secret[0-9].pem` is a valid Docker pattern; missing it leaks to S3."""
+        from benchflow.sandbox import agentcore_provisioning as provisioning
+
+        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+        for name in ("secret1.pem", "secret9.pem", "secretX.pem"):
+            (tmp_path / name).write_text("blob")
+        (tmp_path / ".dockerignore").write_text("secret[0-9].pem\n")
+
+        relatives = {rel for _p, rel in provisioning.iter_context_files(tmp_path)}
+
+        assert "secret1.pem" not in relatives
+        assert "secret9.pem" not in relatives
+        # Positive control: the class must not over-match.
+        assert "secretX.pem" in relatives
+
+    def test_permission_bits_change_image_identity(self, tmp_path):
+        """0600 and 0644 build different containers from identical bytes."""
+        import os
+
+        from benchflow.sandbox import agentcore_provisioning as provisioning
+
+        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+        script = tmp_path / "entrypoint.sh"
+        script.write_text("#!/bin/sh\n")
+
+        os.chmod(script, 0o644)
+        readable = provisioning.build_context_digest(tmp_path, "DF", "SHIM")
+        os.chmod(script, 0o600)
+        private = provisioning.build_context_digest(tmp_path, "DF", "SHIM")
+        os.chmod(script, 0o755)
+        executable = provisioning.build_context_digest(tmp_path, "DF", "SHIM")
+
+        assert len({readable, private, executable}) == 3
+
+    def test_shim_bytes_change_image_identity(self, tmp_path):
+        """The shim is the image entrypoint; an upgrade must not reuse the old."""
+        from benchflow.sandbox import agentcore_provisioning as provisioning
+
+        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+
+        assert provisioning.build_context_digest(
+            tmp_path, "DF", "shim-v1"
+        ) != provisioning.build_context_digest(tmp_path, "DF", "shim-v2")
+
+    def test_identity_fields_cannot_be_confused(self, tmp_path):
+        """Length-prefixed framing: no path can imitate another field."""
+        from benchflow.sandbox import agentcore_provisioning as provisioning
+
+        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+        (tmp_path / "shim").write_text("x")
+
+        assert provisioning.build_context_digest(
+            tmp_path, "DF", "abc"
+        ) != provisioning.build_context_digest(tmp_path, "DFabc", "")
+
+    @pytest.mark.asyncio
+    async def test_unmeasurable_image_is_not_pushed(self, tmp_path):
+        """Failing open pushes an image that may exceed the hard 2 GB cap."""
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        builder = builders.LocalDockerBuilder(MagicMock())
+
+        with (
+            patch.object(
+                builders,
+                "_run",
+                return_value=MagicMock(returncode=1, stdout="", stderr="boom"),
+            ),
+            pytest.raises(SandboxStartupError, match="Could not measure"),
+        ):
+            await builder._reject_oversized("repo:tag")

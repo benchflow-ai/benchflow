@@ -237,9 +237,15 @@ class TestReaper:
                 "createdAt": old,
             },
         ]
+        expired = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         control = self._control(
             runtimes,
-            {"arn:mine": {provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE}},
+            {
+                "arn:mine": {
+                    provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE,
+                    provisioning.LEASE_TAG: expired,
+                }
+            },
         )
 
         report = reap_stale_runtimes(control, max_age_minutes=60)
@@ -258,9 +264,15 @@ class TestReaper:
                 "createdAt": datetime.now(UTC) - timedelta(minutes=5),
             }
         ]
+        expired = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         control = self._control(
             runtimes,
-            {"arn:mine": {provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE}},
+            {
+                "arn:mine": {
+                    provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE,
+                    provisioning.LEASE_TAG: expired,
+                }
+            },
         )
 
         report = reap_stale_runtimes(control, max_age_minutes=1440)
@@ -279,9 +291,15 @@ class TestReaper:
                 "createdAt": datetime.now(UTC) - timedelta(days=3),
             }
         ]
+        expired = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         control = self._control(
             runtimes,
-            {"arn:mine": {provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE}},
+            {
+                "arn:mine": {
+                    provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE,
+                    provisioning.LEASE_TAG: expired,
+                }
+            },
         )
 
         report = reap_stale_runtimes(control, max_age_minutes=60, dry_run=True)
@@ -412,8 +430,15 @@ class TestReaperAgeHandling:
         }
         return control
 
-    def _managed(self, arn):
-        return {arn: {provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE}}
+    def _managed(self, arn, *, leased_until=None):
+        """Managed tags. Default lease is expired, i.e. reapable."""
+        expiry = leased_until or (datetime.now(UTC) - timedelta(hours=1))
+        return {
+            arn: {
+                provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE,
+                provisioning.LEASE_TAG: expiry.isoformat(),
+            }
+        }
 
     def test_fresh_runtime_in_the_real_list_shape_is_kept(self):
         """Reproduces the reported P1 with the shape AWS actually returns.
@@ -496,6 +521,9 @@ class TestRuntimeImageBinding:
                 "containerConfiguration": {"containerUri": "new.example/repo@sha256:b"}
             },
             "lifecycleConfiguration": env._lifecycle_configuration(),
+            "roleArn": "arn:aws:iam::1:role/rt",
+            "networkConfiguration": {"networkMode": "PUBLIC"},
+            "protocolConfiguration": {"serverProtocol": "HTTP"},
         }
 
         with (
@@ -532,6 +560,9 @@ class TestRuntimeImageBinding:
                 "idleRuntimeSessionTimeout": 900,
                 "maxLifetime": 28800,
             },
+            "roleArn": "arn:aws:iam::1:role/rt",
+            "networkConfiguration": {"networkMode": "PUBLIC"},
+            "protocolConfiguration": {"serverProtocol": "HTTP"},
         }
 
         with pytest.raises(SandboxStartupError, match="wrong image"):
@@ -540,6 +571,9 @@ class TestRuntimeImageBinding:
                 "rt-1",
                 "new.example/repo@sha256:b",
                 {"idleRuntimeSessionTimeout": 900, "maxLifetime": 28800},
+                "arn:aws:iam::1:role/rt",
+                {"networkMode": "PUBLIC"},
+                {"serverProtocol": "HTTP"},
             )
 
     def test_adoption_fails_closed_when_lifecycle_drifted(self):
@@ -562,12 +596,15 @@ class TestRuntimeImageBinding:
             },
         }
 
-        with pytest.raises(SandboxStartupError, match="lifecycle"):
+        with pytest.raises(SandboxStartupError, match="does not match"):
             AgentCoreSandbox._verify_adopted_runtime(
                 control,
                 "rt-1",
                 "repo@sha256:a",
                 {"idleRuntimeSessionTimeout": 600, "maxLifetime": 7200},
+                "arn:aws:iam::1:role/rt",
+                {"networkMode": "PUBLIC"},
+                {"serverProtocol": "HTTP"},
             )
 
     @pytest.mark.asyncio
@@ -595,6 +632,9 @@ class TestRuntimeImageBinding:
                 "idleRuntimeSessionTimeout": 600,
                 "maxLifetime": 7200,
             },
+            "roleArn": "arn:aws:iam::1:role/rt",
+            "networkConfiguration": {"networkMode": "PUBLIC"},
+            "protocolConfiguration": {"serverProtocol": "HTTP"},
         }
 
         with (
@@ -760,3 +800,171 @@ class TestLeaseProtectsActiveRuntimes:
         tags = control.tag_resource.call_args.kwargs["tags"]
         assert provisioning.LEASE_TAG in tags
         assert datetime.fromisoformat(tags[provisioning.LEASE_TAG]) > datetime.now(UTC)
+
+
+class TestLeaseIntegrity:
+    """A lease is only protection if it is written, kept, and refreshed."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lease_write_aborts_the_launch(self, tmp_path, monkeypatch):
+        """Swallowing it starts a session on a runtime cleanup may delete."""
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        env = _sandbox(_make_task(tmp_path))
+        control = MagicMock()
+        control.create_agent_runtime.return_value = {
+            "agentRuntimeId": "rt-1",
+            "agentRuntimeArn": "arn:rt",
+        }
+        control.tag_resource.side_effect = RuntimeError("AccessDenied")
+
+        with (
+            patch.object(env, "_client", return_value=control),
+            pytest.raises(SandboxStartupError, match="lease"),
+        ):
+            await env._create_or_adopt_runtime("bf_x", "repo@sha256:a")
+
+    def test_a_managed_runtime_without_a_lease_is_not_deleted(self):
+        """Every provisioned runtime is leased, so an unleased one is unexplained."""
+        from benchflow.sandbox.agentcore_reaper import reap_stale_runtimes
+
+        control = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {
+                "agentRuntimes": [
+                    {
+                        "agentRuntimeArn": "arn:mine",
+                        "agentRuntimeId": "mine",
+                        "lastUpdatedAt": datetime.now(UTC) - timedelta(days=30),
+                    }
+                ]
+            }
+        ]
+        control.get_paginator.return_value = paginator
+        control.list_tags_for_resource.return_value = {
+            "tags": {provisioning.MANAGED_TAG: provisioning.MANAGED_VALUE}
+        }
+
+        report = reap_stale_runtimes(control, max_age_minutes=0)
+
+        assert report.deleted == []
+        assert report.skipped_active == 1
+
+    def test_renewal_is_due_again_after_the_throttle_window(self):
+        """Cache-hit rollouts must refresh, or a long matrix outlives its lease."""
+        window = 7200.0
+        arn = "arn:renew"
+
+        assert provisioning.lease_needs_renewal(arn, window, 0.0) is True
+        assert provisioning.lease_needs_renewal(arn, window, 10.0) is False
+        assert provisioning.lease_needs_renewal(arn, window, window) is True
+
+    @pytest.mark.asyncio
+    async def test_every_rollout_renews_when_due(self, tmp_path, monkeypatch):
+        """Provisioning is memoized, so renewal cannot live only in creation."""
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        env = _sandbox(_make_task(tmp_path))
+        env.runtime_arn = "arn:rt-renew-probe"
+        control = MagicMock()
+
+        with patch.object(env, "_client", return_value=control):
+            await env._renew_lease()
+
+        control.tag_resource.assert_called_once()
+        assert provisioning.LEASE_TAG in control.tag_resource.call_args.kwargs["tags"]
+
+
+class TestAdoptionContract:
+    def _detail(self, **overrides):
+        detail = {
+            "agentRuntimeArtifact": {
+                "containerConfiguration": {"containerUri": "repo@sha256:a"}
+            },
+            "lifecycleConfiguration": {
+                "idleRuntimeSessionTimeout": 600,
+                "maxLifetime": 7200,
+            },
+            "roleArn": "arn:aws:iam::1:role/rt",
+            "networkConfiguration": {"networkMode": "PUBLIC"},
+            "protocolConfiguration": {"serverProtocol": "HTTP"},
+        }
+        detail.update(overrides)
+        return detail
+
+    def _verify(self, detail):
+        from benchflow.sandbox.agentcore import AgentCoreSandbox
+
+        control = MagicMock()
+        control.get_agent_runtime.return_value = detail
+        AgentCoreSandbox._verify_adopted_runtime(
+            control,
+            "rt-1",
+            "repo@sha256:a",
+            {"idleRuntimeSessionTimeout": 600, "maxLifetime": 7200},
+            "arn:aws:iam::1:role/rt",
+            {"networkMode": "PUBLIC"},
+            {"serverProtocol": "HTTP"},
+        )
+
+    def test_a_fully_matching_runtime_is_accepted(self):
+        self._verify(self._detail())
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("roleArn", "arn:aws:iam::1:role/someone-else"),
+            ("networkConfiguration", {"networkMode": "VPC"}),
+            ("protocolConfiguration", {"serverProtocol": "MCP"}),
+        ],
+    )
+    def test_a_differing_contract_is_refused(self, field, value):
+        """Right image, wrong contract: wrong permissions, egress, or shell."""
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        with pytest.raises(SandboxStartupError, match="does not match"):
+            self._verify(self._detail(**{field: value}))
+
+
+class TestDeprecatedCleanupAliasIsSafe:
+    """`bench environment cleanup` reaches the same destructive code.
+
+    Guarding only the new command left the deprecated alias able to select
+    STARTED sandboxes for deletion via a negative age.
+    """
+
+    def test_negative_age_is_rejected_by_the_daytona_reaper(self):
+        from benchflow.sandbox.daytona_reaper import reap_stale_sandboxes
+
+        client = MagicMock()
+
+        with pytest.raises(ValueError, match="must be >= 0"):
+            reap_stale_sandboxes(client, max_age_minutes=-1, dry_run=True)
+
+        client.delete.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"max_age_minutes": -1},
+            {"failed_max_age_minutes": -1},
+            {"min_idle_minutes": -1},
+        ],
+    )
+    def test_every_age_knob_rejects_negatives(self, kwargs):
+        from benchflow.sandbox.daytona_reaper import reap_stale_sandboxes
+
+        with pytest.raises(ValueError, match="must be >= 0"):
+            reap_stale_sandboxes(MagicMock(), dry_run=True, **kwargs)
+
+    @pytest.mark.parametrize("command", ["sandbox", "environment"])
+    def test_cli_rejects_negative_max_age(self, command):
+        """Both the current command and the deprecated alias must refuse it."""
+        from typer.testing import CliRunner
+
+        from benchflow.cli.main import app
+
+        result = CliRunner().invoke(app, [command, "cleanup", "--max-age", "-1"])
+
+        assert result.exit_code != 0

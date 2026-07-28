@@ -91,7 +91,14 @@ def _lease_is_active(tags: Mapping[str, str], now: datetime) -> bool:
     """
     raw = tags.get(LEASE_TAG)
     if not raw:
-        return False
+        # Every runtime BenchFlow provisions is leased before any session runs,
+        # and that write is fatal if it fails. A managed runtime with no lease
+        # is therefore unexplained, not idle — treat it as in use.
+        logger.warning(
+            "BenchFlow-managed AgentCore runtime has no lease tag; "
+            "treating it as active rather than deleting it"
+        )
+        return True
     try:
         until = datetime.fromisoformat(raw)
     except ValueError:

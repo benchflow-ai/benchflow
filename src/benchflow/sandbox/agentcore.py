@@ -50,6 +50,7 @@ import os
 import shlex
 import tarfile
 import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -83,6 +84,8 @@ _MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 # POST /invocations), so register the runtime as HTTP rather than relying on
 # whatever the service currently defaults to.
 _PROTOCOL_CONFIGURATION = {"serverProtocol": "HTTP"}
+#: AgentCore offers PUBLIC or VPC only; see the registry's enforces_no_network.
+_NETWORK_CONFIGURATION = {"networkMode": "PUBLIC"}
 
 # Environment overrides.
 _ENV_REGION = "BENCHFLOW_AGENTCORE_REGION"
@@ -272,6 +275,10 @@ class AgentCoreSandbox(BaseSandbox):
             self.runtime_arn = await self._ensure_runtime(image_uri)
             # AgentCore requires a session id of at least 33 characters.
             self.runtime_session_id = f"{uuid.uuid4()}-{uuid.uuid4().hex[:8]}"
+            # Provisioning is memoized, so only the first rollout of an image
+            # runs the creation path. Every rollout refreshes the lease (rate
+            # limited) or a long matrix outlives the lease it inherited.
+            await self._renew_lease()
             await self._warm_session()
             self.logger.info(
                 "AgentCore session ready (runtime=%s, session=%s)",
@@ -462,7 +469,7 @@ class AgentCoreSandbox(BaseSandbox):
                     "containerConfiguration": {"containerUri": image_uri}
                 },
                 roleArn=self._require_role_arn(),
-                networkConfiguration={"networkMode": "PUBLIC"},
+                networkConfiguration=_NETWORK_CONFIGURATION,
                 protocolConfiguration=_PROTOCOL_CONFIGURATION,
                 lifecycleConfiguration=self._lifecycle_configuration(),
                 description=f"BenchFlow sandbox for {self.environment_name}",
@@ -501,7 +508,7 @@ class AgentCoreSandbox(BaseSandbox):
                         "containerConfiguration": {"containerUri": image_uri}
                     },
                     roleArn=self._require_role_arn(),
-                    networkConfiguration={"networkMode": "PUBLIC"},
+                    networkConfiguration=_NETWORK_CONFIGURATION,
                     protocolConfiguration=_PROTOCOL_CONFIGURATION,
                     # Omitting this resets idle/max-lifetime to the service
                     # defaults, silently discarding the caller's configured
@@ -515,6 +522,9 @@ class AgentCoreSandbox(BaseSandbox):
                 runtime_id,
                 image_uri,
                 self._lifecycle_configuration(),
+                self._require_role_arn(),
+                _NETWORK_CONFIGURATION,
+                _PROTOCOL_CONFIGURATION,
             )
             self.logger.info("Adopted existing AgentCore runtime %s", arn)
             return arn, runtime_id
@@ -528,6 +538,24 @@ class AgentCoreSandbox(BaseSandbox):
             image_uri,
         )
         return created["agentRuntimeArn"], runtime_id
+
+    async def _renew_lease(self) -> None:
+        """Refresh this runtime's lease if it is due, before the session runs."""
+        if not self.runtime_arn:
+            return
+        lifecycle = self._lifecycle_configuration()
+        window = float(
+            max(lifecycle["maxLifetime"], lifecycle["idleRuntimeSessionTimeout"])
+        )
+        if not provisioning.lease_needs_renewal(
+            self.runtime_arn, window, time.monotonic()
+        ):
+            return
+        await asyncio.to_thread(
+            self._write_lease,
+            self._client("bedrock-agentcore-control"),
+            self.runtime_arn,
+        )
 
     def _write_lease(self, control: Any, runtime_arn: str) -> None:
         """Mark the runtime as possibly-in-use until the session window closes.
@@ -552,9 +580,15 @@ class AgentCoreSandbox(BaseSandbox):
                 tags={provisioning.LEASE_TAG: until.isoformat()},
             )
         except Exception as exc:
-            # A runtime without a readable lease is treated as in-use by the
-            # reaper, so a failure here is conservative, not dangerous.
-            self.logger.warning("Could not write AgentCore lease: %s", exc)
+            # Swallowing this would leave the runtime unleased while sessions
+            # run against it, which is precisely the state cleanup is allowed
+            # to delete. Fail the launch instead of starting work that another
+            # process may reap out from under us.
+            raise SandboxStartupError(
+                f"Could not write the AgentCore lease for {runtime_arn}: {exc}. "
+                "Refusing to start a session that cleanup could delete.",
+                sandbox_id=runtime_arn,
+            ) from exc
 
     @staticmethod
     def _verify_adopted_runtime(
@@ -562,6 +596,9 @@ class AgentCoreSandbox(BaseSandbox):
         runtime_id: str,
         image_uri: str,
         lifecycle: dict[str, int],
+        role_arn: str,
+        network: dict[str, Any],
+        protocol: dict[str, Any],
     ) -> None:
         """Fail closed unless the adopted runtime matches what this run needs.
 
@@ -581,16 +618,35 @@ class AgentCoreSandbox(BaseSandbox):
                 sandbox_id=runtime_id,
             )
         actual = detail.get("lifecycleConfiguration") or {}
-        drifted = {
+        drifted: dict[str, tuple[Any, Any]] = {
             key: (actual.get(key), value)
             for key, value in lifecycle.items()
             if actual.get(key) != value
         }
+        # Everything the create request pins must also hold on adoption. A
+        # runtime with the right image but the wrong execution role, network
+        # mode, or protocol is a different sandbox contract than this run asked
+        # for — wrong permissions, wrong egress, or a shell that never answers.
+        for label, expected, found in (
+            ("roleArn", role_arn, detail.get("roleArn")),
+            (
+                "networkConfiguration",
+                dict(network),
+                dict(detail.get("networkConfiguration") or {}),
+            ),
+            (
+                "protocolConfiguration",
+                dict(protocol),
+                dict(detail.get("protocolConfiguration") or {}),
+            ),
+        ):
+            if found != expected:
+                drifted[label] = (found, expected)
         if drifted:
             raise SandboxStartupError(
-                f"AgentCore runtime {runtime_id} lifecycle is {actual}, not the "
-                f"configured {lifecycle} (drift: {drifted}). Sessions could be "
-                "reclaimed earlier than this run expects.",
+                f"AgentCore runtime {runtime_id} does not match this run's "
+                f"configuration (found, expected): {drifted}. Refusing to adopt "
+                "a runtime with a different contract.",
                 sandbox_id=runtime_id,
             )
 
