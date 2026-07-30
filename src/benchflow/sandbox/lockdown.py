@@ -28,6 +28,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Every variable through which an agent can be handed a model endpoint. Kept in
+# sync with providers.litellm_runtime._PROVIDER_ENDPOINT_ENV_NAMES (which that
+# module strips before re-pointing the agent at the gateway) by
+# test_no_web_endpoint_names_cover_provider_endpoint_names -- importing it here
+# would close a cycle, since litellm_runtime imports benchflow.sandbox.
+AGENT_LLM_ENDPOINT_ENV_NAMES = frozenset(
+    {
+        "LLM_BASE_URL",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "AZURE_API_ENDPOINT",
+        "AZURE_API_BASE",
+        "AZURE_OPENAI_ENDPOINT",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+        "GEMINI_BASE_URL",
+        "GOOGLE_GEMINI_BASE_URL",
+        "BENCHFLOW_PROVIDER_BASE_URL",
+    }
+)
+
 
 # Path lockdown defaults and validation
 
@@ -143,6 +164,37 @@ def build_priv_drop_cmd(agent_launch: str, sandbox_user: str) -> str:
     )
 
 
+def _is_loopback_http_url(value: str) -> bool:
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname in {"127.0.0.1", "localhost"}
+        and parsed.port is not None
+    )
+
+
+def classify_agent_llm_endpoints(
+    agent_env: dict[str, str],
+) -> tuple[list[str], list[str]]:
+    """Split the agent's LLM endpoint variables into (present, non-loopback).
+
+    Every adapter injects the gateway under its own name, so there is no single
+    variable to inspect: openhands uses ``LLM_BASE_URL``, opencode and codex-acp
+    use ``OPENAI_BASE_URL``, claude-agent-acp uses ``ANTHROPIC_BASE_URL``, and
+    ``BENCHFLOW_PROVIDER_BASE_URL`` is set for every routed agent.
+    """
+    present: list[str] = []
+    offending: list[str] = []
+    for name in AGENT_LLM_ENDPOINT_ENV_NAMES:
+        value = agent_env.get(name)
+        if not value:
+            continue
+        present.append(name)
+        if not _is_loopback_http_url(value):
+            offending.append(name)
+    return present, offending
+
+
 async def enforce_agent_egress_firewall(
     env: Any,
     sandbox_user: str | None,
@@ -152,15 +204,24 @@ async def enforce_agent_egress_firewall(
     if not sandbox_user or agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") != "1":
         return
 
-    base_url = agent_env.get("LLM_BASE_URL", "")
-    parsed = urlsplit(base_url)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "localhost"}
-        or parsed.port is None
-    ):
+    # The firewall below rejects every non-loopback destination for the sandbox
+    # user, so the agent's model route has to already be loopback or the agent
+    # loses its LLM the moment the rule lands. Checking one hardcoded variable
+    # made that precondition unsatisfiable for every adapter that does not
+    # happen to spell it LLM_BASE_URL -- opencode, codex-acp, claude-agent-acp
+    # and pi-acp could never run a no-network task at all. Validate whichever
+    # endpoints are actually set, and require at least one.
+    present, offending = classify_agent_llm_endpoints(agent_env)
+    if not present:
         raise RuntimeError(
-            "No-web agent requires an HTTP loopback LLM_BASE_URL with a port"
+            "No-web agent requires an HTTP loopback LLM endpoint with a port, "
+            "but none of "
+            f"{', '.join(sorted(AGENT_LLM_ENDPOINT_ENV_NAMES))} is set"
+        )
+    if offending:
+        raise RuntimeError(
+            "No-web agent requires an HTTP loopback LLM endpoint with a port; "
+            f"not loopback: {', '.join(sorted(offending))}"
         )
 
     result = await env.exec(

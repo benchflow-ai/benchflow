@@ -459,7 +459,7 @@ class TestAgentEgressFirewall:
         env = MagicMock()
         env.exec = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="loopback LLM_BASE_URL"):
+        with pytest.raises(RuntimeError, match="not loopback: LLM_BASE_URL"):
             await enforce_agent_egress_firewall(
                 env,
                 "agent",
@@ -470,3 +470,80 @@ class TestAgentEgressFirewall:
             )
 
         env.exec.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("agent", "endpoint_var"),
+        [
+            ("opencode", "OPENAI_BASE_URL"),
+            ("codex-acp", "OPENAI_BASE_URL"),
+            ("claude-agent-acp", "ANTHROPIC_BASE_URL"),
+            ("pi-acp", "BENCHFLOW_PROVIDER_BASE_URL"),
+        ],
+    )
+    async def test_policy_accepts_each_adapters_own_endpoint_var(
+        self, agent, endpoint_var
+    ):
+        """Only openhands spells the gateway LLM_BASE_URL. Requiring that one
+        name made no-network tasks impossible for every other adapter: the
+        firewall raised before the agent was ever prompted."""
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock(return_value=MagicMock(return_code=0))
+
+        await enforce_agent_egress_firewall(
+            env,
+            "agent",
+            {
+                "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                endpoint_var: "http://127.0.0.1:1234/v1",
+            },
+        )
+
+        env.exec.assert_awaited_once()
+
+    async def test_policy_rejects_any_non_loopback_endpoint(self):
+        """A loopback route on one variable does not excuse a routable one on
+        another -- the sandbox user is about to lose egress to it either way."""
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="not loopback: ANTHROPIC_BASE_URL"):
+            await enforce_agent_egress_firewall(
+                env,
+                "agent",
+                {
+                    "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                    "OPENAI_BASE_URL": "http://127.0.0.1:1234/v1",
+                    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+                },
+            )
+
+        env.exec.assert_not_awaited()
+
+    async def test_policy_rejects_when_no_endpoint_is_set(self):
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="none of"):
+            await enforce_agent_egress_firewall(
+                env,
+                "agent",
+                {"BENCHFLOW_DISALLOW_WEB_TOOLS": "1"},
+            )
+
+        env.exec.assert_not_awaited()
+
+    def test_no_web_endpoint_names_cover_provider_endpoint_names(self):
+        """lockdown cannot import litellm_runtime (that module imports
+        benchflow.sandbox), so the endpoint name list is duplicated. Adding a
+        provider endpoint variable there without adding it here would silently
+        exempt it from the loopback precondition -- fail loudly instead."""
+        from benchflow.providers.litellm_runtime import _PROVIDER_ENDPOINT_ENV_NAMES
+        from benchflow.sandbox.lockdown import AGENT_LLM_ENDPOINT_ENV_NAMES
+
+        assert _PROVIDER_ENDPOINT_ENV_NAMES <= AGENT_LLM_ENDPOINT_ENV_NAMES
