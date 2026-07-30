@@ -130,6 +130,71 @@ def test_skill_invocation_count_ignores_marker_in_nested_metadata() -> None:
     assert count_skill_invocations(trajectory) == 0
 
 
+def test_skill_invocation_count_accepts_opencode_skill_content_envelope() -> None:
+    """opencode reports a skill call as kind="other" / title="skill" with the
+    skill body in a <skill_content> envelope. Neither the canonical kind nor the
+    OpenHands header is present, so before this shape was recognized every
+    opencode with-skill rollout reported n_skill_invocations=0."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "tool_call_id": "call_D3Vsvu3AN2TVSjfUuJpeDJdF",
+            "kind": "other",
+            "title": "skill",
+            "status": "completed",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": (
+                            '<skill_content name="polar-electrostatics-mentor">\n'
+                            "# Skill: polar-electrostatics-mentor\n"
+                        ),
+                    },
+                }
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 1
+
+
+def test_skill_invocation_count_ignores_quoted_skill_content_envelope() -> None:
+    """The <skill_content> envelope counts only when it opens the tool result.
+    A tool that greps for the tag is not a skill invocation."""
+    trajectory = [
+        {
+            "type": "tool_call",
+            "kind": "other",
+            "title": "grep skill_content trajectory.jsonl",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": 'trajectory.jsonl:8:<skill_content name="pdf">',
+                    },
+                }
+            ],
+        }
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
+
+
+def test_skill_titled_tool_with_real_kind_is_not_a_skill_invocation() -> None:
+    """title="skill" is honored only for unclassified kinds. A read/execute tool
+    that happens to be titled "skill" keeps its declared identity, so no-skill
+    rollouts cannot be contaminated by a filename."""
+    trajectory = [
+        {"type": "tool_call", "kind": "read", "title": "skill"},
+        {"type": "tool_call", "kind": "execute", "title": "Skill"},
+    ]
+
+    assert count_skill_invocations(trajectory) == 0
+
+
 def test_build_rollout_result_writes_skill_invocation_metric(tmp_path) -> None:
     """Guards issue #507: result.json exposes structured skill invocation counts."""
     trajectory = [

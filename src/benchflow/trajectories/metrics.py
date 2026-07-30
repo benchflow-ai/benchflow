@@ -18,6 +18,15 @@ _SKILL_RESULT_HEADER_RE = re.compile(
 )
 _SKILL_RESULT_MARKER = "[skill:"
 
+# opencode renders a skill invocation as ``kind == "other"`` / ``title ==
+# "skill"`` and returns the skill body wrapped in a ``<skill_content>`` element
+# naming the skill. That envelope opens the tool result, so it is anchored with
+# ``\A`` for the same reason as the OpenHands header above: a tool whose output
+# merely quotes the tag mid-stream is not a skill invocation.
+_SKILL_CONTENT_ENVELOPE_RE = re.compile(
+    r"\A\s*<skill_content\s+name\s*=\s*\"[^\"]+\"", re.IGNORECASE
+)
+
 # Only these unclassified tool kinds are eligible for content sniffing. Any tool
 # carrying a real ACP kind (read, edit, execute, search, fetch, ...) is trusted
 # as-is and never reinterpreted from its output text.
@@ -79,18 +88,25 @@ def _event_tool_name(event: Mapping[str, Any]) -> str:
 
 
 def content_contains_skill_invocation_tool(content: Any) -> bool:
-    """Return whether tool-call content is an OpenHands invoke-skill result.
+    """Return whether tool-call content is a skill-invocation tool result.
 
-    Requires the structured legacy envelope: a tool-result text block that
-    *begins* with the ``Tool: invoke_skill`` / ``Tool: activate_skill`` header
-    and carries a ``[skill: ...]`` marker. The anchored header is what
-    distinguishes a genuine invoke-skill tool result from ordinary output that
-    merely quotes such text. This is intentionally narrow; it is the only
-    text-derived path and is paired with the no-skill experiment-health
+    Two structured envelopes are recognized, both anchored to the start of a
+    tool-result text block:
+
+    * OpenHands legacy — a ``Tool: invoke_skill`` / ``Tool: activate_skill``
+      header carrying a ``[skill: ...]`` marker.
+    * opencode — a ``<skill_content name="...">`` element wrapping the skill
+      body.
+
+    The anchoring is what distinguishes a genuine skill result from ordinary
+    output that merely quotes such text. This is intentionally narrow; it is the
+    only text-derived path and is paired with the no-skill experiment-health
     invariant in the result checker as a backstop.
     """
     for text in _tool_result_texts(content):
         if _SKILL_RESULT_HEADER_RE.match(text) and _SKILL_RESULT_MARKER in text.lower():
+            return True
+        if _SKILL_CONTENT_ENVELOPE_RE.match(text):
             return True
     return False
 
@@ -104,11 +120,13 @@ def is_skill_invocation_event(event: Mapping[str, Any]) -> bool:
 
     ``kind == "skill"`` is the canonical representation. Identity signals (tool
     kind, tool name, or title naming ``invoke_skill`` / ``activate_skill``) are
-    trusted outright. Older OpenHands ACP artifacts emitted ``invoke_skill``
-    calls as ``kind == "other"`` with the structured tool result in ``content``;
-    that shape is recognized only when the tool kind is unclassified, so an
-    ordinary ``read`` / ``execute`` / ``search`` tool whose output happens to
-    quote the marker is never reclassified.
+    trusted outright. Harnesses that do not set the canonical kind are matched
+    on their own structured shape -- OpenHands legacy emits ``invoke_skill`` as
+    ``kind == "other"`` with the tool result in ``content``, and opencode emits
+    ``kind == "other"`` / ``title == "skill"`` with a ``<skill_content>``
+    envelope. Both are recognized only when the tool kind is unclassified, so an
+    ordinary ``read`` / ``execute`` / ``search`` tool whose title or output
+    happens to mention a skill is never reclassified.
     """
     if event.get("type") != "tool_call":
         return False
@@ -126,6 +144,13 @@ def is_skill_invocation_event(event: Mapping[str, Any]) -> bool:
 
     if kind not in _CONTENT_SNIFFABLE_KINDS:
         return False
+
+    # opencode labels the call simply ``skill``. That bare word is too generic
+    # to trust on a tool that already declares a real ACP kind, so unlike the
+    # explicit ``invoke_skill`` spellings above it is only honored for the
+    # unclassified kinds -- the same gate the content sniffing sits behind.
+    if title in _SKILL_TOOL_NAMES:
+        return True
 
     return content_contains_skill_invocation_tool(event.get("content"))
 
