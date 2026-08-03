@@ -281,12 +281,6 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--hf-public-read-check` | `false` | Verify public Hugging Face reads after upload |
 | `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
 | `--trials` | `1` | Number of trials for `--matrix` |
-| `--review` | auto | Post-verify rubric review (--no-review to skip). Omitted: run iff the task ships a review rubric.json; `--review` requires one |
-| `--reviewer-harness` | rubric / required | Agent harness for the rubric reviewer (any registered agent) |
-| `--reviewer-model` | rubric / registry default | Model for the rubric reviewer |
-| `--reviewer-timeout-sec` | rubric / `1800` | Per-criterion reviewer timeout in seconds |
-| `--reviewer-mode` | rubric / `per_criterion` | Reviewer mode: `per_criterion` or `batched` |
-| `--reviewer-reasoning-effort` | provider default | Reasoning/thinking effort for the rubric reviewer |
 
 See [Architecture: skill loading](../architecture.md#skill-loading) for how
 `with-skill` mode is registered with each agent.
@@ -312,6 +306,41 @@ their own harness and sandbox behavior. `--model` is passed to the Verifiers
 model endpoint; use a model id available to that provider. Provider-specific
 sampling options are not inferred; pass them explicitly with
 `--source-env-sampling-arg`.
+
+### bench review
+
+Grade finished rollouts against a rubric with a reviewer agent. Reviews run
+detached from the rollouts they grade: each review is an ordinary sandboxed
+rollout of a throwaway wrapper task built on a prebuilt image, evidence is a
+read-only copy, and results land in `review_report.json`. Reviewed rollouts'
+rewards and `result.json` are never modified.
+
+```bash
+bench review jobs/2026-08-03__12-00-00 --sandbox docker
+bench review jobs/<job>/<rollout> -r my-rubric.json --agent gemini
+bench review jobs/<job> --passing --sandbox daytona -n 8
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--rubric`, `-r` | task / built-in | Rubric JSON file. Default: the task's own `verifier/rubric.json` when it ships one, else the built-in default rubric |
+| `--prompt`, `-p` | built-in | Custom reviewer instruction template |
+| `--agent`, `-a` | `gemini` | Reviewer agent harness |
+| `--model`, `-m` | agent registry | Reviewer model |
+| `--sandbox` | `docker` | Sandbox backend for reviewer rollouts |
+| `--concurrency`, `-n` | `4` | Max concurrent reviews |
+| `--passing` | `false` | Only review passing rollouts (reward 1.0) |
+| `--failing` | `false` | Only review failing rollouts |
+| `--timeout-sec` | `1800` | Reviewer agent timeout per rollout |
+| `--agent-env` | — | `KEY=VALUE` for the reviewer (repeatable) |
+| `--image` | `python:3.13-slim` | Prebuilt sandbox image for reviewer rollouts |
+| `--out-dir`, `-o` | `jobs/review-<ts>` | Review output directory |
+
+A rubric is a JSON list of criteria; each criterion is three strings —
+`name` (identifier; becomes a structured-output field), `description`
+(author-facing documentation, never shown to the reviewer), and `guidance`
+(the grading contract the reviewer follows). The reviewer answers each
+criterion with `pass` / `fail` / `not_applicable` plus an explanation.
 
 ### bench eval list
 

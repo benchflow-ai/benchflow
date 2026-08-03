@@ -701,7 +701,6 @@ class Rollout:
         # Populated by verify()
         self._rewards: dict | None = None
         # Canonical plan-review status/provenance, populated after verify().
-        self._review_metadata: dict[str, Any] | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
         # Populated by _export_generated_skills() on failure (#389 follow-up).
@@ -1017,6 +1016,7 @@ class Rollout:
             self._timing,
             skip_start=self._env_externally_owned,
             on_started=_capture_and_persist_sandbox,
+            uploads=self._config.uploads,
         )
 
         for hook in self._config.pre_agent_hooks or []:
@@ -2038,11 +2038,6 @@ class Rollout:
                 ):
                     self._rewards = {"reward": 0.0}
                     self._verifier_error = None
-                # Post-verify rubric review — runs while the sandbox is still
-                # alive, after the execution reward is already captured, so a
-                # reviewer can neither influence nor be confused with the
-                # primary verifier verdict. Never raises.
-                await self._maybe_review()
 
         except TimeoutError as e:
             self._record_agent_timeout(e)
@@ -2096,22 +2091,6 @@ class Rollout:
     # the same engine convention as ``rollout_branch.py``. These thin methods
     # keep instance-level patching and unbound ``Rollout._export_generated_skills``
     # calls working unchanged.
-
-    async def _maybe_review(self) -> None:
-        """Run the post-verify rubric review when configured / discovered.
-
-        The engine owns discovery (``verifier/rubric.json`` claimed by
-        ``schema_version``), the reviewer session, scoring, and the rewards
-        merge; every failure degrades to ``review/review-details.json``
-        rather than failing the rollout. This wrapper only guards against the
-        engine itself blowing up.
-        """
-        try:
-            from benchflow.rollout._review import run_review_engine
-
-            await run_review_engine(self)
-        except Exception:  # review must never fail the rollout
-            logger.error("Rubric review engine failed", exc_info=True)
 
     async def _export_generated_skills(self) -> None:
         """Download creator-produced skills before sandbox cleanup.
@@ -2541,7 +2520,6 @@ class Rollout:
             source_provenance=self._config.source_provenance,
             dataset=self._config.dataset,
             task_digest=self._config.task_digest,
-            rubric_review=getattr(self, "_review_metadata", None),
             diagnostics=self._diagnostics,
             usage_tracking=self._usage_tracking_metadata(),
             skill_policy=getattr(self, "_task_skill_policy", None)

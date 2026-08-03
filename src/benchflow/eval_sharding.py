@@ -156,7 +156,6 @@ def _config_payload(
         "loop_strategy": (
             config.loop_strategy.to_mapping() if config.loop_strategy else None
         ),
-        "review": config.review.to_mapping() if config.review is not None else None,
     }
     payload.update(config.usage_tracking.to_mapping())
     return payload

@@ -301,6 +301,7 @@ async def _start_env_and_upload(
     *,
     skip_start: bool = False,
     on_started: Callable[[], None] | None = None,
+    uploads: dict[str, str] | None = None,
 ) -> None:
     """Start environment and upload task files.
 
@@ -349,6 +350,17 @@ async def _start_env_and_upload(
             else sandbox_paths.solution_dir
         )
         await env.upload_dir(paths.solution_dir, str(target_dir))
+
+    for host_path, sandbox_path in (uploads or {}).items():
+        source = Path(host_path)
+        if source.is_dir():
+            await env.upload_dir(source, sandbox_path)
+        elif source.is_file():
+            await env.upload_file(source, sandbox_path)
+        else:
+            raise FileNotFoundError(
+                f"configured upload source does not exist: {host_path}"
+            )
 
 
 async def _run_oracle(

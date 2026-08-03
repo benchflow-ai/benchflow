@@ -146,21 +146,26 @@ def task_digest(task_dir: Path) -> str:
 def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str]:
     """Validate a review ``rubric.json`` when the task ships one.
 
-    Only files carrying ``schema_version`` are review rubrics; an llm-judge
-    ``rubric.json`` (Harvey-LAB style, no schema_version) is left to the
-    verifier-strategy machinery and not checked here.
+    Review rubrics are ``{"criteria": [{name, description, guidance}]}``
+    JSON documents. A ``rubric.json`` that is not shaped like that (for
+    example an llm-judge rubric owned by the verifier-strategy machinery)
+    is not checked here.
     """
-    from benchflow.review.config import (
-        ReviewRubricError,
-        is_review_rubric_file,
-        load_review_rubric,
-    )
+    import json
+
+    from benchflow.review.config import ReviewRubricError, load_rubric
 
     candidate = verifier_dir / "rubric.json"
-    if not is_review_rubric_file(candidate):
+    if not candidate.is_file():
         return []
     try:
-        load_review_rubric(candidate)
+        data = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict) or "criteria" not in data:
+        return []
+    try:
+        load_rubric(candidate)
     except ReviewRubricError as e:
         return [f"{verifier_label}/rubric.json invalid: {e}"]
     return []

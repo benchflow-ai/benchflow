@@ -31,7 +31,6 @@ from benchflow.loop_strategies import (
     build_loop_user,
     parse_loop_strategy_spec,
 )
-from benchflow.review.config import ReviewParams
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -140,10 +139,11 @@ class RolloutConfig:
     # exclusive with an explicit ``user``. A dict (the to_mapping() shape) is
     # also accepted at runtime and materialized via from_mapping.
     loop_strategy: LoopStrategySpec | str | None = None
-    # Post-verify rubric review (``verifier/rubric.json`` + an agentic
-    # reviewer). None keeps the default ReviewParams semantics: auto-enable
-    # when the task ships a review rubric. See :mod:`benchflow.review`.
-    review: ReviewParams | None = None
+    # Extra host paths uploaded into the sandbox after start, before the
+    # agent runs: host directory/file -> absolute sandbox path. Used by
+    # callers whose task ships data that is not baked into the image (e.g.
+    # rubric review evidence); every sandbox backend supports the upload.
+    uploads: dict[str, str] = field(default_factory=dict)
     # Whether a task.md-declared user may be adopted when neither an explicit
     # ``user`` nor a loop strategy materializes one. ``None`` (default)
     # derives the answer from scene authorship: programmatic scene callers
@@ -233,13 +233,6 @@ class RolloutConfig:
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
-        if isinstance(self.review, dict):
-            self.review = ReviewParams.from_mapping(cast("dict[str, Any]", self.review))
-        elif self.review is not None and not isinstance(self.review, ReviewParams):
-            raise ValueError(
-                "review must be a mapping, ReviewParams, or None, got "
-                f"{type(self.review).__name__}"
-            )
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)

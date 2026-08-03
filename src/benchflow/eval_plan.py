@@ -36,7 +36,6 @@ from benchflow.loop_strategies import (
     LoopStrategySpec,
     parse_loop_strategy_spec,
 )
-from benchflow.review.config import ReviewParams
 from benchflow.sandbox.providers import (
     is_known_provider,
     provider_extra,
@@ -129,14 +128,6 @@ class EvalCreateRequest:
     hf_public_read_check: bool = False
     matrix: Path | None = None
     trials: int = 1
-    # Post-verify rubric review knobs (``--review`` / ``--no-review``,
-    # ``--reviewer-harness`` and reviewer overrides). ``review=None`` = auto.
-    review: bool | None = None
-    reviewer_harness: str | None = None
-    reviewer_model: str | None = None
-    reviewer_timeout_sec: float | None = None
-    reviewer_mode: str | None = None
-    reviewer_reasoning_effort: str | None = None
 
 
 @dataclass
@@ -168,7 +159,6 @@ class EvalPlan:
     parsed_env: dict[str, str]
     include_tasks: set[str]
     exclude_tasks: set[str]
-    eval_review: ReviewParams | None = None
 
     def make_eval_config(
         self,
@@ -222,7 +212,6 @@ class EvalPlan:
             environment_manifest=self.eval_env_manifest,
             config_override=self.eval_config_override,
             loop_strategy=self.eval_loop_strategy,
-            review=self.eval_review,
         )
 
 
@@ -491,43 +480,4 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         parsed_env=parsed_env,
         include_tasks=include_tasks,
         exclude_tasks=exclude_tasks,
-        eval_review=_build_review_params(request),
     )
-
-
-def _build_review_params(request: EvalCreateRequest) -> ReviewParams | None:
-    """Materialize ``--review`` flags; None when no review flag was given.
-
-    ``--reviewer-harness`` is validated here (against the agent registry) so a
-    typo fails at plan time with the registry's close-match suggestions, not
-    mid-rollout after the task already ran.
-    """
-    if (
-        request.review is None
-        and request.reviewer_harness is None
-        and request.reviewer_model is None
-        and request.reviewer_timeout_sec is None
-        and request.reviewer_mode is None
-        and request.reviewer_reasoning_effort is None
-    ):
-        return None
-    if request.reviewer_harness is not None:
-        from benchflow.agents.registry import resolve_agent
-
-        try:
-            resolve_agent(request.reviewer_harness)
-        except KeyError as e:
-            raise EvalPlanError(f"--reviewer-harness: {e.args[0]}") from None
-    try:
-        return ReviewParams.from_mapping(
-            {
-                "enabled": request.review,
-                "harness": request.reviewer_harness,
-                "model": request.reviewer_model,
-                "timeout_sec": request.reviewer_timeout_sec,
-                "mode": request.reviewer_mode,
-                "reasoning_effort": request.reviewer_reasoning_effort,
-            }
-        )
-    except ValueError as exc:
-        raise EvalPlanError(str(exc)) from None

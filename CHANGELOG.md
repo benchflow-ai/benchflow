@@ -3,18 +3,25 @@
 ## [Unreleased]
 
 ### Added
-- **Rubric review (`verifier/rubric.json`).** Post-verify agentic grading: a
-  task may ship a JSON rubric next to its verifier, and after the execution
-  verifier runs, a reviewer agent (any registered harness + model, via
-  `--reviewer-harness` / `--reviewer-model`) grades binary criteria using
-  sanitized, read-only workspace/trajectory/artifact copies in a separate
-  non-root, no-network sandbox. Criteria use `criterion_type`, signed
-  HealthBench-style `weight`, and `gating`; scores land as `plan`,
-  `plan_passed`, and `plan/<id>` while the primary `reward` remains owned by
-  the verifier. `result.json` records reviewer/model/rubric provenance and
-  isolation status, full verdicts land in `review/review-details.json`, an
-  integrity tripwire discards compromised reviews, and `bench tasks check`
-  validates schema plus numeric answer leaks.
+- **Rubric review (`bench review`).** Detached agentic grading of finished
+  rollouts against a `rubric.json` — a flat list of criteria, each carrying a
+  `name` (structured-output field), a `description` (author documentation,
+  never shown to the reviewer), and `guidance` (the grading contract). One
+  reviewer agent per rollout runs as an ordinary rollout of a throwaway
+  wrapper task on a pinned prebuilt image (no Dockerfile, no image build on
+  any sandbox backend), reads a read-only evidence copy of the rollout and
+  its task, and answers every criterion with `pass` / `fail` /
+  `not_applicable` plus an explanation. The wrapper's own reward means only
+  "the reviewer produced a structurally valid result"; graded outcomes land
+  in `review_report.json`. Reviews never modify a reviewed rollout's rewards
+  or `result.json`. Rubric resolution: `-r` > the task's own
+  `verifier/rubric.json` > a built-in default (`reward_hacking`,
+  `task_specification`). `--passing` / `--failing` filter the rollouts under
+  review; a job-level prose summary aggregates multi-rollout runs.
+- **`RolloutConfig.uploads`.** Generic post-start host→sandbox uploads
+  (directory or file → absolute sandbox path), used by rubric review to
+  deliver evidence into prebuilt-image sandboxes and available to any caller
+  whose task data is not baked into the image.
 - **Native TRL tool-calling SFT export.** `bench train convert --format
   trl-sft` emits conversational prompt/completion rows with a `tools` column,
   excludes OpenCode title/summary helper calls, and accepts rollout trees,

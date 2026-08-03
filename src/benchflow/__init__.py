@@ -61,12 +61,13 @@ from benchflow.monitor import (
     MonitorResult,
 )
 from benchflow.review import (
-    ReviewCriterion,
-    ReviewParams,
-    ReviewRubric,
+    ReviewReport,
     ReviewRubricError,
-    load_review_rubric,
+    run_reviews,
 )
+from benchflow.review import Rubric as ReviewRubric
+from benchflow.review import RubricCriterion as ReviewRubricCriterion
+from benchflow.review import load_rubric as load_review_rubric
 
 # Rewards plane. Reward is the canonical node-based contract
 # (``score(node) -> VerifyResult``); RewardFunc is the legacy path-based shape
@@ -167,11 +168,12 @@ __all__ = [
     "load_rubric",
     "load_rubric_json",
     "load_rubric_toml",
-    "ReviewCriterion",
-    "ReviewParams",
+    "ReviewReport",
     "ReviewRubric",
+    "ReviewRubricCriterion",
     "ReviewRubricError",
     "load_review_rubric",
+    "run_reviews",
     "Sandbox",
     "SandboxExecResult",
     "SandboxImage",

@@ -1,60 +1,67 @@
-"""Rubric review — post-verify agentic grading of a rollout against rubric.json.
+"""Rubric review — detached agentic grading of finished rollouts.
+
+A rubric is a JSON list of criteria (``name`` / ``description`` /
+``guidance``); a reviewer agent reads a finished rollout's records inside its
+own sandbox and answers each criterion with ``pass`` / ``fail`` /
+``not_applicable`` plus an explanation.
+
+Reviews run *after* rollouts, from their host-side directories, as ordinary
+rollouts of throwaway wrapper tasks (:mod:`benchflow.review.wrapper`), so
+every sandbox backend works unchanged.  Review results live in
+``review_report.json``; they are never merged into a reviewed rollout's
+rewards or ``result.json``.
 
 Public surface:
 
-- :func:`load_review_rubric` / :func:`find_review_rubric` — strict JSON-only
-  rubric loading and discovery.
-- :class:`ReviewRubric` / :class:`ReviewCriterion` / :class:`ReviewerSpec` —
-  the parsed rubric.
-- :class:`ReviewParams` — caller-side knobs (``--review``,
-  ``--reviewer-harness``, ``--reviewer-model``).
-- :class:`ReviewOutcome` / :func:`aggregate` — scoring.
-
-The rollout-side engine lives in :mod:`benchflow.rollout._review`; it runs the
-reviewer in a separate no-network sandbox after ``verify()`` and merges
-``plan*`` keys into the rewards dict.
+- :func:`load_rubric` / :func:`find_task_rubric` — rubric loading and
+  per-task discovery.
+- :class:`Rubric` / :class:`RubricCriterion` — the parsed rubric.
+- :func:`run_reviews` — review one rollout directory or a whole job
+  directory; returns a :class:`ReviewReport`.
 """
 
 from benchflow.review.config import (
-    CRITERION_TYPES,
-    REVIEW_MODES,
+    DEFAULT_RUBRIC_PATH,
+    REVIEW_RESULT_FILENAME,
     REVIEW_RUBRIC_FILENAME,
-    REVIEW_SCHEMA_VERSION,
-    ReviewCriterion,
-    ReviewerSpec,
-    ReviewParams,
-    ReviewRubric,
+    CriterionCheck,
+    ReviewOutcomeValue,
     ReviewRubricError,
-    find_review_rubric,
-    is_review_rubric_file,
-    load_review_rubric,
+    Rubric,
+    RubricCriterion,
+    build_criteria_guidance,
+    build_review_response_model,
+    find_task_rubric,
+    load_rubric,
 )
-from benchflow.review.scoring import (
-    STATUS_COMPROMISED,
-    CriterionVerdict,
-    ReviewOutcome,
-    aggregate,
-    extract_verdicts_object,
-    parse_reviewer_message,
+from benchflow.review.runner import (
+    REVIEW_REPORT_FILENAME,
+    ReviewReport,
+    ReviewRunError,
+    TrialReview,
+    discover_rollouts,
+    run_reviews,
 )
+from benchflow.review.wrapper import assemble_review_task
 
 __all__ = [
+    "DEFAULT_RUBRIC_PATH",
+    "REVIEW_REPORT_FILENAME",
+    "REVIEW_RESULT_FILENAME",
     "REVIEW_RUBRIC_FILENAME",
-    "REVIEW_SCHEMA_VERSION",
-    "CRITERION_TYPES",
-    "REVIEW_MODES",
-    "STATUS_COMPROMISED",
-    "CriterionVerdict",
-    "ReviewCriterion",
-    "ReviewOutcome",
-    "ReviewParams",
-    "ReviewRubric",
+    "CriterionCheck",
+    "ReviewOutcomeValue",
+    "ReviewReport",
     "ReviewRubricError",
-    "ReviewerSpec",
-    "aggregate",
-    "extract_verdicts_object",
-    "find_review_rubric",
-    "is_review_rubric_file",
-    "load_review_rubric",
-    "parse_reviewer_message",
+    "ReviewRunError",
+    "Rubric",
+    "RubricCriterion",
+    "TrialReview",
+    "assemble_review_task",
+    "build_criteria_guidance",
+    "build_review_response_model",
+    "discover_rollouts",
+    "find_task_rubric",
+    "load_rubric",
+    "run_reviews",
 ]

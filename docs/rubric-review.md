@@ -1,161 +1,140 @@
 # Rubric review
 
-Rubric review is a post-verifier, agentic assessment of a solver's plan and
-recorded method. The deterministic verifier continues to own `reward`; the
-reviewer adds a separate `plan` channel for criteria that are difficult to
-express as output tests.
+Rubric review is a detached, agentic quality review of finished rollouts. A
+reviewer agent reads a rollout's records — trajectory, result, verifier
+output, and the task definition — inside its own sandbox and grades the run
+against a rubric, one `pass` / `fail` / `not_applicable` verdict plus an
+explanation per criterion.
 
-This is distinct from the [`llm-judge` verifier strategy](./llm-judge.md): an
-llm-judge grades deliverable text with a chat call, while rubric review runs a
-registered agent harness over sanitized workspace, trajectory, and artifact
-snapshots.
+Review is **report-only**. It runs after a job is over, from the host-side
+rollout directories, and writes `review_report.json`. It never modifies a
+reviewed rollout's `rewards` or `result.json`, and there is no code path
+through which it could: the deterministic verifier is the only owner of
+`reward`.
 
-## Task contract
+This is distinct from the [`llm-judge` verifier strategy](./llm-judge.md):
+an llm-judge is part of a task's verifier and *produces* the reward, while
+rubric review is downstream quality assurance *about* finished runs — is the
+task well specified, did the agent game the grader, was the method sound.
 
-A task adds exactly one file:
+## The rubric
 
-```text
-tasks/<task-id>/
-  task.md
-  environment/
-  oracle/
-  verifier/
-    test.sh
-    test_outputs.py
-    rubric.json
-```
-
-`schema_version` distinguishes a review rubric from an llm-judge
-`rubric.json`. Unknown keys are rejected everywhere.
+A rubric is a JSON file with one list:
 
 ```json
 {
-  "schema_version": "1.2",
-  "reviewer": {
-    "harness": "gemini",
-    "model": "gemini-2.5-flash",
-    "timeout_sec": 600,
-    "mode": "per_criterion"
-  },
-  "pass_threshold": 0.7,
   "criteria": [
     {
-      "id": "method-derived",
-      "criterion": "The plan derives the requested result from the supplied data rather than a target answer.",
-      "criterion_type": "data-handling",
-      "weight": 2
-    },
-    {
-      "id": "self-check",
-      "criterion": "The plan includes a final validation against the requested output contract.",
-      "criterion_type": "failure-check",
-      "gating": true
+      "name": "reward_hacking",
+      "description": "Author-facing note about why this criterion exists.",
+      "guidance": "Study the recorded run under trial/ for signs the agent manipulated grading instead of doing the work. PASS when ... FAIL when ... NOT_APPLICABLE when ..."
     }
   ]
 }
 ```
 
-Each criterion has three required fields: `id`, `criterion`, and
-`criterion_type`. Types are a closed set:
+Each criterion is exactly three strings:
 
-- `physical-model`
-- `approximation`
-- `numerical-method`
-- `uncertainty`
-- `data-handling`
-- `failure-check`
+| Field | Purpose |
+|---|---|
+| `name` | Stable identifier. Becomes a field in the reviewer's structured-output schema, so it must be a valid Python identifier. |
+| `description` | Documentation for humans reading the rubric. **Never included in the reviewer prompt** — grading must not depend on it. |
+| `guidance` | The grading contract the reviewer follows. Put the full pass/fail/not-applicable conditions here. |
 
-`weight` defaults to `1`. Positive weights earn credit, negative weights are
-penalties, and zero records a metric. `gating: true` makes a criterion
-must-pass and forbids `weight`.
+There are no weights, gates, thresholds, or aggregate scores. Consumers read
+per-criterion outcomes from the report and apply their own policy.
 
-The task checker also rejects duplicate ids, non-finite weights, rubrics with
-no positive non-gating weight, and numeric answer literals copied from
-`test_outputs.py`. Numeric tolerances expressed as tolerances remain valid.
+Rubric resolution order, per reviewed rollout:
 
-## Running
+1. an explicit `--rubric/-r` file,
+2. the reviewed task's own `verifier/rubric.json` (or `tests/rubric.json`),
+3. the built-in default rubric (`reward_hacking`, `task_specification`).
+
+## Running a review
 
 ```bash
-bench eval run --tasks-dir tasks \
-  --agent codex-acp --model <model-under-test> \
-  --review --reviewer-harness gemini \
-  --reviewer-model gemini-2.5-flash
+# review one rollout
+bench review jobs/<job>/<rollout> --sandbox docker
+
+# review every rollout in a job, eight at a time, on Daytona
+bench review jobs/<job> --sandbox daytona -n 8
+
+# audit the winners for grader manipulation
+bench review jobs/<job> --passing
+
+# analyze the losers for specification gaps
+bench review jobs/<job> --failing -r spec-rubric.json
 ```
 
-Reviewer precedence is CLI override, then `rubric.json`, then the harness's
-registry default for the model. A reviewer harness has no implicit default: it
-must be provided by the rubric or CLI. `--reviewer-timeout-sec` and
-`--reviewer-mode per_criterion|batched` override the other reviewer fields.
-`--reviewer-reasoning-effort` sets reviewer provider effort independently from
-the solver, so heterogeneous model pairs do not leak one model's effort into
-the other.
+`--passing` selects rollouts with reward 1.0 and no recorded error;
+`--failing` selects everything else, including rollouts whose `result.json`
+is unreadable. The reviewer agent (`--agent`, default `gemini`) and model
+(`--model`, default from the agent registry) are independent of whatever ran
+the original job.
 
-- Omitted `--review`: run only when the task ships a review rubric.
-- `--review`: require a valid review rubric.
-- `--no-review`: skip review.
+## How a review executes
 
-## Isolation
+Each review is an ordinary rollout of a throwaway wrapper task assembled on
+the host, which is why every sandbox backend (`docker`, `daytona`,
+`agentcore`, ...) works unchanged:
 
-The reviewer runs after verification in a separate sandbox. It never
-reconnects to the solver container. The runtime provides fixed evidence paths:
+- **Prebuilt image, no build.** The wrapper declares a pinned
+  `docker_image` (`python:3.13-slim`) and ships no Dockerfile, so no backend
+  ever builds an image for a review.
+- **Evidence by upload.** A copy of the rollout directory is uploaded to
+  `/app/trial`, and a copy of the task directory (when the rollout's
+  `config.json` still points at one) to `/app/task`. Prior review outputs
+  are excluded from the copy, so a re-review can never read an earlier
+  verdict. The reviewed rollout itself is never touched.
+- **The rubric never enters the sandbox.** It is decomposed host-side:
+  `guidance` lines render into the instruction, criterion names become the
+  output schema and `tests/criteria.json`. `description` goes nowhere.
+- **Validity-only reward.** The wrapper's verifier is a stdlib-only
+  structural check of the reviewer's `review-result.json` (every criterion
+  answered, outcomes in vocabulary, non-empty explanations). Reward 1.0
+  means "a well-formed review exists" — never "the reviewed run was good".
+- **Failure isolation.** A review that crashes or produces malformed output
+  becomes an error entry for that rollout; the rest of the job continues.
 
-| Path | Access |
-|---|---|
-| `/review/workspace/root` | sanitized read-only solver workspace copy |
-| `/review/trajectory` | key-redacted, delimiter-neutralized trajectory copies |
-| `/review/artifacts` | sanitized read-only artifact copy |
-| `/review/rubric.json` | read-only rubric |
-| `/review/control` | read-only injection-control evidence |
+## Output
 
-The reviewer runs as the non-root `reviewer` user with `network_mode:
-no-network`. Original oracle, verifier, hidden tests, solver credentials, and
-reward outputs are not present. A hidden integrity criterion detects prompt
-injection; failure marks the review `compromised` and discards its scores.
-
-## Verdicts and scoring
-
-The reviewer returns a binary result per criterion:
+The review job directory contains `review_report.json`:
 
 ```json
 {
-  "verdicts": [
+  "path": "…/jobs/2026-08-03__12-00-00",
+  "rubric": {"path": "…", "criteria": ["…"]},
+  "reviewer": {"agent": "gemini", "model": null, "environment": "docker"},
+  "job_summary": "Prose synthesis across runs (multi-rollout jobs only).",
+  "trials": [
     {
-      "id": "method-derived",
-      "explanation": "The trajectory shows the parser deriving each value.",
-      "evidence": ["/review/trajectory/acp_trajectory.jsonl:27"],
-      "criterion_met": true
+      "trial_name": "hello-world-task__829cddb8",
+      "source_rollout": "…",
+      "review_valid": true,
+      "summary": "Three-to-five sentence account of the run.",
+      "checks": {
+        "reward_hacking": {"explanation": "…", "outcome": "pass"},
+        "task_specification": {"explanation": "…", "outcome": "fail"}
+      },
+      "error": null,
+      "reviewer_rollout": "…/runtime/hello-world-task__829cddb8"
     }
   ]
 }
 ```
 
-Evidence must correspond to a read/search tool event. Malformed booleans,
-missing ids, empty or invented evidence, and other schema failures receive up
-to two corrective retries. A remaining non-metric failure makes the plan
-unscored rather than scoring the solver zero.
+Each reviewer rollout's own records (trajectory, verifier output, raw
+`review-result.json`) sit under the report's `runtime/` directory for audit.
 
-Scoring uses a positive-only denominator:
+## Writing good criteria
 
-```text
-any unmet gate => plan = 0
-otherwise plan = clamp(sum(weight * criterion_met) / sum(positive weights), 0, 1)
-```
-
-## Outputs
-
-On a scored review, reward artifacts add a second channel:
-
-```json
-{
-  "reward": 1.0,
-  "plan": 0.5,
-  "plan_passed": 0.0,
-  "plan/method-derived": 1.0,
-  "plan/self-check": 0.0
-}
-```
-
-`result.json` always records `rubric_review.status`, failure reason, reviewer
-harness and model, rubric SHA-256, isolation metadata, and the details path.
-Full verdicts are written to `review/review-details.json`; reviewer ACP and
-provider trajectories remain separate from the solver under `review/`.
+- Put the entire decision rule in `guidance`, including when to answer
+  `not_applicable` (for example: infrastructure failure before the agent
+  ever attempted the task).
+- One judgment per criterion. A criterion that bundles several claims makes
+  `fail` ambiguous.
+- The reviewer reads evidence produced by the solver. Guidance should direct
+  it to concrete records (`trial/result.json`, `trial/trajectory/`,
+  `trial/verifier/`) rather than to intent.
+- `description` is the right place for authorship context you do not want
+  influencing the judge — provenance, rationale, links.

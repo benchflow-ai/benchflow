@@ -1,468 +1,324 @@
-"""Tests for the v1.2 rubric-review schema, parsing, scoring, and threading."""
+"""Unit tests for the rubric contract: schema, prompts, and wrapper assembly."""
 
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from benchflow.review import (
-    ReviewParams,
+from benchflow.review.config import (
+    DEFAULT_RUBRIC_PATH,
+    REVIEW_RESULT_FILENAME,
     ReviewRubricError,
-    aggregate,
-    extract_verdicts_object,
-    find_review_rubric,
-    is_review_rubric_file,
-    load_review_rubric,
-    parse_reviewer_message,
+    Rubric,
+    build_criteria_guidance,
+    build_review_response_model,
+    find_task_rubric,
+    load_rubric,
 )
-from benchflow.review.config import ReviewCriterion, ReviewerSpec, ReviewRubric
-from benchflow.review.prompts import render_review_prompt
-from benchflow.review.scoring import (
-    STATUS_SCORED,
-    STATUS_UNSCORED,
-    CriterionVerdict,
+from benchflow.review.prompts import (
+    TASK_MOUNT,
+    TRIAL_MOUNT,
+    render_job_summary_prompt,
+    render_review_instruction,
 )
+from benchflow.review.wrapper import assemble_review_task
+
+RUBRIC = {
+    "criteria": [
+        {
+            "name": "method_soundness",
+            "description": "Internal note for rubric authors.",
+            "guidance": "PASS when the recorded method is sound; FAIL otherwise.",
+        },
+        {
+            "name": "output_contract",
+            "description": "Another internal note.",
+            "guidance": "PASS when required outputs exist; FAIL when missing.",
+        },
+    ]
+}
 
 
-def _write_rubric(tmp_path: Path, payload: dict) -> Path:
-    path = tmp_path / "rubric.json"
-    path.write_text(json.dumps(payload))
+def write_rubric(tmp_path: Path, data: dict, name: str = "rubric.json") -> Path:
+    path = tmp_path / name
+    path.write_text(json.dumps(data), encoding="utf-8")
     return path
 
 
-def _criterion_payload(**overrides) -> dict:
-    payload = {
-        "id": "correct",
-        "criterion": "The plan derives the requested result from supplied evidence.",
-        "criterion_type": "data-handling",
-    }
-    payload.update(overrides)
-    return payload
+class TestLoadRubric:
+    def test_loads_valid_rubric(self, tmp_path):
+        rubric = load_rubric(write_rubric(tmp_path, RUBRIC))
+        assert [c.name for c in rubric.criteria] == [
+            "method_soundness",
+            "output_contract",
+        ]
+        assert rubric.criteria[0].guidance.startswith("PASS when")
 
+    def test_default_rubric_ships_and_loads(self):
+        rubric = load_rubric(None)
+        assert DEFAULT_RUBRIC_PATH.is_file()
+        assert [c.name for c in rubric.criteria] == [
+            "reward_hacking",
+            "task_specification",
+        ]
 
-def _minimal(**overrides) -> dict:
-    payload = {
-        "schema_version": "1.2",
-        "criteria": [_criterion_payload()],
-    }
-    payload.update(overrides)
-    return payload
+    def test_rejects_non_json_suffix(self, tmp_path):
+        path = tmp_path / "rubric.yaml"
+        path.write_text("criteria: []", encoding="utf-8")
+        with pytest.raises(ReviewRubricError, match="JSON"):
+            load_rubric(path)
 
-
-class TestLoadReviewRubric:
-    def test_minimal_v12_rubric_loads(self, tmp_path: Path) -> None:
-        """Guards PR #942 remediation: the supplied v1.2 shape is canonical."""
-
-        with pytest.warns(UserWarning, match="no gating"):
-            rubric = load_review_rubric(_write_rubric(tmp_path, _minimal()))
-        criterion = rubric.criteria[0]
-        assert criterion.criterion_type == "data-handling"
-        assert criterion.weight == 1.0
-        assert not criterion.gating
-        assert rubric.reviewer.mode == "per_criterion"
-        assert rubric.reviewer.timeout_sec == 1800
-
-    def test_reviewer_v12_fields(self, tmp_path: Path) -> None:
-        payload = _minimal(
-            reviewer={
-                "harness": "gemini",
-                "model": "gemini-2.5-flash",
-                "timeout_sec": 300,
-                "mode": "batched",
-            }
-        )
-        with pytest.warns(UserWarning):
-            rubric = load_review_rubric(_write_rubric(tmp_path, payload))
-        assert rubric.reviewer.harness == "gemini"
-        assert rubric.reviewer.timeout_sec == 300
-        assert rubric.reviewer.mode == "batched"
-
-    def test_old_pr_schema_is_rejected(self, tmp_path: Path) -> None:
-        """Guards PR #942 remediation against reintroducing choices/required."""
-
-        payload = _minimal(reviewer={"agent": "gemini", "timeout": 300})
-        payload["criteria"][0].update(choices=["no", "yes"], required=True)
-        with pytest.raises(ReviewRubricError, match="unknown key"):
-            load_review_rubric(_write_rubric(tmp_path, payload))
-
-    def test_v10_contract_is_rejected(self, tmp_path: Path) -> None:
-        """Guards PR #942 against relabeling the breaking v1.2 shape as v1.0."""
-
-        payload = _minimal(schema_version="1.0")
-        with pytest.raises(ReviewRubricError, match=r"must be '1\.2'"):
-            load_review_rubric(_write_rubric(tmp_path, payload))
-
-    def test_criterion_type_is_required_and_closed(self, tmp_path: Path) -> None:
-        payload = _minimal()
-        payload["criteria"][0].pop("criterion_type")
-        with pytest.raises(ReviewRubricError, match="criterion_type"):
-            load_review_rubric(_write_rubric(tmp_path, payload))
-        payload["criteria"][0]["criterion_type"] = "other"
-        with pytest.raises(ReviewRubricError, match="criterion_type"):
-            load_review_rubric(_write_rubric(tmp_path, payload))
-
-    def test_gating_forbids_weight(self, tmp_path: Path) -> None:
-        payload = _minimal()
-        payload["criteria"][0].update(gating=True, weight=2)
-        with pytest.raises(ReviewRubricError, match="gating=true forbids weight"):
-            load_review_rubric(_write_rubric(tmp_path, payload))
-
-    def test_positive_non_gating_weight_is_required(self, tmp_path: Path) -> None:
-        payload = _minimal()
-        payload["criteria"][0]["weight"] = 0
-        with pytest.raises(ReviewRubricError, match="positive non-gating"):
-            load_review_rubric(_write_rubric(tmp_path, payload))
-
-    def test_nonfinite_weight_rejected(self, tmp_path: Path) -> None:
+    def test_rejects_invalid_json(self, tmp_path):
         path = tmp_path / "rubric.json"
-        path.write_text(
-            '{"schema_version":"1.2","criteria":['
-            '{"id":"a","criterion":"A criterion long enough to validate.",'
-            '"criterion_type":"data-handling","weight":Infinity}]}'
-        )
-        with pytest.raises(ReviewRubricError, match="non-finite"):
-            load_review_rubric(path)
+        path.write_text("{not json", encoding="utf-8")
+        with pytest.raises(ReviewRubricError, match="not valid JSON"):
+            load_rubric(path)
 
-    def test_numeric_answer_leak_rejected_but_tolerance_allowed(
-        self, tmp_path: Path
-    ) -> None:
-        """Guards PR #942 remediation: criteria cannot expose verifier answers."""
+    def test_rejects_missing_fields(self, tmp_path):
+        bad = {"criteria": [{"name": "x", "guidance": "no description"}]}
+        with pytest.raises(ReviewRubricError, match="not a valid rubric"):
+            load_rubric(write_rubric(tmp_path, bad))
 
-        (tmp_path / "test_outputs.py").write_text("EXPECTED = 3\nTOLERANCE = 15\n")
-        payload = _minimal()
-        payload["criteria"][0]["criterion"] = (
-            "The final answer contains exactly 3 classified citations."
-        )
-        with pytest.raises(ReviewRubricError, match="expected answers"):
-            load_review_rubric(_write_rubric(tmp_path, payload))
+    def test_rejects_non_identifier_name(self, tmp_path):
+        bad = {"criteria": [{"name": "bad-name", "description": "d", "guidance": "g"}]}
+        with pytest.raises(ReviewRubricError, match="identifier"):
+            load_rubric(write_rubric(tmp_path, bad))
 
-        payload["criteria"][0]["criterion"] = (
-            "The plan checks numerical agreement to within 15 percent accuracy."
-        )
-        with pytest.warns(UserWarning):
-            load_review_rubric(_write_rubric(tmp_path, payload))
-
-    @pytest.mark.parametrize("field", ["schema_version", "criteria"])
-    def test_required_top_level_fields(self, tmp_path: Path, field: str) -> None:
-        payload = _minimal()
-        payload.pop(field)
-        with pytest.raises(ReviewRubricError):
-            load_review_rubric(_write_rubric(tmp_path, payload))
-
-    def test_duplicate_ids_rejected(self, tmp_path: Path) -> None:
-        payload = _minimal()
-        payload["criteria"].append(dict(payload["criteria"][0]))
-        with pytest.raises(ReviewRubricError, match="duplicate id"):
-            load_review_rubric(_write_rubric(tmp_path, payload))
-
-    def test_unregistered_harness_rejected(self, tmp_path: Path) -> None:
-        payload = _minimal(reviewer={"harness": "definitely-not-an-agent"})
-        with pytest.raises(ReviewRubricError, match=r"reviewer\.harness"):
-            load_review_rubric(_write_rubric(tmp_path, payload))
-
-
-class TestDiscovery:
-    def test_is_review_rubric_requires_schema_version(self, tmp_path: Path) -> None:
-        rubric = tmp_path / "rubric.json"
-        rubric.write_text(json.dumps({"criteria": [{"id": "c"}]}))
-        assert not is_review_rubric_file(rubric)
-        assert find_review_rubric(tmp_path) is None
-        rubric.write_text(json.dumps(_minimal()))
-        assert is_review_rubric_file(rubric)
-        assert find_review_rubric(tmp_path) == rubric
-
-
-def _criterion(identifier: str = "correct", **overrides) -> ReviewCriterion:
-    defaults = {
-        "id": identifier,
-        "criterion": "A criterion long enough for the test fixture.",
-        "criterion_type": "data-handling",
-    }
-    defaults.update(overrides)
-    return ReviewCriterion(**defaults)
-
-
-def test_review_prompt_requires_read_or_search_evidence() -> None:
-    """Guards PR #942 against prompting evidence that runtime rejects."""
-
-    prompt = render_review_prompt(
-        [_criterion()],
-        task_prompt="Inspect the supplied evidence.",
-        trajectory_files=["acp_trajectory.jsonl"],
-        first_batch=True,
-    )
-    assert "only when it names content inspected" in prompt
-    assert "``read`` or ``search`` tool event" in prompt
-    assert "Shell execution" in prompt
-
-
-def _verdict_reply(identifier: str = "correct", met: object = True) -> str:
-    return json.dumps(
-        {
-            "verdicts": [
+    def test_ignores_unknown_keys(self, tmp_path):
+        """Unknown keys are tolerated so rubrics can carry sidecar metadata
+        without breaking older readers."""
+        data = {
+            "criteria": [
                 {
-                    "id": identifier,
-                    "explanation": "I inspected /review/workspace/root/result.json.",
-                    "evidence": ["/review/workspace/root/result.json"],
-                    "criterion_met": met,
+                    "name": "x",
+                    "description": "d",
+                    "guidance": "g",
+                    "extra": "ignored",
                 }
-            ]
-        }
-    )
-
-
-class TestParseReviewerMessage:
-    def test_binary_contract_parses(self) -> None:
-        verdicts, error = parse_reviewer_message(
-            _verdict_reply(),
-            [_criterion()],
-        )
-        assert error is None
-        assert verdicts[0].criterion_met is True
-        assert verdicts[0].score == 1.0
-
-    def test_criterion_met_must_be_boolean(self) -> None:
-        _, error = parse_reviewer_message(
-            _verdict_reply(met="yes"),
-            [_criterion()],
-        )
-        assert error is not None and "JSON boolean" in error
-
-    def test_last_complete_object_wins(self) -> None:
-        """Guards PR #942 remediation for multi-message ACP reviewer turns."""
-
-        partial = json.dumps(
-            {
-                "verdicts": [
-                    {
-                        "id": "wrong",
-                        "explanation": "partial",
-                        "evidence": ["x"],
-                        "criterion_met": False,
-                    }
-                ]
-            }
-        )
-        reply = partial + "\n" + _verdict_reply()
-        verdicts, error = parse_reviewer_message(reply, [_criterion()])
-        assert error is None
-        assert verdicts[0].criterion_id == "correct"
-        assert extract_verdicts_object(reply) == json.loads(_verdict_reply())
-
-    def test_fabricated_evidence_is_rejected_against_trace(self) -> None:
-        """Guards PR #942 remediation: evidence must correspond to tool activity."""
-
-        _, error = parse_reviewer_message(
-            _verdict_reply(),
-            [_criterion()],
-            evidence_trace='{"title":"read other.txt"}',
-        )
-        assert error is not None and "not backed" in error
-        verdicts, error = parse_reviewer_message(
-            _verdict_reply(),
-            [_criterion()],
-            evidence_trace='{"title":"read result.json"}',
-        )
-        assert error is None
-        assert verdicts[0].score == 1.0
-
-    def test_exact_provider_tool_call_citation_ignores_argument_order(self) -> None:
-        """Guards PR #942 against ACP search titles that omit exact arguments."""
-
-        payload = json.loads(_verdict_reply())
-        payload["verdicts"][0]["evidence"] = [
-            "grep_search(dir_path='/review/trajectory', "
-            "include_pattern='*.jsonl', pattern='largest', total_max_matches=50)"
-        ]
-        evidence_trace = json.dumps(
-            [
-                {
-                    "type": "provider_tool_call",
-                    "name": "grep_search",
-                    "arguments": {
-                        "total_max_matches": 50,
-                        "pattern": "largest",
-                        "include_pattern": "*.jsonl",
-                        "dir_path": "/review/trajectory",
-                    },
-                }
-            ]
-        )
-        verdicts, error = parse_reviewer_message(
-            json.dumps(payload), [_criterion()], evidence_trace=evidence_trace
-        )
-        assert error is None
-        assert verdicts[0].score == 1.0
-
-        payload["verdicts"][0]["evidence"] = [
-            "grep_search(dir_path='/review/trajectory', pattern='invented')"
-        ]
-        _, error = parse_reviewer_message(
-            json.dumps(payload), [_criterion()], evidence_trace=evidence_trace
-        )
-        assert error is not None and "not backed" in error
-
-    def test_empty_evidence_is_structural_error(self) -> None:
-        payload = json.loads(_verdict_reply())
-        payload["verdicts"][0]["evidence"] = []
-        _, error = parse_reviewer_message(json.dumps(payload), [_criterion()])
-        assert error is not None and "evidence" in error
-
-
-def _rubric(*criteria: ReviewCriterion, pass_threshold: float = 0.7) -> ReviewRubric:
-    return ReviewRubric(
-        criteria=tuple(criteria),
-        reviewer=ReviewerSpec(harness="gemini"),
-        pass_threshold=pass_threshold,
-    )
-
-
-def _scored(identifier: str, score: float) -> CriterionVerdict:
-    return CriterionVerdict(
-        criterion_id=identifier,
-        criterion_met=bool(score),
-        explanation="checked",
-        evidence=("result.json",),
-        score=score,
-    )
-
-
-class TestAggregate:
-    def test_signed_weighted_mean(self) -> None:
-        rubric = _rubric(
-            _criterion("earn", weight=2.0),
-            _criterion("penalty", weight=-1.0),
-        )
-        outcome = aggregate(rubric, [_scored("earn", 1.0), _scored("penalty", 1.0)])
-        assert outcome.status == STATUS_SCORED
-        assert outcome.plan == pytest.approx(0.5)
-
-    def test_failed_gate_zeroes_plan(self) -> None:
-        rubric = _rubric(
-            _criterion("gate", gating=True, weight=0.0),
-            _criterion("quality", weight=1.0),
-        )
-        outcome = aggregate(rubric, [_scored("gate", 0.0), _scored("quality", 1.0)])
-        assert outcome.plan == 0.0
-        assert outcome.failed_gates == ["gate"]
-
-    def test_unscored_non_metric_nulls_plan(self) -> None:
-        rubric = _rubric(_criterion("quality"))
-        outcome = aggregate(
-            rubric,
-            [
-                CriterionVerdict(
-                    criterion_id="quality",
-                    criterion_met=None,
-                    unscored_reason="reviewer failed",
-                )
             ],
-        )
-        assert outcome.status == STATUS_UNSCORED
-        assert outcome.plan is None
-        assert outcome.reward_updates(rubric) == {}
+            "extra_top": 1,
+        }
+        rubric = load_rubric(write_rubric(tmp_path, data))
+        assert rubric.criteria[0].name == "x"
 
-    def test_plan_reward_shape(self) -> None:
-        rubric = _rubric(_criterion("quality"), pass_threshold=0.5)
-        outcome = aggregate(rubric, [_scored("quality", 1.0)])
-        assert outcome.reward_updates(rubric) == {
-            "plan": 1.0,
-            "plan_passed": 1.0,
-            "plan/quality": 1.0,
+
+class TestFindTaskRubric:
+    @pytest.mark.parametrize("tests_dir", ["verifier", "tests"])
+    def test_finds_shipped_rubric(self, tmp_path, tests_dir):
+        (tmp_path / tests_dir).mkdir()
+        target = write_rubric(tmp_path / tests_dir, RUBRIC)
+        assert find_task_rubric(tmp_path) == target
+
+    def test_returns_none_without_rubric(self, tmp_path):
+        (tmp_path / "verifier").mkdir()
+        assert find_task_rubric(tmp_path) is None
+
+
+class TestGuidanceAndSchema:
+    def test_guidance_line_format(self):
+        rubric = Rubric.model_validate(RUBRIC)
+        guidance = build_criteria_guidance(rubric)
+        assert guidance.splitlines() == [
+            "- method_soundness: PASS when the recorded method is sound; FAIL otherwise.",
+            "- output_contract: PASS when required outputs exist; FAIL when missing.",
+        ]
+
+    def test_description_never_reaches_the_prompt(self):
+        rubric = Rubric.model_validate(RUBRIC)
+        instruction = render_review_instruction(rubric, output_schema={"type": "object"})
+        assert "Internal note for rubric authors." not in instruction
+        assert "Internal note" not in build_criteria_guidance(rubric)
+
+    def test_response_model_shape(self):
+        rubric = Rubric.model_validate(RUBRIC)
+        schema = build_review_response_model(rubric).model_json_schema()
+        assert set(schema["properties"]) == {"trial_name", "summary", "checks"}
+        checks_ref = schema["properties"]["checks"]["$ref"].rsplit("/", 1)[-1]
+        checks = schema["$defs"][checks_ref]
+        assert set(checks["properties"]) == {"method_soundness", "output_contract"}
+        outcome = schema["$defs"]["ReviewOutcomeValue"]["enum"]
+        assert sorted(outcome) == ["fail", "not_applicable", "pass"]
+
+    def test_response_model_validates_outcomes(self):
+        rubric = Rubric.model_validate({"criteria": RUBRIC["criteria"][:1]})
+        model = build_review_response_model(rubric)
+        good = {
+            "trial_name": "t",
+            "summary": "s",
+            "checks": {"method_soundness": {"explanation": "e", "outcome": "pass"}},
+        }
+        assert model.model_validate(good)
+        bad = json.loads(json.dumps(good))
+        bad["checks"]["method_soundness"]["outcome"] = "maybe"
+        with pytest.raises(ValueError):
+            model.model_validate(bad)
+
+
+class TestPromptRendering:
+    def test_instruction_contains_contract(self):
+        rubric = Rubric.model_validate(RUBRIC)
+        instruction = render_review_instruction(
+            rubric, output_schema={"marker": "schema-sentinel"}
+        )
+        assert TRIAL_MOUNT in instruction
+        assert TASK_MOUNT in instruction
+        assert "- method_soundness:" in instruction
+        assert "schema-sentinel" in instruction
+        assert REVIEW_RESULT_FILENAME in instruction
+
+    def test_instruction_without_task_dir(self):
+        rubric = Rubric.model_validate(RUBRIC)
+        instruction = render_review_instruction(rubric, task_path=None)
+        assert TASK_MOUNT not in instruction
+        assert "task definition is not available" in instruction.lower()
+
+    def test_custom_template_missing_placeholders_renders(self):
+        rubric = Rubric.model_validate(RUBRIC)
+        instruction = render_review_instruction(rubric, template="Just review it.")
+        assert instruction.startswith("Just review it.")
+
+    def test_job_summary_prompt_is_brace_safe(self):
+        prompt = render_job_summary_prompt(['Run: a\n  {"weird": "json"}'])
+        assert '{"weird": "json"}' in prompt
+
+
+class TestWrapperAssembly:
+    def make_rollout(self, tmp_path: Path) -> Path:
+        rollout = tmp_path / "rollout"
+        (rollout / "trajectory").mkdir(parents=True)
+        (rollout / ".git").mkdir()
+        (rollout / ".git" / "HEAD").write_text("ref", encoding="utf-8")
+        (rollout / "result.json").write_text(
+            json.dumps({"rewards": {"reward": 0.0}}), encoding="utf-8"
+        )
+        (rollout / REVIEW_RESULT_FILENAME).write_text("{}", encoding="utf-8")
+        return rollout
+
+    def test_assembles_wrapper(self, tmp_path):
+        rubric = Rubric.model_validate(RUBRIC)
+        rollout = self.make_rollout(tmp_path)
+        task_dir = tmp_path / "task"
+        (task_dir / "verifier").mkdir(parents=True)
+        (task_dir / "task.md").write_text("body", encoding="utf-8")
+
+        dest, uploads = assemble_review_task(
+            rollout, task_dir, rubric, tmp_path / "wrapper"
+        )
+
+        task_md = (dest / "task.md").read_text(encoding="utf-8")
+        assert "docker_image: python:3.13-slim" in task_md
+        assert "test-script" in task_md
+        assert not list(dest.rglob("Dockerfile"))
+        assert (dest / "tests" / "test.sh").is_file()
+        assert (dest / "tests" / "validate.py").is_file()
+        names = json.loads((dest / "tests" / "criteria.json").read_text("utf-8"))
+        assert names == ["method_soundness", "output_contract"]
+        assert uploads == {
+            str(dest / "evidence" / "trial"): TRIAL_MOUNT,
+            str(dest / "evidence" / "task"): TASK_MOUNT,
         }
 
+    def test_wrapper_never_contains_the_rubric_file(self, tmp_path):
+        """The rubric is decomposed host-side; the file itself never ships.
 
-class TestReviewParamsThreading:
-    def test_mapping_roundtrip(self) -> None:
-        params = ReviewParams(
-            enabled=True,
-            harness="codex-acp",
-            model="gpt-5.2",
-            timeout_sec=600,
-            mode="batched",
-            reasoning_effort="xhigh",
+        Only the evidence copy of the reviewed task may carry one (it is part
+        of that task's own files)."""
+        rubric = Rubric.model_validate(RUBRIC)
+        rollout = self.make_rollout(tmp_path)
+        dest, _ = assemble_review_task(rollout, None, rubric, tmp_path / "wrapper")
+        assert list(dest.rglob("rubric.json")) == []
+
+    def test_evidence_excludes_vcs_and_prior_reviews(self, tmp_path):
+        rubric = Rubric.model_validate(RUBRIC)
+        rollout = self.make_rollout(tmp_path)
+        dest, uploads = assemble_review_task(rollout, None, rubric, tmp_path / "wrapper")
+        trial_copy = dest / "evidence" / "trial"
+        assert (trial_copy / "result.json").is_file()
+        assert not (trial_copy / ".git").exists()
+        assert not (trial_copy / REVIEW_RESULT_FILENAME).exists()
+        assert uploads == {str(trial_copy): TRIAL_MOUNT}
+
+
+class TestWrapperValidator:
+    """Run the shipped in-sandbox validator exactly as the wrapper does."""
+
+    def run_validator(self, tmp_path: Path, result: dict | str) -> tuple[int, str]:
+        rubric = Rubric.model_validate(RUBRIC)
+        rollout = tmp_path / "r"
+        rollout.mkdir()
+        (rollout / "result.json").write_text("{}", encoding="utf-8")
+        dest, _ = assemble_review_task(rollout, None, rubric, tmp_path / "w")
+        result_path = tmp_path / REVIEW_RESULT_FILENAME
+        payload = result if isinstance(result, str) else json.dumps(result)
+        result_path.write_text(payload, encoding="utf-8")
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(dest / "tests" / "validate.py"),
+                str(result_path),
+                str(dest / "tests" / "criteria.json"),
+            ],
+            capture_output=True,
+            text=True,
         )
-        assert ReviewParams.from_mapping(params.to_mapping()) == params
+        return proc.returncode, proc.stdout
 
-    def test_rollout_config_coerces_mapping(self, tmp_path: Path) -> None:
-        from benchflow.rollout import RolloutConfig
+    def good_result(self) -> dict:
+        return {
+            "trial_name": "r",
+            "summary": "Did things.",
+            "checks": {
+                "method_soundness": {"explanation": "ok", "outcome": "pass"},
+                "output_contract": {"explanation": "missing", "outcome": "fail"},
+            },
+        }
 
-        config = RolloutConfig(
-            task_path=tmp_path,
-            review={"enabled": True, "harness": "gemini"},
-        )
-        assert isinstance(config.review, ReviewParams)
-        assert config.review.harness == "gemini"
+    def test_valid_result_passes(self, tmp_path):
+        code, out = self.run_validator(tmp_path, self.good_result())
+        assert code == 0, out
 
-    def test_eval_plan_builds_v12_review_params(self) -> None:
-        from benchflow.eval_plan import EvalCreateRequest, _build_review_params
+    def test_not_applicable_is_valid(self, tmp_path):
+        result = self.good_result()
+        result["checks"]["method_soundness"]["outcome"] = "not_applicable"
+        code, _ = self.run_validator(tmp_path, result)
+        assert code == 0
 
-        params = _build_review_params(
-            EvalCreateRequest(
-                review=True,
-                reviewer_harness="codex-acp",
-                reviewer_timeout_sec=300,
-                reviewer_mode="batched",
-                reviewer_reasoning_effort="xhigh",
-            )
-        )
-        assert params is not None
-        assert params.harness == "codex-acp"
-        assert params.timeout_sec == 300
-        assert params.mode == "batched"
-        assert params.reasoning_effort == "xhigh"
-
-    def test_shard_payload_preserves_review(self) -> None:
-        """Guards PR #942 remediation against dropping review in worker shards."""
-
-        from benchflow.eval_sharding import EvalShard, _config_payload
-        from benchflow.evaluation import EvaluationConfig
-
-        config = EvaluationConfig(
-            review=ReviewParams(enabled=True, harness="gemini", mode="batched")
-        )
-        payload = _config_payload(
-            config,
-            shard=EvalShard(index=0, task_names=("demo",), concurrency=1),
-        )
-        assert payload["review"] == config.review.to_mapping()
-
-
-class TestCheckTaskReviewRubric:
-    def test_task_check_uses_v12_and_answer_leak_lint(self, tmp_path: Path) -> None:
-        """Guards PR #942 remediation through the public task checker."""
-
-        from benchflow._utils.task_authoring import check_task
-
-        task = tmp_path / "demo"
-        (task / "verifier").mkdir(parents=True)
-        (task / "environment").mkdir()
-        (task / "oracle").mkdir()
-        (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
-        (task / "verifier" / "test.sh").write_text("#!/bin/bash\nexit 0\n")
-        (task / "verifier" / "test_outputs.py").write_text("EXPECTED = 42\n")
-        (task / "task.md").write_text(
-            "---\nschema_version: '1.3'\n---\n\n## prompt\n\nDo the thing.\n"
-        )
-        rubric = _minimal(
-            reviewer={"harness": "gemini"},
-            criteria=[
-                _criterion_payload(gating=True),
-                _criterion_payload(
-                    id="quality",
-                    criterion="The plan validates its output against the requested schema.",
+    @pytest.mark.parametrize(
+        ("mutate", "message"),
+        [
+            (lambda r: r["checks"].pop("method_soundness"), "missing criterion"),
+            (
+                lambda r: r["checks"].__setitem__("extra", {"outcome": "pass"}),
+                "unexpected key",
+            ),
+            (
+                lambda r: r["checks"]["method_soundness"].__setitem__(
+                    "outcome", "maybe"
                 ),
-            ],
-        )
-        (task / "verifier" / "rubric.json").write_text(json.dumps(rubric))
-        issues = check_task(task)
-        assert not any("rubric.json" in issue for issue in issues)
+                "outcome must be one of",
+            ),
+            (
+                lambda r: r["checks"]["method_soundness"].__setitem__(
+                    "explanation", "  "
+                ),
+                "non-empty string",
+            ),
+            (lambda r: r.__setitem__("summary", ""), "summary"),
+            (lambda r: r.pop("trial_name"), "trial_name"),
+        ],
+    )
+    def test_invalid_results_fail(self, tmp_path, mutate, message):
+        result = self.good_result()
+        mutate(result)
+        code, out = self.run_validator(tmp_path, result)
+        assert code == 1
+        assert message in out
 
-        rubric["criteria"][1]["criterion"] = (
-            "The plan writes exactly 42 entries into the final output artifact."
-        )
-        (task / "verifier" / "rubric.json").write_text(json.dumps(rubric))
-        issues = check_task(task)
-        assert any("expected answers" in issue for issue in issues)
+    def test_non_json_fails(self, tmp_path):
+        code, out = self.run_validator(tmp_path, "not json at all")
+        assert code == 1
+        assert "not valid JSON" in out

@@ -294,7 +294,6 @@ def _build_rollout_result(
     skill_policy: TaskSkillPolicy | None = None,
     sandbox_id: str | None = None,
     loop: dict[str, Any] | None = None,
-    rubric_review: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -350,7 +349,6 @@ def _build_rollout_result(
         trajectory_source=trajectory_source,
         evolved_skills=evolved_skills,
         source_provenance=source_provenance,
-        rubric_review=rubric_review,
         started_at=started_at,
         finished_at=finished_at,
     )
@@ -414,7 +412,6 @@ def _build_rollout_result(
         "timing": timing,
         "scenes": _scene_metadata(scenes or []),
         "loop": loop or loop_block(None),
-        "rubric_review": rubric_review,
         **(
             {"source": artifact_source_provenance(source_provenance)}
             if source_provenance is not None
