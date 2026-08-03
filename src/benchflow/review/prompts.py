@@ -65,7 +65,7 @@ OUTPUT_TEMPLATE = """When you are done, write your answer as JSON to {result_pat
 
 {output_schema}
 
-Every criterion listed in the schema must appear in "checks" with an "outcome" of "pass", "fail", or "not_applicable" and a non-empty "explanation". Write the file and nothing else; do not print the JSON instead of writing it."""
+"trial_name" must be exactly "{trial_name}". Every criterion listed in the schema must appear in "checks" with an "outcome" of "pass", "fail", or "not_applicable" and a non-empty "explanation". Write the file and nothing else; do not print the JSON instead of writing it."""
 
 JOB_SUMMARY_TEMPLATE = """Several runs of the same kind were each reviewed independently. Combine their reviews into one short report: recurring failure patterns, systemic issues with the task or environment, and anything that appears in several runs. Three to eight sentences, plain prose, no headings.
 
@@ -90,6 +90,7 @@ def render_review_instruction(
     trial_path: str = TRIAL_MOUNT,
     task_path: str | None = TASK_MOUNT,
     result_path: str = "/app/review-result.json",
+    trial_name: str = "",
     output_schema: dict[str, Any] | None = None,
 ) -> str:
     """Render the full wrapper-task instruction body."""
@@ -106,6 +107,7 @@ def render_review_instruction(
         defaultdict(
             str,
             result_path=result_path,
+            trial_name=trial_name,
             output_schema=json.dumps(output_schema or {}, indent=2),
         )
     )

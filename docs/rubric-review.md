@@ -66,16 +66,19 @@ Rubric resolution order, per reviewed rollout:
 
 ```bash
 # review one rollout
-bench review jobs/<job>/<rollout> --sandbox docker
+bench review jobs/<job>/<rollout> --sandbox docker \
+  --model gemini/gemini-2.5-flash --tasks-root ./tasks
 
 # review every rollout in a job, eight at a time, on Daytona
-bench review jobs/<job> --sandbox daytona -n 8
+bench review jobs/<job> --sandbox daytona -n 8 \
+  --model gemini/gemini-2.5-flash --tasks-root ./tasks
 
 # audit the winners for grader manipulation
-bench review jobs/<job> --passing
+bench review jobs/<job> --passing --model gemini/gemini-2.5-flash
 
 # analyze the losers for specification gaps
-bench review jobs/<job> --failing -r spec-rubric.json
+bench review jobs/<job> --failing -r spec-rubric.json \
+  --model gemini/gemini-2.5-flash
 ```
 
 `--passing` selects rollouts with reward 1.0 and no recorded error;
@@ -91,9 +94,11 @@ Each review is an ordinary rollout of a throwaway wrapper task assembled on
 the host, which is why every sandbox backend (`docker`, `daytona`,
 `agentcore`, ...) works unchanged:
 
-- **Prebuilt image, no build.** The wrapper declares a pinned
-  `docker_image` (`python:3.13-slim`) and ships no Dockerfile, so no backend
-  ever builds an image for a review.
+- **Prebuilt image, pinned by digest.** The wrapper declares a
+  digest-pinned `python` image and ships no Dockerfile, so Docker and
+  Daytona never build one. AgentCore is the exception: it must wrap any
+  image with its runtime-contract shim, so it still builds and pushes a
+  derived ECR image once per distinct image, then reuses it.
 - **Evidence by upload, outside the workdir.** A copy of the rollout
   directory is uploaded to `/evidence/trial`, and a copy of the task
   directory (when the rollout's `config.json` still points at one) to
@@ -104,13 +109,29 @@ the host, which is why every sandbox backend (`docker`, `daytona`,
   evidence are dropped, never dereferenced; task skills and any shipped
   `rubric.json` are excluded from the task copy. The reviewed rollout
   itself is never touched.
-- **No-internet by default, fail closed.** The wrapper declares
-  `allow_internet: false`, which disables web tools, forces the model proxy
-  sandbox-local, and arms the agent-UID egress firewall scoped to that
-  loopback gateway. Backends that cannot enforce network isolation (for
+- **Post-initialization egress restriction, fail closed.** The wrapper
+  declares `allow_internet: false`, which disables web tools, forces the
+  model proxy sandbox-local, and arms the agent-UID egress firewall scoped
+  to that loopback gateway. Backends that cannot enforce isolation (for
   example `agentcore`, whose runtime only offers PUBLIC/VPC networking)
   refuse the review at launch; `--allow-open-network` is the explicit,
-  report-recorded operator override for them.
+  report-recorded override for them.
+
+  Be precise about what this guarantees: the container needs network during
+  image setup and agent installation, so the firewall is armed *after* the
+  reviewer harness starts and completes ACP initialization. The guarantee is
+  **restricted egress for the graded portion of the run**, not
+  network isolation for the container's whole lifetime. A reviewer harness
+  that is itself malicious could egress during startup, before it has seen
+  any evidence. Treat the reviewer harness as trusted code; the untrusted
+  input is the evidence it reads.
+- **Task evidence requires an explicitly trusted root.** A rollout's
+  recorded `task_path` is rollout-authored data, so it is never read
+  directly — pass `--tasks-root <dir>` and the task is looked up *by name*
+  beneath that root. Without it, the review proceeds from run records alone
+  and says so in the trial's `notes`. When the rollout recorded a
+  `task_digest`, a mismatch against the on-disk task is reported in `notes`
+  rather than silently reviewed.
 - **The rubric never enters the sandbox.** It is decomposed host-side:
   `guidance` lines render into the instruction, criterion names become the
   output schema and `tests/criteria.json`. `description` goes nowhere.
@@ -130,7 +151,7 @@ The review job directory contains `review_report.json`:
   "path": "…/jobs/2026-08-03__12-00-00",
   "rubric": {"path": "…", "criteria": ["…"]},
   "reviewer": {"agent": "opencode", "model": "google/gemini-2.5-flash", "environment": "docker"},
-  "job_summary": "Deterministic outcome aggregation (multi-rollout runs only).",
+  "job_summary": "Deterministic aggregation over VALID reviews only.",
   "trials": [
     {
       "trial_name": "hello-world-task__829cddb8",
@@ -142,7 +163,10 @@ The review job directory contains `review_report.json`:
         "task_specification": {"explanation": "…", "outcome": "fail"}
       },
       "error": null,
-      "reviewer_rollout": "…/runtime/hello-world-task__829cddb8"
+      "reviewer_rollout": "…/runtime/hello-world-task__829cddb8/<run-id>/…",
+      "rubric_path": "…/verifier/rubric.json",
+      "criteria": ["reward_hacking", "task_specification"],
+      "notes": ["task evidence skipped: no --tasks-root was given"]
     }
   ]
 }

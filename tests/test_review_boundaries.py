@@ -99,6 +99,64 @@ class TestTaskEvidenceSanitization:
         assert not list(task_copy.rglob("rubric.json"))
 
 
+class TestUntrustedTaskPath:
+    """A rollout-recorded task_path must never be dereferenced.
+
+    Guards the P0 from the PR #942 re-review: a downloaded rollout could
+    name ~/.ssh (or any directory holding .env / cloud credentials) and have
+    it recursively copied into reviewer evidence.
+    """
+
+    def _rollout(self, tmp_path: Path, task_path: str) -> Path:
+        rollout = make_rollout(tmp_path)
+        (rollout / "config.json").write_text(
+            json.dumps({"task_path": task_path}), encoding="utf-8"
+        )
+        return rollout
+
+    def test_absolute_outside_path_is_refused_without_root(self, tmp_path):
+        from benchflow.review.runner import _source_task_dir
+
+        secret = tmp_path / "victim"
+        secret.mkdir()
+        (secret / ".env").write_text("SECRET=1", encoding="utf-8")
+        rollout = self._rollout(tmp_path, str(secret))
+        resolved, reason = _source_task_dir(rollout, tasks_root=None)
+        assert resolved is None
+        assert "untrusted" in (reason or "")
+
+    def test_path_escaping_the_root_is_refused(self, tmp_path):
+        from benchflow.review.runner import _source_task_dir
+
+        secret = tmp_path / "victim"
+        secret.mkdir()
+        root = tmp_path / "tasks"
+        root.mkdir()
+        rollout = self._rollout(tmp_path, str(secret))
+        resolved, reason = _source_task_dir(rollout, tasks_root=root)
+        assert resolved is None
+        assert "tasks-root" in (reason or "")
+
+    def test_traversal_in_recorded_path_is_refused(self, tmp_path):
+        from benchflow.review.runner import _source_task_dir
+
+        root = tmp_path / "tasks"
+        (root / "real").mkdir(parents=True)
+        rollout = self._rollout(tmp_path, "/x/../../../../etc/passwd")
+        resolved, _ = _source_task_dir(rollout, tasks_root=root)
+        assert resolved is None
+
+    def test_name_inside_root_resolves(self, tmp_path):
+        from benchflow.review.runner import _source_task_dir
+
+        root = tmp_path / "tasks"
+        (root / "real-task").mkdir(parents=True)
+        rollout = self._rollout(tmp_path, "/anywhere/else/real-task")
+        resolved, reason = _source_task_dir(rollout, tasks_root=root)
+        assert resolved == (root / "real-task").resolve()
+        assert reason is None
+
+
 class TestNetworkPosture:
     def test_default_wrapper_declares_no_internet(self, tmp_path):
         rollout = make_rollout(tmp_path)
@@ -296,11 +354,14 @@ class TestSealedAgentCoreUploads:
             .decode()
         )
         payload = b'{"GEMINI_API_KEY": "sk-super-secret"}'
-        wrapped_b64, iv_hex, ct_b64 = AgentCoreSandbox._seal_payload(pem, payload)
+        wrapped_b64, iv_hex, ct_b64, tag_hex = AgentCoreSandbox._seal_payload(
+            pem, payload
+        )
 
         import base64
 
         assert b"sk-super-secret" not in base64.b64decode(ct_b64)
+        assert len(bytes.fromhex(tag_hex)) == 32  # HMAC-SHA256 over ciphertext
         key = private.decrypt(
             base64.b64decode(wrapped_b64),
             padding.OAEP(
@@ -309,10 +370,17 @@ class TestSealedAgentCoreUploads:
                 label=None,
             ),
         )
+        enc_key, mac_key = key[:32], key[32:]
         decryptor = Cipher(
-            algorithms.AES(key), modes.CTR(bytes.fromhex(iv_hex))
+            algorithms.AES(enc_key), modes.CTR(bytes.fromhex(iv_hex))
         ).decryptor()
         assert decryptor.update(base64.b64decode(ct_b64)) == payload
+        # Encrypt-then-MAC: the tag authenticates the ciphertext.
+        from cryptography.hazmat.primitives import hmac as _hmac
+
+        verifier = _hmac.HMAC(mac_key, hashes.SHA256())
+        verifier.update(base64.b64decode(ct_b64))
+        verifier.verify(bytes.fromhex(tag_hex))
 
     @pytest.mark.asyncio
     async def test_upload_commands_never_contain_plaintext(self):
@@ -346,12 +414,73 @@ class TestSealedAgentCoreUploads:
             return _R()
 
         sandbox.exec = fake_exec
+        sandbox._exec_raw = fake_exec
         secret = b'launch {"env": {"GEMINI_API_KEY": "sk-super-secret-value"}}'
         await sandbox._upload_sealed(secret, target="/x/launch_config.json")
         assert commands, "no commands captured"
+
+        # Literal search alone is too weak: reversible base64 would pass it.
+        # Decode every long token in every command and assert the plaintext
+        # is unrecoverable by any of them.
+        import base64 as _b64
+        import re as _re
+
         for command in commands:
             assert "sk-super-secret-value" not in command
             assert "GEMINI_API_KEY" not in command
+            for blob in _re.findall(r"[A-Za-z0-9+/=]{16,}", command):
+                try:
+                    decoded = _b64.b64decode(blob + "==", validate=False)
+                except Exception:
+                    continue
+                assert b"sk-super-secret-value" not in decoded
+                assert b"GEMINI_API_KEY" not in decoded
+
+    @pytest.mark.asyncio
+    async def test_staged_env_never_appears_in_commands(self):
+        """exec(env=...) must not leak the environment into a command body."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        from benchflow.sandbox.agentcore import AgentCoreSandbox
+
+        private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = (
+            private.public_key()
+            .public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+        )
+        sandbox = object.__new__(AgentCoreSandbox)
+        sandbox._seal_public_key = pem
+        commands: list[str] = []
+
+        class _R:
+            return_code = 0
+            stdout = ""
+            stderr = ""
+
+        async def fake_exec(command, **_kwargs):
+            commands.append(command)
+            return _R()
+
+        sandbox._exec_raw = fake_exec
+        path = await sandbox._stage_sealed_env({"TOKEN": "tok-abc-123"})
+        assert path.startswith("/tmp/.bf_sealed/env_")
+
+        import base64 as _b64
+        import re as _re
+
+        for command in commands:
+            assert "tok-abc-123" not in command
+            for blob in _re.findall(r"[A-Za-z0-9+/=]{16,}", command):
+                try:
+                    decoded = _b64.b64decode(blob + "==", validate=False)
+                except Exception:
+                    continue
+                assert b"tok-abc-123" not in decoded
 
     def test_write_text_file_routes_through_sealed_path(self):
         import inspect

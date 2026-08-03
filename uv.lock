@@ -368,6 +368,7 @@ judge = [
 sandbox-agentcore = [
     { name = "bedrock-agentcore" },
     { name = "boto3" },
+    { name = "cryptography" },
     { name = "pathspec" },
 ]
 sandbox-daytona = [
@@ -394,6 +395,7 @@ requires-dist = [
     { name = "bedrock-agentcore", marker = "extra == 'sandbox-agentcore'", specifier = ">=1.18" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.40" },
     { name = "boto3", marker = "extra == 'sandbox-agentcore'", specifier = ">=1.43.31" },
+    { name = "cryptography", marker = "extra == 'sandbox-agentcore'", specifier = ">=44" },
     { name = "datasets", marker = "extra == 'trl'", specifier = ">=2.19.0" },
     { name = "daytona", marker = "extra == 'sandbox-daytona'", specifier = ">=0.184.0" },
     { name = "deepagents", marker = "extra == 'deepagents'", specifier = ">=0.6" },

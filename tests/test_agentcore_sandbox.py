@@ -128,18 +128,30 @@ class TestExecSemantics:
         assert body["timeout"] == 3600
 
     @pytest.mark.asyncio
-    async def test_secrets_are_not_passed_as_literal_argv(self, sandbox):
-        """Env values must go through the base64 env-file wrapper (#412)."""
+    async def test_secrets_never_reach_any_command_body(self, sandbox):
+        """Env must not appear in *any* command, encoded or not (#412, #942).
+
+        This platform records command bodies permanently, so the pre-#942
+        base64 env wrapper was reversible from the log. The environment is
+        now staged over the sealed channel and merely sourced by path.
+        """
+        _seeded_seal_keypair(sandbox)
         client = MagicMock()
         client.invoke_agent_runtime_command.return_value = _stream()
         with patch.object(sandbox, "_client", return_value=client):
             await sandbox.exec("run", env={"SECRET_TOKEN": "hunter2"})
 
-        command = client.invoke_agent_runtime_command.call_args.kwargs["body"][
-            "command"
+        bodies = [
+            call.kwargs["body"]["command"]
+            for call in client.invoke_agent_runtime_command.call_args_list
         ]
-        assert "hunter2" not in command
-        assert "base64 -d" in command
+        assert bodies
+        for command in bodies:
+            assert "hunter2" not in command
+            assert "SECRET_TOKEN" not in command
+            assert base64.b64encode(b"hunter2").decode() not in command
+        # The final command sources the staged env file by path only.
+        assert any("/tmp/.bf_sealed/env_" in c for c in bodies)
 
     @pytest.mark.asyncio
     async def test_non_main_service_is_rejected(self, sandbox):
@@ -268,7 +280,10 @@ class TestFileTransfer:
             return MagicMock(return_code=0, stdout="", stderr="")
 
         _seeded_seal_keypair(sandbox)
-        with patch.object(sandbox, "exec", side_effect=_record):
+        with (
+            patch.object(sandbox, "exec", side_effect=_record),
+            patch.object(sandbox, "_exec_raw", side_effect=_record),
+        ):
             await sandbox.upload_dir(source, "/workspace")
 
         # mkdir + sealed chunk(s) + one decrypt-and-extract, not 13 uploads
@@ -320,6 +335,7 @@ class TestFileTransfer:
 
         with (
             patch.object(sandbox, "exec", side_effect=_exec),
+            patch.object(sandbox, "_exec_raw", side_effect=_exec),
             patch.object(sandbox, "_upload_sealed", side_effect=_capture),
         ):
             await sandbox.upload_dir(source, "/workspace")
@@ -376,7 +392,10 @@ class TestFileTransfer:
             commands.append(command)
             return MagicMock(return_code=0, stdout="", stderr="")
 
-        with patch.object(sandbox, "exec", side_effect=_record):
+        with (
+            patch.object(sandbox, "exec", side_effect=_record),
+            patch.object(sandbox, "_exec_raw", side_effect=_record),
+        ):
             assert await sandbox.write_text_file("/tmp/big", "x" * 200_000)
 
         staging = [

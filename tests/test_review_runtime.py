@@ -56,7 +56,13 @@ def make_rollout(
 
 
 def make_task(root: Path, *, with_rubric: bool = False) -> Path:
-    task = root / "source-task"
+    """Create a task inside a *trusted tasks root* (see ``--tasks-root``).
+
+    Task evidence is only included when the caller names a trusted root: a
+    rollout-recorded ``task_path`` is untrusted input and is never
+    dereferenced (guards the P0 fixed in PR #942).
+    """
+    task = root / "tasks" / "source-task"
     (task / "verifier").mkdir(parents=True)
     (task / "task.md").write_text("---\n---\nbody", encoding="utf-8")
     if with_rubric:
@@ -172,6 +178,7 @@ class TestRunReviews:
             model="gemini/test-model",
             environment="docker",
             out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
         )
 
         assert report_path.name == REVIEW_REPORT_FILENAME
@@ -199,6 +206,7 @@ class TestRunReviews:
             environment="daytona",
             agent_env={"X": "1"},
             out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
         )
 
         config = fake.configs[0]
@@ -226,7 +234,12 @@ class TestRunReviews:
         before = (rollout / "result.json").read_bytes()
         monkeypatch.setattr(benchflow, "run", FakeRun(review_payload=good_review()))
 
-        report, _ = await run_reviews(rollout, agent="gemini", out_dir=tmp_path / "out")
+        report, _ = await run_reviews(
+            rollout,
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
 
         assert (rollout / "result.json").read_bytes() == before
         assert not (rollout / REVIEW_RESULT_FILENAME).exists()
@@ -247,7 +260,12 @@ class TestRunReviews:
             FakeRun(reward=0.0, review_payload=good_review()),
         )
 
-        report, _ = await run_reviews(rollout, agent="gemini", out_dir=tmp_path / "out")
+        report, _ = await run_reviews(
+            rollout,
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
         trial = report.trials[0]
         assert trial.review_valid is False
         assert trial.error == "reviewer output failed structural validation"
@@ -259,7 +277,12 @@ class TestRunReviews:
         rollout = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
         monkeypatch.setattr(benchflow, "run", FakeRun(reward=0.0, review_payload=None))
 
-        report, _ = await run_reviews(rollout, agent="gemini", out_dir=tmp_path / "out")
+        report, _ = await run_reviews(
+            rollout,
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
         trial = report.trials[0]
         assert trial.review_valid is False
         assert "did not produce" in (trial.error or "")
@@ -281,7 +304,10 @@ class TestRunReviews:
         monkeypatch.setattr(benchflow, "run", flaky)
 
         report, _ = await run_reviews(
-            tmp_path / "jobs", agent="gemini", out_dir=tmp_path / "out"
+            tmp_path / "jobs",
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
         )
         errors = [t for t in report.trials if t.error]
         assert len(errors) == 1
@@ -317,7 +343,11 @@ class TestRunReviews:
 
         monkeypatch.setattr(benchflow, "run", capture)
         await run_reviews(
-            rollout, agent="gemini", rubric_path=override, out_dir=tmp_path / "out"
+            rollout,
+            agent="gemini",
+            rubric_path=override,
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
         )
         assert seen["criteria"] == ["override_only"]
 
@@ -334,7 +364,12 @@ class TestRunReviews:
             return await FakeRun(review_payload=good_review())(config)
 
         monkeypatch.setattr(benchflow, "run", capture)
-        await run_reviews(rollout, agent="gemini", out_dir=tmp_path / "out")
+        await run_reviews(
+            rollout,
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
         assert seen["criteria"] == ["method_soundness"]
 
     @pytest.mark.asyncio
@@ -350,7 +385,12 @@ class TestRunReviews:
             return await FakeRun(review_payload=good_review())(config)
 
         monkeypatch.setattr(benchflow, "run", capture)
-        await run_reviews(rollout, agent="gemini", out_dir=tmp_path / "out")
+        await run_reviews(
+            rollout,
+            agent="gemini",
+            out_dir=tmp_path / "out",
+            tasks_root=tmp_path / "tasks",
+        )
         assert seen["criteria"] == ["reward_hacking", "task_specification"]
 
     @pytest.mark.asyncio
@@ -364,7 +404,11 @@ class TestRunReviews:
 
         with pytest.raises(ReviewRubricError):
             await run_reviews(
-                rollout, agent="gemini", rubric_path=bad, out_dir=tmp_path / "out"
+                rollout,
+                agent="gemini",
+                rubric_path=bad,
+                out_dir=tmp_path / "out",
+                tasks_root=tmp_path / "tasks",
             )
         assert called.configs == []  # no sandbox spend on a bad rubric
 

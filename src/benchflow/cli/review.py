@@ -140,6 +140,18 @@ def _review_command(
         str,
         typer.Option("--image", help="Prebuilt sandbox image for reviewer rollouts"),
     ] = "python:3.13-slim",
+    tasks_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--tasks-root",
+            help=(
+                "Trusted directory holding the reviewed tasks. Required to "
+                "include task definitions in evidence: a task path recorded "
+                "inside a rollout is untrusted input and is never read "
+                "directly. Without this, reviews use run records only."
+            ),
+        ),
+    ] = None,
     allow_open_network: Annotated[
         bool,
         typer.Option(
@@ -196,6 +208,7 @@ def _review_command(
                 timeout_sec=timeout_sec,
                 image=image,
                 open_network=allow_open_network,
+                tasks_root=tasks_root,
                 filter_passing=filter_passing,
                 out_dir=out_dir,
             )

@@ -334,6 +334,7 @@ bench review jobs/<job> --passing --sandbox daytona -n 8
 | `--timeout-sec` | `1800` | Reviewer agent timeout per rollout |
 | `--agent-env` | — | `KEY=VALUE` for the reviewer (repeatable) |
 | `--image` | `python:3.13-slim` | Prebuilt sandbox image for reviewer rollouts |
+| `--tasks-root` | — | Trusted directory holding reviewed tasks; required to include task definitions in evidence (a rollout-recorded path is untrusted and never read directly) |
 | `--allow-open-network` | `false` | Run reviewers without the no-internet declaration (required on backends that cannot enforce isolation, e.g. agentcore; recorded in the report) |
 | `--out-dir`, `-o` | `jobs/review-<ts>` | Review output directory |
 

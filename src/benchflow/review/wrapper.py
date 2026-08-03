@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 from pathlib import Path
 
 from benchflow.review.config import (
@@ -41,7 +42,12 @@ from benchflow.review.prompts import (
     render_review_instruction,
 )
 
-REVIEWER_IMAGE = "python:3.13-slim"
+#: Pinned by digest: ``python:3.13-slim`` is a mutable tag, so a bare tag
+#: would silently change the reviewer environment between runs. Override
+#: with ``--image`` (e.g. to an internal mirror or a newer digest).
+REVIEWER_IMAGE = (
+    "python@sha256:afe189875f1d2f9b45e287834fb9f2c273a5d59d354ae4050ab9affbf0a6ba06"
+)
 REVIEWER_AGENT_TIMEOUT_SEC = 1800
 REVIEWER_VERIFIER_TIMEOUT_SEC = 120
 
@@ -66,7 +72,7 @@ set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p /logs/verifier
 cp /app/{result_filename} /logs/verifier/{result_filename} 2>/dev/null || true
-if python3 "$DIR/validate.py" /app/{result_filename} "$DIR/criteria.json"; then
+if python3 "$DIR/validate.py" /app/{result_filename} "$DIR/criteria.json" "$DIR/trial_name.txt"; then
   echo 1 > /logs/verifier/reward.txt
 else
   echo 0 > /logs/verifier/reward.txt
@@ -104,8 +110,11 @@ def main() -> int:
         return 1
 
     problems = []
-    if not isinstance(data.get("trial_name"), str) or not data["trial_name"].strip():
-        problems.append("trial_name must be a non-empty string")
+    expected_trial = Path(sys.argv[3]).read_text(encoding="utf-8").strip()
+    if data.get("trial_name") != expected_trial:
+        problems.append(
+            f"trial_name must be {expected_trial!r}, got {data.get('trial_name')!r}"
+        )
     if not isinstance(data.get("summary"), str) or not data["summary"].strip():
         problems.append("summary must be a non-empty string")
 
@@ -200,6 +209,28 @@ def copy_evidence(
         symlinks=True,  # never dereference; links are filtered by ignore()
         ignore_dangling_symlinks=True,
     )
+    _strip_write_bits(destination)
+
+
+def _strip_write_bits(root: Path) -> None:
+    """Clear every write bit under *root*.
+
+    ``copytree`` preserves source permissions, so a rollout file recorded
+    as 0666 (or a 0777 directory) would stay writable — and the upload
+    backends preserve modes — letting the reviewer mutate the evidence it
+    is supposed to be grading. Root ownership alone does not prevent that,
+    so the modes are normalized here, before upload.
+    """
+
+    write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+    for path in [root, *root.rglob("*")]:
+        if path.is_symlink():
+            continue
+        try:
+            current = path.stat().st_mode
+            path.chmod(stat.S_IMODE(current) & ~write_bits)
+        except OSError:
+            continue
 
 
 def assemble_review_task(
@@ -244,6 +275,7 @@ def assemble_review_task(
         trial_path=TRIAL_MOUNT,
         task_path=task_mount,
         result_path=f"/app/{REVIEW_RESULT_FILENAME}",
+        trial_name=rollout_dir.name,
         output_schema=response_model.model_json_schema(),
     )
     frontmatter = _TASK_FRONTMATTER.format(
@@ -277,4 +309,7 @@ def assemble_review_task(
         json.dumps([criterion.name for criterion in rubric.criteria], indent=2),
         encoding="utf-8",
     )
+    # Bind the verdict to the rollout under review: a reviewer that reports
+    # some other run's name produces an unattributable review.
+    (tests_dir / "trial_name.txt").write_text(rollout_dir.name, encoding="utf-8")
     return dest, uploads

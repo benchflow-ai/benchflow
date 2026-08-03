@@ -299,10 +299,12 @@ class _FakeSandbox:
         self.log_content = log_content
         self._started = False
 
-    async def upload_file(self, local_path, remote_path) -> None:
+    async def upload_file(self, local_path, remote_path, *, mode=None) -> None:
         self.uploaded[str(remote_path)] = Path(local_path).read_text()
 
-    async def exec(self, command: str, timeout_sec: int | None = None) -> _ExecResult:
+    async def exec(
+        self, command: str, timeout_sec: int | None = None, user=None
+    ) -> _ExecResult:
         self.exec_calls.append(command)
         self.exec_timeouts.append(timeout_sec)
         if "stat -c %s" in command:

@@ -80,6 +80,10 @@ sandbox-agentcore = [
     # (InvokeAgentRuntimeCommand). The boto3 floor is the first release that
     # models the bedrock-agentcore/-control services.
     "bedrock-agentcore>=1.18",
+    # Used directly by the sealed AgentCore transport (RSA-OAEP key wrap +
+    # AES-CTR/HMAC). It otherwise arrives only transitively via
+    # litellm[proxy]; declaring it here keeps the dependency honest.
+    "cryptography>=44",
     "boto3>=1.43.31",
     # Docker-compatible build-context filtering without requiring a daemon.
     "pathspec>=0.12",

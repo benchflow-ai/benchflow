@@ -22,7 +22,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from benchflow.review.config import (
@@ -62,6 +62,7 @@ class TrialReview:
     reviewer_rollout: str | None = None
     rubric_path: str | None = None
     criteria: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
     def outcome_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {key: 0 for key in _OUTCOME_KEYS}
@@ -108,6 +109,7 @@ class ReviewReport:
                     "reviewer_rollout": trial.reviewer_rollout,
                     "rubric_path": trial.rubric_path,
                     "criteria": trial.criteria,
+                    "notes": trial.notes,
                 }
                 for trial in self.trials
             ],
@@ -177,13 +179,69 @@ def discover_rollouts(
     return rollouts
 
 
-def _source_task_dir(rollout_dir: Path) -> Path | None:
+def _source_task_dir(
+    rollout_dir: Path,
+    *,
+    tasks_root: Path | None,
+) -> tuple[Path | None, str | None]:
+    """Resolve the reviewed task's directory, or explain why it was skipped.
+
+    ``config.json`` is rollout-authored data, not a trusted input: a
+    downloaded rollout can name **any** host directory (``~/.ssh``, a
+    checkout, a directory holding ``.env``) and this code would otherwise
+    copy it wholesale into the reviewer sandbox. So the recorded path is
+    only ever used as a *name to look up beneath an operator-supplied
+    root* (``--tasks-root``): the basename must resolve inside that root,
+    and no path outside it is ever read. Without ``--tasks-root`` the task
+    copy is skipped entirely and the reviewer works from run records alone.
+    """
+
     config = _read_json(rollout_dir / "config.json") or {}
-    task_path = config.get("task_path")
-    if isinstance(task_path, str) and task_path:
-        candidate = Path(task_path)
-        if candidate.is_dir():
-            return candidate
+    recorded = config.get("task_path")
+    if not isinstance(recorded, str) or not recorded:
+        return None, None
+    name = PurePosixPath(recorded.replace("\\", "/")).name
+    if not name:
+        return None, None
+    if tasks_root is None:
+        return None, (
+            f"task evidence skipped: rollout names task {name!r} but no "
+            "--tasks-root was given (a path recorded inside a rollout is "
+            "untrusted and is never read directly)"
+        )
+    root = tasks_root.resolve()
+    candidate = (root / name).resolve()
+    if root not in candidate.parents or not candidate.is_dir():
+        return None, (
+            f"task evidence skipped: {name!r} does not resolve to a "
+            f"directory inside --tasks-root {root}"
+        )
+    return candidate, None
+
+
+def _task_digest_mismatch(rollout_dir: Path, task_dir: Path) -> str | None:
+    """Compare the rollout's recorded task digest against the task on disk.
+
+    A digest mismatch means the run was executed against different task
+    content than the reviewer would see; that is reported per trial rather
+    than silently reviewed.
+    """
+
+    result = _read_json(rollout_dir / "result.json") or {}
+    recorded = result.get("task_digest")
+    if not isinstance(recorded, str) or not recorded:
+        return None
+    try:
+        from benchflow._utils.task_authoring import task_digest
+
+        actual = task_digest(task_dir)
+    except Exception:
+        return None
+    if actual and actual != recorded:
+        return (
+            f"task digest mismatch: rollout recorded {recorded}, "
+            f"--tasks-root copy is {actual}"
+        )
     return None
 
 
@@ -259,6 +317,7 @@ async def _review_one(
     timeout_sec: int,
     image: str,
     open_network: bool,
+    tasks_root: Path | None,
     out_dir: Path,
     workdir: Path,
 ) -> TrialReview:
@@ -269,7 +328,15 @@ async def _review_one(
         trial_name=rollout_dir.name,
         source_rollout=str(rollout_dir),
     )
-    task_dir = _source_task_dir(rollout_dir)
+    task_dir, skip_reason = _source_task_dir(rollout_dir, tasks_root=tasks_root)
+    if skip_reason:
+        trial.notes.append(skip_reason)
+        logger.info("%s: %s", rollout_dir.name, skip_reason)
+    if task_dir is not None:
+        mismatch = _task_digest_mismatch(rollout_dir, task_dir)
+        if mismatch:
+            trial.notes.append(mismatch)
+            logger.warning("%s: %s", rollout_dir.name, mismatch)
     try:
         rubric, resolved_rubric = _resolve_rubric(rubric_path, task_dir)
     except ReviewRubricError as exc:
@@ -349,7 +416,10 @@ def _summarize_job(trials: list[TrialReview]) -> str | None:
     telemetry. Consumers wanting prose synthesis can run it over the report.
     """
 
-    reviewed = [trial for trial in trials if trial.checks]
+    # Only structurally valid reviews contribute verdict counts; rejected
+    # output stays in the report as diagnostics but must not move the
+    # job-level numbers.
+    reviewed = [trial for trial in trials if trial.checks and trial.review_valid]
     if len(reviewed) < 2:
         return None
     total = {key: 0 for key in _OUTCOME_KEYS}
@@ -364,7 +434,7 @@ def _summarize_job(trials: list[TrialReview]) -> str | None:
                 )
                 bucket[outcome] += 1
     lines = [
-        f"{len(reviewed)} of {len(trials)} runs reviewed: "
+        f"{len(reviewed)} of {len(trials)} runs reviewed (valid reviews only): "
         f"{total['pass']} pass, {total['fail']} fail, "
         f"{total['not_applicable']} not applicable across all criteria."
     ]
@@ -393,6 +463,7 @@ async def run_reviews(
     timeout_sec: int = REVIEWER_AGENT_TIMEOUT_SEC,
     image: str = REVIEWER_IMAGE,
     open_network: bool = False,
+    tasks_root: Path | None = None,
     filter_passing: bool | None = None,
     out_dir: Path | None = None,
 ) -> tuple[ReviewReport, Path]:
@@ -441,6 +512,7 @@ async def run_reviews(
                 timeout_sec=timeout_sec,
                 image=image,
                 open_network=open_network,
+                tasks_root=tasks_root,
                 out_dir=out_dir,
                 workdir=workdir,
             )

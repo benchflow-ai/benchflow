@@ -224,7 +224,8 @@ class TestWrapperAssembly:
         )
 
         task_md = (dest / "task.md").read_text(encoding="utf-8")
-        assert "docker_image: python:3.13-slim" in task_md
+        # Pinned by digest, not a mutable tag (PR #942 re-review).
+        assert "docker_image: python@sha256:" in task_md
         assert "test-script" in task_md
         assert not list(dest.rglob("Dockerfile"))
         assert (dest / "tests" / "test.sh").is_file()
@@ -268,6 +269,7 @@ class TestWrapperValidator:
         rollout.mkdir()
         (rollout / "result.json").write_text("{}", encoding="utf-8")
         dest, _ = assemble_review_task(rollout, None, rubric, tmp_path / "w")
+        self._trial_name = rollout.name
         result_path = tmp_path / REVIEW_RESULT_FILENAME
         payload = result if isinstance(result, str) else json.dumps(result)
         result_path.write_text(payload, encoding="utf-8")
@@ -277,6 +279,7 @@ class TestWrapperValidator:
                 str(dest / "tests" / "validate.py"),
                 str(result_path),
                 str(dest / "tests" / "criteria.json"),
+                str(dest / "tests" / "trial_name.txt"),
             ],
             capture_output=True,
             text=True,
@@ -285,7 +288,7 @@ class TestWrapperValidator:
 
     def good_result(self) -> dict:
         return {
-            "trial_name": "r",
+            "trial_name": "r",  # matches the rollout dir name used above
             "summary": "Did things.",
             "checks": {
                 "method_soundness": {"explanation": "ok", "outcome": "pass"},
@@ -325,6 +328,7 @@ class TestWrapperValidator:
             ),
             (lambda r: r.__setitem__("summary", ""), "summary"),
             (lambda r: r.pop("trial_name"), "trial_name"),
+            (lambda r: r.__setitem__("trial_name", "some-other-run"), "trial_name"),
         ],
     )
     def test_invalid_results_fail(self, tmp_path, mutate, message):

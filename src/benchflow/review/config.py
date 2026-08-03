@@ -39,6 +39,7 @@ release notes rather than in the payload.
 from __future__ import annotations
 
 import json
+import keyword
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -74,11 +75,32 @@ class RubricCriterion(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _name_is_identifier(cls, value: str) -> str:
-        if not value.isidentifier():
+    def _name_is_usable_field(cls, value: str) -> str:
+        # The name becomes a dynamically created model field, so anything the
+        # schema library reserves either crashes model construction
+        # (``model_config``), trips protected-namespace rules
+        # (``model_dump``), or is silently dropped from the generated schema
+        # (private/dunder names) — yielding an impossible reviewer/verifier
+        # contract instead of a loud failure.
+        if not value.isidentifier() or keyword.iskeyword(value):
             raise ValueError(
-                f"criterion name {value!r} must be a valid Python identifier "
-                "(it becomes a structured-output field name)"
+                f"criterion name {value!r} must be a valid, non-keyword "
+                "Python identifier (it becomes a structured-output field)"
+            )
+        if value.startswith("_"):
+            raise ValueError(
+                f"criterion name {value!r} must not start with '_': private "
+                "and dunder names are dropped from the generated schema"
+            )
+        if value.startswith("model_"):
+            raise ValueError(
+                f"criterion name {value!r} must not start with 'model_': "
+                "that namespace is reserved by the schema library"
+            )
+        if hasattr(BaseModel, value):
+            raise ValueError(
+                f"criterion name {value!r} collides with reserved schema "
+                "attribute {value!r}; choose another name"
             )
         return value
 
@@ -150,12 +172,15 @@ def load_rubric(path: Path | None = None) -> Rubric:
 
 
 def is_review_rubric_file(path: Path) -> bool:
-    """Whether ``path`` is shaped like a review rubric.
+    """Whether ``path`` claims this contract's dialect.
 
-    ``rubric.json`` is an overloaded filename: llm-judge verifier rubrics use
-    entries shaped like ``{id, match_criteria}``. A file only counts as a
-    review rubric when every criteria entry carries exactly this contract's
-    three keys, so judge rubrics are never claimed or misvalidated.
+    ``rubric.json`` is an overloaded filename: llm-judge verifier rubrics
+    use entries shaped like ``{id, match_criteria}``. The claim is made on
+    the *dialect marker*, not on validity — an entry carrying any of this
+    contract's keys claims the file, so a malformed review rubric (empty
+    ``criteria``, a misspelled ``guidance``) is claimed and then fails
+    loudly in :func:`load_rubric` instead of silently falling back to the
+    built-in default. Judge rubrics are never claimed.
     """
 
     try:
@@ -165,10 +190,13 @@ def is_review_rubric_file(path: Path) -> bool:
     if not isinstance(data, dict):
         return False
     criteria = data.get("criteria")
-    if not isinstance(criteria, list) or not criteria:
+    if not isinstance(criteria, list):
         return False
-    return all(
-        isinstance(entry, dict) and {"name", "description", "guidance"} <= set(entry)
+    if not criteria:
+        return True  # empty: claimed, then rejected by load_rubric
+    return any(
+        isinstance(entry, dict)
+        and bool({"name", "description", "guidance"} & set(entry))
         for entry in criteria
     )
 

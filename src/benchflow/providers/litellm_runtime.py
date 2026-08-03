@@ -728,7 +728,23 @@ async def _upload_text(sandbox: Any, text: str, target_path: str, suffix: str) -
         tmp.write(text)
         tmp_path = Path(tmp.name)
     try:
-        await sandbox.upload_file(tmp_path, target_path)
+        # Runtime files carry the provider environment and proxy master key.
+        # Upload private so an untrusted in-sandbox agent (e.g. the rubric
+        # reviewer) cannot read them; backends without a mode argument keep
+        # their previous behavior.
+        try:
+            await sandbox.upload_file(tmp_path, target_path, mode="600")
+        except TypeError:
+            # Backend predates the mode argument: upload, then tighten in a
+            # separate step. Best-effort — a backend that also lacks `user`
+            # keeps its previous behavior rather than failing the run.
+            await sandbox.upload_file(tmp_path, target_path)
+            with contextlib.suppress(TypeError, OSError, RuntimeError):
+                await sandbox.exec(
+                    f"chmod 600 {shlex.quote(target_path)}",
+                    user="root",
+                    timeout_sec=30,
+                )
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -948,11 +964,15 @@ async def _start_sandbox_litellm(
     await _upload_text(
         sandbox, json.dumps(launch_config), paths["launch_config"], ".json"
     )
+    # The launcher reads launch_config.json (provider env + master key) at
+    # startup; unlink it immediately afterwards so the secret does not sit in
+    # the sandbox filesystem for the life of the run.
     command = (
         f"rm -f {shlex.quote(paths['state'])} {shlex.quote(paths['pid'])} "
         f"{shlex.quote(paths['log'])} && "
         f"{shlex.quote(python)} {shlex.quote(paths['launcher'])} "
-        f"{shlex.quote(paths['launch_config'])}"
+        f"{shlex.quote(paths['launch_config'])}; "
+        f"rc=$?; rm -f {shlex.quote(paths['launch_config'])}; exit $rc"
     )
     try:
         result = await sandbox.exec(command, timeout_sec=20)
