@@ -129,7 +129,9 @@ class TestGuidanceAndSchema:
 
     def test_description_never_reaches_the_prompt(self):
         rubric = Rubric.model_validate(RUBRIC)
-        instruction = render_review_instruction(rubric, output_schema={"type": "object"})
+        instruction = render_review_instruction(
+            rubric, output_schema={"type": "object"}
+        )
         assert "Internal note for rubric authors." not in instruction
         assert "Internal note" not in build_criteria_guidance(rubric)
 
@@ -235,7 +237,9 @@ class TestWrapperAssembly:
     def test_evidence_excludes_vcs_and_prior_reviews(self, tmp_path):
         rubric = Rubric.model_validate(RUBRIC)
         rollout = self.make_rollout(tmp_path)
-        dest, uploads = assemble_review_task(rollout, None, rubric, tmp_path / "wrapper")
+        dest, uploads = assemble_review_task(
+            rollout, None, rubric, tmp_path / "wrapper"
+        )
         trial_copy = dest / "evidence" / "trial"
         assert (trial_copy / "result.json").is_file()
         assert not (trial_copy / ".git").exists()

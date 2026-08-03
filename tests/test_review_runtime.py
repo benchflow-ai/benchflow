@@ -172,8 +172,7 @@ class TestRunReviews:
         assert [t["trial_name"] for t in data["trials"]] == ["rollout-a", "rollout-b"]
         assert all(t["review_valid"] for t in data["trials"])
         assert all(
-            t["checks"]["method_soundness"]["outcome"] == "pass"
-            for t in data["trials"]
+            t["checks"]["method_soundness"]["outcome"] == "pass" for t in data["trials"]
         )
         assert len(fake.configs) == 2
 
@@ -217,9 +216,7 @@ class TestRunReviews:
         before = (rollout / "result.json").read_bytes()
         monkeypatch.setattr(benchflow, "run", FakeRun(review_payload=good_review()))
 
-        report, _ = await run_reviews(
-            rollout, agent="gemini", out_dir=tmp_path / "out"
-        )
+        report, _ = await run_reviews(rollout, agent="gemini", out_dir=tmp_path / "out")
 
         assert (rollout / "result.json").read_bytes() == before
         assert not (rollout / REVIEW_RESULT_FILENAME).exists()
@@ -247,14 +244,10 @@ class TestRunReviews:
         assert trial.checks is not None  # verdicts still surfaced for triage
 
     @pytest.mark.asyncio
-    async def test_missing_review_result_is_an_error_entry(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_missing_review_result_is_an_error_entry(self, tmp_path, monkeypatch):
         task = make_task(tmp_path, with_rubric=True)
         rollout = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
-        monkeypatch.setattr(
-            benchflow, "run", FakeRun(reward=0.0, review_payload=None)
-        )
+        monkeypatch.setattr(benchflow, "run", FakeRun(reward=0.0, review_payload=None))
 
         report, _ = await run_reviews(rollout, agent="gemini", out_dir=tmp_path / "out")
         trial = report.trials[0]
@@ -372,7 +365,5 @@ class TestRolloutConfigUploads:
         assert config.uploads == {}
 
     def test_uploads_accepts_mapping(self, tmp_path):
-        config = RolloutConfig(
-            task_path=tmp_path, uploads={str(tmp_path): "/app/data"}
-        )
+        config = RolloutConfig(task_path=tmp_path, uploads={str(tmp_path): "/app/data"})
         assert config.uploads == {str(tmp_path): "/app/data"}

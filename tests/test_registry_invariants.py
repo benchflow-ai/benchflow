@@ -260,10 +260,14 @@ def test_js_agent_install_respects_explicit_npm_package_specs():
 
 
 def test_opencode_install_is_pinned_for_reproducible_harness_runs():
-    """Guards PR #931 against silently changing OpenCode between eval stages."""
+    """Guards PR #931 against silently changing OpenCode between eval stages.
+
+    The pinned version moves deliberately (PR #942 bumped it to 1.18.11 when
+    opencode became the default rubric reviewer); pinning itself must stay.
+    """
     install_cmd = AGENTS["opencode"].install_cmd
 
-    assert "opencode-ai@1.17.20" in install_cmd
+    assert "opencode-ai@1.18.11" in install_cmd
     assert "opencode-ai@latest" not in install_cmd
 
 

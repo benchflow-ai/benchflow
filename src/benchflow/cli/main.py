@@ -1335,9 +1335,7 @@ def review_command(
     ] = None,
     image: Annotated[
         str,
-        typer.Option(
-            "--image", help="Prebuilt sandbox image for reviewer rollouts"
-        ),
+        typer.Option("--image", help="Prebuilt sandbox image for reviewer rollouts"),
     ] = "python:3.13-slim",
     out_dir: Annotated[
         Path | None,
