@@ -356,7 +356,7 @@ async def test_engine_writes_canonical_plan_metadata_without_touching_solver_ses
     verifier = task / "verifier"
     verifier.mkdir(parents=True)
     rubric = {
-        "schema_version": "1.0",
+        "schema_version": "1.2",
         "reviewer": {"harness": "gemini", "mode": "batched"},
         "criteria": [
             {

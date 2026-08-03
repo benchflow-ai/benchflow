@@ -43,7 +43,7 @@ def _criterion_payload(**overrides) -> dict:
 
 def _minimal(**overrides) -> dict:
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "1.2",
         "criteria": [_criterion_payload()],
     }
     payload.update(overrides)
@@ -86,6 +86,13 @@ class TestLoadReviewRubric:
         with pytest.raises(ReviewRubricError, match="unknown key"):
             load_review_rubric(_write_rubric(tmp_path, payload))
 
+    def test_v10_contract_is_rejected(self, tmp_path: Path) -> None:
+        """Guards PR #942 against relabeling the breaking v1.2 shape as v1.0."""
+
+        payload = _minimal(schema_version="1.0")
+        with pytest.raises(ReviewRubricError, match=r"must be '1\.2'"):
+            load_review_rubric(_write_rubric(tmp_path, payload))
+
     def test_criterion_type_is_required_and_closed(self, tmp_path: Path) -> None:
         payload = _minimal()
         payload["criteria"][0].pop("criterion_type")
@@ -110,7 +117,7 @@ class TestLoadReviewRubric:
     def test_nonfinite_weight_rejected(self, tmp_path: Path) -> None:
         path = tmp_path / "rubric.json"
         path.write_text(
-            '{"schema_version":"1.0","criteria":['
+            '{"schema_version":"1.2","criteria":['
             '{"id":"a","criterion":"A criterion long enough to validate.",'
             '"criterion_type":"data-handling","weight":Infinity}]}'
         )

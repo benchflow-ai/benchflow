@@ -19,7 +19,7 @@ from typing import Any, Literal
 from benchflow._utils.config import normalize_reasoning_effort
 
 REVIEW_RUBRIC_FILENAME = "rubric.json"
-REVIEW_SCHEMA_VERSION = "1.0"
+REVIEW_SCHEMA_VERSION = "1.2"
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _NUMBER_RE = re.compile(r"(?<![\w.])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w.])")

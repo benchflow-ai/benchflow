@@ -30,7 +30,7 @@ tasks/<task-id>/
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.2",
   "reviewer": {
     "harness": "gemini",
     "model": "gemini-2.5-flash",
