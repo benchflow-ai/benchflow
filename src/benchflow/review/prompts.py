@@ -23,7 +23,7 @@ Return exactly one JSON object with this shape:
 
 {{"verdicts": [{{"id": "<criterion id>", "explanation": "<what you found>", "evidence": ["<file path or trajectory step you actually inspected>"], "criterion_met": true}}{ellipsis}]}}
 
-Use every requested criterion id exactly once. ``criterion_met`` must be a JSON boolean. Evidence must name an actual file read, directory search, or trajectory step inspected through a tool during this review; invented evidence makes the review invalid. Return only the JSON object, without markdown fences."""
+Use every requested criterion id exactly once. ``criterion_met`` must be a JSON boolean. Evidence is accepted only when it names content inspected through a reviewer ``read`` or ``search`` tool event during this review. Shell execution, reasoning-only claims, and paths that were not opened by a read/search event are not valid evidence. Invented evidence makes the review invalid. Return only the JSON object, without markdown fences."""
 
 
 def _criterion_block(criterion: ReviewCriterion) -> str:

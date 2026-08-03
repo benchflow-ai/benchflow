@@ -18,6 +18,7 @@ from benchflow.review import (
     parse_reviewer_message,
 )
 from benchflow.review.config import ReviewCriterion, ReviewerSpec, ReviewRubric
+from benchflow.review.prompts import render_review_prompt
 from benchflow.review.scoring import (
     STATUS_SCORED,
     STATUS_UNSCORED,
@@ -181,6 +182,20 @@ def _criterion(identifier: str = "correct", **overrides) -> ReviewCriterion:
     }
     defaults.update(overrides)
     return ReviewCriterion(**defaults)
+
+
+def test_review_prompt_requires_read_or_search_evidence() -> None:
+    """Guards PR #942 against prompting evidence that runtime rejects."""
+
+    prompt = render_review_prompt(
+        [_criterion()],
+        task_prompt="Inspect the supplied evidence.",
+        trajectory_files=["acp_trajectory.jsonl"],
+        first_batch=True,
+    )
+    assert "only when it names content inspected" in prompt
+    assert "``read`` or ``search`` tool event" in prompt
+    assert "Shell execution" in prompt
 
 
 def _verdict_reply(identifier: str = "correct", met: object = True) -> str:
