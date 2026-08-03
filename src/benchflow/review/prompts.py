@@ -8,7 +8,7 @@ a placeholder renders instead of crashing.
 
 Available placeholders:
 
-- ``{trial_path}`` — absolute in-sandbox path of the rollout evidence copy.
+- ``{trial_path}`` — absolute in-sandbox path of the read-only rollout evidence copy.
 - ``{task_section}`` — pre-rendered paragraph describing the task-definition
   copy (or its absence).
 - ``{criteria_guidance}`` — one ``- name: guidance`` line per criterion.
@@ -24,8 +24,8 @@ from typing import Any
 
 from benchflow.review.config import Rubric, build_criteria_guidance
 
-TRIAL_MOUNT = "/app/trial"
-TASK_MOUNT = "/app/task"
+TRIAL_MOUNT = "/evidence/trial"
+TASK_MOUNT = "/evidence/task"
 
 REVIEW_TEMPLATE = """You are reviewing one finished agent run. Judge the run against each criterion listed under Guidance, giving a short rationale for every judgment.
 

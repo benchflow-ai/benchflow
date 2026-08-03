@@ -151,18 +151,16 @@ def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str
     example an llm-judge rubric owned by the verifier-strategy machinery)
     is not checked here.
     """
-    import json
-
-    from benchflow.review.config import ReviewRubricError, load_rubric
+    from benchflow.review.config import (
+        ReviewRubricError,
+        is_review_rubric_file,
+        load_rubric,
+    )
 
     candidate = verifier_dir / "rubric.json"
-    if not candidate.is_file():
-        return []
-    try:
-        data = json.loads(candidate.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return []
-    if not isinstance(data, dict) or "criteria" not in data:
+    if not candidate.is_file() or not is_review_rubric_file(candidate):
+        # Absent, unreadable, or another rubric dialect (e.g. an llm-judge
+        # rubric with id/match_criteria entries) — not ours to validate.
         return []
     try:
         load_rubric(candidate)

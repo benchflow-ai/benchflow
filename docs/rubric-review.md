@@ -44,10 +44,17 @@ Each criterion is exactly three strings:
 There are no weights, gates, thresholds, or aggregate scores. Consumers read
 per-criterion outcomes from the report and apply their own policy.
 
+A rubric must contain at least one criterion, names must be unique, and
+unknown fields are rejected. `rubric.json` is an overloaded filename —
+llm-judge verifier rubrics use `{id, match_criteria}` entries — so a file
+only counts as a review rubric when every criteria entry carries exactly
+these three keys; judge rubrics are never claimed or misvalidated.
+
 Rubric resolution order, per reviewed rollout:
 
 1. an explicit `--rubric/-r` file,
-2. the reviewed task's own `verifier/rubric.json` (or `tests/rubric.json`),
+2. the reviewed task's own `verifier/rubric.json` (or `tests/rubric.json`)
+   when it is shaped like a review rubric,
 3. the built-in default rubric (`reward_hacking`, `task_specification`).
 
 ## Running a review
@@ -68,10 +75,10 @@ bench review jobs/<job> --failing -r spec-rubric.json
 
 `--passing` selects rollouts with reward 1.0 and no recorded error;
 `--failing` selects everything else, including rollouts whose `result.json`
-is unreadable. The reviewer agent (`--agent`, default `opencode`) and model (`--model`;
-agents without a registry default require one — opencode takes models.dev
-ids such as `google/gemini-2.5-flash`) are independent of whatever ran the
-original job.
+is unreadable. The reviewer agent (`--agent`, default `opencode`) and model
+(`--model`; agents without a registry default require one — pass a gateway
+model id such as `gemini/gemini-2.5-flash`) are independent of whatever ran
+the original job.
 
 ## How a review executes
 
@@ -82,11 +89,20 @@ the host, which is why every sandbox backend (`docker`, `daytona`,
 - **Prebuilt image, no build.** The wrapper declares a pinned
   `docker_image` (`python:3.13-slim`) and ships no Dockerfile, so no backend
   ever builds an image for a review.
-- **Evidence by upload.** A copy of the rollout directory is uploaded to
-  `/app/trial`, and a copy of the task directory (when the rollout's
-  `config.json` still points at one) to `/app/task`. Prior review outputs
-  are excluded from the copy, so a re-review can never read an earlier
-  verdict. The reviewed rollout itself is never touched.
+- **Evidence by upload, outside the workdir.** A copy of the rollout
+  directory is uploaded to `/evidence/trial`, and a copy of the task
+  directory (when the rollout's `config.json` still points at one) to
+  `/evidence/task`. `/evidence` sits outside the agent workdir, so the
+  sandbox-user chown never touches it: it stays root-owned and unwritable
+  by the reviewer. Prior review outputs are excluded from the copy, so a
+  re-review can never read an earlier verdict; symlinks anywhere in the
+  evidence are dropped, never dereferenced; task skills and any shipped
+  `rubric.json` are excluded from the task copy. The reviewed rollout
+  itself is never touched.
+- **Gateway-scoped egress.** Reviewer rollouts run with
+  `BENCHFLOW_DISALLOW_WEB_TOOLS=1`, so the sandbox egress lockdown confines
+  the reviewer's network to the model gateway on backends that enforce the
+  owner-matched firewall.
 - **The rubric never enters the sandbox.** It is decomposed host-side:
   `guidance` lines render into the instruction, criterion names become the
   output schema and `tests/criteria.json`. `description` goes nowhere.
@@ -106,7 +122,7 @@ The review job directory contains `review_report.json`:
   "path": "…/jobs/2026-08-03__12-00-00",
   "rubric": {"path": "…", "criteria": ["…"]},
   "reviewer": {"agent": "opencode", "model": "google/gemini-2.5-flash", "environment": "docker"},
-  "job_summary": "Prose synthesis across runs (multi-rollout jobs only).",
+  "job_summary": "Deterministic outcome aggregation (multi-rollout runs only).",
   "trials": [
     {
       "trial_name": "hello-world-task__829cddb8",
@@ -125,7 +141,12 @@ The review job directory contains `review_report.json`:
 ```
 
 Each reviewer rollout's own records (trajectory, verifier output, raw
-`review-result.json`) sit under the report's `runtime/` directory for audit.
+`review-result.json`) sit under the report's `runtime/` directory for
+audit; every invocation uses a fresh unique runtime leaf, and each trial's
+`reviewer_rollout` points at that exact leaf, so reusing `--out-dir` can
+never resurface a stale review. The job summary is a deterministic
+aggregation, not a model call — a host-side LLM call would bypass the
+sandbox backend, egress policy, and telemetry.
 
 ## Writing good criteria
 

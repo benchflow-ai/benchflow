@@ -19,6 +19,19 @@
   `task_specification`). `--passing` / `--failing` filter the rollouts under
   review; a job-level prose summary aggregates multi-rollout runs. The
   default reviewer harness is `opencode` (pinned to the latest release).
+  Evidence mounts at `/evidence` outside the agent workdir (root-owned,
+  unwritable by the reviewer), symlinks are dropped rather than
+  dereferenced, task skills and shipped rubrics are excluded, reviewer
+  egress is gateway-scoped via the sandbox lockdown flag, artifact
+  consumption is pinned to each invocation's unique runtime leaf, and the
+  job summary is a deterministic aggregation.
+- **Sealed AgentCore uploads.** Every AgentCore file transfer is now
+  encrypted end-to-end: the sandbox generates a keypair, only the public
+  key appears in command output, payloads travel as AES-256-CTR ciphertext
+  with an RSA-OAEP-wrapped key, and the decrypted key never appears in
+  command text. Fixes provider credentials from `launch_config.json`
+  being recoverable from the runtime's CloudWatch command log; the
+  generated wrapper image installs `openssl` when missing.
 - **`RolloutConfig.uploads`.** Generic post-start host→sandbox uploads
   (directory or file → absolute sandbox path), used by rubric review to
   deliver evidence into prebuilt-image sandboxes and available to any caller

@@ -19,6 +19,7 @@ import json
 import logging
 import shutil
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +32,6 @@ from benchflow.review.config import (
     find_task_rubric,
     load_rubric,
 )
-from benchflow.review.prompts import render_job_summary_prompt
 from benchflow.review.wrapper import (
     REVIEWER_AGENT_TIMEOUT_SEC,
     REVIEWER_IMAGE,
@@ -60,6 +60,8 @@ class TrialReview:
     checks: dict[str, dict[str, Any]] | None = None
     error: str | None = None
     reviewer_rollout: str | None = None
+    rubric_path: str | None = None
+    criteria: list[str] = field(default_factory=list)
 
     def outcome_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {key: 0 for key in _OUTCOME_KEYS}
@@ -102,6 +104,8 @@ class ReviewReport:
                     "checks": trial.checks,
                     "error": trial.error,
                     "reviewer_rollout": trial.reviewer_rollout,
+                    "rubric_path": trial.rubric_path,
+                    "criteria": trial.criteria,
                 }
                 for trial in self.trials
             ],
@@ -198,25 +202,46 @@ def _resolve_rubric(
     return load_rubric(None), DEFAULT_RUBRIC_PATH
 
 
-def _find_review_result(runtime_dir: Path) -> dict[str, Any] | None:
-    for candidate in sorted(runtime_dir.rglob(REVIEW_RESULT_FILENAME)):
-        data = _read_json(candidate)
+def _reviewer_rollout_leaf(runtime_dir: Path) -> Path | None:
+    """Return the single rollout directory this invocation produced.
+
+    ``runtime_dir`` is unique per (invocation, source rollout), so exactly one
+    reviewer rollout may exist beneath it. Anything else — zero because the
+    run died before creating it, more than one because something unexpected
+    wrote into the directory — is treated as no result rather than guessed
+    at. Artifacts are then read from that exact leaf; there is deliberately
+    no recursive artifact discovery that could pick up stale files.
+    """
+
+    leaves = sorted(
+        candidate.parent
+        for candidate in runtime_dir.rglob("config.json")
+        if candidate.parent != runtime_dir
+    )
+    return leaves[0] if len(leaves) == 1 else None
+
+
+def _leaf_review_result(leaf: Path) -> dict[str, Any] | None:
+    for relative in (
+        Path("verifier") / REVIEW_RESULT_FILENAME,
+        Path("artifacts") / REVIEW_RESULT_FILENAME,
+    ):
+        data = _read_json(leaf / relative)
         if data is not None:
             return data
     return None
 
 
-def _reviewer_reward(runtime_dir: Path) -> float | None:
-    for candidate in sorted(runtime_dir.rglob("result.json")):
-        result = _read_json(candidate)
-        if result is None:
-            continue
-        rewards = result.get("rewards")
-        if isinstance(rewards, dict) and "reward" in rewards:
-            try:
-                return float(rewards["reward"])
-            except (TypeError, ValueError):
-                return None
+def _leaf_reward(leaf: Path) -> float | None:
+    result = _read_json(leaf / "result.json")
+    if result is None:
+        return None
+    rewards = result.get("rewards")
+    if isinstance(rewards, dict) and "reward" in rewards:
+        try:
+            return float(rewards["reward"])
+        except (TypeError, ValueError):
+            return None
     return None
 
 
@@ -247,9 +272,13 @@ async def _review_one(
     except ReviewRubricError as exc:
         trial.error = str(exc)
         return trial
+    trial.rubric_path = str(resolved_rubric)
+    trial.criteria = [criterion.name for criterion in rubric.criteria]
 
     wrapper_dir = workdir / f"review-{rollout_dir.name}"
-    runtime_dir = out_dir / "runtime" / rollout_dir.name
+    # Unique per invocation: reusing --out-dir must never let this run see a
+    # previous run's reviewer artifacts.
+    runtime_dir = out_dir / "runtime" / rollout_dir.name / uuid.uuid4().hex[:12]
     try:
         _, uploads = assemble_review_task(
             rollout_dir,
@@ -260,21 +289,27 @@ async def _review_one(
             image=image,
             agent_timeout_sec=timeout_sec,
         )
+        reviewer_env = dict(agent_env)
+        # Scope reviewer egress to the model gateway wherever the sandbox
+        # lockdown can enforce it (owner-matched firewall keyed off this
+        # flag); harmless where it cannot.
+        reviewer_env.setdefault("BENCHFLOW_DISALLOW_WEB_TOOLS", "1")
         config = RolloutConfig(
             task_path=wrapper_dir,
             agent=agent,
             model=model,
-            agent_env=dict(agent_env),
+            agent_env=reviewer_env,
             environment=environment,
             jobs_dir=runtime_dir,
             timeout=timeout_sec,
             uploads=uploads,
         )
         result = await run_rollout(config)
-        trial.reviewer_rollout = str(runtime_dir)
-        reward = _reviewer_reward(runtime_dir)
+        leaf = _reviewer_rollout_leaf(runtime_dir)
+        trial.reviewer_rollout = str(leaf) if leaf else str(runtime_dir)
+        reward = _leaf_reward(leaf) if leaf else None
         trial.review_valid = reward == 1.0
-        review = _find_review_result(runtime_dir)
+        review = _leaf_review_result(leaf) if leaf else None
         if review is None:
             trial.error = (
                 f"reviewer did not produce a readable {REVIEW_RESULT_FILENAME} "
@@ -302,43 +337,43 @@ async def _review_one(
     return trial
 
 
-async def _summarize_job(
-    trials: list[TrialReview],
-    *,
-    agent: str,
-    model: str | None,
-) -> str | None:
-    """Aggregate per-trial reviews into one prose summary via a plain LLM call."""
+def _summarize_job(trials: list[TrialReview]) -> str | None:
+    """Deterministic cross-run aggregation.
+
+    Intentionally not an LLM call: a host-side model call would bypass the
+    sandbox backend, the reviewer egress policy, ``agent_env``, and normal
+    telemetry. Consumers wanting prose synthesis can run it over the report.
+    """
 
     reviewed = [trial for trial in trials if trial.checks]
     if len(reviewed) < 2:
         return None
-    from benchflow.evaluation import effective_model
-
-    summary_model = effective_model(agent, model)
-    if summary_model is None:
-        return None
-    blocks = []
+    total = {key: 0 for key in _OUTCOME_KEYS}
+    per_criterion: dict[str, dict[str, int]] = {}
     for trial in reviewed:
-        lines = [f"Run: {trial.trial_name}", f"  Summary: {trial.summary or ''}"]
         for name, check in (trial.checks or {}).items():
-            lines.append(
-                f"  {name}: {check.get('outcome')} — {check.get('explanation', '')}"
-            )
-        blocks.append("\n".join(lines))
-    prompt = render_job_summary_prompt(blocks)
-    try:
-        from litellm import acompletion
-
-        response = await acompletion(
-            model=summary_model,
-            messages=[{"role": "user", "content": prompt}],
+            outcome = check.get("outcome")
+            if outcome in total:
+                total[outcome] += 1
+                bucket = per_criterion.setdefault(
+                    name, {key: 0 for key in _OUTCOME_KEYS}
+                )
+                bucket[outcome] += 1
+    lines = [
+        f"{len(reviewed)} of {len(trials)} runs reviewed: "
+        f"{total['pass']} pass, {total['fail']} fail, "
+        f"{total['not_applicable']} not applicable across all criteria."
+    ]
+    for name in sorted(per_criterion):
+        bucket = per_criterion[name]
+        lines.append(
+            f"{name}: {bucket['pass']} pass / {bucket['fail']} fail / "
+            f"{bucket['not_applicable']} n-a"
         )
-        content = response.choices[0].message.content  # type: ignore[union-attr]
-        return content.strip() if isinstance(content, str) else None
-    except Exception:
-        logger.warning("Job-level review summary failed", exc_info=True)
-        return None
+    failures = [trial.trial_name for trial in trials if trial.error]
+    if failures:
+        lines.append("reviews with errors: " + ", ".join(sorted(failures)))
+    return "\n".join(lines)
 
 
 async def run_reviews(
@@ -366,12 +401,18 @@ async def run_reviews(
     if model is None:
         from benchflow.evaluation import effective_model
 
-        model = effective_model(agent, None) or None
+        try:
+            model = effective_model(agent, None) or None
+        except ValueError as exc:
+            raise ReviewRunError(
+                f"agent {agent!r} has no registry default model ({exc}); pass "
+                "--model with a gateway model id such as "
+                "'gemini/gemini-2.5-flash'"
+            ) from None
         if model is None:
             raise ReviewRunError(
                 f"agent {agent!r} has no registry default model; pass --model "
-                "(for opencode use models.dev provider/model ids, e.g. "
-                "'google/gemini-2.5-flash')"
+                "with a gateway model id such as 'gemini/gemini-2.5-flash'"
             )
 
     if out_dir is None:
@@ -410,6 +451,9 @@ async def run_reviews(
         criteria_names = [
             criterion.name for criterion in load_rubric(rubric_path).criteria
         ]
+    elif trials:
+        first = next((trial.criteria for trial in trials if trial.criteria), [])
+        criteria_names = list(first)
     report = ReviewReport(
         path=str(path),
         rubric_path=str(rubric_for_report),
@@ -419,7 +463,7 @@ async def run_reviews(
         environment=environment,
         trials=trials,
     )
-    report.job_summary = await _summarize_job(trials, agent=agent, model=model)
+    report.job_summary = _summarize_job(trials)
 
     report_path = out_dir / REVIEW_REPORT_FILENAME
     report_path.write_text(

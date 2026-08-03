@@ -326,7 +326,7 @@ bench review jobs/<job> --passing --sandbox daytona -n 8
 | `--rubric`, `-r` | task / built-in | Rubric JSON file. Default: the task's own `verifier/rubric.json` when it ships one, else the built-in default rubric |
 | `--prompt`, `-p` | built-in | Custom reviewer instruction template |
 | `--agent`, `-a` | `opencode` | Reviewer agent harness |
-| `--model`, `-m` | agent registry | Reviewer model (required for agents without a registry default, e.g. opencode: `google/gemini-2.5-flash`) |
+| `--model`, `-m` | agent registry | Reviewer model (required for agents without a registry default; gateway ids such as `gemini/gemini-2.5-flash`) |
 | `--sandbox` | `docker` | Sandbox backend for reviewer rollouts |
 | `--concurrency`, `-n` | `4` | Max concurrent reviews |
 | `--passing` | `false` | Only review passing rollouts (reward 1.0) |

@@ -88,22 +88,34 @@ class TestLoadRubric:
         with pytest.raises(ReviewRubricError, match="identifier"):
             load_rubric(write_rubric(tmp_path, bad))
 
-    def test_ignores_unknown_keys(self, tmp_path):
-        """Unknown keys are tolerated so rubrics can carry sidecar metadata
-        without breaking older readers."""
+    def test_rejects_unknown_keys(self, tmp_path):
+        """Unknown fields fail closed so typos cannot silently change review
+        behavior."""
         data = {
             "criteria": [
                 {
                     "name": "x",
                     "description": "d",
                     "guidance": "g",
-                    "extra": "ignored",
+                    "extra": "nope",
                 }
             ],
-            "extra_top": 1,
         }
-        rubric = load_rubric(write_rubric(tmp_path, data))
-        assert rubric.criteria[0].name == "x"
+        with pytest.raises(ReviewRubricError, match="not a valid rubric"):
+            load_rubric(write_rubric(tmp_path, data))
+
+    def test_rejects_empty_criteria(self, tmp_path):
+        """An empty rubric would let the wrapper award reward 1 to a review
+        containing zero judgments."""
+        with pytest.raises(ReviewRubricError, match="not a valid rubric"):
+            load_rubric(write_rubric(tmp_path, {"criteria": []}))
+
+    def test_rejects_duplicate_names(self, tmp_path):
+        """Duplicate names would silently collapse into one structured-output
+        field."""
+        entry = {"name": "x", "description": "d", "guidance": "g"}
+        with pytest.raises(ReviewRubricError, match="unique"):
+            load_rubric(write_rubric(tmp_path, {"criteria": [entry, dict(entry)]}))
 
 
 class TestFindTaskRubric:

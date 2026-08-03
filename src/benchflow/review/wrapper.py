@@ -6,7 +6,9 @@ synthetic task built here on the host:
 - the wrapper uses a pinned prebuilt image (no Dockerfile, no image build on
   any backend);
 - the rollout evidence and, when available, the original task definition are
-  uploaded read-only into the sandbox after start (``RolloutConfig.uploads``);
+  uploaded after start (``RolloutConfig.uploads``) to ``/evidence`` — outside
+  the agent workdir, so the sandbox-user chown never touches them and they
+  stay root-owned and unwritable by the reviewer;
 - the instruction body is the rendered review prompt plus the structured
   output contract;
 - ``tests/`` holds a stdlib-only validator plus the criterion-name list, so
@@ -15,7 +17,11 @@ synthetic task built here on the host:
 
 The rubric file itself never enters the sandbox.  Only its derivatives do:
 guidance lines inside the instruction, criterion names inside the output
-schema, and the same names inside ``tests/criteria.json``.
+schema, and the same names inside ``tests/criteria.json``.  Task evidence is
+sanitized: skills and any shipped ``rubric.json`` are excluded, and symlinks
+anywhere in the evidence are dropped rather than dereferenced.  The reviewer
+runs with ``BENCHFLOW_DISALLOW_WEB_TOOLS=1`` so the sandbox egress lockdown
+confines its network to the model gateway on backends that enforce it.
 """
 
 from __future__ import annotations
@@ -46,6 +52,13 @@ _EVIDENCE_EXCLUDES = (
     "review",
     REVIEW_RESULT_FILENAME,
     "review_report.json",
+)
+
+#: Task-side material the reviewer must not see: skills would break no-skill
+#: resource isolation, and the task's own rubric must never enter a sandbox.
+_TASK_EVIDENCE_EXCLUDES = (
+    "skills",
+    "rubric.json",
 )
 
 _TEST_SCRIPT = """#!/bin/bash
@@ -136,7 +149,6 @@ agent:
 environment:
   docker_image: {image}
   workdir: /app
-  network_mode: public
   cpus: 1
   memory_mb: 2048
   storage_mb: 4096
@@ -145,14 +157,39 @@ environment:
 """
 
 
-def copy_evidence(source: Path, destination: Path) -> None:
-    """Copy one evidence tree, dropping VCS metadata and prior review output."""
+def _evidence_ignore(extra_excludes: tuple[str, ...]):
+    """Build a copytree ignore callback: name excludes plus symlink rejection.
+
+    ``shutil.copytree(symlinks=False)`` would *dereference* links, so a
+    source-controlled symlink could materialize an arbitrary host file into
+    the uploaded evidence. Links are dropped entirely instead.
+    """
+
+    patterns = shutil.ignore_patterns(*(_EVIDENCE_EXCLUDES + extra_excludes))
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        ignored = set(patterns(directory, names))
+        for name in names:
+            if (Path(directory) / name).is_symlink():
+                ignored.add(name)
+        return ignored
+
+    return ignore
+
+
+def copy_evidence(
+    source: Path,
+    destination: Path,
+    *,
+    extra_excludes: tuple[str, ...] = (),
+) -> None:
+    """Copy one evidence tree; drops VCS data, prior reviews, and symlinks."""
 
     shutil.copytree(
         source,
         destination,
-        ignore=shutil.ignore_patterns(*_EVIDENCE_EXCLUDES),
-        symlinks=False,
+        ignore=_evidence_ignore(extra_excludes),
+        symlinks=True,  # never dereference; links are filtered by ignore()
         ignore_dangling_symlinks=True,
     )
 
@@ -182,7 +219,11 @@ def assemble_review_task(
     uploads = {str(evidence / "trial"): TRIAL_MOUNT}
     task_mount: str | None = None
     if task_dir is not None and task_dir.is_dir():
-        copy_evidence(task_dir, evidence / "task")
+        copy_evidence(
+            task_dir,
+            evidence / "task",
+            extra_excludes=_TASK_EVIDENCE_EXCLUDES,
+        )
         uploads[str(evidence / "task")] = TASK_MOUNT
         task_mount = TASK_MOUNT
 

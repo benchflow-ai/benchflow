@@ -85,6 +85,9 @@ class FakeRun:
         self.configs.append(config)
         runtime = Path(config.jobs_dir) / "job" / "wrapper__0000"
         (runtime / "verifier").mkdir(parents=True)
+        # A rollout leaf is identified by its config.json, exactly as the
+        # real lifecycle writes one.
+        (runtime / "config.json").write_text("{}", encoding="utf-8")
         (runtime / "result.json").write_text(
             json.dumps({"rewards": {"reward": self.reward}, "error": self.error}),
             encoding="utf-8",
@@ -198,8 +201,10 @@ class TestRunReviews:
         assert config.agent == "gemini"
         assert config.model == "gemini/test-model"
         assert config.environment == "daytona"
-        assert config.agent_env == {"X": "1"}
-        assert set(config.uploads.values()) == {"/app/trial", "/app/task"}
+        # Caller env plus the egress-lockdown flag the runner always sets so
+        # the sandbox firewall scopes the reviewer to the model gateway.
+        assert config.agent_env == {"X": "1", "BENCHFLOW_DISALLOW_WEB_TOOLS": "1"}
+        assert set(config.uploads.values()) == {"/evidence/trial", "/evidence/task"}
         # The wrapper was assembled with no Dockerfile (prebuilt image only).
         # It is deleted after the run, so assert via the recorded task path
         # name rather than the filesystem.

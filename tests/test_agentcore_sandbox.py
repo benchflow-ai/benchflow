@@ -232,6 +232,24 @@ class TestSessionWarmup:
         assert mock_exec.call_count == 1
 
 
+
+def _seeded_seal_keypair(sandbox):
+    """Give the sandbox a real public key and return the private half."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    sandbox._seal_public_key = (
+        private.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    return private
+
+
 class TestFileTransfer:
     @pytest.mark.asyncio
     async def test_upload_dir_ships_one_archive_not_one_command_per_file(
@@ -250,14 +268,17 @@ class TestFileTransfer:
             commands.append(command)
             return MagicMock(return_code=0, stdout="", stderr="")
 
+        _seeded_seal_keypair(sandbox)
         with patch.object(sandbox, "exec", side_effect=_record):
             await sandbox.upload_dir(source, "/workspace")
 
-        # mkdir + staged chunk(s) + one extract, not 13 uploads.
+        # mkdir + sealed chunk(s) + one decrypt-and-extract, not 13 uploads
+        # (PR #942 moved transfers to the sealed transport).
         assert len(commands) < 13
         assert any("tar -xzf" in c for c in commands)
         extract = next(c for c in commands if "tar -xzf" in c)
-        assert "trap 'rm -f /tmp/.bf_upload_" in extract
+        assert "/tmp/.bf_sealed/" in extract
+        assert "openssl pkeyutl -decrypt" in extract
         assert "set -o pipefail" in extract
 
     @staticmethod
@@ -288,16 +309,26 @@ class TestFileTransfer:
         secret.write_text("do not ship me")
         (source / "link.txt").symlink_to(secret)
 
-        staged: list[str] = []
+        sealed: list[bytes] = []
 
-        async def _record(command, **kwargs):
-            staged.append(command)
+        async def _capture(data, **kwargs):
+            sealed.append(data)
+
+        async def _exec(command, **kwargs):
+            # Only the target-dir mkdir may run outside the sealed transport.
+            assert command.startswith("mkdir -p "), command
             return MagicMock(return_code=0, stdout="", stderr="")
 
-        with patch.object(sandbox, "exec", side_effect=_record):
-            await sandbox.upload_dir(source, "/workspace")
+        with patch.object(sandbox, "exec", side_effect=_exec):
+            with patch.object(sandbox, "_upload_sealed", side_effect=_capture):
+                await sandbox.upload_dir(source, "/workspace")
 
-        with self._extract_staged_archive(staged) as tar:
+        # The archive is inspected pre-seal: link exclusion happens while the
+        # tar is built; sealed-command confidentiality is covered separately
+        # (PR #942).
+        import tarfile as _tarfile
+
+        with _tarfile.open(fileobj=BytesIO(sealed[-1]), mode="r:gz") as tar:
             names = tar.getnames()
             payloads = {
                 name: (tar.extractfile(name) or BytesIO()).read() for name in names
@@ -328,10 +359,30 @@ class TestFileTransfer:
         assert (target / "result.json").read_text() == '{"reward": 1.0}'
 
     @pytest.mark.asyncio
-    async def test_oversized_inline_write_is_refused(self, sandbox):
-        """Silently truncating past the 64 KB command cap would corrupt files."""
-        with pytest.raises(ValueError, match="Refusing to inline"):
-            await sandbox.write_text_file("/tmp/big", "x" * 200_000)
+    async def test_oversized_write_is_chunked_under_the_command_cap(self, sandbox):
+        """Large bodies stage as multiple sealed chunks, none oversized.
+
+        Replaces the pre-PR #942 refusal: the sealed transport chunks
+        ciphertext instead, so no single command exceeds the service cap and
+        nothing is silently truncated.
+        """
+        from benchflow.sandbox.agentcore import _MAX_INLINE_UPLOAD_BYTES
+
+        _seeded_seal_keypair(sandbox)
+        commands: list[str] = []
+
+        async def _record(command, **kwargs):
+            commands.append(command)
+            return MagicMock(return_code=0, stdout="", stderr="")
+
+        with patch.object(sandbox, "exec", side_effect=_record):
+            assert await sandbox.write_text_file("/tmp/big", "x" * 200_000)
+
+        staging = [c for c in commands if ">> /tmp/.bf_sealed/" in c or "> /tmp/.bf_sealed/s_" in c]
+        assert len(staging) > 1  # genuinely chunked
+        for command in commands:
+            assert len(command) < _MAX_INLINE_UPLOAD_BYTES + 4096
+        assert "x" * 64 not in " ".join(commands)  # plaintext never appears
 
     @pytest.mark.asyncio
     async def test_oversized_file_download_is_refused_before_writing(

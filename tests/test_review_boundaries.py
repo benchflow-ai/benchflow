@@ -1,0 +1,336 @@
+"""Boundary tests for rubric review: evidence hygiene, stale artifacts,
+rubric-dialect discrimination, and sealed AgentCore transfers.
+
+Guards the review-isolation and correctness fixes on PR #942.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+import benchflow
+from benchflow.review.config import Rubric, find_task_rubric, load_rubric
+from benchflow.review.runner import run_reviews
+from benchflow.review.wrapper import assemble_review_task
+from benchflow.rollout import RolloutConfig
+
+RUBRIC = Rubric.model_validate(
+    {
+        "criteria": [
+            {
+                "name": "method_soundness",
+                "description": "d",
+                "guidance": "PASS when sound; FAIL otherwise.",
+            }
+        ]
+    }
+)
+
+JUDGE_RUBRIC = {
+    "criteria": [
+        {"id": "matches-figure", "match_criteria": "The plot matches."},
+        {"id": "cites-data", "match_criteria": "Cites the dataset."},
+    ]
+}
+
+
+def make_rollout(root: Path, name: str = "rollout-a") -> Path:
+    rollout = root / name
+    (rollout / "trajectory").mkdir(parents=True)
+    (rollout / "config.json").write_text("{}", encoding="utf-8")
+    (rollout / "result.json").write_text(
+        json.dumps({"rewards": {"reward": 0.0}, "error": None}), encoding="utf-8"
+    )
+    return rollout
+
+
+class TestSymlinkRejection:
+    def test_external_symlink_is_dropped_not_dereferenced(self, tmp_path):
+        """A source-controlled symlink must not materialize a host file into
+        the uploaded evidence."""
+        secret = tmp_path / "host-secret.txt"
+        secret.write_text("HOST-ONLY", encoding="utf-8")
+        rollout = make_rollout(tmp_path)
+        (rollout / "leak.txt").symlink_to(secret)
+        (rollout / "leakdir").symlink_to(tmp_path)
+
+        dest, _ = assemble_review_task(rollout, None, RUBRIC, tmp_path / "w")
+        trial_copy = dest / "evidence" / "trial"
+        assert not (trial_copy / "leak.txt").exists()
+        assert not (trial_copy / "leakdir").exists()
+        assert not list(trial_copy.rglob("host-secret.txt"))
+
+    def test_nested_symlink_is_dropped(self, tmp_path):
+        secret = tmp_path / "deep-secret.txt"
+        secret.write_text("HOST-ONLY", encoding="utf-8")
+        rollout = make_rollout(tmp_path)
+        nested = rollout / "verifier"
+        nested.mkdir()
+        (nested / "inner-link.json").symlink_to(secret)
+
+        dest, _ = assemble_review_task(rollout, None, RUBRIC, tmp_path / "w")
+        assert not list((dest / "evidence").rglob("inner-link.json"))
+
+
+class TestTaskEvidenceSanitization:
+    def test_skills_and_rubric_are_excluded(self, tmp_path):
+        rollout = make_rollout(tmp_path)
+        task = tmp_path / "task"
+        (task / "environment" / "skills" / "mesh").mkdir(parents=True)
+        (task / "environment" / "skills" / "mesh" / "SKILL.md").write_text(
+            "skill body", encoding="utf-8"
+        )
+        (task / "verifier").mkdir()
+        (task / "verifier" / "rubric.json").write_text(
+            json.dumps({"criteria": []}), encoding="utf-8"
+        )
+        (task / "verifier" / "test.sh").write_text("echo hi", encoding="utf-8")
+        (task / "task.md").write_text("body", encoding="utf-8")
+
+        dest, _ = assemble_review_task(rollout, task, RUBRIC, tmp_path / "w")
+        task_copy = dest / "evidence" / "task"
+        assert (task_copy / "task.md").is_file()
+        assert (task_copy / "verifier" / "test.sh").is_file()
+        assert not list(task_copy.rglob("SKILL.md"))
+        assert not list(task_copy.rglob("skills"))
+        assert not list(task_copy.rglob("rubric.json"))
+
+
+class TestRubricDialectDiscrimination:
+    def test_judge_rubric_is_not_claimed(self, tmp_path):
+        """llm-judge rubrics ({id, match_criteria}) share the filename and
+        must be left alone."""
+        task = tmp_path / "task"
+        (task / "verifier").mkdir(parents=True)
+        (task / "verifier" / "rubric.json").write_text(
+            json.dumps(JUDGE_RUBRIC), encoding="utf-8"
+        )
+        assert find_task_rubric(task) is None
+
+    def test_review_rubric_is_claimed(self, tmp_path):
+        task = tmp_path / "task"
+        (task / "verifier").mkdir(parents=True)
+        target = task / "verifier" / "rubric.json"
+        target.write_text(
+            json.dumps(
+                {"criteria": [{"name": "x", "description": "d", "guidance": "g"}]}
+            ),
+            encoding="utf-8",
+        )
+        assert find_task_rubric(task) == target
+
+    def test_judge_rubric_passes_task_authoring_check(self, tmp_path):
+        from benchflow._utils.task_authoring import _check_review_rubric
+
+        verifier = tmp_path / "verifier"
+        verifier.mkdir()
+        (verifier / "rubric.json").write_text(
+            json.dumps(JUDGE_RUBRIC), encoding="utf-8"
+        )
+        assert _check_review_rubric(verifier, verifier_label="verifier") == []
+
+    def test_default_rubric_is_strict_valid(self):
+        rubric = load_rubric(None)
+        assert len(rubric.criteria) >= 1
+
+
+class TestStaleOutDirReuse:
+    @pytest.mark.asyncio
+    async def test_second_run_never_sees_first_runs_artifacts(
+        self, tmp_path, monkeypatch
+    ):
+        """Reusing --out-dir must not let an old reward-1 review make a new
+        failed review look valid."""
+        rollout = make_rollout(tmp_path / "jobs")
+        out_dir = tmp_path / "out"
+
+        class Run:
+            def __init__(self, reward, payload):
+                self.reward = reward
+                self.payload = payload
+
+            async def __call__(self, config: RolloutConfig):
+                leaf = Path(config.jobs_dir) / "job" / "wrapper__0000"
+                (leaf / "verifier").mkdir(parents=True)
+                (leaf / "config.json").write_text("{}", encoding="utf-8")
+                (leaf / "result.json").write_text(
+                    json.dumps({"rewards": {"reward": self.reward}}),
+                    encoding="utf-8",
+                )
+                if self.payload is not None:
+                    (leaf / "verifier" / "review-result.json").write_text(
+                        json.dumps(self.payload), encoding="utf-8"
+                    )
+
+                class _R:
+                    error = None
+
+                return _R()
+
+        good = {
+            "trial_name": "rollout-a",
+            "summary": "fine",
+            "checks": {
+                "reward_hacking": {"explanation": "e", "outcome": "pass"},
+                "task_specification": {"explanation": "e", "outcome": "pass"},
+            },
+        }
+        monkeypatch.setattr(benchflow, "run", Run(1.0, good))
+        first, _ = await run_reviews(rollout, agent="gemini", out_dir=out_dir)
+        assert first.trials[0].review_valid is True
+
+        # Second invocation, same out_dir: reviewer produces nothing at all.
+        monkeypatch.setattr(benchflow, "run", Run(0.0, None))
+        second, _ = await run_reviews(rollout, agent="gemini", out_dir=out_dir)
+        trial = second.trials[0]
+        assert trial.review_valid is False
+        assert trial.checks is None
+        assert "did not produce" in (trial.error or "")
+
+    @pytest.mark.asyncio
+    async def test_trial_records_rubric_and_exact_leaf(self, tmp_path, monkeypatch):
+        rollout = make_rollout(tmp_path / "jobs")
+        leaves: list[Path] = []
+
+        async def run(config: RolloutConfig):
+            leaf = Path(config.jobs_dir) / "job" / "wrapper__0000"
+            (leaf / "verifier").mkdir(parents=True)
+            (leaf / "config.json").write_text("{}", encoding="utf-8")
+            (leaf / "result.json").write_text(
+                json.dumps({"rewards": {"reward": 1.0}}), encoding="utf-8"
+            )
+            (leaf / "verifier" / "review-result.json").write_text(
+                json.dumps(
+                    {
+                        "trial_name": "rollout-a",
+                        "summary": "fine",
+                        "checks": {
+                            "reward_hacking": {
+                                "explanation": "e",
+                                "outcome": "pass",
+                            },
+                            "task_specification": {
+                                "explanation": "e",
+                                "outcome": "not_applicable",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            leaves.append(leaf)
+
+            class _R:
+                error = None
+
+            return _R()
+
+        monkeypatch.setattr(benchflow, "run", run)
+        report, _ = await run_reviews(rollout, agent="gemini", out_dir=tmp_path / "out")
+        trial = report.trials[0]
+        assert trial.criteria == ["reward_hacking", "task_specification"]
+        assert trial.rubric_path is not None
+        assert Path(trial.reviewer_rollout) == leaves[0]
+        assert report.criteria == ["reward_hacking", "task_specification"]
+
+
+class TestSealedAgentCoreUploads:
+    def test_seal_payload_hides_plaintext_and_roundtrips(self):
+        """Ciphertext-only transport: nothing recoverable without the private
+        key, and the host side decrypts its own sealing correctly."""
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
+        from cryptography.hazmat.primitives.ciphers import (
+            Cipher,
+            algorithms,
+            modes,
+        )
+
+        from benchflow.sandbox.agentcore import AgentCoreSandbox
+
+        private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = (
+            private.public_key()
+            .public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+        )
+        payload = b'{"GEMINI_API_KEY": "sk-super-secret"}'
+        wrapped_b64, iv_hex, ct_b64 = AgentCoreSandbox._seal_payload(pem, payload)
+
+        import base64
+
+        assert b"sk-super-secret" not in base64.b64decode(ct_b64)
+        key = private.decrypt(
+            base64.b64decode(wrapped_b64),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        decryptor = Cipher(
+            algorithms.AES(key), modes.CTR(bytes.fromhex(iv_hex))
+        ).decryptor()
+        assert decryptor.update(base64.b64decode(ct_b64)) == payload
+
+    @pytest.mark.asyncio
+    async def test_upload_commands_never_contain_plaintext(self):
+        """Every command body the sealed path emits must be ciphertext-only —
+        the platform records command text permanently."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        from benchflow.sandbox.agentcore import AgentCoreSandbox
+
+        private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = (
+            private.public_key()
+            .public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+        )
+        sandbox = object.__new__(AgentCoreSandbox)
+        sandbox._seal_public_key = pem
+        commands: list[str] = []
+
+        class _R:
+            return_code = 0
+            stdout = ""
+            stderr = ""
+
+        async def fake_exec(command, **_kwargs):
+            commands.append(command)
+            return _R()
+
+        sandbox.exec = fake_exec
+        secret = b'launch {"env": {"GEMINI_API_KEY": "sk-super-secret-value"}}'
+        await sandbox._upload_sealed(secret, target="/x/launch_config.json")
+        assert commands, "no commands captured"
+        for command in commands:
+            assert "sk-super-secret-value" not in command
+            assert "GEMINI_API_KEY" not in command
+
+    def test_write_text_file_routes_through_sealed_path(self):
+        import inspect
+
+        from benchflow.sandbox.agentcore import AgentCoreSandbox
+
+        source = inspect.getsource(AgentCoreSandbox.write_text_file)
+        assert "_upload_sealed" in source
+        assert "b64encode" not in source
+
+    def test_tar_path_routes_through_sealed_path(self):
+        import inspect
+
+        from benchflow.sandbox.agentcore import AgentCoreSandbox
+
+        source = inspect.getsource(AgentCoreSandbox._upload_via_tar)
+        assert "_upload_sealed" in source

@@ -777,6 +777,154 @@ class AgentCoreSandbox(BaseSandbox):
 
     # -------------------------------------------------------- file transfer
 
+    # ---------------------------------------------- confidential transfer
+    #
+    # Every exec() command body on this backend is recorded by the platform's
+    # shell channel in the runtime's CloudWatch log group. A payload embedded
+    # in a command is therefore permanently logged, base64 being reversible.
+    # All uploads are consequently sealed: the sandbox generates a keypair
+    # once, only the PUBLIC key ever appears in command output, payloads
+    # travel as AES-256-CTR ciphertext with the AES key RSA-OAEP-wrapped, and
+    # the decrypted AES key is read from a file inside the sandbox — the
+    # logged command text contains only ciphertext and a literal
+    # "$(od ...)" expansion, never key material.
+
+    _SEAL_DIR = "/tmp/.bf_sealed"
+
+    async def _ensure_seal_public_key(self) -> str:
+        if getattr(self, "_seal_public_key", None):
+            return self._seal_public_key
+        d = self._SEAL_DIR
+        result = await self.exec(
+            f"mkdir -p {d} && chmod 700 {d} && "
+            f"([ -f {d}/key.pem ] || openssl genpkey -algorithm RSA "
+            f"-pkeyopt rsa_keygen_bits:2048 -out {d}/key.pem 2>/dev/null) && "
+            f"chmod 600 {d}/key.pem && openssl pkey -in {d}/key.pem -pubout",
+            timeout_sec=60,
+            user="root",
+        )
+        stdout = result.stdout or ""
+        begin = stdout.find("-----BEGIN PUBLIC KEY-----")
+        end = stdout.find("-----END PUBLIC KEY-----")
+        if result.return_code != 0 or begin == -1 or end == -1:
+            raise RuntimeError(
+                "AgentCore sealed upload requires `openssl` inside the runtime "
+                "image (the generated wrapper installs it when a package "
+                "manager exists). Refusing to fall back to plaintext command "
+                f"uploads: {(result.stderr or result.stdout or '')[:300]}"
+            )
+        self._seal_public_key = stdout[begin : end + len("-----END PUBLIC KEY-----")]
+        return self._seal_public_key
+
+    @staticmethod
+    def _seal_payload(public_pem: str, data: bytes) -> tuple[str, str, str]:
+        """Return (b64 wrapped AES key, IV hex, b64 ciphertext)."""
+        import os as _os
+
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives.ciphers import (
+            Cipher,
+            algorithms,
+            modes,
+        )
+
+        key = _os.urandom(32)
+        iv = _os.urandom(16)
+        public = serialization.load_pem_public_key(public_pem.encode())
+        if not isinstance(public, rsa.RSAPublicKey):
+            raise RuntimeError(
+                "AgentCore sealed upload expected an RSA public key from the "
+                f"sandbox, got {type(public).__name__}"
+            )
+        wrapped = public.encrypt(
+            key,
+            _pad.OAEP(
+                mgf=_pad.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        encryptor = Cipher(algorithms.AES(key), modes.CTR(iv)).encryptor()
+        ciphertext = encryptor.update(data) + encryptor.finalize()
+        return (
+            base64.b64encode(wrapped).decode(),
+            iv.hex(),
+            base64.b64encode(ciphertext).decode(),
+        )
+
+    async def _upload_sealed(
+        self,
+        data: bytes,
+        *,
+        target: str | None,
+        mode: str | None = None,
+        extract_tar: bool = False,
+        user: str | None = None,
+        timeout_sec: int = 600,
+    ) -> None:
+        """Deliver *data* through ciphertext-only commands.
+
+        With ``extract_tar`` the plaintext is a gzip tar extracted at ``/``;
+        otherwise it is written to ``target`` (with optional chmod ``mode``).
+        """
+        public_pem = await self._ensure_seal_public_key()
+        wrapped_b64, iv_hex, ct_b64 = self._seal_payload(public_pem, data)
+
+        token = uuid.uuid4().hex[:16]
+        staging = f"{self._SEAL_DIR}/s_{token}.b64"
+        keyfile = f"{self._SEAL_DIR}/k_{token}.bin"
+        aesfile = f"{self._SEAL_DIR}/a_{token}.bin"
+        chunk = _MAX_INLINE_UPLOAD_BYTES
+        for index in range(0, len(ct_b64), chunk):
+            piece = ct_b64[index : index + chunk]
+            redirect = ">" if index == 0 else ">>"
+            result = await self.exec(
+                f"printf %s {shlex.quote(piece)} {redirect} {staging}",
+                timeout_sec=120,
+                user="root",
+            )
+            if result.return_code != 0:
+                await self.exec(f"rm -f {staging}", timeout_sec=30, user="root")
+                raise RuntimeError(
+                    f"AgentCore sealed staging failed: {(result.stderr or '')[:500]}"
+                )
+
+        decrypt = (
+            f"openssl pkeyutl -decrypt -inkey {self._SEAL_DIR}/key.pem "
+            f"-in {keyfile} -out {aesfile} "
+            f"-pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 && "
+            f"base64 -d {staging} | openssl enc -d -aes-256-ctr "
+            f"-K \"$(od -An -v -tx1 {aesfile} | tr -d ' \\n')\" "
+            f"-iv {iv_hex}"
+        )
+        if extract_tar:
+            sink = " | tar -xzf - -C /"
+            prep = ""
+            finalize = ""
+            run_user = "root"
+        else:
+            assert target is not None
+            quoted = shlex.quote(target)
+            prep = f"mkdir -p $(dirname {quoted}) && "
+            sink = f" -out {quoted}"
+            finalize = f" && chmod {mode} {quoted}" if mode else ""
+            run_user = user if user is not None else "root"
+        result = await self.exec(
+            f"set -o pipefail; "
+            f"trap 'rm -f {staging} {keyfile} {aesfile}' EXIT; "
+            f"{prep}"
+            f"printf %s {shlex.quote(wrapped_b64)} | base64 -d > {keyfile} && "
+            f"{decrypt}{sink}{finalize}",
+            timeout_sec=timeout_sec,
+            user=run_user,
+        )
+        if result.return_code != 0:
+            raise RuntimeError(
+                f"AgentCore sealed upload failed: {(result.stderr or '')[:500]}"
+            )
+
     async def write_text_file(
         self, remote_path: str, body: str, *, mode: str = "600"
     ) -> bool:
@@ -785,42 +933,19 @@ class AgentCoreSandbox(BaseSandbox):
         Used by the ACP transport to stage the agent env file without typing
         secrets into the PTY, where they would be echoed into the agent log.
         """
-        encoded = base64.b64encode(body.encode()).decode()
-        if len(encoded) > _MAX_INLINE_UPLOAD_BYTES:
-            raise ValueError(
-                f"Refusing to inline {len(encoded)} bytes into an AgentCore "
-                f"command (limit {_MAX_INLINE_UPLOAD_BYTES}). "
+        try:
+            await self._upload_sealed(
+                body.encode(), target=remote_path, mode=mode, timeout_sec=120
             )
-        quoted = shlex.quote(remote_path)
-        result = await self.exec(
-            f"mkdir -p $(dirname {quoted}) && "
-            f"printf %s {shlex.quote(encoded)} | base64 -d > {quoted} && "
-            f"chmod {mode} {quoted}",
-            timeout_sec=60,
-        )
-        return result.return_code == 0
+        except RuntimeError:
+            return False
+        return True
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         source = Path(source_path)
-        data = source.read_bytes()
-        encoded = base64.b64encode(data).decode()
-        if len(encoded) > _MAX_INLINE_UPLOAD_BYTES:
-            # Larger payloads go through the tar path, which streams in
-            # bounded chunks instead of one oversized command.
-            await self._upload_via_tar(
-                {source: PurePosixPath(target_path)},
-            )
-            return
-        quoted = shlex.quote(target_path)
-        result = await self.exec(
-            f"mkdir -p $(dirname {quoted}) && "
-            f"printf %s {shlex.quote(encoded)} | base64 -d > {quoted}",
-            timeout_sec=120,
+        await self._upload_sealed(
+            source.read_bytes(), target=target_path, timeout_sec=300
         )
-        if result.return_code != 0:
-            raise RuntimeError(
-                f"AgentCore upload_file failed: {(result.stderr or '')[:500]}"
-            )
 
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"
@@ -850,33 +975,9 @@ class AgentCoreSandbox(BaseSandbox):
         with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
             for local, remote in members.items():
                 tar.add(local, arcname=str(remote).lstrip("/"))
-        encoded = base64.b64encode(buffer.getvalue()).decode()
-
-        staging = f"/tmp/.bf_upload_{uuid.uuid4().hex[:16]}.b64"
-        chunk = _MAX_INLINE_UPLOAD_BYTES
-        for index in range(0, len(encoded), chunk):
-            piece = encoded[index : index + chunk]
-            redirect = ">" if index == 0 else ">>"
-            result = await self.exec(
-                f"printf %s {shlex.quote(piece)} {redirect} {staging}",
-                timeout_sec=120,
-            )
-            if result.return_code != 0:
-                await self.exec(f"rm -f {staging}", timeout_sec=30)
-                raise RuntimeError(
-                    f"AgentCore upload staging failed: {(result.stderr or '')[:500]}"
-                )
-
-        result = await self.exec(
-            f"set -o pipefail; trap 'rm -f {staging}' EXIT; "
-            f"base64 -d {staging} | tar -xzf - -C /",
-            timeout_sec=600,
-            user="root",
+        await self._upload_sealed(
+            buffer.getvalue(), target=None, extract_tar=True, timeout_sec=600
         )
-        if result.return_code != 0:
-            raise RuntimeError(
-                f"AgentCore upload extract failed: {(result.stderr or '')[:500]}"
-            )
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         target = Path(target_path)

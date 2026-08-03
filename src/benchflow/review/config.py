@@ -39,7 +39,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ValidationError, create_model, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    create_model,
+    field_validator,
+)
 
 REVIEW_RUBRIC_FILENAME = "rubric.json"
 REVIEW_RESULT_FILENAME = "review-result.json"
@@ -53,6 +60,8 @@ class ReviewRubricError(ValueError):
 
 class RubricCriterion(BaseModel):
     """One criterion the reviewer grades."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     description: str
@@ -72,7 +81,26 @@ class RubricCriterion(BaseModel):
 class Rubric(BaseModel):
     """A parsed review rubric."""
 
-    criteria: list[RubricCriterion]
+    model_config = ConfigDict(extra="forbid")
+
+    criteria: list[RubricCriterion] = Field(min_length=1)
+
+    @field_validator("criteria")
+    @classmethod
+    def _names_are_unique(cls, value: list[RubricCriterion]) -> list[RubricCriterion]:
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for criterion in value:
+            if criterion.name in seen:
+                duplicates.add(criterion.name)
+            seen.add(criterion.name)
+        if duplicates:
+            raise ValueError(
+                f"criterion names must be unique; duplicated: {sorted(duplicates)} "
+                "(duplicate names would silently collapse into one "
+                "structured-output field)"
+            )
+        return value
 
 
 class ReviewOutcomeValue(StrEnum):
@@ -116,16 +144,41 @@ def load_rubric(path: Path | None = None) -> Rubric:
         raise ReviewRubricError(f"{rubric_path} is not a valid rubric: {exc}") from exc
 
 
+def is_review_rubric_file(path: Path) -> bool:
+    """Whether ``path`` is shaped like a review rubric.
+
+    ``rubric.json`` is an overloaded filename: llm-judge verifier rubrics use
+    entries shaped like ``{id, match_criteria}``. A file only counts as a
+    review rubric when every criteria entry carries exactly this contract's
+    three keys, so judge rubrics are never claimed or misvalidated.
+    """
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    criteria = data.get("criteria")
+    if not isinstance(criteria, list) or not criteria:
+        return False
+    return all(
+        isinstance(entry, dict) and {"name", "description", "guidance"} <= set(entry)
+        for entry in criteria
+    )
+
+
 def find_task_rubric(task_path: Path) -> Path | None:
-    """Return the rubric a task ships, if any.
+    """Return the review rubric a task ships, if any.
 
     Looks for ``rubric.json`` next to the task's test files (``verifier/`` or
-    ``tests/``); returns None when the task does not ship one.
+    ``tests/``). Files that exist but are not shaped like a review rubric
+    (for example llm-judge rubrics) are left alone.
     """
 
     for tests_dir_name in ("verifier", "tests"):
         candidate = task_path / tests_dir_name / REVIEW_RUBRIC_FILENAME
-        if candidate.is_file():
+        if candidate.is_file() and is_review_rubric_file(candidate):
             return candidate
     return None
 
