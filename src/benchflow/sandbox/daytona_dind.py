@@ -559,7 +559,9 @@ class _DaytonaDinD(_DaytonaStrategy):
             )
         return await self._compose_exec(parts, timeout_sec=timeout_sec)
 
-    async def upload_file(self, source_path: Path | str, target_path: str) -> None:
+    async def upload_file(
+        self, source_path: Path | str, target_path: str, *, mode: str | None = None
+    ) -> None:
         temp = f"/tmp/benchflow_{uuid4().hex}"
         try:
             await self._env._sdk_upload_file(source_path, temp)
@@ -584,6 +586,8 @@ class _DaytonaDinD(_DaytonaStrategy):
                 raise RuntimeError(
                     f"docker compose cp failed: {result.stdout} {result.stderr}"
                 )
+            if mode is not None:
+                await self._env._apply_upload_mode(target_path, mode)
         finally:
             await self._vm_exec(f"rm -f {shlex.quote(temp)}", timeout_sec=10)
 

@@ -266,7 +266,29 @@ class BaseSandbox(ABC):
     async def stop(self, delete: bool) -> None: ...
 
     @abstractmethod
-    async def upload_file(self, source_path: Path | str, target_path: str) -> None: ...
+    async def upload_file(
+        self, source_path: Path | str, target_path: str, *, mode: str | None = None
+    ) -> None: ...
+
+    async def _apply_upload_mode(self, target_path: str, mode: str | None) -> None:
+        """chmod an uploaded file when the caller requested a private mode.
+
+        Canonical post-upload step for backends whose transfer primitive
+        cannot set the mode atomically. Fails loudly: a secret-bearing file
+        silently left world-readable is worse than a failed upload.
+        """
+        if mode is None:
+            return
+        result = await self.exec(
+            f"chmod {mode} {shlex.quote(str(target_path))}",
+            user="root",
+            timeout_sec=30,
+        )
+        if result.return_code != 0:
+            raise RuntimeError(
+                f"chmod {mode} {target_path} failed: "
+                f"{(result.stderr or result.stdout or '')[:300]}"
+            )
 
     @abstractmethod
     async def upload_dir(

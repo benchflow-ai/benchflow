@@ -245,12 +245,12 @@ class TestSessionWarmup:
 
 
 def _seeded_seal_keypair(sandbox):
-    """Give the sandbox a real public key and return the private half."""
+    """Give the sandbox's sealed channel a real public key."""
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
 
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    sandbox._seal_public_key = (
+    sandbox._sealed._public_key = (
         private.public_key()
         .public_bytes(
             serialization.Encoding.PEM,
@@ -282,7 +282,7 @@ class TestFileTransfer:
         _seeded_seal_keypair(sandbox)
         with (
             patch.object(sandbox, "exec", side_effect=_record),
-            patch.object(sandbox, "_exec_raw", side_effect=_record),
+            patch.object(sandbox._sealed, "_exec_raw", side_effect=_record),
         ):
             await sandbox.upload_dir(source, "/workspace")
 
@@ -335,8 +335,7 @@ class TestFileTransfer:
 
         with (
             patch.object(sandbox, "exec", side_effect=_exec),
-            patch.object(sandbox, "_exec_raw", side_effect=_exec),
-            patch.object(sandbox, "_upload_sealed", side_effect=_capture),
+            patch.object(sandbox._sealed, "upload", side_effect=_capture),
         ):
             await sandbox.upload_dir(source, "/workspace")
 
@@ -394,7 +393,7 @@ class TestFileTransfer:
 
         with (
             patch.object(sandbox, "exec", side_effect=_record),
-            patch.object(sandbox, "_exec_raw", side_effect=_record),
+            patch.object(sandbox._sealed, "_exec_raw", side_effect=_record),
         ):
             assert await sandbox.write_text_file("/tmp/big", "x" * 200_000)
 

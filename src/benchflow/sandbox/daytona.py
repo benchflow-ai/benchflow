@@ -878,8 +878,11 @@ class DaytonaSandbox(BaseSandbox):
     async def services(self) -> list[str]:
         return await self._strategy.services()
 
-    async def upload_file(self, source_path: Path | str, target_path: str) -> None:
-        return await self._strategy.upload_file(source_path, target_path)
+    async def upload_file(
+        self, source_path: Path | str, target_path: str, *, mode: str | None = None
+    ) -> None:
+        await self._strategy.upload_file(source_path, target_path)
+        await self._apply_upload_mode(target_path, mode)
 
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"

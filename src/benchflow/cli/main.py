@@ -17,7 +17,6 @@ compatibility.
 import asyncio
 import json
 import logging
-import os
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -27,7 +26,6 @@ from rich.markup import escape
 from rich.table import Table
 
 from benchflow import __version__
-from benchflow._dotenv import load_dotenv_env
 from benchflow._utils.config import normalize_sandbox_user
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli._live_progress import (
@@ -37,7 +35,9 @@ from benchflow.cli._live_progress import (
 )
 from benchflow.cli._options import AgentOption, ModelOption, SkillModeOption
 from benchflow.cli._shared import (
+    _apply_dotenv_to_process_env,
     _exit_if_evaluation_had_errors,
+    _parse_agent_env,
     _report_eval_result,
     console,
     err_console,
@@ -112,23 +112,6 @@ def _cli_main(
     ] = None,
 ) -> None:
     """The universal environment framework — run, author, and adopt agent benchmarks."""
-
-
-def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
-    parsed: dict[str, str] = {}
-    for entry in entries or []:
-        if "=" not in entry:
-            print_error(f"Invalid env var: {entry}")
-            raise typer.Exit(1)
-        key, value = entry.split("=", 1)
-        parsed[key] = value
-    return parsed
-
-
-def _apply_dotenv_to_process_env() -> None:
-    """Expose local .env credentials to provider SDKs without overriding env."""
-    for key, value in load_dotenv_env().items():
-        os.environ.setdefault(key, value)
 
 
 def _normalize_eval_agent_or_exit(agent_spec: str) -> str:

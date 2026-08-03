@@ -586,7 +586,9 @@ class DockerSandbox(BaseSandbox):
         except Exception as e:
             self.logger.warning(f"Force-kill of compose project {project} failed: {e}")
 
-    async def upload_file(self, source_path: Path | str, target_path: str) -> None:
+    async def upload_file(
+        self, source_path: Path | str, target_path: str, *, mode: str | None = None
+    ) -> None:
         target_parent = str(Path(target_path).parent)
         if target_parent not in {"", "."}:
             await self.exec(f"mkdir -p {shlex.quote(target_parent)}", user="root")
@@ -594,6 +596,7 @@ class DockerSandbox(BaseSandbox):
             ["cp", str(source_path), f"main:{target_path}"],
             check=True,
         )
+        await self._apply_upload_mode(target_path, mode)
 
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"

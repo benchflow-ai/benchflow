@@ -63,6 +63,7 @@ from benchflow.sandbox import agentcore_provisioning as provisioning
 from benchflow.sandbox._base import BaseSandbox, ExecResult
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.agentcore_image import AgentCoreImagePublisher
+from benchflow.sandbox.agentcore_sealed import SealedChannel
 from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths
@@ -129,6 +130,7 @@ class AgentCoreSandbox(BaseSandbox):
         self._runtime_id: str | None = None
         self._clients: dict[str, Any] = {}
         self._client_lock = threading.Lock()
+        self._sealed = SealedChannel(self._exec_raw, self.logger)
         self._images = AgentCoreImagePublisher(
             environment_dir=environment_dir,
             environment_name=environment_name,
@@ -695,7 +697,7 @@ class AgentCoreSandbox(BaseSandbox):
             # runtime's CloudWatch log group. Stage the environment through
             # the sealed (ciphertext-only) channel and source it instead, so
             # the logged text holds only a file path.
-            env_path = await self._stage_sealed_env(merged_env)
+            env_path = await self._sealed.stage_env(merged_env)
             wrapped = (
                 f"set -a; . {shlex.quote(env_path)}; set +a; "
                 f"rm -f {shlex.quote(env_path)}; {wrapped}"
@@ -812,205 +814,6 @@ class AgentCoreSandbox(BaseSandbox):
         timeout = max(1, min(int(timeout_sec or 300), 3600))
         return await asyncio.to_thread(self._invoke_command, payload, timeout)
 
-    async def _stage_sealed_env(self, env: dict[str, str]) -> str:
-        """Write *env* into a mode-0600 sandbox file over the sealed channel.
-
-        Returns the in-sandbox path of a shell-sourceable file. Only POSIX
-        identifier keys are exported, matching the shared env-file helper.
-        """
-
-        lines = []
-        for key, value in env.items():
-            if not key.isidentifier():
-                self.logger.warning(
-                    "Skipping non-identifier env key %r for AgentCore exec", key
-                )
-                continue
-            lines.append(f"{key}={shlex.quote(str(value))}")
-        body = "\n".join(lines) + "\n"
-        path = f"{self._SEAL_DIR}/env_{uuid.uuid4().hex[:16]}.sh"
-        await self._upload_sealed(
-            body.encode(), target=path, mode="600", timeout_sec=120
-        )
-        return path
-
-    # ---------------------------------------------- confidential transfer
-    #
-    # Every exec() command body on this backend is recorded by the platform's
-    # shell channel in the runtime's CloudWatch log group. A payload embedded
-    # in a command is therefore permanently logged, base64 being reversible.
-    # All uploads are consequently sealed: the sandbox generates a keypair
-    # once, only the PUBLIC key ever appears in command output, payloads
-    # travel as AES-256-CTR ciphertext with the AES key RSA-OAEP-wrapped, and
-    # the decrypted AES key is read from a file inside the sandbox — the
-    # logged command text contains only ciphertext and a literal
-    # "$(od ...)" expansion, never key material.
-
-    _SEAL_DIR = "/tmp/.bf_sealed"
-
-    async def _ensure_seal_public_key(self) -> str:
-        if getattr(self, "_seal_public_key", None):
-            return self._seal_public_key
-        d = self._SEAL_DIR
-        result = await self._exec_raw(
-            f"mkdir -p {d} && chmod 700 {d} && "
-            f"([ -f {d}/key.pem ] || openssl genpkey -algorithm RSA "
-            f"-pkeyopt rsa_keygen_bits:2048 -out {d}/key.pem 2>/dev/null) && "
-            f"chmod 600 {d}/key.pem && openssl pkey -in {d}/key.pem -pubout",
-            timeout_sec=60,
-            user="root",
-        )
-        stdout = result.stdout or ""
-        begin = stdout.find("-----BEGIN PUBLIC KEY-----")
-        end = stdout.find("-----END PUBLIC KEY-----")
-        if result.return_code != 0 or begin == -1 or end == -1:
-            raise RuntimeError(
-                "AgentCore sealed upload requires `openssl` inside the runtime "
-                "image (the generated wrapper installs it when a package "
-                "manager exists). Refusing to fall back to plaintext command "
-                f"uploads: {(result.stderr or result.stdout or '')[:300]}"
-            )
-        self._seal_public_key = stdout[begin : end + len("-----END PUBLIC KEY-----")]
-        return self._seal_public_key
-
-    @staticmethod
-    def _seal_payload(public_pem: str, data: bytes) -> tuple[str, str, str, str]:
-        """Return (b64 wrapped key material, IV hex, b64 ciphertext, tag hex).
-
-        Encrypt-then-MAC: AES-256-CTR for confidentiality plus an
-        HMAC-SHA256 tag over the ciphertext, because the payload travels
-        through a command body the platform records and must be
-        tamper-evident as well as secret. GCM is not usable here —
-        ``openssl enc`` rejects AEAD ciphers outright — so the tag is
-        verified explicitly before decryption, and decryption never runs on
-        unauthenticated bytes.
-
-        One RSA envelope carries 64 bytes: the first 32 are the AES key,
-        the last 32 the MAC key.
-        """
-        import os as _os
-
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives import hmac as _hmac
-        from cryptography.hazmat.primitives.asymmetric import padding as _pad
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.hazmat.primitives.ciphers import (
-            Cipher,
-            algorithms,
-            modes,
-        )
-
-        secret = _os.urandom(64)
-        key, mac_key = secret[:32], secret[32:]
-        iv = _os.urandom(16)
-        public = serialization.load_pem_public_key(public_pem.encode())
-        if not isinstance(public, rsa.RSAPublicKey):
-            raise RuntimeError(
-                "AgentCore sealed upload expected an RSA public key from the "
-                f"sandbox, got {type(public).__name__}"
-            )
-        wrapped = public.encrypt(
-            secret,
-            _pad.OAEP(
-                mgf=_pad.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
-            ),
-        )
-        encryptor = Cipher(algorithms.AES(key), modes.CTR(iv)).encryptor()
-        ciphertext = encryptor.update(data) + encryptor.finalize()
-        tag = _hmac.HMAC(mac_key, hashes.SHA256())
-        tag.update(ciphertext)
-        return (
-            base64.b64encode(wrapped).decode(),
-            iv.hex(),
-            base64.b64encode(ciphertext).decode(),
-            tag.finalize().hex(),
-        )
-
-    async def _upload_sealed(
-        self,
-        data: bytes,
-        *,
-        target: str | None,
-        mode: str | None = None,
-        extract_tar: bool = False,
-        user: str | None = None,
-        timeout_sec: int = 600,
-    ) -> None:
-        """Deliver *data* through ciphertext-only commands.
-
-        With ``extract_tar`` the plaintext is a gzip tar extracted at ``/``;
-        otherwise it is written to ``target`` (with optional chmod ``mode``).
-        """
-        public_pem = await self._ensure_seal_public_key()
-        wrapped_b64, iv_hex, ct_b64, tag_hex = self._seal_payload(public_pem, data)
-
-        token = uuid.uuid4().hex[:16]
-        staging = f"{self._SEAL_DIR}/s_{token}.b64"
-        keyfile = f"{self._SEAL_DIR}/k_{token}.bin"
-        aesfile = f"{self._SEAL_DIR}/a_{token}.bin"
-        ctfile = f"{self._SEAL_DIR}/c_{token}.bin"
-        chunk = _MAX_INLINE_UPLOAD_BYTES
-        # range() yields nothing for an empty payload, which would leave the
-        # staging file absent and fail the decrypt; emit one empty write.
-        offsets = list(range(0, len(ct_b64), chunk)) or [0]
-        for index in offsets:
-            piece = ct_b64[index : index + chunk]
-            redirect = ">" if index == offsets[0] else ">>"
-            result = await self._exec_raw(
-                f"printf %s {shlex.quote(piece)} {redirect} {staging}",
-                timeout_sec=120,
-                user="root",
-            )
-            if result.return_code != 0:
-                await self._exec_raw(f"rm -f {staging}", timeout_sec=30, user="root")
-                raise RuntimeError(
-                    f"AgentCore sealed staging failed: {(result.stderr or '')[:500]}"
-                )
-
-        # Unwrap 64 bytes (AES key ‖ MAC key), verify the ciphertext tag,
-        # and only then decrypt. A mismatched tag aborts before any
-        # plaintext is produced.
-        decrypt = (
-            f"openssl pkeyutl -decrypt -inkey {self._SEAL_DIR}/key.pem "
-            f"-in {keyfile} -out {aesfile} "
-            f"-pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 && "
-            f"base64 -d {staging} > {ctfile} && "
-            f"ENCK=$(od -An -v -tx1 -N32 {aesfile} | tr -d ' \\n') && "
-            f"MACK=$(od -An -v -tx1 -j32 -N32 {aesfile} | tr -d ' \\n') && "
-            f"ACTUAL=$(openssl dgst -sha256 -mac HMAC -macopt hexkey:$MACK "
-            f"-hex < {ctfile} | sed 's/^.*[= ]//') && "
-            f'[ "$ACTUAL" = "{tag_hex}" ] && '
-            f'openssl enc -d -aes-256-ctr -K "$ENCK" -iv {iv_hex} '
-            f"-in {ctfile}"
-        )
-        if extract_tar:
-            sink = " | tar -xzf - -C /"
-            prep = ""
-            finalize = ""
-            run_user = "root"
-        else:
-            assert target is not None
-            quoted = shlex.quote(target)
-            prep = f"mkdir -p $(dirname {quoted}) && "
-            sink = f" -out {quoted}"
-            finalize = f" && chmod {mode} {quoted}" if mode else ""
-            run_user = user if user is not None else "root"
-        result = await self._exec_raw(
-            f"set -o pipefail; "
-            f"trap 'rm -f {staging} {keyfile} {aesfile} {ctfile}' EXIT; "
-            f"{prep}"
-            f"printf %s {shlex.quote(wrapped_b64)} | base64 -d > {keyfile} && "
-            f"{decrypt}{sink}{finalize}",
-            timeout_sec=timeout_sec,
-            user=run_user,
-        )
-        if result.return_code != 0:
-            raise RuntimeError(
-                f"AgentCore sealed upload failed: {(result.stderr or '')[:500]}"
-            )
-
     async def write_text_file(
         self, remote_path: str, body: str, *, mode: str = "600"
     ) -> bool:
@@ -1020,7 +823,7 @@ class AgentCoreSandbox(BaseSandbox):
         secrets into the PTY, where they would be echoed into the agent log.
         """
         try:
-            await self._upload_sealed(
+            await self._sealed.upload(
                 body.encode(), target=remote_path, mode=mode, timeout_sec=120
             )
         except RuntimeError:
@@ -1031,7 +834,7 @@ class AgentCoreSandbox(BaseSandbox):
         self, source_path: Path | str, target_path: str, *, mode: str | None = None
     ) -> None:
         source = Path(source_path)
-        await self._upload_sealed(
+        await self._sealed.upload(
             source.read_bytes(), target=target_path, mode=mode, timeout_sec=300
         )
 
@@ -1063,7 +866,7 @@ class AgentCoreSandbox(BaseSandbox):
         with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
             for local, remote in members.items():
                 tar.add(local, arcname=str(remote).lstrip("/"))
-        await self._upload_sealed(
+        await self._sealed.upload(
             buffer.getvalue(), target=None, extract_tar=True, timeout_sec=600
         )
 

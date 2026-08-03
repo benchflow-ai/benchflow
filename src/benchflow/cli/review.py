@@ -12,21 +12,12 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
-from benchflow.cli._shared import console
+from benchflow.cli._shared import (
+    _apply_dotenv_to_process_env,
+    _parse_agent_env,
+    console,
+)
 from benchflow.sandbox.providers import providers_phrase
-
-
-def _apply_dotenv_to_process_env() -> None:
-    from benchflow.cli.main import _apply_dotenv_to_process_env as impl
-
-    impl()
-
-
-def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
-    from benchflow.cli.main import _parse_agent_env as impl
-
-    return impl(entries)
-
 
 _REVIEW_OUTCOME_STYLES = {
     "pass": "green",

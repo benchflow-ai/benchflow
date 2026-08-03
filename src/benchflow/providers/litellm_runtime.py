@@ -732,19 +732,10 @@ async def _upload_text(sandbox: Any, text: str, target_path: str, suffix: str) -
         # Upload private so an untrusted in-sandbox agent (e.g. the rubric
         # reviewer) cannot read them; backends without a mode argument keep
         # their previous behavior.
-        try:
-            await sandbox.upload_file(tmp_path, target_path, mode="600")
-        except TypeError:
-            # Backend predates the mode argument: upload, then tighten in a
-            # separate step. Best-effort — a backend that also lacks `user`
-            # keeps its previous behavior rather than failing the run.
-            await sandbox.upload_file(tmp_path, target_path)
-            with contextlib.suppress(TypeError, OSError, RuntimeError):
-                await sandbox.exec(
-                    f"chmod 600 {shlex.quote(target_path)}",
-                    user="root",
-                    timeout_sec=30,
-                )
+        # Runtime files carry the provider environment and proxy master key;
+        # ``mode`` is part of the sandbox protocol, so every backend either
+        # honors it or fails loudly — never a silently world-readable secret.
+        await sandbox.upload_file(tmp_path, target_path, mode="600")
     finally:
         tmp_path.unlink(missing_ok=True)
 

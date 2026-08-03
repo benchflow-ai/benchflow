@@ -331,77 +331,68 @@ class TestStaleOutDirReuse:
 
 
 class TestSealedAgentCoreUploads:
-    def test_seal_payload_hides_plaintext_and_roundtrips(self):
-        """Ciphertext-only transport: nothing recoverable without the private
-        key, and the host side decrypts its own sealing correctly."""
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    """The sealed channel is the only transport on a command-logging backend."""
+
+    @staticmethod
+    def _keypair():
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = (
+            private.public_key()
+            .public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+        )
+        return private, pem
+
+    def test_seal_hides_plaintext_and_roundtrips(self):
+        """Ciphertext-only transport with an authenticating tag."""
+        import base64
+
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives import hmac as _hmac
+        from cryptography.hazmat.primitives.asymmetric import padding
         from cryptography.hazmat.primitives.ciphers import (
             Cipher,
             algorithms,
             modes,
         )
 
-        from benchflow.sandbox.agentcore import AgentCoreSandbox
+        from benchflow.sandbox.agentcore_sealed import seal
 
-        private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        pem = (
-            private.public_key()
-            .public_bytes(
-                serialization.Encoding.PEM,
-                serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-            .decode()
-        )
+        private, pem = self._keypair()
         payload = b'{"GEMINI_API_KEY": "sk-super-secret"}'
-        wrapped_b64, iv_hex, ct_b64, tag_hex = AgentCoreSandbox._seal_payload(
-            pem, payload
-        )
+        sealed = seal(pem, payload)
 
-        import base64
+        assert b"sk-super-secret" not in base64.b64decode(sealed.ciphertext_b64)
+        assert len(bytes.fromhex(sealed.tag_hex)) == 32
 
-        assert b"sk-super-secret" not in base64.b64decode(ct_b64)
-        assert len(bytes.fromhex(tag_hex)) == 32  # HMAC-SHA256 over ciphertext
-        key = private.decrypt(
-            base64.b64decode(wrapped_b64),
+        secret = private.decrypt(
+            base64.b64decode(sealed.wrapped_key_b64),
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
                 algorithm=hashes.SHA256(),
                 label=None,
             ),
         )
-        enc_key, mac_key = key[:32], key[32:]
-        decryptor = Cipher(
-            algorithms.AES(enc_key), modes.CTR(bytes.fromhex(iv_hex))
-        ).decryptor()
-        assert decryptor.update(base64.b64decode(ct_b64)) == payload
-        # Encrypt-then-MAC: the tag authenticates the ciphertext.
-        from cryptography.hazmat.primitives import hmac as _hmac
-
+        enc_key, mac_key = secret[:32], secret[32:]
+        ciphertext = base64.b64decode(sealed.ciphertext_b64)
         verifier = _hmac.HMAC(mac_key, hashes.SHA256())
-        verifier.update(base64.b64decode(ct_b64))
-        verifier.verify(bytes.fromhex(tag_hex))
+        verifier.update(ciphertext)
+        verifier.verify(bytes.fromhex(sealed.tag_hex))
+        decryptor = Cipher(
+            algorithms.AES(enc_key), modes.CTR(bytes.fromhex(sealed.iv_hex))
+        ).decryptor()
+        assert decryptor.update(ciphertext) == payload
 
-    @pytest.mark.asyncio
-    async def test_upload_commands_never_contain_plaintext(self):
-        """Every command body the sealed path emits must be ciphertext-only —
-        the platform records command text permanently."""
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
+    @staticmethod
+    def _channel_with_recorder():
+        from benchflow.sandbox.agentcore_sealed import SealedChannel
 
-        from benchflow.sandbox.agentcore import AgentCoreSandbox
-
-        private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        pem = (
-            private.public_key()
-            .public_bytes(
-                serialization.Encoding.PEM,
-                serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-            .decode()
-        )
-        sandbox = object.__new__(AgentCoreSandbox)
-        sandbox._seal_public_key = pem
         commands: list[str] = []
 
         class _R:
@@ -409,92 +400,71 @@ class TestSealedAgentCoreUploads:
             stdout = ""
             stderr = ""
 
-        async def fake_exec(command, **_kwargs):
+        async def exec_raw(command, **_kwargs):
             commands.append(command)
             return _R()
 
-        sandbox.exec = fake_exec
-        sandbox._exec_raw = fake_exec
-        secret = b'launch {"env": {"GEMINI_API_KEY": "sk-super-secret-value"}}'
-        await sandbox._upload_sealed(secret, target="/x/launch_config.json")
-        assert commands, "no commands captured"
+        import logging
 
-        # Literal search alone is too weak: reversible base64 would pass it.
-        # Decode every long token in every command and assert the plaintext
-        # is unrecoverable by any of them.
+        channel = SealedChannel(exec_raw, logging.getLogger("test"))
+        return channel, commands
+
+    @staticmethod
+    def _assert_unrecoverable(commands: list[str], *needles: bytes) -> None:
+        """Literal search alone is too weak: reversible base64 would pass.
+
+        Decode every long token in every command and assert none of the
+        needles is recoverable.
+        """
         import base64 as _b64
         import re as _re
 
+        assert commands, "no commands captured"
         for command in commands:
-            assert "sk-super-secret-value" not in command
-            assert "GEMINI_API_KEY" not in command
+            for needle in needles:
+                assert needle.decode(errors="ignore") not in command
             for blob in _re.findall(r"[A-Za-z0-9+/=]{16,}", command):
                 try:
                     decoded = _b64.b64decode(blob + "==", validate=False)
                 except Exception:
                     continue
-                assert b"sk-super-secret-value" not in decoded
-                assert b"GEMINI_API_KEY" not in decoded
+                for needle in needles:
+                    assert needle not in decoded
+
+    @pytest.mark.asyncio
+    async def test_upload_commands_never_contain_plaintext(self):
+        channel, commands = self._channel_with_recorder()
+        _, pem = self._keypair()
+        channel._public_key = pem
+        secret = b'launch {"env": {"GEMINI_API_KEY": "sk-super-secret-value"}}'
+        await channel.upload(secret, target="/x/launch_config.json")
+        self._assert_unrecoverable(
+            commands, b"sk-super-secret-value", b"GEMINI_API_KEY"
+        )
 
     @pytest.mark.asyncio
     async def test_staged_env_never_appears_in_commands(self):
         """exec(env=...) must not leak the environment into a command body."""
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
-
-        from benchflow.sandbox.agentcore import AgentCoreSandbox
-
-        private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        pem = (
-            private.public_key()
-            .public_bytes(
-                serialization.Encoding.PEM,
-                serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-            .decode()
-        )
-        sandbox = object.__new__(AgentCoreSandbox)
-        sandbox._seal_public_key = pem
-        commands: list[str] = []
-
-        class _R:
-            return_code = 0
-            stdout = ""
-            stderr = ""
-
-        async def fake_exec(command, **_kwargs):
-            commands.append(command)
-            return _R()
-
-        sandbox._exec_raw = fake_exec
-        path = await sandbox._stage_sealed_env({"TOKEN": "tok-abc-123"})
+        channel, commands = self._channel_with_recorder()
+        _, pem = self._keypair()
+        channel._public_key = pem
+        path = await channel.stage_env({"TOKEN": "tok-abc-123"})
         assert path.startswith("/tmp/.bf_sealed/env_")
+        self._assert_unrecoverable(commands, b"tok-abc-123")
 
-        import base64 as _b64
-        import re as _re
-
-        for command in commands:
-            assert "tok-abc-123" not in command
-            for blob in _re.findall(r"[A-Za-z0-9+/=]{16,}", command):
-                try:
-                    decoded = _b64.b64decode(blob + "==", validate=False)
-                except Exception:
-                    continue
-                assert b"tok-abc-123" not in decoded
-
-    def test_write_text_file_routes_through_sealed_path(self):
+    def test_write_text_file_routes_through_sealed_channel(self):
         import inspect
 
         from benchflow.sandbox.agentcore import AgentCoreSandbox
 
         source = inspect.getsource(AgentCoreSandbox.write_text_file)
-        assert "_upload_sealed" in source
+        assert "self._sealed.upload" in source
         assert "b64encode" not in source
 
-    def test_tar_path_routes_through_sealed_path(self):
+    def test_tar_path_routes_through_sealed_channel(self):
         import inspect
 
         from benchflow.sandbox.agentcore import AgentCoreSandbox
 
         source = inspect.getsource(AgentCoreSandbox._upload_via_tar)
-        assert "_upload_sealed" in source
+        assert "self._sealed.upload" in source
