@@ -407,6 +407,10 @@ class DaytonaSandbox(BaseSandbox):
         if self._compose_mode:
             path = self._environment_docker_compose_path
         else:
+            if self.task_env_config.docker_image:
+                # Prebuilt-image task: start() uses Image.base(docker_image)
+                # and never reads a Dockerfile (matches modal/agentcore/apple).
+                return
             path = self._dockerfile_path
         if not path.exists():
             raise FileNotFoundError(f"{path} not found. Please ensure the file exists.")

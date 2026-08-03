@@ -285,6 +285,10 @@ class DockerSandbox(BaseSandbox):
         return path
 
     def _validate_definition(self) -> None:
+        if self.task_env_config.docker_image:
+            # Prebuilt-image task: compose references the image directly and
+            # the build step is skipped (matches modal/agentcore/apple).
+            return
         if (
             not self._dockerfile_path.exists()
             and not self._environment_docker_compose_path.exists()
