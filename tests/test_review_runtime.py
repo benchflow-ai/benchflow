@@ -11,14 +11,51 @@ from typing import ClassVar
 
 import pytest
 
+from benchflow.models import AgentInstallError
 from benchflow.review.runtime import (
     IsolatedReviewerRuntime,
+    _install_reviewer_agent,
     _provider_tool_events,
     _recover_final_reply,
     _safe_extract_regular_files,
     neutralize_structural_delimiters,
 )
 from benchflow.rollout._review import run_review_engine
+
+
+class _FlakyReviewerInstall:
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.attempts = 0
+
+    async def install_agent(self) -> None:
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise AgentInstallError(
+                agent="openhands",
+                return_code=1,
+                stdout="HTTP 503",
+                diagnostics="",
+            )
+
+
+@pytest.mark.asyncio
+async def test_reviewer_install_retries_transient_failure() -> None:
+    """Guards PR #942 against one transient install failure aborting review."""
+
+    rollout = _FlakyReviewerInstall(failures=2)
+    await _install_reviewer_agent(rollout, retry_delays=(0.0, 0.0))
+    assert rollout.attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_reviewer_install_retry_remains_bounded() -> None:
+    """Guards PR #942 against unbounded retries for deterministic failures."""
+
+    rollout = _FlakyReviewerInstall(failures=3)
+    with pytest.raises(AgentInstallError):
+        await _install_reviewer_agent(rollout, retry_delays=(0.0, 0.0))
+    assert rollout.attempts == 3
 
 
 def test_structural_delimiters_are_neutralized() -> None:

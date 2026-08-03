@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -15,11 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.acp.client import ACPError
+from benchflow.models import AgentInstallError
 from benchflow.review.config import ReviewParams
 from benchflow.trajectories._capture import TrajectoryWriter
 from benchflow.trajectories.types import redact_trajectory_obj, redact_trajectory_text
 
 _MAX_SNAPSHOT_BYTES = 1024 * 1024 * 1024
+_REVIEWER_INSTALL_RETRY_DELAYS_SEC = (2.0, 5.0)
 _SECRET_NAMES = re.compile(
     r"(^|[._-])(auth|credential|secret|token|password|cookie|session|api[_-]?key)($|[._-])",
     re.IGNORECASE,
@@ -45,6 +48,31 @@ _STRUCTURAL_MARKER_RE = re.compile(
 _ROLE_TAG_RE = re.compile(r"</?(system|assistant|user|tool)(?=[\s>])", re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
+
+
+async def _install_reviewer_agent(
+    rollout: Any,
+    *,
+    retry_delays: tuple[float, ...] = _REVIEWER_INSTALL_RETRY_DELAYS_SEC,
+) -> None:
+    """Retry bounded transient install failures in the isolated reviewer."""
+
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            await rollout.install_agent()
+            return
+        except AgentInstallError:
+            if attempt == len(retry_delays):
+                raise
+            delay = retry_delays[attempt]
+            logger.warning(
+                "Reviewer agent install failed on attempt %d/%d; retrying in %.1fs",
+                attempt + 1,
+                len(retry_delays) + 1,
+                delay,
+                exc_info=True,
+            )
+            await asyncio.sleep(delay)
 
 
 def neutralize_structural_delimiters(text: str) -> str:
@@ -440,7 +468,7 @@ class IsolatedReviewerRuntime:
         self._rollout = await Rollout.create(config)
         await self._rollout.setup()
         await self._rollout.start()
-        await self._rollout.install_agent()
+        await _install_reviewer_agent(self._rollout)
         self._upstream_agent_env = dict(self._rollout._agent_env)
 
         env = self._rollout.env
