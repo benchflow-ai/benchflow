@@ -77,6 +77,7 @@ from benchflow.loop_strategies import (
     parse_loop_strategy_spec,
 )
 from benchflow.models import RolloutResult
+from benchflow.review.config import ReviewParams
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -524,6 +525,10 @@ class EvaluationConfig:
     # and stamped in summary.json; None = single-shot. A dict (the to_mapping()
     # shape) is also accepted at runtime — __post_init__ materializes it.
     loop_strategy: LoopStrategySpec | str | None = None
+    # Post-verify rubric review parameters (``--review`` /
+    # ``--reviewer-agent`` / ``--reviewer-model``). None keeps the default
+    # auto behavior: review runs iff the task ships a review rubric.
+    review: ReviewParams | None = None
 
     def __post_init__(self):
         from benchflow._utils.config import (
@@ -1244,6 +1249,7 @@ class Evaluation:
             task_digest=task_digest_value,
             usage_tracking=cfg.usage_tracking,
             loop_strategy=cfg.loop_strategy,
+            review=cfg.review,
         )
         if skill_mode == SKILL_MODE_SELF_GEN:
             from benchflow.self_gen import run_self_gen

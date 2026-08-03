@@ -585,6 +585,31 @@ def eval_run(
         int,
         typer.Option("--trials", help="Number of trials for --matrix"),
     ] = 1,
+    review: Annotated[
+        bool | None,
+        typer.Option(
+            "--review/--no-review",
+            help=(
+                "Post-verify rubric review. Default (omitted): run iff the "
+                "task ships a review rubric.json; --review requires one; "
+                "--no-review skips it."
+            ),
+        ),
+    ] = None,
+    reviewer_agent: Annotated[
+        str | None,
+        typer.Option(
+            "--reviewer-agent",
+            help="Agent harness for the rubric reviewer (any registered agent)",
+        ),
+    ] = None,
+    reviewer_model: Annotated[
+        str | None,
+        typer.Option(
+            "--reviewer-model",
+            help="Model for the rubric reviewer (defaults to the agent's registry default)",
+        ),
+    ] = None,
 ) -> None:
     # The supported --sandbox values are rendered from the provider registry
     # into that option's own help text. This docstring used to hand-copy them
@@ -644,6 +669,9 @@ def eval_run(
         hf_public_read_check=hf_public_read_check,
         matrix=matrix,
         trials=trials,
+        review=review,
+        reviewer_agent=reviewer_agent,
+        reviewer_model=reviewer_model,
     )
     # --source-path/--source-ref only apply to --source-repo; otherwise they're
     # silently ignored (e.g. `--dataset X --source-ref abc` drops the ref).

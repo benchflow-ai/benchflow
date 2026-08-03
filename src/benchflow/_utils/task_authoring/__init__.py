@@ -143,6 +143,29 @@ def task_digest(task_dir: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str]:
+    """Validate a review ``rubric.json`` when the task ships one.
+
+    Only files carrying ``schema_version`` are review rubrics; an llm-judge
+    ``rubric.json`` (Harvey-LAB style, no schema_version) is left to the
+    verifier-strategy machinery and not checked here.
+    """
+    from benchflow.review.config import (
+        ReviewRubricError,
+        is_review_rubric_file,
+        load_review_rubric,
+    )
+
+    candidate = verifier_dir / "rubric.json"
+    if not is_review_rubric_file(candidate):
+        return []
+    try:
+        load_review_rubric(candidate)
+    except ReviewRubricError as e:
+        return [f"{verifier_label}/rubric.json invalid: {e}"]
+    return []
+
+
 def check_task(
     task_dir: Path,
     *,
@@ -240,6 +263,9 @@ def check_task(
                 verifier_dir,
                 verifier_label=verifier_label,
             )
+        )
+        issues.extend(
+            _check_review_rubric(verifier_dir, verifier_label=verifier_label)
         )
     else:
         issues.append(

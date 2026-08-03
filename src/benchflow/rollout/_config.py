@@ -31,6 +31,7 @@ from benchflow.loop_strategies import (
     build_loop_user,
     parse_loop_strategy_spec,
 )
+from benchflow.review.config import ReviewParams
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -139,6 +140,10 @@ class RolloutConfig:
     # exclusive with an explicit ``user``. A dict (the to_mapping() shape) is
     # also accepted at runtime and materialized via from_mapping.
     loop_strategy: LoopStrategySpec | str | None = None
+    # Post-verify rubric review (``verifier/rubric.json`` + an agentic
+    # reviewer). None keeps the default ReviewParams semantics: auto-enable
+    # when the task ships a review rubric. See :mod:`benchflow.review`.
+    review: ReviewParams | None = None
     # Whether a task.md-declared user may be adopted when neither an explicit
     # ``user`` nor a loop strategy materializes one. ``None`` (default)
     # derives the answer from scene authorship: programmatic scene callers

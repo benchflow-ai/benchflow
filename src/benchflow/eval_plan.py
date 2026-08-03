@@ -36,6 +36,7 @@ from benchflow.loop_strategies import (
     LoopStrategySpec,
     parse_loop_strategy_spec,
 )
+from benchflow.review.config import ReviewParams
 from benchflow.sandbox.providers import (
     is_known_provider,
     provider_extra,
@@ -128,6 +129,11 @@ class EvalCreateRequest:
     hf_public_read_check: bool = False
     matrix: Path | None = None
     trials: int = 1
+    # Post-verify rubric review knobs (``--review`` / ``--no-review``,
+    # ``--reviewer-agent``, ``--reviewer-model``). ``review=None`` = auto.
+    review: bool | None = None
+    reviewer_agent: str | None = None
+    reviewer_model: str | None = None
 
 
 @dataclass
@@ -159,6 +165,7 @@ class EvalPlan:
     parsed_env: dict[str, str]
     include_tasks: set[str]
     exclude_tasks: set[str]
+    eval_review: ReviewParams | None = None
 
     def make_eval_config(
         self,
@@ -212,6 +219,7 @@ class EvalPlan:
             environment_manifest=self.eval_env_manifest,
             config_override=self.eval_config_override,
             loop_strategy=self.eval_loop_strategy,
+            review=self.eval_review,
         )
 
 
@@ -480,4 +488,32 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         parsed_env=parsed_env,
         include_tasks=include_tasks,
         exclude_tasks=exclude_tasks,
+        eval_review=_build_review_params(request),
+    )
+
+
+def _build_review_params(request: EvalCreateRequest) -> ReviewParams | None:
+    """Materialize ``--review`` flags; None when no review flag was given.
+
+    ``--reviewer-agent`` is validated here (against the agent registry) so a
+    typo fails at plan time with the registry's close-match suggestions, not
+    mid-rollout after the task already ran.
+    """
+    if (
+        request.review is None
+        and request.reviewer_agent is None
+        and request.reviewer_model is None
+    ):
+        return None
+    if request.reviewer_agent is not None:
+        from benchflow.agents.registry import resolve_agent
+
+        try:
+            resolve_agent(request.reviewer_agent)
+        except KeyError as e:
+            raise EvalPlanError(f"--reviewer-agent: {e.args[0]}") from None
+    return ReviewParams(
+        enabled=request.review,
+        agent=request.reviewer_agent,
+        model=request.reviewer_model,
     )

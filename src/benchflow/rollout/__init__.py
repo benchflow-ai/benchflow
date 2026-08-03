@@ -2035,6 +2035,11 @@ class Rollout:
                 ):
                     self._rewards = {"reward": 0.0}
                     self._verifier_error = None
+                # Post-verify rubric review — runs while the sandbox is still
+                # alive, after the execution reward is already captured, so a
+                # reviewer can neither influence nor be confused with the
+                # primary verifier verdict. Never raises.
+                await self._maybe_review()
 
         except TimeoutError as e:
             self._record_agent_timeout(e)
@@ -2088,6 +2093,22 @@ class Rollout:
     # the same engine convention as ``rollout_branch.py``. These thin methods
     # keep instance-level patching and unbound ``Rollout._export_generated_skills``
     # calls working unchanged.
+
+    async def _maybe_review(self) -> None:
+        """Run the post-verify rubric review when configured / discovered.
+
+        The engine owns discovery (``verifier/rubric.json`` claimed by
+        ``schema_version``), the reviewer session, scoring, and the rewards
+        merge; every failure degrades to ``review/review_details.json``
+        rather than failing the rollout. This wrapper only guards against the
+        engine itself blowing up.
+        """
+        try:
+            from benchflow.rollout._review import run_review_engine
+
+            await run_review_engine(self)
+        except Exception:  # noqa: BLE001 - review must never fail the rollout
+            logger.error("Rubric review engine failed", exc_info=True)
 
     async def _export_generated_skills(self) -> None:
         """Download creator-produced skills before sandbox cleanup.

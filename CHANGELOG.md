@@ -3,6 +3,18 @@
 ## [Unreleased]
 
 ### Added
+- **Rubric review (`verifier/rubric.json`).** Post-verify agentic grading: a
+  task may ship a JSON rubric next to its verifier, and after the execution
+  verifier runs, a reviewer agent (any registered harness + model, via
+  `--reviewer-agent` / `--reviewer-model`) explores the workspace and the
+  captured trajectory snapshot and grades each criterion. Criteria follow the
+  established rubric-field vocabulary (`criterion`, `weight` signed
+  HealthBench-style, `choices` ordered worst→best, `required` gates,
+  `guidance`, `tags`); scores land as `review`, `review_passed`, and
+  `review/<id>` reward keys — the primary `reward` stays owned by the
+  verifier — with full verdicts in `review/review_details.json`. Reviewer
+  failures mark criteria unscored rather than scoring the model down, and
+  `bench tasks check` validates the rubric.
 - **Native TRL tool-calling SFT export.** `bench train convert --format
   trl-sft` emits conversational prompt/completion rows with a `tools` column,
   excludes OpenCode title/summary helper calls, and accepts rollout trees,

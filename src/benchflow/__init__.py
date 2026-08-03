@@ -83,6 +83,13 @@ from benchflow.rewards import (
     load_rubric_json,
     load_rubric_toml,
 )
+from benchflow.review import (
+    ReviewCriterion,
+    ReviewParams,
+    ReviewRubric,
+    ReviewRubricError,
+    load_review_rubric,
+)
 from benchflow.rollout import (
     BashToolResult,
     Rollout,
@@ -160,6 +167,11 @@ __all__ = [
     "load_rubric",
     "load_rubric_json",
     "load_rubric_toml",
+    "ReviewCriterion",
+    "ReviewParams",
+    "ReviewRubric",
+    "ReviewRubricError",
+    "load_review_rubric",
     "Sandbox",
     "SandboxExecResult",
     "SandboxImage",
