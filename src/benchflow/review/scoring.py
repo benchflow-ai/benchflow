@@ -1,31 +1,17 @@
-"""Verdict validation and score aggregation for rubric reviews.
-
-The scoring contract, in one place:
-
-- A verdict must be a member of its criterion's ``choices``; anything else is
-  an **unscored** criterion, never a zero. A reviewer failure must not be
-  scored against the model (PrimeIntellect verifiers v1's rule; the opposite
-  default — timeout scores 0.0 — makes infra noise indistinguishable from a
-  genuine failure).
-- Gates: every ``required`` criterion must land on its best choice, or the
-  review is 0.0 regardless of the weighted mean.
-- The mean is HealthBench's: signed weights in the numerator, **positive
-  weights only** in the denominator, final score clamped to [0, 1]. Penalties
-  can only erode earned credit.
-- ``weight == 0`` criteria are recorded as metrics and never move the score.
-"""
+"""Binary verdict validation and HealthBench-style plan-score aggregation."""
 
 from __future__ import annotations
 
+import ast
 import json
 from dataclasses import dataclass, field
 from typing import Any
 
 from benchflow.review.config import ReviewCriterion, ReviewRubric
 
-# Review lifecycle states surfaced in review_details.json.
 STATUS_SCORED = "scored"
 STATUS_UNSCORED = "unscored"
+STATUS_COMPROMISED = "compromised"
 STATUS_CONFIG_ERROR = "config_error"
 STATUS_ERROR = "error"
 STATUS_SKIPPED = "skipped"
@@ -33,11 +19,11 @@ STATUS_SKIPPED = "skipped"
 
 @dataclass
 class CriterionVerdict:
-    """One criterion's parsed reviewer answer."""
+    """One parsed binary criterion verdict."""
 
     criterion_id: str
-    verdict: str | None
-    reasoning: str = ""
+    criterion_met: bool | None
+    explanation: str = ""
     evidence: tuple[str, ...] = ()
     score: float | None = None
     unscored_reason: str | None = None
@@ -45,45 +31,33 @@ class CriterionVerdict:
 
 @dataclass
 class ReviewOutcome:
-    """Aggregated review result, ready for rewards + details serialization."""
+    """Aggregated review result, ready for result and reward serialization."""
 
     status: str
-    review: float | None = None
+    plan: float | None = None
     passed: bool | None = None
     verdicts: list[CriterionVerdict] = field(default_factory=list)
     failed_gates: list[str] = field(default_factory=list)
     error: str | None = None
 
     def reward_updates(self, rubric: ReviewRubric | None) -> dict[str, float]:
-        """Reward-dict keys this outcome contributes.
-
-        Only a fully scored review writes keys: a partial score computed while
-        some criterion is unscored would silently misrepresent the rubric, so
-        unscored/error reviews keep the rewards dict untouched and speak
-        through ``review_details.json`` instead. The primary ``reward`` key is
-        never written here — the execution verifier owns it.
-        """
-        if self.status != STATUS_SCORED or self.review is None or rubric is None:
+        if self.status != STATUS_SCORED or self.plan is None or rubric is None:
             return {}
         updates: dict[str, float] = {
-            "review": round(self.review, 4),
-            "review_passed": 1.0 if self.passed else 0.0,
+            "plan": round(self.plan, 4),
+            "plan_passed": 1.0 if self.passed else 0.0,
         }
         for verdict in self.verdicts:
             if verdict.score is not None:
-                updates[f"review/{verdict.criterion_id}"] = round(verdict.score, 4)
+                updates[f"plan/{verdict.criterion_id}"] = round(verdict.score, 4)
         return updates
 
 
-def extract_verdicts_object(text: str) -> dict[str, Any] | None:
-    """Find the first balanced JSON object carrying a ``"verdicts"`` key.
+def extract_verdicts_objects(text: str) -> list[dict[str, Any]]:
+    """Return every balanced JSON object carrying a ``verdicts`` key."""
 
-    Scanning for the key (not just the first ``{``) skips prose and — the case
-    that actually bites — an echoed copy of the format example from the
-    prompt, which fails to parse or lacks real content. Returns ``None`` when
-    no such object exists.
-    """
     decoder = json.JSONDecoder()
+    objects: list[dict[str, Any]] = []
     index = text.find("{")
     while index != -1:
         try:
@@ -91,27 +65,115 @@ def extract_verdicts_object(text: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             obj = None
         if isinstance(obj, dict) and "verdicts" in obj:
-            return obj
+            objects.append(obj)
         index = text.find("{", index + 1)
-    return None
+    return objects
 
 
-def parse_reviewer_message(
-    text: str, expected: list[ReviewCriterion]
+def extract_verdicts_object(text: str) -> dict[str, Any] | None:
+    """Return the last candidate, which is normally the reviewer's final answer."""
+
+    objects = extract_verdicts_objects(text)
+    return objects[-1] if objects else None
+
+
+def _trace_json_values(evidence_trace: str) -> list[Any]:
+    """Decode adjacent JSON values from an accumulated evidence trace."""
+
+    values: list[Any] = []
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(evidence_trace):
+        while index < len(evidence_trace) and evidence_trace[index].isspace():
+            index += 1
+        if index >= len(evidence_trace):
+            break
+        try:
+            value, end = decoder.raw_decode(evidence_trace[index:])
+        except json.JSONDecodeError:
+            break
+        values.append(value)
+        index += end
+    return values
+
+
+def _provider_tool_calls(evidence_trace: str) -> list[tuple[str, dict[str, Any]]]:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        if value.get("type") == "provider_tool_call":
+            name = value.get("name")
+            arguments = value.get("arguments")
+            if isinstance(name, str) and isinstance(arguments, dict):
+                calls.append((name, arguments))
+
+    for value in _trace_json_values(evidence_trace):
+        visit(value)
+    return calls
+
+
+def _cited_tool_call(item: str) -> tuple[str, dict[str, Any]] | None:
+    """Parse a reviewer citation such as ``read_file(file_path='...')``."""
+
+    try:
+        expression = ast.parse(item, mode="eval").body
+    except (SyntaxError, ValueError):
+        return None
+    if (
+        not isinstance(expression, ast.Call)
+        or not isinstance(expression.func, ast.Name)
+        or expression.args
+        or not expression.keywords
+    ):
+        return None
+    arguments: dict[str, Any] = {}
+    for keyword in expression.keywords:
+        if keyword.arg is None:
+            return None
+        try:
+            arguments[keyword.arg] = ast.literal_eval(keyword.value)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            return None
+    return expression.func.id, arguments
+
+
+def _evidence_is_trace_backed(item: str, evidence_trace: str | None) -> bool:
+    if evidence_trace is None:
+        return True
+    needle = item.strip()
+    if not needle:
+        return False
+    if needle in evidence_trace:
+        return True
+    # Tool titles often shorten absolute paths.  Require the cited basename to
+    # appear in an actual read/search event; a free-form claim alone is not
+    # independently checkable.
+    path = needle.split(":", 1)[0].strip("`'\"")
+    basename = path.rstrip("/").rsplit("/", 1)[-1]
+    if basename and len(basename) >= 3 and basename in evidence_trace:
+        return True
+
+    cited_call = _cited_tool_call(needle)
+    if cited_call is None:
+        return False
+    cited_name, cited_arguments = cited_call
+    return any(
+        cited_name == actual_name and cited_arguments == actual_arguments
+        for actual_name, actual_arguments in _provider_tool_calls(evidence_trace)
+    )
+
+
+def _parse_candidate(
+    obj: dict[str, Any],
+    expected: list[ReviewCriterion],
+    evidence_trace: str | None,
 ) -> tuple[list[CriterionVerdict], str | None]:
-    """Parse one reviewer message into verdicts for ``expected`` criteria.
-
-    Returns ``(verdicts, error)``. ``error`` is a human-readable description
-    of a *structural* failure (no JSON, id mismatch) suitable for feeding back
-    to the reviewer on retry; per-criterion problems (off-menu verdict,
-    missing evidence) land on the individual verdict as ``unscored_reason``.
-    """
-    obj = extract_verdicts_object(text)
-    if obj is None:
-        return [], (
-            "no JSON object with a 'verdicts' key was found in the reply; "
-            "return exactly one such object"
-        )
     raw_verdicts = obj.get("verdicts")
     if not isinstance(raw_verdicts, list):
         return [], "'verdicts' must be a list"
@@ -124,12 +186,14 @@ def parse_reviewer_message(
             return [], f"duplicate verdict id {item['id']!r}"
         by_id[item["id"]] = item
 
-    expected_ids = [c.id for c in expected]
-    missing = [cid for cid in expected_ids if cid not in by_id]
-    extra = [cid for cid in by_id if cid not in expected_ids]
+    expected_ids = [criterion.id for criterion in expected]
+    missing = [
+        criterion_id for criterion_id in expected_ids if criterion_id not in by_id
+    ]
+    extra = [criterion_id for criterion_id in by_id if criterion_id not in expected_ids]
     if missing or extra:
         return [], (
-            f"verdict ids do not match the requested criteria "
+            "verdict ids do not match the requested criteria "
             f"(missing: {missing or 'none'}, unexpected: {extra or 'none'}); "
             f"answer exactly the ids {expected_ids}"
         )
@@ -137,90 +201,106 @@ def parse_reviewer_message(
     verdicts: list[CriterionVerdict] = []
     for criterion in expected:
         item = by_id[criterion.id]
-        raw_verdict = item.get("verdict")
-        reasoning = item.get("reasoning")
+        criterion_met = item.get("criterion_met")
+        explanation = item.get("explanation")
         evidence_raw = item.get("evidence")
-        evidence = (
-            tuple(str(e) for e in evidence_raw)
-            if isinstance(evidence_raw, list)
-            else ()
-        )
-
-        unscored_reason: str | None = None
-        score: float | None = None
-        if not isinstance(raw_verdict, str) or raw_verdict not in criterion.choices:
-            unscored_reason = (
-                f"verdict {raw_verdict!r} is not one of {list(criterion.choices)}"
+        if not isinstance(criterion_met, bool):
+            return [], f"{criterion.id}: criterion_met must be a JSON boolean"
+        if not isinstance(explanation, str) or not explanation.strip():
+            return [], f"{criterion.id}: explanation must be a non-empty string"
+        if (
+            not isinstance(evidence_raw, list)
+            or not evidence_raw
+            or not all(
+                isinstance(value, str) and value.strip() for value in evidence_raw
             )
-        elif not isinstance(reasoning, str) or not reasoning.strip():
-            unscored_reason = "verdict has no reasoning"
-        elif not evidence:
-            unscored_reason = (
-                "verdict cites no evidence (file paths, trajectory steps, or "
-                "a description of what was searched)"
+        ):
+            return [], f"{criterion.id}: evidence must be a non-empty list of strings"
+        evidence = tuple(value.strip() for value in evidence_raw)
+        unsupported = [
+            value
+            for value in evidence
+            if not _evidence_is_trace_backed(value, evidence_trace)
+        ]
+        if unsupported:
+            return [], (
+                f"{criterion.id}: evidence is not backed by reviewer tool/search "
+                f"events: {unsupported}"
             )
-        else:
-            score = criterion.choice_score(raw_verdict)
-
         verdicts.append(
             CriterionVerdict(
                 criterion_id=criterion.id,
-                verdict=raw_verdict if isinstance(raw_verdict, str) else None,
-                reasoning=reasoning if isinstance(reasoning, str) else "",
+                criterion_met=criterion_met,
+                explanation=explanation.strip(),
                 evidence=evidence,
-                score=score,
-                unscored_reason=unscored_reason,
+                score=1.0 if criterion_met else 0.0,
             )
         )
     return verdicts, None
 
 
-def aggregate(rubric: ReviewRubric, verdicts: list[CriterionVerdict]) -> ReviewOutcome:
-    """Aggregate per-criterion verdicts into the review outcome."""
-    by_id = {v.criterion_id: v for v in verdicts}
+def parse_reviewer_message(
+    text: str,
+    expected: list[ReviewCriterion],
+    *,
+    evidence_trace: str | None = None,
+) -> tuple[list[CriterionVerdict], str | None]:
+    """Parse the last structurally valid, complete verdict object in ``text``."""
 
+    objects = extract_verdicts_objects(text)
+    if not objects:
+        return [], (
+            "no JSON object with a 'verdicts' key was found in the reply; "
+            "return exactly one such object"
+        )
+    last_error: str | None = None
+    for obj in reversed(objects):
+        verdicts, error = _parse_candidate(obj, expected, evidence_trace)
+        if error is None:
+            return verdicts, None
+        last_error = error
+    return [], last_error or "no complete verdict object was found"
+
+
+def aggregate(rubric: ReviewRubric, verdicts: list[CriterionVerdict]) -> ReviewOutcome:
+    """Aggregate binary verdicts with gates and a positive-only denominator."""
+
+    by_id = {verdict.criterion_id: verdict for verdict in verdicts}
     unscored = [
-        v
-        for v in verdicts
-        if v.score is None
-        # A metric criterion failing to score is reported but must not block
-        # the review score — it could not have moved it anyway.
-        and not _criterion(rubric, v.criterion_id).is_metric
+        verdict
+        for verdict in verdicts
+        if verdict.score is None
+        and not _criterion(rubric, verdict.criterion_id).is_metric
     ]
     if unscored:
         reasons = "; ".join(
-            f"{v.criterion_id}: {v.unscored_reason}" for v in unscored
+            f"{verdict.criterion_id}: {verdict.unscored_reason}" for verdict in unscored
         )
         return ReviewOutcome(
             status=STATUS_UNSCORED,
             verdicts=verdicts,
-            error=f"review is unscored — {reasons}",
+            error=f"plan review is unscored: {reasons}",
         )
 
     failed_gates = [
-        gate.id
-        for gate in rubric.gates
-        if (by_id[gate.id].score or 0.0) < 1.0
+        gate.id for gate in rubric.gates if (by_id[gate.id].score or 0.0) < 1.0
     ]
     if failed_gates:
-        review = 0.0
+        plan = 0.0
     else:
-        scored = rubric.scored
-        denominator = sum(c.weight for c in scored if c.weight > 0)
-        if denominator > 0:
-            numerator = sum(
-                c.weight * (by_id[c.id].score or 0.0) for c in scored
-            )
-            review = min(1.0, max(0.0, numerator / denominator))
-        else:
-            # Loader guarantees gates exist in this shape: gates all passed
-            # and nothing else can move the score.
-            review = 1.0
+        denominator = sum(
+            criterion.weight for criterion in rubric.scored if criterion.weight > 0
+        )
+        numerator = sum(
+            criterion.weight * (by_id[criterion.id].score or 0.0)
+            for criterion in rubric.scored
+        )
+        plan = min(1.0, max(0.0, numerator / denominator))
 
     return ReviewOutcome(
         status=STATUS_SCORED,
-        review=review,
-        passed=review >= rubric.pass_threshold,
+        plan=plan,
+        passed=plan >= rubric.pass_threshold,
         verdicts=verdicts,
         failed_gates=failed_gates,
     )

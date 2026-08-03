@@ -700,6 +700,8 @@ class Rollout:
 
         # Populated by verify()
         self._rewards: dict | None = None
+        # Canonical plan-review status/provenance, populated after verify().
+        self._review_metadata: dict[str, Any] | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
         # Populated by _export_generated_skills() on failure (#389 follow-up).
@@ -1199,6 +1201,7 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
+            force_sandbox_local=getattr(self, "_disallow_web_tools", False),
         )
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
@@ -2099,7 +2102,7 @@ class Rollout:
 
         The engine owns discovery (``verifier/rubric.json`` claimed by
         ``schema_version``), the reviewer session, scoring, and the rewards
-        merge; every failure degrades to ``review/review_details.json``
+        merge; every failure degrades to ``review/review-details.json``
         rather than failing the rollout. This wrapper only guards against the
         engine itself blowing up.
         """
@@ -2107,7 +2110,7 @@ class Rollout:
             from benchflow.rollout._review import run_review_engine
 
             await run_review_engine(self)
-        except Exception:  # noqa: BLE001 - review must never fail the rollout
+        except Exception:  # review must never fail the rollout
             logger.error("Rubric review engine failed", exc_info=True)
 
     async def _export_generated_skills(self) -> None:
@@ -2179,6 +2182,7 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
+            force_sandbox_local=disallow_web_tools,
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
@@ -2537,6 +2541,7 @@ class Rollout:
             source_provenance=self._config.source_provenance,
             dataset=self._config.dataset,
             task_digest=self._config.task_digest,
+            rubric_review=getattr(self, "_review_metadata", None),
             diagnostics=self._diagnostics,
             usage_tracking=self._usage_tracking_metadata(),
             skill_policy=getattr(self, "_task_skill_policy", None)

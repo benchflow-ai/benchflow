@@ -105,7 +105,7 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
     # Cache reported as a SEPARATE additive component — Anthropic Messages
     # (`cache_read_input_tokens`) and Bedrock Converse (`cacheReadInputToken*`) —
     # is NOT included in that provider's `input_tokens`/`inputTokens` count.
-    additive_cache_read = _first_int(
+    reported_additive_cache_read = _first_int(
         usage.get("cache_read_input_tokens"),
         usage.get("cacheReadInputTokens"),
         usage.get("cacheReadInputTokenCount"),
@@ -122,8 +122,14 @@ def _exchange_token_usage(exchange: "LLMExchange") -> TokenUsage:
         input_details.get("cached_tokens"),
         usage_metadata.get("cachedContentTokenCount"),
     )
-    cache_read_tokens = additive_cache_read or inclusive_cache_read
+    cache_read_tokens = reported_additive_cache_read or inclusive_cache_read
     cache_creation_tokens = additive_cache_creation
+
+    # Some normalized provider responses expose the same cache read in both
+    # families (for example Gemini pass-through: ``prompt_tokens_details`` and
+    # ``cache_read_input_tokens``). The inclusive marker proves the raw prompt
+    # count already contains cache reads, so never add the duplicate field.
+    additive_cache_read = 0 if inclusive_cache_read else reported_additive_cache_read
 
     # Normalize `input_tokens` to mean the same thing across providers: the total
     # input the model processed, cache included. Anthropic/Bedrock report the

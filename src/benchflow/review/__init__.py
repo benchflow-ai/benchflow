@@ -7,15 +7,17 @@ Public surface:
 - :class:`ReviewRubric` / :class:`ReviewCriterion` / :class:`ReviewerSpec` —
   the parsed rubric.
 - :class:`ReviewParams` — caller-side knobs (``--review``,
-  ``--reviewer-agent``, ``--reviewer-model``).
+  ``--reviewer-harness``, ``--reviewer-model``).
 - :class:`ReviewOutcome` / :func:`aggregate` — scoring.
 
 The rollout-side engine lives in :mod:`benchflow.rollout._review`; it runs the
-reviewer agent in the task sandbox after ``verify()`` and merges ``review*``
-keys into the rewards dict.
+reviewer in a separate no-network sandbox after ``verify()`` and merges
+``plan*`` keys into the rewards dict.
 """
 
 from benchflow.review.config import (
+    CRITERION_TYPES,
+    REVIEW_MODES,
     REVIEW_RUBRIC_FILENAME,
     REVIEW_SCHEMA_VERSION,
     ReviewCriterion,
@@ -28,6 +30,7 @@ from benchflow.review.config import (
     load_review_rubric,
 )
 from benchflow.review.scoring import (
+    STATUS_COMPROMISED,
     CriterionVerdict,
     ReviewOutcome,
     aggregate,
@@ -38,6 +41,9 @@ from benchflow.review.scoring import (
 __all__ = [
     "REVIEW_RUBRIC_FILENAME",
     "REVIEW_SCHEMA_VERSION",
+    "CRITERION_TYPES",
+    "REVIEW_MODES",
+    "STATUS_COMPROMISED",
     "CriterionVerdict",
     "ReviewCriterion",
     "ReviewOutcome",

@@ -74,12 +74,10 @@ _REQUIRED_SKILL_NAMES_ENV = "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON"
 _LIVE_CAPTURE_CHUNK_BYTES = 24 * 1024
 _LIVE_CAPTURE_INTERVAL_SEC = 1.0
 
-# Agents that speak a provider-native wire protocol the LiteLLM proxy does not
-# expose on its OpenAI/Anthropic surfaces. Routing them through the proxy would
-# silently mis-wire the agent (e.g. the Gemini CLI speaks Google's
-# GenerateContent format), so they talk to their provider directly and report
-# usage_source='unavailable'. ``oracle`` has no model at all.
-_NATIVE_PROTOCOL_AGENTS = frozenset({"oracle", "gemini"})
+# Agents that cannot make model calls through LiteLLM. ``oracle`` has no model
+# at all. Gemini is routable through LiteLLM's native Google GenerateContent
+# endpoints; keeping it behind the proxy is required for no-web reviewer runs.
+_NATIVE_PROTOCOL_AGENTS = frozenset({"oracle"})
 # Providers whose mandatory LiteLLM proxy runs inside the sandbox. Keeping this
 # placement policy in the canonical provider registry prevents a new backend from
 # accidentally handing an in-sandbox agent a host-loopback endpoint.
@@ -1249,6 +1247,16 @@ def _wire_litellm_agent_env(
         updated["LLM_MODEL"] = f"openai/{route.model_alias}"
         updated[LITELLM_MODEL_VIA_ENV] = "1"
         return updated
+    if agent == "gemini":
+        # Gemini CLI speaks Google's native GenerateContent protocol. Use
+        # LiteLLM's byte-preserving Gemini pass-through route: its translated
+        # GenerateContent route can corrupt streamed, multi-tool responses.
+        # The gateway authenticates the reviewer with ``master_key`` and swaps
+        # in the upstream Gemini key server-side.
+        updated.pop(LITELLM_MODEL_ALIAS_ENV, None)
+        updated["GOOGLE_GEMINI_BASE_URL"] = f"{base_url.rstrip('/')}/gemini"
+        updated["GEMINI_API_KEY"] = master_key
+        return updated
     if agent == "claude-agent-acp":
         updated["ANTHROPIC_BASE_URL"] = base_url.rstrip("/")
         updated["ANTHROPIC_AUTH_TOKEN"] = master_key
@@ -1327,6 +1335,7 @@ async def ensure_litellm_runtime(
     sandbox_setup_timeout: int = 120,
     required_skill_names: tuple[str, ...] = (),
     live_trajectory_path: Path | None = None,
+    force_sandbox_local: bool = False,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1336,8 +1345,8 @@ async def ensure_litellm_runtime(
     whether the proxy runs — it only governs whether trusted telemetry is
     *required* (``required`` fails closed when usage cannot be captured at all).
     The only agents that skip the proxy are those that physically cannot be
-    routed through it: ``oracle`` (no model), native-protocol agents (e.g.
-    ``gemini``), and native-subscription auth (no API key to proxy).
+    routed through it: ``oracle`` (no model) and native-subscription auth (no
+    API key to proxy). Gemini uses LiteLLM's native GenerateContent endpoints.
     """
     usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
 
@@ -1357,7 +1366,8 @@ async def ensure_litellm_runtime(
         return await _skip_litellm_runtime(agent_env, runtime)
     assert model is not None
 
-    if environment in _SANDBOX_LOCAL_ENVIRONMENTS and sandbox is None:
+    sandbox_local = force_sandbox_local or environment in _SANDBOX_LOCAL_ENVIRONMENTS
+    if sandbox_local and sandbox is None:
         raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
 
     try:
@@ -1391,8 +1401,10 @@ async def ensure_litellm_runtime(
     skill_gate_key = json.dumps(
         sorted(set(required_skill_names)), separators=(",", ":")
     )
+    proxy_location = "sandbox" if sandbox_local else "host"
     config_key = (
-        f"{environment}:{route.config_key}:{agent}:{session_id}:{skill_gate_key}"
+        f"{environment}:{proxy_location}:{route.config_key}:{agent}:"
+        f"{session_id}:{skill_gate_key}"
     )
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
@@ -1419,7 +1431,7 @@ async def ensure_litellm_runtime(
             agent_env=agent_env,
             required_skill_names=required_skill_names,
         )
-        if environment in _SANDBOX_LOCAL_ENVIRONMENTS:
+        if sandbox_local:
             server = await _start_sandbox_litellm(
                 sandbox=sandbox,
                 route=route,

@@ -130,10 +130,12 @@ class EvalCreateRequest:
     matrix: Path | None = None
     trials: int = 1
     # Post-verify rubric review knobs (``--review`` / ``--no-review``,
-    # ``--reviewer-agent``, ``--reviewer-model``). ``review=None`` = auto.
+    # ``--reviewer-harness`` and reviewer overrides). ``review=None`` = auto.
     review: bool | None = None
-    reviewer_agent: str | None = None
+    reviewer_harness: str | None = None
     reviewer_model: str | None = None
+    reviewer_timeout_sec: float | None = None
+    reviewer_mode: str | None = None
 
 
 @dataclass
@@ -495,25 +497,34 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
 def _build_review_params(request: EvalCreateRequest) -> ReviewParams | None:
     """Materialize ``--review`` flags; None when no review flag was given.
 
-    ``--reviewer-agent`` is validated here (against the agent registry) so a
+    ``--reviewer-harness`` is validated here (against the agent registry) so a
     typo fails at plan time with the registry's close-match suggestions, not
     mid-rollout after the task already ran.
     """
     if (
         request.review is None
-        and request.reviewer_agent is None
+        and request.reviewer_harness is None
         and request.reviewer_model is None
+        and request.reviewer_timeout_sec is None
+        and request.reviewer_mode is None
     ):
         return None
-    if request.reviewer_agent is not None:
+    if request.reviewer_harness is not None:
         from benchflow.agents.registry import resolve_agent
 
         try:
-            resolve_agent(request.reviewer_agent)
+            resolve_agent(request.reviewer_harness)
         except KeyError as e:
-            raise EvalPlanError(f"--reviewer-agent: {e.args[0]}") from None
-    return ReviewParams(
-        enabled=request.review,
-        agent=request.reviewer_agent,
-        model=request.reviewer_model,
-    )
+            raise EvalPlanError(f"--reviewer-harness: {e.args[0]}") from None
+    try:
+        return ReviewParams.from_mapping(
+            {
+                "enabled": request.review,
+                "harness": request.reviewer_harness,
+                "model": request.reviewer_model,
+                "timeout_sec": request.reviewer_timeout_sec,
+                "mode": request.reviewer_mode,
+            }
+        )
+    except ValueError as exc:
+        raise EvalPlanError(str(exc)) from None

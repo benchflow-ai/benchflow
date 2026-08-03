@@ -274,6 +274,39 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
     assert usage["cost_usd"] == 0.00042
 
 
+def test_normalized_gemini_cache_read_is_not_double_counted() -> None:
+    """Guards PR #942 remediation for duplicate inclusive cache fields."""
+
+    record = {
+        "event": "success",
+        "request_model": "gemini-2.5-flash",
+        "provider_model": "gemini-2.5-flash",
+        "request": {"method": "POST", "path": "/gemini/v1beta/models/x"},
+        "response": {
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "cache_read_input_tokens": 40,
+                "prompt_tokens_details": {"cached_tokens": 40},
+            }
+        },
+        "start_time": "2026-08-03T00:00:00",
+        "end_time": "2026-08-03T00:00:01",
+    }
+    trajectory = trajectory_from_litellm_callback_log(
+        json.dumps(record),
+        session_id="review",
+        agent_name="gemini",
+    )
+    usage = extract_usage_from_trajectory(trajectory)
+
+    assert usage["n_input_tokens"] == 100
+    assert usage["n_cache_read_tokens"] == 40
+    assert usage["n_output_tokens"] == 20
+    assert usage["total_tokens"] == 120
+
+
 def test_opencode_callback_import_preserves_call_metadata_and_purpose():
     """Guards PR #925: TRL conversion can exclude OpenCode helper calls."""
     primary = {

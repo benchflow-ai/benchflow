@@ -596,10 +596,10 @@ def eval_run(
             ),
         ),
     ] = None,
-    reviewer_agent: Annotated[
+    reviewer_harness: Annotated[
         str | None,
         typer.Option(
-            "--reviewer-agent",
+            "--reviewer-harness",
             help="Agent harness for the rubric reviewer (any registered agent)",
         ),
     ] = None,
@@ -608,6 +608,20 @@ def eval_run(
         typer.Option(
             "--reviewer-model",
             help="Model for the rubric reviewer (defaults to the agent's registry default)",
+        ),
+    ] = None,
+    reviewer_timeout_sec: Annotated[
+        float | None,
+        typer.Option(
+            "--reviewer-timeout-sec",
+            help="Per-criterion reviewer timeout in seconds",
+        ),
+    ] = None,
+    reviewer_mode: Annotated[
+        str | None,
+        typer.Option(
+            "--reviewer-mode",
+            help="Reviewer mode: per_criterion or batched",
         ),
     ] = None,
 ) -> None:
@@ -670,8 +684,10 @@ def eval_run(
         matrix=matrix,
         trials=trials,
         review=review,
-        reviewer_agent=reviewer_agent,
+        reviewer_harness=reviewer_harness,
         reviewer_model=reviewer_model,
+        reviewer_timeout_sec=reviewer_timeout_sec,
+        reviewer_mode=reviewer_mode,
     )
     # --source-path/--source-ref only apply to --source-repo; otherwise they're
     # silently ignored (e.g. `--dataset X --source-ref abc` drops the ref).

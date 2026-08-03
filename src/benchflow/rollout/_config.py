@@ -233,6 +233,13 @@ class RolloutConfig:
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         self.usage_tracking = UsageTrackingConfig.coerce(self.usage_tracking)
+        if isinstance(self.review, dict):
+            self.review = ReviewParams.from_mapping(cast("dict[str, Any]", self.review))
+        elif self.review is not None and not isinstance(self.review, ReviewParams):
+            raise ValueError(
+                "review must be a mapping, ReviewParams, or None, got "
+                f"{type(self.review).__name__}"
+            )
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)

@@ -152,7 +152,9 @@ async def enforce_agent_egress_firewall(
     if not sandbox_user or agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") != "1":
         return
 
-    base_url = agent_env.get("LLM_BASE_URL", "")
+    base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(
+        "LLM_BASE_URL", ""
+    )
     parsed = urlsplit(base_url)
     if (
         parsed.scheme != "http"

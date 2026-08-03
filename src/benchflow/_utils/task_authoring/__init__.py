@@ -264,9 +264,7 @@ def check_task(
                 verifier_label=verifier_label,
             )
         )
-        issues.extend(
-            _check_review_rubric(verifier_dir, verifier_label=verifier_label)
-        )
+        issues.extend(_check_review_rubric(verifier_dir, verifier_label=verifier_label))
     else:
         issues.append(
             "Missing verifier/ directory (or legacy tests/; verifier needs "

@@ -51,7 +51,7 @@ class _FakeHostServer:
 @pytest.mark.parametrize(
     "agent,model,expected",
     [
-        ("gemini", "gemini-3.5-flash", False),
+        ("gemini", "gemini-3.5-flash", True),
         ("oracle", "openai/gpt-4.1-mini", False),
         ("openhands", "gemini-3.5-flash", True),
         ("codex-acp", "openai/gpt-4.1-mini", True),

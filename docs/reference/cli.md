@@ -282,8 +282,10 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--matrix` | — | YAML model matrix for repeated evals; currently requires `--tasks-dir` |
 | `--trials` | `1` | Number of trials for `--matrix` |
 | `--review` | auto | Post-verify rubric review (--no-review to skip). Omitted: run iff the task ships a review rubric.json; `--review` requires one |
-| `--reviewer-agent` | rubric / `claude-agent-acp` | Agent harness for the rubric reviewer (any registered agent) |
+| `--reviewer-harness` | rubric / required | Agent harness for the rubric reviewer (any registered agent) |
 | `--reviewer-model` | rubric / registry default | Model for the rubric reviewer |
+| `--reviewer-timeout-sec` | rubric / `1800` | Per-criterion reviewer timeout in seconds |
+| `--reviewer-mode` | rubric / `per_criterion` | Reviewer mode: `per_criterion` or `batched` |
 
 See [Architecture: skill loading](../architecture.md#skill-loading) for how
 `with-skill` mode is registered with each agent.

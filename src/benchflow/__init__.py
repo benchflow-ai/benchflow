@@ -60,6 +60,13 @@ from benchflow.monitor import (
     MonitorNotImplementedError,
     MonitorResult,
 )
+from benchflow.review import (
+    ReviewCriterion,
+    ReviewParams,
+    ReviewRubric,
+    ReviewRubricError,
+    load_review_rubric,
+)
 
 # Rewards plane. Reward is the canonical node-based contract
 # (``score(node) -> VerifyResult``); RewardFunc is the legacy path-based shape
@@ -82,13 +89,6 @@ from benchflow.rewards import (
     load_rubric,
     load_rubric_json,
     load_rubric_toml,
-)
-from benchflow.review import (
-    ReviewCriterion,
-    ReviewParams,
-    ReviewRubric,
-    ReviewRubricError,
-    load_review_rubric,
 )
 from benchflow.rollout import (
     BashToolResult,
