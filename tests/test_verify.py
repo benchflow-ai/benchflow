@@ -31,6 +31,10 @@ from benchflow.models import RunResult
             "verifier crashed: Failed to download verifier directory from sandbox",
             VERIFIER_INFRA,
         ),
+        (
+            "verifier crashed: Failed to get session command: ",
+            VERIFIER_INFRA,
+        ),
         ("verifier timed out after 900s", VERIFIER_TIMEOUT),
         ("verifier did something weird", "verifier_other"),
         # dep_install classification + stdout surfacing live in

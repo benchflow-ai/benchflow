@@ -120,6 +120,13 @@ class TestRetryConfig:
             "verifier crashed: Failed to download verifier directory from sandbox"
         )
 
+    def test_should_retry_verifier_daytona_session_command_failure(self):
+        """Guards the fix from PR #942 against verifier-session transport loss."""
+        cfg = RetryConfig()
+        assert cfg.should_retry_verifier_error(
+            "verifier crashed: Failed to get session command: "
+        )
+
     def test_should_not_retry_missing_reward_file(self):
         """Missing reward is a verifier contract failure, not transient infra."""
         cfg = RetryConfig()
