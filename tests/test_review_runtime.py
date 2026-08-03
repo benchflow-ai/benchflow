@@ -11,6 +11,7 @@ from typing import ClassVar
 
 import pytest
 
+from benchflow.acp.client import ACPError
 from benchflow.models import AgentInstallError
 from benchflow.review.runtime import (
     IsolatedReviewerRuntime,
@@ -20,7 +21,7 @@ from benchflow.review.runtime import (
     _safe_extract_regular_files,
     neutralize_structural_delimiters,
 )
-from benchflow.rollout._review import run_review_engine
+from benchflow.rollout._review import _prompt_with_transport_retries, run_review_engine
 
 
 class _FlakyReviewerInstall:
@@ -56,6 +57,44 @@ async def test_reviewer_install_retry_remains_bounded() -> None:
     with pytest.raises(AgentInstallError):
         await _install_reviewer_agent(rollout, retry_delays=(0.0, 0.0))
     assert rollout.attempts == 3
+
+
+class _FlakyReviewerPrompt:
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.attempts = 0
+        self.fresh_sessions = 0
+
+    async def prompt(self, _message: str) -> str:
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise ACPError(-32603, "Internal error")
+        return "scorable reply"
+
+    async def fresh_session(self) -> None:
+        self.fresh_sessions += 1
+
+
+@pytest.mark.asyncio
+async def test_reviewer_prompt_retries_transient_acp_failure() -> None:
+    """Guards PR #942 against one transient ACP prompt aborting review."""
+
+    runtime = _FlakyReviewerPrompt(failures=2)
+    reply = await _prompt_with_transport_retries(runtime, "review")  # type: ignore[arg-type]
+    assert reply == "scorable reply"
+    assert runtime.attempts == 3
+    assert runtime.fresh_sessions == 2
+
+
+@pytest.mark.asyncio
+async def test_reviewer_prompt_transport_retry_remains_bounded() -> None:
+    """Guards PR #942 against unbounded reviewer ACP prompt retries."""
+
+    runtime = _FlakyReviewerPrompt(failures=3)
+    with pytest.raises(ACPError):
+        await _prompt_with_transport_retries(runtime, "review")  # type: ignore[arg-type]
+    assert runtime.attempts == 3
+    assert runtime.fresh_sessions == 2
 
 
 def test_structural_delimiters_are_neutralized() -> None:

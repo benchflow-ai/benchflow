@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from benchflow.agents.errors import AgentProtocolError
 from benchflow.review.config import (
     REVIEW_RUBRIC_FILENAME,
     ReviewCriterion,
@@ -40,6 +41,7 @@ if TYPE_CHECKING:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 _MAX_PARSE_RETRIES = 2
+_MAX_TRANSPORT_RETRIES = 2
 
 
 def resolve_review_params(config_review: ReviewParams | None) -> ReviewParams:
@@ -274,7 +276,7 @@ async def _grade_batch(
     evidence_trace = ""
     for attempt in range(_MAX_PARSE_RETRIES + 1):
         message = prompt if attempt == 0 else render_retry_prompt(error or "")
-        turn = await runtime.prompt(message)
+        turn = await _prompt_with_transport_retries(runtime, message)
         evidence_trace += "\n" + turn.evidence_trace
         verdicts, error = parse_reviewer_message(
             turn.reply,
@@ -291,6 +293,28 @@ async def _grade_batch(
         )
         for criterion in batch
     ]
+
+
+async def _prompt_with_transport_retries(
+    runtime: IsolatedReviewerRuntime,
+    message: str,
+):
+    """Retry a reviewer prompt in a fresh session after transient ACP loss."""
+
+    for attempt in range(_MAX_TRANSPORT_RETRIES + 1):
+        try:
+            return await runtime.prompt(message)
+        except AgentProtocolError:
+            if attempt == _MAX_TRANSPORT_RETRIES:
+                raise
+            logger.warning(
+                "Reviewer ACP prompt failed on attempt %d/%d; retrying in a fresh session",
+                attempt + 1,
+                _MAX_TRANSPORT_RETRIES + 1,
+                exc_info=True,
+            )
+            await runtime.fresh_session()
+    raise AssertionError("unreachable")
 
 
 def _review_details(
