@@ -624,6 +624,13 @@ def eval_run(
             help="Reviewer mode: per_criterion or batched",
         ),
     ] = None,
+    reviewer_reasoning_effort: Annotated[
+        str | None,
+        typer.Option(
+            "--reviewer-reasoning-effort",
+            help="Reasoning/thinking effort for the rubric reviewer",
+        ),
+    ] = None,
 ) -> None:
     # The supported --sandbox values are rendered from the provider registry
     # into that option's own help text. This docstring used to hand-copy them
@@ -688,6 +695,7 @@ def eval_run(
         reviewer_model=reviewer_model,
         reviewer_timeout_sec=reviewer_timeout_sec,
         reviewer_mode=reviewer_mode,
+        reviewer_reasoning_effort=reviewer_reasoning_effort,
     )
     # --source-path/--source-ref only apply to --source-repo; otherwise they're
     # silently ignored (e.g. `--dataset X --source-ref abc` drops the ref).

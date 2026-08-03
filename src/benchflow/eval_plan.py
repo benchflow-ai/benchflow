@@ -136,6 +136,7 @@ class EvalCreateRequest:
     reviewer_model: str | None = None
     reviewer_timeout_sec: float | None = None
     reviewer_mode: str | None = None
+    reviewer_reasoning_effort: str | None = None
 
 
 @dataclass
@@ -507,6 +508,7 @@ def _build_review_params(request: EvalCreateRequest) -> ReviewParams | None:
         and request.reviewer_model is None
         and request.reviewer_timeout_sec is None
         and request.reviewer_mode is None
+        and request.reviewer_reasoning_effort is None
     ):
         return None
     if request.reviewer_harness is not None:
@@ -524,6 +526,7 @@ def _build_review_params(request: EvalCreateRequest) -> ReviewParams | None:
                 "model": request.reviewer_model,
                 "timeout_sec": request.reviewer_timeout_sec,
                 "mode": request.reviewer_mode,
+                "reasoning_effort": request.reviewer_reasoning_effort,
             }
         )
     except ValueError as exc:

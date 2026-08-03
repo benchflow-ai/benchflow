@@ -351,12 +351,14 @@ class IsolatedReviewerRuntime:
         model: str | None,
         timeout_sec: float,
         review_dir: Path,
+        reasoning_effort: str | None = None,
     ) -> None:
         self._solver = solver
         self.harness = harness
         self.model = model
         self.timeout_sec = timeout_sec
         self.review_dir = review_dir
+        self.reasoning_effort = reasoning_effort
         self._task_tmp: tempfile.TemporaryDirectory[str] | None = None
         self._rollout: Any = None
         self._tool_calls = 0
@@ -406,6 +408,18 @@ class IsolatedReviewerRuntime:
         from benchflow.rollout import Rollout, RolloutConfig
 
         task = self._build_task()
+        reviewer_agent_env = dict(self._solver._config.agent_env)
+        if self.reasoning_effort is not None:
+            # The solver and reviewer may use different providers with
+            # different maximum effort levels. Override both gateway aliases
+            # in the isolated reviewer config without routing the generic ACP
+            # effort knob through harnesses that do not expose one.
+            reviewer_agent_env.update(
+                {
+                    "BENCHFLOW_REASONING_EFFORT": self.reasoning_effort,
+                    "LLM_REASONING_EFFORT": self.reasoning_effort,
+                }
+            )
         config = RolloutConfig(
             task_path=task,
             environment=self._solver._config.environment,
@@ -416,7 +430,7 @@ class IsolatedReviewerRuntime:
             rollout_name="reviewer",
             agent=self.harness,
             model=self.model,
-            agent_env=self._solver._config.agent_env,
+            agent_env=reviewer_agent_env,
             timeout=int(self.timeout_sec),
             agent_idle_timeout=self._solver._config.agent_idle_timeout,
             usage_tracking=self._solver._config.usage_tracking,
@@ -527,6 +541,7 @@ class IsolatedReviewerRuntime:
         metadata = {
             "harness": self.harness,
             "model": self.model,
+            "reasoning_effort": self.reasoning_effort,
             "agent_name": self._rollout._agent_name,
             "n_events": len(self._rollout.trajectory),
             "n_tool_calls": self._tool_calls,

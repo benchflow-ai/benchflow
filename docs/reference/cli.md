@@ -286,6 +286,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--reviewer-model` | rubric / registry default | Model for the rubric reviewer |
 | `--reviewer-timeout-sec` | rubric / `1800` | Per-criterion reviewer timeout in seconds |
 | `--reviewer-mode` | rubric / `per_criterion` | Reviewer mode: `per_criterion` or `batched` |
+| `--reviewer-reasoning-effort` | provider default | Reasoning/thinking effort for the rubric reviewer |
 
 See [Architecture: skill loading](../architecture.md#skill-loading) for how
 `with-skill` mode is registered with each agent.

@@ -86,6 +86,9 @@ Reviewer precedence is CLI override, then `rubric.json`, then the harness's
 registry default for the model. A reviewer harness has no implicit default: it
 must be provided by the rubric or CLI. `--reviewer-timeout-sec` and
 `--reviewer-mode per_criterion|batched` override the other reviewer fields.
+`--reviewer-reasoning-effort` sets reviewer provider effort independently from
+the solver, so heterogeneous model pairs do not leak one model's effort into
+the other.
 
 - Omitted `--review`: run only when the task ships a review rubric.
 - `--review`: require a valid review rubric.

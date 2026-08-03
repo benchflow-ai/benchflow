@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from benchflow._utils.config import normalize_reasoning_effort
+
 REVIEW_RUBRIC_FILENAME = "rubric.json"
 REVIEW_SCHEMA_VERSION = "1.0"
 
@@ -113,6 +115,7 @@ class ReviewParams:
     model: str | None = None
     timeout_sec: float | None = None
     mode: ReviewMode | None = None
+    reasoning_effort: str | None = None
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -121,11 +124,19 @@ class ReviewParams:
             "model": self.model,
             "timeout_sec": self.timeout_sec,
             "mode": self.mode,
+            "reasoning_effort": self.reasoning_effort,
         }
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any]) -> ReviewParams:
-        allowed = {"enabled", "harness", "model", "timeout_sec", "mode"}
+        allowed = {
+            "enabled",
+            "harness",
+            "model",
+            "timeout_sec",
+            "mode",
+            "reasoning_effort",
+        }
         unknown = sorted(set(value) - allowed)
         if unknown:
             raise ValueError(f"review has unknown key(s): {unknown}")
@@ -145,6 +156,9 @@ class ReviewParams:
             model=value.get("model"),
             timeout_sec=timeout,
             mode=mode,
+            reasoning_effort=normalize_reasoning_effort(
+                value.get("reasoning_effort")
+            ),
         )
 
 

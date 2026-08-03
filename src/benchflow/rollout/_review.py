@@ -68,6 +68,7 @@ async def run_review_engine(rollout: Rollout) -> None:
     model: str | None = None
     mode: str | None = None
     timeout_sec: float | None = None
+    reasoning_effort: str | None = None
     reviewer_meta: dict[str, Any] = {}
     outcome = ReviewOutcome(
         status=STATUS_ERROR,
@@ -83,7 +84,13 @@ async def run_review_engine(rollout: Rollout) -> None:
                 f"exists under {verifier_dir}"
             )
         rubric = load_review_rubric(rubric_path)
-        harness, model, timeout_sec, mode = _resolve_reviewer(params, rubric)
+        (
+            harness,
+            model,
+            timeout_sec,
+            mode,
+            reasoning_effort,
+        ) = _resolve_reviewer(params, rubric)
         outcome, reviewer_meta = await _run_isolated_review(
             rollout,
             rubric,
@@ -92,6 +99,7 @@ async def run_review_engine(rollout: Rollout) -> None:
             model=model,
             timeout_sec=timeout_sec,
             mode=mode,
+            reasoning_effort=reasoning_effort,
             review_dir=review_dir,
         )
     except ReviewRubricError as exc:
@@ -151,7 +159,7 @@ async def run_review_engine(rollout: Rollout) -> None:
 def _resolve_reviewer(
     params: ReviewParams,
     rubric: ReviewRubric,
-) -> tuple[str, str | None, float, str]:
+) -> tuple[str, str | None, float, str, str | None]:
     """Resolve CLI overrides over rubric defaults; a harness is mandatory."""
 
     harness = params.harness or rubric.reviewer.harness
@@ -167,7 +175,7 @@ def _resolve_reviewer(
         model = effective_model(harness, None)
     timeout_sec = params.timeout_sec or rubric.reviewer.timeout_sec
     mode = params.mode or rubric.reviewer.mode
-    return harness, model, timeout_sec, mode
+    return harness, model, timeout_sec, mode, params.reasoning_effort
 
 
 def _integrity_criterion(token: str) -> ReviewCriterion:
@@ -191,6 +199,7 @@ async def _run_isolated_review(
     model: str | None,
     timeout_sec: float,
     mode: str,
+    reasoning_effort: str | None,
     review_dir: Path,
 ) -> tuple[ReviewOutcome, dict[str, Any]]:
     snapshot = await capture_evidence_snapshot(rollout)
@@ -200,6 +209,7 @@ async def _run_isolated_review(
         model=model,
         timeout_sec=timeout_sec,
         review_dir=review_dir,
+        reasoning_effort=reasoning_effort,
     )
     reviewer_meta: dict[str, Any] = {}
     try:

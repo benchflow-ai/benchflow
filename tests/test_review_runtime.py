@@ -260,12 +260,15 @@ async def test_runtime_creates_a_separate_no_network_non_root_rollout(
         model="gemini-2.5-flash",
         timeout_sec=300,
         review_dir=review_dir,
+        reasoning_effort="xhigh",
     )
     await runtime.start(snapshot, rubric)
     config = _LifecycleRollout.created_config
     assert config.sandbox_user == "reviewer"
     assert config.environment == "docker"
     assert config.review.enabled is False
+    assert config.agent_env["BENCHFLOW_REASONING_EFFORT"] == "xhigh"
+    assert config.agent_env["LLM_REASONING_EFFORT"] == "xhigh"
     task_text = (config.task_path / "task.md").read_text()
     assert "network_mode: no-network" in task_text
     assert "workdir: /review" in task_text

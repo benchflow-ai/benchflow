@@ -360,6 +360,7 @@ class TestReviewParamsThreading:
             model="gpt-5.2",
             timeout_sec=600,
             mode="batched",
+            reasoning_effort="xhigh",
         )
         assert ReviewParams.from_mapping(params.to_mapping()) == params
 
@@ -382,12 +383,14 @@ class TestReviewParamsThreading:
                 reviewer_harness="codex-acp",
                 reviewer_timeout_sec=300,
                 reviewer_mode="batched",
+                reviewer_reasoning_effort="xhigh",
             )
         )
         assert params is not None
         assert params.harness == "codex-acp"
         assert params.timeout_sec == 300
         assert params.mode == "batched"
+        assert params.reasoning_effort == "xhigh"
 
     def test_shard_payload_preserves_review(self) -> None:
         """Guards PR #942 remediation against dropping review in worker shards."""
