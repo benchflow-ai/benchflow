@@ -135,6 +135,7 @@ agent:
   timeout_sec: {agent_timeout}
 environment:
   docker_image: {image}
+  workdir: /app
   network_mode: public
   cpus: 1
   memory_mb: 2048
@@ -191,7 +192,7 @@ def assemble_review_task(
         template=template,
         trial_path=TRIAL_MOUNT,
         task_path=task_mount,
-        result_filename=REVIEW_RESULT_FILENAME,
+        result_path=f"/app/{REVIEW_RESULT_FILENAME}",
         output_schema=response_model.model_json_schema(),
     )
     frontmatter = _TASK_FRONTMATTER.format(

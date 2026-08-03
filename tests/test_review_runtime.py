@@ -159,7 +159,7 @@ class TestRunReviews:
         fake = FakeRun(review_payload=good_review())
         monkeypatch.setattr(benchflow, "run", fake)
 
-        report, report_path = await run_reviews(
+        _report, report_path = await run_reviews(
             tmp_path / "jobs",
             agent="gemini",
             model="gemini/test-model",

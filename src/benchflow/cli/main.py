@@ -1304,7 +1304,7 @@ def review_command(
     agent: Annotated[
         str,
         typer.Option("--agent", "-a", help="Reviewer agent harness"),
-    ] = "gemini",
+    ] = "opencode",
     model: Annotated[
         str | None,
         typer.Option("--model", "-m", help="Reviewer model (default: agent registry)"),

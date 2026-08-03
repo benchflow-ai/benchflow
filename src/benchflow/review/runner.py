@@ -363,6 +363,16 @@ async def run_reviews(
     template = prompt_path.read_text(encoding="utf-8") if prompt_path else None
     if rubric_path is not None:
         load_rubric(rubric_path)  # fail fast on a bad -r before any sandbox spend
+    if model is None:
+        from benchflow.evaluation import effective_model
+
+        model = effective_model(agent, None) or None
+        if model is None:
+            raise ReviewRunError(
+                f"agent {agent!r} has no registry default model; pass --model "
+                "(for opencode use models.dev provider/model ids, e.g. "
+                "'google/gemini-2.5-flash')"
+            )
 
     if out_dir is None:
         stamp = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")

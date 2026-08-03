@@ -12,7 +12,7 @@ Available placeholders:
 - ``{task_section}`` — pre-rendered paragraph describing the task-definition
   copy (or its absence).
 - ``{criteria_guidance}`` — one ``- name: guidance`` line per criterion.
-- ``{result_filename}`` / ``{output_schema}`` — output-contract details.
+- ``{result_path}`` / ``{output_schema}`` — output-contract details.
 - ``{trial_results}`` — job-summary template only; replaced verbatim.
 """
 
@@ -61,7 +61,7 @@ TASK_SECTION_MISSING = (
     "required from the run's own records and test output."
 )
 
-OUTPUT_TEMPLATE = """When you are done, write your answer as JSON to {result_filename} in your working directory. The file must contain a single object matching this schema exactly:
+OUTPUT_TEMPLATE = """When you are done, write your answer as JSON to {result_path}. The file must contain a single object matching this schema exactly:
 
 {output_schema}
 
@@ -89,7 +89,7 @@ def render_review_instruction(
     template: str | None = None,
     trial_path: str = TRIAL_MOUNT,
     task_path: str | None = TASK_MOUNT,
-    result_filename: str = "review-result.json",
+    result_path: str = "/app/review-result.json",
     output_schema: dict[str, Any] | None = None,
 ) -> str:
     """Render the full wrapper-task instruction body."""
@@ -105,7 +105,7 @@ def render_review_instruction(
     output = OUTPUT_TEMPLATE.format_map(
         defaultdict(
             str,
-            result_filename=result_filename,
+            result_path=result_path,
             output_schema=json.dumps(output_schema or {}, indent=2),
         )
     )

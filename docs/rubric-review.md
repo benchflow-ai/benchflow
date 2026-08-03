@@ -68,9 +68,10 @@ bench review jobs/<job> --failing -r spec-rubric.json
 
 `--passing` selects rollouts with reward 1.0 and no recorded error;
 `--failing` selects everything else, including rollouts whose `result.json`
-is unreadable. The reviewer agent (`--agent`, default `gemini`) and model
-(`--model`, default from the agent registry) are independent of whatever ran
-the original job.
+is unreadable. The reviewer agent (`--agent`, default `opencode`) and model (`--model`;
+agents without a registry default require one — opencode takes models.dev
+ids such as `google/gemini-2.5-flash`) are independent of whatever ran the
+original job.
 
 ## How a review executes
 
@@ -104,7 +105,7 @@ The review job directory contains `review_report.json`:
 {
   "path": "…/jobs/2026-08-03__12-00-00",
   "rubric": {"path": "…", "criteria": ["…"]},
-  "reviewer": {"agent": "gemini", "model": null, "environment": "docker"},
+  "reviewer": {"agent": "opencode", "model": "google/gemini-2.5-flash", "environment": "docker"},
   "job_summary": "Prose synthesis across runs (multi-rollout jobs only).",
   "trials": [
     {

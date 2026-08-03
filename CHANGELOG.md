@@ -17,7 +17,8 @@
   or `result.json`. Rubric resolution: `-r` > the task's own
   `verifier/rubric.json` > a built-in default (`reward_hacking`,
   `task_specification`). `--passing` / `--failing` filter the rollouts under
-  review; a job-level prose summary aggregates multi-rollout runs.
+  review; a job-level prose summary aggregates multi-rollout runs. The
+  default reviewer harness is `opencode` (pinned to the latest release).
 - **`RolloutConfig.uploads`.** Generic post-start host→sandbox uploads
   (directory or file → absolute sandbox path), used by rubric review to
   deliver evidence into prebuilt-image sandboxes and available to any caller
