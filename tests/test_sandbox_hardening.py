@@ -234,6 +234,40 @@ class TestVerifierDirWipe:
         assert match.kwargs.get("user") == "root"
 
     @pytest.mark.asyncio
+    async def test_pr_942_tree_hardening_uses_shared_setup_budget(self):
+        """Guards PR #942 against Daytona tree cleanup using the 10s exec default."""
+        from benchflow.sandbox.lockdown import (
+            VERIFIER_SETUP_TIMEOUT_SEC,
+            harden_before_verify,
+        )
+
+        env = _make_env()
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, workspace="/app"
+        )
+
+        assert VERIFIER_SETUP_TIMEOUT_SEC >= 180
+        tree_calls = [
+            call
+            for call in env.exec.call_args_list
+            if any(
+                marker in call.args[0]
+                for marker in (
+                    "find /logs/verifier -mindepth 1",
+                    "root.rglob",
+                    "__pycache__",
+                    "chown -R root:root /app",
+                    "conftest.py",
+                )
+            )
+        ]
+        assert len(tree_calls) >= 5
+        assert all(
+            call.kwargs.get("timeout_sec") == VERIFIER_SETUP_TIMEOUT_SEC
+            for call in tree_calls
+        )
+
+    @pytest.mark.asyncio
     async def test_wipe_failure_is_not_ignored(self):
         """Verifier setup must not continue with stale reward outputs after wipe failure."""
         from benchflow.sandbox.lockdown import harden_before_verify

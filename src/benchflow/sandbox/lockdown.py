@@ -827,7 +827,7 @@ async def _checked_exec(env: Any, command: str, label: str, **kwargs: Any) -> An
 # setup from false-erroring the verifier. Owned here so every call site — the
 # scoring path (harden_before_verify) and the soft-verify path (rollout, via
 # cleanup_verifier_python_hooks) — shares one value rather than scattering it.
-VERIFIER_SETUP_TIMEOUT_SEC = 60
+VERIFIER_SETUP_TIMEOUT_SEC = 180
 
 
 async def clear_verifier_output_dir(
@@ -1104,9 +1104,21 @@ async def _freeze_workspace(env, workspace: str) -> None:
     chown workspace to root is belt-and-suspenders against any zombie
     sandbox-user process that survived the pkill above.
     """
-    await env.exec(_purge_external_symlinks_cmd(workspace), user="root")
-    await env.exec(_purge_pycache_cmd(workspace), user="root")
-    await env.exec(f"chown -R root:root {shlex.quote(workspace)}", user="root")
+    await env.exec(
+        _purge_external_symlinks_cmd(workspace),
+        user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+    )
+    await env.exec(
+        _purge_pycache_cmd(workspace),
+        user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+    )
+    await env.exec(
+        f"chown -R root:root {shlex.quote(workspace)}",
+        user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+    )
 
 
 async def _build_verifier_env(
@@ -1192,12 +1204,14 @@ async def harden_before_verify(
         _CLEAR_VERIFIER_DIR_CMD,
         "Verifier hardening failed: clearing verifier output directory",
         user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
     await _checked_exec(
         env,
         _ENSURE_APP_DIR_CMD,
         "Verifier hardening failed: preparing /app",
         user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
     # 3. Reclaim re-downloadable cache space before the verifier installs deps.
     await _reclaim_disk(env, workspace)
