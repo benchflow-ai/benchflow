@@ -156,9 +156,7 @@ class ReviewParams:
             model=value.get("model"),
             timeout_sec=timeout,
             mode=mode,
-            reasoning_effort=normalize_reasoning_effort(
-                value.get("reasoning_effort")
-            ),
+            reasoning_effort=normalize_reasoning_effort(value.get("reasoning_effort")),
         )
 
 
