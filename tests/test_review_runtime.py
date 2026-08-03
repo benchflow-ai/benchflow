@@ -83,6 +83,10 @@ class FakeRun:
 
     async def __call__(self, config: RolloutConfig):
         self.configs.append(config)
+        self.task_docs = getattr(self, "task_docs", [])
+        self.task_docs.append(
+            (config.task_path / "task.md").read_text(encoding="utf-8")
+        )
         runtime = Path(config.jobs_dir) / "job" / "wrapper__0000"
         (runtime / "verifier").mkdir(parents=True)
         # A rollout leaf is identified by its config.json, exactly as the
@@ -201,9 +205,10 @@ class TestRunReviews:
         assert config.agent == "gemini"
         assert config.model == "gemini/test-model"
         assert config.environment == "daytona"
-        # Caller env plus the egress-lockdown flag the runner always sets so
-        # the sandbox firewall scopes the reviewer to the model gateway.
-        assert config.agent_env == {"X": "1", "BENCHFLOW_DISALLOW_WEB_TOOLS": "1"}
+        assert config.agent_env == {"X": "1"}
+        # The wrapper task itself declares no-internet, engaging the no-web
+        # pipeline (web policy, sandbox-local proxy, egress firewall).
+        assert "allow_internet: false" in fake.task_docs[0]
         assert set(config.uploads.values()) == {"/evidence/trial", "/evidence/task"}
         # The wrapper was assembled with no Dockerfile (prebuilt image only).
         # It is deleted after the run, so assert via the recorded task path

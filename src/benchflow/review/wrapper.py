@@ -8,7 +8,9 @@ synthetic task built here on the host:
 - the rollout evidence and, when available, the original task definition are
   uploaded after start (``RolloutConfig.uploads``) to ``/evidence`` — outside
   the agent workdir, so the sandbox-user chown never touches them and they
-  stay root-owned and unwritable by the reviewer;
+  stay root-owned and unwritable by the reviewer (the wrapper declares
+  ``allow_internet: false``, which engages the sandbox-local model proxy,
+  the agent-UID egress firewall, and the no-web agent policy end to end);
 - the instruction body is the rendered review prompt plus the structured
   output contract;
 - ``tests/`` holds a stdlib-only validator plus the criterion-name list, so
@@ -19,9 +21,7 @@ The rubric file itself never enters the sandbox.  Only its derivatives do:
 guidance lines inside the instruction, criterion names inside the output
 schema, and the same names inside ``tests/criteria.json``.  Task evidence is
 sanitized: skills and any shipped ``rubric.json`` are excluded, and symlinks
-anywhere in the evidence are dropped rather than dereferenced.  The reviewer
-runs with ``BENCHFLOW_DISALLOW_WEB_TOOLS=1`` so the sandbox egress lockdown
-confines its network to the model gateway on backends that enforce it.
+anywhere in the evidence are dropped rather than dereferenced.
 """
 
 from __future__ import annotations
@@ -148,13 +148,21 @@ agent:
   timeout_sec: {agent_timeout}
 environment:
   docker_image: {image}
-  workdir: /app
+  workdir: /app{network_line}
   cpus: 1
   memory_mb: 2048
   storage_mb: 4096
 ---
 
 """
+
+#: Default network posture: the wrapper declares no-internet, which engages
+#: the no-web pipeline (web tools disabled, sandbox-local model proxy,
+#: agent-UID egress firewall) and makes backends that cannot enforce network
+#: isolation fail closed at launch. ``open_network=True`` is an explicit
+#: operator override for those backends; the report records it.
+_NETWORK_LINE_ISOLATED = "\n  allow_internet: false"
+_NETWORK_LINE_OPEN = ""
 
 
 def _evidence_ignore(extra_excludes: tuple[str, ...]):
@@ -203,6 +211,8 @@ def assemble_review_task(
     template: str | None = None,
     image: str = REVIEWER_IMAGE,
     agent_timeout_sec: int = REVIEWER_AGENT_TIMEOUT_SEC,
+    open_network: bool = False,
+    net_admin_overlay: bool = False,
 ) -> tuple[Path, dict[str, str]]:
     """Assemble one wrapper task under ``dest``.
 
@@ -240,8 +250,21 @@ def assemble_review_task(
         verifier_timeout=float(REVIEWER_VERIFIER_TIMEOUT_SEC),
         agent_timeout=float(agent_timeout_sec),
         image=image,
+        network_line=_NETWORK_LINE_OPEN if open_network else _NETWORK_LINE_ISOLATED,
     )
     (dest / "task.md").write_text(frontmatter + instruction, encoding="utf-8")
+
+    if net_admin_overlay:
+        # Docker only: the agent-UID egress firewall programs iptables inside
+        # the container, which needs NET_ADMIN. The docker backend stacks
+        # this overlay on top of its generated compose files; other backends
+        # must not receive it (a task compose file changes their strategy).
+        environment_dir = dest / "environment"
+        environment_dir.mkdir()
+        (environment_dir / "docker-compose.yaml").write_text(
+            "services:\n  main:\n    cap_add:\n      - NET_ADMIN\n",
+            encoding="utf-8",
+        )
 
     tests_dir = dest / "tests"
     tests_dir.mkdir()

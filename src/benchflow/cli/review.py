@@ -140,6 +140,18 @@ def _review_command(
         str,
         typer.Option("--image", help="Prebuilt sandbox image for reviewer rollouts"),
     ] = "python:3.13-slim",
+    allow_open_network: Annotated[
+        bool,
+        typer.Option(
+            "--allow-open-network",
+            help=(
+                "Run reviewers WITHOUT the no-internet declaration. Required "
+                "on backends that cannot enforce network isolation (e.g. "
+                "agentcore) — reviews there fail closed by default. The "
+                "report records the relaxed posture."
+            ),
+        ),
+    ] = False,
     out_dir: Annotated[
         Path | None,
         typer.Option(
@@ -158,6 +170,11 @@ def _review_command(
     """
     from benchflow.review import run_reviews
 
+    if allow_open_network:
+        console.print(
+            "[yellow]Warning: reviewers will run without network isolation "
+            "(--allow-open-network).[/yellow]"
+        )
     if passing and failing:
         console.print("[red]Use either --passing or --failing, not both.[/red]")
         raise typer.Exit(1)
@@ -178,6 +195,7 @@ def _review_command(
                 concurrency=concurrency,
                 timeout_sec=timeout_sec,
                 image=image,
+                open_network=allow_open_network,
                 filter_passing=filter_passing,
                 out_dir=out_dir,
             )

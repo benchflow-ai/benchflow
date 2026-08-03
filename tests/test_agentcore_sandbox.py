@@ -232,7 +232,6 @@ class TestSessionWarmup:
         assert mock_exec.call_count == 1
 
 
-
 def _seeded_seal_keypair(sandbox):
     """Give the sandbox a real public key and return the private half."""
     from cryptography.hazmat.primitives import serialization
@@ -319,9 +318,11 @@ class TestFileTransfer:
             assert command.startswith("mkdir -p "), command
             return MagicMock(return_code=0, stdout="", stderr="")
 
-        with patch.object(sandbox, "exec", side_effect=_exec):
-            with patch.object(sandbox, "_upload_sealed", side_effect=_capture):
-                await sandbox.upload_dir(source, "/workspace")
+        with (
+            patch.object(sandbox, "exec", side_effect=_exec),
+            patch.object(sandbox, "_upload_sealed", side_effect=_capture),
+        ):
+            await sandbox.upload_dir(source, "/workspace")
 
         # The archive is inspected pre-seal: link exclusion happens while the
         # tar is built; sealed-command confidentiality is covered separately
@@ -378,7 +379,11 @@ class TestFileTransfer:
         with patch.object(sandbox, "exec", side_effect=_record):
             assert await sandbox.write_text_file("/tmp/big", "x" * 200_000)
 
-        staging = [c for c in commands if ">> /tmp/.bf_sealed/" in c or "> /tmp/.bf_sealed/s_" in c]
+        staging = [
+            c
+            for c in commands
+            if ">> /tmp/.bf_sealed/" in c or "> /tmp/.bf_sealed/s_" in c
+        ]
         assert len(staging) > 1  # genuinely chunked
         for command in commands:
             assert len(command) < _MAX_INLINE_UPLOAD_BYTES + 4096

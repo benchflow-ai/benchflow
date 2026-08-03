@@ -17,7 +17,7 @@ an llm-judge is part of a task's verifier and *produces* the reward, while
 rubric review is downstream quality assurance *about* finished runs — is the
 task well specified, did the agent game the grader, was the method sound.
 
-## The rubric
+## The rubric (contract v0.1)
 
 A rubric is a JSON file with one list:
 
@@ -44,8 +44,13 @@ Each criterion is exactly three strings:
 There are no weights, gates, thresholds, or aggregate scores. Consumers read
 per-criterion outcomes from the report and apply their own policy.
 
+The contract is named **v0.1**; the document itself carries no version key
+— a rubric is exactly its `criteria` list.
+
 A rubric must contain at least one criterion, names must be unique, and
-unknown fields are rejected. `rubric.json` is an overloaded filename —
+unknown fields are rejected. (Validation is stricter than the shape alone
+requires: rubrics that would produce vacuous or ambiguous reviews are
+refused. Every rubric that passes is exactly the v0.1 shape.) `rubric.json` is an overloaded filename —
 llm-judge verifier rubrics use `{id, match_criteria}` entries — so a file
 only counts as a review rubric when every criteria entry carries exactly
 these three keys; judge rubrics are never claimed or misvalidated.
@@ -99,10 +104,13 @@ the host, which is why every sandbox backend (`docker`, `daytona`,
   evidence are dropped, never dereferenced; task skills and any shipped
   `rubric.json` are excluded from the task copy. The reviewed rollout
   itself is never touched.
-- **Gateway-scoped egress.** Reviewer rollouts run with
-  `BENCHFLOW_DISALLOW_WEB_TOOLS=1`, so the sandbox egress lockdown confines
-  the reviewer's network to the model gateway on backends that enforce the
-  owner-matched firewall.
+- **No-internet by default, fail closed.** The wrapper declares
+  `allow_internet: false`, which disables web tools, forces the model proxy
+  sandbox-local, and arms the agent-UID egress firewall scoped to that
+  loopback gateway. Backends that cannot enforce network isolation (for
+  example `agentcore`, whose runtime only offers PUBLIC/VPC networking)
+  refuse the review at launch; `--allow-open-network` is the explicit,
+  report-recorded operator override for them.
 - **The rubric never enters the sandbox.** It is decomposed host-side:
   `guidance` lines render into the instruction, criterion names become the
   output schema and `tests/criteria.json`. `description` goes nowhere.

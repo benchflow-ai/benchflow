@@ -99,6 +99,41 @@ class TestTaskEvidenceSanitization:
         assert not list(task_copy.rglob("rubric.json"))
 
 
+class TestNetworkPosture:
+    def test_default_wrapper_declares_no_internet(self, tmp_path):
+        rollout = make_rollout(tmp_path)
+        dest, _ = assemble_review_task(rollout, None, RUBRIC, tmp_path / "w")
+        task_md = (dest / "task.md").read_text(encoding="utf-8")
+        assert "allow_internet: false" in task_md
+
+    def test_docker_isolation_ships_net_admin_overlay(self, tmp_path):
+        """The docker egress firewall programs iptables in-container and
+        needs NET_ADMIN; the overlay is docker-only."""
+        rollout = make_rollout(tmp_path)
+        dest, _ = assemble_review_task(
+            rollout, None, RUBRIC, tmp_path / "w", net_admin_overlay=True
+        )
+        overlay = (dest / "environment" / "docker-compose.yaml").read_text(
+            encoding="utf-8"
+        )
+        assert "NET_ADMIN" in overlay
+
+    def test_non_docker_wrapper_has_no_compose_file(self, tmp_path):
+        """A task compose file flips other backends into compose strategies;
+        the overlay must never ship unless requested."""
+        rollout = make_rollout(tmp_path)
+        dest, _ = assemble_review_task(rollout, None, RUBRIC, tmp_path / "w")
+        assert not (dest / "environment").exists()
+
+    def test_open_network_is_explicit_opt_in(self, tmp_path):
+        rollout = make_rollout(tmp_path)
+        dest, _ = assemble_review_task(
+            rollout, None, RUBRIC, tmp_path / "w", open_network=True
+        )
+        task_md = (dest / "task.md").read_text(encoding="utf-8")
+        assert "allow_internet" not in task_md
+
+
 class TestRubricDialectDiscrimination:
     def test_judge_rubric_is_not_claimed(self, tmp_path):
         """llm-judge rubrics ({id, match_criteria}) share the filename and

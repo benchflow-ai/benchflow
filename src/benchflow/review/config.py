@@ -1,4 +1,4 @@
-"""Rubric schema and loading for post-run rubric review.
+"""Rubric schema and loading for post-run rubric review (contract v0.1).
 
 A review rubric is a small JSON document listing the criteria a reviewer
 agent grades a finished rollout against:
@@ -30,6 +30,10 @@ The reviewer answers every criterion with an ``outcome`` of ``pass``,
 no scoring layer on top: no weights, no thresholds, no aggregation into a
 single number.  Consumers read per-criterion outcomes from the review
 report.
+
+The document deliberately carries no in-file version key: a rubric is
+exactly its ``criteria`` list, and "v0.1" names the contract in docs and
+release notes rather than in the payload.
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ from pydantic import (
     field_validator,
 )
 
+REVIEW_RUBRIC_CONTRACT = "v0.1"
 REVIEW_RUBRIC_FILENAME = "rubric.json"
 REVIEW_RESULT_FILENAME = "review-result.json"
 

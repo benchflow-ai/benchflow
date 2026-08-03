@@ -82,6 +82,7 @@ class ReviewReport:
     agent: str
     model: str | None
     environment: str
+    network: str = "no-internet"
     job_summary: str | None = None
     trials: list[TrialReview] = field(default_factory=list)
 
@@ -93,6 +94,7 @@ class ReviewReport:
                 "agent": self.agent,
                 "model": self.model,
                 "environment": self.environment,
+                "network": self.network,
             },
             "job_summary": self.job_summary,
             "trials": [
@@ -256,6 +258,7 @@ async def _review_one(
     agent_env: dict[str, str],
     timeout_sec: int,
     image: str,
+    open_network: bool,
     out_dir: Path,
     workdir: Path,
 ) -> TrialReview:
@@ -288,17 +291,18 @@ async def _review_one(
             template=template,
             image=image,
             agent_timeout_sec=timeout_sec,
+            open_network=open_network,
+            net_admin_overlay=(environment == "docker" and not open_network),
         )
-        reviewer_env = dict(agent_env)
-        # Scope reviewer egress to the model gateway wherever the sandbox
-        # lockdown can enforce it (owner-matched firewall keyed off this
-        # flag); harmless where it cannot.
-        reviewer_env.setdefault("BENCHFLOW_DISALLOW_WEB_TOOLS", "1")
+        # The wrapper task declares allow_internet: false, which engages the
+        # no-web pipeline end to end: web tools disabled, the model proxy
+        # forced sandbox-local, and the agent-UID egress firewall scoped to
+        # that loopback gateway.
         config = RolloutConfig(
             task_path=wrapper_dir,
             agent=agent,
             model=model,
-            agent_env=reviewer_env,
+            agent_env=dict(agent_env),
             environment=environment,
             jobs_dir=runtime_dir,
             timeout=timeout_sec,
@@ -388,6 +392,7 @@ async def run_reviews(
     concurrency: int = 4,
     timeout_sec: int = REVIEWER_AGENT_TIMEOUT_SEC,
     image: str = REVIEWER_IMAGE,
+    open_network: bool = False,
     filter_passing: bool | None = None,
     out_dir: Path | None = None,
 ) -> tuple[ReviewReport, Path]:
@@ -435,6 +440,7 @@ async def run_reviews(
                 agent_env=agent_env or {},
                 timeout_sec=timeout_sec,
                 image=image,
+                open_network=open_network,
                 out_dir=out_dir,
                 workdir=workdir,
             )
@@ -461,6 +467,9 @@ async def run_reviews(
         agent=agent,
         model=model,
         environment=environment,
+        network="open (explicit --allow-open-network)"
+        if open_network
+        else "no-internet",
         trials=trials,
     )
     report.job_summary = _summarize_job(trials)

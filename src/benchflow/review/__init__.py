@@ -1,7 +1,7 @@
 """Rubric review — detached agentic grading of finished rollouts.
 
-A rubric is a JSON list of criteria (``name`` / ``description`` /
-``guidance``); a reviewer agent reads a finished rollout's records inside its
+A rubric (contract **v0.1**) is a JSON list of criteria (``name`` /
+``description`` / ``guidance``); a reviewer agent reads a finished rollout's records inside its
 own sandbox and answers each criterion with ``pass`` / ``fail`` /
 ``not_applicable`` plus an explanation.
 
@@ -23,6 +23,7 @@ Public surface:
 from benchflow.review.config import (
     DEFAULT_RUBRIC_PATH,
     REVIEW_RESULT_FILENAME,
+    REVIEW_RUBRIC_CONTRACT,
     REVIEW_RUBRIC_FILENAME,
     CriterionCheck,
     ReviewOutcomeValue,
@@ -46,6 +47,7 @@ from benchflow.review.wrapper import assemble_review_task
 
 __all__ = [
     "DEFAULT_RUBRIC_PATH",
+    "REVIEW_RUBRIC_CONTRACT",
     "REVIEW_REPORT_FILENAME",
     "REVIEW_RESULT_FILENAME",
     "REVIEW_RUBRIC_FILENAME",

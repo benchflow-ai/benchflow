@@ -4,9 +4,11 @@
 
 ### Added
 - **Rubric review (`bench review`).** Detached agentic grading of finished
-  rollouts against a `rubric.json` — a flat list of criteria, each carrying a
-  `name` (structured-output field), a `description` (author documentation,
-  never shown to the reviewer), and `guidance` (the grading contract). One
+  rollouts against a `rubric.json` — rubric contract **v0.1**: a flat list of
+  criteria, each carrying a `name` (structured-output field), a
+  `description` (author documentation, never shown to the reviewer), and
+  `guidance` (the grading contract). The document carries no in-file
+  version key. One
   reviewer agent per rollout runs as an ordinary rollout of a throwaway
   wrapper task on a pinned prebuilt image (no Dockerfile, no image build on
   any sandbox backend), reads a read-only evidence copy of the rollout and
