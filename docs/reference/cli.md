@@ -316,10 +316,13 @@ read-only copy, and results land in `review_report.json`. Reviewed rollouts'
 rewards and `result.json` are never modified.
 
 ```bash
-bench review jobs/2026-08-03__12-00-00 --sandbox docker
+bench review jobs/2026-08-03__12-00-00 --sandbox docker -m gemini/gemini-2.5-flash
 bench review jobs/<job>/<rollout> -r my-rubric.json --agent gemini
-bench review jobs/<job> --passing --sandbox daytona -n 8
+bench review jobs/<job> --passing --sandbox daytona -n 8 -m gemini/gemini-2.5-flash
 ```
+
+The default `opencode` reviewer has no registry default model, so `-m` is
+required with it (a run without one exits with an actionable error).
 
 | Flag | Default | Description |
 |---|---|---|
@@ -333,12 +336,13 @@ bench review jobs/<job> --passing --sandbox daytona -n 8
 | `--failing` | `false` | Only review failing rollouts |
 | `--timeout-sec` | `1800` | Reviewer agent timeout per rollout |
 | `--agent-env` | — | `KEY=VALUE` for the reviewer (repeatable) |
-| `--image` | `python:3.13-slim` | Prebuilt sandbox image for reviewer rollouts |
+| `--image` | digest-pinned `python` slim | Prebuilt sandbox image for reviewer rollouts (default is pinned by digest; a tag override is mutable) |
 | `--tasks-root` | — | Trusted directory holding reviewed tasks; required to include task definitions in evidence (a rollout-recorded path is untrusted and never read directly) |
 | `--allow-open-network` | `false` | Run reviewers without the no-internet declaration (required on backends that cannot enforce isolation, e.g. agentcore; recorded in the report) |
 | `--out-dir`, `-o` | `jobs/review-<ts>` | Review output directory |
 
-A rubric is a JSON list of criteria; each criterion is three strings —
+A rubric is a JSON object with one `criteria` list; each criterion is three
+strings —
 `name` (identifier; becomes a structured-output field), `description`
 (author-facing documentation, never shown to the reviewer), and `guidance`
 (the grading contract the reviewer follows). The reviewer answers each

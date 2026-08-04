@@ -204,7 +204,9 @@ class ModalSandbox(BaseSandbox):
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
-    async def upload_file(self, source_path: Path | str, target_path: str) -> None:
+    async def upload_file(
+        self, source_path: Path | str, target_path: str, *, mode: str | None = None
+    ) -> None:
         if not self._sandbox:
             raise RuntimeError("Sandbox not found. Please start the environment first.")
 
@@ -215,6 +217,7 @@ class ModalSandbox(BaseSandbox):
                     if not chunk:
                         break
                     await file_handle.write.aio(chunk)
+        await self._apply_upload_mode(target_path, mode)
 
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"

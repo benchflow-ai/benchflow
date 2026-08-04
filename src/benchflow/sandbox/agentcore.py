@@ -697,10 +697,18 @@ class AgentCoreSandbox(BaseSandbox):
             # runtime's CloudWatch log group. Stage the environment through
             # the sealed (ciphertext-only) channel and source it instead, so
             # the logged text holds only a file path.
-            env_path = await self._sealed.stage_env(merged_env)
+            resolved_owner = self._resolve_user(user)
+            env_path = await self._sealed.stage_env(
+                merged_env,
+                owner=str(resolved_owner) if resolved_owner is not None else None,
+            )
+            quoted_env = shlex.quote(env_path)
+            # `.` failing must abort (exit 97) rather than silently running
+            # the command with an empty environment; the trap still removes
+            # the staged file on every path.
             wrapped = (
-                f"set -a; . {shlex.quote(env_path)}; set +a; "
-                f"rm -f {shlex.quote(env_path)}; {wrapped}"
+                f"trap 'rm -f {quoted_env}' EXIT; "
+                f"set -a; . {quoted_env} || exit 97; set +a; {wrapped}"
             )
         if cwd:
             wrapped = f"cd {shlex.quote(cwd)} && {wrapped}"
@@ -871,6 +879,10 @@ class AgentCoreSandbox(BaseSandbox):
         )
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
+        # NOT sealed: the file body returns as base64 through command
+        # OUTPUT, which the platform records like command text. Downloads
+        # must therefore only carry non-secret run artifacts (verifier
+        # logs, review results) — never credentials.
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         result = await self.exec(f"base64 {shlex.quote(source_path)}", timeout_sec=300)

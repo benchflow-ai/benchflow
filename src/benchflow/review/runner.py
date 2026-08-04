@@ -335,8 +335,12 @@ async def _review_one(
     if task_dir is not None:
         mismatch = _task_digest_mismatch(rollout_dir, task_dir)
         if mismatch:
-            trial.notes.append(mismatch)
+            # Enforced, not merely noted: reviewing an old rollout against
+            # changed task content silently misattributes findings, so the
+            # mismatched task is dropped from evidence entirely.
+            trial.notes.append(mismatch + " — task evidence excluded")
             logger.warning("%s: %s", rollout_dir.name, mismatch)
+            task_dir = None
     try:
         rubric, resolved_rubric = _resolve_rubric(rubric_path, task_dir)
     except ReviewRubricError as exc:

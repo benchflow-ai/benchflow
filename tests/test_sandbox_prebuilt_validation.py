@@ -63,3 +63,41 @@ class TestDaytonaPrebuiltValidation:
         sandbox._compose_mode = True
         with pytest.raises(FileNotFoundError):
             sandbox._validate_definition()
+
+
+class TestUploadFileProtocolConformance:
+    """Every backend must accept upload_file(..., mode=...).
+
+    Guards the round-3 PR #942 finding: LiteLLM always passes mode="600",
+    and ModalSandbox still had the old signature, so every Modal run died
+    with TypeError. A backend list that drifts from the protocol is caught
+    here by signature inspection instead of at runtime.
+    """
+
+    def test_every_backend_accepts_mode(self):
+        import inspect
+
+        from benchflow.sandbox._base import BaseSandbox
+
+        def walk(cls):
+            for sub in cls.__subclasses__():
+                yield sub
+                yield from walk(sub)
+
+        import benchflow.sandbox.agentcore
+        import benchflow.sandbox.apple_container
+        import benchflow.sandbox.daytona
+        import benchflow.sandbox.docker
+        import benchflow.sandbox.modal_impl  # noqa: F401
+
+        checked = 0
+        for cls in walk(BaseSandbox):
+            fn = cls.__dict__.get("upload_file")
+            if fn is None:
+                continue
+            parameters = inspect.signature(fn).parameters
+            assert "mode" in parameters, (
+                f"{cls.__name__}.upload_file must accept mode= (protocol)"
+            )
+            checked += 1
+        assert checked >= 4  # docker, daytona, agentcore, apple, modal

@@ -27,13 +27,17 @@
   egress is gateway-scoped via the sandbox lockdown flag, artifact
   consumption is pinned to each invocation's unique runtime leaf, and the
   job summary is a deterministic aggregation.
-- **Sealed AgentCore uploads.** Every AgentCore file transfer is now
-  encrypted end-to-end: the sandbox generates a keypair, only the public
-  key appears in command output, payloads travel as AES-256-CTR ciphertext
-  with an RSA-OAEP-wrapped key, and the decrypted key never appears in
-  command text. Fixes provider credentials from `launch_config.json`
-  being recoverable from the runtime's CloudWatch command log; the
-  generated wrapper image installs `openssl` when missing.
+- **Sealed AgentCore uploads.** Every AgentCore **upload and staged
+  environment** is now encrypted end-to-end: the sandbox generates a
+  keypair, only the public key appears in command output, payloads travel
+  as AES-256-CTR ciphertext with an HMAC-SHA256 tag over IV and
+  ciphertext (verified before decryption), and the decrypted key never
+  appears in command text. Fixes provider credentials from
+  `launch_config.json` and command environments being recoverable from
+  the runtime's CloudWatch command log; the generated wrapper image
+  installs `openssl` when missing. Downloads are not sealed: they return
+  file contents as base64 through command output, so they must only carry
+  non-secret run artifacts.
 - **`RolloutConfig.uploads`.** Generic post-start host→sandbox uploads
   (directory or file → absolute sandbox path), used by rubric review to
   deliver evidence into prebuilt-image sandboxes and available to any caller

@@ -150,8 +150,9 @@ class TestExecSemantics:
             assert "hunter2" not in command
             assert "SECRET_TOKEN" not in command
             assert base64.b64encode(b"hunter2").decode() not in command
-        # The final command sources the staged env file by path only.
-        assert any("/tmp/.bf_sealed/env_" in c for c in bodies)
+        # The final command sources the staged env file by path only
+        # (outside the root-only seal dir so non-root users can read it).
+        assert any("/tmp/.bf_env_" in c for c in bodies)
 
     @pytest.mark.asyncio
     async def test_non_main_service_is_rejected(self, sandbox):

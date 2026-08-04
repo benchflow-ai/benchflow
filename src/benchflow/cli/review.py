@@ -128,9 +128,9 @@ def _review_command(
         typer.Option("--agent-env", help="KEY=VALUE for the reviewer (repeatable)"),
     ] = None,
     image: Annotated[
-        str,
+        str | None,
         typer.Option("--image", help="Prebuilt sandbox image for reviewer rollouts"),
-    ] = "python:3.13-slim",
+    ] = None,
     tasks_root: Annotated[
         Path | None,
         typer.Option(
@@ -172,6 +172,7 @@ def _review_command(
     rollouts' rewards and ``result.json`` are never modified.
     """
     from benchflow.review import run_reviews
+    from benchflow.review.wrapper import REVIEWER_IMAGE
 
     if allow_open_network:
         console.print(
@@ -197,7 +198,7 @@ def _review_command(
                 agent_env=_parse_agent_env(agent_env),
                 concurrency=concurrency,
                 timeout_sec=timeout_sec,
-                image=image,
+                image=image if image is not None else REVIEWER_IMAGE,
                 open_network=allow_open_network,
                 tasks_root=tasks_root,
                 filter_passing=filter_passing,

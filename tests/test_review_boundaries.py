@@ -157,6 +157,57 @@ class TestUntrustedTaskPath:
         assert reason is None
 
 
+class TestDigestEnforcement:
+    @pytest.mark.asyncio
+    async def test_mismatched_task_evidence_is_excluded(self, tmp_path, monkeypatch):
+        """A digest mismatch drops the task from evidence, not just notes it.
+
+        Guards the round-3 PR #942 finding: an old rollout must not be
+        reviewed against silently changed task content.
+        """
+        import benchflow.review.runner as runner_mod
+
+        root = tmp_path / "tasks"
+        task = root / "t1"
+        (task / "verifier").mkdir(parents=True)
+        (task / "task.md").write_text("body", encoding="utf-8")
+        rollout = make_rollout(tmp_path / "jobs")
+        (rollout / "config.json").write_text(
+            json.dumps({"task_path": "/x/t1"}), encoding="utf-8"
+        )
+        (rollout / "result.json").write_text(
+            json.dumps({"rewards": {"reward": 0.0}, "task_digest": "sha256:recorded"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "benchflow._utils.task_authoring.task_digest",
+            lambda _p: "sha256:actual-differs",
+        )
+        uploads_seen: list[dict] = []
+
+        async def fake_run(config: RolloutConfig):
+            uploads_seen.append(dict(config.uploads or {}))
+            leaf = Path(config.jobs_dir) / "job" / "w__0000"
+            (leaf / "verifier").mkdir(parents=True)
+            (leaf / "config.json").write_text("{}", encoding="utf-8")
+            (leaf / "result.json").write_text(
+                json.dumps({"rewards": {"reward": 0.0}}), encoding="utf-8"
+            )
+
+            class _R:
+                error = None
+
+            return _R()
+
+        monkeypatch.setattr(benchflow, "run", fake_run)
+        report, _ = await runner_mod.run_reviews(
+            rollout, agent="gemini", out_dir=tmp_path / "out", tasks_root=root
+        )
+        trial = report.trials[0]
+        assert any("digest mismatch" in n and "excluded" in n for n in trial.notes)
+        assert all("/evidence/task" not in u.values() for u in uploads_seen)
+
+
 class TestNetworkPosture:
     def test_default_wrapper_declares_no_internet(self, tmp_path):
         rollout = make_rollout(tmp_path)
@@ -224,6 +275,28 @@ class TestRubricDialectDiscrimination:
             json.dumps(JUDGE_RUBRIC), encoding="utf-8"
         )
         assert _check_review_rubric(verifier, verifier_label="verifier") == []
+
+    def test_all_misspelled_review_rubric_is_claimed(self, tmp_path):
+        """Round-3 fix: only the judge dialect is disclaimed; a rubric with
+        every review key misspelled must be claimed (and rejected loudly by
+        load_rubric), never silently replaced by the default."""
+        from benchflow.review.config import (
+            ReviewRubricError,
+            is_review_rubric_file,
+            load_rubric,
+        )
+
+        task = tmp_path / "task"
+        (task / "verifier").mkdir(parents=True)
+        target = task / "verifier" / "rubric.json"
+        target.write_text(
+            json.dumps({"criteria": [{"nme": "x", "guidnce": "g"}]}),
+            encoding="utf-8",
+        )
+        assert is_review_rubric_file(target)
+        assert find_task_rubric(task) == target
+        with pytest.raises(ReviewRubricError):
+            load_rubric(target)
 
     def test_default_rubric_is_strict_valid(self):
         rubric = load_rubric(None)
@@ -382,6 +455,7 @@ class TestSealedAgentCoreUploads:
         enc_key, mac_key = secret[:32], secret[32:]
         ciphertext = base64.b64decode(sealed.ciphertext_b64)
         verifier = _hmac.HMAC(mac_key, hashes.SHA256())
+        verifier.update(sealed.iv_hex.encode())  # IV is tag-bound (round 3)
         verifier.update(ciphertext)
         verifier.verify(bytes.fromhex(sealed.tag_hex))
         decryptor = Cipher(
@@ -449,7 +523,9 @@ class TestSealedAgentCoreUploads:
         _, pem = self._keypair()
         channel._public_key = pem
         path = await channel.stage_env({"TOKEN": "tok-abc-123"})
-        assert path.startswith("/tmp/.bf_sealed/env_")
+        # Round 3: env files live OUTSIDE the root-only seal dir so a
+        # non-root exec user can actually source them.
+        assert path.startswith("/tmp/.bf_env_")
         self._assert_unrecoverable(commands, b"tok-abc-123")
 
     def test_write_text_file_routes_through_sealed_channel(self):

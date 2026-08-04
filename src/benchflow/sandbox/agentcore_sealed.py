@@ -9,9 +9,12 @@ environments into the sandbox:
 - The sandbox generates an RSA keypair once; only the **public** key ever
   appears in command output.
 - Payloads travel as AES-256-CTR ciphertext with an HMAC-SHA256 tag over
-  the ciphertext (encrypt-then-MAC; ``openssl enc`` rejects AEAD ciphers,
-  so GCM is not an option). The tag is verified *before* decryption —
-  decryption never runs on unauthenticated bytes.
+  the IV and the ciphertext (encrypt-then-MAC; ``openssl enc`` rejects
+  AEAD ciphers, so GCM is not an option). Binding the IV into the tag
+  matters: CTR keystreams depend on it, so an attacker who could flip IV
+  bits would silently change every plaintext block while a
+  ciphertext-only tag still verified. The tag is checked *before*
+  decryption — decryption never runs on unauthenticated bytes.
 - One RSA-OAEP envelope wraps 64 bytes: AES key ‖ MAC key. The decrypted
   key material is only ever read from a file inside the sandbox; the
   logged command text carries ciphertext, public material, and literal
@@ -62,7 +65,7 @@ class SealedPayload:
     wrapped_key_b64: str  # RSA-OAEP(AES key ‖ MAC key)
     iv_hex: str
     ciphertext_b64: str
-    tag_hex: str  # HMAC-SHA256 over the ciphertext
+    tag_hex: str  # HMAC-SHA256 over iv_hex (ASCII) ‖ ciphertext
 
 
 def seal(public_pem: str, data: bytes) -> SealedPayload:
@@ -96,6 +99,9 @@ def seal(public_pem: str, data: bytes) -> SealedPayload:
     encryptor = Cipher(algorithms.AES(key), modes.CTR(iv)).encryptor()
     ciphertext = encryptor.update(data) + encryptor.finalize()
     tag = _hmac.HMAC(mac_key, hashes.SHA256())
+    # The IV participates as its ASCII hex form because that is exactly the
+    # representation the sandbox-side verifier can prepend with printf.
+    tag.update(iv.hex().encode())
     tag.update(ciphertext)
     return SealedPayload(
         wrapped_key_b64=base64.b64encode(wrapped).decode(),
@@ -147,6 +153,7 @@ class SealedChannel:
         *,
         target: str | None,
         mode: str | None = None,
+        owner: str | None = None,
         extract_tar: bool = False,
         user: str | None = None,
         timeout_sec: int = 600,
@@ -193,8 +200,9 @@ class SealedChannel:
             f"base64 -d {staging} > {ctfile} && "
             f"ENCK=$(od -An -v -tx1 -N32 {aesfile} | tr -d ' \\n') && "
             f"MACK=$(od -An -v -tx1 -j32 -N32 {aesfile} | tr -d ' \\n') && "
-            f"ACTUAL=$(openssl dgst -sha256 -mac HMAC -macopt hexkey:$MACK "
-            f"-hex < {ctfile} | sed 's/^.*[= ]//') && "
+            f"ACTUAL=$({{ printf %s {payload.iv_hex}; cat {ctfile}; }} | "
+            f"openssl dgst -sha256 -mac HMAC -macopt hexkey:$MACK -hex "
+            f"| sed 's/^.*[= ]//') && "
             f'[ "$ACTUAL" = "{payload.tag_hex}" ] && '
             f'openssl enc -d -aes-256-ctr -K "$ENCK" -iv {payload.iv_hex} '
             f"-in {ctfile}"
@@ -210,6 +218,8 @@ class SealedChannel:
             prep = f"mkdir -p $(dirname {quoted}) && "
             sink = f" -out {quoted}"
             finalize = f" && chmod {mode} {quoted}" if mode else ""
+            if owner is not None:
+                finalize += f" && chown {shlex.quote(str(owner))} {quoted}"
             run_user = user if user is not None else "root"
         result = await self._exec_raw(
             f"set -o pipefail; "
@@ -226,10 +236,14 @@ class SealedChannel:
                 f"AgentCore sealed upload failed: {(result.stderr or '')[:500]}"
             )
 
-    async def stage_env(self, env: dict[str, str]) -> str:
+    async def stage_env(self, env: dict[str, str], *, owner: str | None = None) -> str:
         """Write *env* into a mode-0600 sandbox file over the sealed channel.
 
-        Returns the in-sandbox path of a shell-sourceable file. Only POSIX
+        Returns the in-sandbox path of a shell-sourceable file. The file
+        lives **outside** the root-only seal directory and is chowned to
+        *owner* when given, so a command that runs as a non-root user can
+        actually source it — root-owned env files inside a 0700 directory
+        would fail with permission denied for everyone else. Only POSIX
         identifier keys are exported, matching the shared env-file helper.
         """
 
@@ -242,6 +256,8 @@ class SealedChannel:
                 continue
             lines.append(f"{key}={shlex.quote(str(value))}")
         body = "\n".join(lines) + "\n"
-        path = f"{SEAL_DIR}/env_{uuid.uuid4().hex[:16]}.sh"
-        await self.upload(body.encode(), target=path, mode="600", timeout_sec=120)
+        path = f"/tmp/.bf_env_{uuid.uuid4().hex[:16]}.sh"
+        await self.upload(
+            body.encode(), target=path, mode="600", owner=owner, timeout_sec=120
+        )
         return path

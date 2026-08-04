@@ -175,12 +175,11 @@ def is_review_rubric_file(path: Path) -> bool:
     """Whether ``path`` claims this contract's dialect.
 
     ``rubric.json`` is an overloaded filename: llm-judge verifier rubrics
-    use entries shaped like ``{id, match_criteria}``. The claim is made on
-    the *dialect marker*, not on validity — an entry carrying any of this
-    contract's keys claims the file, so a malformed review rubric (empty
-    ``criteria``, a misspelled ``guidance``) is claimed and then fails
-    loudly in :func:`load_rubric` instead of silently falling back to the
-    built-in default. Judge rubrics are never claimed.
+    use entries shaped like ``{id, match_criteria}``. Only that dialect is
+    disclaimed; **everything else in this slot is claimed** and then
+    validated loudly by :func:`load_rubric` — including empty ``criteria``
+    and rubrics with misspelled or missing review keys — so no malformed
+    review rubric can silently fall back to the built-in default.
     """
 
     try:
@@ -192,13 +191,16 @@ def is_review_rubric_file(path: Path) -> bool:
     criteria = data.get("criteria")
     if not isinstance(criteria, list):
         return False
-    if not criteria:
-        return True  # empty: claimed, then rejected by load_rubric
-    return any(
-        isinstance(entry, dict)
-        and bool({"name", "description", "guidance"} & set(entry))
-        for entry in criteria
-    )
+
+    # Fail closed: everything in this filename slot is claimed as a review
+    # rubric — and validated loudly by load_rubric — UNLESS it is
+    # affirmatively the llm-judge dialect (id/match_criteria entries). A
+    # rubric with every review key misspelled is therefore claimed and
+    # rejected instead of silently replaced by the default rubric.
+    def is_judge_entry(entry: object) -> bool:
+        return isinstance(entry, dict) and bool({"id", "match_criteria"} & set(entry))
+
+    return not (criteria and all(is_judge_entry(entry) for entry in criteria))
 
 
 def find_task_rubric(task_path: Path) -> Path | None:
