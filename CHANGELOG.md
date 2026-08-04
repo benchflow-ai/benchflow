@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- Isolated pull-request and post-test integration concurrency groups so a
+  credential-free workflow completion cannot cancel an active PR rollout.
+
 ## 0.6.6 — 2026-08-04
 
 ### Added
