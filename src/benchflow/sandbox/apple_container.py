@@ -292,7 +292,7 @@ class AppleContainerSandbox(BaseSandbox):
         await _RUN_SLOT.acquire()
         self._holds_run_slot = True
         try:
-            _require_kalloc_headroom()
+            await asyncio.to_thread(_require_kalloc_headroom)
             image = await self._resolve_image(force_build=force_build)
             safe_session = re.sub(r"[^a-zA-Z0-9_.-]+", "_", self.session_id)
             self._container_name = f"bf_{safe_session}"[:63]

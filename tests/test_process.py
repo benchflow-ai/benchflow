@@ -254,6 +254,32 @@ class TestDockerProcessEnv:
         assert calls[0][-1] == "echo hello"
 
     @pytest.mark.asyncio
+    async def test_staged_env_is_removed_when_main_launch_fails(self):
+        """Guards the 0.6.6 cleanup after commit 69f589d7 launch failure."""
+        calls = []
+
+        async def fake_exec(*args, **kwargs):
+            calls.append(list(args))
+            if len(calls) == 2:
+                raise OSError("docker exec launch failed")
+            return _FakeProcess(
+                communicate=AsyncMock(return_value=(b"", b"")),
+            )
+
+        proc = self._make_process()
+        with (
+            patch.object(proc, "_host_env", return_value={}),
+            patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
+            pytest.raises(OSError, match="launch failed"),
+        ):
+            await proc.start("codex-acp", env={"API_KEY": "secret"})
+
+        assert len(calls) == 3
+        cleanup = " ".join(calls[2])
+        assert "rm -f /tmp/.benchflow_env" in cleanup
+        assert "secret" not in cleanup
+
+    @pytest.mark.asyncio
     async def test_env_values_shell_quoted(self):
         """Env values with special chars are shell-quoted."""
         communicate_inputs = []
@@ -414,6 +440,34 @@ class TestAppleContainerProcess:
         assert ". /tmp/.benchflow_agent_env_" in main_command
         assert "rm -f /tmp/.benchflow_agent_env_" in main_command
         assert main_command.endswith("&& codex-acp")
+
+    @pytest.mark.asyncio
+    async def test_staged_env_is_removed_when_main_launch_fails(self):
+        """Guards the 0.6.6 cleanup against the PR #936 launch-failure leak."""
+        calls = []
+
+        async def fake_exec(*args, **kwargs):
+            calls.append((args, kwargs))
+            if len(calls) == 2:
+                raise OSError("apple exec launch failed")
+            return _FakeProcess(
+                communicate=AsyncMock(return_value=(b"", b"")),
+            )
+
+        proc = AppleContainerProcess("bf_run")
+        with (
+            patch(
+                "benchflow.sandbox.process.apple.asyncio.create_subprocess_exec",
+                side_effect=fake_exec,
+            ),
+            pytest.raises(OSError, match="launch failed"),
+        ):
+            await proc.start("codex-acp", env={"API_KEY": "secret"})
+
+        assert len(calls) == 3
+        cleanup = " ".join(calls[2][0])
+        assert "rm -f /tmp/.benchflow_agent_env_" in cleanup
+        assert "secret" not in cleanup
 
 
 class TestDaytonaProcessEnvFilePath:

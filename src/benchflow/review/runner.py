@@ -390,7 +390,11 @@ async def _review_one(
         trial.notes.append(skip_reason)
         logger.info("%s: %s", rollout_dir.name, skip_reason)
     if task_dir is not None:
-        digest_issue = _task_digest_issue(rollout_dir, task_dir)
+        digest_issue = await asyncio.to_thread(
+            _task_digest_issue,
+            rollout_dir,
+            task_dir,
+        )
         if digest_issue:
             # Enforced, not merely noted: reviewing an old rollout against
             # changed task content silently misattributes findings, so the
@@ -411,7 +415,8 @@ async def _review_one(
     # previous run's reviewer artifacts.
     runtime_dir = out_dir / "runtime" / rollout_dir.name / uuid.uuid4().hex[:12]
     try:
-        _, uploads = assemble_review_task(
+        _, uploads = await asyncio.to_thread(
+            assemble_review_task,
             rollout_dir,
             task_dir,
             rubric,

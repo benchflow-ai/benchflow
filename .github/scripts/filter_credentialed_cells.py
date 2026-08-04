@@ -58,9 +58,8 @@ logger = logging.getLogger(__name__)
 #      set. ..."). The missing key is the first whitespace-delimited token.
 #   2. Missing base-URL env — "Provider '<p>' for model '<m>' requires <KEY[ or
 #      KEY2]> to build the provider base URL." (and the Azure variant). This is
-#      what fires for a deepseek cell when DEEPSEEK_BASE_URL is absent, and since
-#      openhands (deepseek) is the BASELINE agent, missing it would false-red
-#      almost every run. The missing key sits between "requires" and "to build".
+#      what fires for providers without a built-in endpoint when their base URL
+#      is absent. The missing key sits between "requires" and "to build".
 #
 # Shape 1 ("not set") deliberately does NOT match shape 2's "requires" — note
 # "requires" does not contain the substring "required" — so the two are matched

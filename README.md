@@ -19,9 +19,9 @@ BenchFlow is a universal environment framework: it runs AI agents against task e
 - **Loop strategies** — wrap any agent in a `--loop-strategy` (`verify-retry`, `self-review`); every rollout captures a per-iteration reward + token trajectory, so you can plot capability against cost (can a cheap model + loops match an expensive one at equal token spend?)
 - **`task.md` tasks** — one file (YAML frontmatter + prompt body) replaces the split `task.toml` + `instruction.md` layout; author with `bench tasks init` / `check` / `migrate` / `export`
 - **Hosted environments** — run external PrimeIntellect / Verifiers environments through `--source-env`, without converting them to BenchFlow tasks
-- **Sandboxes** — Docker locally, Apple Container on Apple Silicon Macs, Daytona for parallel cloud runs (orphaned sandboxes auto-reaped at eval start), Modal for serverless/GPU-backed task environments
+- **Sandboxes** — Docker locally, Apple Container on Apple Silicon Macs, Daytona for parallel cloud runs (orphaned sandboxes auto-reaped at eval start), Modal for serverless/GPU-backed task environments, and AgentCore for AWS-hosted runtimes
 - **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
-- **Training-ready output** — every scored rollout emits ATIF (`trainer/atif.json`) and ADP (`trainer/adp.jsonl`) trajectory records next to the Verifiers/ORS (OpenReward) reward record
+- **Training-ready output** — scored rollouts emit a Verifiers/ORS reward record and best-effort ATIF (`trainer/atif.json`) / ADP (`trainer/adp.jsonl`) conversions; ATIF is omitted when the trajectory is empty, and conversion errors are reported in the rollout result
 
 ## Quickstart
 
@@ -30,14 +30,14 @@ BenchFlow is a universal environment framework: it runs AI agents against task e
 uv tool install --python 3.12 --upgrade benchflow
 
 # Run a benchmark: any task source, any ACP agent, any sandbox
-export GEMINI_API_KEY=...            # or claude login / codex --login for subscription auth
+export GEMINI_API_KEY=...            # or claude auth login / codex login for subscription auth
 bench eval run \
     --source-repo benchflow-ai/skillsbench --source-path tasks \
     --agent gemini --model gemini-3.1-flash-lite-preview \
     --sandbox docker
 ```
 
-Each run writes a per-task `result.json` (rewards + trajectory + token usage) and a job `summary.json` (pass-rate, cost, and — for looped runs — a pass@iteration convergence curve). New here? Start with [Getting started](./docs/getting-started.md), or paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code / Codex / Gemini CLI and let it drive the whole thing.
+Each run writes a per-task `result.json` (rewards, trajectory summary, and token usage), full events under `trajectory/`, and a job `summary.json` (pass-rate, cost, and — for looped runs — a pass@iteration convergence curve). New here? Start with [Getting started](./docs/getting-started.md), or paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code / Codex / Gemini CLI and let it drive the whole thing.
 
 ## Install
 
@@ -52,7 +52,7 @@ uv tool install --python 3.12 --upgrade benchflow
   in the install command so `uv` does not resolve an older Python-compatible
   package that lacks the CLI entrypoints.
 - If you see `Executables already exist: bench, benchflow`, re-run with `uv tool install --python 3.12 --upgrade --force benchflow` to replace stale entrypoints from an older install.
-- For Daytona or Modal extras, install the relevant optional package, for example `uv tool install --python 3.12 --upgrade 'benchflow[sandbox-daytona]'`.
+- For Daytona, Modal, or AgentCore extras, install the relevant optional package, for example `uv tool install --python 3.12 --upgrade 'benchflow[sandbox-daytona]'`.
 
 Internal users wanting the newest preview from `main` install the [internal preview channel](./docs/release.md) (`uv tool install --python 3.12 --prerelease allow --upgrade benchflow`).
 
@@ -60,7 +60,7 @@ Internal users wanting the newest preview from `main` install the [internal prev
 `--python 3.12` flag lets it provision a compatible interpreter for the tool
 install. Set `DAYTONA_API_KEY` for Daytona or configure Modal auth for Modal;
 export an agent API key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) or use
-subscription auth (`claude login` / `codex --login`). Provider-prefixed models
+subscription auth (`claude auth login` / `codex login`). Provider-prefixed models
 may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` +
 `AZURE_API_ENDPOINT`.
 

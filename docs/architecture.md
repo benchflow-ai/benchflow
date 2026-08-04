@@ -85,7 +85,7 @@ Trajectory  — one root-to-leaf path. Computed from the tree, never declared   
 Scene       — a declared span carrying a role/skill configuration             AUTHORING SUGAR
 ```
 
-- **The primitives are irreducible.** The tree (`Rollout`), its edges (`Step` — Han's atomic unit; one `Step` is one "turn"), and the `Branch` operation (snapshot + fork). `Branch` is the credit-assignment engine: it evaluates *one state across N continuations* — averaging the children's returns estimates `V(s)`. That is Han's *"from reward function to a value function of the current state"* and Tree-GRPO's peer-reviewed result that a tree yields process supervision from a single outcome reward. A GRPO group run as a shared-prefix tree beats N independent rollouts (more rollouts per token/tool budget). Branches occur at `ask_user`-style interaction checkpoints (one child per option), at GRPO group points, and at value-estimation points.
+- **The primitives are irreducible.** The tree (`Rollout`), its edges (`Step` — Han's atomic unit; one `Step` is one "turn"), and the `Branch` operation (snapshot + fork). `Branch` is the credit-assignment engine: it evaluates *one state across N continuations* — averaging the children's returns estimates `V(s)`. That is Han's *"from reward function to a value function of the current state"* and Tree-GRPO's peer-reviewed result that a tree yields process supervision from a single outcome reward. A GRPO group run as a shared-prefix tree beats N independent rollouts (more rollouts per token/tool budget). Callers create branches explicitly at GRPO group or value-estimation points; `ask_user` currently resolves one answer and does not fork automatically.
 - **`Trajectory` is a derived view** — a pure function of the tree (a path), never declared. It is what serialises out: a linear `prompt / completion / reward / metrics / info` record, the Verifiers/ORS training unit.
 - **`Scene` is authoring sugar** — the *declaration* form for multi-phase / multi-agent rollouts (`RolloutConfig.scenes`). It desugars completely to per-`Step` role/skill attribution plus config that changes along the tree, and adds no expressive power. It has no runtime object and no lifecycle of its own — `RolloutConfig.scenes` is a desugaring pass that lowers to per-`Step` config. Kept only as a convenient authoring affordance. (The original RFC's instinct — "a phase is just state" — was correct.)
 
@@ -99,17 +99,17 @@ Every lifecycle the framework owns, as ordered phases.
 
 **Rollout lifecycle.** `setup` (resolve config, build the environment object) → `start` (sandbox up) → `provision environment` (Environment plane starts services) → `readiness gate` (framework-guaranteed; the agent never runs before the world is healthy) → `connect agent` (ACP) → `execute` (the tree grows: Steps and Branches) → `verify` (Reward plane scores) → `teardown`.
 
-**Branch lifecycle.** `quiesce` (pause the agent at a stable point) → `checkpoint` (snapshot environment state, then container, then agent-session state — in that order, see "The hard part") → `fork` (N children) → `run children` → `score / aggregate` (per-child return → `V(parent)`) → optionally `restore` the winning child's state to continue.
+**Branch lifecycle.** `quiesce` (disconnect the active agent) → `checkpoint` (snapshot Environment state) → `fork` (N children) → for each child, `restore` the Environment and start a fresh agent session → `score / aggregate` (per-child return → `V(parent)`) → restore the parent's linear rollout state. Agent-session snapshotting is not implemented. Callers that set `require_sandbox_snapshot=True` also require a sandbox with snapshot capability, but the current branch engine still uses the Environment snapshot as its restore point.
 
 **Environment lifecycle** (Han's roll-out / roll-back). `provision` → `readiness` → `query` (expose state to the verifier) → `snapshot` → `restore` → `reset` → `teardown`. `snapshot`/`restore` are definitional — the substrate every `Branch` runs on.
 
-**Sandbox lifecycle.** `start` → `exec` / `upload` / `download` / `expose_port` → `snapshot` / `restore` (container-level, coarser than environment-state) → `stop`.
+**Sandbox lifecycle.** configure `expose_ports` → `start` → `exec` / `upload_file` / `upload_dir` / `download_file` / `download_dir` → optional `snapshot` / `restore` → `stop`.
 
-A Rollout is checkpointable because three snapshot layers compose — container (Sandbox) ⊃ environment-state (Environment) ⊃ agent-session — but composing them correctly is a real consistency problem (see "The hard part"). The one store that deliberately does **not** roll back with a `Branch` is the continual-learning learner store (capability 5).
+A Rollout branch currently rolls back Environment state and starts a fresh agent session for every child. Container and agent-session checkpoint composition remain future work. The one store that deliberately does **not** roll back with a `Branch` is the continual-learning learner store (capability 5).
 
 ## The four planes
 
-**Sandbox — where it runs.** Compute substrate. Built-in: `Local` (raw Linux) + `Docker`. Optional: `Daytona`, `Modal`, `Firecracker`, K8s. BYO via the `Sandbox` protocol. Hardening (`lockdown`) is a capability flag. Framework-guaranteed readiness gate + teardown. An environment is declared once and runs on any provider.
+**Sandbox — where it runs.** Compute substrate. Built-in providers are `Docker` and `Apple Container`; optional providers are `Daytona`, `Modal`, and `AgentCore`. BYO implementations can satisfy the `Sandbox` protocol. Hardening (`lockdown`) is a capability flag. Framework-guaranteed readiness gate + teardown. An environment is declared once and runs on any provider that supports its required capabilities.
 
 **Agent — who acts.** The agent under test (eval) or the policy under training — Han's harness, "not intelligent." Protocol: **ACP** (the official `agent-client-protocol`). BYO via `--agent-import-path`. The registry stores agent *declarations* as data, not install code in the kernel. A trainer-served policy endpoint (OpenAI-compatible, hot-swappable) is one agent provider type. The plane's real surface is the `Session` (below) — not just `connect`.
 
@@ -139,13 +139,19 @@ The kernel imports only these.
 
 ```python
 class Sandbox(Protocol):            # where it runs — container level
-    async def exec(cmd, *, user, timeout) -> ExecResult: ...
-    async def upload(local, remote) -> None: ...
-    async def download(remote, local) -> None: ...
-    async def expose_port(port) -> Endpoint: ...
-    async def snapshot() -> SandboxImage: ...
+    async def exec(cmd, *, user, timeout_sec) -> ExecResult: ...
+    async def upload_file(src, dst, *, mode=None) -> None: ...
+    async def upload_dir(src, dst, service="main") -> None: ...
+    async def download_file(src, dst) -> None: ...
+    async def download_dir(src, dst, service="main") -> None: ...
+    async def start() -> None: ...
+    async def stop(*, delete=True) -> None: ...
+    async def snapshot(name=None) -> SandboxImage: ...
     async def restore(image: SandboxImage) -> None: ...
-    async def teardown() -> None: ...
+    @property
+    def supports_snapshot() -> bool: ...
+    @property
+    def expose_ports() -> list[int]: ...
 
 class Agent(Protocol):              # who acts — Han's harness
     async def connect(sandbox, role) -> Session: ...
@@ -195,10 +201,11 @@ inject_into = "entrypoint"            # reaches PID 1, not just exec()
 http        = ["http://localhost:8023/health"]
 timeout_sec = 120
 
-[verifier]
-kind              = "agent"
-hidden_from_agent = ["expectations.json", "tasks/*/fixtures"]
 ```
+
+Verifier isolation is configured by the task package and runtime, not by an
+`[verifier]` table in this environment manifest. Unknown top-level manifest
+tables are not an enforcement boundary.
 
 **State is a real database**; tools are read-write ops over the schema — which is what makes state snapshot-able, diffable, and verifiable. Two topologies behind one contract: **in-sandbox** (the environment runs in the rollout's own sandbox — the default) and **shared-fleet / sidecar** (a long-lived service fleet + a `TaskDatabase` + `AccountBroker` for multi-tenant per-task accounts — the scale path).
 
@@ -224,7 +231,7 @@ Human interaction is modelled through ACP's role split: **BenchFlow is the ACP C
 - `session/prompt` (Client → Agent) — the task instruction and every **nudge** (user-initiated follow-up).
 - `request_permission` / `ask_user` (Agent → Client, with enumerated options) — agent-initiated, surfaced through `Session.on_ask_user`.
 
-`ask_user` with enumerated options is the **branchable interaction primitive** — finite options ⇒ a finite, scoreable interaction tree (each option is one `Branch` child). The interaction tool is never hard-coded as "step one"; the agent chooses to use it, and the **Action space** scores *whether it asked* — an under-specified task makes "ask the user" the correct behaviour, and failing to ask is a negative reward (Han). User Model modes: scripted / simulated (LLM persona) / real-human / auto. (Branching is not a User Model mode — it is a property of the `Rollout` tree.)
+`ask_user` with enumerated options is a **branchable interaction seam**, but the current runtime invokes one registered handler and returns one selected answer. It does not automatically turn every option into a `Branch` child. Callers can use the explicit Branch API to evaluate multiple continuations. The interaction tool is never hard-coded as "step one"; the agent chooses to use it, and the **Action space** can score *whether it asked*. User Model modes are scripted / simulated (LLM persona) / real-human / auto; branching is a separate Rollout operation.
 
 ## The edges — adapters & trainers
 

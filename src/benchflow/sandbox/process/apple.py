@@ -72,6 +72,28 @@ class AppleContainerProcess(SubprocessLiveProcess):
                 f"(rc={proc.returncode}): {stderr.decode(errors='replace')[:500]}"
             )
 
+    async def _remove_env_from_container(self) -> None:
+        """Remove a staged env file when the live process cannot start."""
+        env_path = shlex.quote(self._env_path)
+        proc = await asyncio.create_subprocess_exec(
+            "container",
+            "exec",
+            "--user",
+            "root",
+            self._container_name,
+            "sh",
+            "-c",
+            f"rm -f {env_path}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Failed to remove staged Apple container env file "
+                f"(rc={proc.returncode}): {stderr.decode(errors='replace')[:500]}"
+            )
+
     async def start(
         self,
         command: str,
@@ -87,13 +109,24 @@ class AppleContainerProcess(SubprocessLiveProcess):
         if cwd:
             args.extend(["--workdir", cwd])
         args.extend([self._container_name, "bash", "-c", command])
-        self._process = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_BUFFER_LIMIT,
-        )
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=_BUFFER_LIMIT,
+            )
+        except BaseException:
+            if env:
+                try:
+                    await asyncio.shield(self._remove_env_from_container())
+                except Exception:
+                    logger.warning(
+                        "Could not remove staged Apple container env after launch failure",
+                        exc_info=True,
+                    )
+            raise
         logger.info(
             "Apple Container process started (pid=%s, container=%s)",
             self._process.pid,

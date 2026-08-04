@@ -121,13 +121,30 @@ class DockerProcess(SubprocessLiveProcess):
             )
         logger.debug("Env file written inside container (%d vars)", len(env))
 
+    async def _remove_env_from_container(self, proc_env: dict[str, str]) -> None:
+        """Remove a staged env file when the live process cannot start."""
+        cleanup_cmd = self._compose_cmd()
+        cleanup_cmd.extend(["exec", "-T", self._service, "rm", "-f", self._ENV_PATH])
+        proc = await asyncio.create_subprocess_exec(
+            *cleanup_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=proc_env,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Failed to remove staged Docker env file "
+                f"(rc={proc.returncode}): {stderr.decode()[:500]}"
+            )
+
     async def start(
         self,
         command: str,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
-        proc_env = self._host_env()
+        proc_env = await asyncio.to_thread(self._host_env)
 
         # Write env vars to a file inside the container, then source it
         # in the main command. This keeps secrets off `ps aux` on the host
@@ -143,14 +160,25 @@ class DockerProcess(SubprocessLiveProcess):
         cmd.extend([self._service, "bash", "-c", command])
 
         logger.debug(f"DockerProcess: {' '.join(cmd[:10])}...")
-        self._process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=proc_env,
-            limit=_BUFFER_LIMIT,
-        )
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=proc_env,
+                limit=_BUFFER_LIMIT,
+            )
+        except BaseException:
+            if env:
+                try:
+                    await asyncio.shield(self._remove_env_from_container(proc_env))
+                except Exception:
+                    logger.warning(
+                        "Could not remove staged Docker env after launch failure",
+                        exc_info=True,
+                    )
+            raise
         logger.info(
             f"Docker process started (pid={self._process.pid}, "
             f"project={self._project_name})"

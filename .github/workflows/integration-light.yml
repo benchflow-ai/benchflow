@@ -19,6 +19,13 @@ name: integration-light
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  # A successful unit run on main feeds this live gate; the internal-preview
+  # publisher then consumes this workflow's successful completion.  Keep the
+  # main-only source checks on rollout-smoke below: workflow_run has access to
+  # repository environments, so an untrusted PR completion must stay a no-op.
+  workflow_run:
+    workflows: ["test"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       task:
@@ -29,7 +36,7 @@ on:
 # Cancel superseded L1 runs on the same PR branch — this is the fast-feedback
 # lane, so a newer push supersedes the older run.
 concurrency:
-  group: integration-light-${{ github.event.pull_request.head.sha || github.ref }}
+  group: integration-light-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.ref }}
   cancel-in-progress: true
 
 # Workflow-level least privilege; jobs elevate only what they need.
@@ -55,8 +62,10 @@ jobs:
       - name: Resolve refs
         id: refs
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # On workflow_run, pin trusted infra and code-under-test to the exact
+          # commit that the unit workflow tested.  Never follow moving main.
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.workflow_run.head_sha || github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
           echo "base_ref=$BASE_REF" >> "$GITHUB_OUTPUT"
@@ -92,8 +101,26 @@ jobs:
         env:
           BASE_REF: ${{ steps.refs.outputs.base_ref }}
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            if [ "$SOURCE_EVENT" = "push" ] && [ "$SOURCE_BRANCH" = "main" ]; then
+              if [ "$SOURCE_CONCLUSION" != "success" ]; then
+                echo "::error::unit workflow for main concluded $SOURCE_CONCLUSION; live release gate is red"
+                exit 1
+              fi
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "Unit-tested main commit $HEAD_SHA requires the live release gate."
+            else
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::workflow_run is not a main push; L1 stays a credential-free no-op"
+            fi
+            exit 0
+          fi
           if [ ! -f .github/scripts/integration_matrix.py ]; then
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::trusted base does not contain integration_matrix.py yet; bootstrap PR passes L1 as a green no-op"
@@ -155,6 +182,12 @@ jobs:
         !contains(github.event.pull_request.labels.*.name, 'integration:deep') &&
         (
           github.event_name == 'workflow_dispatch' ||
+          (
+            github.event_name == 'workflow_run' &&
+            github.event.workflow_run.conclusion == 'success' &&
+            github.event.workflow_run.event == 'push' &&
+            github.event.workflow_run.head_branch == 'main'
+          ) ||
           (
             github.event_name == 'pull_request' &&
             github.event.pull_request.head.repo.full_name == 'benchflow-ai/benchflow'
@@ -255,4 +288,55 @@ jobs:
           name: integration-light-jobs
           path: jobs/integration-light
           if-no-files-found: ignore
+          retention-days: 14
+
+  # The preview publisher consumes this workflow's overall conclusion.  A
+  # condition regression must never turn a skipped live job into a green
+  # release gate, so successful-main workflow_run events end here and require
+  # both the unit source and the live rollout job to have succeeded.
+  release-gate:
+    needs: [detect-scope, rollout-smoke]
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main'
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce unit and live integration success
+        env:
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          DETECT_SCOPE_RESULT: ${{ needs.detect-scope.result }}
+          ROLLOUT_SMOKE_RESULT: ${{ needs.rollout-smoke.result }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+        run: |
+          set -euo pipefail
+          if [ "$SOURCE_CONCLUSION" != "success" ]; then
+            echo "::error::unit workflow concluded $SOURCE_CONCLUSION"
+            exit 1
+          fi
+          if [ "$DETECT_SCOPE_RESULT" != "success" ]; then
+            echo "::error::integration planning concluded $DETECT_SCOPE_RESULT"
+            exit 1
+          fi
+          if [ "$ROLLOUT_SMOKE_RESULT" != "success" ]; then
+            echo "::error::live integration concluded $ROLLOUT_SMOKE_RESULT"
+            exit 1
+          fi
+          echo "Unit and live integration gates both succeeded."
+          mkdir -p release-provenance
+          printf '%s\n' "$TESTED_SHA" > release-provenance/tested-sha
+          printf '%s\n' "$SOURCE_RUN_NUMBER" > release-provenance/source-run-number
+
+      - name: Upload tested release provenance
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: internal-preview-provenance
+          path: release-provenance
+          if-no-files-found: error
           retention-days: 14

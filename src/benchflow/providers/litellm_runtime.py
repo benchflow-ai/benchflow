@@ -604,7 +604,7 @@ async def _start_host_litellm(
     stdout_path = runtime_dir / "stdout.log"
     stderr_path = runtime_dir / "stderr.log"
     port = _find_free_port()
-    bind = _host_bind_address(environment)
+    bind = await asyncio.to_thread(_host_bind_address, environment)
     config = litellm_proxy_config(route, master_key=master_key)
     config_path, _, _ = _write_runtime_files(runtime_dir, config=config)
     env = dict(os.environ)
