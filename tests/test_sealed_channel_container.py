@@ -64,7 +64,7 @@ def _dx(container: str, command: str, user: str | None = None):
     if user:
         args += ["-u", user]
     return subprocess.run(
-        args + [container, "sh", "-c", command], capture_output=True, text=True
+        [*args, container, "sh", "-c", command], capture_output=True, text=True
     )
 
 
