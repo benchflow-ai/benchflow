@@ -9,10 +9,10 @@ with its own ARN), after which sessions are invoked against that ARN.
 concurrent sessions, each an isolated microVM with its own filesystem, and the
 account quotas are lopsided in exactly that direction: 5000 concurrent
 sessions against 100 total runtimes, with ``CreateAgentRuntime`` limited to
-5/s. So the image and the runtime are built **once per distinct task image**
-— keyed by a digest of the build context, and shared by every trial and skill
-arm that resolves to it — while sessions are what scale out. That sharing is
-what makes this backend usable for a large parallel matrix; see
+5/s. So each image is built once, and each compatible image-plus-runtime
+contract is registered once and shared by every matching trial and skill arm,
+while sessions are what scale out. That sharing is what makes this backend
+usable for a large parallel matrix; see
 ``agentcore_provisioning`` for the single-flight machinery.
 
 Runtimes therefore outlive the rollout that first needed them, like a built
@@ -46,7 +46,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import io
+import json
 import os
 import shlex
 import tarfile
@@ -283,17 +285,16 @@ class AgentCoreSandbox(BaseSandbox):
             ) from exc
 
     async def _ensure_runtime(self, image_uri: str) -> str:
-        """Resolve the shared agent runtime for *image_uri*, creating it once.
+        """Resolve the shared runtime for an image and execution contract.
 
-        The runtime is named after the image's content digest, so every rollout
-        of that image — each trial, and both skill arms when their images match
-        — resolves to the same runtime and simply opens another session against
-        it. Keying on the task name instead meant concurrent trials raced to
-        create one runtime and the first to finish deleted it while the others
-        were still running.
+        Equivalent rollouts share one runtime and open separate sessions. The
+        identity also binds lifecycle, role, network, and protocol: AgentCore
+        stores those on the runtime, so image-only naming made a later rollout
+        with a different timeout collide with an incompatible existing runtime.
         """
         digest, _tag = self._images.identity()
-        name = provisioning.runtime_name(self.environment_name, digest)
+        contract_digest = self._runtime_contract_digest(digest)
+        name = provisioning.runtime_name(self.environment_name, contract_digest)
 
         async def _create() -> tuple[str, str]:
             return await self._create_or_adopt_runtime(name, image_uri)
@@ -306,6 +307,19 @@ class AgentCoreSandbox(BaseSandbox):
         )
         self._runtime_id = runtime_id
         return arn
+
+    def _runtime_contract_digest(self, image_digest: str) -> str:
+        """Hash every immutable field that determines a reusable runtime."""
+
+        contract = {
+            "imageDigest": image_digest,
+            "lifecycleConfiguration": self._lifecycle_configuration(),
+            "networkConfiguration": _NETWORK_CONFIGURATION,
+            "protocolConfiguration": _PROTOCOL_CONFIGURATION,
+            "roleArn": self._require_role_arn(),
+        }
+        payload = json.dumps(contract, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode()).hexdigest()
 
     async def _create_or_adopt_runtime(
         self, name: str, image_uri: str

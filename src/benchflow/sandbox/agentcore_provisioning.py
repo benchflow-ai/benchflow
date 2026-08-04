@@ -5,8 +5,8 @@ host many concurrent sessions, each an isolated microVM with its own
 filesystem — measured at 8 concurrent sessions on one runtime, and the account
 quota for *Active Session Workloads* is 5000 against only 100 *Total Agents*.
 So the expensive, rate-limited artifacts (an ECR image and a registered
-runtime) must be created **once per distinct task image** and shared by every
-rollout that uses it, while sessions are what scale out.
+runtime) must be created **once per distinct image and execution contract** and
+shared by every compatible rollout, while sessions are what scale out.
 
 Getting that wrong is not merely slow. Keying a runtime on the task name meant
 that three trials of one task raced to create the same runtime and the first to
@@ -314,10 +314,10 @@ def image_tag(task_name: str, digest: str) -> str:
 
 
 def runtime_name(task_name: str, digest: str) -> str:
-    """Agent-runtime name derived from image identity, not the task name.
+    """Agent-runtime name derived from an image-plus-contract identity.
 
-    Two rollouts of the same task image — different trials, or the with-skill
-    and no-skill arms when their images happen to match — resolve to the same
+    Two compatible rollouts — different trials, or the with-skill and no-skill
+    arms when their images and runtime contracts match — resolve to the same
     name and therefore share one runtime. AgentCore accepts
     ``[A-Za-z][A-Za-z0-9_]*``; the ``bf_`` prefix guarantees the leading letter.
     """

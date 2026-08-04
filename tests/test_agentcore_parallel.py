@@ -130,8 +130,13 @@ class TestSingleFlight:
         assert len(set(uris)) == 1
 
     @pytest.mark.asyncio
-    async def test_concurrent_rollouts_register_one_runtime(self, tmp_path):
+    async def test_concurrent_rollouts_register_one_runtime(
+        self, tmp_path, monkeypatch
+    ):
         """CreateAgentRuntime is a 5/s quota — it cannot run per rollout."""
+        monkeypatch.setenv(
+            "BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/runtime"
+        )
         task_dir = _make_task(tmp_path)
         creates = {"n": 0}
 
@@ -148,6 +153,23 @@ class TestSingleFlight:
 
         assert creates["n"] == 1
         assert len(set(arns)) == 1
+
+    def test_runtime_identity_changes_with_execution_contract(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards PR #942: incompatible lifecycle contracts cannot collide."""
+        monkeypatch.setenv(
+            "BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/runtime"
+        )
+        short = _sandbox(_make_task(tmp_path / "short"))
+        long = _sandbox(_make_task(tmp_path / "long"))
+        short.configure_agent_timeout(900)
+        long.configure_agent_timeout(1800)
+
+        image_digest = "a" * 64
+        assert short._runtime_contract_digest(
+            image_digest
+        ) != long._runtime_contract_digest(image_digest)
 
     @pytest.mark.asyncio
     async def test_a_failed_build_is_not_cached(self, tmp_path):

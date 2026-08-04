@@ -208,6 +208,16 @@ class TestPromptRendering:
         assert "schema-sentinel" in instruction
         assert REVIEW_RESULT_FILENAME in instruction
 
+    def test_instruction_requires_conjunctive_returned_evidence(self):
+        """Guards PR #942: related searches cannot be promoted to proof."""
+
+        rubric = Rubric.model_validate(RUBRIC)
+        instruction = render_review_instruction(rubric)
+
+        assert "A pass requires every stated condition" in instruction
+        assert "command title, search attempt" in instruction
+        assert "exact recorded observation" in instruction
+
     def test_instruction_without_task_dir(self):
         rubric = Rubric.model_validate(RUBRIC)
         instruction = render_review_instruction(rubric, task_path=None)
