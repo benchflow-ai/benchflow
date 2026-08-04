@@ -112,10 +112,13 @@ the host, which is why every sandbox backend (`docker`, `daytona`,
   re-review can never read an earlier verdict; symlinks anywhere in the
   evidence are dropped, never dereferenced; task skills and any shipped
   `rubric.json` are excluded from the task copy. The canonical ACP trajectory
-  is retained, while the redundant provider-history `llm_trajectory.jsonl`
-  is omitted: that log repeats the growing conversation on every request and
-  can exhaust a reviewer model's context without adding recorded actions. The
-  reviewed rollout itself is never touched.
+  is retained. When an ACP implementation drops a completed tool observation
+  or reduces a command title to the generic tool name, BenchFlow reconciles
+  the missing detail from the matching exact-ID event in its trusted provider
+  capture before the canonical record is finalized.
+  The cumulative provider-history `llm_trajectory.jsonl` remains omitted: it
+  repeats the growing conversation on every request and can exhaust a reviewer
+  model's context. The reviewed rollout itself is never touched.
 - **Post-initialization egress restriction, fail closed.** The wrapper
   declares `allow_internet: false`, which disables web tools, forces the
   model proxy sandbox-local, and arms the agent-UID egress firewall scoped

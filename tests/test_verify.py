@@ -17,6 +17,12 @@ from benchflow._utils.scoring import (
 )
 from benchflow.metrics import BenchmarkMetrics, TaskMetrics
 from benchflow.models import RunResult
+from benchflow.trajectories.types import (
+    LLMExchange,
+    LLMRequest,
+    LLMResponse,
+    Trajectory,
+)
 
 # classify_verifier_error
 
@@ -901,6 +907,99 @@ class TestScrapedTrajectoryTrust:
             for p in patches:
                 stack.enter_context(p)
             yield planes
+
+    @pytest.mark.asyncio
+    async def test_pr_942_provider_capture_repairs_nonempty_acp(self, sdk_run_mocks):
+        """Guards PR #942: cleanup reconciles trusted evidence into ACP."""
+
+        sdk, mock_env, task_dir = sdk_run_mocks
+        acp = [
+            {
+                "type": "tool_call",
+                "tool_call_id": "call-1",
+                "kind": "execute",
+                "title": "bash",
+                "status": "completed",
+                "content": [],
+            }
+        ]
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "function": {
+                            "name": "bash",
+                            "arguments": json.dumps(
+                                {"command": "cat /root/input/settings.yaml"}
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": "returned input",
+            },
+        ]
+        provider_trajectory = Trajectory(
+            session_id="provider-capture",
+            exchanges=[
+                LLMExchange(
+                    request=LLMRequest(body={"messages": messages}),
+                    response=LLMResponse(body={}),
+                )
+            ],
+        )
+        usage_runtime = MagicMock()
+        usage_runtime.server.trajectory = provider_trajectory
+        mock_session = MagicMock()
+        mock_session.tool_calls = [MagicMock()]
+        mock_acp = AsyncMock()
+        mock_acp.session = mock_session
+        mock_acp.close = AsyncMock()
+
+        with self._patch_sdk_run(
+            sdk,
+            mock_env,
+            [
+                patch(
+                    "benchflow.rollout._verify_rollout",
+                    new_callable=AsyncMock,
+                    return_value=({"reward": 0.0}, None, None),
+                ),
+            ],
+        ) as planes:
+            planes.ensure_litellm_runtime.side_effect = None
+            planes.ensure_litellm_runtime.return_value = (
+                {"TEST": "1"},
+                usage_runtime,
+            )
+            planes.connect_acp.return_value = (
+                mock_acp,
+                mock_session,
+                MagicMock(),
+                "opencode",
+            )
+            planes.execute_prompts.return_value = (acp, 1)
+            result = await sdk.run(
+                task_dir,
+                agent="opencode",
+                agent_env={"TEST": "1"},
+                sandbox_user=None,
+                jobs_dir=task_dir.parent / "jobs",
+            )
+
+        assert result.trajectory_source == "acp"
+        assert result.trajectory[0]["title"] == "cat /root/input/settings.yaml"
+        assert result.trajectory[0]["content"] == [
+            {
+                "type": "content",
+                "content": {"type": "text", "text": "returned input"},
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_scraped_trajectory_preserves_n_tool_calls(

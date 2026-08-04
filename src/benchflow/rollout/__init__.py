@@ -210,6 +210,8 @@ from benchflow.skill_policy import SKILL_MODE_WITH_SKILL as SKILL_MODE_WITH_SKIL
 from benchflow.trajectories._capture import (
     TrajectoryWriter,
     _capture_session_trajectory,
+    _parse_provider_tool_evidence,
+    _reconcile_tool_evidence,
     _scrape_agent_trajectory,
     make_trajectory_sink,
 )
@@ -1893,6 +1895,10 @@ class Rollout:
                 self._write_llm_trajectory(usage_runtime)
             except Exception as e:
                 logger.warning(f"LLM trajectory write failed: {e}")
+            try:
+                self._reconcile_acp_tool_evidence(usage_runtime)
+            except Exception as e:
+                logger.warning(f"ACP tool-evidence reconciliation failed: {e}")
             finally:
                 self._usage_runtime = None
 
@@ -2361,6 +2367,29 @@ class Rollout:
         LiveLLMTrajectoryWriter(
             self._rollout_dir / "trajectory" / "llm_trajectory.jsonl"
         ).reconcile(trajectory)
+
+    def _reconcile_acp_tool_evidence(self, usage_runtime: Any) -> None:
+        """Repair lossy ACP tool details from trusted provider capture."""
+
+        if self._rollout_dir is None:
+            return
+        trajectory = getattr(getattr(usage_runtime, "server", None), "trajectory", None)
+        exchanges = getattr(trajectory, "exchanges", None)
+        if not isinstance(exchanges, list) or not exchanges:
+            return
+        provider_evidence = _parse_provider_tool_evidence(exchanges)
+        self._trajectory, repaired = _reconcile_tool_evidence(
+            self._trajectory, provider_evidence
+        )
+        if not repaired:
+            return
+        TrajectoryWriter(
+            self._rollout_dir / "trajectory" / "acp_trajectory.jsonl"
+        ).write_final(self._trajectory)
+        logger.warning(
+            "Repaired %d lossy ACP tool event(s) from trusted provider capture",
+            repaired,
+        )
 
     def _usage_tracking_metadata(self) -> dict[str, Any]:
         usage_cfg = self._config.usage_tracking.with_env_defaults()

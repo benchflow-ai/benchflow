@@ -25,8 +25,10 @@
   default reviewer harness is `opencode` (pinned to `1.18.11`).
   Evidence mounts at `/evidence` outside the agent workdir (root-owned,
   unwritable by the reviewer), symlinks are dropped rather than
-  dereferenced, task skills, shipped rubrics, and redundant provider-history
-  trajectories are excluded while the canonical ACP trajectory is retained,
+  dereferenced, task skills, shipped rubrics, and cumulative provider-history
+  trajectories are excluded while the canonical ACP trajectory is retained;
+  dropped ACP tool observations and generic tool titles are repaired from
+  exact-ID events in the trusted provider capture,
   reviewer egress is gateway-scoped via the sandbox lockdown flag, artifact
   consumption is pinned to each invocation's unique runtime leaf, and the
   job summary is a deterministic aggregation.
