@@ -36,7 +36,7 @@ on:
 # Cancel superseded L1 runs on the same PR branch — this is the fast-feedback
 # lane, so a newer push supersedes the older run.
 concurrency:
-  group: integration-light-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.ref }}
+  group: integration-light-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.ref }}
   cancel-in-progress: true
 
 # Workflow-level least privilege; jobs elevate only what they need.

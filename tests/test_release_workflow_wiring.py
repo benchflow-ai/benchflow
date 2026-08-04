@@ -215,6 +215,17 @@ def test_preview_publish_is_downstream_of_tested_main_live_gate() -> None:
     assert "${{ steps.provenance.outputs.source_run_number }}" in version_step["run"]
 
 
+def test_pr_integration_is_not_cancelled_by_test_workflow_completion() -> None:
+    """Guards PR #944 against cross-event integration concurrency cancellation."""
+    integration = _workflow("integration-light.yml")
+
+    assert integration["concurrency"]["group"] == (
+        "integration-light-${{ github.event_name }}-"
+        "${{ github.event.pull_request.head.sha || "
+        "github.event.workflow_run.head_sha || github.ref }}"
+    )
+
+
 def test_failed_main_unit_run_makes_integration_gate_red(tmp_path: Path) -> None:
     """Guards the 0.6.6 fix against publishing after a failed main unit run."""
     integration = _workflow("integration-light.yml")
