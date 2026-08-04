@@ -155,6 +155,12 @@ class AgentCoreImagePublisher:
         return (
             base
             + "\n"
+            + "# Sealed uploads decrypt with openssl inside the runtime;\n"
+            + "# install it when the base image lacks it and a package\n"
+            + "# manager exists (fails loudly at runtime otherwise).\n"
+            + "RUN command -v openssl >/dev/null 2>&1 || "
+            + "(apt-get update -qq && apt-get install -y -qq openssl) || "
+            + "dnf -y install openssl || apk add --no-cache openssl || true\n"
             + "# --- BenchFlow AgentCore runtime contract ---\n"
             + "# AgentCore refuses command execution for a session whose\n"
             + "# container does not answer GET /ping on :8080.\n"

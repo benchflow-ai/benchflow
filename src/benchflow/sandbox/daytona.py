@@ -407,6 +407,10 @@ class DaytonaSandbox(BaseSandbox):
         if self._compose_mode:
             path = self._environment_docker_compose_path
         else:
+            if self.task_env_config.docker_image:
+                # Prebuilt-image task: start() uses Image.base(docker_image)
+                # and never reads a Dockerfile (matches modal/agentcore/apple).
+                return
             path = self._dockerfile_path
         if not path.exists():
             raise FileNotFoundError(f"{path} not found. Please ensure the file exists.")
@@ -874,8 +878,11 @@ class DaytonaSandbox(BaseSandbox):
     async def services(self) -> list[str]:
         return await self._strategy.services()
 
-    async def upload_file(self, source_path: Path | str, target_path: str) -> None:
-        return await self._strategy.upload_file(source_path, target_path)
+    async def upload_file(
+        self, source_path: Path | str, target_path: str, *, mode: str | None = None
+    ) -> None:
+        await self._strategy.upload_file(source_path, target_path)
+        await self._apply_upload_mode(target_path, mode)
 
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"

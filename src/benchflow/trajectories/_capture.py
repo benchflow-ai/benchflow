@@ -269,3 +269,172 @@ def _parse_gemini_trajectory(data: dict) -> list[dict]:
             if thought:
                 events.append({"type": "agent_thought", "text": thought})
     return events
+
+
+def _reconcile_tool_evidence(
+    trajectory: list[dict], provider_evidence: list[dict]
+) -> tuple[list[dict], int]:
+    """Repair lossy ACP tool events from exact-ID provider evidence.
+
+    ACP remains the canonical ordering/status source. A non-empty provider
+    result fills only an empty ACP observation, and a provider command title
+    replaces only a generic ACP title equal to the tool name. The normal
+    trajectory writer applies credential redaction before merged events reach
+    disk.
+
+    Returns the merged trajectory and the number of repaired observations.
+    """
+
+    evidence_by_id = {
+        event.get("tool_call_id"): event
+        for event in provider_evidence
+        if event.get("type") == "tool_call" and event.get("tool_call_id")
+    }
+    if not evidence_by_id:
+        return trajectory, 0
+
+    merged: list[dict] = []
+    repaired = 0
+    for event in trajectory:
+        tool_call_id = event.get("tool_call_id")
+        evidence = evidence_by_id.get(tool_call_id)
+        if event.get("type") == "tool_call" and evidence:
+            updated = dict(event)
+            if not event.get("content") and evidence.get("content"):
+                updated["content"] = evidence["content"]
+            provider_title = evidence.get("title")
+            provider_tool = evidence.get("provider_tool")
+            if (
+                isinstance(provider_title, str)
+                and provider_title
+                and event.get("title") in {None, "", provider_tool}
+            ):
+                updated["title"] = provider_title
+            if updated != event:
+                event = updated
+                repaired += 1
+        merged.append(event)
+    return merged, repaired
+
+
+def _provider_tool_title(name: str, arguments: Any) -> str | None:
+    """Render the most useful bounded title from captured tool arguments."""
+
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return arguments[:4096] or None
+    if not isinstance(arguments, dict):
+        return None
+    command = arguments.get("command")
+    if isinstance(command, str) and command:
+        return command[:4096]
+    rendered = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+    return f"{name} {rendered}"[:4096] if rendered != "{}" else None
+
+
+def _parse_provider_tool_evidence(exchanges: list[Any]) -> list[dict]:
+    """Extract exact-ID tool commands/results from trusted provider requests.
+
+    OpenAI-style messages carry ordinary ``tool_calls`` and ``tool`` results.
+    Gemini CLI additionally embeds its native ``contents`` conversation as
+    JSON inside one of those messages. Later requests repeat the growing
+    conversation, so evidence is deduplicated by exact tool-call ID. This
+    source is captured by BenchFlow's host/sandbox-local proxy, unlike the
+    agent-writable native trajectory fallback.
+    """
+
+    evidence: dict[str, dict] = {}
+    order: list[str] = []
+
+    def record_call(tool_call_id: Any, name: Any, arguments: Any) -> None:
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            return
+        if tool_call_id not in evidence:
+            order.append(tool_call_id)
+            evidence[tool_call_id] = {
+                "type": "tool_call",
+                "tool_call_id": tool_call_id,
+            }
+        if isinstance(name, str) and name:
+            evidence[tool_call_id]["provider_tool"] = name
+            title = _provider_tool_title(name, arguments)
+            if title:
+                evidence[tool_call_id]["title"] = title
+
+    def record_result(tool_call_id: Any, output: Any) -> None:
+        if not isinstance(tool_call_id, str) or not tool_call_id or output is None:
+            return
+        if tool_call_id not in evidence:
+            order.append(tool_call_id)
+            evidence[tool_call_id] = {
+                "type": "tool_call",
+                "tool_call_id": tool_call_id,
+            }
+        text = output if isinstance(output, str) else json.dumps(output)
+        evidence[tool_call_id]["content"] = [
+            {
+                "type": "content",
+                "content": {"type": "text", "text": text},
+            }
+        ]
+
+    for exchange in exchanges:
+        request = getattr(exchange, "request", None)
+        body = getattr(request, "body", None)
+        if not isinstance(body, dict):
+            continue
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            continue
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function = tool_call.get("function")
+                    function = function if isinstance(function, dict) else {}
+                    record_call(
+                        tool_call.get("id") or tool_call.get("tool_call_id"),
+                        function.get("name") or tool_call.get("name"),
+                        function.get("arguments", tool_call.get("arguments")),
+                    )
+            if message.get("role") == "tool":
+                record_result(
+                    message.get("tool_call_id") or message.get("id"),
+                    message.get("content"),
+                )
+            raw_content = message.get("content")
+            if not isinstance(raw_content, str):
+                continue
+            try:
+                nested = json.loads(raw_content.lstrip())
+            except json.JSONDecodeError:
+                continue
+            contents = nested.get("contents") if isinstance(nested, dict) else None
+            if not isinstance(contents, list):
+                continue
+            for content in contents:
+                if not isinstance(content, dict):
+                    continue
+                parts = content.get("parts")
+                if not isinstance(parts, list):
+                    continue
+                for part in parts:
+                    call = part.get("functionCall") if isinstance(part, dict) else None
+                    if isinstance(call, dict):
+                        record_call(call.get("id"), call.get("name"), call.get("args"))
+                    response = (
+                        part.get("functionResponse") if isinstance(part, dict) else None
+                    )
+                    if not isinstance(response, dict):
+                        continue
+                    payload = response.get("response")
+                    if not isinstance(payload, dict):
+                        continue
+                    record_result(response.get("id"), payload.get("output"))
+    return [evidence[tool_call_id] for tool_call_id in order]

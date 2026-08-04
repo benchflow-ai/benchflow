@@ -301,6 +301,7 @@ async def _start_env_and_upload(
     *,
     skip_start: bool = False,
     on_started: Callable[[], None] | None = None,
+    uploads: dict[str, str] | None = None,
 ) -> None:
     """Start environment and upload task files.
 
@@ -349,6 +350,20 @@ async def _start_env_and_upload(
             else sandbox_paths.solution_dir
         )
         await env.upload_dir(paths.solution_dir, str(target_dir))
+
+    from benchflow._paths import is_safe_regular_dir, is_safe_regular_file
+
+    for host_path, sandbox_path in (uploads or {}).items():
+        source = Path(host_path)
+        if is_safe_regular_dir(source):
+            await env.upload_dir(source, sandbox_path)
+        elif is_safe_regular_file(source):
+            await env.upload_file(source, sandbox_path)
+        else:
+            raise FileNotFoundError(
+                "configured upload source must be an existing regular file or "
+                f"directory, not a symlink: {host_path}"
+            )
 
 
 async def _run_oracle(

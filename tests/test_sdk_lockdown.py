@@ -453,13 +453,32 @@ class TestAgentEgressFirewall:
         assert "iptables -C OUTPUT -o lo" in _cmd
         assert env.exec.await_args.kwargs == {"user": "root", "timeout_sec": 120}
 
+    async def test_policy_accepts_canonical_loopback_provider_url(self):
+        """Guards PR #942 remediation for native-protocol reviewer proxies."""
+
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock(return_value=MagicMock(return_code=0))
+
+        await enforce_agent_egress_firewall(
+            env,
+            "reviewer",
+            {
+                "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                "BENCHFLOW_PROVIDER_BASE_URL": "http://127.0.0.1:45678/v1",
+            },
+        )
+
+        env.exec.assert_awaited_once()
+
     async def test_policy_rejects_non_loopback_proxy(self):
         from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
 
         env = MagicMock()
         env.exec = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="loopback LLM_BASE_URL"):
+        with pytest.raises(RuntimeError, match="loopback provider base URL"):
             await enforce_agent_egress_firewall(
                 env,
                 "agent",

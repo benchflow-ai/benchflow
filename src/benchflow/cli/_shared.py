@@ -135,3 +135,27 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     if job_dir is not None:
         console.print(f"[dim]Artifacts:[/dim] {escape(str(job_dir))}")
         console.print(f"[dim]Summary:  [/dim] {escape(str(job_dir))}/summary.json")
+
+
+def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
+    """Parse repeated ``KEY=VALUE`` CLI options into a dict."""
+    import typer
+
+    parsed: dict[str, str] = {}
+    for entry in entries or []:
+        if "=" not in entry:
+            print_error(f"Invalid env var: {entry}")
+            raise typer.Exit(1)
+        key, value = entry.split("=", 1)
+        parsed[key] = value
+    return parsed
+
+
+def _apply_dotenv_to_process_env() -> None:
+    """Expose local .env credentials to provider SDKs without overriding env."""
+    import os
+
+    from benchflow._dotenv import load_dotenv_env
+
+    for key, value in load_dotenv_env().items():
+        os.environ.setdefault(key, value)

@@ -62,6 +62,39 @@ class FakeSetupCommandEnv:
         return SimpleNamespace(return_code=self.return_code, stdout="out", stderr="err")
 
 
+@pytest.mark.parametrize("target_kind", ["file", "directory"])
+@pytest.mark.asyncio
+async def test_configured_upload_rejects_top_level_symlink(
+    tmp_path: Path, target_kind: str
+) -> None:
+    """Guards PR #942: post-start uploads cannot follow a host symlink."""
+
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "instruction.md").write_text("review\n", encoding="utf-8")
+    if target_kind == "file":
+        target = tmp_path / ".env"
+        target.write_text("SECRET=do-not-upload\n", encoding="utf-8")
+    else:
+        target = tmp_path / "secrets"
+        target.mkdir()
+        (target / ".env").write_text("SECRET=do-not-upload\n", encoding="utf-8")
+    link = tmp_path / "configured-upload"
+    link.symlink_to(target, target_is_directory=target_kind == "directory")
+    env = FakeUploadEnv()
+
+    with pytest.raises(FileNotFoundError, match="not a symlink"):
+        await _start_env_and_upload(
+            env,
+            task,
+            {},
+            uploads={str(link): "/evidence/secret"},
+        )
+
+    assert env.uploaded_dirs == []
+    assert all("do-not-upload" not in body for body, _ in env.uploaded_file_contents)
+
+
 @pytest.mark.asyncio
 async def test_environment_healthcheck_retries_until_ready(monkeypatch) -> None:
     """Guards environment healthcheck execution added with PR #907."""

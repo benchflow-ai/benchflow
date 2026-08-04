@@ -139,6 +139,11 @@ class RolloutConfig:
     # exclusive with an explicit ``user``. A dict (the to_mapping() shape) is
     # also accepted at runtime and materialized via from_mapping.
     loop_strategy: LoopStrategySpec | str | None = None
+    # Extra host paths uploaded into the sandbox after start, before the
+    # agent runs: host directory/file -> absolute sandbox path. Used by
+    # callers whose task ships data that is not baked into the image (e.g.
+    # rubric review evidence); every sandbox backend supports the upload.
+    uploads: dict[str, str] = field(default_factory=dict)
     # Whether a task.md-declared user may be adopted when neither an explicit
     # ``user`` nor a loop strategy materializes one. ``None`` (default)
     # derives the answer from scene authorship: programmatic scene callers

@@ -9,10 +9,10 @@ with its own ARN), after which sessions are invoked against that ARN.
 concurrent sessions, each an isolated microVM with its own filesystem, and the
 account quotas are lopsided in exactly that direction: 5000 concurrent
 sessions against 100 total runtimes, with ``CreateAgentRuntime`` limited to
-5/s. So the image and the runtime are built **once per distinct task image**
-— keyed by a digest of the build context, and shared by every trial and skill
-arm that resolves to it — while sessions are what scale out. That sharing is
-what makes this backend usable for a large parallel matrix; see
+5/s. So each image is built once, and each compatible image-plus-runtime
+contract is registered once and shared by every matching trial and skill arm,
+while sessions are what scale out. That sharing is what makes this backend
+usable for a large parallel matrix; see
 ``agentcore_provisioning`` for the single-flight machinery.
 
 Runtimes therefore outlive the rollout that first needed them, like a built
@@ -46,7 +46,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import io
+import json
 import os
 import shlex
 import tarfile
@@ -60,9 +62,10 @@ from typing import TYPE_CHECKING, Any
 from benchflow._paths import iter_safe_tree
 from benchflow.sandbox import agentcore_builder as builders
 from benchflow.sandbox import agentcore_provisioning as provisioning
-from benchflow.sandbox._base import BaseSandbox, ExecResult, wrap_command_with_env_file
+from benchflow.sandbox._base import BaseSandbox, ExecResult
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.agentcore_image import AgentCoreImagePublisher
+from benchflow.sandbox.agentcore_sealed import SealedChannel
 from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths
@@ -129,6 +132,7 @@ class AgentCoreSandbox(BaseSandbox):
         self._runtime_id: str | None = None
         self._clients: dict[str, Any] = {}
         self._client_lock = threading.Lock()
+        self._sealed = SealedChannel(self._exec_raw, self.logger)
         self._images = AgentCoreImagePublisher(
             environment_dir=environment_dir,
             environment_name=environment_name,
@@ -254,6 +258,11 @@ class AgentCoreSandbox(BaseSandbox):
             self.runtime_arn = await self._ensure_runtime(image_uri)
             # AgentCore requires a session id of at least 33 characters.
             self.runtime_session_id = f"{uuid.uuid4()}-{uuid.uuid4().hex[:8]}"
+            # Each runtime session has an independent microVM/filesystem. A
+            # public key cached for the previous session has no matching
+            # private key here, so reset the channel before any warm-up exec
+            # can stage persistent environment values.
+            self._sealed = SealedChannel(self._exec_raw, self.logger)
             # Provisioning is memoized, so only the first rollout of an image
             # runs the creation path. Every rollout refreshes the lease (rate
             # limited) or a long matrix outlives the lease it inherited.
@@ -276,17 +285,16 @@ class AgentCoreSandbox(BaseSandbox):
             ) from exc
 
     async def _ensure_runtime(self, image_uri: str) -> str:
-        """Resolve the shared agent runtime for *image_uri*, creating it once.
+        """Resolve the shared runtime for an image and execution contract.
 
-        The runtime is named after the image's content digest, so every rollout
-        of that image — each trial, and both skill arms when their images match
-        — resolves to the same runtime and simply opens another session against
-        it. Keying on the task name instead meant concurrent trials raced to
-        create one runtime and the first to finish deleted it while the others
-        were still running.
+        Equivalent rollouts share one runtime and open separate sessions. The
+        identity also binds lifecycle, role, network, and protocol: AgentCore
+        stores those on the runtime, so image-only naming made a later rollout
+        with a different timeout collide with an incompatible existing runtime.
         """
         digest, _tag = self._images.identity()
-        name = provisioning.runtime_name(self.environment_name, digest)
+        contract_digest = self._runtime_contract_digest(digest)
+        name = provisioning.runtime_name(self.environment_name, contract_digest)
 
         async def _create() -> tuple[str, str]:
             return await self._create_or_adopt_runtime(name, image_uri)
@@ -299,6 +307,19 @@ class AgentCoreSandbox(BaseSandbox):
         )
         self._runtime_id = runtime_id
         return arn
+
+    def _runtime_contract_digest(self, image_digest: str) -> str:
+        """Hash every immutable field that determines a reusable runtime."""
+
+        contract = {
+            "imageDigest": image_digest,
+            "lifecycleConfiguration": self._lifecycle_configuration(),
+            "networkConfiguration": _NETWORK_CONFIGURATION,
+            "protocolConfiguration": _PROTOCOL_CONFIGURATION,
+            "roleArn": self._require_role_arn(),
+        }
+        payload = json.dumps(contract, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode()).hexdigest()
 
     async def _create_or_adopt_runtime(
         self, name: str, image_uri: str
@@ -687,23 +708,61 @@ class AgentCoreSandbox(BaseSandbox):
             raise RuntimeError("AgentCore sandbox not started. Call start() first.")
 
         wrapped = command
+        resolved_user = self._resolve_user(user)
         merged_env = self._merge_env(env)
         if merged_env:
-            wrapped = wrap_command_with_env_file(
-                merged_env, wrapped, env_path_prefix="/tmp/.bf_agentcore_env_"
+            # NEVER use the shared env-file command wrapper here: it embeds
+            # the whole environment as reversible base64 in the command, and
+            # this platform records command bodies permanently in the
+            # runtime's CloudWatch log group. Stage the environment through
+            # the sealed (ciphertext-only) channel and source it instead, so
+            # the logged text holds only a file path.
+            env_path = await self._sealed.stage_env(
+                merged_env,
+                owner=str(resolved_user) if resolved_user is not None else None,
             )
-        if cwd:
+            quoted_env = shlex.quote(env_path)
+            if cwd:
+                wrapped = f"cd {shlex.quote(cwd)} && {wrapped}"
+            # Cleanup must not depend on anything that can be skipped:
+            # - the trap is installed FIRST, before any `cd` (a failed cd
+            #   previously prevented trap installation and leaked the file);
+            # - the file is ALSO removed inline right after sourcing, before
+            #   the user command runs, because a command that `exec`s
+            #   replaces the shell and EXIT traps never fire;
+            # - a failed `.` must abort (POSIX makes dot-failures fatal in
+            #   non-interactive shells; `|| exit 97` covers shells where it
+            #   is not) rather than silently running with an empty
+            #   environment — the trap still fires on that exit.
+            wrapped = (
+                f"trap 'rm -f {quoted_env}' EXIT; "
+                f"set -a; . {quoted_env} || exit 97; set +a; "
+                f"rm -f {quoted_env}; {wrapped}"
+            )
+        elif cwd:
             wrapped = f"cd {shlex.quote(cwd)} && {wrapped}"
 
-        resolved_user = self._resolve_user(user)
+        return await self._dispatch_command(
+            wrapped, timeout_sec=timeout_sec, resolved_user=resolved_user
+        )
+
+    async def _dispatch_command(
+        self,
+        command: str,
+        *,
+        timeout_sec: int | None,
+        resolved_user: str | int | None,
+    ) -> ExecResult:
+        """Send one environment-free shell command to the active session."""
+
         if resolved_user is not None:
             if isinstance(resolved_user, int):
                 user_arg = f"$(getent passwd {resolved_user} | cut -d: -f1)"
             else:
                 user_arg = shlex.quote(str(resolved_user))
-            wrapped = f"su {user_arg} -s /bin/bash -c {shlex.quote(wrapped)}"
+            command = f"su {user_arg} -s /bin/bash -c {shlex.quote(command)}"
 
-        payload = f"/bin/bash -c {shlex.quote(wrapped)}"
+        payload = f"/bin/bash -c {shlex.quote(command)}"
         # The service enforces 1..3600 for the command timeout.
         timeout = max(1, min(int(timeout_sec or 300), 3600))
         return await asyncio.to_thread(self._invoke_command, payload, timeout)
@@ -777,50 +836,50 @@ class AgentCoreSandbox(BaseSandbox):
 
     # -------------------------------------------------------- file transfer
 
+    async def _exec_raw(
+        self,
+        command: str,
+        *,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+    ) -> ExecResult:
+        """Run *command* with no environment injection at all.
+
+        The sealed transport and the env-staging path must use this: routing
+        them through :meth:`exec` would re-enter environment wrapping (and,
+        for env staging, recurse). Nothing secret may appear in *command* —
+        every caller passes ciphertext or plain paths.
+        """
+
+        return await self._dispatch_command(
+            command,
+            timeout_sec=timeout_sec,
+            resolved_user=self._resolve_user(user),
+        )
+
     async def write_text_file(
         self, remote_path: str, body: str, *, mode: str = "600"
     ) -> bool:
-        """Write *body* to *remote_path* inside the session, base64-encoded.
+        """Write *body* to *remote_path* through the sealed channel.
 
         Used by the ACP transport to stage the agent env file without typing
         secrets into the PTY, where they would be echoed into the agent log.
         """
-        encoded = base64.b64encode(body.encode()).decode()
-        if len(encoded) > _MAX_INLINE_UPLOAD_BYTES:
-            raise ValueError(
-                f"Refusing to inline {len(encoded)} bytes into an AgentCore "
-                f"command (limit {_MAX_INLINE_UPLOAD_BYTES}). "
+        try:
+            await self._sealed.upload(
+                body.encode(), target=remote_path, mode=mode, timeout_sec=120
             )
-        quoted = shlex.quote(remote_path)
-        result = await self.exec(
-            f"mkdir -p $(dirname {quoted}) && "
-            f"printf %s {shlex.quote(encoded)} | base64 -d > {quoted} && "
-            f"chmod {mode} {quoted}",
-            timeout_sec=60,
-        )
-        return result.return_code == 0
+        except RuntimeError:
+            return False
+        return True
 
-    async def upload_file(self, source_path: Path | str, target_path: str) -> None:
+    async def upload_file(
+        self, source_path: Path | str, target_path: str, *, mode: str | None = None
+    ) -> None:
         source = Path(source_path)
-        data = source.read_bytes()
-        encoded = base64.b64encode(data).decode()
-        if len(encoded) > _MAX_INLINE_UPLOAD_BYTES:
-            # Larger payloads go through the tar path, which streams in
-            # bounded chunks instead of one oversized command.
-            await self._upload_via_tar(
-                {source: PurePosixPath(target_path)},
-            )
-            return
-        quoted = shlex.quote(target_path)
-        result = await self.exec(
-            f"mkdir -p $(dirname {quoted}) && "
-            f"printf %s {shlex.quote(encoded)} | base64 -d > {quoted}",
-            timeout_sec=120,
+        await self._sealed.upload(
+            source.read_bytes(), target=target_path, mode=mode, timeout_sec=300
         )
-        if result.return_code != 0:
-            raise RuntimeError(
-                f"AgentCore upload_file failed: {(result.stderr or '')[:500]}"
-            )
 
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"
@@ -840,45 +899,24 @@ class AgentCoreSandbox(BaseSandbox):
             await self._upload_via_tar(members)
 
     async def _upload_via_tar(self, members: dict[Path, PurePosixPath]) -> None:
-        """Ship files as a single base64 tar stream, chunked under the cap.
+        """Ship files as one sealed tar stream, chunked under the command cap.
 
-        One archive per directory keeps this O(1) commands for the common case
-        instead of one round trip per file, and the chunk loop keeps every
-        individual command well inside the service's 64 KB payload limit.
+        One archive avoids a round trip per file, while the chunk loop keeps
+        every command well inside the service's 64 KB payload limit.
         """
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
             for local, remote in members.items():
                 tar.add(local, arcname=str(remote).lstrip("/"))
-        encoded = base64.b64encode(buffer.getvalue()).decode()
-
-        staging = f"/tmp/.bf_upload_{uuid.uuid4().hex[:16]}.b64"
-        chunk = _MAX_INLINE_UPLOAD_BYTES
-        for index in range(0, len(encoded), chunk):
-            piece = encoded[index : index + chunk]
-            redirect = ">" if index == 0 else ">>"
-            result = await self.exec(
-                f"printf %s {shlex.quote(piece)} {redirect} {staging}",
-                timeout_sec=120,
-            )
-            if result.return_code != 0:
-                await self.exec(f"rm -f {staging}", timeout_sec=30)
-                raise RuntimeError(
-                    f"AgentCore upload staging failed: {(result.stderr or '')[:500]}"
-                )
-
-        result = await self.exec(
-            f"set -o pipefail; trap 'rm -f {staging}' EXIT; "
-            f"base64 -d {staging} | tar -xzf - -C /",
-            timeout_sec=600,
-            user="root",
+        await self._sealed.upload(
+            buffer.getvalue(), target=None, extract_tar=True, timeout_sec=600
         )
-        if result.return_code != 0:
-            raise RuntimeError(
-                f"AgentCore upload extract failed: {(result.stderr or '')[:500]}"
-            )
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
+        # NOT sealed: the file body returns as base64 through command
+        # OUTPUT, which the platform records like command text. Downloads
+        # must therefore only carry non-secret run artifacts (verifier
+        # logs, review results) — never credentials.
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         result = await self.exec(f"base64 {shlex.quote(source_path)}", timeout_sec=300)

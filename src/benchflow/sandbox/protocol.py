@@ -1,3 +1,5 @@
+"""Shared sandbox protocol value types and capability interfaces."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -107,7 +109,12 @@ class Sandbox(Protocol):
         self, cmd: str, *, user: str = "root", timeout_sec: int = 30
     ) -> ExecResult: ...
 
-    async def upload_file(self, src: Path, dst: str) -> None: ...
+    async def upload_file(
+        self, src: Path, dst: str, *, mode: str | None = None
+    ) -> None:
+        """Upload one file; ``mode`` chmods it (e.g. ``"600"`` for secrets)."""
+        ...
+
     async def upload_dir(self, src: Path, dst: str, service: str = "main") -> None: ...
     async def download_file(self, src: str, dst: Path) -> None: ...
     async def download_dir(

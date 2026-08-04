@@ -152,7 +152,9 @@ async def enforce_agent_egress_firewall(
     if not sandbox_user or agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") != "1":
         return
 
-    base_url = agent_env.get("LLM_BASE_URL", "")
+    base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL") or agent_env.get(
+        "LLM_BASE_URL", ""
+    )
     parsed = urlsplit(base_url)
     if (
         parsed.scheme != "http"
@@ -160,7 +162,7 @@ async def enforce_agent_egress_firewall(
         or parsed.port is None
     ):
         raise RuntimeError(
-            "No-web agent requires an HTTP loopback LLM_BASE_URL with a port"
+            "No-web agent requires an HTTP loopback provider base URL with a port"
         )
 
     result = await env.exec(
@@ -825,7 +827,7 @@ async def _checked_exec(env: Any, command: str, label: str, **kwargs: Any) -> An
 # setup from false-erroring the verifier. Owned here so every call site — the
 # scoring path (harden_before_verify) and the soft-verify path (rollout, via
 # cleanup_verifier_python_hooks) — shares one value rather than scattering it.
-VERIFIER_SETUP_TIMEOUT_SEC = 60
+VERIFIER_SETUP_TIMEOUT_SEC = 180
 
 
 async def clear_verifier_output_dir(
@@ -1102,9 +1104,23 @@ async def _freeze_workspace(env, workspace: str) -> None:
     chown workspace to root is belt-and-suspenders against any zombie
     sandbox-user process that survived the pkill above.
     """
-    await env.exec(_purge_external_symlinks_cmd(workspace), user="root")
-    await env.exec(_purge_pycache_cmd(workspace), user="root")
-    await env.exec(f"chown -R root:root {shlex.quote(workspace)}", user="root")
+    await env.exec(
+        _purge_external_symlinks_cmd(workspace),
+        user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+    )
+    await env.exec(
+        _purge_pycache_cmd(workspace),
+        user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+    )
+    await _checked_exec(
+        env,
+        f"chown -R root:root {shlex.quote(workspace)}",
+        "Verifier hardening failed: freezing workspace ownership",
+        user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+    )
 
 
 async def _build_verifier_env(
@@ -1190,12 +1206,14 @@ async def harden_before_verify(
         _CLEAR_VERIFIER_DIR_CMD,
         "Verifier hardening failed: clearing verifier output directory",
         user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
     await _checked_exec(
         env,
         _ENSURE_APP_DIR_CMD,
         "Verifier hardening failed: preparing /app",
         user="root",
+        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
     # 3. Reclaim re-downloadable cache space before the verifier installs deps.
     await _reclaim_disk(env, workspace)

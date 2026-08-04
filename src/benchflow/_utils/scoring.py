@@ -216,7 +216,10 @@ def contains_verifier_dep_install_marker(text: str) -> bool:
 
 
 def _looks_like_verifier_infra_error(error: str) -> bool:
-    return any(
+    # Verifier execution uses the same sandbox transport as agent execution.
+    # Preserve retry parity for transport failures such as Daytona losing its
+    # session command between execution phases.
+    return _looks_like_infra_error(error) or any(
         marker in error
         for marker in (
             "failed to add tests directory",

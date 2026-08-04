@@ -651,18 +651,39 @@ async def test_required_usage_propagates_litellm_start_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_required_usage_fails_for_native_agent_without_litellm_route():
-    """Guards the follow-up to PR #613: required cannot silently go unavailable."""
+async def test_gemini_uses_native_generate_content_through_sandbox_proxy(monkeypatch):
+    """Guards PR #942 remediation: Gemini review keeps no-web isolation."""
 
-    with pytest.raises(RuntimeError, match="cannot be routed through LiteLLM"):
-        await ensure_litellm_runtime(
-            agent="gemini",
-            agent_env={"GEMINI_API_KEY": "gemini-key"},
-            model="gemini-2.5-flash",
-            runtime=None,
-            environment="docker",
-            usage_tracking="required",
-        )
+    starts = []
+
+    async def fake_sandbox_start(**kwargs):
+        starts.append(kwargs)
+        return FakeLiteLLMServer("http://127.0.0.1:45678", kwargs["route"])
+
+    async def unexpected_host_start(**_kwargs):
+        raise AssertionError("no-web Gemini must not use a host proxy")
+
+    monkeypatch.setattr(runtime_mod, "_start_sandbox_litellm", fake_sandbox_start)
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", unexpected_host_start)
+    sandbox = SimpleNamespace()
+
+    updated, provider_runtime = await ensure_litellm_runtime(
+        agent="gemini",
+        agent_env={"GEMINI_API_KEY": "upstream-gemini-key"},
+        model="gemini-2.5-flash",
+        runtime=None,
+        environment="docker",
+        usage_tracking="required",
+        sandbox=sandbox,
+        force_sandbox_local=True,
+    )
+
+    assert starts[0]["sandbox"] is sandbox
+    assert provider_runtime is not None
+    assert updated["GOOGLE_GEMINI_BASE_URL"] == "http://127.0.0.1:45678/gemini"
+    assert updated["GEMINI_API_KEY"] == provider_runtime.master_key
+    assert updated["GEMINI_API_KEY"] != "upstream-gemini-key"
+    assert LITELLM_MODEL_ALIAS_ENV not in updated
 
 
 @pytest.mark.asyncio

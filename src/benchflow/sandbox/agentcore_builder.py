@@ -180,6 +180,16 @@ class LocalDockerBuilder:
                 f"docker build failed (exit {result.returncode}):\n"
                 f"{(result.stderr or result.stdout or '').strip()[:4000]}"
             )
+        build_output = f"{result.stdout or ''}\n{result.stderr or ''}"
+        if "InvalidBaseImagePlatform" in build_output:
+            from benchflow.sandbox.protocol import SandboxStartupError
+
+            raise SandboxStartupError(
+                "AgentCore requires a linux/arm64 image, but Docker reported "
+                "that the selected base image is for another platform. Use a "
+                "multi-architecture index digest or an arm64 image digest.",
+                sandbox_id=request.image_uri,
+            )
 
         await self._reject_oversized(request.image_uri)
         await asyncio.to_thread(self._login, request.registry)

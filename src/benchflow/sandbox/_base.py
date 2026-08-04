@@ -54,6 +54,17 @@ def _filter_compose_service_names(output: str) -> list[str]:
 # assigned via `export NAME=...`; sourcing such a line aborts the whole
 # `. {env_path}` step, so the user command would never run (PR #323).
 _SHELL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_UPLOAD_MODE_RE = re.compile(r"^[0-7]{3,4}$")
+
+
+def validate_upload_mode(mode: str | None) -> str | None:
+    """Return a safe octal upload mode, rejecting shell fragments."""
+
+    if mode is not None and not _UPLOAD_MODE_RE.fullmatch(mode):
+        raise ValueError(
+            f"upload mode must be a 3- or 4-digit octal string, got {mode!r}"
+        )
+    return mode
 
 
 def wrap_command_with_env_file(
@@ -266,7 +277,30 @@ class BaseSandbox(ABC):
     async def stop(self, delete: bool) -> None: ...
 
     @abstractmethod
-    async def upload_file(self, source_path: Path | str, target_path: str) -> None: ...
+    async def upload_file(
+        self, source_path: Path | str, target_path: str, *, mode: str | None = None
+    ) -> None: ...
+
+    async def _apply_upload_mode(self, target_path: str, mode: str | None) -> None:
+        """chmod an uploaded file when the caller requested a private mode.
+
+        Canonical post-upload step for backends whose transfer primitive
+        cannot set the mode atomically. Fails loudly: a secret-bearing file
+        silently left world-readable is worse than a failed upload.
+        """
+        mode = validate_upload_mode(mode)
+        if mode is None:
+            return
+        result = await self.exec(
+            f"chmod {mode} {shlex.quote(str(target_path))}",
+            user="root",
+            timeout_sec=30,
+        )
+        if result.return_code != 0:
+            raise RuntimeError(
+                f"chmod {mode} {target_path} failed: "
+                f"{(result.stderr or result.stdout or '')[:300]}"
+            )
 
     @abstractmethod
     async def upload_dir(

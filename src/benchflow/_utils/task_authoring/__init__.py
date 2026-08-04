@@ -143,6 +143,32 @@ def task_digest(task_dir: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str]:
+    """Validate a review ``rubric.json`` when the task ships one.
+
+    Review rubrics are ``{"criteria": [{name, description, guidance}]}``
+    JSON documents. A ``rubric.json`` that is not shaped like that (for
+    example an llm-judge rubric owned by the verifier-strategy machinery)
+    is not checked here.
+    """
+    from benchflow.review.config import (
+        ReviewRubricError,
+        is_review_rubric_file,
+        load_rubric,
+    )
+
+    candidate = verifier_dir / "rubric.json"
+    if not candidate.is_file() or not is_review_rubric_file(candidate):
+        # Absent, unreadable, or another rubric dialect (e.g. an llm-judge
+        # rubric with id/match_criteria entries) — not ours to validate.
+        return []
+    try:
+        load_rubric(candidate)
+    except ReviewRubricError as e:
+        return [f"{verifier_label}/rubric.json invalid: {e}"]
+    return []
+
+
 def check_task(
     task_dir: Path,
     *,
@@ -241,6 +267,7 @@ def check_task(
                 verifier_label=verifier_label,
             )
         )
+        issues.extend(_check_review_rubric(verifier_dir, verifier_label=verifier_label))
     else:
         issues.append(
             "Missing verifier/ directory (or legacy tests/; verifier needs "

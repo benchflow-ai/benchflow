@@ -51,7 +51,7 @@ class _FakeHostServer:
 @pytest.mark.parametrize(
     "agent,model,expected",
     [
-        ("gemini", "gemini-3.5-flash", False),
+        ("gemini", "gemini-3.5-flash", True),
         ("oracle", "openai/gpt-4.1-mini", False),
         ("openhands", "gemini-3.5-flash", True),
         ("codex-acp", "openai/gpt-4.1-mini", True),
@@ -292,6 +292,7 @@ class _FakeSandbox:
         log_content: str = _SUCCESS_LOG,
     ):
         self.uploaded: dict[str, str] = {}
+        self.uploaded_modes: dict[str, str | None] = {}
         self.exec_calls: list[str] = []
         self.exec_timeouts: list[int | None] = []
         self.fail_launch = fail_launch
@@ -299,10 +300,13 @@ class _FakeSandbox:
         self.log_content = log_content
         self._started = False
 
-    async def upload_file(self, local_path, remote_path) -> None:
+    async def upload_file(self, local_path, remote_path, *, mode=None) -> None:
         self.uploaded[str(remote_path)] = Path(local_path).read_text()
+        self.uploaded_modes[str(remote_path)] = mode
 
-    async def exec(self, command: str, timeout_sec: int | None = None) -> _ExecResult:
+    async def exec(
+        self, command: str, timeout_sec: int | None = None, user=None
+    ) -> _ExecResult:
         self.exec_calls.append(command)
         self.exec_timeouts.append(timeout_sec)
         if "stat -c %s" in command:
@@ -358,11 +362,14 @@ async def test_sandbox_litellm_launch_keeps_secrets_off_command_line():
     launch_files = [k for k in sandbox.uploaded if k.endswith("launch_config.json")]
     assert launch_files, "launch_config.json should be uploaded"
     assert secret in sandbox.uploaded[launch_files[0]]
+    assert set(sandbox.uploaded_modes.values()) == {"600"}
     # ...and the secret never appears on any exec command line (/proc exposure).
     assert all(secret not in call for call in sandbox.exec_calls)
     # config.yaml uses os.environ/ refs, so the secret is not inlined there either.
     config_files = [k for k in sandbox.uploaded if k.endswith("config.yaml")]
     assert config_files and secret not in sandbox.uploaded[config_files[0]]
+    launch_command = next(call for call in sandbox.exec_calls if "launcher.py" in call)
+    assert f"rc=$?; rm -f {launch_files[0]}; exit $rc" in launch_command
 
     assert proc.base_url == "http://127.0.0.1:45999"
     assert await proc.is_running() is True

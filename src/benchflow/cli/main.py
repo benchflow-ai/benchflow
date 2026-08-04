@@ -17,7 +17,6 @@ compatibility.
 import asyncio
 import json
 import logging
-import os
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -27,7 +26,6 @@ from rich.markup import escape
 from rich.table import Table
 
 from benchflow import __version__
-from benchflow._dotenv import load_dotenv_env
 from benchflow._utils.config import normalize_sandbox_user
 from benchflow.agents.registry import parse_agent_spec
 from benchflow.cli._live_progress import (
@@ -37,7 +35,9 @@ from benchflow.cli._live_progress import (
 )
 from benchflow.cli._options import AgentOption, ModelOption, SkillModeOption
 from benchflow.cli._shared import (
+    _apply_dotenv_to_process_env,
     _exit_if_evaluation_had_errors,
+    _parse_agent_env,
     _report_eval_result,
     console,
     err_console,
@@ -51,6 +51,7 @@ from benchflow.cli.eval_artifacts import postprocess_eval_artifacts, run_matrix_
 from benchflow.cli.eval_lift import register_eval_lift
 from benchflow.cli.hub import register_hub
 from benchflow.cli.monitor import register_monitor
+from benchflow.cli.review import register_review
 from benchflow.cli.sandbox import register_sandbox
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
@@ -85,6 +86,9 @@ logging.basicConfig(
 
 _TAGLINE = "The universal environment framework — run, author, and adopt agent benchmarks across any environment."
 
+# Root command setup
+
+
 app = typer.Typer(
     name="benchflow",
     help=_TAGLINE,
@@ -111,23 +115,6 @@ def _cli_main(
     ] = None,
 ) -> None:
     """The universal environment framework — run, author, and adopt agent benchmarks."""
-
-
-def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
-    parsed: dict[str, str] = {}
-    for entry in entries or []:
-        if "=" not in entry:
-            print_error(f"Invalid env var: {entry}")
-            raise typer.Exit(1)
-        key, value = entry.split("=", 1)
-        parsed[key] = value
-    return parsed
-
-
-def _apply_dotenv_to_process_env() -> None:
-    """Expose local .env credentials to provider SDKs without overriding env."""
-    for key, value in load_dotenv_env().items():
-        os.environ.setdefault(key, value)
 
 
 def _normalize_eval_agent_or_exit(agent_spec: str) -> str:
@@ -189,6 +176,9 @@ def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
         console.print(
             f"\n[bold green]{counts['deleted']} sandboxes deleted[/bold green] ({counts['skipped']} skipped, younger than {max_age_minutes}m)"
         )
+
+
+# Evaluation execution
 
 
 eval_app = typer.Typer(help="Evaluation commands.")
@@ -768,6 +758,9 @@ def eval_run(
         raise typer.Exit(1)
 
 
+# Batch and config-file execution helpers
+
+
 def _eval_label(plan: "EvalPlan", tasks_dir: Path) -> str:
     """A short source descriptor for the live dashboard header."""
     req = plan.request
@@ -1060,6 +1053,9 @@ eval_create = eval_run
 
 
 @eval_app.command("list")
+# Evaluation inspection commands
+
+
 def eval_list(
     jobs_dir: Annotated[
         Path | None,
@@ -1224,6 +1220,7 @@ def eval_view(
 # not affect behavior; it follows the historical top-level help ordering.
 register_continue(eval_app, alias_app=app)
 register_skills(app)
+register_review(app)
 register_tasks(app)
 register_train(app)
 register_hub(app)

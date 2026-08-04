@@ -68,9 +68,16 @@ jobs:
       - name: Audit locked dependencies for known advisories
         run: |
           uv export --locked --extra dev --extra sandbox-daytona --extra sandbox-modal --format requirements-txt --no-hashes --output-file /tmp/req-audit
-          # GHSA-537c-gmf6-5ccf (cryptography <48.0.1): un-fixable while we use
-          # litellm[proxy], which hard-pins cryptography>=46.0.7,<47 in every
-          # release (incl. the latest, 1.89.0). Remove this ignore once litellm
-          # relaxes that pin so cryptography can reach the fixed 48.0.1.
+          # Every ignore below is a cryptography advisory we cannot reach the
+          # fix for: litellm[proxy] (pinned 1.91.0) hard-pins
+          # cryptography>=48.0.1,<49 , so 48.0.1 is the newest resolvable
+          # version. Drop these once litellm relaxes that pin.
+          #   GHSA-537c-gmf6-5ccf  fixed in 48.0.1 (pin previously held <47)
+          #   CVE-2026-69248       fixed in 49.0.0
+          #   CVE-2026-69249       fixed in 49.0.0
+          #   CVE-2026-69247       fixed in 50.0.0
           uv run --with pip-audit pip-audit -r /tmp/req-audit --no-deps --disable-pip \
-            --ignore-vuln GHSA-537c-gmf6-5ccf
+            --ignore-vuln GHSA-537c-gmf6-5ccf \
+            --ignore-vuln CVE-2026-69248 \
+            --ignore-vuln CVE-2026-69249 \
+            --ignore-vuln CVE-2026-69247
