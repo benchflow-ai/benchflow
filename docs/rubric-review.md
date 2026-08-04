@@ -51,9 +51,12 @@ A rubric must contain at least one criterion, names must be unique, and
 unknown fields are rejected. (Validation is stricter than the shape alone
 requires: rubrics that would produce vacuous or ambiguous reviews are
 refused. Every rubric that passes is exactly the v0.1 shape.) `rubric.json` is an overloaded filename —
-llm-judge verifier rubrics use `{id, match_criteria}` entries — so a file
-only counts as a review rubric when every criteria entry carries exactly
-these three keys; judge rubrics are never claimed or misvalidated.
+llm-judge verifier rubrics use `{id, match_criteria}` entries. Discovery is
+fail-closed: a `rubric.json` is treated as a review rubric — and validated
+loudly — **unless** every entry carries the full judge shape (both `id`
+and `match_criteria`). Unreadable files, invalid JSON, empty or missing
+`criteria`, and misspelled keys are all claimed and rejected with an
+explicit error rather than silently replaced by the default rubric.
 
 Rubric resolution order, per reviewed rollout:
 
@@ -121,17 +124,20 @@ the host, which is why every sandbox backend (`docker`, `daytona`,
   image setup and agent installation, so the firewall is armed *after* the
   reviewer harness starts and completes ACP initialization. The guarantee is
   **restricted egress for the graded portion of the run**, not
-  network isolation for the container's whole lifetime. A reviewer harness
-  that is itself malicious could egress during startup, before it has seen
-  any evidence. Treat the reviewer harness as trusted code; the untrusted
-  input is the evidence it reads.
+  network isolation for the container's whole lifetime. Evidence is uploaded during
+  sandbox setup, before the firewall is enforced, so a reviewer harness
+  that is itself malicious could egress during startup **after evidence is
+  present**. Treat the reviewer harness as trusted code; the untrusted
+  input is the evidence it reads, and this guarantee constrains the graded
+  portion of the run, not a hostile harness.
 - **Task evidence requires an explicitly trusted root.** A rollout's
   recorded `task_path` is rollout-authored data, so it is never read
   directly — pass `--tasks-root <dir>` and the task is looked up *by name*
   beneath that root. Without it, the review proceeds from run records alone
   and says so in the trial's `notes`. When the rollout recorded a
-  `task_digest`, a mismatch against the on-disk task is reported in `notes`
-  rather than silently reviewed.
+  `task_digest`, a mismatch against the on-disk task — or any failure to
+  verify it — **excludes the task from evidence** and says so in `notes`;
+  an old rollout is never reviewed against changed task content.
 - **The rubric never enters the sandbox.** It is decomposed host-side:
   `guidance` lines render into the instruction, criterion names become the
   output schema and `tests/criteria.json`. `description` goes nowhere.
@@ -150,7 +156,7 @@ The review job directory contains `review_report.json`:
 {
   "path": "…/jobs/2026-08-03__12-00-00",
   "rubric": {"path": "…", "criteria": ["…"]},
-  "reviewer": {"agent": "opencode", "model": "google/gemini-2.5-flash", "environment": "docker"},
+  "reviewer": {"agent": "opencode", "model": "gemini/gemini-2.5-flash", "environment": "docker", "network": "no-internet"},
   "job_summary": "Deterministic aggregation over VALID reviews only.",
   "trials": [
     {

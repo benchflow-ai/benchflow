@@ -703,14 +703,24 @@ class AgentCoreSandbox(BaseSandbox):
                 owner=str(resolved_owner) if resolved_owner is not None else None,
             )
             quoted_env = shlex.quote(env_path)
-            # `.` failing must abort (exit 97) rather than silently running
-            # the command with an empty environment; the trap still removes
-            # the staged file on every path.
+            if cwd:
+                wrapped = f"cd {shlex.quote(cwd)} && {wrapped}"
+            # Cleanup must not depend on anything that can be skipped:
+            # - the trap is installed FIRST, before any `cd` (a failed cd
+            #   previously prevented trap installation and leaked the file);
+            # - the file is ALSO removed inline right after sourcing, before
+            #   the user command runs, because a command that `exec`s
+            #   replaces the shell and EXIT traps never fire;
+            # - a failed `.` must abort (POSIX makes dot-failures fatal in
+            #   non-interactive shells; `|| exit 97` covers shells where it
+            #   is not) rather than silently running with an empty
+            #   environment — the trap still fires on that exit.
             wrapped = (
                 f"trap 'rm -f {quoted_env}' EXIT; "
-                f"set -a; . {quoted_env} || exit 97; set +a; {wrapped}"
+                f"set -a; . {quoted_env} || exit 97; set +a; "
+                f"rm -f {quoted_env}; {wrapped}"
             )
-        if cwd:
+        elif cwd:
             wrapped = f"cd {shlex.quote(cwd)} && {wrapped}"
 
         resolved_user = self._resolve_user(user)

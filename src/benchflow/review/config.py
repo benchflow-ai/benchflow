@@ -175,22 +175,25 @@ def is_review_rubric_file(path: Path) -> bool:
     """Whether ``path`` claims this contract's dialect.
 
     ``rubric.json`` is an overloaded filename: llm-judge verifier rubrics
-    use entries shaped like ``{id, match_criteria}``. Only that dialect is
+    use entries carrying the full ``{id, match_criteria}`` shape. Only that dialect is
     disclaimed; **everything else in this slot is claimed** and then
     validated loudly by :func:`load_rubric` — including empty ``criteria``
     and rubrics with misspelled or missing review keys — so no malformed
     review rubric can silently fall back to the built-in default.
     """
 
+    # Fail closed: unreadable files, invalid JSON, non-dict documents, and
+    # missing/non-list ``criteria`` are all CLAIMED so load_rubric reports
+    # them loudly — never silently replaced by the default rubric.
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
+        return True
     if not isinstance(data, dict):
-        return False
+        return True
     criteria = data.get("criteria")
     if not isinstance(criteria, list):
-        return False
+        return True
 
     # Fail closed: everything in this filename slot is claimed as a review
     # rubric — and validated loudly by load_rubric — UNLESS it is
@@ -198,7 +201,9 @@ def is_review_rubric_file(path: Path) -> bool:
     # rubric with every review key misspelled is therefore claimed and
     # rejected instead of silently replaced by the default rubric.
     def is_judge_entry(entry: object) -> bool:
-        return isinstance(entry, dict) and bool({"id", "match_criteria"} & set(entry))
+        # FULL judge shape required: an entry carrying only one of the two
+        # keys is ambiguous and is claimed for loud validation instead.
+        return isinstance(entry, dict) and {"id", "match_criteria"} <= set(entry)
 
     return not (criteria and all(is_judge_entry(entry) for entry in criteria))
 

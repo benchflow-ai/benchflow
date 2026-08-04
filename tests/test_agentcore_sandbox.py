@@ -150,9 +150,14 @@ class TestExecSemantics:
             assert "hunter2" not in command
             assert "SECRET_TOKEN" not in command
             assert base64.b64encode(b"hunter2").decode() not in command
-        # The final command sources the staged env file by path only
-        # (outside the root-only seal dir so non-root users can read it).
-        assert any("/tmp/.bf_env_" in c for c in bodies)
+        # The final command sources a staged env file by path only, and
+        # that file lives outside the root-only seal directory (behavior:
+        # a non-root exec user must be able to read it).
+        from benchflow.sandbox.agentcore_sealed import SEAL_DIR
+
+        sourced = [c for c in bodies if "set -a; . " in c]
+        assert sourced
+        assert all(f". {SEAL_DIR}/" not in c for c in sourced)
 
     @pytest.mark.asyncio
     async def test_non_main_service_is_rejected(self, sandbox):

@@ -8,13 +8,15 @@ environments into the sandbox:
 
 - The sandbox generates an RSA keypair once; only the **public** key ever
   appears in command output.
-- Payloads travel as AES-256-CTR ciphertext with an HMAC-SHA256 tag over
-  the IV and the ciphertext (encrypt-then-MAC; ``openssl enc`` rejects
-  AEAD ciphers, so GCM is not an option). Binding the IV into the tag
-  matters: CTR keystreams depend on it, so an attacker who could flip IV
-  bits would silently change every plaintext block while a
-  ciphertext-only tag still verified. The tag is checked *before*
-  decryption — decryption never runs on unauthenticated bytes.
+- Payloads travel as one blob of ``IV ‖ AES-256-CTR ciphertext`` with an
+  HMAC-SHA256 tag over the whole blob (encrypt-then-MAC; ``openssl enc``
+  rejects AEAD ciphers, so GCM is not an option). The receiver derives
+  the decryption IV **from the same authenticated bytes the tag
+  verified** — never from a second copy in the command — so no IV
+  occurrence exists that could diverge from what was authenticated. The
+  tag is checked *before* decryption; decryption never runs on
+  unauthenticated bytes, and decrypted output is created under
+  ``umask 077`` so plaintext is never world-readable, even briefly.
 - One RSA-OAEP envelope wraps 64 bytes: AES key ‖ MAC key. The decrypted
   key material is only ever read from a file inside the sandbox; the
   logged command text carries ciphertext, public material, and literal
@@ -31,9 +33,11 @@ re-enter env staging and recurse.
 from __future__ import annotations
 
 import base64
+import re
 import shlex
 import uuid
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
@@ -44,6 +48,8 @@ if TYPE_CHECKING:
 MAX_INLINE_BYTES = 24 * 1024
 
 SEAL_DIR = "/tmp/.bf_sealed"
+
+_SHELL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class RawExec(Protocol):
@@ -63,9 +69,8 @@ class SealedPayload:
     """Host-side encryption of one payload, ready for command transport."""
 
     wrapped_key_b64: str  # RSA-OAEP(AES key ‖ MAC key)
-    iv_hex: str
-    ciphertext_b64: str
-    tag_hex: str  # HMAC-SHA256 over iv_hex (ASCII) ‖ ciphertext
+    blob_b64: str  # base64(IV ‖ ciphertext) — the only transported copy of IV
+    tag_hex: str  # HMAC-SHA256 over the raw blob (IV ‖ ciphertext)
 
 
 def seal(public_pem: str, data: bytes) -> SealedPayload:
@@ -97,16 +102,12 @@ def seal(public_pem: str, data: bytes) -> SealedPayload:
         ),
     )
     encryptor = Cipher(algorithms.AES(key), modes.CTR(iv)).encryptor()
-    ciphertext = encryptor.update(data) + encryptor.finalize()
+    blob = iv + encryptor.update(data) + encryptor.finalize()
     tag = _hmac.HMAC(mac_key, hashes.SHA256())
-    # The IV participates as its ASCII hex form because that is exactly the
-    # representation the sandbox-side verifier can prepend with printf.
-    tag.update(iv.hex().encode())
-    tag.update(ciphertext)
+    tag.update(blob)
     return SealedPayload(
         wrapped_key_b64=base64.b64encode(wrapped).decode(),
-        iv_hex=iv.hex(),
-        ciphertext_b64=base64.b64encode(ciphertext).decode(),
+        blob_b64=base64.b64encode(blob).decode(),
         tag_hex=tag.finalize().hex(),
     )
 
@@ -170,14 +171,14 @@ class SealedChannel:
         staging = f"{SEAL_DIR}/s_{token}.b64"
         keyfile = f"{SEAL_DIR}/k_{token}.bin"
         aesfile = f"{SEAL_DIR}/a_{token}.bin"
-        ctfile = f"{SEAL_DIR}/c_{token}.bin"
+        blobfile = f"{SEAL_DIR}/c_{token}.bin"
         chunk = MAX_INLINE_BYTES
-        ct_b64 = payload.ciphertext_b64
+        blob_b64 = payload.blob_b64
         # range() yields nothing for an empty payload, which would leave the
         # staging file absent and fail the decrypt; emit one empty write.
-        offsets = list(range(0, len(ct_b64), chunk)) or [0]
+        offsets = list(range(0, len(blob_b64), chunk)) or [0]
         for index in offsets:
-            piece = ct_b64[index : index + chunk]
+            piece = blob_b64[index : index + chunk]
             redirect = ">" if index == offsets[0] else ">>"
             result = await self._exec_raw(
                 f"printf %s {shlex.quote(piece)} {redirect} {staging}",
@@ -190,22 +191,23 @@ class SealedChannel:
                     f"AgentCore sealed staging failed: {(result.stderr or '')[:500]}"
                 )
 
-        # Unwrap 64 bytes (AES key ‖ MAC key), verify the ciphertext tag,
-        # and only then decrypt. A mismatched tag aborts before any
-        # plaintext is produced.
+        # Unwrap 64 bytes (AES key ‖ MAC key), verify the tag over the WHOLE
+        # blob, and only then split IV ‖ ciphertext out of those same
+        # authenticated bytes and decrypt. A mismatched tag aborts before
+        # any plaintext is produced.
         decrypt = (
             f"openssl pkeyutl -decrypt -inkey {SEAL_DIR}/key.pem "
             f"-in {keyfile} -out {aesfile} "
             f"-pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 && "
-            f"base64 -d {staging} > {ctfile} && "
-            f"ENCK=$(od -An -v -tx1 -N32 {aesfile} | tr -d ' \\n') && "
-            f"MACK=$(od -An -v -tx1 -j32 -N32 {aesfile} | tr -d ' \\n') && "
-            f"ACTUAL=$({{ printf %s {payload.iv_hex}; cat {ctfile}; }} | "
-            f"openssl dgst -sha256 -mac HMAC -macopt hexkey:$MACK -hex "
-            f"| sed 's/^.*[= ]//') && "
+            f"base64 -d {staging} > {blobfile} && "
+            f"ENCK=$(od -An -v -tx1 -N32 {aesfile} | tr -d ' \n') && "
+            f"MACK=$(od -An -v -tx1 -j32 -N32 {aesfile} | tr -d ' \n') && "
+            f"ACTUAL=$(openssl dgst -sha256 -mac HMAC -macopt hexkey:$MACK "
+            f"-hex < {blobfile} | sed 's/^.*[= ]//') && "
             f'[ "$ACTUAL" = "{payload.tag_hex}" ] && '
-            f'openssl enc -d -aes-256-ctr -K "$ENCK" -iv {payload.iv_hex} '
-            f"-in {ctfile}"
+            f"IVHEX=$(od -An -v -tx1 -N16 {blobfile} | tr -d ' \n') && "
+            f'tail -c +17 {blobfile} | openssl enc -d -aes-256-ctr -K "$ENCK" '
+            f'-iv "$IVHEX"'
         )
         if extract_tar:
             sink = " | tar -xzf - -C /"
@@ -215,15 +217,25 @@ class SealedChannel:
         else:
             assert target is not None
             quoted = shlex.quote(target)
-            prep = f"mkdir -p $(dirname {quoted}) && "
+            # Parent computed host-side and quoted: `$(dirname ...)` would
+            # word-split paths containing spaces.
+            parent = str(PurePosixPath(target).parent)
+            prep = (
+                f"mkdir -p {shlex.quote(parent)} && "
+                if parent not in ("", ".", "/")
+                else ""
+            )
             sink = f" -out {quoted}"
-            finalize = f" && chmod {mode} {quoted}" if mode else ""
+            # umask 077 (below) creates the file 0600; relax to the caller's
+            # mode afterwards. The old order — create world-readable, then
+            # chmod down — left plaintext secrets briefly 0644.
+            finalize = f" && chmod {mode or '644'} {quoted}"
             if owner is not None:
                 finalize += f" && chown {shlex.quote(str(owner))} {quoted}"
             run_user = user if user is not None else "root"
         result = await self._exec_raw(
-            f"set -o pipefail; "
-            f"trap 'rm -f {staging} {keyfile} {aesfile} {ctfile}' EXIT; "
+            f"set -o pipefail; umask 077; "
+            f"trap 'rm -f {staging} {keyfile} {aesfile} {blobfile}' EXIT; "
             f"{prep}"
             f"printf %s {shlex.quote(payload.wrapped_key_b64)} "
             f"| base64 -d > {keyfile} && "
@@ -249,7 +261,9 @@ class SealedChannel:
 
         lines = []
         for key, value in env.items():
-            if not key.isidentifier():
+            # str.isidentifier() admits Unicode (e.g. "é") that sh cannot
+            # assign; require an ASCII shell identifier.
+            if not _SHELL_IDENTIFIER.fullmatch(key):
                 self._logger.warning(
                     "Skipping non-identifier env key %r for AgentCore exec", key
                 )

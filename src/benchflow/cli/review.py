@@ -40,7 +40,7 @@ def _render_trial_review(trial) -> None:
             style=_REVIEW_OUTCOME_STYLES.get(outcome, "white"),
         )
     if trial.summary:
-        console.print(f"\n[bold]Summary:[/bold] {escape(trial.summary)}\n")
+        console.print(f"\n[bold]Summary:[/bold] {escape(str(trial.summary))}\n")
     console.print(table)
 
 

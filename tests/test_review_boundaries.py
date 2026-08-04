@@ -441,7 +441,8 @@ class TestSealedAgentCoreUploads:
         payload = b'{"GEMINI_API_KEY": "sk-super-secret"}'
         sealed = seal(pem, payload)
 
-        assert b"sk-super-secret" not in base64.b64decode(sealed.ciphertext_b64)
+        blob = base64.b64decode(sealed.blob_b64)
+        assert b"sk-super-secret" not in blob
         assert len(bytes.fromhex(sealed.tag_hex)) == 32
 
         secret = private.decrypt(
@@ -453,14 +454,14 @@ class TestSealedAgentCoreUploads:
             ),
         )
         enc_key, mac_key = secret[:32], secret[32:]
-        ciphertext = base64.b64decode(sealed.ciphertext_b64)
+        # Round 4: the tag covers the WHOLE blob (IV ‖ ciphertext) and the
+        # receiver derives its IV from those same authenticated bytes — no
+        # second, unauthenticated IV copy exists.
         verifier = _hmac.HMAC(mac_key, hashes.SHA256())
-        verifier.update(sealed.iv_hex.encode())  # IV is tag-bound (round 3)
-        verifier.update(ciphertext)
+        verifier.update(blob)
         verifier.verify(bytes.fromhex(sealed.tag_hex))
-        decryptor = Cipher(
-            algorithms.AES(enc_key), modes.CTR(bytes.fromhex(sealed.iv_hex))
-        ).decryptor()
+        iv, ciphertext = blob[:16], blob[16:]
+        decryptor = Cipher(algorithms.AES(enc_key), modes.CTR(iv)).decryptor()
         assert decryptor.update(ciphertext) == payload
 
     @staticmethod
@@ -523,9 +524,12 @@ class TestSealedAgentCoreUploads:
         _, pem = self._keypair()
         channel._public_key = pem
         path = await channel.stage_env({"TOKEN": "tok-abc-123"})
-        # Round 3: env files live OUTSIDE the root-only seal dir so a
-        # non-root exec user can actually source them.
-        assert path.startswith("/tmp/.bf_env_")
+        # Behavior, not naming: the env file must live OUTSIDE the
+        # root-only seal directory (or a non-root exec user could never
+        # source it), and the upload must have been chowned to the owner.
+        from benchflow.sandbox.agentcore_sealed import SEAL_DIR
+
+        assert not path.startswith(SEAL_DIR + "/")
         self._assert_unrecoverable(commands, b"tok-abc-123")
 
     def test_write_text_file_routes_through_sealed_channel(self):

@@ -90,14 +90,49 @@ class TestUploadFileProtocolConformance:
         import benchflow.sandbox.docker
         import benchflow.sandbox.modal_impl  # noqa: F401
 
-        checked = 0
-        for cls in walk(BaseSandbox):
-            fn = cls.__dict__.get("upload_file")
-            if fn is None:
-                continue
+        overriding = {
+            cls.__name__: cls.__dict__.get("upload_file")
+            for cls in walk(BaseSandbox)
+            if cls.__dict__.get("upload_file") is not None
+        }
+        for name, fn in overriding.items():
             parameters = inspect.signature(fn).parameters
             assert "mode" in parameters, (
-                f"{cls.__name__}.upload_file must accept mode= (protocol)"
+                f"{name}.upload_file must accept mode= (protocol)"
             )
-            checked += 1
-        assert checked >= 4  # docker, daytona, agentcore, apple, modal
+        # Exact expected set: a backend silently DROPPING its override (and
+        # with it the mode behavior) must fail this test, not shrink a
+        # count threshold.
+        expected = {
+            "DockerSandbox",
+            "DaytonaSandbox",
+            "AgentCoreSandbox",
+            "AppleContainerSandbox",
+            "ModalSandbox",
+        }
+        assert expected <= set(overriding), (
+            f"missing upload_file overrides: {sorted(expected - set(overriding))}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_modal_forwards_requested_mode(self, tmp_path):
+        """Behavioral, not just signature: Modal must actually chmod."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from benchflow.sandbox.modal_impl import ModalSandbox
+
+        sandbox = object.__new__(ModalSandbox)
+        handle = MagicMock()
+        handle.__aenter__ = AsyncMock(return_value=handle)
+        handle.__aexit__ = AsyncMock(return_value=False)
+        handle.write.aio = AsyncMock()
+        sandbox._sandbox = MagicMock()
+        sandbox._sandbox.open.aio = AsyncMock(return_value=handle)
+        source = tmp_path / "s.bin"
+        source.write_bytes(b"data")
+
+        with patch.object(
+            ModalSandbox, "_apply_upload_mode", new_callable=AsyncMock
+        ) as applied:
+            await sandbox.upload_file(source, "/x/y.bin", mode="600")
+        applied.assert_awaited_once_with("/x/y.bin", "600")

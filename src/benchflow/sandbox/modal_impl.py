@@ -235,7 +235,7 @@ class ModalSandbox(BaseSandbox):
         if not source_path.exists():
             raise FileNotFoundError(f"Source directory {source_dir} does not exist")
 
-        await self.exec(f"mkdir -p {target_dir}", user="root")
+        await self.exec(f"mkdir -p {shlex.quote(str(target_dir))}", user="root")
 
         # Walk with followlinks=False and skip symlinks (#411): a task or
         # workspace symlink under source_path must not exfiltrate host files
@@ -248,7 +248,9 @@ class ModalSandbox(BaseSandbox):
 
             target_file_parent = str(PurePosixPath(target_file_path).parent)
             if target_file_parent != target_dir:
-                await self.exec(f"mkdir -p {target_file_parent}", user="root")
+                await self.exec(
+                    f"mkdir -p {shlex.quote(str(target_file_parent))}", user="root"
+                )
 
             await self.upload_file(file_path, target_file_path)
 

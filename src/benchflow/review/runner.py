@@ -235,8 +235,11 @@ def _task_digest_mismatch(rollout_dir: Path, task_dir: Path) -> str | None:
         from benchflow._utils.task_authoring import task_digest
 
         actual = task_digest(task_dir)
-    except Exception:
-        return None
+    except Exception as exc:
+        # Fail closed: a rollout that RECORDED a digest is claiming a
+        # specific task; if that claim cannot be verified, the task must
+        # not be admitted as evidence.
+        return f"task digest could not be verified ({exc!r})"
     if actual and actual != recorded:
         return (
             f"task digest mismatch: rollout recorded {recorded}, "
@@ -260,6 +263,37 @@ def _resolve_rubric(
     from benchflow.review.config import DEFAULT_RUBRIC_PATH
 
     return load_rubric(None), DEFAULT_RUBRIC_PATH
+
+
+def _coerce_summary(value: Any) -> str | None:
+    """Reviewer output is untrusted; only a string survives as the summary."""
+
+    if value is None or isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _coerce_checks(value: Any) -> dict[str, dict[str, Any]] | None:
+    """Normalize reviewer checks so hostile shapes cannot crash consumers.
+
+    Even invalid reviews are retained for diagnostics, so a criterion whose
+    value is a list (or anything else non-dict) must not raise later in
+    outcome counting or table rendering; it is preserved as an explanation
+    string with no outcome.
+    """
+
+    if not isinstance(value, dict):
+        return None
+    normalized: dict[str, dict[str, Any]] = {}
+    for name, check in value.items():
+        if isinstance(check, dict):
+            normalized[str(name)] = {
+                "outcome": check.get("outcome"),
+                "explanation": _coerce_summary(check.get("explanation")),
+            }
+        else:
+            normalized[str(name)] = {"outcome": None, "explanation": str(check)}
+    return normalized
 
 
 def _reviewer_rollout_leaf(runtime_dir: Path) -> Path | None:
@@ -393,9 +427,8 @@ async def _review_one(
                 else f"reviewer did not produce a readable {REVIEW_RESULT_FILENAME}"
             )
             return trial
-        trial.summary = review.get("summary")
-        checks = review.get("checks")
-        trial.checks = checks if isinstance(checks, dict) else None
+        trial.summary = _coerce_summary(review.get("summary"))
+        trial.checks = _coerce_checks(review.get("checks"))
         if not trial.review_valid:
             trial.error = "reviewer output failed structural validation"
         logger.info(
