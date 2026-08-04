@@ -136,3 +136,22 @@ class TestUploadFileProtocolConformance:
         ) as applied:
             await sandbox.upload_file(source, "/x/y.bin", mode="600")
         applied.assert_awaited_once_with("/x/y.bin", "600")
+
+    @pytest.mark.asyncio
+    async def test_upload_mode_rejects_shell_fragments(self):
+        """Guards PR #942: mode is data, never a root-shell fragment."""
+
+        from benchflow.sandbox._base import BaseSandbox
+
+        class Dummy:
+            called = False
+
+            async def exec(self, *args, **kwargs):
+                self.called = True
+
+        sandbox = Dummy()
+        with pytest.raises(ValueError, match="octal"):
+            await BaseSandbox._apply_upload_mode(
+                sandbox, "/tmp/target", "600; touch /tmp/injected"
+            )
+        assert sandbox.called is False

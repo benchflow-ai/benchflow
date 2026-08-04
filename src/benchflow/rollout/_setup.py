@@ -351,15 +351,18 @@ async def _start_env_and_upload(
         )
         await env.upload_dir(paths.solution_dir, str(target_dir))
 
+    from benchflow._paths import is_safe_regular_dir, is_safe_regular_file
+
     for host_path, sandbox_path in (uploads or {}).items():
         source = Path(host_path)
-        if source.is_dir():
+        if is_safe_regular_dir(source):
             await env.upload_dir(source, sandbox_path)
-        elif source.is_file():
+        elif is_safe_regular_file(source):
             await env.upload_file(source, sandbox_path)
         else:
             raise FileNotFoundError(
-                f"configured upload source does not exist: {host_path}"
+                "configured upload source must be an existing regular file or "
+                f"directory, not a symlink: {host_path}"
             )
 
 

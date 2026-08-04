@@ -27,15 +27,15 @@ _REVIEW_OUTCOME_STYLES = {
 
 
 def _render_trial_review(trial) -> None:
-    table = Table(title=f"Review: {trial.trial_name}", show_lines=True)
+    table = Table(title=f"Review: {escape(str(trial.trial_name))}", show_lines=True)
     table.add_column("Criterion")
     table.add_column("Outcome")
     table.add_column("Explanation")
     for name, check in (trial.checks or {}).items():
         outcome = str(check.get("outcome", ""))
         table.add_row(
-            name.replace("_", " ").title(),
-            outcome,
+            escape(str(name).replace("_", " ").title()),
+            escape(outcome),
             escape(str(check.get("explanation", ""))),
             style=_REVIEW_OUTCOME_STYLES.get(outcome, "white"),
         )
@@ -50,11 +50,13 @@ def _render_review_overview(trials) -> None:
         table.add_column(column)
     for trial in trials:
         if trial.error and not trial.checks:
-            table.add_row(trial.trial_name, "-", "-", "-", "no", style="red")
+            table.add_row(
+                escape(str(trial.trial_name)), "-", "-", "-", "no", style="red"
+            )
             continue
         counts = trial.outcome_counts()
         table.add_row(
-            trial.trial_name,
+            escape(str(trial.trial_name)),
             str(counts["pass"]),
             str(counts["fail"]),
             str(counts["not_applicable"]),
@@ -65,7 +67,8 @@ def _render_review_overview(trials) -> None:
     for trial in trials:
         if trial.error:
             console.print(
-                f"[red]✗ {trial.trial_name}: {escape(trial.error.splitlines()[0])}[/red]"
+                f"[red]✗ {escape(str(trial.trial_name))}: "
+                f"{escape(trial.error.splitlines()[0])}[/red]"
             )
 
 
@@ -82,8 +85,9 @@ def _review_command(
             "--rubric",
             "-r",
             help=(
-                "Rubric JSON file. Default: the task's own verifier/rubric.json "
-                "when it ships one, else the built-in default rubric."
+                "Rubric JSON file. Default: an admitted task copy's "
+                "verifier/rubric.json (requires --tasks-root and verified "
+                "digest), else the built-in default rubric."
             ),
         ),
     ] = None,
@@ -220,7 +224,7 @@ def _review_command(
         if report.job_summary:
             console.print(f"\n[bold]Job summary:[/bold] {escape(report.job_summary)}")
 
-    console.print(f"\n[bold]Report:[/bold] {report_path}")
+    console.print(f"\n[bold]Report:[/bold] {escape(str(report_path))}")
     if any(trial.error for trial in report.trials):
         raise typer.Exit(1)
 

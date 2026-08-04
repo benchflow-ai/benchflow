@@ -212,8 +212,8 @@ def find_task_rubric(task_path: Path) -> Path | None:
     """Return the review rubric a task ships, if any.
 
     Looks for ``rubric.json`` next to the task's test files (``verifier/`` or
-    ``tests/``). Files that exist but are not shaped like a review rubric
-    (for example llm-judge rubrics) are left alone.
+    ``tests/``). Only files affirmatively matching the full judge dialect are
+    left alone; every other shape is claimed and validated loudly.
     """
 
     for tests_dir_name in ("verifier", "tests"):

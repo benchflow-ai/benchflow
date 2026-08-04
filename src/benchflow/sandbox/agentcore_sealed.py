@@ -33,12 +33,13 @@ re-enter env staging and recurse.
 from __future__ import annotations
 
 import base64
-import re
 import shlex
 import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol
+
+from benchflow.sandbox._base import _SHELL_IDENTIFIER_RE, validate_upload_mode
 
 if TYPE_CHECKING:
     from benchflow.sandbox._base import ExecResult
@@ -48,8 +49,6 @@ if TYPE_CHECKING:
 MAX_INLINE_BYTES = 24 * 1024
 
 SEAL_DIR = "/tmp/.bf_sealed"
-
-_SHELL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class RawExec(Protocol):
@@ -156,7 +155,6 @@ class SealedChannel:
         mode: str | None = None,
         owner: str | None = None,
         extract_tar: bool = False,
-        user: str | None = None,
         timeout_sec: int = 600,
     ) -> None:
         """Deliver *data* through ciphertext-only commands.
@@ -165,6 +163,7 @@ class SealedChannel:
         otherwise it is written to ``target`` (with optional chmod ``mode``).
         """
 
+        mode = validate_upload_mode(mode)
         payload = seal(await self.public_key(), data)
 
         token = uuid.uuid4().hex[:16]
@@ -213,35 +212,43 @@ class SealedChannel:
             sink = " | tar -xzf - -C /"
             prep = ""
             finalize = ""
-            run_user = "root"
+            cleanup_paths: list[str] = []
         else:
             assert target is not None
             quoted = shlex.quote(target)
             # Parent computed host-side and quoted: `$(dirname ...)` would
             # word-split paths containing spaces.
             parent = str(PurePosixPath(target).parent)
+            temporary = str(PurePosixPath(parent) / f".bf_upload_{token}.tmp")
+            quoted_temporary = shlex.quote(temporary)
+            cleanup_paths = [temporary]
             prep = (
                 f"mkdir -p {shlex.quote(parent)} && "
                 if parent not in ("", ".", "/")
                 else ""
             )
-            sink = f" -out {quoted}"
-            # umask 077 (below) creates the file 0600; relax to the caller's
-            # mode afterwards. The old order — create world-readable, then
-            # chmod down — left plaintext secrets briefly 0644.
-            finalize = f" && chmod {mode or '644'} {quoted}"
+            # Decrypt to a private file in the target directory, then replace
+            # the destination atomically. Opening the final path directly
+            # would preserve an existing permissive mode and follow an
+            # attacker-planted symlink as root.
+            sink = f" -out {quoted_temporary}"
+            finalize = f" && chmod {mode or '644'} {quoted_temporary}"
             if owner is not None:
-                finalize += f" && chown {shlex.quote(str(owner))} {quoted}"
-            run_user = user if user is not None else "root"
+                finalize += f" && chown {shlex.quote(str(owner))} {quoted_temporary}"
+            finalize += f" && mv -f -- {quoted_temporary} {quoted}"
+        cleanup_command = "rm -f " + " ".join(
+            shlex.quote(path)
+            for path in (staging, keyfile, aesfile, blobfile, *cleanup_paths)
+        )
         result = await self._exec_raw(
             f"set -o pipefail; umask 077; "
-            f"trap 'rm -f {staging} {keyfile} {aesfile} {blobfile}' EXIT; "
+            f"trap {shlex.quote(cleanup_command)} EXIT; "
             f"{prep}"
             f"printf %s {shlex.quote(payload.wrapped_key_b64)} "
             f"| base64 -d > {keyfile} && "
             f"{decrypt}{sink}{finalize}",
             timeout_sec=timeout_sec,
-            user=run_user,
+            user="root",
         )
         if result.return_code != 0:
             raise RuntimeError(
@@ -263,12 +270,12 @@ class SealedChannel:
         for key, value in env.items():
             # str.isidentifier() admits Unicode (e.g. "é") that sh cannot
             # assign; require an ASCII shell identifier.
-            if not _SHELL_IDENTIFIER.fullmatch(key):
+            if not _SHELL_IDENTIFIER_RE.fullmatch(key):
                 self._logger.warning(
                     "Skipping non-identifier env key %r for AgentCore exec", key
                 )
                 continue
-            lines.append(f"{key}={shlex.quote(str(value))}")
+            lines.append(f"{key}={shlex.quote(value)}")
         body = "\n".join(lines) + "\n"
         path = f"/tmp/.bf_env_{uuid.uuid4().hex[:16]}.sh"
         await self.upload(

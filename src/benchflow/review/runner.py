@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import tempfile
 import uuid
@@ -43,6 +44,9 @@ logger = logging.getLogger(__name__)
 REVIEW_REPORT_FILENAME = "review_report.json"
 
 _OUTCOME_KEYS = ("pass", "fail", "not_applicable")
+_TASK_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+# Report models
 
 
 class ReviewRunError(ValueError):
@@ -114,6 +118,9 @@ class ReviewReport:
                 for trial in self.trials
             ],
         }
+
+
+# Source and rubric discovery
 
 
 def _is_rollout_dir(path: Path) -> bool:
@@ -219,18 +226,28 @@ def _source_task_dir(
     return candidate, None
 
 
-def _task_digest_mismatch(rollout_dir: Path, task_dir: Path) -> str | None:
+def _task_digest_issue(rollout_dir: Path, task_dir: Path) -> str | None:
     """Compare the rollout's recorded task digest against the task on disk.
 
-    A digest mismatch means the run was executed against different task
-    content than the reviewer would see; that is reported per trial rather
-    than silently reviewed.
+    Task evidence is admitted only when result/config provenance identifies
+    one valid digest and the trusted on-disk task matches it.
     """
 
-    result = _read_json(rollout_dir / "result.json") or {}
-    recorded = result.get("task_digest")
-    if not isinstance(recorded, str) or not recorded:
-        return None
+    recorded_by_source: dict[str, str] = {}
+    for filename in ("result.json", "config.json"):
+        document = _read_json(rollout_dir / filename)
+        if document is None or "task_digest" not in document:
+            continue
+        recorded = document["task_digest"]
+        if not isinstance(recorded, str) or not _TASK_DIGEST_RE.fullmatch(recorded):
+            return f"{filename} carries an invalid task_digest"
+        recorded_by_source[filename] = recorded
+    if not recorded_by_source:
+        return "task digest is missing from both result.json and config.json"
+    recorded_values = set(recorded_by_source.values())
+    if len(recorded_values) != 1:
+        return "result.json and config.json carry conflicting task digests"
+    recorded = next(iter(recorded_values))
     try:
         from benchflow._utils.task_authoring import task_digest
 
@@ -240,7 +257,7 @@ def _task_digest_mismatch(rollout_dir: Path, task_dir: Path) -> str | None:
         # specific task; if that claim cannot be verified, the task must
         # not be admitted as evidence.
         return f"task digest could not be verified ({exc!r})"
-    if actual and actual != recorded:
+    if actual != recorded:
         return (
             f"task digest mismatch: rollout recorded {recorded}, "
             f"--tasks-root copy is {actual}"
@@ -249,13 +266,13 @@ def _task_digest_mismatch(rollout_dir: Path, task_dir: Path) -> str | None:
 
 
 def _resolve_rubric(
-    rubric_path: Path | None,
+    explicit_rubric: tuple[Rubric, Path] | None,
     task_dir: Path | None,
 ) -> tuple[Rubric, Path]:
     """Resolution order: explicit ``-r`` > the task's own rubric > default."""
 
-    if rubric_path is not None:
-        return load_rubric(rubric_path), rubric_path
+    if explicit_rubric is not None:
+        return explicit_rubric
     if task_dir is not None:
         shipped = find_task_rubric(task_dir)
         if shipped is not None:
@@ -263,6 +280,9 @@ def _resolve_rubric(
     from benchflow.review.config import DEFAULT_RUBRIC_PATH
 
     return load_rubric(None), DEFAULT_RUBRIC_PATH
+
+
+# Reviewer artifact ingestion
 
 
 def _coerce_summary(value: Any) -> str | None:
@@ -339,10 +359,13 @@ def _leaf_reward(leaf: Path) -> float | None:
     return None
 
 
+# Review orchestration and aggregation
+
+
 async def _review_one(
     rollout_dir: Path,
     *,
-    rubric_path: Path | None,
+    explicit_rubric: tuple[Rubric, Path] | None,
     template: str | None,
     agent: str,
     model: str | None,
@@ -367,16 +390,16 @@ async def _review_one(
         trial.notes.append(skip_reason)
         logger.info("%s: %s", rollout_dir.name, skip_reason)
     if task_dir is not None:
-        mismatch = _task_digest_mismatch(rollout_dir, task_dir)
-        if mismatch:
+        digest_issue = _task_digest_issue(rollout_dir, task_dir)
+        if digest_issue:
             # Enforced, not merely noted: reviewing an old rollout against
             # changed task content silently misattributes findings, so the
             # mismatched task is dropped from evidence entirely.
-            trial.notes.append(mismatch + " — task evidence excluded")
-            logger.warning("%s: %s", rollout_dir.name, mismatch)
+            trial.notes.append(digest_issue + " — task evidence excluded")
+            logger.warning("%s: %s", rollout_dir.name, digest_issue)
             task_dir = None
     try:
-        rubric, resolved_rubric = _resolve_rubric(rubric_path, task_dir)
+        rubric, resolved_rubric = _resolve_rubric(explicit_rubric, task_dir)
     except ReviewRubricError as exc:
         trial.error = str(exc)
         return trial
@@ -412,10 +435,11 @@ async def _review_one(
             jobs_dir=runtime_dir,
             timeout=timeout_sec,
             uploads=uploads,
+            pre_agent_hooks=[_lock_review_evidence],
         )
         result = await run_rollout(config)
         leaf = _reviewer_rollout_leaf(runtime_dir)
-        trial.reviewer_rollout = str(leaf) if leaf else str(runtime_dir)
+        trial.reviewer_rollout = str(leaf) if leaf else None
         reward = _leaf_reward(leaf) if leaf else None
         trial.review_valid = reward == 1.0
         review = _leaf_review_result(leaf) if leaf else None
@@ -443,6 +467,21 @@ async def _review_one(
     finally:
         shutil.rmtree(wrapper_dir, ignore_errors=True)
     return trial
+
+
+async def _lock_review_evidence(sandbox: Any) -> None:
+    """Make uploaded evidence readable but immutable before the agent starts."""
+
+    result = await sandbox.exec(
+        "chown -R 0:0 /evidence && chmod -R a-w,a+rX /evidence",
+        user="root",
+        timeout_sec=120,
+    )
+    if result.return_code != 0:
+        raise RuntimeError(
+            "failed to lock reviewer evidence read-only: "
+            f"{(result.stderr or result.stdout or '')[:300]}"
+        )
 
 
 def _summarize_job(trials: list[TrialReview]) -> str | None:
@@ -487,6 +526,9 @@ def _summarize_job(trials: list[TrialReview]) -> str | None:
     return "\n".join(lines)
 
 
+# Public API
+
+
 async def run_reviews(
     path: Path,
     *,
@@ -509,8 +551,9 @@ async def run_reviews(
     path = Path(path).resolve()
     rollouts = discover_rollouts(path, filter_passing=filter_passing)
     template = prompt_path.read_text(encoding="utf-8") if prompt_path else None
-    if rubric_path is not None:
-        load_rubric(rubric_path)  # fail fast on a bad -r before any sandbox spend
+    explicit_rubric = (
+        (load_rubric(rubric_path), rubric_path) if rubric_path is not None else None
+    )
     if model is None:
         from benchflow.evaluation import effective_model
 
@@ -540,7 +583,7 @@ async def run_reviews(
         async with semaphore:
             return await _review_one(
                 rollout_dir,
-                rubric_path=rubric_path,
+                explicit_rubric=explicit_rubric,
                 template=template,
                 agent=agent,
                 model=model,
@@ -555,20 +598,21 @@ async def run_reviews(
             )
 
     try:
-        trials = list(await asyncio.gather(*(bounded(rollout) for rollout in rollouts)))
+        trials = await asyncio.gather(*(bounded(rollout) for rollout in rollouts))
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
     trials.sort(key=lambda trial: trial.trial_name)
     rubric_for_report = rubric_path or Path("<per-task or default>")
-    criteria_names: list[str] = []
-    if rubric_path is not None:
-        criteria_names = [
-            criterion.name for criterion in load_rubric(rubric_path).criteria
-        ]
-    elif trials:
-        first = next((trial.criteria for trial in trials if trial.criteria), [])
-        criteria_names = list(first)
+    if explicit_rubric is not None:
+        criteria_names = [criterion.name for criterion in explicit_rubric[0].criteria]
+    else:
+        # Jobs can contain tasks with different rubrics. The report-level list
+        # is a deterministic union; each trial remains the authoritative
+        # mapping for its own checks.
+        criteria_names = list(
+            dict.fromkeys(name for trial in trials for name in trial.criteria)
+        )
     report = ReviewReport(
         path=str(path),
         rubric_path=str(rubric_for_report),

@@ -47,10 +47,12 @@ def _cli_long_flags(path: list[str]) -> set[str]:
 
 
 def _doc_section(header: str) -> str:
-    """The cli.md block from ``header`` up to the next ``### `` heading."""
+    """The cli.md block up to the next heading at the same or higher level."""
     doc = _CLI_MD.read_text()
     i = doc.index(header)
-    nxt = doc.find("\n### ", i + len(header))
+    level = len(header) - len(header.lstrip("#"))
+    match = re.search(rf"\n#{{2,{level}}} ", doc[i + len(header) :])
+    nxt = i + len(header) + match.start() if match else -1
     return doc[i : nxt if nxt != -1 else len(doc)]
 
 

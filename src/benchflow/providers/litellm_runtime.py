@@ -728,10 +728,6 @@ async def _upload_text(sandbox: Any, text: str, target_path: str, suffix: str) -
         tmp.write(text)
         tmp_path = Path(tmp.name)
     try:
-        # Runtime files carry the provider environment and proxy master key.
-        # Upload private so an untrusted in-sandbox agent (e.g. the rubric
-        # reviewer) cannot read them; backends without a mode argument keep
-        # their previous behavior.
         # Runtime files carry the provider environment and proxy master key;
         # ``mode`` is part of the sandbox protocol, so every backend either
         # honors it or fails loudly — never a silently world-readable secret.

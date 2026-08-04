@@ -307,7 +307,7 @@ model endpoint; use a model id available to that provider. Provider-specific
 sampling options are not inferred; pass them explicitly with
 `--source-env-sampling-arg`.
 
-### bench review
+## bench review
 
 Grade finished rollouts against a rubric with a reviewer agent. Reviews run
 detached from the rollouts they grade: each review is an ordinary sandboxed
@@ -326,7 +326,7 @@ required with it (a run without one exits with an actionable error).
 
 | Flag | Default | Description |
 |---|---|---|
-| `--rubric`, `-r` | task / built-in | Rubric JSON file. Default: the task's own `verifier/rubric.json` when it ships one, else the built-in default rubric |
+| `--rubric`, `-r` | task / built-in | Rubric JSON file. Default: an admitted task copy's `verifier/rubric.json` (requires `--tasks-root` and a verified recorded digest), else the built-in default rubric |
 | `--prompt`, `-p` | built-in | Custom reviewer instruction template |
 | `--agent`, `-a` | `opencode` | Reviewer agent harness |
 | `--model`, `-m` | agent registry | Reviewer model (required for agents without a registry default; gateway ids such as `gemini/gemini-2.5-flash`) |

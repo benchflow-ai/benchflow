@@ -86,6 +86,9 @@ logging.basicConfig(
 
 _TAGLINE = "The universal environment framework — run, author, and adopt agent benchmarks across any environment."
 
+# Root command setup
+
+
 app = typer.Typer(
     name="benchflow",
     help=_TAGLINE,
@@ -173,6 +176,9 @@ def _cleanup_daytona_sandboxes(dry_run: bool, max_age_minutes: int) -> None:
         console.print(
             f"\n[bold green]{counts['deleted']} sandboxes deleted[/bold green] ({counts['skipped']} skipped, younger than {max_age_minutes}m)"
         )
+
+
+# Evaluation execution
 
 
 eval_app = typer.Typer(help="Evaluation commands.")
@@ -752,6 +758,9 @@ def eval_run(
         raise typer.Exit(1)
 
 
+# Batch and config-file execution helpers
+
+
 def _eval_label(plan: "EvalPlan", tasks_dir: Path) -> str:
     """A short source descriptor for the live dashboard header."""
     req = plan.request
@@ -1044,6 +1053,9 @@ eval_create = eval_run
 
 
 @eval_app.command("list")
+# Evaluation inspection commands
+
+
 def eval_list(
     jobs_dir: Annotated[
         Path | None,

@@ -850,6 +850,34 @@ class TestLeaseRenewalRetry:
 
         assert order == ["renew", "warm"]
 
+    @pytest.mark.asyncio
+    async def test_start_resets_sealed_channel_for_new_session(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards PR #942: a new microVM cannot reuse the prior sealing key."""
+
+        monkeypatch.setenv("BENCHFLOW_AGENTCORE_ROLE_ARN", "arn:aws:iam::1:role/rt")
+        env = _sandbox(_make_task(tmp_path))
+        prior_channel = env._sealed
+        prior_channel._public_key = "old-session-key"
+
+        async def _publish(*, force_build):
+            return "repo@sha256:a"
+
+        async def _ensure(image_uri):
+            return "arn:started"
+
+        with (
+            patch.object(env._images, "publish", side_effect=_publish),
+            patch.object(env, "_ensure_runtime", side_effect=_ensure),
+            patch.object(env, "_renew_lease"),
+            patch.object(env, "_warm_session"),
+        ):
+            await env.start(force_build=False)
+
+        assert env._sealed is not prior_channel
+        assert env._sealed._public_key is None
+
 
 class TestReservedPathsArePreserved:
     """Guards PR #937: never clobber a task file at a generated path."""

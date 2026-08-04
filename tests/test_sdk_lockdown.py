@@ -478,7 +478,7 @@ class TestAgentEgressFirewall:
         env = MagicMock()
         env.exec = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="loopback LLM_BASE_URL"):
+        with pytest.raises(RuntimeError, match="loopback provider base URL"):
             await enforce_agent_egress_firewall(
                 env,
                 "agent",

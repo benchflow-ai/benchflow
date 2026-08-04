@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +14,8 @@ from benchflow.review.config import REVIEW_RESULT_FILENAME
 from benchflow.review.runner import (
     REVIEW_REPORT_FILENAME,
     ReviewRunError,
+    _lock_review_evidence,
+    _task_digest_issue,
     discover_rollouts,
     run_reviews,
 )
@@ -41,8 +45,13 @@ def make_rollout(
     (rollout / "trajectory").mkdir(parents=True)
     (rollout / "trajectory" / "trajectory.json").write_text("[]", encoding="utf-8")
     config: dict = {}
+    digest: str | None = None
     if task_path is not None:
+        from benchflow._utils.task_authoring import task_digest
+
+        digest = task_digest(task_path)
         config["task_path"] = str(task_path)
+        config["task_digest"] = digest
     (rollout / "config.json").write_text(json.dumps(config), encoding="utf-8")
     if broken_result:
         (rollout / "result.json").write_text("{corrupt", encoding="utf-8")
@@ -50,6 +59,7 @@ def make_rollout(
         result = {
             "rewards": {"reward": reward} if reward is not None else None,
             "error": error,
+            "task_digest": digest,
         }
         (rollout / "result.json").write_text(json.dumps(result), encoding="utf-8")
     return rollout
@@ -218,6 +228,7 @@ class TestRunReviews:
         # pipeline (web policy, sandbox-local proxy, egress firewall).
         assert "allow_internet: false" in fake.task_docs[0]
         assert set(config.uploads.values()) == {"/evidence/trial", "/evidence/task"}
+        assert config.pre_agent_hooks == [_lock_review_evidence]
         # The wrapper was assembled with no Dockerfile (prebuilt image only).
         # It is deleted after the run, so assert via the recorded task path
         # name rather than the filesystem.
@@ -411,6 +422,201 @@ class TestRunReviews:
                 tasks_root=tmp_path / "tasks",
             )
         assert called.configs == []  # no sandbox spend on a bad rubric
+
+    @pytest.mark.asyncio
+    async def test_explicit_rubric_is_one_atomic_snapshot(self, tmp_path, monkeypatch):
+        """Guards PR #942: one invocation cannot mix rubric file revisions."""
+
+        make_rollout(tmp_path / "jobs", "rollout-a")
+        make_rollout(tmp_path / "jobs", "rollout-b")
+        rubric_path = tmp_path / "rubric.json"
+        rubric_path.write_text(json.dumps(RUBRIC), encoding="utf-8")
+        seen: list[list[str]] = []
+
+        async def mutate_after_first_wrapper(config: RolloutConfig):
+            criteria = json.loads(
+                (config.task_path / "tests" / "criteria.json").read_text("utf-8")
+            )
+            seen.append(criteria)
+            rubric_path.write_text(
+                json.dumps(
+                    {
+                        "criteria": [
+                            {
+                                "name": "changed_mid_run",
+                                "description": "d",
+                                "guidance": "g",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return await FakeRun(review_payload=good_review())(config)
+
+        monkeypatch.setattr(benchflow, "run", mutate_after_first_wrapper)
+        report, _ = await run_reviews(
+            tmp_path / "jobs",
+            agent="gemini",
+            rubric_path=rubric_path,
+            concurrency=1,
+            out_dir=tmp_path / "out",
+        )
+
+        assert seen == [["method_soundness"], ["method_soundness"]]
+        assert report.criteria == ["method_soundness"]
+        assert all(t.criteria == ["method_soundness"] for t in report.trials)
+
+    @pytest.mark.asyncio
+    async def test_report_criteria_union_for_per_task_rubrics(
+        self, tmp_path, monkeypatch
+    ):
+        """Guards PR #942: heterogeneous jobs report every trial criterion."""
+
+        tasks_root = tmp_path / "tasks"
+        for task_name, criterion in (("task-a", "alpha"), ("task-b", "beta")):
+            task = tasks_root / task_name
+            (task / "verifier").mkdir(parents=True)
+            (task / "task.md").write_text("---\n---\nbody", encoding="utf-8")
+            (task / "verifier" / "rubric.json").write_text(
+                json.dumps(
+                    {
+                        "criteria": [
+                            {
+                                "name": criterion,
+                                "description": "d",
+                                "guidance": "g",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            make_rollout(tmp_path / "jobs", f"rollout-{criterion}", task_path=task)
+
+        monkeypatch.setattr(benchflow, "run", FakeRun(review_payload=good_review()))
+        report, _ = await run_reviews(
+            tmp_path / "jobs",
+            agent="gemini",
+            tasks_root=tasks_root,
+            out_dir=tmp_path / "out",
+        )
+        assert report.criteria == ["alpha", "beta"]
+
+    @pytest.mark.asyncio
+    async def test_job_summary_uses_only_valid_reviews(self, tmp_path, monkeypatch):
+        """Guards PR #942: rejected reviewer output cannot move aggregates."""
+
+        make_rollout(tmp_path / "jobs", "a")
+        make_rollout(tmp_path / "jobs", "b")
+        calls = {"count": 0}
+
+        async def mixed(config: RolloutConfig):
+            calls["count"] += 1
+            return await FakeRun(
+                reward=1.0 if calls["count"] == 1 else 0.0,
+                review_payload=good_review(),
+            )(config)
+
+        monkeypatch.setattr(benchflow, "run", mixed)
+        report, _ = await run_reviews(
+            tmp_path / "jobs", agent="gemini", out_dir=tmp_path / "out"
+        )
+        assert report.job_summary is None
+
+
+class TestTaskDigestAdmission:
+    def test_config_only_digest_is_enforced(self, tmp_path):
+        """Guards PR #942: config provenance is authoritative when result omits it."""
+
+        task = make_task(tmp_path)
+        rollout = make_rollout(tmp_path / "jobs", "run", task_path=task)
+        result = json.loads((rollout / "result.json").read_text(encoding="utf-8"))
+        result.pop("task_digest")
+        (rollout / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        assert _task_digest_issue(rollout, task) is None
+
+    def test_missing_digest_excludes_task(self, tmp_path):
+        """Guards PR #942: unverifiable task evidence fails closed."""
+
+        task = make_task(tmp_path)
+        rollout = make_rollout(tmp_path / "jobs", "run", task_path=task)
+        for filename in ("result.json", "config.json"):
+            data = json.loads((rollout / filename).read_text(encoding="utf-8"))
+            data.pop("task_digest", None)
+            (rollout / filename).write_text(json.dumps(data), encoding="utf-8")
+        assert "missing" in (_task_digest_issue(rollout, task) or "")
+
+    def test_conflicting_digests_exclude_task(self, tmp_path):
+        """Guards PR #942: conflicting provenance cannot select task evidence."""
+
+        task = make_task(tmp_path)
+        rollout = make_rollout(tmp_path / "jobs", "run", task_path=task)
+        result = json.loads((rollout / "result.json").read_text(encoding="utf-8"))
+        result["task_digest"] = "sha256:" + "0" * 64
+        (rollout / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        assert "conflicting" in (_task_digest_issue(rollout, task) or "")
+
+    def test_digest_computation_failure_excludes_task(self, tmp_path, monkeypatch):
+        """Guards PR #942: digest errors cannot admit unverified task files."""
+
+        task = make_task(tmp_path)
+        rollout = make_rollout(tmp_path / "jobs", "run", task_path=task)
+
+        def fail(_path):
+            raise OSError("cannot hash")
+
+        monkeypatch.setattr("benchflow._utils.task_authoring.task_digest", fail)
+        assert "could not be verified" in (_task_digest_issue(rollout, task) or "")
+
+
+@pytest.mark.asyncio
+async def test_review_evidence_lock_is_fail_closed():
+    """Guards PR #942: the agent starts only after read-only evidence locking."""
+
+    class Sandbox:
+        async def exec(self, command, **kwargs):
+            self.command = command
+            self.kwargs = kwargs
+
+            class Result:
+                return_code = 0
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+    sandbox = Sandbox()
+    await _lock_review_evidence(sandbox)
+    assert "chown -R 0:0 /evidence" in sandbox.command
+    assert "chmod -R a-w,a+rX /evidence" in sandbox.command
+    assert sandbox.kwargs["user"] == "root"
+
+
+def test_cli_rendering_escapes_untrusted_review_fields(monkeypatch):
+    """Guards PR #942: rollout data cannot crash or inject Rich markup."""
+
+    from rich.console import Console
+
+    from benchflow.cli import review as review_cli
+
+    output = StringIO()
+    monkeypatch.setattr(
+        review_cli,
+        "console",
+        Console(file=output, force_terminal=True, color_system=None),
+    )
+    trial = SimpleNamespace(
+        trial_name="[/bold]",
+        checks={"[/red]": {"outcome": "[/green]", "explanation": "[x]"}},
+        summary="[/bold]",
+        error="[/red]",
+        review_valid=False,
+        outcome_counts=lambda: {"pass": 0, "fail": 0, "not_applicable": 0},
+    )
+    review_cli._render_trial_review(trial)
+    review_cli._render_review_overview([trial])
+    assert "[/bold]" in output.getvalue()
 
 
 class TestRolloutConfigUploads:

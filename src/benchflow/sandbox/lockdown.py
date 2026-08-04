@@ -162,7 +162,7 @@ async def enforce_agent_egress_firewall(
         or parsed.port is None
     ):
         raise RuntimeError(
-            "No-web agent requires an HTTP loopback LLM_BASE_URL with a port"
+            "No-web agent requires an HTTP loopback provider base URL with a port"
         )
 
     result = await env.exec(
@@ -1114,8 +1114,10 @@ async def _freeze_workspace(env, workspace: str) -> None:
         user="root",
         timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
-    await env.exec(
+    await _checked_exec(
+        env,
         f"chown -R root:root {shlex.quote(workspace)}",
+        "Verifier hardening failed: freezing workspace ownership",
         user="root",
         timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )

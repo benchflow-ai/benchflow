@@ -237,7 +237,12 @@ class TestVerifierDirWipe:
     async def test_pr_942_tree_hardening_uses_shared_setup_budget(self):
         """Guards PR #942 against Daytona tree cleanup using the 10s exec default."""
         from benchflow.sandbox.lockdown import (
+            _CLEAR_VERIFIER_DIR_CMD,
+            _ENSURE_APP_DIR_CMD,
             VERIFIER_SETUP_TIMEOUT_SEC,
+            _build_cleanup_cmd,
+            _purge_external_symlinks_cmd,
+            _purge_pycache_cmd,
             harden_before_verify,
         )
 
@@ -247,25 +252,40 @@ class TestVerifierDirWipe:
         )
 
         assert VERIFIER_SETUP_TIMEOUT_SEC >= 180
-        tree_calls = [
-            call
-            for call in env.exec.call_args_list
-            if any(
-                marker in call.args[0]
-                for marker in (
-                    "find /logs/verifier -mindepth 1",
-                    "root.rglob",
-                    "__pycache__",
-                    "chown -R root:root /app",
-                    "conftest.py",
-                )
-            )
+        expected_commands = [
+            _CLEAR_VERIFIER_DIR_CMD,
+            _ENSURE_APP_DIR_CMD,
+            _purge_external_symlinks_cmd("/app"),
+            _purge_pycache_cmd("/app"),
+            "chown -R root:root /app",
+            _build_cleanup_cmd(),
         ]
-        assert len(tree_calls) >= 5
-        assert all(
-            call.kwargs.get("timeout_sec") == VERIFIER_SETUP_TIMEOUT_SEC
-            for call in tree_calls
-        )
+        calls_by_command = {call.args[0]: call for call in env.exec.call_args_list}
+        for command in expected_commands:
+            assert command in calls_by_command
+            assert (
+                calls_by_command[command].kwargs.get("timeout_sec")
+                == VERIFIER_SETUP_TIMEOUT_SEC
+            )
+
+    @pytest.mark.asyncio
+    async def test_pr_942_workspace_chown_failure_is_fatal(self):
+        """Guards PR #942: failed ownership freezing cannot reach verification."""
+
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        def side_effect(command, **kwargs):
+            if command == "chown -R root:root /app":
+                return MagicMock(
+                    stdout="", stderr="operation not permitted", return_code=1
+                )
+            return MagicMock(stdout="", stderr="", return_code=0)
+
+        env = _make_env(side_effect)
+        with pytest.raises(RuntimeError, match="freezing workspace ownership"):
+            await harden_before_verify(
+                env, _make_task(), sandbox_user=None, workspace="/app"
+            )
 
     @pytest.mark.asyncio
     async def test_wipe_failure_is_not_ignored(self):

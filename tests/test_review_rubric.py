@@ -22,10 +22,9 @@ from benchflow.review.config import (
 from benchflow.review.prompts import (
     TASK_MOUNT,
     TRIAL_MOUNT,
-    render_job_summary_prompt,
     render_review_instruction,
 )
-from benchflow.review.wrapper import assemble_review_task
+from benchflow.review.wrapper import assemble_review_task, copy_evidence
 
 RUBRIC = {
     "criteria": [
@@ -104,6 +103,22 @@ class TestLoadRubric:
         with pytest.raises(ReviewRubricError, match="not a valid rubric"):
             load_rubric(write_rubric(tmp_path, data))
 
+    def test_rejects_unknown_top_level_keys(self, tmp_path):
+        """Guards PR #942: top-level rubric typos must fail closed."""
+
+        data = {**RUBRIC, "criterai": []}
+        with pytest.raises(ReviewRubricError, match="not a valid rubric"):
+            load_rubric(write_rubric(tmp_path, data))
+
+    def test_rejects_schema_reserved_name(self, tmp_path):
+        """Guards PR #942: model-prefixed names cannot erase schema fields."""
+
+        bad = {
+            "criteria": [{"name": "model_future", "description": "d", "guidance": "g"}]
+        }
+        with pytest.raises(ReviewRubricError, match="reserved"):
+            load_rubric(write_rubric(tmp_path, bad))
+
     def test_rejects_empty_criteria(self, tmp_path):
         """An empty rubric would let the wrapper award reward 1 to a review
         containing zero judgments."""
@@ -128,6 +143,15 @@ class TestFindTaskRubric:
     def test_returns_none_without_rubric(self, tmp_path):
         (tmp_path / "verifier").mkdir()
         assert find_task_rubric(tmp_path) is None
+
+    def test_native_verifier_rubric_precedes_legacy_tests(self, tmp_path):
+        """Guards PR #942: native verifier/rubric.json wins in dual layouts."""
+
+        (tmp_path / "verifier").mkdir()
+        (tmp_path / "tests").mkdir()
+        native = write_rubric(tmp_path / "verifier", RUBRIC)
+        write_rubric(tmp_path / "tests", RUBRIC)
+        assert find_task_rubric(tmp_path) == native
 
 
 class TestGuidanceAndSchema:
@@ -195,9 +219,19 @@ class TestPromptRendering:
         instruction = render_review_instruction(rubric, template="Just review it.")
         assert instruction.startswith("Just review it.")
 
-    def test_job_summary_prompt_is_brace_safe(self):
-        prompt = render_job_summary_prompt(['Run: a\n  {"weird": "json"}'])
-        assert '{"weird": "json"}' in prompt
+    def test_custom_template_typo_is_rejected(self):
+        """Guards PR #942: misspelled placeholders cannot erase guidance."""
+
+        rubric = Rubric.model_validate(RUBRIC)
+        with pytest.raises(KeyError, match="criteria_guidence"):
+            render_review_instruction(rubric, template="{criteria_guidence}")
+
+    def test_trial_name_is_rendered_as_json(self):
+        """Guards PR #942: hostile legal names remain unambiguous in prompts."""
+
+        rubric = Rubric.model_validate(RUBRIC)
+        instruction = render_review_instruction(rubric, trial_name='a"b\nline')
+        assert 'exactly "a\\"b\\nline"' in instruction
 
 
 class TestWrapperAssembly:
@@ -259,6 +293,41 @@ class TestWrapperAssembly:
         assert not (trial_copy / REVIEW_RESULT_FILENAME).exists()
         assert uploads == {str(trial_copy): TRIAL_MOUNT}
 
+    def test_evidence_uses_canonical_trajectory_not_provider_history(self, tmp_path):
+        """Guards PR #942 against redundant provider history exhausting context."""
+
+        rollout = tmp_path / "rollout"
+        trajectory = rollout / "trajectory"
+        trajectory.mkdir(parents=True)
+        (trajectory / "acp_trajectory.jsonl").write_text(
+            '{"type":"tool_call"}\n', encoding="utf-8"
+        )
+        (trajectory / "llm_trajectory.jsonl").write_text(
+            '{"messages":["expanded provider history"]}\n', encoding="utf-8"
+        )
+
+        destination = tmp_path / "copy"
+        copy_evidence(rollout, destination)
+
+        assert (destination / "trajectory" / "acp_trajectory.jsonl").is_file()
+        assert not (destination / "trajectory" / "llm_trajectory.jsonl").exists()
+
+    def test_permission_normalization_fails_closed(self, tmp_path, monkeypatch):
+        """Guards PR #942: chmod failure cannot admit writable evidence."""
+
+        rubric = Rubric.model_validate(RUBRIC)
+        rollout = self.make_rollout(tmp_path)
+        original_chmod = Path.chmod
+
+        def fail_on_copy(path: Path, mode: int, *args, **kwargs):
+            if "wrapper" in path.parts:
+                raise OSError("chmod refused")
+            return original_chmod(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "chmod", fail_on_copy)
+        with pytest.raises(OSError, match="chmod refused"):
+            assemble_review_task(rollout, None, rubric, tmp_path / "wrapper")
+
 
 class TestWrapperValidator:
     """Run the shipped in-sandbox validator exactly as the wrapper does."""
@@ -305,6 +374,31 @@ class TestWrapperValidator:
         result["checks"]["method_soundness"]["outcome"] = "not_applicable"
         code, _ = self.run_validator(tmp_path, result)
         assert code == 0
+
+    def test_trial_name_round_trips_without_whitespace_loss(self, tmp_path):
+        """Guards PR #942: validator identity matching must be byte-exact."""
+
+        rubric = Rubric.model_validate(RUBRIC)
+        rollout = tmp_path / " run "
+        rollout.mkdir()
+        (rollout / "result.json").write_text("{}", encoding="utf-8")
+        dest, _ = assemble_review_task(rollout, None, rubric, tmp_path / "w-space")
+        result = self.good_result()
+        result["trial_name"] = " run "
+        result_path = tmp_path / "space-review.json"
+        result_path.write_text(json.dumps(result), encoding="utf-8")
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(dest / "tests" / "validate.py"),
+                str(result_path),
+                str(dest / "tests" / "criteria.json"),
+                str(dest / "tests" / "trial_name.txt"),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stdout
 
     @pytest.mark.parametrize(
         ("mutate", "message"),

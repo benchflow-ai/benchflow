@@ -104,6 +104,25 @@ class TestBuilderSelection:
         assert builders.ENV_CODEBUILD_ROLE in str(excinfo.value)
         assert "codebuild.amazonaws.com" in str(excinfo.value)
 
+    @pytest.mark.asyncio
+    async def test_local_builder_rejects_mismatched_base_platform(self, tmp_path):
+        """Guards PR #942 against arm64 images built from amd64-only pins."""
+
+        from benchflow.sandbox.protocol import SandboxStartupError
+
+        warning = MagicMock(
+            returncode=0,
+            stdout="",
+            stderr="WARNING: InvalidBaseImagePlatform: expected linux/arm64",
+        )
+        builder = builders.LocalDockerBuilder(MagicMock())
+
+        with (
+            patch.object(builders, "_run", return_value=warning),
+            pytest.raises(SandboxStartupError, match="multi-architecture index"),
+        ):
+            await builder.build_and_push(_request(tmp_path))
+
 
 class TestCodeBuildPackaging:
     def test_archive_carries_the_generated_dockerfile_and_shim(self, tmp_path):

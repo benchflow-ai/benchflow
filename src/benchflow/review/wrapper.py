@@ -3,8 +3,8 @@
 Each review of a finished rollout runs as an ordinary single rollout of a
 synthetic task built here on the host:
 
-- the wrapper uses a pinned prebuilt image (no Dockerfile, no image build on
-  any backend);
+- the wrapper uses a digest-pinned base image and no task-authored Dockerfile;
+  backends may still derive their own runtime image;
 - the rollout evidence and, when available, the original task definition are
   uploaded after start (``RolloutConfig.uploads``) to ``/evidence`` — outside
   the agent workdir, so the sandbox-user chown never touches them and they
@@ -46,7 +46,7 @@ from benchflow.review.prompts import (
 #: would silently change the reviewer environment between runs. Override
 #: with ``--image`` (e.g. to an internal mirror or a newer digest).
 REVIEWER_IMAGE = (
-    "python@sha256:afe189875f1d2f9b45e287834fb9f2c273a5d59d354ae4050ab9affbf0a6ba06"
+    "python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91"
 )
 REVIEWER_AGENT_TIMEOUT_SEC = 1800
 REVIEWER_VERIFIER_TIMEOUT_SEC = 120
@@ -55,6 +55,7 @@ REVIEWER_VERIFIER_TIMEOUT_SEC = 120
 #: prior review output means a re-review can never read an earlier verdict.
 _EVIDENCE_EXCLUDES = (
     ".git",
+    "llm_trajectory.jsonl",
     "review",
     REVIEW_RESULT_FILENAME,
     "review_report.json",
@@ -110,7 +111,7 @@ def main() -> int:
         return 1
 
     problems = []
-    expected_trial = Path(sys.argv[3]).read_text(encoding="utf-8").strip()
+    expected_trial = Path(sys.argv[3]).read_text(encoding="utf-8")
     if data.get("trial_name") != expected_trial:
         problems.append(
             f"trial_name must be {expected_trial!r}, got {data.get('trial_name')!r}"
@@ -207,7 +208,6 @@ def copy_evidence(
         destination,
         ignore=_evidence_ignore(extra_excludes),
         symlinks=True,  # never dereference; links are filtered by ignore()
-        ignore_dangling_symlinks=True,
     )
     _strip_write_bits(destination)
 
@@ -226,11 +226,8 @@ def _strip_write_bits(root: Path) -> None:
     for path in [root, *root.rglob("*")]:
         if path.is_symlink():
             continue
-        try:
-            current = path.stat().st_mode
-            path.chmod(stat.S_IMODE(current) & ~write_bits)
-        except OSError:
-            continue
+        current = path.stat().st_mode
+        path.chmod(stat.S_IMODE(current) & ~write_bits)
 
 
 def assemble_review_task(

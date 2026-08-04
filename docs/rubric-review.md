@@ -103,15 +103,19 @@ the host, which is why every sandbox backend (`docker`, `daytona`,
   image with its runtime-contract shim, so it still builds and pushes a
   derived ECR image once per distinct image, then reuses it.
 - **Evidence by upload, outside the workdir.** A copy of the rollout
-  directory is uploaded to `/evidence/trial`, and a copy of the task
-  directory (when the rollout's `config.json` still points at one) to
-  `/evidence/task`. `/evidence` sits outside the agent workdir, so the
-  sandbox-user chown never touches it: it stays root-owned and unwritable
-  by the reviewer. Prior review outputs are excluded from the copy, so a
+  directory is uploaded to `/evidence/trial`. A task copy is uploaded to
+  `/evidence/task` only when it is admitted through the trusted-root and
+  digest checks below. `/evidence` sits outside the agent workdir; after all
+  uploads, a pre-agent hook fails closed unless the whole tree can be made
+  root-owned, readable, and non-writable by the reviewer. Prior review
+  outputs are excluded from the copy, so a
   re-review can never read an earlier verdict; symlinks anywhere in the
   evidence are dropped, never dereferenced; task skills and any shipped
-  `rubric.json` are excluded from the task copy. The reviewed rollout
-  itself is never touched.
+  `rubric.json` are excluded from the task copy. The canonical ACP trajectory
+  is retained, while the redundant provider-history `llm_trajectory.jsonl`
+  is omitted: that log repeats the growing conversation on every request and
+  can exhaust a reviewer model's context without adding recorded actions. The
+  reviewed rollout itself is never touched.
 - **Post-initialization egress restriction, fail closed.** The wrapper
   declares `allow_internet: false`, which disables web tools, forces the
   model proxy sandbox-local, and arms the agent-UID egress firewall scoped
@@ -135,9 +139,11 @@ the host, which is why every sandbox backend (`docker`, `daytona`,
   directly — pass `--tasks-root <dir>` and the task is looked up *by name*
   beneath that root. Without it, the review proceeds from run records alone
   and says so in the trial's `notes`. When the rollout recorded a
-  `task_digest`, a mismatch against the on-disk task — or any failure to
-  verify it — **excludes the task from evidence** and says so in `notes`;
-  an old rollout is never reviewed against changed task content.
+  `task_digest` in `result.json` or `config.json`, the values must be valid
+  and mutually consistent. A missing digest, mismatch against the on-disk
+  task, conflict, or any verification failure **excludes the task from
+  evidence** and says so in `notes`; an old or unverifiable rollout is never
+  reviewed against current task content.
 - **The rubric never enters the sandbox.** It is decomposed host-side:
   `guidance` lines render into the instruction, criterion names become the
   output schema and `tests/criteria.json`. `description` goes nowhere.
@@ -180,9 +186,10 @@ The review job directory contains `review_report.json`:
 
 Each reviewer rollout's own records (trajectory, verifier output, raw
 `review-result.json`) sit under the report's `runtime/` directory for
-audit; every invocation uses a fresh unique runtime leaf, and each trial's
-`reviewer_rollout` points at that exact leaf, so reusing `--out-dir` can
-never resurface a stale review. The job summary is a deterministic
+audit; every invocation uses a fresh unique runtime leaf. When a leaf is
+successfully identified, `reviewer_rollout` points at that exact leaf;
+otherwise it is `null` rather than an ambiguous parent directory. Reusing
+`--out-dir` can therefore never resurface a stale review. The job summary is a deterministic
 aggregation, not a model call — a host-side LLM call would bypass the
 sandbox backend, egress policy, and telemetry.
 

@@ -1,9 +1,10 @@
 """Rubric review — detached agentic grading of finished rollouts.
 
-A rubric (contract **v0.1**) is a JSON list of criteria (``name`` /
-``description`` / ``guidance``); a reviewer agent reads a finished rollout's records inside its
-own sandbox and answers each criterion with ``pass`` / ``fail`` /
-``not_applicable`` plus an explanation.
+A rubric (contract **v0.1**) is a JSON object containing a ``criteria`` list;
+each criterion has ``name``, ``description``, and ``guidance``. A reviewer
+agent reads a finished rollout's records inside its own sandbox and answers
+each criterion with ``pass`` / ``fail`` / ``not_applicable`` plus an
+explanation.
 
 Reviews run *after* rollouts, from their host-side directories, as ordinary
 rollouts of throwaway wrapper tasks (:mod:`benchflow.review.wrapper`), so

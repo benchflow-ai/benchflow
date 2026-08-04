@@ -13,18 +13,12 @@ scripts keep working.
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-
-def _load_env_defaults() -> None:
-    from benchflow._dotenv import load_dotenv_env
-
-    for key, value in load_dotenv_env().items():
-        os.environ.setdefault(key, value)
+from benchflow.cli._shared import _apply_dotenv_to_process_env
 
 
 def register_continue(
@@ -116,7 +110,7 @@ def register_continue(
         from benchflow.continue_run.orchestrator import continue_run
         from benchflow.continue_run.run_folder import RunFolderError
 
-        _load_env_defaults()
+        _apply_dotenv_to_process_env()
 
         try:
             result = asyncio.run(
@@ -223,7 +217,7 @@ def register_continue(
             summarize_batch,
         )
 
-        _load_env_defaults()
+        _apply_dotenv_to_process_env()
         # Fail fast on a bad ROOT instead of treating a typo'd/nonexistent path as
         # an empty-but-valid tree — otherwise scripted callers read the exit-0
         # "No timeout run folders found." as success. Matches `bench eval continue`,

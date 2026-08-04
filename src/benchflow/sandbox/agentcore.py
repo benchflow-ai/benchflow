@@ -256,6 +256,11 @@ class AgentCoreSandbox(BaseSandbox):
             self.runtime_arn = await self._ensure_runtime(image_uri)
             # AgentCore requires a session id of at least 33 characters.
             self.runtime_session_id = f"{uuid.uuid4()}-{uuid.uuid4().hex[:8]}"
+            # Each runtime session has an independent microVM/filesystem. A
+            # public key cached for the previous session has no matching
+            # private key here, so reset the channel before any warm-up exec
+            # can stage persistent environment values.
+            self._sealed = SealedChannel(self._exec_raw, self.logger)
             # Provisioning is memoized, so only the first rollout of an image
             # runs the creation path. Every rollout refreshes the lease (rate
             # limited) or a long matrix outlives the lease it inherited.
@@ -689,6 +694,7 @@ class AgentCoreSandbox(BaseSandbox):
             raise RuntimeError("AgentCore sandbox not started. Call start() first.")
 
         wrapped = command
+        resolved_user = self._resolve_user(user)
         merged_env = self._merge_env(env)
         if merged_env:
             # NEVER use the shared env-file command wrapper here: it embeds
@@ -697,10 +703,9 @@ class AgentCoreSandbox(BaseSandbox):
             # runtime's CloudWatch log group. Stage the environment through
             # the sealed (ciphertext-only) channel and source it instead, so
             # the logged text holds only a file path.
-            resolved_owner = self._resolve_user(user)
             env_path = await self._sealed.stage_env(
                 merged_env,
-                owner=str(resolved_owner) if resolved_owner is not None else None,
+                owner=str(resolved_user) if resolved_user is not None else None,
             )
             quoted_env = shlex.quote(env_path)
             if cwd:
@@ -723,15 +728,27 @@ class AgentCoreSandbox(BaseSandbox):
         elif cwd:
             wrapped = f"cd {shlex.quote(cwd)} && {wrapped}"
 
-        resolved_user = self._resolve_user(user)
+        return await self._dispatch_command(
+            wrapped, timeout_sec=timeout_sec, resolved_user=resolved_user
+        )
+
+    async def _dispatch_command(
+        self,
+        command: str,
+        *,
+        timeout_sec: int | None,
+        resolved_user: str | int | None,
+    ) -> ExecResult:
+        """Send one environment-free shell command to the active session."""
+
         if resolved_user is not None:
             if isinstance(resolved_user, int):
                 user_arg = f"$(getent passwd {resolved_user} | cut -d: -f1)"
             else:
                 user_arg = shlex.quote(str(resolved_user))
-            wrapped = f"su {user_arg} -s /bin/bash -c {shlex.quote(wrapped)}"
+            command = f"su {user_arg} -s /bin/bash -c {shlex.quote(command)}"
 
-        payload = f"/bin/bash -c {shlex.quote(wrapped)}"
+        payload = f"/bin/bash -c {shlex.quote(command)}"
         # The service enforces 1..3600 for the command timeout.
         timeout = max(1, min(int(timeout_sec or 300), 3600))
         return await asyncio.to_thread(self._invoke_command, payload, timeout)
@@ -820,22 +837,16 @@ class AgentCoreSandbox(BaseSandbox):
         every caller passes ciphertext or plain paths.
         """
 
-        wrapped = command
-        resolved_user = self._resolve_user(user)
-        if resolved_user is not None:
-            if isinstance(resolved_user, int):
-                user_arg = f"$(getent passwd {resolved_user} | cut -d: -f1)"
-            else:
-                user_arg = shlex.quote(str(resolved_user))
-            wrapped = f"su {user_arg} -s /bin/bash -c {shlex.quote(wrapped)}"
-        payload = f"/bin/bash -c {shlex.quote(wrapped)}"
-        timeout = max(1, min(int(timeout_sec or 300), 3600))
-        return await asyncio.to_thread(self._invoke_command, payload, timeout)
+        return await self._dispatch_command(
+            command,
+            timeout_sec=timeout_sec,
+            resolved_user=self._resolve_user(user),
+        )
 
     async def write_text_file(
         self, remote_path: str, body: str, *, mode: str = "600"
     ) -> bool:
-        """Write *body* to *remote_path* inside the session, base64-encoded.
+        """Write *body* to *remote_path* through the sealed channel.
 
         Used by the ACP transport to stage the agent env file without typing
         secrets into the PTY, where they would be echoed into the agent log.
@@ -874,11 +885,10 @@ class AgentCoreSandbox(BaseSandbox):
             await self._upload_via_tar(members)
 
     async def _upload_via_tar(self, members: dict[Path, PurePosixPath]) -> None:
-        """Ship files as a single base64 tar stream, chunked under the cap.
+        """Ship files as one sealed tar stream, chunked under the command cap.
 
-        One archive per directory keeps this O(1) commands for the common case
-        instead of one round trip per file, and the chunk loop keeps every
-        individual command well inside the service's 64 KB payload limit.
+        One archive avoids a round trip per file, while the chunk loop keeps
+        every command well inside the service's 64 KB payload limit.
         """
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as tar:

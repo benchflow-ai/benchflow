@@ -14,6 +14,7 @@ import asyncio
 import base64
 import dataclasses
 import logging
+import shlex
 import shutil
 import subprocess
 import uuid
@@ -59,12 +60,12 @@ def container():
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
 
-def _dx(container: str, command: str, user: str | None = None):
+def _dx(container: str, command: str, user: str | None = None, *, shell: str = "sh"):
     args = ["docker", "exec"]
     if user:
         args += ["-u", user]
     return subprocess.run(
-        [*args, container, "sh", "-c", command], capture_output=True, text=True
+        [*args, container, shell, "-c", command], capture_output=True, text=True
     )
 
 
@@ -90,12 +91,55 @@ def channel(container):
 
 class TestReceiverBoundary:
     def test_secret_upload_lands_0600_with_spaced_parent(self, container, channel):
-        """Mode is applied atomically under umask 077 — no 0644 window —
-        and parents with spaces are quoted (host-computed, not $(dirname))."""
-        target = "/tmp/spaced dir/secret.bin"
+        """Guards PR #942: spaced parents retain the requested private mode."""
+        target = "/tmp/spaced dir's/secret.bin"
         asyncio.run(channel.upload(b"TOKEN=abc\n" * 20, target=target, mode="600"))
-        result = _dx(container, "stat -c '%a' '/tmp/spaced dir/secret.bin'")
+        result = _dx(container, f"stat -c %a {shlex.quote(target)}")
         assert result.stdout.strip() == "600"
+
+    def test_existing_target_is_replaced_from_private_temporary(
+        self, container, channel
+    ):
+        """Guards PR #942: overwrite cannot expose plaintext through mode 0644."""
+
+        target = "/tmp/existing-secret.bin"
+        _dx(container, f"printf old > {target} && chmod 644 {target}")
+        before = _dx(container, f"stat -c '%i:%a' {target}").stdout.strip()
+        asyncio.run(channel.upload(b"replacement", target=target, mode="600"))
+        after = _dx(container, f"stat -c '%i:%a' {target}").stdout.strip()
+        assert before.split(":", 1)[0] != after.split(":", 1)[0]
+        assert after.endswith(":600")
+        assert _dx(container, f"cat {target}").stdout == "replacement"
+
+    def test_existing_target_symlink_is_replaced_not_followed(self, container, channel):
+        """Guards PR #942: root decryption must not overwrite a symlink victim."""
+
+        _dx(
+            container,
+            "printf victim > /tmp/sealed-victim && "
+            "ln -sf /tmp/sealed-victim /tmp/sealed-target",
+        )
+        asyncio.run(
+            channel.upload(b"replacement", target="/tmp/sealed-target", mode="600")
+        )
+        assert _dx(container, "test ! -L /tmp/sealed-target").returncode == 0
+        assert _dx(container, "cat /tmp/sealed-target").stdout == "replacement"
+        assert _dx(container, "cat /tmp/sealed-victim").stdout == "victim"
+
+    def test_invalid_mode_is_rejected_before_receiver_execution(
+        self, container, channel
+    ):
+        """Guards PR #942: upload mode cannot append a root shell command."""
+
+        with pytest.raises(ValueError, match="octal"):
+            asyncio.run(
+                channel.upload(
+                    b"x",
+                    target="/tmp/invalid-mode-target",
+                    mode="600; touch /tmp/mode-injected",
+                )
+            )
+        assert _dx(container, "test ! -e /tmp/mode-injected").returncode == 0
 
     def test_receiver_rejects_blob_iv_tampering(self, container, channel):
         """Round 4: the receiver's IV comes from the authenticated blob, so
@@ -152,42 +196,69 @@ class TestStagedEnvBehavior:
         assert result.stdout == "sekrit-1"
         assert _dx(container, f"test ! -e {env_path}").returncode == 0
 
-    def test_cd_failure_does_not_leak_env_file(self, container, channel):
-        """Trap installs before cd, so a failed cd still cleans up."""
-        env_path = asyncio.run(channel.stage_env({"A": "1"}, owner="agent"))
-        result = _dx(
-            container,
-            f"trap 'rm -f {env_path}' EXIT; set -a; . {env_path} || exit 97; "
-            f"set +a; rm -f {env_path}; cd /nonexistent && echo RAN",
-            user="agent",
-        )
-        assert result.returncode != 0
-        assert "RAN" not in result.stdout
-        assert _dx(container, f"test ! -e {env_path}").returncode == 0
+    def test_agentcore_exec_uses_production_env_wrapper(self, container, channel):
+        """Guards PR #942 across owner, cwd, exec, and source-failure boundaries."""
 
-    def test_exec_replacement_does_not_leak_env_file(self, container, channel):
-        """The file is removed inline before the user command, so a command
-        that ``exec``s (EXIT trap never fires) cannot leave it behind."""
-        env_path = asyncio.run(channel.stage_env({"B": "2"}, owner="agent"))
-        result = _dx(
-            container,
-            f"trap 'rm -f {env_path}' EXIT; set -a; . {env_path} || exit 97; "
-            f'set +a; rm -f {env_path}; exec printf %s "$B"',
-            user="agent",
-        )
-        assert result.stdout == "2"
-        assert _dx(container, f"test ! -e {env_path}").returncode == 0
+        from benchflow.sandbox._base import ExecResult
+        from benchflow.sandbox.agentcore import AgentCoreSandbox
 
-    def test_unreadable_env_aborts_instead_of_running_without_env(self, container):
+        sandbox = object.__new__(AgentCoreSandbox)
+        sandbox.runtime_arn = "arn:test"
+        sandbox.runtime_session_id = "s" * 40
+        sandbox.default_user = "agent"
+        sandbox._persistent_env = {}
+        sandbox._sealed = channel
+        staged: list[str] = []
+        real_stage_env = channel.stage_env
+
+        async def record_stage_env(env, *, owner=None):
+            path = await real_stage_env(env, owner=owner)
+            staged.append(path)
+            return path
+
+        async def dispatch(command, *, timeout_sec, resolved_user):
+            result = _dx(
+                container,
+                command,
+                user=None if resolved_user in (None, "root") else str(resolved_user),
+                shell="bash",
+            )
+            return ExecResult(
+                return_code=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+
+        channel.stage_env = record_stage_env
+        sandbox._dispatch_command = dispatch
+
+        sourced = asyncio.run(
+            sandbox.exec('printf %s "$OWNER_TEST"', env={"OWNER_TEST": "ok"})
+        )
+        assert sourced.stdout == "ok"
+        assert _dx(container, f"test ! -e {staged[-1]}").returncode == 0
+
+        failed_cd = asyncio.run(
+            sandbox.exec("echo SHOULD_NOT_RUN", cwd="/nonexistent", env={"A": "1"})
+        )
+        assert failed_cd.return_code != 0
+        assert "SHOULD_NOT_RUN" not in (failed_cd.stdout or "")
+        assert _dx(container, f"test ! -e {staged[-1]}").returncode == 0
+
+        replaced = asyncio.run(sandbox.exec('exec printf %s "$B"', env={"B": "2"}))
+        assert replaced.stdout == "2"
+        assert _dx(container, f"test ! -e {staged[-1]}").returncode == 0
+
         _dx(
             container,
             "printf 'X=1\\n' > /tmp/rootonly.sh && chmod 600 /tmp/rootonly.sh",
         )
-        result = _dx(
-            container,
-            "trap 'rm -f /tmp/rootonly.sh' EXIT; set -a; "
-            ". /tmp/rootonly.sh || exit 97; set +a; echo SHOULD_NOT_PRINT",
-            user="agent",
-        )
-        assert result.returncode != 0
-        assert "SHOULD_NOT_PRINT" not in result.stdout
+
+        async def unreadable_env(_env, *, owner=None):
+            return "/tmp/rootonly.sh"
+
+        channel.stage_env = unreadable_env
+        unreadable = asyncio.run(sandbox.exec("echo SHOULD_NOT_PRINT", env={"X": "1"}))
+        assert unreadable.return_code != 0
+        assert "SHOULD_NOT_PRINT" not in (unreadable.stdout or "")
+        _dx(container, "rm -f /tmp/rootonly.sh")

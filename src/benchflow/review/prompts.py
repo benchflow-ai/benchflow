@@ -2,9 +2,8 @@
 
 The reviewer instruction is assembled host-side from a template plus the
 rubric's guidance lines and the structured-output schema, then baked into the
-wrapper task's instruction body.  Templates are rendered with
-``str.format_map`` over a defaulting mapping, so a custom template that omits
-a placeholder renders instead of crashing.
+wrapper task's instruction body. Templates may omit supported placeholders,
+but unknown or misspelled placeholders fail loudly before the reviewer runs.
 
 Available placeholders:
 
@@ -13,13 +12,11 @@ Available placeholders:
   copy (or its absence).
 - ``{criteria_guidance}`` — one ``- name: guidance`` line per criterion.
 - ``{result_path}`` / ``{output_schema}`` — output-contract details.
-- ``{trial_results}`` — job-summary template only; replaced verbatim.
 """
 
 from __future__ import annotations
 
 import json
-from collections import defaultdict
 from typing import Any
 
 from benchflow.review.config import Rubric, build_criteria_guidance
@@ -65,14 +62,7 @@ OUTPUT_TEMPLATE = """When you are done, write your answer as JSON to {result_pat
 
 {output_schema}
 
-"trial_name" must be exactly "{trial_name}". Every criterion listed in the schema must appear in "checks" with an "outcome" of "pass", "fail", or "not_applicable" and a non-empty "explanation". Write the file and nothing else; do not print the JSON instead of writing it."""
-
-JOB_SUMMARY_TEMPLATE = """Several runs of the same kind were each reviewed independently. Combine their reviews into one short report: recurring failure patterns, systemic issues with the task or environment, and anything that appears in several runs. Three to eight sentences, plain prose, no headings.
-
-Per-run reviews:
-
-{trial_results}
-"""
+"trial_name" must be exactly {trial_name_json}. Every criterion listed in the schema must appear in "checks" with an "outcome" of "pass", "fail", or "not_applicable" and a non-empty "explanation". Write the file and nothing else; do not print the JSON instead of writing it."""
 
 
 def render_task_section(task_path: str | None) -> str:
@@ -80,7 +70,7 @@ def render_task_section(task_path: str | None) -> str:
 
     if task_path is None:
         return TASK_SECTION_MISSING
-    return TASK_SECTION_TEMPLATE.format_map(defaultdict(str, task_path=task_path))
+    return TASK_SECTION_TEMPLATE.format(task_path=task_path)
 
 
 def render_review_instruction(
@@ -96,29 +86,17 @@ def render_review_instruction(
     """Render the full wrapper-task instruction body."""
 
     body = (template or REVIEW_TEMPLATE).format_map(
-        defaultdict(
-            str,
-            trial_path=trial_path,
-            task_section=render_task_section(task_path),
-            criteria_guidance=build_criteria_guidance(rubric),
-        )
+        {
+            "trial_path": trial_path,
+            "task_section": render_task_section(task_path),
+            "criteria_guidance": build_criteria_guidance(rubric),
+        }
     )
     output = OUTPUT_TEMPLATE.format_map(
-        defaultdict(
-            str,
-            result_path=result_path,
-            trial_name=trial_name,
-            output_schema=json.dumps(output_schema or {}, indent=2),
-        )
+        {
+            "result_path": result_path,
+            "trial_name_json": json.dumps(trial_name),
+            "output_schema": json.dumps(output_schema or {}, indent=2),
+        }
     )
     return f"{body.rstrip()}\n\n{output.strip()}\n"
-
-
-def render_job_summary_prompt(trial_results: list[str]) -> str:
-    """Render the job-level aggregation prompt.
-
-    Uses ``str.replace`` rather than ``format`` so review text containing
-    braces (code snippets, JSON) cannot break rendering.
-    """
-
-    return JOB_SUMMARY_TEMPLATE.replace("{trial_results}", "\n\n".join(trial_results))

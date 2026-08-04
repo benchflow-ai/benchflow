@@ -4,15 +4,17 @@
 
 ### Added
 - **Rubric review (`bench review`).** Detached agentic grading of finished
-  rollouts against a `rubric.json` — rubric contract **v0.1**: a flat list of
-  criteria, each carrying a `name` (structured-output field), a
+  rollouts against a `rubric.json` — rubric contract **v0.1**: an object with
+  a `criteria` list, each entry carrying a `name` (structured-output field), a
   `description` (author documentation, never shown to the reviewer), and
   `guidance` (the grading contract). The document carries no in-file
   version key. One
   reviewer agent per rollout runs as an ordinary rollout of a throwaway
-  wrapper task on a pinned prebuilt image (no Dockerfile, no image build on
-  any sandbox backend), reads a read-only evidence copy of the rollout and
-  its task, and answers every criterion with `pass` / `fail` /
+  wrapper task on a digest-pinned multi-architecture base image and no
+  task-authored Dockerfile
+  (AgentCore still builds a derived runtime image), reads a read-only evidence
+  copy of the rollout and, when admitted from a trusted `--tasks-root` with a
+  verified digest, its task, and answers every criterion with `pass` / `fail` /
   `not_applicable` plus an explanation. The wrapper's own reward means only
   "the reviewer produced a structurally valid result"; graded outcomes land
   in `review_report.json`. Reviews never modify a reviewed rollout's rewards
@@ -20,11 +22,12 @@
   `verifier/rubric.json` > a built-in default (`reward_hacking`,
   `task_specification`). `--passing` / `--failing` filter the rollouts under
   review; a job-level prose summary aggregates multi-rollout runs. The
-  default reviewer harness is `opencode` (pinned to the latest release).
+  default reviewer harness is `opencode` (pinned to `1.18.11`).
   Evidence mounts at `/evidence` outside the agent workdir (root-owned,
   unwritable by the reviewer), symlinks are dropped rather than
-  dereferenced, task skills and shipped rubrics are excluded, reviewer
-  egress is gateway-scoped via the sandbox lockdown flag, artifact
+  dereferenced, task skills, shipped rubrics, and redundant provider-history
+  trajectories are excluded while the canonical ACP trajectory is retained,
+  reviewer egress is gateway-scoped via the sandbox lockdown flag, artifact
   consumption is pinned to each invocation's unique runtime leaf, and the
   job summary is a deterministic aggregation.
 - **Sealed AgentCore uploads.** Every AgentCore **upload and staged

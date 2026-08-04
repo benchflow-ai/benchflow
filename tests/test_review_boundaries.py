@@ -173,15 +173,18 @@ class TestDigestEnforcement:
         (task / "task.md").write_text("body", encoding="utf-8")
         rollout = make_rollout(tmp_path / "jobs")
         (rollout / "config.json").write_text(
-            json.dumps({"task_path": "/x/t1"}), encoding="utf-8"
+            json.dumps({"task_path": "/x/t1", "task_digest": "sha256:" + "a" * 64}),
+            encoding="utf-8",
         )
         (rollout / "result.json").write_text(
-            json.dumps({"rewards": {"reward": 0.0}, "task_digest": "sha256:recorded"}),
+            json.dumps(
+                {"rewards": {"reward": 0.0}, "task_digest": "sha256:" + "a" * 64}
+            ),
             encoding="utf-8",
         )
         monkeypatch.setattr(
             "benchflow._utils.task_authoring.task_digest",
-            lambda _p: "sha256:actual-differs",
+            lambda _p: "sha256:" + "b" * 64,
         )
         uploads_seen: list[dict] = []
 
@@ -293,6 +296,28 @@ class TestRubricDialectDiscrimination:
             json.dumps({"criteria": [{"nme": "x", "guidnce": "g"}]}),
             encoding="utf-8",
         )
+        assert is_review_rubric_file(target)
+        assert find_task_rubric(task) == target
+        with pytest.raises(ReviewRubricError):
+            load_rubric(target)
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            {"criteria": [{"id": "only-id"}]},
+            {"criteria": [{"match_criteria": "only-match"}]},
+            {"criteria": "not-a-list"},
+        ],
+    )
+    def test_ambiguous_or_malformed_dialects_are_claimed(self, tmp_path, document):
+        """Guards PR #942: only the full judge shape is disclaimed."""
+
+        from benchflow.review.config import ReviewRubricError, is_review_rubric_file
+
+        task = tmp_path / "task"
+        (task / "verifier").mkdir(parents=True)
+        target = task / "verifier" / "rubric.json"
+        target.write_text(json.dumps(document), encoding="utf-8")
         assert is_review_rubric_file(target)
         assert find_task_rubric(task) == target
         with pytest.raises(ReviewRubricError):
@@ -531,20 +556,3 @@ class TestSealedAgentCoreUploads:
 
         assert not path.startswith(SEAL_DIR + "/")
         self._assert_unrecoverable(commands, b"tok-abc-123")
-
-    def test_write_text_file_routes_through_sealed_channel(self):
-        import inspect
-
-        from benchflow.sandbox.agentcore import AgentCoreSandbox
-
-        source = inspect.getsource(AgentCoreSandbox.write_text_file)
-        assert "self._sealed.upload" in source
-        assert "b64encode" not in source
-
-    def test_tar_path_routes_through_sealed_channel(self):
-        import inspect
-
-        from benchflow.sandbox.agentcore import AgentCoreSandbox
-
-        source = inspect.getsource(AgentCoreSandbox._upload_via_tar)
-        assert "self._sealed.upload" in source
