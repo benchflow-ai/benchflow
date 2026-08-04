@@ -7,7 +7,7 @@ UI / API. Workflows:
 | Level | File | Trigger | Required? |
 |------|------|---------|-----------|
 | L0 | `.github/workflows/test.yml` | push / PR / merge_group | yes (every PR) |
-| L1 | `.github/workflows/integration-light.yml` | PR (opened/sync/reopen/ready) + dispatch | yes (every PR) |
+| L1 | `.github/workflows/integration-light.yml` | PR + dispatch + successful `test` run on `main` | yes (every PR; also gates previews) |
 | L2 | `.github/workflows/integration-scope.yml` | PR (labeled `integration:medium`, …) + dispatch | yes (real work only on label) |
 | L3 | `.github/workflows/integration-final-review.yml` | `workflow_dispatch` only | gated by protected env approval |
 
@@ -55,8 +55,8 @@ main, not a human approval gate).
 ## 3. Secrets
 
 Set on each environment (not as bare repo secrets) so they rotate without
-repo-admin Actions access. Most `*_BASE_URL` are optional overrides — but
-`DEEPSEEK_BASE_URL` is **required** (see below).
+repo-admin Actions access. `*_BASE_URL` values are optional when the provider
+has a built-in public endpoint; set one when routing through a custom gateway.
 
 Provider (rollout + judge):
 `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `GLM_API_KEY`, `GLM_BASE_URL`,
@@ -67,17 +67,16 @@ Per the agent model policy (see
 [`../../docs/integration-tiers.md`](../../docs/integration-tiers.md) §3.3), these
 specific keys are load-bearing:
 
-- **`DEEPSEEK_API_KEY` + `DEEPSEEK_BASE_URL` — both required; gate rollout AND
-  grading.** The 5 open agents (`openhands`, `openclaw`, `opencode`, `pi-acp`,
+- **`DEEPSEEK_API_KEY` — gates rollout AND grading; `DEEPSEEK_BASE_URL` is an
+  optional override.** The 5 open agents (`openhands`, `openclaw`, `opencode`, `pi-acp`,
   `mimo`) run on `deepseek/deepseek-v4-flash` through the LiteLLM usage proxy; the
-  `deepseek` provider declares `url_params={"base_url": "DEEPSEEK_BASE_URL"}`
-  (`src/benchflow/agents/providers.py`), so `DEEPSEEK_BASE_URL` is **not** an
-  optional override. The **agent-judge also runs on DeepSeek-v4 only**
+  provider defaults to DeepSeek's public OpenAI-compatible endpoint and honors
+  `DEEPSEEK_BASE_URL` when set. The **agent-judge also runs on DeepSeek-v4 only**
   (`select_integration_provider.py` exports
   `BENCHFLOW_JUDGE_MODEL=openai/deepseek-v4-flash`, routed via the OpenAI-
   compatible surface with the DeepSeek key/base_url). The judge is NOT a matrix
   cell, so the credential filter does **not** protect it — a missing
-  `DEEPSEEK_*` fails grading on **every** cell.
+  `DEEPSEEK_API_KEY` fails grading on **every** cell.
 - **`GEMINI_API_KEY` — set but NOT load-bearing.** Nothing on the default path
   consumes it: the judge runs on DeepSeek-v4 and the `gemini` /
   `harvey-lab-harness` rollout agents were dropped from the roster. It is
@@ -123,8 +122,10 @@ a pre-existing on-host `auth.json`. If none resolve, L3 fails closed to
 
 ## 5. Security invariants (do not weaken)
 
-- All workflows are plain `pull_request` / `workflow_dispatch`, never
-  `pull_request_target`. Fork PRs receive no secrets.
+- PR-facing workflows use plain `pull_request`, never `pull_request_target`, so
+  forks receive no secrets. L1 also uses `workflow_run` after `test`, but its
+  environment-backed job is fail-closed to a successful `push` on `main` and
+  pins both trusted infrastructure and code-under-test to that tested SHA.
 - `detect-scope`, `plan`, and `review-pack` check out the planner / grader /
   harness / review skill from **trusted `origin/main`** (sparse), never the PR
   head. Only `src/benchflow` (the orchestrator code-under-test) is overlaid from

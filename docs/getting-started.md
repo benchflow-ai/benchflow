@@ -5,7 +5,9 @@ A 5-minute path from install to first eval.
 
 - [`uv`](https://docs.astral.sh/uv/) for the CLI install; use the documented
   `--python 3.12` flag so it provisions a compatible Python automatically
-- Docker for local sandboxes; install `benchflow[sandbox-daytona]` + set `DAYTONA_API_KEY` for Daytona cloud runs, or install `benchflow[sandbox-modal]` for Modal-backed runs
+- Docker for local sandboxes; Apple Container is also built in on supported
+  Apple Silicon Macs. Install the matching extra for Daytona, Modal, or
+  AgentCore cloud runs.
 - An API key or subscription/OAuth auth for at least one agent (see below)
 
 ## Install
@@ -32,9 +34,12 @@ For optional sandbox integrations, include the extra in the tool install:
 ```bash
 uv tool install --python 3.12 --upgrade 'benchflow[sandbox-daytona]'
 uv tool install --python 3.12 --upgrade 'benchflow[sandbox-modal]'
+uv tool install --python 3.12 --upgrade 'benchflow[sandbox-agentcore]'
 ```
 
-This gives you the `benchflow` (alias `bench`) CLI plus the Python SDK. To install for editable development:
+This gives you the isolated `benchflow` (alias `bench`) CLI. To import the
+Python SDK from your own program, add `benchflow` to that program's Python
+environment. To install for editable development:
 
 ```bash
 git clone https://github.com/benchflow-ai/benchflow
@@ -48,12 +53,14 @@ You don't need an API key if you're a Claude / Codex / Gemini subscriber. Three 
 
 ### Option 1 — Subscription OAuth from host CLI login
 
-If you've logged into the agent's CLI on your host (`claude login`, `codex --login`, `gemini` interactive flow), benchflow picks up the credential file and copies it into the sandbox. No API key billing.
+If you've logged into the agent's CLI on your host (`claude auth login`,
+`codex login`, or the `gemini` interactive flow), benchflow picks up the
+credential file and copies it into the sandbox. No API key billing.
 
 | Agent | How to log in on the host | What benchflow detects | Replaces env var |
 |-------|---------------------------|------------------------|------------------|
-| `claude-agent-acp` | `claude login` (Claude Code CLI) | `~/.claude/.credentials.json` | `ANTHROPIC_API_KEY` |
-| `codex-acp` | `codex --login` (Codex CLI) | `~/.codex/auth.json` | `OPENAI_API_KEY` |
+| `claude-agent-acp` | `claude auth login` (Claude Code CLI) | `~/.claude/.credentials.json` | `ANTHROPIC_API_KEY` |
+| `codex-acp` | `codex login` (Codex CLI) | `~/.codex/auth.json` | `OPENAI_API_KEY` |
 | `gemini` | `gemini` (interactive login) | `~/.gemini/oauth_creds.json` | `GEMINI_API_KEY` |
 
 When benchflow finds the detect file, you'll see:
@@ -68,7 +75,7 @@ For CI pipelines, scripts, or anywhere the host can't run an interactive browser
 
 ```bash
 claude setup-token            # walks you through browser auth, prints a token
-export CLAUDE_CODE_OAUTH_TOKEN=<paste-token>
+export CLAUDE_CODE_OAUTH_TOKEN='<paste-token>'
 ```
 
 benchflow auto-inherits `CLAUDE_CODE_OAUTH_TOKEN` from your shell into the sandbox; the Claude CLI inside reads it directly. Same auth precedence as plain `claude` ([Anthropic docs](https://code.claude.com/docs/en/authentication#authentication-precedence)): API keys override OAuth tokens, so unset `ANTHROPIC_API_KEY` if you want the token to win.
@@ -86,7 +93,7 @@ export CODEX_API_KEY=sk-...       # Codex alias for OPENAI_API_KEY
 export GEMINI_API_KEY=...
 export LLM_API_KEY=...           # OpenHands / LiteLLM-compatible providers
 export AZURE_API_KEY=...
-export AZURE_API_ENDPOINT=https://<resource>.openai.azure.com/
+export AZURE_API_ENDPOINT='https://<resource>.openai.azure.com/'
 ```
 
 benchflow auto-inherits well-known API key env vars from your shell into the sandbox.
@@ -97,19 +104,16 @@ native default auth. For Azure Foundry, use models such as
 from `AZURE_API_ENDPOINT` and routes the selected agent through a generated
 LiteLLM gateway config.
 
-Several providers with user-supplied endpoints — `deepseek`, `glm`, `kimi`,
-`minimax`, `hunyuan`, and others — follow the `<PROVIDER>_API_KEY` +
-`<PROVIDER>_BASE_URL` convention; providers with fixed endpoints (such as
-`zai` or `openai`) need only the API key. For example, `deepseek/<model>`
-reads:
+Several providers with user-supplied endpoints — `glm`, `kimi`, `minimax`,
+`hunyuan`, and others — follow the `<PROVIDER>_API_KEY` +
+`<PROVIDER>_BASE_URL` convention; providers with fixed or default endpoints
+(such as `deepseek`, `zai`, or `openai`) need only the API key. Override the
+DeepSeek endpoint only when necessary:
 
 ```bash
 export DEEPSEEK_API_KEY=...
-export DEEPSEEK_BASE_URL=https://api.deepseek.com
+export DEEPSEEK_BASE_URL=https://api.deepseek.com  # optional default override
 ```
-
-If the base URL is missing, the run fails with
-`Provider 'deepseek' for model 'deepseek/<model>' requires DEEPSEEK_BASE_URL to build the provider base URL.`
 
 These variables must be **exported** to reach the benchflow runtime — a plain
 shell assignment or a `source .env` without `export` stays local to your shell
@@ -135,28 +139,26 @@ option, unset the higher one in your shell before running.
 ## Run your first eval
 
 ```bash
-# Single task from a local directory
+# Single task fetched from the public task repository
 GEMINI_API_KEY=... bench eval run \
-  --tasks-dir tasks/edit-pdf \
+  --source-repo benchflow-ai/skillsbench --source-path tasks \
+  --include edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --sandbox docker
 
 # Single task with mounted skills
 GEMINI_API_KEY=... bench eval run \
-  --tasks-dir tasks/edit-pdf \
+  --source-repo benchflow-ai/skillsbench --source-path tasks \
+  --include edit-pdf \
   --agent gemini \
   --model gemini-3.1-pro-preview \
   --sandbox daytona \
-  --skill-mode with-skill \
-  --skills-dir tasks/edit-pdf/environment/skills
+  --skill-mode with-skill
 
-# A whole batch from YAML config
-bench eval run --config benchmarks/harvey-lab/harvey-lab-gemini-flash-lite.yaml
-
-# Batch over a local tasks directory with concurrency
+# Batch over the remote tasks directory with concurrency
 GEMINI_API_KEY=... bench eval run \
-    --tasks-dir tasks \
+    --source-repo benchflow-ai/skillsbench --source-path tasks \
     --agent gemini --model gemini-3.1-pro-preview --sandbox daytona --concurrency 32
 
 # List the registered agents

@@ -106,8 +106,10 @@ Internal preview:
 2. `.github/workflows/test.yml` runs.
 3. `.github/workflows/integration-eval.yml` runs a real rollout after the
    tested `main` commit passes.
-4. `.github/workflows/internal-preview-release.yml` publishes to PyPI only if
-   the integration gate passed.
+4. The terminal integration gate uploads the exact tested commit and source
+   run number as provenance. `.github/workflows/internal-preview-release.yml`
+   downloads and validates that artifact from the successful integration run,
+   verifies the commit is on `main`, then publishes it.
 
 The integration gate selects the first configured live LLM provider that can
 answer a small probe request, then uses that same provider for the smoke rollout

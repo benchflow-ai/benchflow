@@ -2,7 +2,14 @@
 
 ## [Unreleased]
 
+## 0.6.6 — 2026-08-04
+
 ### Added
+- **Apple Container and Amazon Bedrock AgentCore sandboxes.** Apple Silicon
+  users can run supported single-container arm64 tasks through Apple's
+  Virtualization.framework, while `--sandbox agentcore` builds task-specific
+  AWS runtimes with lease-aware cleanup for supported public-network,
+  single-container arm64 tasks. (#936, #937)
 - **Rubric review (`bench review`).** Detached agentic grading of finished
   rollouts against a `rubric.json` — rubric contract **v0.1**: an object with
   a `criteria` list, each entry carrying a `name` (structured-output field), a
@@ -59,6 +66,30 @@
 - **LLM call-purpose provenance.** Captured LLM exchanges retain provider/model
   metadata and classify agent, title, summary, compaction, and helper calls;
   `results.jsonl` carries the metadata on each trajectory step. (#925)
+- **Live trajectory streaming and token logprobs.** Redacted LLM trajectory
+  snapshots are written during active rollouts, and training runs can opt into
+  sampled-token logprobs with `BENCHFLOW_CAPTURE_TOKEN_LOGPROBS=1`. (#922, #926)
+
+### Changed
+- OpenHands supports requested reasoning effort through its LiteLLM request
+  body and now fails closed if completed provider exchanges are missing from
+  trainer trajectories. The built-in OpenCode harness is version-pinned for
+  reproducibility. (#921, #931)
+
+### Fixed
+- Restored the documented `test` → live `integration-light` → internal-preview
+  publication chain for successful `main` pushes, pinned to the exact tested
+  commit and fail-closed against untrusted workflow sources.
+- Fixed OpenHands startup outside root-owned workdirs, OpenCode gateway setup
+  in non-Python task images, Qwen3.5 TRL SFT tokenization, and incomplete agent
+  skill-path validation. (#919, #924, #929, #932)
+- Moved recursive review evidence work and blocking platform probes off the
+  async event loop so concurrent reviews and rollouts retain responsive
+  scheduling and timeouts.
+- Remove staged Docker and Apple Container credential files when live process
+  launch fails before the agent can source and unlink them.
+- Corrected release-facing authentication, sandbox, trajectory-artifact,
+  branching, and provider documentation to match the shipped interfaces.
 
 ## 0.6.5 — 2026-07-10
 
