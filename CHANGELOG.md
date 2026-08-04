@@ -29,8 +29,6 @@
   trajectories are excluded while the canonical ACP trajectory is retained;
   dropped ACP tool observations and generic tool titles are repaired from
   exact-ID events in the trusted provider capture,
-  pass judgments are instructed to require every guidance conjunct from
-  concrete returned evidence rather than related searches or inferred facts,
   reviewer egress is gateway-scoped via the sandbox lockdown flag, artifact
   consumption is pinned to each invocation's unique runtime leaf, and the
   job summary is a deterministic aggregation.

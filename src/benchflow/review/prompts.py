@@ -40,8 +40,6 @@ Run records:
 
 Work through the criteria one at a time. For each criterion, weigh the evidence before deciding, and cite the specific files or recorded steps that support your judgment in its explanation.
 
-Treat evidence sufficiency as fail-closed and apply each guidance line literally. A pass requires every stated condition, not just a related command or nearby material. When guidance requires returned tool output, a command title, search attempt, agent thought, or later deliverable does not substitute for the exact recorded observation. Do not infer a missing fact from what the agent intended or probably saw. If any required condition is absent or ambiguous, answer fail unless that criterion explicitly permits not_applicable.
-
 Also write a "summary": three to five sentences covering what the agent attempted, the main problems it hit, and how close it came to finishing (for example: passed part of the tests, had a sound approach but stalled, or failed before making progress).
 
 Do not modify anything under {trial_path}.
