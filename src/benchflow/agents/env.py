@@ -831,3 +831,21 @@ def resolve_agent_env(
     # Disable telemetry/non-essential traffic in container
     agent_env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
     return agent_env
+
+
+def apply_reasoning_effort_env(
+    agent: str, agent_env: dict[str, str], reasoning_effort: str | None
+) -> dict[str, str]:
+    """Apply a requested effort to agents configured at process launch.
+
+    ACP config options are set after ``session/new``.  Launch-configured
+    agents need the same value in their environment before their process is
+    started, so their registry entry declares the exact native variable.
+    """
+    if not reasoning_effort:
+        return agent_env
+    config = AGENTS.get(agent)
+    env_key = getattr(config, "reasoning_effort_env", "") if config else ""
+    if env_key:
+        agent_env[env_key] = reasoning_effort
+    return agent_env

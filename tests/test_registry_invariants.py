@@ -262,19 +262,19 @@ def test_js_agent_install_respects_explicit_npm_package_specs():
 def test_opencode_install_is_pinned_for_reproducible_harness_runs():
     """Guards PR #931 against silently changing OpenCode between eval stages.
 
-    The pinned version moves deliberately (PR #942 bumped it to 1.18.11 when
+    The pinned version moves deliberately (PR #942 bumped it to 1.18.13 when
     opencode became the default rubric reviewer); pinning itself must stay.
     """
     install_cmd = AGENTS["opencode"].install_cmd
 
-    assert "opencode-ai@1.18.11" in install_cmd
+    assert "opencode-ai@1.18.13" in install_cmd
     assert "opencode-ai@latest" not in install_cmd
 
 
 def test_gemini_cli_install_is_pinned():
     """Guards v0.5-integration@27752fa against Daytona installing moving latest."""
     install_cmd = AGENTS["gemini"].install_cmd
-    assert "@google/gemini-cli@0.42.0" in install_cmd
+    assert "@google/gemini-cli@0.53.1" in install_cmd
     assert "@google/gemini-cli@latest" not in install_cmd
     assert "[ -x /opt/benchflow/js-agents/bin/gemini ] ||" not in install_cmd
 

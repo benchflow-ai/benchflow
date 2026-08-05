@@ -11,7 +11,7 @@ cases live in ``tests/test_acp_setup_failure_propagation.py``.
 """
 
 import contextlib
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -125,6 +125,134 @@ async def test_codex_with_model_option_uses_config_option(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_codex_model_option_does_not_receive_legacy_effort_suffix(tmp_path):
+    """Guards ACP capability mapping against sending ``model[effort]`` to a
+    current Codex ACP ``model`` config option."""
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}],
+        model_state={"currentModelId": "gpt-5.6-sol[medium]"},
+    )
+    await _connect(
+        mock_acp, agent="codex-acp", model="gpt-5.6-sol", tmp_path=tmp_path
+    )
+
+    mock_acp.set_config_option.assert_awaited_once_with("model", "gpt-5.6-sol")
+    mock_acp.set_model.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_current_acp_uses_dedicated_effort_option(tmp_path):
+    """Guards ACP capability mapping against dropping Codex's requested effort."""
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}, {"id": "reasoning_effort"}]
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="gpt-5.6-sol",
+        tmp_path=tmp_path,
+        reasoning_effort="high",
+    )
+
+    mock_acp.set_config_option.assert_has_awaits(
+        [
+            call("model", "gpt-5.6-sol"),
+            call("reasoning_effort", "high"),
+        ]
+    )
+    mock_acp.set_model.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_legacy_acp_encodes_effort_in_model_id(tmp_path):
+    """Guards ACP capability mapping for legacy Codex ``model[effort]`` IDs."""
+    mock_acp = _make_mocks(
+        config_options=[{"id": "fast-mode"}],
+        model_state={
+            "availableModels": [
+                {"modelId": "gpt-5.5[medium]"},
+                {"modelId": "gpt-5.5[high]"},
+            ],
+            "currentModelId": "gpt-5.5[medium]",
+        },
+    )
+    await _connect(
+        mock_acp,
+        agent="codex-acp",
+        model="gpt-5.5",
+        tmp_path=tmp_path,
+        reasoning_effort="high",
+    )
+
+    mock_acp.set_model.assert_awaited_once_with("gpt-5.5[high]")
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_legacy_acp_rejects_unadvertised_effort(tmp_path):
+    """Guards the ACP capability mapping fix against silently using a default."""
+    mock_acp = _make_mocks(
+        config_options=[{"id": "fast-mode"}],
+        model_state={
+            "availableModels": [{"modelId": "gpt-5.5[medium]"}],
+            "currentModelId": "gpt-5.5[medium]",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="does not advertise reasoning effort"):
+        await _connect(
+            mock_acp,
+            agent="codex-acp",
+            model="gpt-5.5",
+            tmp_path=tmp_path,
+            reasoning_effort="high",
+        )
+
+    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pi_acp_uses_thought_level_and_maps_none_to_off(tmp_path):
+    """Guards Pi ACP's distinct effort option and its ``off`` spelling."""
+    mock_acp = _make_mocks(
+        config_options=[{"id": "model"}, {"id": "thought_level"}]
+    )
+    await _connect(
+        mock_acp,
+        agent="pi-acp",
+        model="openai/gpt-5.6-sol",
+        tmp_path=tmp_path,
+        reasoning_effort="none",
+    )
+
+    mock_acp.set_config_option.assert_has_awaits(
+        [
+            call("model", "openai/gpt-5.6-sol"),
+            call("thought_level", "off"),
+        ]
+    )
+    mock_acp.set_model.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_openhands_effort_is_owned_by_its_launch_environment(tmp_path):
+    """OpenHands consumes the effort before ACP starts, not via session config."""
+    mock_acp = _make_mocks()
+    await _connect(
+        mock_acp,
+        agent="openhands",
+        model="gpt-5.6-sol",
+        tmp_path=tmp_path,
+        agent_env={"LLM_REASONING_EFFORT": "high"},
+        reasoning_effort="high",
+    )
+
+    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_unregistered_agent_with_model_option_uses_config_option(tmp_path):
     """An agent not in the registry that advertises a 'model' option is still
     handled via the config option — discovery is from the session, not the
@@ -153,11 +281,10 @@ async def test_registry_hint_overrides_when_session_advertises_nothing(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_effort_without_effort_config_id_fails_closed(tmp_path):
-    """reasoning_effort requested for an agent that declares no effort config
-    option must fail closed rather than silently drop the effort."""
+async def test_effort_without_advertised_option_fails_closed(tmp_path):
+    """An ACP agent without an effort option must fail rather than drop it."""
     mock_acp = _make_mocks(config_options=[])
-    with pytest.raises(RuntimeError, match="does not declare an ACP effort"):
+    with pytest.raises(RuntimeError, match="does not expose an effort"):
         await _connect(
             mock_acp,
             agent="test-agent",

@@ -75,6 +75,7 @@ from benchflow._types import Role, Scene, Turn
 from benchflow._utils.scoring import classify_error as classify_error
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
+from benchflow.agents.env import apply_reasoning_effort_env
 from benchflow.agents.registry import AGENTS
 from benchflow.contracts import (
     AgentProtocolError,
@@ -865,6 +866,9 @@ class Rollout:
                 cfg.primary_agent, cfg.primary_model, cfg.agent_env
             ),
             disallow=self._disallow_web_tools,
+        )
+        apply_reasoning_effort_env(
+            cfg.primary_agent, self._agent_env, cfg.primary_reasoning_effort
         )
         env_config = getattr(getattr(self._task, "config", None), "environment", None)
         task_skill_policy = resolve_task_skill_policy(
@@ -2155,6 +2159,7 @@ class Rollout:
             ),
             disallow=disallow_web_tools,
         )
+        apply_reasoning_effort_env(role.agent, agent_env, role.reasoning_effort)
         agent_env, self._usage_runtime = await self._planes.ensure_litellm_runtime(
             agent=role.agent,
             agent_env=agent_env,

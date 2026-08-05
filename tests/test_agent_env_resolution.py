@@ -14,7 +14,21 @@ from pathlib import Path
 
 import pytest
 
-from benchflow.agents.env import auto_inherit_env, resolve_agent_env
+from benchflow.agents.env import (
+    apply_reasoning_effort_env,
+    auto_inherit_env,
+    resolve_agent_env,
+)
+
+
+def test_apply_reasoning_effort_env_uses_only_declared_agent_native_variable():
+    openhands_env: dict[str, str] = {}
+    apply_reasoning_effort_env("openhands", openhands_env, "high")
+    assert openhands_env == {"LLM_REASONING_EFFORT": "high"}
+
+    gemini_env: dict[str, str] = {}
+    apply_reasoning_effort_env("gemini", gemini_env, "high")
+    assert gemini_env == {}
 
 
 def _patch_no_subscription(monkeypatch, tmp_path):
