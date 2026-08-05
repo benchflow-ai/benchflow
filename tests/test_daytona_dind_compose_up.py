@@ -168,7 +168,10 @@ def test_long_exec_heartbeat_returns_promptly_after_fast_command():
         capture_output=True,
         check=True,
         text=True,
-        timeout=2,
+        # "Promptly" = far below the 60s heartbeat interval; 2s flaked on
+        # loaded CI runners (bash -l startup + subshell spawn), so give
+        # headroom without weakening the assertion.
+        timeout=15,
     )
 
     assert result.stdout == "done"

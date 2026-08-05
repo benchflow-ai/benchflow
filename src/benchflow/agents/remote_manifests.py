@@ -65,9 +65,24 @@ def _source_root(spec: str) -> Path:
     if local.is_dir():
         return local
     repo, _, ref = spec.partition("@")
-    from benchflow._utils.benchmark_repos import resolve_source
+    from benchflow._utils import benchmark_repos
 
-    return resolve_source(repo, ref=ref or None)
+    try:
+        return benchmark_repos.resolve_source(repo, ref=ref or None)
+    except Exception:
+        # Offline (or the refresh fetch failed): the cached clone is the
+        # catalog of record — a user who saw the full catalog online must
+        # not silently lose it, so fall back before giving up.
+        org, _, name = repo.partition("/")
+        cached = benchmark_repos._cache_dir() / org / name
+        if cached.is_dir():
+            logger.warning(
+                "could not refresh agents source %s; using the cached catalog at %s",
+                spec,
+                cached,
+            )
+            return cached
+        raise
 
 
 def _gap_fill(
@@ -169,3 +184,74 @@ def _reset_for_tests() -> None:
     global _attempted, last_source_description
     _attempted = False
     last_source_description = ""
+
+
+def fetch_one(name: str) -> bool:
+    """Fetch and register ONE catalog agent's manifest — never the full repo.
+
+    Local-dir sources read ``acp/<name>/manifest.toml`` directly; remote
+    ``owner/repo[@ref]`` sources fetch that single file over HTTPS (raw
+    GitHub), so browsing/selecting an agent costs one small request instead
+    of a multi-hundred-MB clone. Local-wins semantics: a name already
+    registered is left untouched (returns True — the agent is available).
+    Returns False when the manifest cannot be fetched or is invalid.
+    """
+    import os
+
+    from benchflow.agents import registry
+    from benchflow.agents.manifest import load_agent_manifest
+
+    if name in registry.AGENTS:
+        return True
+    spec = os.environ.get(AGENTS_SOURCE_ENV) or DEFAULT_AGENTS_SOURCE
+    if spec.strip().lower() in _OFF_VALUES:
+        return False
+    local = Path(spec).expanduser()
+    try:
+        if local.is_dir():
+            text = (local / "acp" / name / "manifest.toml").read_text()
+        else:
+            import httpx
+
+            repo, _, ref = spec.partition("@")
+            url = (
+                f"https://raw.githubusercontent.com/{repo}/{ref or 'main'}"
+                f"/acp/{name}/manifest.toml"
+            )
+            resp = httpx.get(url, timeout=30, follow_redirects=True)
+            if resp.status_code != 200:
+                logger.warning(
+                    "catalog agent %r: manifest fetch returned HTTP %s (%s)",
+                    name,
+                    resp.status_code,
+                    url,
+                )
+                return False
+            text = resp.text
+    except Exception as exc:
+        logger.warning("catalog agent %r: manifest fetch failed: %s", name, exc)
+        return False
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        mpath = Path(td) / "manifest.toml"
+        mpath.write_text(text)
+        try:
+            loaded = load_agent_manifest(mpath)
+        except Exception as exc:
+            logger.warning("catalog agent %r: invalid manifest: %s", name, exc)
+            return False
+    from benchflow.agents.manifest import register_manifest_agents
+
+    kept = _gap_fill([loaded], agents=registry.AGENTS, aliases=registry.AGENT_ALIASES)
+    if kept:
+        register_manifest_agents(
+            kept,
+            agents=registry.AGENTS,
+            aliases=registry.AGENT_ALIASES,
+            installers=registry.AGENT_INSTALLERS,
+            launch=registry.AGENT_LAUNCH,
+        )
+        logger.info("catalog agent %r: registered from single-manifest fetch", name)
+    return name in registry.AGENTS
