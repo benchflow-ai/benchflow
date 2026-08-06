@@ -33,13 +33,21 @@ class TestEnvMappingField:
         assert cfg.supports_acp_set_model is False
         assert cfg.acp_model_config_id == "model"
         assert cfg.acp_effort_config_id == "effort"
-        assert "@agentclientprotocol/claude-agent-acp@0.40.0" in cfg.install_cmd
+        assert "@agentclientprotocol/claude-agent-acp@0.64.2" in cfg.install_cmd
 
     def test_pi_acp_no_static_mapping(self):
         """pi-acp is multi-protocol — launch wrapper handles env translation."""
         cfg = AGENTS["pi-acp"]
         assert cfg.env_mapping == {}
         assert cfg.acp_model_format == "registered-provider/model"
+        assert cfg.acp_effort_config_id == "thought_level"
+        assert "@mariozechner/pi-coding-agent@0.73.1" in cfg.install_cmd
+        assert "pi-acp@0.0.33" in cfg.install_cmd
+
+    def test_openclaw_uses_a_compatible_pinned_node_runtime(self):
+        cfg = AGENTS["openclaw"]
+        assert "openclaw@2026.7.1-2" in cfg.install_cmd
+        assert "BF_NODE_VERSION=22.22.3" in cfg.install_cmd
 
     def test_codex_acp_has_mapping(self):
         cfg = AGENTS["codex-acp"]
@@ -49,10 +57,10 @@ class TestEnvMappingField:
         assert "openai_base_url=$OPENAI_BASE_URL" in cfg.launch_cmd
 
     def test_codex_acp_install_is_version_pinned(self):
-        """Same @agentclientprotocol family as claude — pin so a floating latest
-        can't silently break activation when upstream drops session/set_model."""
+        """Guards the ACP capability mapping fix against reverting Codex ACP."""
         cfg = AGENTS["codex-acp"]
-        assert "@agentclientprotocol/codex-acp@0.0.45" in cfg.install_cmd
+        assert "@agentclientprotocol/codex-acp@1.1.9" in cfg.install_cmd
+        assert cfg.acp_effort_config_id == "reasoning_effort"
 
     def test_gemini_has_mapping(self):
         cfg = AGENTS["gemini"]
@@ -63,6 +71,8 @@ class TestEnvMappingField:
         # bidirectional mirror in auto_inherit_env handles GOOGLE_API_KEY
         # callers transparently.
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "GEMINI_API_KEY"
+        assert "@google/gemini-cli@0.53.1" in cfg.install_cmd
+        assert cfg.acp_effort_config_id == ""
 
     def test_openhands_has_mapping(self):
         cfg = AGENTS["openhands"]
@@ -214,6 +224,7 @@ class TestOpenHandsConfig:
         assert ',"reasoning_effort":"%s",' in cfg.launch_cmd
         assert '"litellm_extra_body":{"reasoning_effort":"%s"}' in cfg.launch_cmd
         assert '"$LLM_REASONING_EFFORT" "$LLM_REASONING_EFFORT"' in cfg.launch_cmd
+        assert cfg.reasoning_effort_env == "LLM_REASONING_EFFORT"
 
     def test_openhands_launch_cmd_keeps_minimal_out_of_typed_effort(self, tmp_path):
         """Guards PR #921: OpenHands' typed effort enum rejects minimal."""

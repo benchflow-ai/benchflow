@@ -124,13 +124,12 @@ _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
 )
-# Node >=22.19 is required by current openclaw (the JS agents install
-# @latest); keep this pin at or above that floor or the openclaw ACP
-# bootstrap aborts at its runtime version check (BF-10).
+# OpenClaw 2026.7.1-2 requires Node >=22.22.3. Keep the isolated runtime at
+# or above that floor so the ACP bootstrap does not abort its version check.
 _NODE_INSTALL = (
     "export DEBIAN_FRONTEND=noninteractive; "
     f"BF_NODE_DIR={_BENCHFLOW_NODE_PREFIX}; "
-    "BF_NODE_VERSION=22.20.0; "
+    "BF_NODE_VERSION=22.22.3; "
     'if [ ! -x "$BF_NODE_DIR/bin/node" ]; then '
     "  if ! command -v curl >/dev/null 2>&1 || "
     "     ! command -v tar >/dev/null 2>&1 || "
@@ -209,7 +208,7 @@ _MIMO_MANIFEST_INSTALL_CMD = (
     + 'printf \'%s\' \'{"name":"bf-mimo-acp","private":true,"type":"module"}\' '
     + "> /opt/benchflow/js-agents/mimo-acp/package.json && "
     + "cd /opt/benchflow/js-agents/mimo-acp && "
-    + "/opt/benchflow/node/bin/npm install @mimo-ai/cli@0.1.4 "
+    + "/opt/benchflow/node/bin/npm install @mimo-ai/cli@0.1.9 "
     + "--no-audit --no-fund >/dev/null 2>&1 && "
     + "chmod -R a+rX /opt/benchflow && "
     + "[ -f /opt/benchflow/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo ]"
@@ -491,6 +490,11 @@ class AgentConfig:
     acp_model_config_id: str = ""
     # ACP session config option id used for reasoning/thinking effort.
     acp_effort_config_id: str = ""
+    # Agent-native environment variable that receives the requested reasoning
+    # effort before the ACP process starts. Used by launch-configured agents
+    # such as OpenHands; unlike ``acp_effort_config_id`` this is not an ACP
+    # session capability.
+    reasoning_effort_env: str = ""
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
     # target home so settings land in the same home the agent will run from.
@@ -517,13 +521,13 @@ AGENTS: dict[str, AgentConfig] = {
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
-        # Pinned to 0.40.0: the config-option wiring below (set_config_option +
+        # Pinned to 0.64.2: the config-option wiring below (set_config_option +
         # the "model"/"effort" ids) targets this version's ACP protocol (sdk
         # 0.24, which dropped session/set_model). The option ids are coupled to
         # this pin — re-verify them when bumping. runtime.py uses
         # capability-first dispatch for the rest of the family.
         install_cmd=_js_agent_install(
-            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
+            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.64.2"
         ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
@@ -559,8 +563,8 @@ AGENTS: dict[str, AgentConfig] = {
         description="Pi agent via ACP",
         skill_paths=["$HOME/.pi/agent/skills", "$HOME/.agents/skills"],
         install_cmd=(
-            f"{_js_agent_install('pi', '@mariozechner/pi-coding-agent')} && "
-            f"{_js_agent_install('pi-acp', 'pi-acp')} && "
+            f"{_js_agent_install('pi', '@mariozechner/pi-coding-agent@0.73.1')} && "
+            f"{_js_agent_install('pi-acp', 'pi-acp@0.0.33')} && "
             # Deploy launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
             + _install_python_script(
                 f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher", _PI_LAUNCHER
@@ -569,6 +573,7 @@ AGENTS: dict[str, AgentConfig] = {
         launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher",
         protocol="acp",
         acp_model_format="registered-provider/model",
+        acp_effort_config_id="thought_level",
         requires_env=[],  # inferred from --model at runtime
         # Pi is multi-protocol: speaks Anthropic natively and OpenAI via
         # models.json.  Empty lets the provider determine the protocol so
@@ -583,7 +588,7 @@ AGENTS: dict[str, AgentConfig] = {
         description="OpenClaw agent via ACP shim — model set at runtime via --model",
         skill_paths=["$HOME/.claude/skills", "$WORKSPACE/skills"],
         install_cmd=(
-            f"{_js_agent_install('openclaw', 'openclaw')} && "
+            f"{_js_agent_install('openclaw', 'openclaw@2026.7.1-2')} && "
             # Configure: auto-approve tools (no model — set at runtime via ACP set_model)
             "mkdir -p ~/.openclaw && "
             'echo \'{"version":1,"defaults":{"allow_all":true}}\''
@@ -602,16 +607,10 @@ AGENTS: dict[str, AgentConfig] = {
         name="codex-acp",
         description="OpenAI Codex agent via ACP",
         skill_paths=["$HOME/.agents/skills"],
-        # Pinned for reproducibility: an unpinned @agentclientprotocol install
-        # floats to latest and can silently break agent activation when the ACP
-        # protocol changes (claude-agent-acp above hit exactly this — sdk 0.24
-        # dropped session/set_model). 0.0.45 ships sdk 0.22.x, which still
-        # implements session/set_model. If a future bump advertises a model
-        # config option instead, runtime.py's capability-first dispatch routes
-        # the model through that option — but re-verify model selection when
-        # bumping this pin.
+        # Pinned for reproducibility. This version exposes separate ``model``
+        # and ``reasoning_effort`` session config options.
         install_cmd=_js_agent_install(
-            "codex-acp", "@agentclientprotocol/codex-acp@0.0.45"
+            "codex-acp", "@agentclientprotocol/codex-acp@1.1.9"
         ),
         # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
         # ONLY when the key is set (so subscription/host-auth mode is untouched),
@@ -644,15 +643,18 @@ AGENTS: dict[str, AgentConfig] = {
                 HostAuthFile("~/.codex/auth.json", "{home}/.codex/auth.json"),
             ],
         ),
+        acp_effort_config_id="reasoning_effort",
         disallow_web_tools_launch_suffix=" -c tools.web_search=false",
     ),
     "gemini": AgentConfig(
         name="gemini",
         description="Google Gemini CLI via ACP",
         skill_paths=["$HOME/.gemini/skills"],
-        install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
+        install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.53.1"),
         launch_cmd=_js_agent_launch("gemini", "--acp --yolo"),
         protocol="acp",
+        # Gemini CLI ACP currently exposes model selection but no generic
+        # reasoning/thinking-effort session option.
         # The Gemini CLI reads GEMINI_API_KEY natively. GOOGLE_API_KEY is
         # accepted as an alias: auto_inherit_env mirrors it both ways so users
         # can set either one. Advertise GEMINI_API_KEY here so `agent show`
@@ -700,7 +702,7 @@ AGENTS: dict[str, AgentConfig] = {
         skill_paths=["$HOME/.opencode/skills"],
         home_dirs=[".opencode"],
         install_cmd=(
-            _js_agent_install("opencode", "opencode-ai@1.18.11")
+            _js_agent_install("opencode", "opencode-ai@1.18.13")
             + " && "
             + _opencode_family_proxy_wrapper_install(
                 "opencode", ".config/opencode/opencode.json"
@@ -799,6 +801,7 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         launch_cmd=f"HARVEY_LABS_ROOT=/opt/harvey-labs /opt/benchflow/harvey-lab-venv/bin/python {_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim",
         protocol="acp",
+        reasoning_effort_env="BENCHFLOW_REASONING_EFFORT",
         requires_env=[],  # inferred from model at runtime (ANTHROPIC_API_KEY, etc.)
         # Harvey LAB's Anthropic/Gemini adapters read ANTHROPIC_API_KEY /
         # GOOGLE_API_KEY directly (auto_inherit_env propagates a host key). But
@@ -967,6 +970,7 @@ AGENTS: dict[str, AgentConfig] = {
             "openhands acp --always-approve --override-with-envs"
         ),
         protocol="acp",
+        reasoning_effort_env="LLM_REASONING_EFFORT",
         requires_env=["LLM_API_KEY"],
         api_protocol="",
         env_mapping={
@@ -1171,6 +1175,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         supports_acp_set_model=config.supports_acp_set_model,
         acp_model_config_id=config.acp_model_config_id,
         acp_effort_config_id=config.acp_effort_config_id,
+        reasoning_effort_env=config.reasoning_effort_env,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
@@ -1365,6 +1370,7 @@ def register_agent(
     supports_acp_set_model: bool = True,
     acp_model_config_id: str = "",
     acp_effort_config_id: str = "",
+    reasoning_effort_env: str = "",
     disallow_web_tools_setup_cmd: str = "",
     disallow_web_tools_owned_paths: list[str] | None = None,
     disallow_web_tools_launch_suffix: str = "",
@@ -1404,6 +1410,7 @@ def register_agent(
         supports_acp_set_model=supports_acp_set_model,
         acp_model_config_id=acp_model_config_id,
         acp_effort_config_id=acp_effort_config_id,
+        reasoning_effort_env=reasoning_effort_env,
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,

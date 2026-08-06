@@ -716,6 +716,9 @@ def main():
                     output_dir=output_dir,
                     workspace_dir=workspace_dir,
                     session_id=session_id,
+                    reasoning_effort=(
+                        os.environ.get("BENCHFLOW_REASONING_EFFORT") or None
+                    ),
                 )
                 _emit_text(
                     session_id,

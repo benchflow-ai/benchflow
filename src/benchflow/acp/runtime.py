@@ -176,7 +176,11 @@ def _codex_reasoning_effort(model_id: str) -> str:
     return model_id.rsplit("[", 1)[1][:-1]
 
 
-def _codex_session_model_id(model: str, session: object | None) -> str:
+def _codex_session_model_id(
+    model: str,
+    session: object | None,
+    reasoning_effort: str | None = None,
+) -> str:
     """Map a bare Codex model to the exact ACP modelId returned by session/new.
 
     ``@agentclientprotocol/codex-acp`` validates ``session/set_model`` against
@@ -193,6 +197,10 @@ def _codex_session_model_id(model: str, session: object | None) -> str:
     if (
         isinstance(current_model, str)
         and _codex_model_name(current_model) == requested_name
+        and (
+            not reasoning_effort
+            or _codex_reasoning_effort(current_model) == reasoning_effort
+        )
     ):
         return current_model
 
@@ -208,6 +216,11 @@ def _codex_session_model_id(model: str, session: object | None) -> str:
     ]
     if not candidates:
         return model
+
+    if reasoning_effort:
+        for candidate in candidates:
+            if _codex_reasoning_effort(candidate) == reasoning_effort:
+                return candidate
 
     preferred_efforts = ("medium", "high", "low", "minimal", "none")
     for effort in preferred_efforts:
@@ -286,11 +299,12 @@ def _select_acp_model_id(
     model: str,
     agent: str,
     session: object | None,
+    reasoning_effort: str | None = None,
 ) -> str:
     """Return the concrete modelId to send through ACP session/set_model."""
     formatted = _format_acp_model(model, agent)
     if agent == "codex-acp":
-        return _codex_session_model_id(formatted, session)
+        return _codex_session_model_id(formatted, session, reasoning_effort)
     return formatted
 
 
@@ -394,6 +408,41 @@ def _resolve_acp_model_option_id(
     return None
 
 
+_ACP_EFFORT_CONFIG_OPTION_IDS = (
+    "reasoning_effort",
+    "effort",
+    "thought_level",
+)
+
+
+def _resolve_acp_effort_option_id(
+    agent_cfg: object | None, session: object | None
+) -> str | None:
+    """Return the effort config option declared by the connected ACP agent.
+
+    Prefer the live ``session/new`` capability over a registry hint so an agent
+    package upgrade cannot silently retain a stale option name. The ordered
+    fallback covers the common ACP spellings used by Codex, Claude, and Pi.
+    """
+    option_ids = _session_config_option_ids(session)
+    declared = getattr(agent_cfg, "acp_effort_config_id", "") or ""
+    if option_ids:
+        if declared in option_ids:
+            return declared
+        for option_id in _ACP_EFFORT_CONFIG_OPTION_IDS:
+            if option_id in option_ids:
+                return option_id
+        return None
+    return declared or None
+
+
+def _normalize_acp_effort_value(reasoning_effort: str, config_id: str) -> str:
+    """Translate BenchFlow's neutral ``none`` value to Pi ACP's ``off``."""
+    if config_id == "thought_level" and reasoning_effort == "none":
+        return "off"
+    return reasoning_effort
+
+
 async def _set_acp_model(
     acp_client: ACPClient,
     *,
@@ -459,6 +508,7 @@ async def _configure_acp_session(
     reasoning_effort: str | None,
 ) -> None:
     agent_cfg = AGENTS.get(agent)
+    effort_encoded_in_model_id = False
 
     if model and _model_selection_owned_by_env(agent, model, agent_env):
         logger.info(
@@ -466,7 +516,6 @@ async def _configure_acp_session(
         )
     elif model:
         acp_model_input = _resolve_acp_model_input(agent, model, agent_env)
-        acp_model_id = _select_acp_model_id(acp_model_input, agent, session)
         model_option_id = _resolve_acp_model_option_id(agent_cfg, session)
         if model_option_id:
             # Capability-first: the agent advertises a model config option (or
@@ -478,13 +527,34 @@ async def _configure_acp_session(
                 session,
                 agent=agent,
                 config_id=model_option_id,
-                value=acp_model_id,
+                # Config options use the public, effort-free model name. The
+                # legacy Codex ``session/set_model`` API instead expects an
+                # advertised ``model[effort]`` identifier.
+                value=_format_acp_model(acp_model_input, agent),
                 label="model",
             )
         elif not agent_cfg or agent_cfg.supports_acp_set_model:
             # No model config option advertised/declared — use the legacy
             # session/set_model path. Fails closed if the agent rejects it.
+            acp_model_id = _select_acp_model_id(
+                acp_model_input,
+                agent,
+                session,
+                reasoning_effort,
+            )
+            if (
+                reasoning_effort
+                and agent == "codex-acp"
+                and _codex_reasoning_effort(acp_model_id) != reasoning_effort
+            ):
+                raise RuntimeError(
+                    f"ACP agent {agent!r} does not advertise reasoning effort "
+                    f"{reasoning_effort!r} for model {acp_model_input!r}"
+                )
             await _set_acp_model(acp_client, agent=agent, model_id=acp_model_id)
+            # Legacy Codex ACP represents reasoning effort as part of the
+            # selected model ID, e.g. ``gpt-5.5[high]``.
+            effort_encoded_in_model_id = bool(reasoning_effort and agent == "codex-acp")
         else:
             logger.info(
                 f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
@@ -492,17 +562,29 @@ async def _configure_acp_session(
 
     if not reasoning_effort:
         return
-    if not agent_cfg or not agent_cfg.acp_effort_config_id:
+    effort_env = getattr(agent_cfg, "reasoning_effort_env", "") or ""
+    if effort_env and agent_env.get(effort_env):
+        logger.info(
+            "Reasoning effort for %s is configured at launch through %s",
+            agent,
+            effort_env,
+        )
+        return
+    if effort_encoded_in_model_id:
+        return
+    effort_option_id = _resolve_acp_effort_option_id(agent_cfg, session)
+    if not effort_option_id:
         raise RuntimeError(
             f"reasoning_effort={reasoning_effort!r} was requested for agent "
-            f"{agent!r}, but that agent does not declare an ACP effort config option"
+            f"{agent!r}, but the connected ACP session does not expose an effort "
+            "config option"
         )
     await _set_acp_config_option(
         acp_client,
         session,
         agent=agent,
-        config_id=agent_cfg.acp_effort_config_id,
-        value=reasoning_effort,
+        config_id=effort_option_id,
+        value=_normalize_acp_effort_value(reasoning_effort, effort_option_id),
         label="reasoning effort",
     )
 
