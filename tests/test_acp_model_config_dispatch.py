@@ -132,9 +132,7 @@ async def test_codex_model_option_does_not_receive_legacy_effort_suffix(tmp_path
         config_options=[{"id": "model"}],
         model_state={"currentModelId": "gpt-5.6-sol[medium]"},
     )
-    await _connect(
-        mock_acp, agent="codex-acp", model="gpt-5.6-sol", tmp_path=tmp_path
-    )
+    await _connect(mock_acp, agent="codex-acp", model="gpt-5.6-sol", tmp_path=tmp_path)
 
     mock_acp.set_config_option.assert_awaited_once_with("model", "gpt-5.6-sol")
     mock_acp.set_model.assert_not_awaited()
@@ -143,9 +141,7 @@ async def test_codex_model_option_does_not_receive_legacy_effort_suffix(tmp_path
 @pytest.mark.asyncio
 async def test_codex_current_acp_uses_dedicated_effort_option(tmp_path):
     """Guards ACP capability mapping against dropping Codex's requested effort."""
-    mock_acp = _make_mocks(
-        config_options=[{"id": "model"}, {"id": "reasoning_effort"}]
-    )
+    mock_acp = _make_mocks(config_options=[{"id": "model"}, {"id": "reasoning_effort"}])
     await _connect(
         mock_acp,
         agent="codex-acp",
@@ -215,9 +211,7 @@ async def test_codex_legacy_acp_rejects_unadvertised_effort(tmp_path):
 @pytest.mark.asyncio
 async def test_pi_acp_uses_thought_level_and_maps_none_to_off(tmp_path):
     """Guards Pi ACP's distinct effort option and its ``off`` spelling."""
-    mock_acp = _make_mocks(
-        config_options=[{"id": "model"}, {"id": "thought_level"}]
-    )
+    mock_acp = _make_mocks(config_options=[{"id": "model"}, {"id": "thought_level"}])
     await _connect(
         mock_acp,
         agent="pi-acp",

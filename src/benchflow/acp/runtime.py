@@ -436,9 +436,7 @@ def _resolve_acp_effort_option_id(
     return declared or None
 
 
-def _normalize_acp_effort_value(
-    reasoning_effort: str, config_id: str
-) -> str:
+def _normalize_acp_effort_value(reasoning_effort: str, config_id: str) -> str:
     """Translate BenchFlow's neutral ``none`` value to Pi ACP's ``off``."""
     if config_id == "thought_level" and reasoning_effort == "none":
         return "off"
@@ -556,9 +554,7 @@ async def _configure_acp_session(
             await _set_acp_model(acp_client, agent=agent, model_id=acp_model_id)
             # Legacy Codex ACP represents reasoning effort as part of the
             # selected model ID, e.g. ``gpt-5.5[high]``.
-            effort_encoded_in_model_id = bool(
-                reasoning_effort and agent == "codex-acp"
-            )
+            effort_encoded_in_model_id = bool(reasoning_effort and agent == "codex-acp")
         else:
             logger.info(
                 f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
