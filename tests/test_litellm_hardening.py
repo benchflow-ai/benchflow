@@ -181,7 +181,24 @@ def test_host_bind_address_local_is_loopback():
 
 def test_host_bind_address_docker_uses_bridge_ip(monkeypatch):
     monkeypatch.setattr(runtime_mod, "_docker_host_address", lambda: "172.17.0.1")
+    monkeypatch.setattr(runtime_mod, "_address_is_local", lambda _addr: True)
     assert runtime_mod._host_bind_address("docker") == "172.17.0.1"
+
+
+def test_host_bind_address_docker_unbindable_gateway_falls_back(monkeypatch):
+    """Docker Desktop's WSL2/Hyper-V backend: the bridge gateway is a valid IPv4
+    address that belongs to the docker VM, so binding it raises EADDRNOTAVAIL."""
+    monkeypatch.setattr(runtime_mod, "_docker_host_address", lambda: "172.17.0.1")
+    monkeypatch.setattr(runtime_mod, "_address_is_local", lambda _addr: False)
+    assert runtime_mod._host_bind_address("docker") == "0.0.0.0"
+
+
+def test_agent_endpoint_docker_unbindable_gateway_advertises_host_name(monkeypatch):
+    monkeypatch.setattr(runtime_mod, "_docker_host_address", lambda: "172.17.0.1")
+    monkeypatch.setattr(runtime_mod, "_address_is_local", lambda _addr: False)
+    endpoint = runtime_mod._agent_endpoint_for_environment(4000, "docker", "0.0.0.0")
+    assert endpoint.agent_base_url == "http://host.docker.internal:4000"
+    assert endpoint.local_base_url == "http://127.0.0.1:4000"
 
 
 def test_host_bind_address_docker_hostname_falls_back_to_all_ifaces(monkeypatch):
