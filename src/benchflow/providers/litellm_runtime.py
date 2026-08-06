@@ -486,6 +486,20 @@ def _docker_host_address() -> str:
     return "host.docker.internal"
 
 
+def _address_is_local(address: str) -> bool:
+    """True when this host can actually bind the address.
+
+    Under Docker Desktop's WSL2 backend the bridge gateway (172.17.0.1) lives in
+    the Docker VM, not in the WSL distro, so it resolves but cannot be bound.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((address, 0))
+            return True
+        except OSError:
+            return False
+
+
 def _host_bind_address(environment: str) -> str:
     """Interface the host LiteLLM proxy binds to.
 
@@ -502,6 +516,11 @@ def _host_bind_address(environment: str) -> str:
         socket.inet_aton(address)
     except OSError:
         return "0.0.0.0"
+    # A routable-looking gateway that this host cannot bind means the docker
+    # daemon lives elsewhere (Docker Desktop's WSL2 / Hyper-V VM). Fall back to
+    # the same path macOS uses.
+    if not _address_is_local(address):
+        return "0.0.0.0"
     return address
 
 
@@ -509,7 +528,16 @@ def _agent_endpoint_for_environment(
     port: int, environment: str, bind: str
 ) -> LiteLLMEndpoint:
     if environment == "docker":
-        agent_host = bind if bind != "0.0.0.0" else _docker_host_address()
+        if bind != "0.0.0.0":
+            agent_host = bind
+        else:
+            detected = _docker_host_address()
+            # If we fell back to 0.0.0.0 because the gateway was unbindable,
+            # the container cannot reach us on it either - use the name Docker
+            # Desktop publishes for the host.
+            agent_host = (
+                detected if _address_is_local(detected) else "host.docker.internal"
+            )
         health_host = "127.0.0.1" if bind == "0.0.0.0" else bind
     else:
         agent_host = health_host = "127.0.0.1"
