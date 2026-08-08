@@ -472,10 +472,34 @@ async def _verify_rollout(
         await planes.harden_before_verify(env, task, sandbox_user, workspace=workspace)
         logger.info("Running verifier...")
         verifier = planes.verifier(task=task, rollout_paths=rollout_paths, sandbox=env)
-        verifier_result = await asyncio.wait_for(
-            verifier.verify(),
-            timeout=timeout_budget,
-        )
+        verifier_result = None
+        for attempt in (1, 2):
+            try:
+                verifier_result = await asyncio.wait_for(
+                    verifier.verify(),
+                    timeout=timeout_budget,
+                )
+                break
+            except TimeoutError:
+                # A verifier that times out having produced NO output never
+                # actually started its tests — the exec-layer session wedged
+                # (observed on Daytona 2026-08-07/08: test.sh finishes in
+                # under a second when it runs, yet several rollouts burned the
+                # full verifier budget with an empty test-stdout.txt). That is
+                # an infra wedge, not a slow verifier, and test.sh is a
+                # stateless scoring script over the frozen workspace — so one
+                # retry is safe and turns a lost rollout into a real score. A
+                # timeout WITH output is a genuinely slow/hung verifier and is
+                # never retried.
+                if attempt == 1 and await _verifier_wedged_without_output(env):
+                    logger.warning(
+                        "Verifier timed out with no output — exec-layer wedge "
+                        "suspected; retrying verifier once"
+                    )
+                    await _kill_orphan_verifier(env)
+                    continue
+                raise
+        assert verifier_result is not None
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         rewards = _ensure_canonical_rewards(verifier_result.rewards, task=task)
         logger.info(f"Rewards: {rewards}")
@@ -496,6 +520,41 @@ async def _verify_rollout(
         rewards = None
         logger.error(verifier_error)
     return rewards, verifier_error, verifier_timeout
+
+
+async def _verifier_wedged_without_output(env: Any) -> bool:
+    """True when the timed-out verifier attempt left no test output behind.
+
+    Zero bytes in ``/logs/verifier/test-stdout.txt`` (or no file at all) means
+    ``test.sh`` never started — the wedge signature. When even this probe
+    fails, the control plane is still sick and a retry is the best remaining
+    move, so failures count as wedged.
+    """
+    try:
+        r = await asyncio.wait_for(
+            env.exec(
+                "wc -c < /logs/verifier/test-stdout.txt 2>/dev/null || echo 0",
+                timeout_sec=10,
+            ),
+            timeout=30,
+        )
+        return int((r.stdout or "0").strip() or 0) == 0
+    except Exception:
+        return True
+
+
+async def _kill_orphan_verifier(env: Any) -> None:
+    """Best-effort kill of a possibly-orphaned first verifier attempt.
+
+    The host-side timeout cancels only our await; if the in-sandbox test.sh
+    did start late it would race the retry's run, so clear it first.
+    """
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(
+            env.exec("pkill -f '/verifier/test.sh' 2>/dev/null || true",
+                     user="root", timeout_sec=10),
+            timeout=30,
+        )
 
 
 def _ensure_canonical_rewards(rewards: dict | None, *, task: Any = None) -> dict:
