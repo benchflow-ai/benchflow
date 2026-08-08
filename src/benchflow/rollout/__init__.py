@@ -97,6 +97,7 @@ from benchflow.loop_strategies import (
     loop_block,
 )
 from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.rollout import _deadline as _deadline
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
 from benchflow.rollout._results import _DIAG_TRUNCATE as _DIAG_TRUNCATE
@@ -1977,6 +1978,20 @@ class Rollout:
         logger.error(self._error)
 
     async def run(self) -> RolloutResult:
+        """Run the complete trial lifecycle under a host-side hard deadline.
+
+        The lifecycle itself lives in :meth:`_run_lifecycle`; the deadline is
+        a backstop against awaits wedged below every phase-level timeout (a
+        Daytona PTY kill on a dead websocket, a hung session exec in the
+        post-verify export path) — see :mod:`benchflow.rollout._deadline`.
+        A trip becomes a normal infra-retryable error result and the
+        abandoned attempt's cleanup is bounded too.
+        """
+        return await _deadline.enforce_hard_deadline(
+            self._run_lifecycle(), config=self._config
+        )
+
+    async def _run_lifecycle(self) -> RolloutResult:
         """Run the complete trial lifecycle.
 
         Iterates over effective_scenes. Single-agent is a trial with one
