@@ -53,6 +53,10 @@ import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from benchflow.agents.openhands_settings_writer import (
+    OPENHANDS_SETTINGS_WRITER as _OPENHANDS_SETTINGS_WRITER,
+)
+
 
 def _install_python_script(container_path: str, source: str) -> str:
     """Shell snippet that ensures python3 and writes `source` to container_path.
@@ -120,6 +124,7 @@ OPENCODE_PROXY_PROVIDER_ID = "benchflow"
 _OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
+_OPENHANDS_SETTINGS_WRITER_PATH = "/opt/benchflow/bin/openhands-settings-writer"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -508,6 +513,11 @@ class AgentConfig:
     task_mcp_transport: str = "acp"
     # Native-config target path, relative to $HOME unless absolute.
     task_mcp_config_path: str = ""
+    # Host-owned install step for provider/harness compatibility shims that
+    # cannot be represented in the data-only agent manifest contract.
+    install_setup_cmd: str = ""
+    # Host-owned launch override paired with install_setup_cmd.
+    launch_override_cmd: str = ""
 
 
 # Agent registry — all supported agents
@@ -964,6 +974,16 @@ AGENTS: dict[str, AgentConfig] = {
             "assert old in s or new in s; "
             "p.write_text(s.replace(old,new,1))'; "
             "fi && "
+            "openhands acp --always-approve --override-with-envs"
+        ),
+        install_setup_cmd=_install_python_script(
+            _OPENHANDS_SETTINGS_WRITER_PATH, _OPENHANDS_SETTINGS_WRITER
+        ),
+        launch_override_cmd=(
+            'export PATH="$HOME/.local/bin:$PATH" && '
+            "mkdir -p ~/.openhands && "
+            f"python3 {_OPENHANDS_SETTINGS_WRITER_PATH} "
+            "~/.openhands/agent_settings.json && "
             "openhands acp --always-approve --override-with-envs"
         ),
         protocol="acp",

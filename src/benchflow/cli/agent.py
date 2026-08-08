@@ -84,7 +84,8 @@ def register_agent(app: typer.Typer) -> None:
             console.print(f"  Aliases:     {', '.join(aliases)}")
         console.print(f"  Description: {cfg.description}")
         console.print(f"  Protocol:    {cfg.protocol}")
-        console.print(f"  Launch:      {cfg.launch_cmd}")
+        launch_cmd = cfg.launch_override_cmd or cfg.launch_cmd
+        console.print(f"  Launch:      {launch_cmd}")
         console.print(f"  Requires:    {_format_requires(cfg) or '(none)'}")
         console.print(f"  Provider auth: {_PROVIDER_AUTH_MESSAGE}")
         if cfg.subscription_auth:

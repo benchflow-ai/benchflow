@@ -27,3 +27,13 @@ def test_agent_show_mentions_provider_specific_azure_auth() -> None:
     assert "Provider auth:" in output
     assert "AZURE_API_KEY" in output
     assert "AZURE_API_ENDPOINT" in output
+
+
+def test_agent_show_uses_launch_override_when_present() -> None:
+    """Guards PR #927: agent diagnostics show the effective runtime launch."""
+    result = CliRunner().invoke(app, ["agent", "show", "openhands"])
+
+    assert result.exit_code == 0
+    output = click.unstyle(result.output)
+    assert "Launch:" in output
+    assert "/opt/benchflow/bin/openhands-settings-writer" in output
