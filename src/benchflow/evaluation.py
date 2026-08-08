@@ -11,6 +11,7 @@ Backward-compat aliases: ``Job = Evaluation``, ``JobConfig = EvaluationConfig``,
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -96,6 +97,70 @@ from benchflow.usage_tracking import UsageTrackingConfig
 RunResult = RolloutResult
 
 logger = logging.getLogger(__name__)
+
+# Host-side hard deadline for one rollout attempt. Every phase inside a rollout
+# already carries its own timeout (install, agent idle + wall-clock, verifier,
+# PTY readline), but calls BELOW that instrumentation — a Daytona PTY kill on a
+# dead websocket, a wedged session exec in the post-verify export path — can
+# block forever and freeze the whole job (observed 2026-08-07: one hung
+# bike-rebalance rollout wedged a 25-task eval for 11+ hours after its verifier
+# had already finished). The hard deadline is a backstop, not a budget: it is
+# derived from the sum of every phase budget plus a generous fixed margin, so
+# it can only fire when some await is stuck outside all phase-level timeouts.
+# Override with BENCHFLOW_ROLLOUT_HARD_DEADLINE (seconds; "off"/"none"/"0"
+# disables the backstop entirely).
+_HARD_DEADLINE_ENV = "BENCHFLOW_ROLLOUT_HARD_DEADLINE"
+_HARD_DEADLINE_MARGIN_SEC = 1800.0
+_HARD_DEADLINE_FALLBACK_SEC = 3 * 3600.0
+_DEFAULT_AGENT_INSTALL_TIMEOUT_SEC = 900.0
+_CLEANUP_BOUND_SEC = 120.0
+
+
+def _rollout_hard_deadline_sec(task_dir: Path, cfg: EvaluationConfig) -> float | None:
+    """Compute the hard backstop deadline for one rollout attempt.
+
+    Returns ``None`` when the operator disabled the backstop. On any failure to
+    read the task's budgets, falls back to a conservative constant rather than
+    running unbounded.
+    """
+    raw = os.environ.get(_HARD_DEADLINE_ENV, "").strip().lower()
+    if raw in {"off", "none", "0"}:
+        return None
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(
+                f"{_HARD_DEADLINE_ENV}={raw!r} is not a number; using computed deadline"
+            )
+    try:
+        from benchflow.task import Task
+
+        tcfg = Task(task_dir).config
+        agent_sec = float(tcfg.agent.timeout_sec or 900.0)
+        verifier_sec = float(tcfg.verifier.timeout_sec or 900.0)
+        build_sec = float(tcfg.sandbox.build_timeout_sec or 600.0)
+    except Exception as e:
+        logger.debug(f"hard-deadline: could not read {task_dir.name} budgets: {e}")
+        return _HARD_DEADLINE_FALLBACK_SEC
+    install_sec = _DEFAULT_AGENT_INSTALL_TIMEOUT_SEC
+    try:
+        from benchflow.agents.registry import resolve_agent
+
+        install_sec = float(
+            resolve_agent(cfg.agent).install_timeout or install_sec
+        )
+    except Exception:
+        # Raw-command agents and unresolved specs skip install entirely.
+        pass
+    n_prompts = max(1, len(cfg.prompts or []) or 1)
+    return (
+        agent_sec * n_prompts
+        + verifier_sec
+        + build_sec
+        + install_sec
+        + _HARD_DEADLINE_MARGIN_SEC
+    )
 
 # Label applied to every container/network BenchFlow's compose files create.
 # Used to scope Docker prune calls so we only delete our own resources and never
@@ -1250,7 +1315,31 @@ class Evaluation:
 
             return await run_self_gen(rollout_config)
         rollout = await Rollout.create(rollout_config)
-        return await rollout.run()
+        deadline = _rollout_hard_deadline_sec(task_dir, cfg)
+        if deadline is None:
+            return await rollout.run()
+        try:
+            return await asyncio.wait_for(rollout.run(), timeout=deadline)
+        except TimeoutError:
+            # A wedged transport (e.g. a hung Daytona PTY/session call below
+            # the idle and wall-clock watchdogs) must never freeze the whole
+            # job: abandon the rollout, bound the cleanup too, and surface a
+            # normal infra-retryable error result.
+            logger.error(
+                f"[HARD-DEADLINE] {task_dir.name}: rollout exceeded host "
+                f"deadline ({deadline:.0f}s); abandoning sandbox"
+            )
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(rollout.cleanup(), timeout=_CLEANUP_BOUND_SEC)
+            return RunResult(
+                task_name=task_dir.name,
+                error=(
+                    f"Rollout exceeded host hard deadline ({deadline:.0f}s) — "
+                    "transport or teardown wedged below the idle/wall-clock "
+                    "watchdogs; sandbox abandoned"
+                ),
+                error_category=INFRA_ERROR,
+            )
 
     async def _run_single_task_legacy(
         self, task_dir: Path, cfg: EvaluationConfig
