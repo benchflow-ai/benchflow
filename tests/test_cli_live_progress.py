@@ -92,6 +92,48 @@ def test_trusted_telemetry_accumulates():
     assert d._covered == 2
 
 
+def test_activity_cell_polls_live_session_counters():
+    # Per-task activity in the running-now table (fresh-user dogfood
+    # 2026-08-09): the heartbeat's counters must reach the dashboard, since
+    # the Live mutes the logged heartbeat line itself.
+    from benchflow._utils import live_activity
+    from benchflow.cli._live_progress import _activity_cell
+
+    class _Session:
+        def progress_snapshot(self):
+            return 38, "file_editor"
+
+        def latest_usage_totals(self):
+            return {"total_tokens": 1500}
+
+    live_activity.register(
+        "edit-pdf", SimpleNamespace(acp_client=SimpleNamespace(session=_Session()))
+    )
+    try:
+        assert _activity_cell("edit-pdf") == "38 calls · 1.5k tok · last: file_editor"
+    finally:
+        live_activity.unregister("edit-pdf")
+    # Unregistered tasks (and pre-session rollouts) degrade to empty, not raise.
+    assert _activity_cell("edit-pdf") == ""
+
+
+def test_activity_cell_empty_before_session_exists():
+    from benchflow._utils import live_activity
+    from benchflow.cli._live_progress import _activity_cell
+
+    # Rollout registered but not yet connected (no ACP client / session):
+    # the cell stays empty and the render is unperturbed.
+    live_activity.register("warming-up", SimpleNamespace(acp_client=None))
+    try:
+        assert _activity_cell("warming-up") == ""
+        d = _dash()
+        d.on_plan(total=1, done=0, remaining=1)
+        d.on_task_start("warming-up")
+        d.__rich__()  # builds the running-now table row; must not raise
+    finally:
+        live_activity.unregister("warming-up")
+
+
 def test_progress_enabled_respects_tty_and_optout(monkeypatch):
     tty = SimpleNamespace(is_terminal=True)
     notty = SimpleNamespace(is_terminal=False)

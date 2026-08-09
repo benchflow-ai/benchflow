@@ -95,11 +95,21 @@ def _looks_like_commit_sha(ref: str) -> bool:
 
 def _checkout_fetched_ref(repo_root: Path, ref: str) -> None:
     subprocess.run(
-        ["git", "-C", str(repo_root), "fetch", "--depth", "1", "origin", ref],
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "fetch",
+            "--quiet",
+            "--depth",
+            "1",
+            "origin",
+            ref,
+        ],
         check=True,
     )
     subprocess.run(
-        ["git", "-C", str(repo_root), "checkout", "--detach", "FETCH_HEAD"],
+        ["git", "-C", str(repo_root), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
         check=True,
     )
 
@@ -155,7 +165,10 @@ def _clone_repo_unlocked(org: str, repo: str, ref: str | None = None) -> Path:
     try:
         if clone_tmp.exists():
             shutil.rmtree(clone_tmp)
-        cmd = ["git", "clone", "--depth", "1"]
+        # --quiet: raw clone progress ("remote: Counting objects: …") on the
+        # console pre-dashboard is noise; the "Cloning …" log line above is
+        # the one-line summary. Errors still print (git keeps stderr on fail).
+        cmd = ["git", "clone", "--quiet", "--depth", "1"]
         if ref and not _looks_like_commit_sha(ref):
             cmd.extend(["--branch", ref])
         cmd.extend([url, str(clone_tmp)])

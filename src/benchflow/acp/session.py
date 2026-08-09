@@ -221,6 +221,15 @@ class ACPSession:
             # which is otherwise easy to miss in a 64-concurrency log.
             logger.error(f"ACPSession on_change callback failed: {e}")
 
+    def progress_snapshot(self) -> tuple[int, str]:
+        """(tool-call count, last tool title) — the console heartbeat's
+        counters, also polled by the live eval dashboard's activity cell."""
+        title = ""
+        if self.tool_calls:
+            last = self.tool_calls[-1]
+            title = (last.title or last.kind or "").strip().splitlines()[0][:60]
+        return len(self.tool_calls), title
+
     def _maybe_log_progress(self) -> None:
         if not self._progress_enabled or self._prompt_started_at is None:
             return
@@ -229,12 +238,10 @@ class ACPSession:
             return
         self._last_progress_at = now
         elapsed_min = (now - self._prompt_started_at) / 60.0
-        line = f"  … {elapsed_min:.1f}min, {len(self.tool_calls)} tool calls"
-        if self.tool_calls:
-            last = self.tool_calls[-1]
-            title = (last.title or last.kind or "").strip().splitlines()[0][:60]
-            if title:
-                line += f" (last: {title})"
+        calls, title = self.progress_snapshot()
+        line = f"  … {elapsed_min:.1f}min, {calls} tool calls"
+        if title:
+            line += f" (last: {title})"
         logger.info(line)
 
     def record_user_prompt(self, text: str) -> None:

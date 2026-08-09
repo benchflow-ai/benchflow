@@ -1250,11 +1250,20 @@ class Evaluation:
 
             return await run_self_gen(rollout_config)
         rollout = await Rollout.create(rollout_config)
-        # Rollout.run() enforces its own host-side hard deadline against
-        # awaits wedged below the phase-level timeouts — see
-        # benchflow.rollout._deadline. A trip surfaces here as a normal
-        # infra-retryable error result.
-        return await rollout.run()
+        # Expose the live rollout to the eval dashboard's activity cell —
+        # a same-process poll of the session's heartbeat counters, see
+        # benchflow._utils.live_activity.
+        from benchflow._utils import live_activity
+
+        live_activity.register(task_dir.name, rollout)
+        try:
+            # Rollout.run() enforces its own host-side hard deadline against
+            # awaits wedged below the phase-level timeouts — see
+            # benchflow.rollout._deadline. A trip surfaces here as a normal
+            # infra-retryable error result.
+            return await rollout.run()
+        finally:
+            live_activity.unregister(task_dir.name)
 
     async def _run_single_task_legacy(
         self, task_dir: Path, cfg: EvaluationConfig

@@ -2401,7 +2401,10 @@ class Rollout:
         TrajectoryWriter(
             self._rollout_dir / "trajectory" / "acp_trajectory.jsonl"
         ).write_final(self._trajectory)
-        logger.warning(
+        # debug: routine self-healing bookkeeping, not an operator concern —
+        # as a warning it survived the live dashboard's WARNING+ replay and
+        # printed between teardown and the score line (dogfood 2026-08-09).
+        logger.debug(
             "Repaired %d lossy ACP tool event(s) from trusted provider capture",
             repaired,
         )

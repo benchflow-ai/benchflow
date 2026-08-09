@@ -51,6 +51,7 @@ def test_skillsbench_alias_clones_main_branch(tmp_path, monkeypatch):
         [
             "git",
             "clone",
+            "--quiet",
             "--depth",
             "1",
             "--branch",
@@ -733,13 +734,24 @@ def test_resolve_source_with_sha_ref_fetches_after_clone(tmp_path, monkeypatch):
         [
             "git",
             "clone",
+            "--quiet",
             "--depth",
             "1",
             "https://github.com/org/repo.git",
             str(clone_tmp),
         ],
-        ["git", "-C", str(clone_tmp), "fetch", "--depth", "1", "origin", sha_ref],
-        ["git", "-C", str(clone_tmp), "checkout", "--detach", "FETCH_HEAD"],
+        [
+            "git",
+            "-C",
+            str(clone_tmp),
+            "fetch",
+            "--quiet",
+            "--depth",
+            "1",
+            "origin",
+            sha_ref,
+        ],
+        ["git", "-C", str(clone_tmp), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
     ]
 
 
@@ -760,8 +772,8 @@ def test_resolve_source_with_ref_refreshes_cached_checkout(tmp_path, monkeypatch
     resolve_source("org/repo", path="tasks", ref="main")
 
     assert calls == [
-        ["git", "-C", str(cache), "fetch", "--depth", "1", "origin", "main"],
-        ["git", "-C", str(cache), "checkout", "--detach", "FETCH_HEAD"],
+        ["git", "-C", str(cache), "fetch", "--quiet", "--depth", "1", "origin", "main"],
+        ["git", "-C", str(cache), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
     ]
 
 

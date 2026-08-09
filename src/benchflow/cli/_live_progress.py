@@ -27,6 +27,7 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
+from benchflow._utils import live_activity
 from benchflow.cli._shared import console
 from benchflow.usage_tracking import is_trusted_usage_source
 
@@ -125,6 +126,27 @@ def _fmt_tokens(n: int) -> str:
     if n >= 1_000:
         return f"{n / 1_000:.1f}k"
     return str(n)
+
+
+def _activity_cell(name: str) -> str:
+    """Per-task activity for the "running now" table, e.g.
+    ``38 calls · last: file_editor``.
+
+    Polls the live rollout's ACP session counters — the same ones the console
+    heartbeat logs, which the Live display otherwise mutes — via the
+    live-activity registry. Empty until the agent session exists. Tokens appear
+    only once the session has a usage snapshot (i.e. after a completed prompt).
+    """
+    snap = live_activity.activity(name)
+    if snap is None:
+        return ""
+    calls, last_title, tokens = snap
+    cell = f"{calls} calls"
+    if tokens:
+        cell += f" · {_fmt_tokens(tokens)} tok"
+    if last_title:
+        cell += f" · last: {last_title[:30]}"
+    return cell
 
 
 class LiveEvalProgress:
@@ -295,17 +317,23 @@ class LiveEvalProgress:
             )
             tbl.add_column("running now", no_wrap=True)
             tbl.add_column("elapsed", justify="right")
+            tbl.add_column("activity", no_wrap=True)
             now = time.monotonic()
             for name in sorted(running, key=lambda n: running[n])[:_MAX_RUNNING_ROWS]:
                 # Text() so a task name containing Rich markup (`[` is legal in
                 # SkillsBench dir names) is rendered literally, not parsed as
                 # markup — a MarkupError here escapes __rich__ and aborts the
                 # CLI on live-context exit, violating this module's "a render
-                # bug can never perturb a run" contract.
-                tbl.add_row(Text(name), _fmt_dur(now - running[name]))
+                # bug can never perturb a run" contract. Same for the activity
+                # cell, which carries agent-authored tool titles.
+                tbl.add_row(
+                    Text(name),
+                    _fmt_dur(now - running[name]),
+                    Text(_activity_cell(name), style="dim"),
+                )
             extra = len(running) - _MAX_RUNNING_ROWS
             if extra > 0:
-                tbl.add_row(f"… {extra} more", "")
+                tbl.add_row(f"… {extra} more", "", "")
             parts.append(tbl)
 
         # Footer: pass-rate (excl errors) + token/cost economics. Show "—" (not
