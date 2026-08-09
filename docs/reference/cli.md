@@ -301,6 +301,11 @@ alike (so it also wins over an exported `on`). Note that on a TTY,
 mutes INFO logging while it owns the screen; pair it with
 `BENCHFLOW_NO_PROGRESS=1` to get plain heartbeat lines on a TTY.
 
+The final `Score: P/T (…%)` line is pass-threshold aggregation — a task counts
+as passed only at reward 1.0 — while `mean reward` beside it is the average raw
+verifier reward, so `0/1 (0.0%)` next to `mean reward 0.80` means partial
+credit below the pass threshold, not a flat zero.
+
 Set `BENCHFLOW_ACP_HANDSHAKE_TIMEOUT` to a number of seconds (default 60) to
 give slow-starting agents more time to answer the pre-prompt ACP handshake
 (`initialize`/`session_new`) — heavyweight task images can push agent startup
