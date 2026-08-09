@@ -195,9 +195,14 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
         err_part = f", [red]{detail}[/red]"
     else:
         err_part = ", errors=0"
+    # Mean reward alongside the binarized counts: pass/fail thresholds at
+    # reward==1, so "0/1" alone can't distinguish 0.3 partial credit from a
+    # flat 0. getattr(): sharded aggregation and older callers don't carry it.
+    mean_reward = getattr(result, "mean_reward", None)
+    mean_part = f", mean reward {mean_reward:.2f}" if mean_reward is not None else ""
     console.print(
         f"\n[{style}]{mark} Score: {result.passed}/{result.total} "
-        f"({result.score:.1%})[/{style}]{err_part}"
+        f"({result.score:.1%})[/{style}]{mean_part}{err_part}"
     )
     # One dim reason line per FAILED task, so "0/1" doesn't force a dig into
     # summary.json to learn why. getattr(): sharded aggregation and older

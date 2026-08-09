@@ -354,6 +354,42 @@ def _failed_result(task_failures):
     )
 
 
+def test_report_eval_result_shows_mean_reward():
+    # Partial credit must be visible next to the binarized counts: pass/fail
+    # thresholds at reward==1, so "0/1 (0.0%)" alone can't distinguish a 0.3
+    # rubric score from a flat 0.
+    out = _reported(
+        SimpleNamespace(
+            passed=0,
+            total=1,
+            errored=0,
+            verifier_errored=0,
+            score=0.0,
+            job_name="j",
+            mean_reward=0.3,
+        )
+    )
+    assert "Score: 0/1" in out
+    assert "mean reward 0.30" in out
+
+
+def test_report_eval_result_omits_mean_reward_when_unavailable():
+    # Sharded aggregation and older callers don't carry mean_reward — the line
+    # must render without it rather than showing a misleading 0.00.
+    out = _reported(
+        SimpleNamespace(
+            passed=0,
+            total=1,
+            errored=1,
+            verifier_errored=0,
+            score=0.0,
+            job_name="j",
+        )
+    )
+    assert "Score: 0/1" in out
+    assert "mean reward" not in out
+
+
 def test_report_eval_result_prints_failure_reason_lines():
     # Dogfood follow-up: "✗ Score: 0/1" alone forces a dig into summary.json.
     # Each FAILED task gets one dim reason line — verifier_error first, else a

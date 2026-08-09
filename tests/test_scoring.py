@@ -7,6 +7,7 @@ from benchflow._utils.scoring import (
     classify_result_outcome,
     count_result_outcomes,
     extract_reward,
+    mean_scored_reward,
     pass_rate,
     pass_rate_excl_errors,
 )
@@ -280,3 +281,37 @@ class TestPassRateExclErrors:
     )
     def test_pass_rate_excl_errors(self, passed, failed, expected):
         assert pass_rate_excl_errors(passed=passed, failed=failed) == expected
+
+
+class TestMeanScoredReward:
+    """mean_scored_reward(results) -> float | None"""
+
+    def test_mean_over_scored_only(self):
+        results = [
+            {"rewards": {"reward": 1.0}},
+            {"rewards": {"reward": 0.3}},
+            {"error": "agent crashed"},
+        ]
+        assert mean_scored_reward(results) == pytest.approx(0.65)
+
+    def test_none_when_nothing_scored(self):
+        assert mean_scored_reward([{"error": "boom"}, {"rewards": None}]) is None
+        assert mean_scored_reward([]) is None
+
+    def test_bool_rewards_excluded(self):
+        # classify_result treats a persisted `true` as a pass (True == 1), but
+        # a bool is not a reward magnitude — it must not enter the mean.
+        results = [{"rewards": {"reward": True}}, {"rewards": {"reward": 0.5}}]
+        assert mean_scored_reward(results) == pytest.approx(0.5)
+
+    def test_non_finite_rewards_excluded(self):
+        # Python's json round-trips NaN; unvalidated resume data must not
+        # poison the mean.
+        results = [{"rewards": {"reward": float("nan")}}, {"rewards": {"reward": 1.0}}]
+        assert mean_scored_reward(results) == pytest.approx(1.0)
+
+    def test_malformed_rewards_shape_tolerated(self):
+        # The resume path feeds raw json.loads payloads with no shape
+        # validation — a non-dict rewards must not crash the aggregation.
+        results = [{"rewards": ["not", "a", "dict"]}, {"rewards": {"reward": 0.4}}]
+        assert mean_scored_reward(results) == pytest.approx(0.4)
