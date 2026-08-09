@@ -581,23 +581,38 @@ async def _run_environment_healthcheck(env: Any, task: Any) -> None:
             await asyncio.sleep(delay)
 
 
-def _gateway_live_tokens(usage_runtime: Any) -> int | None:
+def _gateway_live_tokens(runtime: Any) -> int | None:
     """Cumulative provider tokens from the LiteLLM gateway's live capture.
 
     Piggybacks on the llm_trajectory.jsonl mirror the proxy runtime already
     runs for every rollout (``LiteLLMProcess.start_live_capture``, wired in
     ``connect()`` and cancelled by the proxy's ``stop()`` in cleanup) — this
     read generates no additional sandbox exec traffic, at any concurrency.
-    Best-effort by the dashboard contract: any absence (no runtime, a server
-    without the accessor, the reader raising, a non-int value) degrades to
-    None — #963's ACP-only behavior — never to a render error.
+
+    ``runtime`` stays ``Any`` because the rollout kernel must not import the
+    concrete provider plane (``benchflow.providers.runtime``; the #515
+    architecture test forbids even a TYPE_CHECKING import, and the planes
+    contract is deliberately Any-typed). Rename-safety for the
+    ``server.live_usage_tokens`` accessor lives where typing IS allowed: the
+    name is agreed in ``contracts.planes.LiveUsageGateway``, LiteLLMProcess
+    statically asserts conformance in the providers plane
+    (``_live_usage_gateway_conformance`` — a rename on either side fails
+    ty), and ``test_gateway_live_tokens_reach_rollout_activity_snapshot``
+    pins THIS call site to the real classes end-to-end (a drift here fails
+    pytest). The attribute access is direct (no getattr default) so the
+    failure mode under a fake without the accessor is the caught exception
+    below, not a permanent silent None.
+    Best-effort by the dashboard contract: any absence (no runtime, no
+    server, the accessor raising, a non-int value) degrades to None —
+    #963's ACP-only behavior — never to a render error.
     """
-    server = getattr(usage_runtime, "server", None)
-    read = getattr(server, "live_usage_tokens", None)
-    if read is None:
+    if runtime is None:
         return None
     try:
-        tokens = read()
+        server = runtime.server
+        if server is None:
+            return None
+        tokens = server.live_usage_tokens()
     except Exception:
         return None
     return tokens if isinstance(tokens, int) else None
@@ -814,7 +829,7 @@ class Rollout:
         calls, last_title = session.progress_snapshot()
         usage = session.latest_usage_totals()
         acp_tokens = usage.get("total_tokens") if usage else None
-        gateway_tokens = _gateway_live_tokens(getattr(self, "_usage_runtime", None))
+        gateway_tokens = _gateway_live_tokens(self._usage_runtime)
         if acp_tokens is None and gateway_tokens is None:
             tokens = None
         else:

@@ -265,7 +265,9 @@ def test_rollout_activity_snapshot_reads_acp_session():
     from benchflow.rollout import Rollout
 
     connected = SimpleNamespace(
-        _acp_client=SimpleNamespace(session=_FakeSession()), _phase="connected"
+        _acp_client=SimpleNamespace(session=_FakeSession()),
+        _phase="connected",
+        _usage_runtime=None,
     )
     assert Rollout.activity_snapshot(connected) == ActivitySnapshot(
         "connected", SessionCounters(38, "file_editor", 1500, 4)

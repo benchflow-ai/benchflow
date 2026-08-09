@@ -216,8 +216,7 @@ async def test_daytona_proxy_incrementally_mirrors_callback(tmp_path, monkeypatc
     assert len(output_path.read_text().splitlines()) == 2
 
 
-def _sandbox_process(sandbox, tmp_path=None) -> SandboxLiteLLMProcess:
-    del tmp_path
+def _sandbox_process(sandbox) -> SandboxLiteLLMProcess:
     return SandboxLiteLLMProcess(
         sandbox=sandbox,
         route=SimpleNamespace(),
@@ -344,13 +343,75 @@ async def test_live_usage_resets_when_capture_restarts_on_new_path(
     assert await _wait_for(lambda: process.live_usage_tokens() == 10)
     await process._stop_live_capture()
 
+    # Grow the log so attempt b's true total (25) differs from attempt a's
+    # stale value (10) — without this, a missing reset would still converge
+    # to the expected number and the test could not see it.
+    sandbox.data += _callback_line(
+        content="second",
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    ).encode()
     process.start_live_capture(tmp_path / "b" / "llm_trajectory.jsonl")
+    # The reset's synchronous observable: BEFORE the new capture task has run,
+    # the stale total from attempt a must already read as "no signal" — not 10.
+    assert process.live_usage_tokens() is None
     try:
         # The counter restarts from the log's beginning (offset reset), so it
-        # re-converges to the log's true total rather than double-counting.
-        assert await _wait_for(lambda: process.live_usage_tokens() == 10)
+        # re-converges to the log's true total (10 + 15), not 10 + 25.
+        assert await _wait_for(lambda: process.live_usage_tokens() == 25)
     finally:
         await process._stop_live_capture()
+
+
+@pytest.mark.asyncio
+async def test_gateway_live_tokens_reach_rollout_activity_snapshot(
+    tmp_path, monkeypatch
+):
+    """Cross-boundary seam guard: a REAL SandboxLiteLLMProcess fed a canned
+    callback log, wrapped in a REAL ProviderRuntime, must surface its live
+    total through Rollout.activity_snapshot — pinning the
+    ``server.live_usage_tokens`` accessor name across the provider/rollout
+    boundary, where the unit tests on either side use fakes (a rename on
+    either side fails HERE, not silently in production)."""
+    from benchflow.providers.runtime import ProviderRuntime
+    from benchflow.rollout import Rollout
+
+    monkeypatch.setattr(runtime_mod, "_LIVE_CAPTURE_INTERVAL_SEC", 0.01)
+    sandbox = _SandboxWithCallbackLog(
+        _callback_line(
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+        ).encode()
+    )
+    process = _sandbox_process(sandbox)
+    process.start_live_capture(tmp_path / "trajectory" / "llm_trajectory.jsonl")
+    try:
+        assert await _wait_for(lambda: process.live_usage_tokens() == 120)
+
+        class _MidPromptSession:
+            # A single-prompt ACP session mid-prompt: tool calls exist, the
+            # ACP usage snapshot does not (it lands only at prompt end).
+            distinct_tool_titles = 1
+
+            def progress_snapshot(self):
+                return 3, "IPython cell"
+
+            def latest_usage_totals(self):
+                return None
+
+        rollout = SimpleNamespace(
+            _acp_client=SimpleNamespace(session=_MidPromptSession()),
+            _phase="connected",
+            _usage_runtime=ProviderRuntime(
+                kind="litellm",
+                agent_base_url="http://127.0.0.1:4000",
+                server=process,
+            ),
+        )
+        snap = Rollout.activity_snapshot(rollout)
+    finally:
+        await process._stop_live_capture()
+
+    assert snap.counters is not None
+    assert snap.counters.total_tokens == 120
 
 
 @pytest.mark.asyncio

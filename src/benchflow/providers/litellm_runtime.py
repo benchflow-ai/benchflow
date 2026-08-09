@@ -19,7 +19,7 @@ import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 from uuid import uuid4
 
 import httpx
@@ -53,6 +53,9 @@ from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
+
+if TYPE_CHECKING:
+    from benchflow.contracts.planes import LiveUsageGateway
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +102,10 @@ class LiteLLMProcess:
     trajectory: Trajectory | None
     session_id: str
     agent_name: str
+    # Live-capture token counter (class-level defaults so reads are plain
+    # attribute access even before start_live_capture ever runs).
+    _live_usage_total_tokens: int = 0
+    _live_usage_seen: bool = False
 
     @property
     def base_url(self) -> str:
@@ -126,8 +133,10 @@ class LiteLLMProcess:
         )
         self._live_callback_offset = 0
         self._live_callback_remainder = b""
-        self._live_usage_total_tokens = 0
+        # Clear ``seen`` BEFORE the total so a racing render-thread read can
+        # only observe None (fresh capture) — never a transient "0 tokens".
         self._live_usage_seen = False
+        self._live_usage_total_tokens = 0
         self._live_capture_task = asyncio.create_task(self._live_capture_loop())
 
     def live_usage_tokens(self) -> int | None:
@@ -144,9 +153,9 @@ class LiteLLMProcess:
         capture cadence/backlog and is display-only: trusted usage still comes
         from the full log import at ``stop()``.
         """
-        if not getattr(self, "_live_usage_seen", False):
+        if not self._live_usage_seen:
             return None
-        return int(getattr(self, "_live_usage_total_tokens", 0))
+        return self._live_usage_total_tokens
 
     async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
         raise NotImplementedError
@@ -184,9 +193,11 @@ class LiteLLMProcess:
                     # trusted total as the capture catches up. Failure records
                     # carry no usage and leave the counter untouched.
                     if parsed.has_provider_usage:
-                        self._live_usage_total_tokens = int(
-                            getattr(self, "_live_usage_total_tokens", 0)
-                        ) + int(parsed.total_provider_tokens)
+                        # Total before ``seen``: a racing reader can never
+                        # observe seen=True with a not-yet-updated total.
+                        self._live_usage_total_tokens += int(
+                            parsed.total_provider_tokens
+                        )
                         self._live_usage_seen = True
                     changed = True
             if len(chunk) < _LIVE_CAPTURE_CHUNK_BYTES:
@@ -218,6 +229,19 @@ class LiteLLMProcess:
         writer = getattr(self, "_live_writer", None)
         if writer is not None:
             writer.reconcile(self.trajectory)
+
+
+def _live_usage_gateway_conformance(process: LiteLLMProcess) -> LiveUsageGateway:
+    """Static assertion: LiteLLMProcess satisfies the contract the rollout
+    kernel's dashboard read binds to (``contracts.planes.LiveUsageGateway``).
+
+    The kernel cannot import this module (#515 architecture invariant), so
+    its ``server.live_usage_tokens()`` call is dynamically typed there; this
+    return-type check is what makes a rename of the accessor — on either the
+    protocol or the process side — fail ``ty`` instead of silently blanking
+    the live token signal. Never called at runtime.
+    """
+    return process
 
 
 class HostLiteLLMProcess(LiteLLMProcess):
