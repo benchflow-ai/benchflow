@@ -25,7 +25,7 @@ verifier:
     cleanup_conftests: true
 agent:
   timeout_sec: 600.0
-environment:
+sandbox:
   network_mode: public
   build_timeout_sec: 600.0
   docker_image: ubuntu:24.04

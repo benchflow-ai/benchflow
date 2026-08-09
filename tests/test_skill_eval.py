@@ -355,7 +355,7 @@ class TestGenerateTasks:
         task_dirs = generate_tasks(ds, output, with_skill=True)
 
         task = Task(task_dirs[0])
-        assert task.config.environment.skills_dir == "/skills"
+        assert task.config.sandbox.skills_dir == "/skills"
 
     def test_judge_env_templates_available_host_keys_without_secrets(
         self, skill_dir, tmp_path, monkeypatch
@@ -386,7 +386,7 @@ class TestGenerateTasks:
         task_dirs = generate_tasks(ds, output, with_skill=False)
 
         task = Task(task_dirs[0])
-        assert task.config.environment.skills_dir is None
+        assert task.config.sandbox.skills_dir is None
 
     def test_dockerfile_with_skill_has_copy(self, skill_dir, tmp_path):
         ds = load_eval_dataset(skill_dir)
@@ -431,8 +431,7 @@ class TestGenerateTasks:
 
         dockerfile = (task_dirs[0] / "environment" / "Dockerfile").read_text()
         assert (
-            Task(task_dirs[0]).config.environment.skills_dir
-            == "/opt/benchflow/skill-eval"
+            Task(task_dirs[0]).config.sandbox.skills_dir == "/opt/benchflow/skill-eval"
         )
         assert "COPY skills/ /opt/benchflow/skill-eval/" in dockerfile
 

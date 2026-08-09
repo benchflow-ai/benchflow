@@ -79,7 +79,7 @@ class TestCaseEnvironmentOverrides:
         task = generate_tasks(ds, tmp_path / "out", with_skill=False)[0]
 
         # The override must be exposed as sandbox env so the runner forwards it.
-        env_block = Task(task).config.environment.env
+        env_block = Task(task).config.sandbox.env
         assert env_block == {"CASE_ONLY": "expected-value", "ANOTHER": "x y"}
 
     def test_case_environment_lands_in_case_json(self, tmp_path):
@@ -103,8 +103,8 @@ class TestCaseEnvironmentOverrides:
         skill = _make_skill(tmp_path)
         ds = load_eval_dataset(skill)
         task = generate_tasks(ds, tmp_path / "out", with_skill=False)[0]
-        # No spurious [environment.env] section when there's nothing to forward.
-        assert Task(task).config.environment.env == {}
+        # No spurious [sandbox.env] section when there's nothing to forward.
+        assert Task(task).config.sandbox.env == {}
 
 
 # Issue #393 — TOML escape of skill_name
@@ -458,4 +458,4 @@ class TestGenerateTasksDefenseInDepth:
             ],
         )
         task = generate_tasks(ds, tmp_path / "out", with_skill=False)[0]
-        assert Task(task).config.environment.env == {"FOO": "bar"}
+        assert Task(task).config.sandbox.env == {"FOO": "bar"}

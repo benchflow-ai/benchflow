@@ -333,7 +333,7 @@ timeout_sec = 300
 [verifier]
 timeout_sec = 120
 
-[environment]
+[sandbox]
 cpus = 1
 memory_mb = 2048
 """)
@@ -412,7 +412,7 @@ agent:
   timeout_sec: 300
 verifier:
   timeout_sec: 120
-environment:
+sandbox:
   cpus: 1
   memory_mb: 2048
 ---

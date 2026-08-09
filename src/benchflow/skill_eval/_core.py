@@ -262,24 +262,24 @@ def _build_task_toml(dataset: EvalDataset, case: EvalCase, with_skill: bool) -> 
     if present_judge_keys:
         verifier["env"] = {k: f"${{{k}}}" for k in present_judge_keys}
 
-    environment_block: dict[str, Any] = {
+    sandbox_block: dict[str, Any] = {
         "cpus": 1,
         "memory_mb": 2048,
         "allow_internet": True,
     }
     if with_skill:
-        environment_block["skills_dir"] = dataset.skill_mount_dir
+        sandbox_block["skills_dir"] = dataset.skill_mount_dir
     # Forward per-case ``environment`` overrides (#392). The runner reads
-    # ``[environment.env]`` and forwards entries to the sandbox.
+    # ``[sandbox.env]`` and forwards entries to the sandbox.
     if case.environment:
-        environment_block["env"] = dict(case.environment)
+        sandbox_block["env"] = dict(case.environment)
 
     doc: dict[str, Any] = {
         "version": "1.0",
         "metadata": metadata,
         "agent": {"timeout_sec": dataset.timeout_sec},
         "verifier": verifier,
-        "environment": environment_block,
+        "sandbox": sandbox_block,
     }
 
     return tomli_w.dumps(doc)

@@ -10,7 +10,7 @@ declares a hardened **`network_mode: allowlist`** scoped to exactly the hosts th
 
 ## What it is
 
-- `task.md` — same prompt / metadata as the base task, but its `environment:`
+- `task.md` — same prompt / metadata as the base task, but its `sandbox:`
   block sets:
 
   ```yaml

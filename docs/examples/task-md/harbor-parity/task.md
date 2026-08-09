@@ -26,16 +26,16 @@ verifier:
     JUDGE_API_KEY: ${JUDGE_API_KEY:-test}
   user: root
   network_mode: public
-  environment_mode: separate
+  sandbox_mode: separate
   pytest_plugins: [pytest_playwright]
   hardening:
     cleanup_conftests: false
-  environment:
+  sandbox:
     docker_image: ghcr.io/example/grader:latest
     cpus: 2
     memory_mb: 1024
     network_mode: no-network
-environment:
+sandbox:
   network_mode: allowlist
   allowed_hosts: [datasets.example.com]
   build_timeout_sec: 600

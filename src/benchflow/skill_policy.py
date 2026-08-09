@@ -143,7 +143,7 @@ def resolve_task_skill_policy(
         if source == SKILL_SOURCE_TASK_BUNDLED:
             sandbox_dir = validate_container_mount_path(
                 declared_sandbox_skills_dir or "/skills",
-                "environment.skills_dir",
+                "sandbox.skills_dir",
             )
         else:
             sandbox_dir = validate_container_mount_path("/skills")
@@ -156,7 +156,7 @@ def resolve_task_skill_policy(
         host_dir = bundled
         sandbox_dir = validate_container_mount_path(
             declared_sandbox_skills_dir or "/skills",
-            "environment.skills_dir",
+            "sandbox.skills_dir",
         )
         strip_bundled = False
 

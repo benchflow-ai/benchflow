@@ -147,15 +147,15 @@ metric = "exact_match"
         assert result.compatibility is not None
         assert result.compatibility.config_extra == {
             "harbor_ext": "kept",
-            "environment": {
+            "sandbox": {
                 "modal": {"image": "registry.example.com/task:latest"},
             },
             "steps": [{"runner": "harbor-step-runner"}],
             "verifier": {"reward_kit": {"metric": "exact_match"}},
         }
         assert result.compatibility.config_extra_paths == (
-            "environment.modal.image",
             "harbor_ext",
+            "sandbox.modal.image",
             "steps[0].runner",
             "verifier.reward_kit.metric",
         )

@@ -204,7 +204,7 @@ class TestSdkVerify:
                 "metadata": {"author_name": "benchflow"},
                 "agent": {"timeout_sec": 30},
                 "verifier": {"timeout_sec": 0.1},
-                "environment": {"cpus": 1, "memory_mb": 1024},
+                "sandbox": {"cpus": 1, "memory_mb": 1024},
             }
         )
         assert not hasattr(config, "name")  # the bug condition

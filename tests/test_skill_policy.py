@@ -147,7 +147,7 @@ def test_with_skill_rejects_unsafe_sandbox_path(tmp_path: Path) -> None:
     task = tmp_path / "task"
     _make_task_skills(task)
 
-    with pytest.raises(ValueError, match=r"environment\.skills_dir"):
+    with pytest.raises(ValueError, match=r"sandbox\.skills_dir"):
         resolve_task_skill_policy(
             task_path=task,
             skill_mode=SKILL_MODE_WITH_SKILL,

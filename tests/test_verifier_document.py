@@ -39,7 +39,7 @@ def test_task_paths_accepts_selected_reward_kit_without_test_sh(
             """\
             ---
             schema_version: "1.3"
-            environment:
+            sandbox:
               network_mode: no-network
             ---
 
@@ -322,7 +322,7 @@ def test_check_task_reports_malformed_verifier_document(tmp_path: Path) -> None:
             """\
             ---
             schema_version: "1.3"
-            environment:
+            sandbox:
               network_mode: no-network
             ---
 

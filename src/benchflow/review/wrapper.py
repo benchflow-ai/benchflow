@@ -156,7 +156,7 @@ verifier:
   timeout_sec: {verifier_timeout}
 agent:
   timeout_sec: {agent_timeout}
-environment:
+sandbox:
   docker_image: {image}
   workdir: /app{network_line}
   cpus: 1

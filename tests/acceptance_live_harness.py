@@ -47,7 +47,7 @@ def write_live_task(task_dir: Path, *, workdir: str | None = "/app") -> Path:
         "verifier": {"timeout_sec": 30},
     }
     if workdir is not None:
-        frontmatter["environment"] = {"workdir": workdir}
+        frontmatter["sandbox"] = {"workdir": workdir}
     task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / "task.md").write_text(
         "---\n"

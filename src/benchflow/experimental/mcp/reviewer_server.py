@@ -9,7 +9,7 @@ with a clean tool-call interface that prevents reward hacking (reviewer
 never has write access to /app/).
 
 Usage in task.toml:
-    [[environment.mcp_servers]]
+    [[sandbox.mcp_servers]]
     name = "reviewer"
     transport = "streamable-http"
     url = "http://localhost:8100/mcp"

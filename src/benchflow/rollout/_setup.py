@@ -51,7 +51,7 @@ _DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
 
 def _task_disallows_internet(task: Any) -> bool:
     """Return True when task config requests no internet for the agent task."""
-    env_config = getattr(getattr(task, "config", None), "environment", None)
+    env_config = getattr(getattr(task, "config", None), "sandbox", None)
     return getattr(env_config, "allow_internet", True) is False
 
 
@@ -189,7 +189,7 @@ def _agent_process_kill_pattern(agent_launch: str) -> str | None:
 def _configured_task_workdir(task: Any) -> str | None:
     """Return the task-declared sandbox workdir, if any."""
 
-    env_config = getattr(getattr(task, "config", None), "environment", None)
+    env_config = getattr(getattr(task, "config", None), "sandbox", None)
     value = getattr(env_config, "workdir", None)
     if not isinstance(value, str):
         return None
@@ -200,7 +200,7 @@ def _configured_task_workdir(task: Any) -> str | None:
 def _validate_agent_workdir(workdir: str) -> None:
     path = PurePosixPath(workdir)
     if not path.is_absolute() or path == PurePosixPath("/"):
-        raise ValueError("environment.workdir must be an absolute non-root path")
+        raise ValueError("sandbox.workdir must be an absolute non-root path")
 
 
 async def _resolve_agent_cwd(env: Any, task: Any) -> str:
@@ -231,7 +231,7 @@ async def _resolve_agent_cwd(env: Any, task: Any) -> str:
     if isinstance(return_code, int) and return_code != 0:
         stderr = (getattr(result, "stderr", "") or "").strip()
         raise RuntimeError(
-            f"failed to prepare environment.workdir {configured!r}: {stderr}"
+            f"failed to prepare sandbox.workdir {configured!r}: {stderr}"
         )
     return (getattr(result, "stdout", "") or "").strip() or configured
 

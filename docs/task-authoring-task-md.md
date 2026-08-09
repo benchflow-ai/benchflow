@@ -31,7 +31,7 @@ agent:
   timeout_sec: 300         # strongly recommended — unset means no wall-clock cap
 verifier:
   timeout_sec: 120
-environment:
+sandbox:
   cpus: 1
   memory_mb: 2048
 ---
@@ -76,7 +76,7 @@ so typos fail at parse time instead of becoming silently-ignored config:
 | `metadata` | Freeform mapping — difficulty, category, tags, anything descriptive |
 | `agent` | Agent run policy: `timeout_sec`, `user`, `network_mode`, `allowed_hosts` |
 | `verifier` | Verifier run policy: `timeout_sec` (default 600), `env`, `user`, `service`, … |
-| `environment` | Sandbox: `docker_image`, `cpus`, `memory_mb`, `storage_mb`, `network_mode`, `env`, `workdir`, … |
+| `sandbox` | Sandbox: `docker_image`, `cpus`, `memory_mb`, `storage_mb`, `network_mode`, `env`, `workdir`, … (legacy `task.toml` imports convert the Harbor `environment` table to this key; `environment:` in `task.md` is rejected with a rename hint) |
 | `oracle` | Oracle run policy: `env`, `timeout_sec` (import alias: `solution`) |
 | `source`, `artifacts`, `steps`, `multi_step_reward_strategy`, `reward` | Provenance, artifact, and reward metadata |
 
@@ -99,7 +99,7 @@ canonical config under their short names:
 | Shorthand | Expands to |
 |---|---|
 | `name: hello-world` | `task.name: benchflow/hello-world` (a `/` in the value keeps your org) |
-| `image: ubuntu:24.04` | `environment.docker_image: ubuntu:24.04` |
+| `image: ubuntu:24.04` | `sandbox.docker_image: ubuntu:24.04` |
 | `verifier: verifier/` (string form) | `benchflow.verifier.path` / `.spec` / `.entrypoint` defaults |
 | `oracle: oracle/` (string form) | `benchflow.oracle.path` |
 | `profile: code-change` | Merges a named defaults bundle (see below) |

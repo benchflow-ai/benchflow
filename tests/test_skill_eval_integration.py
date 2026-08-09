@@ -137,7 +137,7 @@ class TestSkillEvalIntegration:
             assert skill_dst.exists()
             assert (skill_dst / "SKILL.md").exists()
             assert (skill_dst / "scripts" / "check_claim.py").exists()
-            assert Task(task_dir).config.environment.skills_dir == "/skills"
+            assert Task(task_dir).config.sandbox.skills_dir == "/skills"
 
         cleanup_tasks([with_dir])
         assert not with_dir.exists()

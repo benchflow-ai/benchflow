@@ -549,7 +549,7 @@ async def connect_acp(
     dormant and the auto-approve policy ran unconditionally (#382 follow-up).
 
     ``mcp_servers`` are the task's configured MCP servers (mapped from
-    ``[[environment.mcp_servers]]``); they are attached to the ACP session at
+    ``[[sandbox.mcp_servers]]``); they are attached to the ACP session at
     ``session/new`` so the agent can reach them. ``None`` attaches none.
 
     Retries with exponential backoff on ConnectionError (Daytona SSH storms).

@@ -117,7 +117,7 @@ when unknown in native authoring mode:
 - `metadata`
 - `agent`
 - `verifier`
-- `environment`
+- `sandbox` (legacy `task.toml` import spelling: `environment`)
 - `oracle` (validation alias: `solution`)
 - `source`
 - `artifacts`
@@ -512,7 +512,7 @@ assets as first-class objects:
 benchflow:
   provenance:
     images:
-      - field: environment.docker_image
+      - field: sandbox.docker_image
         reference: ghcr.io/org/task-image:2026-06
         digest: sha256:...
         registry: ghcr.io
@@ -767,11 +767,11 @@ Target compatibility rules:
      compat:
        source: harbor
        extra_paths:
-         - environment.modal.image
+         - sandbox.modal.image
          - steps[0].runner
          - verifier.reward_kit.metric
        extra:
-         environment:
+         sandbox:
            modal:
              image: registry.example.com/task:latest
          steps:
@@ -949,7 +949,7 @@ semantics, and non-`main` verifier services on backends that cannot run them.
 It is wired into `bench tasks check --sandbox <backend>` and the shared sandbox
 factory used by rollouts and `Environment.from_task()`. Unsupported parsed
 semantics now raise `UnsupportedTaskFeatureError` before Docker, Daytona, or
-Modal construction. Safe absolute non-root `environment.workdir` values are
+Modal construction. Safe absolute non-root `sandbox.workdir` values are
 materialized before agent and verifier setup.
 
 P2: Split native and adapter validation modes.

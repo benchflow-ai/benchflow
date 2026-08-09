@@ -7,7 +7,7 @@ from benchflow.task.config import (
     NetworkMode,
     TaskConfig,
     TaskOS,
-    VerifierEnvironmentMode,
+    VerifierSandboxMode,
 )
 
 
@@ -79,7 +79,13 @@ def test_verifier_timeout_sec_rejects_unusable_budgets(value):
 
 
 def test_task_config_accepts_current_harbor_task_toml_surface():
-    """Guards commit 67378ddd's 2026-06-04 parity pass against schema shrinkage."""
+    """Guards commit 67378ddd's 2026-06-04 parity pass against schema shrinkage.
+
+    Harbor task.toml spells the sandbox spec ``[environment]`` (and
+    ``[verifier.environment]``); the toml import path converts both to the
+    native ``sandbox`` key, so the assertions below read ``cfg.sandbox`` /
+    ``cfg.verifier.sandbox``.
+    """
     cfg = TaskConfig.model_validate_toml(
         """
 schema_version = "1.3"
@@ -174,16 +180,16 @@ env = { STEP = "scaffold" }
     assert cfg.metadata["custom"]["kept"] is True
     assert cfg.agent.network_mode == NetworkMode.ALLOWLIST
     assert cfg.agent.allowed_hosts == ["api.example.com"]
-    assert cfg.verifier.environment_mode == VerifierEnvironmentMode.SEPARATE
+    assert cfg.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE
     assert cfg.verifier.hardening.cleanup_conftests is False
-    assert cfg.verifier.environment is not None
-    assert cfg.verifier.environment.allow_internet is False
-    assert cfg.environment.network_mode == NetworkMode.ALLOWLIST
-    assert cfg.environment.os == TaskOS.LINUX
-    assert cfg.environment.tpu is not None
-    assert cfg.environment.tpu.chip_count == 8
-    assert cfg.environment.healthcheck is not None
-    assert cfg.environment.healthcheck.retries == 5
+    assert cfg.verifier.sandbox is not None
+    assert cfg.verifier.sandbox.allow_internet is False
+    assert cfg.sandbox.network_mode == NetworkMode.ALLOWLIST
+    assert cfg.sandbox.os == TaskOS.LINUX
+    assert cfg.sandbox.tpu is not None
+    assert cfg.sandbox.tpu.chip_count == 8
+    assert cfg.sandbox.healthcheck is not None
+    assert cfg.sandbox.healthcheck.retries == 5
     assert cfg.multi_step_reward_strategy == MultiStepRewardStrategy.FINAL
     assert cfg.artifacts[0].source == "/logs/artifacts"
     assert cfg.steps is not None
@@ -210,7 +216,11 @@ def test_task_config_accepts_native_oracle_alias():
 
 
 def test_task_config_accepts_current_skillsbench_task_toml_surface():
-    """Guards SkillsBench main a8eefb4 against parser-only run failures."""
+    """Guards SkillsBench main a8eefb4 against parser-only run failures.
+
+    The legacy ``[environment]`` table converts to ``cfg.sandbox`` on the
+    toml import path.
+    """
     cfg = TaskConfig.model_validate_toml(
         """
 version = "1.0"
@@ -243,10 +253,10 @@ REPO_ID = "google/auto"
 
     assert cfg.schema_version == "1.0"
     assert cfg.reward["reward"].startswith("(P0_passed")
-    assert cfg.environment.docker_image == "python:3.12-slim"
-    assert cfg.environment.bugswarm_image_tag == "google-auto-101506036"
-    assert cfg.environment.memory_mb == 4096
-    assert cfg.environment.storage_mb == 8192
+    assert cfg.sandbox.docker_image == "python:3.12-slim"
+    assert cfg.sandbox.bugswarm_image_tag == "google-auto-101506036"
+    assert cfg.sandbox.memory_mb == 4096
+    assert cfg.sandbox.storage_mb == 8192
     assert cfg.solution.timeout_sec == 1800.0
 
 
@@ -267,7 +277,7 @@ exclude_tags = ["admin"]
 """
     )
 
-    (server,) = cfg.environment.mcp_servers
+    (server,) = cfg.sandbox.mcp_servers
     assert server.name == "atlas"
     assert server.transport == "streamable-http"
     assert server.headers == {"x_run": "smoke"}
@@ -291,7 +301,7 @@ cwd = "/workspace/agent_workspace"
 """
     )
 
-    (server,) = cfg.environment.mcp_servers
+    (server,) = cfg.sandbox.mcp_servers
     assert server.cwd == "/workspace/agent_workspace"
 
 
@@ -314,7 +324,7 @@ FOO = "${FOO:-bar}"
 """
     )
 
-    (command,) = cfg.environment.setup_commands
+    (command,) = cfg.sandbox.setup_commands
     assert command.command == "python preprocess.py"
     assert command.cwd == "/workspace"
     assert command.timeout_sec == 120
@@ -366,4 +376,108 @@ MODAL_TOKEN_ID = "inline"
 [solution.env]
 MODAL_TOKEN_ID = "nested"
 """
+        )
+
+
+def test_task_config_rejects_renamed_environment_key_with_actionable_message():
+    """The native surface accepts only 'sandbox'; 'environment' is a rename,
+    not an alias, and the error says exactly how to fix the file."""
+    with pytest.raises(
+        ValueError,
+        match=r"the 'environment' key was renamed to 'sandbox' — rename "
+        r"'environment:' to 'sandbox:'",
+    ):
+        TaskConfig.model_validate({"environment": {"cpus": 2}})
+
+
+def test_task_config_rejects_renamed_verifier_environment_key():
+    with pytest.raises(
+        ValueError,
+        match=r"the 'verifier\.environment' key was renamed to "
+        r"'verifier\.sandbox'",
+    ):
+        TaskConfig.model_validate({"verifier": {"environment": {"cpus": 2}}})
+
+
+def test_task_config_toml_converts_legacy_environment_table():
+    """task.toml is the legacy/Harbor surface: '[environment]' converts."""
+    cfg = TaskConfig.model_validate_toml('version = "1.0"\n[environment]\ncpus = 2\n')
+    assert cfg.sandbox.cpus == 2
+
+
+def test_task_config_toml_rejects_both_environment_and_sandbox():
+    with pytest.raises(
+        ValueError,
+        match=r"declares both 'environment' and 'sandbox'",
+    ):
+        TaskConfig.model_validate_toml(
+            'version = "1.0"\n[environment]\ncpus = 2\n[sandbox]\ncpus = 3\n'
+        )
+
+
+def test_task_config_toml_rejects_both_verifier_environment_and_sandbox():
+    with pytest.raises(
+        ValueError,
+        match=r"declares both 'verifier\.environment' and 'verifier\.sandbox'",
+    ):
+        TaskConfig.model_validate_toml(
+            'version = "1.0"\n[verifier.environment]\ncpus = 2\n'
+            "[verifier.sandbox]\ncpus = 3\n"
+        )
+
+
+def test_task_config_dump_emits_sandbox_key():
+    """Emitters follow the rename: dumps carry 'sandbox', never 'environment'."""
+    cfg = TaskConfig.model_validate({"sandbox": {"cpus": 2}})
+    dumped = cfg.model_dump_toml()
+    assert "[sandbox]" in dumped
+    assert "[environment]" not in dumped
+
+
+def test_task_config_rejects_renamed_verifier_environment_mode_key():
+    with pytest.raises(
+        ValueError,
+        match=r"the 'verifier\.environment_mode' key was renamed to "
+        r"'verifier\.sandbox_mode'",
+    ):
+        TaskConfig.model_validate({"verifier": {"environment_mode": "separate"}})
+
+
+def test_task_config_toml_converts_legacy_verifier_environment_mode():
+    cfg = TaskConfig.model_validate_toml(
+        'version = "1.0"\n[verifier]\nenvironment_mode = "separate"\n'
+    )
+    assert cfg.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE
+
+
+def test_task_config_toml_rejects_both_environment_mode_and_sandbox_mode():
+    with pytest.raises(
+        ValueError,
+        match=r"declares both 'verifier\.environment_mode' and "
+        r"'verifier\.sandbox_mode'",
+    ):
+        TaskConfig.model_validate_toml(
+            'version = "1.0"\n[verifier]\nenvironment_mode = "separate"\n'
+            'sandbox_mode = "separate"\n'
+        )
+
+
+def test_task_config_toml_converts_step_verifier_environment_with_indexed_error():
+    cfg = TaskConfig.model_validate_toml(
+        'version = "1.0"\n[[steps]]\nname = "one"\n'
+        "[steps.verifier.environment]\ncpus = 2\n"
+    )
+    assert cfg.steps is not None
+    assert cfg.steps[0].verifier.sandbox is not None
+    assert cfg.steps[0].verifier.sandbox.cpus == 2
+
+    with pytest.raises(
+        ValueError,
+        match=r"declares both 'steps\[0\]\.verifier\.environment' and "
+        r"'steps\[0\]\.verifier\.sandbox'",
+    ):
+        TaskConfig.model_validate_toml(
+            'version = "1.0"\n[[steps]]\nname = "one"\n'
+            "[steps.verifier.environment]\ncpus = 2\n"
+            "[steps.verifier.sandbox]\ncpus = 3\n"
         )

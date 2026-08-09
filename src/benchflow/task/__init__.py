@@ -26,8 +26,8 @@ from benchflow.task.config import (
     TaskOS,
     TpuSpec,
     VerifierConfig,
-    VerifierEnvironmentMode,
     VerifierHardeningConfig,
+    VerifierSandboxMode,
 )
 from benchflow.task.config import (
     AgentConfig as TaskAgentConfig,
@@ -173,7 +173,7 @@ __all__ = [
     "TpuSpec",
     "NetworkMode",
     "TaskOS",
-    "VerifierEnvironmentMode",
+    "VerifierSandboxMode",
     "MultiStepRewardStrategy",
     "PackageInfo",
     "Author",

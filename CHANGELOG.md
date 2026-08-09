@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING (task.md): the `environment:` frontmatter key is renamed to
+  `sandbox:`.** The native task-config surface now accepts only `sandbox:`
+  (plus `verifier.sandbox:` for the verifier's separate sandbox spec and
+  `verifier.sandbox_mode:` for shared/separate selection); `environment:`,
+  `verifier.environment:`, and `verifier.environment_mode:` no longer
+  validate and fail with an actionable message naming the rename. **The
+  one-line fix for existing task.md files is renaming the key.**
+  Legacy/Harbor `task.toml` imports are unaffected: the toml loader
+  converts `[environment]`, `[verifier.environment]`, and
+  `environment_mode` to the `sandbox` spellings (declaring both spellings
+  in one file is an error), and `bench tasks export` emits the inverse —
+  a stock-Harbor `[environment]`-spelled `task.toml`. All native emitters
+  — `model_dump_toml`, `bench tasks migrate`, task scaffolding,
+  skill-eval/trace/adapter task generation, rubric-review wrappers — now
+  write `sandbox`. Python API: the compat property
+  `TaskConfig.environment` is removed (use `TaskConfig.sandbox`),
+  `VerifierConfig.environment`/`environment_mode` became
+  `sandbox`/`sandbox_mode`, and the `VerifierEnvironmentMode` enum is now
+  `VerifierSandboxMode`. The Environment plane
+  (`--environment-manifest`, `benchflow.environment.manifest`, the
+  eval-config `environment:` docker/daytona selector) is a different
+  subsystem and is unchanged.
+
 ## 0.6.7 — 2026-08-09
 
 ### Added
