@@ -521,9 +521,7 @@ class TestCapabilityGating:
         from benchflow.task.config import TaskConfig
         from benchflow.task.runtime_capabilities import validate_task_runtime_support
 
-        config = TaskConfig.model_validate(
-            {"environment": {"network_mode": "no-network"}}
-        )
+        config = TaskConfig.model_validate({"sandbox": {"network_mode": "no-network"}})
         issues = validate_task_runtime_support(config, sandbox="agentcore")
 
         assert any(

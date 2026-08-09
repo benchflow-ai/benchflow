@@ -243,7 +243,7 @@ def _materialize_mcp_atlas(ctx: _SourceContext, output_dir: Path) -> None:
                         "MCP_ATLAS_JUDGE_MODEL": "${MCP_ATLAS_JUDGE_MODEL:-qwen/qwen-plus}",
                     },
                 },
-                "environment": {
+                "sandbox": {
                     "cpus": 4,
                     "memory_mb": 8192,
                     "storage_mb": 10240,

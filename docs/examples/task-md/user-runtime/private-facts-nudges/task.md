@@ -10,7 +10,7 @@ agent:
   timeout_sec: 600
 verifier:
   timeout_sec: 120
-environment:
+sandbox:
   network_mode: no-network
   cpus: 1
   memory_mb: 2048

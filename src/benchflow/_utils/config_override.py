@@ -144,8 +144,9 @@ def apply_config_override(config: Any, overlay: dict[str, Any] | None) -> Any:
 
     # Merge against the FIELD-NAME dump (``by_alias=False``) so overlays use the
     # canonical field names (``agent``, ``sandbox``, …); ``populate_by_name`` lets
-    # re-validation accept them. ``by_alias=True`` would force callers to write the
-    # alias (e.g. ``environment`` for ``sandbox``) — the bug this avoids.
+    # re-validation accept them. (``sandbox`` is now the only spelling — the
+    # legacy ``environment`` alias was removed in the rename — but ``oracle``
+    # still serializes via alias, so the field-name dump stays load-bearing.)
     merged = deep_merge(config.model_dump(by_alias=False), overlay)
     patched = TaskConfig.model_validate(merged)
     logger.debug(

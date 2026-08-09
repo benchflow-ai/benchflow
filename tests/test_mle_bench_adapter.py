@@ -328,7 +328,7 @@ def test_mle_bench_converter_keeps_private_data_out_of_environment(tmp_path: Pat
     config = TaskConfig.model_validate_toml((task_dir / "task.toml").read_text())
     assert config.task is not None
     assert config.task.name == "mle-bench/fake-kaggle"
-    assert config.environment.allow_internet is False
+    assert config.sandbox.allow_internet is False
 
     dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
     assert 'CMD ["sleep", "infinity"]' in dockerfile

@@ -172,8 +172,8 @@ def _append_config_issues(
     )
     _append_network_issue(
         unsupported,
-        path="environment.network_mode",
-        mode=config.environment.network_mode,
+        path="sandbox.network_mode",
+        mode=config.sandbox.network_mode,
         sandbox=sandbox,
     )
     _append_network_issue(
@@ -190,11 +190,11 @@ def _append_config_issues(
             reason="separate verifier environments are parsed but not executed",
             sandbox=sandbox,
         )
-    if config.verifier.environment is not None:
+    if config.verifier.sandbox is not None:
         _issue(
             unsupported,
-            path="verifier.environment",
-            reason="verifier-specific environment materialization is not implemented",
+            path="verifier.sandbox",
+            reason="verifier-specific sandbox materialization is not implemented",
             sandbox=sandbox,
         )
     if config.verifier.service != "main" and sandbox != "docker":
@@ -205,25 +205,25 @@ def _append_config_issues(
             sandbox=sandbox,
         )
 
-    env = config.environment
+    env = config.sandbox
     if env.os == TaskOS.WINDOWS:
         _issue(
             unsupported,
-            path="environment.os",
+            path="sandbox.os",
             reason="Windows task environments are parsed but not executable",
             sandbox=sandbox,
         )
     if env.tpu is not None:
         _issue(
             unsupported,
-            path="environment.tpu",
+            path="sandbox.tpu",
             reason="TPU scheduling is parsed but not implemented",
             sandbox=sandbox,
         )
     if env.gpus or env.gpu_types:
         _issue(
             unsupported,
-            path="environment.gpus",
+            path="sandbox.gpus",
             reason="GPU scheduling is parsed but not capability-gated",
             sandbox=sandbox,
         )
@@ -245,7 +245,7 @@ def _append_workdir_issue(
     if not isinstance(workdir, str) or not workdir.strip():
         _issue(
             unsupported,
-            path="environment.workdir",
+            path="sandbox.workdir",
             reason="configured workdir must be a non-empty absolute path",
             sandbox=sandbox,
         )
@@ -254,7 +254,7 @@ def _append_workdir_issue(
     if not path.is_absolute() or path == PurePosixPath("/"):
         _issue(
             unsupported,
-            path="environment.workdir",
+            path="sandbox.workdir",
             reason="configured workdir must be an absolute non-root path",
             sandbox=sandbox,
         )

@@ -251,7 +251,7 @@ class TestCreateEnvironment:
         env_config = MagicMock()
         task = SimpleNamespace(
             paths=SimpleNamespace(environment_dir=original_env_dir),
-            config=SimpleNamespace(environment=env_config),
+            config=SimpleNamespace(sandbox=env_config),
         )
 
         with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
@@ -264,7 +264,7 @@ class TestCreateEnvironment:
         rollout_paths = MagicMock()
         task = SimpleNamespace(
             paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
-            config=SimpleNamespace(environment=env_config),
+            config=SimpleNamespace(sandbox=env_config),
         )
 
         with patch(
@@ -302,7 +302,7 @@ class TestCreateEnvironment:
         rollout_paths = MagicMock()
         task = SimpleNamespace(
             paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
-            config=SimpleNamespace(environment=env_config),
+            config=SimpleNamespace(sandbox=env_config),
         )
 
         with (

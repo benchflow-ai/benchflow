@@ -111,7 +111,7 @@ async def test_environment_healthcheck_retries_until_ready(monkeypatch) -> None:
     env.exec = exec_healthcheck
     task = SimpleNamespace(
         config=SimpleNamespace(
-            environment=SimpleNamespace(
+            sandbox=SimpleNamespace(
                 healthcheck=SimpleNamespace(
                     command="python /opt/pull_bucket.py",
                     interval_sec=0,
@@ -147,7 +147,7 @@ async def test_environment_healthcheck_fails_closed() -> None:
     env = FakeSetupCommandEnv(return_code=1)
     task = SimpleNamespace(
         config=SimpleNamespace(
-            environment=SimpleNamespace(
+            sandbox=SimpleNamespace(
                 healthcheck=SimpleNamespace(
                     command="false",
                     interval_sec=0,
@@ -170,7 +170,7 @@ async def test_environment_setup_commands_run_before_agent_install() -> None:
     env = FakeSetupCommandEnv()
     task = SimpleNamespace(
         config=SimpleNamespace(
-            environment=SimpleNamespace(
+            sandbox=SimpleNamespace(
                 setup_commands=[
                     SimpleNamespace(
                         command="python preprocess.py",
@@ -205,7 +205,7 @@ async def test_environment_setup_commands_fail_closed_on_nonzero() -> None:
     env = FakeSetupCommandEnv(return_code=2)
     task = SimpleNamespace(
         config=SimpleNamespace(
-            environment=SimpleNamespace(
+            sandbox=SimpleNamespace(
                 setup_commands=[
                     SimpleNamespace(
                         command="python preprocess.py",
@@ -226,13 +226,13 @@ async def test_environment_setup_commands_fail_closed_on_nonzero() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_agent_cwd_uses_configured_workdir() -> None:
-    """environment.workdir becomes the executable agent workspace."""
+    """sandbox.workdir becomes the executable agent workspace."""
     env = MagicMock()
     env.exec = AsyncMock(
         return_value=MagicMock(stdout="/repo\n", stderr="", return_code=0)
     )
     task = SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(workdir="/repo"))
+        config=SimpleNamespace(sandbox=SimpleNamespace(workdir="/repo"))
     )
 
     agent_cwd = await _resolve_agent_cwd(env, task)
@@ -247,13 +247,13 @@ async def test_resolve_agent_cwd_uses_configured_workdir() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_agent_cwd_falls_back_to_container_pwd() -> None:
-    """Tasks without environment.workdir preserve the existing pwd discovery."""
+    """Tasks without sandbox.workdir preserve the existing pwd discovery."""
     env = MagicMock()
     env.exec = AsyncMock(
         return_value=MagicMock(stdout="/app\n", stderr="", return_code=0)
     )
     task = SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(workdir=None))
+        config=SimpleNamespace(sandbox=SimpleNamespace(workdir=None))
     )
 
     agent_cwd = await _resolve_agent_cwd(env, task)
@@ -273,7 +273,7 @@ async def test_resolve_agent_cwd_avoids_root_workspace() -> None:
         ]
     )
     task = SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(workdir=None))
+        config=SimpleNamespace(sandbox=SimpleNamespace(workdir=None))
     )
 
     agent_cwd = await _resolve_agent_cwd(env, task)

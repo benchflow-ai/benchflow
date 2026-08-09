@@ -54,7 +54,7 @@ agent:
   timeout_sec: 300
 verifier:
   timeout_sec: 120
-environment:
+sandbox:
   network_mode: no-network
 {extra}---
 
@@ -135,7 +135,7 @@ def test_validator_reports_allowlist_as_runtime_gap() -> None:
                 "network_mode": "allowlist",
                 "allowed_hosts": ["api.example.com"],
             },
-            "environment": {
+            "sandbox": {
                 "network_mode": "allowlist",
                 "allowed_hosts": ["repo.example.com"],
             },
@@ -146,13 +146,13 @@ def test_validator_reports_allowlist_as_runtime_gap() -> None:
 
     assert [issue.path for issue in issues] == [
         "agent.network_mode",
-        "environment.network_mode",
+        "sandbox.network_mode",
     ]
 
 
 def test_validator_reports_unknown_sandbox_backend() -> None:
     """Runtime-capability validation cannot greenlight typoed backends."""
-    config = TaskConfig.model_validate({"environment": {"network_mode": "no-network"}})
+    config = TaskConfig.model_validate({"sandbox": {"network_mode": "no-network"}})
 
     issues = validate_task_runtime_support(config, sandbox="not-a-backend")
 
@@ -167,13 +167,13 @@ def test_validator_reports_unknown_sandbox_backend() -> None:
 
 def test_validator_reports_apple_container_no_network_gap() -> None:
     """Guards PR #936 against silently launching no-network tasks on Apple Container."""
-    config = TaskConfig.model_validate({"environment": {"network_mode": "no-network"}})
+    config = TaskConfig.model_validate({"sandbox": {"network_mode": "no-network"}})
 
     issues = validate_task_runtime_support(config, sandbox="apple-container")
 
     assert [(issue.path, issue.reason) for issue in issues] == [
         (
-            "environment.network_mode",
+            "sandbox.network_mode",
             "network_mode='no-network' is not enforced by apple-container",
         )
     ]
@@ -410,9 +410,9 @@ def test_sandbox_launch_rejects_unsafe_workdir_before_backend_construction(
 
     assert docker_sandbox.call_count == 0
     message = str(exc_info.value)
-    assert "environment.workdir" in message
+    assert "sandbox.workdir" in message
     assert {feature.path for feature in exc_info.value.features} == {
-        "environment.workdir",
+        "sandbox.workdir",
     }
 
 
@@ -433,7 +433,7 @@ def test_validator_reports_root_workdir_as_runtime_gap(tmp_path: Path) -> None:
     )
 
     assert any(
-        issue.path == "environment.workdir" and "absolute non-root path" in issue.reason
+        issue.path == "sandbox.workdir" and "absolute non-root path" in issue.reason
         for issue in issues
     )
 

@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from benchflow.task.config import TaskConfig
+from benchflow.task.config import TaskConfig, convert_legacy_environment_keys
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,10 @@ def import_task_config_toml(
     opt into this two-pass parse when their job is to ingest foreign tasks.
     """
 
-    raw = tomllib.loads(toml_data)
+    # Foreign task.toml uses Harbor's 'environment' spelling for the sandbox
+    # spec; translate it before validation (and before recording `declared`)
+    # so importers and re-emitters see only the native 'sandbox' key.
+    raw = convert_legacy_environment_keys(tomllib.loads(toml_data))
     try:
         config = TaskConfig.model_validate(copy.deepcopy(raw))
     except ValidationError as exc:

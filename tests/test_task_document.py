@@ -48,7 +48,11 @@ def test_task_document_preserves_demo_task_config_and_prompt() -> None:
 def test_render_task_md_from_legacy_emits_only_declared_frontmatter(
     tmp_path: Path,
 ) -> None:
-    """Migration must not materialize runtime defaults the author never wrote."""
+    """Migration must not materialize runtime defaults the author never wrote.
+
+    The legacy ``[environment]`` table is emitted under the native
+    ``sandbox`` key — migration follows the rename.
+    """
     (tmp_path / "task.toml").write_text(
         '[metadata]\ndifficulty = "easy"\n\n'
         "[agent]\ntimeout_sec = 120\n\n"
@@ -63,7 +67,7 @@ def test_render_task_md_from_legacy_emits_only_declared_frontmatter(
         "schema_version": "1.3",
         "metadata": {"difficulty": "easy"},
         "agent": {"timeout_sec": 120},
-        "environment": {"cpus": 2},
+        "sandbox": {"cpus": 2},
     }
 
 
@@ -117,8 +121,8 @@ Implement fail-closed runtime capability validation.
 
     assert document.config.task is not None
     assert document.config.task.name == "benchflow/runtime-capability-gate"
-    assert document.config.environment.docker_image == "ghcr.io/example/task:latest"
-    assert document.config.environment.network_mode == NetworkMode.NO_NETWORK
+    assert document.config.sandbox.docker_image == "ghcr.io/example/task:latest"
+    assert document.config.sandbox.network_mode == NetworkMode.NO_NETWORK
     assert document.config.verifier.timeout_sec == 1200
     assert document.benchflow["verifier"]["spec"] == "verifier/verifier.md"
     assert document.benchflow["oracle"]["path"] == "oracle/"
@@ -178,7 +182,7 @@ name: override-task
 image: ubuntu:24.04
 agent:
   timeout_sec: 42
-environment:
+sandbox:
   docker_image: ghcr.io/example/explicit:latest
   cpus: 9
 verifier:
@@ -189,8 +193,8 @@ Do it.
     )
 
     assert document.config.agent.timeout_sec == 42
-    assert document.config.environment.docker_image == "ghcr.io/example/explicit:latest"
-    assert document.config.environment.cpus == 9
+    assert document.config.sandbox.docker_image == "ghcr.io/example/explicit:latest"
+    assert document.config.sandbox.cpus == 9
     assert document.config.verifier.timeout_sec == 33
 
 
@@ -234,7 +238,7 @@ agent:
   timeout_sec: 300
 verifier:
   timeout_sec: 120
-environment:
+sandbox:
   cpus: 2
   memory_mb: 4096
 agents:
@@ -278,7 +282,7 @@ Push for clarification when the agent skips order details.
     )
 
     assert document.instruction == "Handle the refund request."
-    assert document.config.environment.memory_mb == 4096
+    assert document.config.sandbox.memory_mb == 4096
     assert document.roles["planner"].capabilities == ["tool-use"]
     assert document.user["stop_rule"] == "done-or-3-rounds"
     assert document.user_persona == (
@@ -330,12 +334,12 @@ verifier:
   pytest_plugins: [pytest_playwright]
   hardening:
     cleanup_conftests: false
-  environment:
+  sandbox:
     docker_image: ghcr.io/example/grader:latest
     cpus: 2
     memory_mb: 1024
     network_mode: no-network
-environment:
+sandbox:
   network_mode: allowlist
   allowed_hosts: [datasets.example.com]
   build_timeout_sec: 600
@@ -399,14 +403,14 @@ Solve the parity task.
     assert cfg.agent.network_mode == NetworkMode.ALLOWLIST
     assert cfg.verifier.environment_mode == VerifierEnvironmentMode.SEPARATE
     assert cfg.verifier.hardening.cleanup_conftests is False
-    assert cfg.verifier.environment is not None
-    assert cfg.verifier.environment.allow_internet is False
-    assert cfg.environment.network_mode == NetworkMode.ALLOWLIST
-    assert cfg.environment.os == TaskOS.LINUX
-    assert cfg.environment.tpu is not None
-    assert cfg.environment.tpu.chip_count == 8
-    assert cfg.environment.healthcheck is not None
-    assert cfg.environment.healthcheck.retries == 5
+    assert cfg.verifier.sandbox is not None
+    assert cfg.verifier.sandbox.allow_internet is False
+    assert cfg.sandbox.network_mode == NetworkMode.ALLOWLIST
+    assert cfg.sandbox.os == TaskOS.LINUX
+    assert cfg.sandbox.tpu is not None
+    assert cfg.sandbox.tpu.chip_count == 8
+    assert cfg.sandbox.healthcheck is not None
+    assert cfg.sandbox.healthcheck.retries == 5
     assert cfg.solution.env == {"SOLUTION_MODE": "oracle"}
     assert cfg.multi_step_reward_strategy == MultiStepRewardStrategy.FINAL
     assert cfg.artifacts[0].source == "/logs/artifacts"
@@ -420,7 +424,7 @@ def test_task_document_rejects_unknown_task_config_fields() -> None:
     with pytest.raises(ValueError, match="unknown_harbor_field"):
         TaskDocument.from_text(
             """---
-environment:
+sandbox:
   unknown_harbor_field: true
 ---
 ## prompt
@@ -568,7 +572,7 @@ metadata:
   category: demo
 agent:
   timeout_sec: 120
-environment:
+sandbox:
   cpus: 1
 ---
 ## prompt
@@ -1254,3 +1258,40 @@ def test_sidecar_prompt_files_take_precedence_over_legacy_headings(
 
     assert doc.instruction == "Base prompt."
     assert doc.role_prompts == {"reviewer": "File version wins."}
+
+
+def test_task_document_rejects_renamed_environment_frontmatter_key() -> None:
+    """task.md is the native format: only 'sandbox:' validates, and the
+    'environment:' failure names the rename instead of a bare extra-key error."""
+    with pytest.raises(
+        ValueError,
+        match=r"the 'environment' key was renamed to 'sandbox' — rename "
+        r"'environment:' to 'sandbox:'",
+    ):
+        TaskDocument.from_text(
+            """---
+version: "1.0"
+environment:
+  cpus: 2
+---
+Do it.
+"""
+        )
+
+
+def test_task_document_rejects_renamed_verifier_environment_frontmatter_key() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"the 'verifier\.environment' key was renamed to "
+        r"'verifier\.sandbox'",
+    ):
+        TaskDocument.from_text(
+            """---
+version: "1.0"
+verifier:
+  environment:
+    cpus: 2
+---
+Do it.
+"""
+        )

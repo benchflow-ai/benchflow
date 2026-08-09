@@ -31,7 +31,7 @@ _TASK_AUTHORING_PROFILES: dict[str, dict[str, Any]] = {
             "timeout_sec": 1200,
             "user": "root",
         },
-        "environment": {
+        "sandbox": {
             "docker_image": "ubuntu:24.04",
             "network_mode": "no-network",
             "cpus": 4,
@@ -52,7 +52,7 @@ _TASK_AUTHORING_PROFILES: dict[str, dict[str, Any]] = {
         "metadata": {
             "category": "harbor-compatible",
         },
-        "environment": {
+        "sandbox": {
             "cpus": 1,
             "memory_mb": 2048,
         },

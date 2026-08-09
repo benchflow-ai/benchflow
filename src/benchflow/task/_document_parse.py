@@ -23,7 +23,7 @@ from benchflow.task._document_normalize import (
     _mapping,
     normalize_task_document_frontmatter,
 )
-from benchflow.task.config import TaskConfig
+from benchflow.task.config import TaskConfig, convert_legacy_environment_keys
 from benchflow.task.imports import import_task_config_toml
 
 TASK_DOCUMENT_FILENAME = "task.md"
@@ -124,9 +124,11 @@ def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
 
     ``frontmatter`` may be a parsed config mapping or raw ``task.toml`` text.
     A legacy ``solution`` block is emitted as the native ``oracle`` block when no
-    ``oracle`` block is present; declaring both is rejected. Reserved section
-    headings embedded in ``instruction`` are escaped so they round-trip as prompt
-    text instead of fracturing the document into extra sections.
+    ``oracle`` block is present, and a legacy ``environment`` table is emitted
+    as the native ``sandbox`` key; declaring both spellings of either pair is
+    rejected. Reserved section headings embedded in ``instruction`` are escaped
+    so they round-trip as prompt text instead of fracturing the document into
+    extra sections.
     """
 
     data = (
@@ -134,6 +136,10 @@ def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
         if isinstance(frontmatter, str)
         else deepcopy(frontmatter)
     )
+    # Emitters follow the sandbox rename: legacy toml input (or a legacy
+    # mapping) is translated so rendered task.md frontmatter only ever
+    # carries the native 'sandbox' spelling.
+    data = convert_legacy_environment_keys(data)
     if "solution" in data:
         if "oracle" in data:
             raise ValueError(

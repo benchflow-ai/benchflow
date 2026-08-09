@@ -38,7 +38,7 @@ def _wire_fake_planes(trial: Rollout) -> MagicMock:
 
 def test_task_disallows_internet_from_environment_config():
     task = SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(allow_internet=False))
+        config=SimpleNamespace(sandbox=SimpleNamespace(allow_internet=False))
     )
 
     assert _task_disallows_internet(task) is True
@@ -88,7 +88,7 @@ def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
     original_env.model_copy.return_value = copied_env
     task = SimpleNamespace(
         paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
-        config=SimpleNamespace(environment=original_env),
+        config=SimpleNamespace(sandbox=original_env),
     )
 
     with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
@@ -113,7 +113,7 @@ def test_create_environment_keeps_oracle_network_policy(tmp_path):
     original_env.allow_internet = False
     task = SimpleNamespace(
         paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
-        config=SimpleNamespace(environment=original_env),
+        config=SimpleNamespace(sandbox=original_env),
     )
 
     with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
@@ -142,7 +142,7 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
     trial._agent_cwd = "/app"
     trial._phase = "idle"
     trial._task = SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(allow_internet=False))
+        config=SimpleNamespace(sandbox=SimpleNamespace(allow_internet=False))
     )
     planes = _wire_fake_planes(trial)
     captured = {}
@@ -251,7 +251,7 @@ async def test_connect_as_applies_hard_web_policy_to_role_agent(tmp_path):
 def test_task_allows_internet_when_explicitly_true():
     """allow_internet=True should not trigger web-tool disabling."""
     task = SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(allow_internet=True))
+        config=SimpleNamespace(sandbox=SimpleNamespace(allow_internet=True))
     )
     assert _task_disallows_internet(task) is False
 
@@ -365,7 +365,7 @@ def test_create_environment_does_not_flip_when_internet_allowed(tmp_path):
     original_env.allow_internet = True
     task = SimpleNamespace(
         paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
-        config=SimpleNamespace(environment=original_env),
+        config=SimpleNamespace(sandbox=original_env),
     )
 
     with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
@@ -393,7 +393,7 @@ def test_task_toml_allow_internet_false_parsed_correctly(tmp_path):
     (task_dir / "instruction.md").write_text("Test instruction.")
 
     task = Task(task_dir)
-    assert task.config.environment.allow_internet is False
+    assert task.config.sandbox.allow_internet is False
     assert _task_disallows_internet(task) is True
 
 
@@ -409,7 +409,7 @@ def test_task_toml_allow_internet_true_parsed_correctly(tmp_path):
     (task_dir / "instruction.md").write_text("Test instruction.")
 
     task = Task(task_dir)
-    assert task.config.environment.allow_internet is True
+    assert task.config.sandbox.allow_internet is True
     assert _task_disallows_internet(task) is False
 
 

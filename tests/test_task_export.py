@@ -71,7 +71,7 @@ def _write_native_task(task_dir: Path) -> None:
               timeout_sec: 300
             verifier:
               timeout_sec: 120
-            environment:
+            sandbox:
               network_mode: no-network
             agents:
               roles:
@@ -314,7 +314,7 @@ def test_migrate_minimal_frontmatter_round_trips_equivalent_config(
 
     text = result.task_md.read_text()
     frontmatter = yaml.safe_load(text.split("---\n")[1])
-    assert sorted(frontmatter) == ["agent", "environment", "metadata", "schema_version"]
+    assert sorted(frontmatter) == ["agent", "metadata", "sandbox", "schema_version"]
     assert "judge" not in text
     document = TaskDocument.from_path(result.task_md)
     assert document.config.model_dump() == (
@@ -345,8 +345,8 @@ def test_export_rehydrates_preserved_foreign_extensions(tmp_path: Path) -> None:
     task_md = task_dir / "task.md"
     task_md_text = task_md.read_text()
     task_md_text = task_md_text.replace(
-        "environment:\n  network_mode: no-network\n",
-        """environment:
+        "sandbox:\n  network_mode: no-network\n",
+        """sandbox:
   network_mode: no-network
 steps:
   - name: phase-one
@@ -359,13 +359,13 @@ steps:
   compat:
     source: harbor
     extra_paths:
-      - environment.modal.image
       - harbor_ext
+      - sandbox.modal.image
       - steps[0].runner
       - verifier.reward_kit.metric
     extra:
       harbor_ext: kept
-      environment:
+      sandbox:
         modal:
           image: registry.example.com/task:latest
       steps:
@@ -382,15 +382,13 @@ steps:
 
     exported = tomllib.loads((out_dir / "task.toml").read_text())
     assert exported["harbor_ext"] == "kept"
-    assert exported["environment"]["modal"] == {
-        "image": "registry.example.com/task:latest"
-    }
+    assert exported["sandbox"]["modal"] == {"image": "registry.example.com/task:latest"}
     assert exported["steps"][0]["name"] == "phase-one"
     assert exported["steps"][0]["runner"] == "harbor-step-runner"
     assert exported["verifier"]["reward_kit"] == {"metric": "exact_match"}
     assert report.restored_extension_paths == [
-        "environment.modal.image",
         "harbor_ext",
+        "sandbox.modal.image",
         "steps[0].runner",
         "verifier.reward_kit.metric",
     ]
@@ -487,8 +485,8 @@ image = "registry.example.com/task:latest"
 
     assert report.status == "lossless"
     assert report.restored_extension_paths == [
-        "environment.modal.image",
         "harbor_ext",
+        "sandbox.modal.image",
     ]
 
 

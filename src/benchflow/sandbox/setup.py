@@ -663,13 +663,13 @@ def _create_sandbox_environment(
 
     When ``environment_manifest`` is provided, its declared controls take
     effect at sandbox-construction time: the manifest's runnable ``image``
-    overrides ``task.config.environment.docker_image`` (so the manifest —
+    overrides ``task.config.sandbox.docker_image`` (so the manifest —
     not the task's local Dockerfile — drives image selection), and the
     manifest's ``task_selection`` + ``forward_env`` are resolved into a
     persistent env overlay so the values reach the container's entrypoint
     via compose and every subsequent ``sandbox.exec`` call.
     """
-    env_config = task.config.environment
+    env_config = task.config.sandbox
     environment_dir = task_path / "environment"
     if not environment_dir.exists():
         environment_dir = task.paths.environment_dir
@@ -698,7 +698,7 @@ def _create_sandbox_environment(
             # Image control point — manifest's run target wins over task.toml's
             # docker_image so a benchmark author can pin the runtime image
             # from the manifest without editing every task.toml.
-            if env_config is task.config.environment:
+            if env_config is task.config.sandbox:
                 env_config = env_config.model_copy(deep=True)
             env_config.docker_image = manifest_image
         manifest_env = resolve_manifest_runtime_env(

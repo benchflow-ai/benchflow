@@ -91,7 +91,7 @@ def test_http_spec_carries_url_and_type() -> None:
 
 def _task_with_mcp(*configs: MCPServerConfig) -> SimpleNamespace:
     return SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(mcp_servers=list(configs)))
+        config=SimpleNamespace(sandbox=SimpleNamespace(mcp_servers=list(configs)))
     )
 
 
@@ -255,7 +255,7 @@ def test_task_mcp_specs_handles_absent_config() -> None:
     assert _task_mcp_specs(None) == []
     assert (
         _task_mcp_specs(
-            SimpleNamespace(config=SimpleNamespace(environment=SimpleNamespace()))
+            SimpleNamespace(config=SimpleNamespace(sandbox=SimpleNamespace()))
         )
         == []
     )

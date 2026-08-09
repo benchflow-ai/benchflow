@@ -93,7 +93,7 @@ def _parse_workspace(
     target: str | None = None
     if value is None:
         task = Task(task_dir)
-        target = task.config.environment.workdir or "/app"
+        target = task.config.sandbox.workdir or "/app"
     elif isinstance(value, dict):
         mapping = cast(dict[str, object], value)
         source_value = mapping.get("source", _WORKSPACE_SOURCE_CURRENT_WORKTREE)
@@ -105,7 +105,7 @@ def _parse_workspace(
         target_value = mapping.get("target")
         if target_value is not None and not isinstance(target_value, str):
             return None, ["acceptance-live workspace.target must be a string"]
-        target = target_value or Task(task_dir).config.environment.workdir or "/app"
+        target = target_value or Task(task_dir).config.sandbox.workdir or "/app"
     else:
         return None, ["acceptance-live workspace must be a mapping when declared"]
 

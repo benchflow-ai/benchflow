@@ -39,7 +39,7 @@ async def test_environment_setup_host_lock_serializes_commands(
         host_lock="shared-notion-oauth",
     )
     task = SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(setup_commands=[command]))
+        config=SimpleNamespace(sandbox=SimpleNamespace(setup_commands=[command]))
     )
 
     await asyncio.gather(
@@ -82,7 +82,7 @@ async def test_environment_setup_command_captures_directory_to_env(
         capture_dir_b64_env_file_var="CAPTURE_DOTENV_PATH",
     )
     task = SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(setup_commands=[command]))
+        config=SimpleNamespace(sandbox=SimpleNamespace(setup_commands=[command]))
     )
 
     await _run_environment_setup_commands(Env(), task)
@@ -134,7 +134,7 @@ async def test_environment_setup_host_lock_covers_capture(tmp_path, monkeypatch)
         capture_dir_b64_env_file_var=None,
     )
     task = SimpleNamespace(
-        config=SimpleNamespace(environment=SimpleNamespace(setup_commands=[command]))
+        config=SimpleNamespace(sandbox=SimpleNamespace(setup_commands=[command]))
     )
 
     await asyncio.gather(

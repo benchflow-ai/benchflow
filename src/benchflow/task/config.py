@@ -30,6 +30,65 @@ ORG_NAME_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
 _NETWORK_HOST_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _ENV_VAR_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
+_ENVIRONMENT_RENAMED_ERROR = (
+    "the 'environment' key was renamed to 'sandbox' — rename 'environment:' "
+    "to 'sandbox:' (legacy task.toml imports convert '[environment]' "
+    "automatically)"
+)
+_VERIFIER_ENVIRONMENT_RENAMED_ERROR = (
+    "the 'verifier.environment' key was renamed to 'verifier.sandbox' — "
+    "rename the key (legacy task.toml imports convert "
+    "'[verifier.environment]' automatically)"
+)
+
+
+def convert_legacy_environment_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """Rename legacy Harbor ``environment`` tables to native ``sandbox``.
+
+    ``task.toml`` is a foreign/legacy format (Harbor's), so its
+    ``environment`` spelling is translated here at the import boundary
+    instead of being modeled as an alias on the native schema. That keeps
+    exactly one spelling — ``sandbox`` — in the native surface (task.md
+    frontmatter, Python constructors) while Harbor and SkillsBench task.toml
+    corpora keep loading unchanged. Declaring both spellings in one file is
+    a hard error rather than a silent merge.
+
+    Converts the top-level ``environment`` table, ``verifier.environment``,
+    and ``steps[*].verifier.environment``. Mutates ``data`` in place and
+    returns it; callers pass freshly parsed or copied mappings.
+    """
+
+    def rename(table: Any, *, legacy: str, native: str, context: str) -> None:
+        if not isinstance(table, dict) or legacy not in table:
+            return
+        if native in table:
+            raise ValueError(
+                f"task config declares both '{context}{legacy}' and "
+                f"'{context}{native}' — they are the same section "
+                f"('{legacy}' is the legacy Harbor spelling); keep only "
+                f"'{context}{native}'"
+            )
+        table[native] = table.pop(legacy)
+
+    rename(data, legacy="environment", native="sandbox", context="")
+    rename(
+        data.get("verifier"),
+        legacy="environment",
+        native="sandbox",
+        context="verifier.",
+    )
+    steps = data.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if isinstance(step, dict):
+                rename(
+                    step.get("verifier"),
+                    legacy="environment",
+                    native="sandbox",
+                    context="steps.verifier.",
+                )
+    return data
+
 
 class TaskConfigModel(BaseModel):
     """Base model for task schema sections.
@@ -314,9 +373,9 @@ class VerifierConfig(TaskConfigModel):
             "or a dedicated verifier environment ('separate')."
         ),
     )
-    environment: SandboxConfig | None = Field(
+    sandbox: SandboxConfig | None = Field(
         default=None,
-        description="Optional separate verifier environment configuration.",
+        description="Optional separate verifier sandbox configuration.",
     )
     service: str = Field(
         default="main",
@@ -367,16 +426,23 @@ class VerifierConfig(TaskConfigModel):
         # the reward contract in benchflow.rewards.validation.
         return None if value is None else validate_declared_reward_range(value)
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_renamed_environment_key(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "environment" in data:
+            raise ValueError(_VERIFIER_ENVIRONMENT_RENAMED_ERROR)
+        return data
+
     @model_validator(mode="after")
     def validate_verifier_environment(self) -> VerifierConfig:
         _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
         if (
             self.environment_mode == VerifierEnvironmentMode.SHARED
-            and self.environment is not None
+            and self.sandbox is not None
         ):
             raise ValueError(
                 "[verifier].environment_mode='shared' is incompatible with "
-                "[verifier.environment]"
+                "[verifier.sandbox]"
             )
         return self
 
@@ -809,11 +875,12 @@ class StepConfig(TaskConfigModel):
 
 
 class TaskConfig(TaskConfigModel):
-    """Full task.toml configuration — the task specification ($T$).
+    """Full task configuration — the task specification ($T$).
 
-    Maps task.toml sections to BenchFlow's RL-aligned models.
-    The ``environment`` key in task.toml is loaded into ``sandbox``
-    for internal use, maintaining file-level backward compatibility.
+    Maps task.md frontmatter / task.toml sections to BenchFlow's RL-aligned
+    models. The native key for the sandbox spec is ``sandbox``; the legacy
+    Harbor ``environment`` spelling is only accepted on the task.toml import
+    path, where :func:`convert_legacy_environment_keys` translates it.
     """
 
     schema_version: str = "1.3"
@@ -824,11 +891,7 @@ class TaskConfig(TaskConfigModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     verifier: VerifierConfig = Field(default_factory=VerifierConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
-    # Stored as 'sandbox' internally, but loaded from 'environment' key in TOML
-    sandbox: SandboxConfig = Field(
-        default_factory=SandboxConfig,
-        alias="environment",
-    )
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     solution: SolutionConfig = Field(
         default_factory=SolutionConfig,
         serialization_alias="oracle",
@@ -854,6 +917,8 @@ class TaskConfig(TaskConfigModel):
     @classmethod
     def handle_version_rename(cls, data: Any) -> Any:
         if isinstance(data, dict):
+            if "environment" in data:
+                raise ValueError(_ENVIRONMENT_RENAMED_ERROR)
             if "oracle" in data and "solution" in data:
                 raise ValueError(
                     "Task config cannot contain both 'oracle' and legacy "
@@ -890,7 +955,12 @@ class TaskConfig(TaskConfigModel):
 
     @classmethod
     def model_validate_toml(cls, toml_data: str) -> TaskConfig:
-        toml_dict = tomllib.loads(toml_data)
+        # task.toml is the legacy/Harbor surface, so the loader translates
+        # the foreign 'environment' spelling to native 'sandbox' before
+        # validation. This is deliberate format translation, not an alias:
+        # the native schema (task.md frontmatter, direct model_validate)
+        # accepts only 'sandbox'.
+        toml_dict = convert_legacy_environment_keys(tomllib.loads(toml_data))
         return cls.model_validate(toml_dict)
 
     @property
@@ -917,8 +987,3 @@ class TaskConfig(TaskConfigModel):
         if isinstance(memory, dict) and not memory:
             public["verifier"].pop("memory", None)
         return tomli_w.dumps(public)
-
-    @property
-    def environment(self) -> SandboxConfig:
-        """Backward-compat alias: task.config.environment → task.config.sandbox."""
-        return self.sandbox

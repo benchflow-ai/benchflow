@@ -508,7 +508,7 @@ def _toolathlon_task_toml(
         "metadata": metadata,
         "agent": {"timeout_sec": 1800.0},
         "verifier": {"timeout_sec": 900.0},
-        "environment": environment,
+        "sandbox": environment,
     }
 
 

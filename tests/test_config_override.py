@@ -24,7 +24,7 @@ def _cfg() -> TaskConfig:
             "version": "1.0",
             "agent": {"timeout_sec": 300},
             "verifier": {"timeout_sec": 120},
-            "environment": {"cpus": 1, "memory_mb": 2048},
+            "sandbox": {"cpus": 1, "memory_mb": 2048},
         }
     )
 
@@ -138,8 +138,9 @@ def test_apply_rejects_blank_agent_prompt_prefix():
 
 
 def test_apply_overrides_sandbox_by_field_name():
-    # Regression: merging against by_alias=True made `sandbox` (alias
-    # `environment`) un-overridable via its field name. Must work now.
+    # Regression: merging against by_alias=True once made `sandbox` (then
+    # aliased to `environment`) un-overridable via its field name. `sandbox`
+    # is now the only spelling; overriding by field name must keep working.
     out = apply_config_override(_cfg(), {"sandbox": {"cpus": 8}})
     assert out.sandbox.cpus == 8
 

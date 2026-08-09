@@ -237,7 +237,7 @@ _MCP_TRANSPORT_TO_ACP_TYPE = {
 
 
 def _task_mcp_specs(task: Any) -> list[McpServerSpec]:
-    """Map the task's ``[[environment.mcp_servers]]`` entries to ACP specs.
+    """Map the task's ``[[sandbox.mcp_servers]]`` entries to ACP specs.
 
     This is the composition seam between the task-config layer
     (``MCPServerConfig``) and the ACP protocol layer (``McpServerSpec``) — kept
@@ -247,7 +247,7 @@ def _task_mcp_specs(task: Any) -> list[McpServerSpec]:
     — reachable by the agent. Returns ``[]`` when the task declares none,
     preserving the historical default of attaching no MCP servers.
     """
-    env_config = getattr(getattr(task, "config", None), "environment", None)
+    env_config = getattr(getattr(task, "config", None), "sandbox", None)
     configs = getattr(env_config, "mcp_servers", None) or []
     return [
         McpServerSpec(
@@ -503,7 +503,7 @@ async def _run_one_environment_setup_command(
 async def _run_environment_setup_commands(env: Any, task: Any) -> None:
     """Run task-authored setup commands after sandbox start, before agent install."""
 
-    env_config = getattr(getattr(task, "config", None), "environment", None)
+    env_config = getattr(getattr(task, "config", None), "sandbox", None)
     commands = list(getattr(env_config, "setup_commands", []) or [])
     if not commands:
         return
@@ -539,7 +539,7 @@ async def _run_environment_setup_commands(env: Any, task: Any) -> None:
 async def _run_environment_healthcheck(env: Any, task: Any) -> None:
     """Gate rollout startup on the task-authored environment healthcheck."""
 
-    env_config = getattr(getattr(task, "config", None), "environment", None)
+    env_config = getattr(getattr(task, "config", None), "sandbox", None)
     healthcheck = getattr(env_config, "healthcheck", None)
     if healthcheck is None:
         return
@@ -893,7 +893,7 @@ class Rollout:
             ),
             disallow=self._disallow_web_tools,
         )
-        env_config = getattr(getattr(self._task, "config", None), "environment", None)
+        env_config = getattr(getattr(self._task, "config", None), "sandbox", None)
         task_skill_policy = resolve_task_skill_policy(
             task_path=cfg.task_path,
             skill_mode=cfg.recorded_skill_mode,
