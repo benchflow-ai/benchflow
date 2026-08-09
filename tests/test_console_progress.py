@@ -75,6 +75,28 @@ def test_heartbeat_silent_when_disabled(monkeypatch, caplog):
     assert not [r for r in caplog.records if "tool calls" in r.message]
 
 
+def test_progress_snapshot_exposes_heartbeat_counters(monkeypatch):
+    """The dashboard's activity cell polls the same counters the line logs."""
+    monkeypatch.setenv("BENCHFLOW_PROGRESS", "off")
+    s = ACPSession("sid")
+    assert s.progress_snapshot() == (0, "")
+    _drive_tool_call(s, "tc1")
+    assert s.progress_snapshot() == (1, "IPython cell")
+
+
+def test_progress_snapshot_whitespace_only_title(monkeypatch):
+    """A whitespace-only title strips to "" instead of raising IndexError
+
+    (truthy title -> strip() -> "" -> splitlines() == [] under the old code).
+    """
+    monkeypatch.setenv("BENCHFLOW_PROGRESS", "off")
+    s = ACPSession("sid")
+    s.handle_update(
+        {"sessionUpdate": "tool_call", "toolCallId": "tc1", "title": "   ", "kind": ""}
+    )
+    assert s.progress_snapshot() == (1, "")
+
+
 def test_heartbeat_silent_outside_prompt(monkeypatch, caplog):
     """No heartbeat before the first prompt or after mark_prompt_end."""
     monkeypatch.setenv("BENCHFLOW_PROGRESS", "on")

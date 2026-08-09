@@ -45,6 +45,9 @@ exactly as for built-in agents, including the gateway's raw LLM trace.
 
 Details worth knowing:
 
+- `DEEPSEEK_BASE_URL` is optional: unset, `deepseek/*` models default to the
+  public OpenAI-compatible endpoint (`https://api.deepseek.com/v1`); set it
+  only to route to a different OpenAI-compatible deployment.
 - The fetch happens **at most once per process**, only on a resolution miss,
   and only fills gaps — it never shadows a built-in or already-registered
   agent name.
