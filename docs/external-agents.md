@@ -32,9 +32,12 @@ bench eval run --tasks-dir tasks/edit-pdf --agent prime-agent \
   --model deepseek/deepseek-v4-flash --sandbox daytona
 ```
 
-Expect a quiet stretch while the agent works (its events stream to
-`trajectory/acp_trajectory.jsonl` in the rollout dir, not the console) — the
-console picks back up at the verifier and the `✓ Score` line.
+While the agent works, single-concurrency runs print a throttled progress
+heartbeat about every 45 seconds (`… 6.2min, 12 tool calls (last: …)`);
+`--quiet` suppresses it, and multi-concurrency jobs gate it off by default.
+The full event stream lands in `trajectory/acp_trajectory.jsonl` in the
+rollout dir; the console picks back up at the verifier and the `✓ Score`
+line.
 
 The first rollout runs the agent's `install_cmd` inside the sandbox (a few
 minutes for agents that bootstrap toolchains); artifacts land in the jobs dir
@@ -99,11 +102,18 @@ error message if its name is later requested.
 
 ## Precedence
 
-1. Built-in registry (core `AGENTS`) — never shadowed by anything below.
-2. `BENCHFLOW_AGENTS_DIR` manifests — merged at import.
+1. Built-in registry (core `AGENTS`).
+2. `BENCHFLOW_AGENTS_DIR` manifests — merged at import; a collision with an
+   existing agent name or alias is a hard error, so manifests never shadow
+   built-ins.
 3. Entry-point plugin packages — loaded at import, after the manifest merge.
+   These register through plain `register_agent`, which overwrites by name:
+   a plugin **can** replace a built-in (or manifest-registered) agent that
+   shares its name. Well-behaved plugins skip names the registry already owns
+   (as the acp-registry package does).
 4. Remote autoload (`BENCHFLOW_AGENTS_SOURCE`, default `benchflow-ai/agents@main`)
-   — consulted last, once, only for names still unknown at resolution time.
+   — consulted last, once, only for names still unknown at resolution time;
+   it fills gaps and never overwrites.
 
 Manifest capabilities are deliberately bounded: a `manifest.toml` is data-only
 (install/launch commands, env mapping, model-routing hints — the

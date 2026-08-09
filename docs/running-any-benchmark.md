@@ -101,7 +101,7 @@ bench tasks check <dir>
 ```
 
 That is the structural gate (`check_task` in
-[`_utils/task_authoring.py`](../src/benchflow/_utils/task_authoring.py)): it
+[`_utils/task_authoring/`](../src/benchflow/_utils/task_authoring/__init__.py)): it
 rejects unreplaced `[REPLACE: …]` placeholders, missing required files, and a
 verifier package with no runnable entrypoint. This flow records no
 `parity_experiment.json` and runs no parity gate — it is a faithful in-place

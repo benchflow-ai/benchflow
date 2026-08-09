@@ -72,7 +72,7 @@ so typos fail at parse time instead of becoming silently-ignored config:
 | Key | Meaning |
 |---|---|
 | `schema_version` (alias `version`) | Config schema version, currently `"1.3"` |
-| `task` | Package identity: `name` (`org/name` format), `description`, `authors`, `keywords` |
+| `task` | Package identity: `name` (`org/name` format), `description`, `authors`, `keywords`, `version` (informational Harbor 1.3 field, stored verbatim) |
 | `metadata` | Freeform mapping — difficulty, category, tags, anything descriptive |
 | `agent` | Agent run policy: `timeout_sec`, `user`, `network_mode`, `allowed_hosts` |
 | `verifier` | Verifier run policy: `timeout_sec` (default 600), `env`, `user`, `service`, … |

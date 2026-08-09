@@ -23,23 +23,27 @@ The user may say `/docs-review` with an optional argument:
 ### Full review (all seven checks)
 
 - `docs/architecture.md`
-- `docs/cli-reference.md`
-- `docs/task-authoring.md`
+- `docs/reference/cli.md`
+- `docs/reference/python-api.md`
 - `docs/getting-started.md`
-- `docs/labs.md`
+- `docs/task-authoring-task-md.md`
+- `docs/task-authoring.md`
 - `README.md`
 - `AGENTS.md`
 
 ### Light-touch (checks 1, 2, 6 only — drift, stale refs, link integrity)
 
-- `.claude/dev-docs/harden-sandbox.md` — sandbox hardening notes; verify
-  referenced files / knobs / env vars still exist.
-- `.claude/dev-docs/tested-agents.md` — matrix of agent × model × provider;
-  verify names still appear in `agents/registry.py` and `agents/providers.py`.
+Every other top-level `docs/*.md` — e.g. `docs/concepts.md`,
+`docs/environment-plane.md`, `docs/external-agents.md`,
+`docs/running-any-benchmark.md`, `docs/running-benchmarks.md`,
+`docs/sandbox-hardening.md`, `docs/skill-eval.md`, `docs/task-standard.md`,
+`docs/use-cases.md`, … (enumerate with `ls docs/*.md` at review time).
 
 ### Skipped entirely
 
 - Anything matching `*-notes.md`, `*-archive.md`.
+- `docs/examples/` (task fixtures) and `docs/reports/` (dated reports —
+  they reflect state at the time they were written).
 - `.smoke-jobs/`, `trajectories/`, `examples/`, `fixtures/` — generated or
   sample output, not documentation.
 
@@ -54,14 +58,13 @@ entries. Cross-check:
   `ls src/benchflow/cli/` against trees in `architecture.md` and `Key
   modules` blocks in README/AGENTS.
 - Module descriptions — does `sdk.py` still own what the doc claims?
-  Does `job.py` still drive the run loop? Spot-check first ~40 lines of
-  each named module.
+  Does `evaluation.py` still drive the batch run loop? Spot-check first
+  ~40 lines of each named module.
 - **Registry drift** (high-churn surface). For each agent/provider name
   mentioned in docs, grep `src/benchflow/agents/registry.py` and
   `src/benchflow/agents/providers.py`. A name in docs but not in the
   registry dict → stale; a name in the registry but not documented where
-  expected (`docs/architecture.md` matrix, `.claude/dev-docs/tested-agents.md`)
-  → gap.
+  expected (e.g. `docs/architecture.md`) → gap.
 - Env vars mentioned in docs (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
   `GROQ_API_KEY`, `BENCHFLOW_*`, etc.) — still referenced in
   `src/benchflow/`?
@@ -90,11 +93,10 @@ Grep for implementation-tracking words:
 
 For each hit, ask: is this describing the *design* (stays true) or
 *in-flight work* (rots)? In-flight language belongs in commit messages,
-PR descriptions, or `.claude/dev-docs/*-notes.md`, not user-facing reference
-docs.
+PR descriptions, or dated notes/reports, not user-facing reference docs.
 
-**Suppress for `.claude/dev-docs/*-notes.md`** — dated refactor notes
-legitimately carry status language.
+**Suppress for `*-notes.md` and `docs/reports/`** — dated refactor notes
+and reports legitimately carry status language.
 
 ### 4. Duplication
 
@@ -107,28 +109,26 @@ for benchflow:
 - **Registry examples** — one copy in `architecture.md` + one in
   `task-authoring.md` is OK if they illustrate distinct use cases; two
   near-identical `register_agent(...)` blocks is not.
-- **Agent × Model × Provider matrix** — live in
-  `.claude/dev-docs/tested-agents.md`; `architecture.md` should link, not
-  duplicate.
 - **Env var reference** — should live in `docs/getting-started.md` or
-  `docs/cli-reference.md`; not re-listed in README.
+  `docs/reference/cli.md`; not re-listed in README.
 
 Target state: `architecture.md` is the sole deep reference for internals,
-`cli-reference.md` for commands, `task-authoring.md` for task YAML /
-verifier shape. README and AGENTS.md link to them instead of duplicating.
+`reference/cli.md` for commands, `task-authoring-task-md.md` for task
+frontmatter / verifier shape. README and AGENTS.md link to them instead of
+duplicating.
 
 ### 5. Cross-doc alignment
 
-- `docs/cli-reference.md` flag list ↔ actual Typer definitions in
+- `docs/reference/cli.md` flag list ↔ actual Typer definitions in
   `src/benchflow/cli/`. Every documented flag resolves; every command in
-  the CLI has a documented entry (or an intentional hide).
-- `docs/task-authoring.md` YAML schema ↔ `TaskConfig` / loader in
-  `src/benchflow/tasks.py`. Every field has a loader path.
-- `docs/architecture.md` "Error Taxonomy" / "Trajectory event format"
-  sections ↔ the actual dataclass fields in `src/benchflow/models.py`
-  and emit sites in `job.py` / `_trajectory.py`.
-- `docs/architecture.md` ACP Protocol section ↔ `src/benchflow/acp/` and
-  `_acp_run.py`.
+  the CLI has a documented entry (or an intentional hide). CI already pins
+  part of this via `tests/test_cli_docs_drift.py`.
+- `docs/task-authoring-task-md.md` frontmatter schema ↔ `TaskConfig` in
+  `src/benchflow/task/config.py`. Every field has a loader path.
+- `docs/architecture.md` "Error Taxonomy" / trajectory sections ↔ the
+  actual dataclass fields in `src/benchflow/models.py` and the emit sites
+  in `src/benchflow/rollout/` and `src/benchflow/trajectories/`.
+- `docs/architecture.md` ACP Protocol section ↔ `src/benchflow/acp/`.
 - Cross-references between docs — does each `[text](other-doc.md)` link
   still point at a section that exists?
 
@@ -154,13 +154,14 @@ All markdown links resolve:
 - **docs/architecture.md**: sole deep reference for internals. All module
   descriptions, full project tree, SDK phases, registry pattern, error
   taxonomy live here.
-- **docs/cli-reference.md**: flag-level reference. Not narrative.
-- **docs/task-authoring.md**: task YAML + verifier contract. Not a
-  "how benchflow works" overview — link to architecture for that.
-- **docs/getting-started.md / docs/labs.md**: tutorial tone; design
-  rationale belongs elsewhere.
-- **.claude/dev-docs/**: internal — can carry status language, refactor
-  histories, signature tables.
+- **docs/reference/cli.md**: flag-level reference. Not narrative.
+- **docs/task-authoring-task-md.md / docs/task-authoring.md**: task
+  frontmatter + verifier contract. Not a "how benchflow works" overview —
+  link to architecture for that.
+- **docs/getting-started.md**: tutorial tone; design rationale belongs
+  elsewhere.
+- **docs/reports/**: dated, internal-leaning — can carry status language
+  and refactor histories.
 
 ## Execution
 
@@ -202,9 +203,9 @@ For a full review:
   prose quality or tone.
 - **Don't grow scope.** If a check isn't in the seven above, don't add it
   mid-review. File a suggestion in the punch list instead.
-- **Don't touch archives or refactor notes.** `.claude/dev-docs/*-notes.md`
-  legitimately carry status language and reflect state at the time they
-  were written; don't normalize them.
+- **Don't touch archives or refactor notes.** `*-notes.md` files and
+  `docs/reports/` legitimately carry status language and reflect state at
+  the time they were written; don't normalize them.
 - **Don't flag registry drift without reading the registry dict.**
   `registry.py` and `providers.py` are the source of truth — a name
   missing from docs is a doc bug; a name missing from the registry is a
@@ -217,14 +218,14 @@ Docs review punch list (3 blocker, 4 stale, 2 polish)
 
 Blockers:
 - docs/architecture.md:114 — references AgentConfig at src/benchflow/agents/registry.py, but file defines AgentSpec (renamed)
-- docs/cli-reference.md:142 — documents `benchflow verify --strict` flag; flag doesn't exist in cli/verify.py
+- docs/reference/cli.md:142 — documents `benchflow verify --strict` flag; flag doesn't exist in cli/verify.py
 - README.md:62 — example uses register_agent(..., model=...) kwarg; signature takes models=[...] (list)
 
 Stale:
 - docs/architecture.md:39 — "Phase 1: SETUP (host)" numbering implies sequential work-in-progress; phases are always-on
 - docs/task-authoring.md:88 — "TODO: document verifier timeout knob"
 - docs/getting-started.md:121 — example task ID "demo-fizzbuzz" renamed to "examples-fizzbuzz"
-- .claude/dev-docs/tested-agents.md:14 — lists claude-code-acp; registry only has claude-agent-acp
+- docs/external-agents.md:14 — lists claude-code-acp; registry only has claude-agent-acp
 
 Polish:
 - README.md:98-134 — full src/ tree duplicates docs/architecture.md:12-38
