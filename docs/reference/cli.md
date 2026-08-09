@@ -252,6 +252,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--worker-retries` | `1` | Retry a crashed worker shard this many times, resuming its jobs dir |
 | `--worker-start-stagger-sec` | `1.0` | Seconds to stagger worker starts to avoid Daytona connection storms |
 | `--agent-idle-timeout` | (built-in default) | Abort ACP prompts after this many idle seconds; `0` disables idle detection |
+| `--quiet` | off | Suppress the per-run console progress heartbeat during agent execution |
 | `--jobs-dir` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
