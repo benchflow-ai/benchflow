@@ -686,6 +686,9 @@ class TestJobRunOrchestration:
         assert "[FAIL] task-1 (reward=0.30, tools=0)" in caplog.text
         assert "[ERR] task-2 (tools=0)" in caplog.text
         assert "mean_reward=0.65" in caplog.text
+        # The machine-readable surface must agree with the console.
+        summary = json.loads((job._jobs_dir / "summary.json").read_text())
+        assert summary["mean_reward"] == pytest.approx(0.65)
 
     @pytest.mark.asyncio
     async def test_run_mean_reward_none_when_nothing_scored(self, tmp_path, caplog):

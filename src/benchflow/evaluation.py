@@ -64,6 +64,7 @@ from benchflow._utils.scoring import (
     classify_verifier_error,
     count_audit_outcomes,
     count_score_outcomes,
+    mean_scored_reward,
     pass_rate,
     pass_rate_excl_errors,
 )
@@ -1825,15 +1826,6 @@ class Evaluation:
             for name, r in sorted(all_results.items())
             if classify_score_outcome(r) == "failed"
         ]
-        scored_rewards = [
-            rw
-            for r in all_results.values()
-            if isinstance(rw := (r.get("rewards") or {}).get("reward"), (int, float))
-            and not isinstance(rw, bool)
-        ]
-        mean_reward = (
-            sum(scored_rewards) / len(scored_rewards) if scored_rewards else None
-        )
         job_result = EvaluationResult(
             job_name=self._job_name,
             config=cfg,
@@ -1850,7 +1842,7 @@ class Evaluation:
             memory_score=memory["avg_score"],
             memory_scores=memory_scores,
             task_failures=task_failures,
-            mean_reward=mean_reward,
+            mean_reward=mean_scored_reward(all_results.values()),
         )
 
         assert (
