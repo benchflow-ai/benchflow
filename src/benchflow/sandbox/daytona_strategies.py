@@ -29,6 +29,7 @@ from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.daytona_pty import (
     _exec_failure_output,
     _reject_non_main_service,
+    stamp_transient_transport,
 )
 from benchflow.sandbox.daytona_reaper import _benchflow_owned_labels
 from benchflow.sandbox.protocol import (
@@ -311,11 +312,13 @@ class _DaytonaDirect(_DaytonaStrategy):
         _reject_non_main_service(service)
         await self._env._sdk_download_dir(source_dir, target_dir)
 
+    @stamp_transient_transport
     async def is_dir(self, path: str, user: str | int | None = None) -> bool:
         sandbox = self._env._require_sandbox()
         file_info = await sandbox.fs.get_file_info(path)
         return file_info.is_dir
 
+    @stamp_transient_transport
     async def is_file(self, path: str, user: str | int | None = None) -> bool:
         sandbox = self._env._require_sandbox()
         file_info = await sandbox.fs.get_file_info(path)

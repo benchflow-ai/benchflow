@@ -101,6 +101,23 @@ class TestRetryConfig:
         cfg = RetryConfig()
         assert cfg.should_retry("Failed to get session command: ")
 
+    def test_should_retry_stamped_transient_sandbox_transport_failure(self):
+        """The stamped marker must stay retryable through outer wrapping.
+
+        Every provider call on the sandbox corridor — exec, upload, download,
+        stat — funnels its transport blips into one marker at the raise site.
+        The message it lands in is whatever the caller wraps it with, so the
+        retry verdict has to survive that wrapping; a proxy-start failure is
+        the case that motivated it.
+        """
+        cfg = RetryConfig()
+        assert cfg.should_retry(
+            "LiteLLM proxy failed to start for model 'deepseek/deepseek-v4-flash': "
+            "TransientSandboxTransportError: transient sandbox transport failure: "
+            "DaytonaTimeoutError: Failed to execute session command: (no detail). "
+            "BenchFlow never sends provider traffic directly, so this is fatal."
+        )
+
     def test_should_retry_sandbox_startup_failure(self):
         """Sandbox setup diagnostics are infra failures for retry purposes."""
         cfg = RetryConfig()

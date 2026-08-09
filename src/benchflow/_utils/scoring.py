@@ -4,7 +4,10 @@ import math
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
-from benchflow.diagnostics import DIAGNOSTIC_REASON_IDLE_TIMEOUT
+from benchflow.diagnostics import (
+    DIAGNOSTIC_REASON_IDLE_TIMEOUT,
+    TRANSIENT_SANDBOX_TRANSPORT_MARKER,
+)
 
 # Error category constants
 INSTALL_FAILED = "install_failure"
@@ -174,6 +177,14 @@ def _looks_like_infra_error(error: str) -> bool:
             "connection reset",
             "connection refused",
             "broken pipe",
+            # Stamped by TransientSandboxTransportError at the sandbox-SDK
+            # boundary, where the vendor exception type is still available to
+            # judge. One marker covers every provider call — exec, upload,
+            # download, stat — instead of one entry per vendor message
+            # prefix, which would be endless and silently incomplete.
+            TRANSIENT_SANDBOX_TRANSPORT_MARKER,
+            # Predates the marker above and is kept for strings rebuilt
+            # outside that boundary (e.g. a verifier error re-raised as text).
             "failed to get session command",
             "sandbox not found",
             "workspace not found",

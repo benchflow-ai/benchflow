@@ -54,11 +54,15 @@ from benchflow.sandbox.daytona_dind import _DaytonaDinD
 # sibling underscore helpers) keep resolving from this module path unchanged.
 # The unused names below are intentional façade re-exports, not dead imports.
 from benchflow.sandbox.daytona_pty import (
+    _DAYTONA_EMPTY_EXIT_CODE_MARKERS,  # noqa: F401
     _DAYTONA_ENV_FILE_PREFIX,  # noqa: F401
+    _DAYTONA_TRANSIENT_RETRY_CLASS_NAMES,  # noqa: F401
     _daytona_preflight,
     _exec_failure_output,  # noqa: F401
+    _is_daytona_transient_retry_error,
     _reject_non_main_service,  # noqa: F401
     _wrap_daytona_command_with_env_file,
+    stamp_transient_transport,
 )
 
 # Re-export the extracted ownership labels + auto-reaper so existing imports of
@@ -232,33 +236,6 @@ _STARTUP_HARD_TIMEOUT_BUFFER_SEC = 120
 # (``None``, or a non-positive value — both previously meant "no deadline");
 # an explicit positive ``timeout_sec`` is honored byte-for-byte as before.
 _DAYTONA_EXEC_HARD_CAP_SEC = 3600
-_DAYTONA_TRANSIENT_RETRY_CLASS_NAMES = frozenset(
-    {
-        "DaytonaConnectionError",
-        "DaytonaRateLimitError",
-        "DaytonaTimeoutError",
-    }
-)
-_DAYTONA_EMPTY_EXIT_CODE_MARKERS = (
-    "failed to convert exit code to int",
-    'strconv.Atoi: parsing "": invalid syntax',
-)
-
-
-def _is_daytona_transient_retry_error(exc: BaseException) -> bool:
-    if isinstance(exc, (ConnectionError, TimeoutError)):
-        return True
-    exc_type = type(exc)
-    if exc_type.__module__.startswith("daytona.") and all(
-        marker in str(exc) for marker in _DAYTONA_EMPTY_EXIT_CODE_MARKERS
-    ):
-        return True
-    return (
-        exc_type.__module__.startswith("daytona.")
-        and exc_type.__name__ in _DAYTONA_TRANSIENT_RETRY_CLASS_NAMES
-    )
-
-
 _DAYTONA_TRANSIENT_RETRY: Any = retry_if_exception(_is_daytona_transient_retry_error)
 
 # Retry-attempt budgets for transient Daytona failures, named here so the
@@ -533,6 +510,7 @@ class DaytonaSandbox(BaseSandbox):
         if self._sandbox:
             await self._sandbox.delete()
 
+    @stamp_transient_transport
     @_SDK_RETRY
     async def _get_session_command_with_retry(
         self, session_id: str, command_id: str
@@ -540,6 +518,7 @@ class DaytonaSandbox(BaseSandbox):
         sandbox = self._require_sandbox()
         return await sandbox.process.get_session_command(session_id, command_id)
 
+    @stamp_transient_transport
     @_SDK_RETRY
     async def _get_session_command_logs_with_retry(
         self, session_id: str, command_id: str
@@ -618,6 +597,7 @@ class DaytonaSandbox(BaseSandbox):
             return_code=int(response.exit_code),  # type: ignore[union-attr]
         )
 
+    @stamp_transient_transport
     async def _sandbox_exec(
         self,
         command: str,
@@ -639,6 +619,26 @@ class DaytonaSandbox(BaseSandbox):
         """
         sandbox = self._require_sandbox()
 
+        # Deliberately NOT wrapped in ``_SDK_RETRY``, unlike every other SDK
+        # call on this corridor: neither of the two calls below is safe to
+        # replay, so a transient here is stamped (see the decorator) and
+        # retried one level up, as a fresh rollout against a fresh sandbox.
+        #
+        # ``create_session``: the id is fixed before the call, so a create
+        # that lands but whose response times out comes back
+        # ``DaytonaConflictError`` on replay — a permanent error, and not in
+        # the transient set, so the retry would convert a blip into a hard
+        # failure.
+        #
+        # ``execute_session_command``: replay is silently destructive rather
+        # than loud. The LiteLLM launcher binds an ephemeral port
+        # (``("127.0.0.1", 0)``), so a second exec does not collide on
+        # EADDRINUSE — it binds a *different* port, and its ``rm -f`` +
+        # rewrite of the state/pid files erases the first launcher's
+        # bookkeeping. The first proxy then survives as an orphan holding the
+        # provider key and LITELLM_MASTER_KEY, invisible to
+        # ``_terminate_sandbox_litellm`` (which only knows the overwritten
+        # pid) for the remaining life of the sandbox.
         session_id = str(uuid4())
         await sandbox.process.create_session(session_id)
 
@@ -695,11 +695,13 @@ class DaytonaSandbox(BaseSandbox):
                 with contextlib.suppress(Exception):
                     await sandbox.process.delete_session(session_id)
 
+    @stamp_transient_transport
     @_SDK_RETRY
     async def _sdk_upload_file(self, source_path: Path | str, target_path: str) -> None:
         sandbox = self._require_sandbox()
         await sandbox.fs.upload_file(str(source_path), target_path)
 
+    @stamp_transient_transport
     @_SDK_RETRY
     async def _sdk_upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
         sandbox = self._require_sandbox()
@@ -725,6 +727,7 @@ class DaytonaSandbox(BaseSandbox):
         if file_uploads:
             await sandbox.fs.upload_files(files=file_uploads)
 
+    @stamp_transient_transport
     @_SDK_RETRY
     async def _sdk_download_file(
         self, source_path: str, target_path: Path | str
@@ -732,6 +735,7 @@ class DaytonaSandbox(BaseSandbox):
         sandbox = self._require_sandbox()
         await sandbox.fs.download_file(source_path, str(target_path))
 
+    @stamp_transient_transport
     @_SDK_RETRY
     async def _sdk_download_dir(self, source_dir: str, target_dir: Path | str) -> None:
         sandbox = self._require_sandbox()

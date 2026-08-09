@@ -565,6 +565,47 @@ async def test_auto_usage_fails_closed_when_litellm_start_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_proxy_start_failure_keeps_the_exception_type_and_retries(monkeypatch):
+    """A detail-free transport failure must stay diagnosable and retryable.
+
+    Under concurrent load the Daytona toolbox API can time out on the exec
+    that launches the sandbox proxy. httpx raises that timeout with an empty
+    message, so the SDK's wrapper renders the whole error as the bare
+    ``"Failed to execute session command: "``. Interpolating the exception
+    alone dropped the class name — the only surviving evidence that this was
+    a *timeout* rather than a crash — and left the message in the "other"
+    bucket, which the retry policy never retries, so the rollout died on a
+    blip that had not yet run any agent work.
+    """
+    from benchflow._utils.scoring import INFRA_ERROR, classify_error
+    from benchflow.diagnostics import TransientSandboxTransportError
+
+    # What the sandbox corridor actually raises once the SDK boundary has
+    # judged the vendor exception transient and stamped it.
+    async def fail_start(**_kwargs):
+        raise TransientSandboxTransportError(
+            "DaytonaTimeoutError: Failed to execute session command: (no detail)"
+        )
+
+    monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await ensure_litellm_runtime(
+            agent="codex-acp",
+            agent_env={"OPENAI_API_KEY": "sk-openai"},
+            model="openai/gpt-4.1-mini",
+            runtime=None,
+            environment="docker",
+            usage_tracking="auto",
+        )
+
+    message = str(excinfo.value)
+    assert "DaytonaTimeoutError" in message
+    assert "(no detail)" in message
+    assert classify_error(message) == INFRA_ERROR
+
+
+@pytest.mark.asyncio
 async def test_auto_usage_does_not_fallback_on_bedrock_patch_preflight(monkeypatch):
     """Guards PR #668's fail-closed fix for issue #602: an inactive Bedrock patch
     must abort even when usage_tracking=auto would normally skip LiteLLM."""

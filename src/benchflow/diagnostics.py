@@ -477,6 +477,33 @@ class RolloutDiagnostics:
         return d if isinstance(d, TransportClosedDiagnostic) else None
 
 
+TRANSIENT_SANDBOX_TRANSPORT_MARKER = "transient sandbox transport failure"
+
+
+class TransientSandboxTransportError(ConnectionError):
+    """A sandbox-provider API call failed at the transport layer.
+
+    Raised at the SDK boundary, where the vendor exception *type* is still
+    alive, and carrying one stable marker so downstream classification never
+    has to keep a census of vendor message prefixes.
+
+    This exists because the vendor prefix is the wrong thing to match on.
+    The Daytona SDK stamps a different prefix per method — "Failed to
+    execute session command: ", "Failed to upload files: ", "Failed to get
+    file info: " — while the *failure* is identical in every case: an httpx
+    timeout or disconnect against the toolbox API, with an empty message.
+    Enumerating those prefixes in the classifier means one entry per vendor
+    method, silently incomplete the moment the SDK adds or renames one, and
+    it also over-matches: a permanent 401/400/409 shares the prefix but is
+    not transient. Deciding at the raise site, where
+    ``_is_daytona_transient_retry_error`` can inspect the real class, keeps
+    both halves honest.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"{TRANSIENT_SANDBOX_TRANSPORT_MARKER}: {detail}")
+
+
 # Summary / check_results helpers driven by the registry
 
 
@@ -514,6 +541,8 @@ __all__ = [
     "IdleTimeoutError",
     "TransportClosedError",
     "RolloutDiagnostics",
+    "TRANSIENT_SANDBOX_TRANSPORT_MARKER",
+    "TransientSandboxTransportError",
     "summary_warning",
     "format_issue_for_field",
 ]

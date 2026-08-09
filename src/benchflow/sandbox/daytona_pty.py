@@ -11,8 +11,13 @@ keep working unchanged.
 
 from __future__ import annotations
 
+import functools
 import os
+from collections.abc import Callable, Coroutine
+from typing import Any, cast
 
+from benchflow._utils.text import describe_exception
+from benchflow.diagnostics import TransientSandboxTransportError
 from benchflow.sandbox._base import ExecResult, wrap_command_with_env_file
 
 # Prefix for the decoded env file inside the Daytona sandbox. A unique 16-hex
@@ -72,3 +77,66 @@ def _daytona_preflight() -> None:
             "Daytona requires DAYTONA_API_KEY to be set. "
             "Please set this environment variable and try again."
         )
+
+
+_DAYTONA_TRANSIENT_RETRY_CLASS_NAMES = frozenset(
+    {
+        "DaytonaConnectionError",
+        "DaytonaRateLimitError",
+        "DaytonaTimeoutError",
+    }
+)
+_DAYTONA_EMPTY_EXIT_CODE_MARKERS = (
+    "failed to convert exit code to int",
+    'strconv.Atoi: parsing "": invalid syntax',
+)
+
+
+def _is_daytona_transient_retry_error(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    exc_type = type(exc)
+    if exc_type.__module__.startswith("daytona.") and all(
+        marker in str(exc) for marker in _DAYTONA_EMPTY_EXIT_CODE_MARKERS
+    ):
+        return True
+    return (
+        exc_type.__module__.startswith("daytona.")
+        and exc_type.__name__ in _DAYTONA_TRANSIENT_RETRY_CLASS_NAMES
+    )
+
+
+def stamp_transient_transport[M: Callable[..., Coroutine[Any, Any, Any]]](fn: M) -> M:
+    """Re-raise a transient Daytona SDK failure as a benchflow-owned error.
+
+    Wrap every method that touches the Daytona SDK — exec, upload, download,
+    stat. The vendor exception type is only alive *here*: by the time an
+    error reaches classification it has been flattened to a string (and may
+    have crossed a worker boundary), so ``DaytonaTimeoutError`` is
+    indistinguishable from any other sentence. Deciding at the raise site
+    lets :func:`_is_daytona_transient_retry_error` inspect the real class,
+    and stamps one stable marker that
+    :func:`benchflow._utils.scoring._looks_like_infra_error` can match
+    forever — instead of the classifier tracking one message prefix per
+    vendor method.
+
+    Only transient failures are stamped. A permanent 401/400/409 shares the
+    same vendor prefix but must stay out of ``infra_failure``, or a dead
+    credential would be retried as though it were a blip.
+
+    Apply this *outside* ``_SDK_RETRY`` so the retry budget is spent first
+    and only the final, still-failing error is stamped.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await fn(*args, **kwargs)
+        except TransientSandboxTransportError:
+            raise
+        except Exception as exc:
+            if _is_daytona_transient_retry_error(exc):
+                raise TransientSandboxTransportError(describe_exception(exc)) from exc
+            raise
+
+    return cast(M, wrapper)

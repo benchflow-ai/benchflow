@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from benchflow._utils.text import describe_exception
 from benchflow.continue_run.replay_proxy import ReplayProxy, ReplayRouter
 from benchflow.continue_run.run_folder import RunFolder, RunFolderError, load_run_folder
 from benchflow.continue_run.sandbox_proxy import (
@@ -442,7 +443,7 @@ async def _safe_sandbox_continuation_teardown(
         try:
             await awaitable
         except Exception as exc:
-            message = f"{label}: {exc}"
+            message = f"{label}: {describe_exception(exc)}"
             errors.append(message)
             logger.warning("Continuation teardown step failed: %s", message)
 
