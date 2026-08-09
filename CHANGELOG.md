@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.6.7 — 2026-08-09
+
 ### Added
 - **Built-in environment registry.** The committed env-axis pins
   (`env0@prod`, `env0@outage`) moved from `benchmarks/_environments/` into
@@ -10,13 +12,71 @@
   `pip install benchflow` with no checkout and no env vars.
   `$BENCHFLOW_ENV_REGISTRY`, when set, still wins entirely; resolution
   stays content-addressed (sha256 logged), and unknown names now error
-  listing the available specs.
+  listing the available specs. (#961)
 - **Console progress heartbeat.** Single-concurrency eval runs print a
   throttled progress line (`… 6.2min, 12 tool calls (last: …)`) about every
   45 seconds while the agent works, so a long prompt is distinguishable from
   a hang. The heartbeat is auto-gated off for multi-concurrency jobs;
   `bench eval run --quiet` suppresses it, and `BENCHFLOW_PROGRESS=on`/`off`
   overrides the auto-gate. (#951)
+- **Live per-task activity in the eval dashboard.** Under a TTY the
+  running-now table gains an activity column ("38 calls · last:
+  file_editor", plus tokens once a usage snapshot exists), polled from the
+  ACP session's existing heartbeat counters. The agents-manifest autoload
+  also clones quietly — one "Cloning …" summary line instead of raw git
+  progress. (#956)
+- **Phase labels and per-task failure reasons.** The activity cell is never
+  blank while a row exists: sandbox create, agent install, and verify show
+  dim phase labels ("creating sandbox…", "installing agent…",
+  "verifying…"). The final block prints one dim "✗ task: reason" line per
+  failed task — verifier error first, else a compact reward/metric
+  breakdown, else the reward — capped at 5 lines. `--quiet` now silences
+  the dashboard as well as the heartbeat. (#957)
+- **Failure reasons mined from verifier artifacts.** When a displayed
+  failure would read as a bare "reward X", the CLI reads a small bounded
+  artifact from the rollout's own verifier dir — the CTRF report (first
+  failed test plus its assertion line) or a tail of `test-stdout.txt` — and
+  a dim "(details: …/verifier)" pointer names the artifact directory.
+  Artifacts resolve by the recorded rollout name, never by glob. (#959)
+- **Fractional rewards in console summaries.** Per-task lines carry the
+  scored reward (`✗ task (reward=0.30, tools=47)`), the Score line renders
+  ", mean reward 0.30" alongside the binarized counts, and
+  `EvaluationResult` / `summary.json` gain a `mean_reward` field (mean over
+  scored rollouts; errors excluded, not zeroed). (#960)
+- **Full failure counts on per-task console lines.** A CTRF report with
+  more than one failed test rolls up as " (+N more failure(s); P/T checks
+  passed)" after the first failure — the count suffix is never truncated
+  away — and parametrized test names keep their `[param]` ids whenever the
+  report carries them. (#962)
+- **Live token usage in the dashboard footer.** The footer sums completed
+  tasks' trusted telemetry plus every running rollout's live ACP session
+  usage, so spend is visible while the run executes (usage lands per
+  completed prompt; cost stays scoring-time from the gateway log).
+  Single-tool agents' activity cell drops the redundant "last:" suffix in
+  favor of "38 calls · 412.0k tok" once tokens are available. (#963)
+- **env0-shaped failure breakdowns.** The failure-reason tiers understand
+  metrics nested one level under `metrics` / `details`, pair
+  `<name>_found` with `<name>_total` into fractions ("deadlines 1/5",
+  lowest-signal first), probe `verifier/reward.json` on disk between the
+  CTRF and stdout tiers, and every failure block with on-disk verifier
+  artifacts gets one "(details: …)" pointer. (#964)
+- **Mid-prompt live token usage via the gateway's live capture.** The #963
+  live tokens stepped forward only when an ACP prompt completed, so a
+  single-prompt rollout showed "— tokens" for its whole agent phase. The
+  proxy runtime's existing live-capture loop (which already tails the
+  sandbox gateway's callback log every second) now also accumulates
+  provider tokens into an O(1) counter, and the dashboard reconciles the
+  two non-decreasing live signals as max(ACP, gateway) — display-only,
+  still replaced by the trusted scoring import at completion, and any
+  gateway-side failure degrades to the ACP-only behavior. (#965)
+
+- **Compact flow-style arrays in emitted task.md frontmatter.** Short
+  scalar-only lists render on one line (`tags: [parsing, nlp]`) instead of
+  multiline bullets, so hand-written flow arrays survive `bench tasks
+  migrate` / normalize round-trips. The style predicate measures each list
+  with the real YAML emitter (so it can never disagree with PyYAML's own
+  quoting) and falls back to block style for long, nested, or multiline
+  items. Parsing is unchanged — both styles were always accepted. (#967)
 
 ### Changed
 - Migrated the clawsbench `archive-amazon-shipping` task to the native
@@ -51,6 +111,27 @@
   environment now fails loud when it declares services but none are startable
   in the image, instead of passing a vacuous readiness gate and dying at the
   verifier. (#954)
+- Pointed the built-in `env0@prod` / `env0@outage` pins at the org-owned
+  `ghcr.io/benchflow-ai/env0:0.2.0` base image. The wheel-shipped pins named a
+  personal Docker Hub image while their own comments and the environment docs
+  declared the ghcr image authoritative; `base_image` is recorded as rollout
+  provenance, so every env0 result carried the wrong base. Verified on Daytona
+  (env0 `auth-least-privilege-summary`, 8/8 services ready, reward 1.0).
+- Restored the `env0@outage` perturbation (gmail and slack removed relative
+  to `env0@prod`) that the #954 upstream sync had erased by mirroring the
+  full service list into both pins, and corrected the pin header's stale
+  slack port. (#955)
+- **ACP protocol JSON glued to PTY shell noise now decodes.** On PTY
+  transports, an agent's initialize response could arrive on the same line
+  as the shell prompt (ANSI/OSC-prefixed), fail the strict whole-line JSON
+  parse, and get filed as noise — the handshake then "timed out" at any
+  window with the answer sitting in the agent log. The PTY-facing transport
+  now retries from the first `{` and once more after an ANSI scrub, but
+  only until the first successfully decoded protocol message per
+  connection; afterwards the strict contract rules, so log-echoed envelopes
+  cannot impersonate protocol traffic mid-session. The pre-prompt handshake
+  window is also env-configurable via `BENCHFLOW_ACP_HANDSHAKE_TIMEOUT`
+  (seconds; default 60). (#958)
 
 ## 0.6.6 — 2026-08-04
 

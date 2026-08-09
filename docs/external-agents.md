@@ -11,8 +11,8 @@ first one is all there is to know.
 Using an agent name BenchFlow doesn't recognize triggers a one-shot fetch of
 the declarative manifests from `benchflow-ai/agents@main`. Nothing to install
 or configure. End to end, from an empty directory to a scored rollout
-(verified as written: skillsbench `edit-pdf`, reward 1.0, ~23 min, ~$0.02 on
-`deepseek-v4-flash`):
+(verified as written: skillsbench `edit-pdf`, reward 1.0, ~23 min, a few
+cents on `deepseek-v4-flash` — rates approximate):
 
 ```bash
 # Install. `uv tool install --python 3.12 'benchflow[sandbox-daytona]'` (the
