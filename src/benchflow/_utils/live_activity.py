@@ -15,7 +15,11 @@ import threading
 from typing import Any
 
 _lock = threading.Lock()
-_live: dict[str, Any] = {}  # task name -> live Rollout
+# Task name -> live Rollout. Task basenames are unique keys by engine-wide
+# invariant: the whole run pipeline (resume filtering, result keying — see
+# Evaluation's `d.name not in completed` plan filter) is keyed by basename,
+# so each name is scheduled at most once at a time.
+_live: dict[str, Any] = {}
 
 
 def register(task_name: str, rollout: Any) -> None:
@@ -33,18 +37,16 @@ def activity(task_name: str) -> tuple[int, str, int | None] | None:
     """(tool calls, last tool title, total tokens) for a running task.
 
     None until the task's agent session exists — including non-ACP
-    (session-factory) agents, which never grow an ACP client.
+    (session-factory) agents, which never grow an ACP client. The dig into
+    client/session state lives on ``Rollout.activity_snapshot()`` (typed,
+    owner-side); the except here only guards renders racing rollout teardown.
     """
     with _lock:
         rollout = _live.get(task_name)
+    if rollout is None:
+        return None
     try:
-        session = getattr(getattr(rollout, "acp_client", None), "session", None)
-        if session is None:
-            return None
-        calls, last_title = session.progress_snapshot()
-        usage = session.latest_usage_totals()
-        tokens = usage.get("total_tokens") if usage else None
-        return calls, last_title, tokens
+        return rollout.activity_snapshot()
     except Exception:
         # Dashboard reads race a live rollout; degrading to "no activity" is
         # always preferable to perturbing the render.

@@ -92,6 +92,14 @@ def test_trusted_telemetry_accumulates():
     assert d._covered == 2
 
 
+class _FakeSession:
+    def progress_snapshot(self):
+        return 38, "file_editor"
+
+    def latest_usage_totals(self):
+        return {"total_tokens": 1500}
+
+
 def test_activity_cell_polls_live_session_counters():
     # Per-task activity in the running-now table (fresh-user dogfood
     # 2026-08-09): the heartbeat's counters must reach the dashboard, since
@@ -99,15 +107,8 @@ def test_activity_cell_polls_live_session_counters():
     from benchflow._utils import live_activity
     from benchflow.cli._live_progress import _activity_cell
 
-    class _Session:
-        def progress_snapshot(self):
-            return 38, "file_editor"
-
-        def latest_usage_totals(self):
-            return {"total_tokens": 1500}
-
     live_activity.register(
-        "edit-pdf", SimpleNamespace(acp_client=SimpleNamespace(session=_Session()))
+        "edit-pdf", SimpleNamespace(activity_snapshot=lambda: (38, "file_editor", 1500))
     )
     try:
         assert _activity_cell("edit-pdf") == "38 calls · 1.5k tok · last: file_editor"
@@ -117,13 +118,49 @@ def test_activity_cell_polls_live_session_counters():
     assert _activity_cell("edit-pdf") == ""
 
 
+def test_rollout_activity_snapshot_reads_acp_session():
+    # The client/session dig lives on Rollout (typed, owner-side) so a rename
+    # of session counters breaks HERE instead of silently blanking the cell.
+    from benchflow.rollout import Rollout
+
+    connected = SimpleNamespace(_acp_client=SimpleNamespace(session=_FakeSession()))
+    assert Rollout.activity_snapshot(connected) == (38, "file_editor", 1500)
+    # Pre-connect (and session-factory) rollouts have no client -> None.
+    assert Rollout.activity_snapshot(SimpleNamespace(_acp_client=None)) is None
+
+
+def test_dashboard_renders_activity_for_registered_running_task():
+    # End-to-end through __rich__: a registered running task's activity must
+    # appear in the rendered panel — reverting the table wiring fails this.
+    import io
+
+    from benchflow._utils import live_activity
+
+    live_activity.register(
+        "edit-pdf", SimpleNamespace(activity_snapshot=lambda: (38, "file_editor", None))
+    )
+    try:
+        d = _dash()
+        d.on_plan(total=1, done=0, remaining=1)
+        d.on_task_start("edit-pdf")
+        out = Console(file=io.StringIO(), width=120)
+        out.print(d.__rich__())
+        text = out.file.getvalue()
+        assert "38 calls" in text
+        assert "file_editor" in text
+    finally:
+        live_activity.unregister("edit-pdf")
+
+
 def test_activity_cell_empty_before_session_exists():
     from benchflow._utils import live_activity
     from benchflow.cli._live_progress import _activity_cell
 
     # Rollout registered but not yet connected (no ACP client / session):
     # the cell stays empty and the render is unperturbed.
-    live_activity.register("warming-up", SimpleNamespace(acp_client=None))
+    live_activity.register(
+        "warming-up", SimpleNamespace(activity_snapshot=lambda: None)
+    )
     try:
         assert _activity_cell("warming-up") == ""
         d = _dash()

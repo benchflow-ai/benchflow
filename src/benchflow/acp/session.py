@@ -223,11 +223,16 @@ class ACPSession:
 
     def progress_snapshot(self) -> tuple[int, str]:
         """(tool-call count, last tool title) — the console heartbeat's
-        counters, also polled by the live eval dashboard's activity cell."""
+        counters, also polled by the live eval dashboard's activity cell.
+
+        The title is the raw first line (untruncated — display width belongs
+        to each render site); ``split`` not ``splitlines`` so a whitespace-only
+        title strips to ``""`` instead of raising on an empty line list.
+        """
         title = ""
         if self.tool_calls:
             last = self.tool_calls[-1]
-            title = (last.title or last.kind or "").strip().splitlines()[0][:60]
+            title = (last.title or last.kind or "").strip().split("\n", 1)[0]
         return len(self.tool_calls), title
 
     def _maybe_log_progress(self) -> None:
@@ -241,7 +246,7 @@ class ACPSession:
         calls, title = self.progress_snapshot()
         line = f"  … {elapsed_min:.1f}min, {calls} tool calls"
         if title:
-            line += f" (last: {title})"
+            line += f" (last: {title[:60]})"
         logger.info(line)
 
     def record_user_prompt(self, text: str) -> None:

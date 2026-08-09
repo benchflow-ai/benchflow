@@ -755,6 +755,23 @@ class Rollout:
     def acp_client(self) -> Any:
         return self._acp_client
 
+    def activity_snapshot(self) -> tuple[int, str, int | None] | None:
+        """(tool calls, last tool title, total tokens) for the eval
+        dashboard's activity cell, or None before the agent session exists.
+
+        Rollout owns the client/session dig so a rename breaks here — in
+        typed, tested code — instead of silently blanking the dashboard cell
+        (see benchflow._utils.live_activity). Session-factory agents have no
+        ACP client and always return None.
+        """
+        session = self._acp_client.session if self._acp_client else None
+        if session is None:
+            return None
+        calls, last_title = session.progress_snapshot()
+        usage = session.latest_usage_totals()
+        tokens = usage.get("total_tokens") if usage else None
+        return calls, last_title, tokens
+
     @property
     def trajectory(self) -> list[dict]:
         return self._trajectory
@@ -2401,10 +2418,11 @@ class Rollout:
         TrajectoryWriter(
             self._rollout_dir / "trajectory" / "acp_trajectory.jsonl"
         ).write_final(self._trajectory)
-        # debug: routine self-healing bookkeeping, not an operator concern —
-        # as a warning it survived the live dashboard's WARNING+ replay and
-        # printed between teardown and the score line (dogfood 2026-08-09).
-        logger.debug(
+        # info, not warning: trajectory repair is evidence-mutation an auditor
+        # should find at default (non-TTY/CI) verbosity, but as a warning it
+        # survived the live dashboard's WARNING+ replay and printed between
+        # teardown and the score line (dogfood 2026-08-09).
+        logger.info(
             "Repaired %d lossy ACP tool event(s) from trusted provider capture",
             repaired,
         )
