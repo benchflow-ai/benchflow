@@ -72,7 +72,7 @@ from benchflow._types import Role, Scene, Turn
 # / ``_capture_session_trajectory`` / ``default_rollout_planes`` keep affecting
 # the ``Rollout`` methods that call those names, because those methods stay
 # defined in this module.
-from benchflow._utils.live_activity import ActivitySnapshot
+from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
 from benchflow._utils.scoring import classify_error as classify_error
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
@@ -757,11 +757,12 @@ class Rollout:
         return self._acp_client
 
     def activity_snapshot(self) -> ActivitySnapshot:
-        """The eval dashboard's per-task :class:`ActivitySnapshot`: session
-        counters (tool calls, last tool title, total tokens) plus the current
-        lifecycle phase. Counters are None before the agent session exists —
-        the phase then carries the cell ("creating sandbox…", "verifying…"),
-        so a 90s sandbox create is not indistinguishable from a hang.
+        """The eval dashboard's per-task :class:`ActivitySnapshot`: the
+        current lifecycle phase plus the live :class:`SessionCounters` (tool
+        calls, last tool title, total tokens). ``counters`` is None before
+        the agent session exists — the phase then carries the cell
+        ("creating sandbox…", "verifying…"), so a 90s sandbox create is not
+        indistinguishable from a hang.
 
         Rollout owns the client/session dig so a rename breaks here — in
         typed, tested code — instead of silently blanking the dashboard cell
@@ -770,11 +771,11 @@ class Rollout:
         """
         session = self._acp_client.session if self._acp_client else None
         if session is None:
-            return ActivitySnapshot(None, None, None, self._phase)
+            return ActivitySnapshot(self._phase, None)
         calls, last_title = session.progress_snapshot()
         usage = session.latest_usage_totals()
         tokens = usage.get("total_tokens") if usage else None
-        return ActivitySnapshot(calls, last_title, tokens, self._phase)
+        return ActivitySnapshot(self._phase, SessionCounters(calls, last_title, tokens))
 
     @property
     def trajectory(self) -> list[dict]:

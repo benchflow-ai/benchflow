@@ -15,21 +15,30 @@ import threading
 from typing import Any, NamedTuple
 
 
+class SessionCounters(NamedTuple):
+    """The live ACP session counters the console heartbeat logs.
+
+    ``total_tokens`` is None until the session has a usage snapshot (i.e.
+    after a completed prompt).
+    """
+
+    tool_calls: int
+    last_tool: str
+    total_tokens: int | None
+
+
 class ActivitySnapshot(NamedTuple):
     """One dashboard poll of a live rollout.
 
-    ``tool_calls`` / ``last_tool`` / ``total_tokens`` mirror the console
-    heartbeat's ACP session counters and are all None until the agent session
-    exists (session-factory agents never grow one). ``phase`` is the rollout's
-    lifecycle phase (``Rollout._phase``) so the activity cell can label the
-    long non-agent stretches — sandbox create, agent install, verify — instead
-    of blanking in a way that is indistinguishable from a hang.
+    ``phase`` is the rollout's lifecycle phase (``Rollout._phase``) and is
+    always present, so the activity cell can label the long non-agent
+    stretches — sandbox create, agent install, verify — instead of blanking
+    in a way that is indistinguishable from a hang. ``counters`` is None
+    until the agent session exists (session-factory agents never grow one).
     """
 
-    tool_calls: int | None
-    last_tool: str | None
-    total_tokens: int | None
     phase: str
+    counters: SessionCounters | None
 
 
 _lock = threading.Lock()
@@ -55,9 +64,9 @@ def activity(task_name: str) -> ActivitySnapshot | None:
     """The :class:`ActivitySnapshot` for a running task, or None when the
     rollout isn't registered (pre-create, between retries, teardown).
 
-    Session counters inside the snapshot are None until the task's agent
-    session exists — including non-ACP (session-factory) agents, which never
-    grow an ACP client — but ``phase`` is always present. The dig into
+    ``counters`` inside the snapshot is None until the task's agent session
+    exists — including non-ACP (session-factory) agents, which never grow an
+    ACP client — but ``phase`` is always present. The dig into
     client/session state lives on ``Rollout.activity_snapshot()`` (typed,
     owner-side); the except here only guards renders racing rollout teardown.
     """

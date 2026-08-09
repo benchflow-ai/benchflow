@@ -163,13 +163,14 @@ def _activity_cell(name: str) -> str:
     snap = live_activity.activity(name)
     if snap is None:
         return _PHASE_FALLBACK
-    if snap.tool_calls is None:
+    counters = snap.counters
+    if counters is None:
         return _PHASE_LABELS.get(snap.phase, _PHASE_FALLBACK)
-    cell = f"{snap.tool_calls} calls"
-    if snap.total_tokens:
-        cell += f" · {_fmt_tokens(snap.total_tokens)} tok"
-    if snap.last_tool:
-        cell += f" · last: {snap.last_tool[:30]}"
+    cell = f"{counters.tool_calls} calls"
+    if counters.total_tokens:
+        cell += f" · {_fmt_tokens(counters.total_tokens)} tok"
+    if counters.last_tool:
+        cell += f" · last: {counters.last_tool[:30]}"
     return cell
 
 

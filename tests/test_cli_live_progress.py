@@ -106,14 +106,14 @@ def test_activity_cell_polls_live_session_counters():
     # 2026-08-09): the heartbeat's counters must reach the dashboard, since
     # the Live mutes the logged heartbeat line itself.
     from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import ActivitySnapshot
+    from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
     from benchflow.cli._live_progress import _activity_cell
 
     live_activity.register(
         "edit-pdf",
         SimpleNamespace(
             activity_snapshot=lambda: ActivitySnapshot(
-                38, "file_editor", 1500, "connected"
+                "connected", SessionCounters(38, "file_editor", 1500)
             )
         ),
     )
@@ -129,20 +129,20 @@ def test_activity_cell_polls_live_session_counters():
 def test_rollout_activity_snapshot_reads_acp_session():
     # The client/session dig lives on Rollout (typed, owner-side) so a rename
     # of session counters breaks HERE instead of silently blanking the cell.
-    from benchflow._utils.live_activity import ActivitySnapshot
+    from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
     from benchflow.rollout import Rollout
 
     connected = SimpleNamespace(
         _acp_client=SimpleNamespace(session=_FakeSession()), _phase="connected"
     )
     assert Rollout.activity_snapshot(connected) == ActivitySnapshot(
-        38, "file_editor", 1500, "connected"
+        "connected", SessionCounters(38, "file_editor", 1500)
     )
     # Pre-connect (and session-factory) rollouts have no client: counters are
     # None but the lifecycle phase still rides out so the cell can label it.
     assert Rollout.activity_snapshot(
         SimpleNamespace(_acp_client=None, _phase="setup")
-    ) == ActivitySnapshot(None, None, None, "setup")
+    ) == ActivitySnapshot("setup", None)
 
 
 def test_dashboard_renders_activity_for_registered_running_task():
@@ -151,13 +151,13 @@ def test_dashboard_renders_activity_for_registered_running_task():
     import io
 
     from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import ActivitySnapshot
+    from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
 
     live_activity.register(
         "edit-pdf",
         SimpleNamespace(
             activity_snapshot=lambda: ActivitySnapshot(
-                38, "file_editor", None, "connected"
+                "connected", SessionCounters(38, "file_editor", None)
             )
         ),
     )
@@ -185,9 +185,7 @@ def test_activity_cell_shows_phase_label_before_session_exists():
     phase = "setup"
     live_activity.register(
         "warming-up",
-        SimpleNamespace(
-            activity_snapshot=lambda: ActivitySnapshot(None, None, None, phase)
-        ),
+        SimpleNamespace(activity_snapshot=lambda: ActivitySnapshot(phase, None)),
     )
     try:
         assert _activity_cell("warming-up") == "creating sandbox…"
@@ -216,9 +214,7 @@ def test_dashboard_renders_phase_label_for_counterless_task():
 
     live_activity.register(
         "edit-pdf",
-        SimpleNamespace(
-            activity_snapshot=lambda: ActivitySnapshot(None, None, None, "started")
-        ),
+        SimpleNamespace(activity_snapshot=lambda: ActivitySnapshot("started", None)),
     )
     try:
         d = _dash()
