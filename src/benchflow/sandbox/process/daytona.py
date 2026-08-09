@@ -52,10 +52,16 @@ async def _cleanup_daytona_remote_env_file(
     sandbox: Any,
     remote_env_path: str,
 ) -> None:
+    # timeout=10 is the server-side exec limit; the extra wait_for bounds the
+    # client-side await too, so a dead connection can't hang a teardown path
+    # (this runs inside close()'s finally).
     with contextlib.suppress(Exception):
-        await sandbox.process.exec(
-            f"rm -f {shlex.quote(remote_env_path)}",
-            timeout=10,
+        await asyncio.wait_for(
+            sandbox.process.exec(
+                f"rm -f {shlex.quote(remote_env_path)}",
+                timeout=10,
+            ),
+            timeout=30,
         )
 
 
@@ -655,10 +661,16 @@ class DaytonaPtyProcess(LiveProcess):
         self._closed = True
         try:
             if self._pty:
+                # kill/disconnect go over the PTY's websocket; on a dead or
+                # wedged connection either await can block indefinitely, and a
+                # hung close() freezes the whole rollout teardown (this exact
+                # shape wedged a 25-task job for 11+ hours). Bound each call —
+                # the sandbox is deleted by env.stop() regardless, so an
+                # abandoned server-side PTY session costs nothing.
                 with contextlib.suppress(Exception):
-                    await self._pty.kill()
+                    await asyncio.wait_for(self._pty.kill(), timeout=15)
                 with contextlib.suppress(Exception):
-                    await self._pty.disconnect()
+                    await asyncio.wait_for(self._pty.disconnect(), timeout=15)
                 logger.info("DaytonaPtyProcess terminated")
         finally:
             await self._cleanup_started_env_file()

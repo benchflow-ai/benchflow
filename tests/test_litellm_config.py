@@ -111,7 +111,10 @@ def test_registered_provider_route_honors_explicit_generic_proxy_env():
         },
     )
 
-    assert route.upstream_model == "openai/deepseek-v4-flash"
+    # deepseek routes via LiteLLM's NATIVE provider prefix (reasoning-param
+    # passthrough) even behind an explicit proxy — the proxy override is
+    # honored through api_base, which is what PR #780 actually guards.
+    assert route.upstream_model == "deepseek/deepseek-v4-flash"
     assert route.litellm_params["api_base"] == "https://llm-proxy.example.test/v1"
     assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
     assert route.required_env == ("BENCHFLOW_PROVIDER_API_KEY",)

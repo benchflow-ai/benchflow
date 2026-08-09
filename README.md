@@ -73,6 +73,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Run an eval on an existing task | [Getting started](./docs/getting-started.md) |
 | Understand how BenchFlow runs *any* benchmark (the three-layer model) | [Run any benchmark](./docs/running-any-benchmark.md) |
 | Have an AI agent install + run the quickstart end to end | [Agent quickstart prompt](./docs/agent-quickstart.md) |
+| Run an agent from the public agents repo (goose, qwen-code, prime-agent, …) | [Running external agents](./docs/external-agents.md) |
 | Understand Rollout / Scene / Role / Verifier | [Concepts](./docs/concepts.md) |
 | Author a new task | [Task authoring](./docs/task-authoring.md) |
 | Author a task in the native `task.md` format | [Native task.md authoring](./docs/task-authoring-task-md.md) |

@@ -669,3 +669,36 @@ async def test_failure_event_records_exception_cause_when_response_none(
     assert record["error"]["type"] == "ValueError"
     assert "16384 tokens" in record["error"]["message"]
     assert record["error"]["message"] != "None"
+
+
+def test_pre_call_hook_lifts_deepseek_reasoning_effort_into_extra_body():
+    """LiteLLM's deepseek transform consumes a top-level reasoning_effort (the
+    raw field never reaches the wire, even with drop_params off); extra_body
+    merges verbatim. The hook lifts the param so the upstream receives exactly
+    what the agent sent — matching a native, gateway-less run."""
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "model": "benchflow-deepseek-deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "hi"}],
+        "reasoning_effort": "high",
+        "thinking": {"type": "enabled"},
+    }
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+    assert cleaned is not None
+    assert "reasoning_effort" not in cleaned
+    assert cleaned["extra_body"]["reasoning_effort"] == "high"
+    assert cleaned["thinking"] == {"type": "enabled"}
+    # original request dict not mutated in place
+    assert data["reasoning_effort"] == "high"
+
+
+def test_pre_call_hook_leaves_non_deepseek_reasoning_effort_alone():
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    data = {
+        "model": "benchflow-openai-gpt-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "reasoning_effort": "high",
+    }
+    assert (
+        asyncio.run(logger.async_pre_call_hook(None, None, data, "completion")) is None
+    )

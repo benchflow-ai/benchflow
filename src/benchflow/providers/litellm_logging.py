@@ -223,13 +223,6 @@ def _failure_traceback(detail: Any) -> str:
 
 
 class BenchFlowLiteLLMLogger(CustomLogger):
-    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
-        if isinstance(data, dict) and data.get("messages") is not None and "input" in data:
-            cleaned = dict(data)
-            cleaned.pop("input", None)
-            return cleaned
-        return None
-
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
         if not path:
@@ -321,6 +314,23 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 if cleaned is data:
                     cleaned = dict(data)
                 cleaned["tools"] = kept
+
+        # Forward ``reasoning_effort`` VERBATIM on deepseek routes. LiteLLM's
+        # deepseek transform consumes the top-level field (it maps it into its
+        # own thinking handling and drops the raw param — even with drop_params
+        # off; verified against a capture upstream 2026-08-08), while
+        # ``extra_body`` fields merge into the wire request untouched. Lifting
+        # the param means the upstream receives exactly what the agent sent —
+        # the same request a native (gateway-less) run produces. Scoped to
+        # deepseek, today's only natively-routed completions provider
+        # (_NATIVE_LITELLM_COMPLETIONS_PROVIDERS in litellm_config.py).
+        model_id = str(cleaned.get("model") or "")
+        if "deepseek" in model_id and cleaned.get("reasoning_effort") is not None:
+            if cleaned is data:
+                cleaned = dict(data)
+            extra = dict(cleaned.get("extra_body") or {})
+            extra.setdefault("reasoning_effort", cleaned.pop("reasoning_effort"))
+            cleaned["extra_body"] = extra
 
         capture_logprobs = (
             os.environ.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "").strip().lower()

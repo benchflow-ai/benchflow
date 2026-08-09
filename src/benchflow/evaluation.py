@@ -1250,6 +1250,10 @@ class Evaluation:
 
             return await run_self_gen(rollout_config)
         rollout = await Rollout.create(rollout_config)
+        # Rollout.run() enforces its own host-side hard deadline against
+        # awaits wedged below the phase-level timeouts — see
+        # benchflow.rollout._deadline. A trip surfaces here as a normal
+        # infra-retryable error result.
         return await rollout.run()
 
     async def _run_single_task_legacy(
