@@ -179,6 +179,12 @@ def _load_daytona_sdk() -> None:
     Resources = _daytona.Resources
     SessionExecuteRequest = _daytona.SessionExecuteRequest
     SnapshotState = _snapshot.SnapshotState
+    # The SDK's PTY transport rides socket.io; engineio's write loop logs
+    # "packet queue is empty, aborting" at ERROR on a benign disconnect race
+    # every time a PTY closes normally (fresh-user dogfood 2026-08-09: two such
+    # lines mid-run on a passing rollout). It is not actionable and reads as a
+    # failure — silence the logger for benchflow processes.
+    logging.getLogger("engineio.client").setLevel(logging.CRITICAL)
     _DAYTONA_SDK_LOADED = True
 
 
@@ -308,10 +314,17 @@ class DaytonaClientManager:
             return self._client
 
     def _cleanup_sync(self) -> None:
+        # Runs as an atexit callback after a (typically successful) run.
+        # ``CancelledError`` is a BaseException, so a bare ``except Exception``
+        # let it escape into a 40-line "Exception ignored in atexit callback"
+        # traceback printed AFTER the final score line (fresh-user dogfood
+        # 2026-08-09) — closing the SDK client tears down its aiohttp/websocket
+        # readers, which surface cancellation on loop shutdown. Nothing here is
+        # actionable at exit: log at debug, never print.
         try:
             asyncio.run(self._cleanup())
-        except Exception as e:
-            print(f"Error during Daytona client cleanup: {e}")
+        except (Exception, asyncio.CancelledError) as e:
+            self._logger.debug(f"Daytona client cleanup swallowed at exit: {e!r}")
 
     async def _cleanup(self) -> None:
         async with self._client_lock:
@@ -319,8 +332,8 @@ class DaytonaClientManager:
                 try:
                     self._logger.debug("Closing AsyncDaytona client at program exit")
                     await self._client.close()
-                except Exception as e:
-                    self._logger.error(f"Error closing AsyncDaytona client: {e}")
+                except (Exception, asyncio.CancelledError) as e:
+                    self._logger.debug(f"Error closing AsyncDaytona client: {e!r}")
                 finally:
                     self._client = None
 
