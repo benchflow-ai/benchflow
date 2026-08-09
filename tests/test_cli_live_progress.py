@@ -10,10 +10,14 @@ import contextlib
 import logging
 from types import SimpleNamespace
 
+import pytest
 from rich.console import Console
 
+from benchflow._utils import live_activity
+from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
 from benchflow.cli._live_progress import (
     LiveEvalProgress,
+    _activity_cell,
     progress_enabled,
     quiet_root_logging,
 )
@@ -32,6 +36,36 @@ def _dash() -> LiveEvalProgress:
     return LiveEvalProgress(
         Console(), label="skillsbench", agent="gemini", model="flash", sandbox="docker"
     )
+
+
+@contextlib.contextmanager
+def _registered_rollouts(rollouts: dict):
+    """Register fake rollouts and guarantee unregistration.
+
+    Values are the ActivitySnapshot to serve — or an Exception instance to
+    raise from ``activity_snapshot()`` (a teardown-racing rollout).
+    """
+
+    def _fake(snap):
+        if isinstance(snap, Exception):
+
+            def _boom():
+                raise snap
+
+            return SimpleNamespace(activity_snapshot=_boom)
+        return SimpleNamespace(activity_snapshot=lambda: snap)
+
+    for name, snap in rollouts.items():
+        live_activity.register(name, _fake(snap))
+    try:
+        yield
+    finally:
+        for name in rollouts:
+            live_activity.unregister(name)
+
+
+def _counters_snap(tokens, *, calls=3, last="file_editor", distinct=2):
+    return ActivitySnapshot("connected", SessionCounters(calls, last, tokens, distinct))
 
 
 def test_counts_classify_like_the_engine():
@@ -101,27 +135,15 @@ def _rendered(d: LiveEvalProgress) -> str:
     return out.file.getvalue()
 
 
-def _live_session_rollout(tokens: int | None):
-    from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
-
-    return SimpleNamespace(
-        activity_snapshot=lambda: ActivitySnapshot(
-            "connected", SessionCounters(3, "file_editor", tokens, 2)
-        )
-    )
-
-
 def test_footer_sums_live_running_usage_with_completed():
     # Mid-run spend visibility (51-min single-task dogfood: footer read
     # "— tokens · $—" for the whole agent phase): the footer must sum the
     # completed tasks' trusted telemetry PLUS every running session's live
     # usage. Cost stays completed-only — $ exists only in the scoring-time
     # LiteLLM gateway import.
-    from benchflow._utils import live_activity
-
-    live_activity.register("task-a", _live_session_rollout(1_000_000))
-    live_activity.register("task-b", _live_session_rollout(500_000))
-    try:
+    with _registered_rollouts(
+        {"task-a": _counters_snap(1_000_000), "task-b": _counters_snap(500_000)}
+    ):
         d = _dash()
         d.on_plan(total=3, done=0, remaining=3)
         for name in ("task-a", "task-b", "task-c"):
@@ -132,19 +154,13 @@ def test_footer_sums_live_running_usage_with_completed():
         text = _rendered(d)
         assert "4.00M tokens" in text
         assert "$0.02" in text
-    finally:
-        live_activity.unregister("task-a")
-        live_activity.unregister("task-b")
 
 
 def test_footer_shows_live_usage_before_any_completion():
     # The single-task common case: no task has finished, but the running
     # session has per-completed-prompt usage — real tokens render, and $
     # stays "—" (no live price signal exists).
-    from benchflow._utils import live_activity
-
-    live_activity.register("task-a", _live_session_rollout(750_000))
-    try:
+    with _registered_rollouts({"task-a": _counters_snap(750_000)}):
         d = _dash()
         d.on_plan(total=1, done=0, remaining=1)
         d.on_task_start("task-a")
@@ -152,8 +168,6 @@ def test_footer_shows_live_usage_before_any_completion():
         assert "750.0k tokens" in text
         assert "$—" in text
         assert "— tokens" not in text
-    finally:
-        live_activity.unregister("task-a")
 
 
 def test_footer_degrades_to_dash_without_any_usage_signal():
@@ -161,18 +175,12 @@ def test_footer_degrades_to_dash_without_any_usage_signal():
     # teardown-racing rollout whose snapshot raises, an unregistered task):
     # the footer keeps the "—" contract — a coverage-0 run reads broken, not
     # free — and never raises.
-    from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import ActivitySnapshot
-
-    def _boom():
-        raise RuntimeError("teardown race")
-
-    live_activity.register(
-        "warming",
-        SimpleNamespace(activity_snapshot=lambda: ActivitySnapshot("setup", None)),
-    )
-    live_activity.register("racing", SimpleNamespace(activity_snapshot=_boom))
-    try:
+    with _registered_rollouts(
+        {
+            "warming": ActivitySnapshot("setup", None),
+            "racing": RuntimeError("teardown race"),
+        }
+    ):
         d = _dash()
         d.on_plan(total=3, done=0, remaining=3)
         for name in ("warming", "racing", "unregistered"):
@@ -180,27 +188,19 @@ def test_footer_degrades_to_dash_without_any_usage_signal():
         text = _rendered(d)
         assert "— tokens" in text
         assert "$—" in text
-    finally:
-        live_activity.unregister("warming")
-        live_activity.unregister("racing")
 
 
 def test_footer_live_usage_ignores_sessions_without_usage():
     # A running session before its first completed prompt reports
     # total_tokens=None — it must contribute 0, not poison the sum.
-    from benchflow._utils import live_activity
-
-    live_activity.register("task-a", _live_session_rollout(None))
-    live_activity.register("task-b", _live_session_rollout(250_000))
-    try:
+    with _registered_rollouts(
+        {"task-a": _counters_snap(None), "task-b": _counters_snap(250_000)}
+    ):
         d = _dash()
         d.on_plan(total=2, done=0, remaining=2)
         d.on_task_start("task-a")
         d.on_task_start("task-b")
         assert "250.0k tokens" in _rendered(d)
-    finally:
-        live_activity.unregister("task-a")
-        live_activity.unregister("task-b")
 
 
 class _FakeSession:
@@ -213,103 +213,49 @@ class _FakeSession:
         return {"total_tokens": 1500}
 
 
-def test_activity_cell_polls_live_session_counters():
-    # Per-task activity in the running-now table (fresh-user dogfood
-    # 2026-08-09): the heartbeat's counters must reach the dashboard, since
-    # the Live mutes the logged heartbeat line itself.
-    from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
-    from benchflow.cli._live_progress import _activity_cell
+def test_activity_cell_formats_counters_and_registry_miss():
+    # Pure formatter over one polled snapshot — __rich__ polls the registry
+    # once per running task per frame and shares snapshots between the cells
+    # and the footer sum. distinct_tools=None (unknown, e.g. an old-style
+    # producer) must degrade to the full last:-suffixed cell, never mislabel.
+    snap = ActivitySnapshot("connected", SessionCounters(38, "file_editor", 1500))
+    assert _activity_cell(snap) == "38 calls · 1.5k tok · last: file_editor"
+    # Registry misses (pre-register, teardown races) hand the formatter None —
+    # a live row's cell must never be blank, and never raise.
+    assert _activity_cell(None) == "starting…"
 
-    live_activity.register(
-        "edit-pdf",
-        SimpleNamespace(
-            activity_snapshot=lambda: ActivitySnapshot(
-                # distinct_tools defaults to 0 = unknown: an old-style producer
-                # must degrade to the full last:-suffixed cell, never mislabel.
-                "connected",
-                SessionCounters(38, "file_editor", 1500),
-            )
+
+@pytest.mark.parametrize(
+    ("counters", "expected"),
+    [
+        # Single-tool agents (prime-agent funnels everything through one
+        # IPython tool): "last: IPython cell" is a constant across all N
+        # calls — once tokens are available they carry the information.
+        (
+            SessionCounters(38, "IPython cell", 412_000, 1),
+            "38 calls · 412.0k tok",
         ),
-    )
-    try:
-        assert _activity_cell("edit-pdf") == "38 calls · 1.5k tok · last: file_editor"
-    finally:
-        live_activity.unregister("edit-pdf")
-    # Unregistered tasks (pre-register, teardown races) degrade to the
-    # fallback label — a live row's cell must never be blank, and never raise.
-    assert _activity_cell("edit-pdf") == "starting…"
-
-
-def _register_counters(name: str, counters) -> None:
-    from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import ActivitySnapshot
-
-    live_activity.register(
-        name,
-        SimpleNamespace(
-            activity_snapshot=lambda: ActivitySnapshot("connected", counters)
+        # Varied tool names: last: still carries information.
+        (
+            SessionCounters(38, "file_editor", 412_000, 5),
+            "38 calls · 412.0k tok · last: file_editor",
         ),
-    )
-
-
-def test_activity_cell_constant_tool_shows_tokens_not_last():
-    # Single-tool agents (prime-agent funnels everything through one IPython
-    # tool): "last: IPython cell" is a constant across all N calls — once
-    # tokens are available they carry the information instead.
-    from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import SessionCounters
-    from benchflow.cli._live_progress import _activity_cell
-
-    _register_counters("prime-task", SessionCounters(38, "IPython cell", 412_000, 1))
-    try:
-        assert _activity_cell("prime-task") == "38 calls · 412.0k tok"
-    finally:
-        live_activity.unregister("prime-task")
-
-
-def test_activity_cell_varied_tools_keep_last():
-    from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import SessionCounters
-    from benchflow.cli._live_progress import _activity_cell
-
-    _register_counters("multi-task", SessionCounters(38, "file_editor", 412_000, 5))
-    try:
-        assert (
-            _activity_cell("multi-task") == "38 calls · 412.0k tok · last: file_editor"
-        )
-    finally:
-        live_activity.unregister("multi-task")
-
-
-def test_activity_cell_constant_tool_without_tokens_keeps_last():
-    # Before the first prompt completes there are no tokens to substitute —
-    # the name (shown once) is still the only signal, so it stays.
-    from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import SessionCounters
-    from benchflow.cli._live_progress import _activity_cell
-
-    _register_counters("prime-task", SessionCounters(5, "IPython cell", None, 1))
-    try:
-        assert _activity_cell("prime-task") == "5 calls · last: IPython cell"
-    finally:
-        live_activity.unregister("prime-task")
-
-
-def test_activity_cell_first_lone_call_keeps_last():
-    # One call is trivially "constant" but the name is still news; the drop
-    # only pays off once repetition makes it redundant.
-    from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import SessionCounters
-    from benchflow.cli._live_progress import _activity_cell
-
-    _register_counters("prime-task", SessionCounters(1, "IPython cell", 90_000, 1))
-    try:
-        assert (
-            _activity_cell("prime-task") == "1 calls · 90.0k tok · last: IPython cell"
-        )
-    finally:
-        live_activity.unregister("prime-task")
+        # Constant tool but no tokens yet (first prompt still running): the
+        # name, shown once, is still the only signal — it stays.
+        (
+            SessionCounters(5, "IPython cell", None, 1),
+            "5 calls · last: IPython cell",
+        ),
+        # A lone first call is trivially "constant" but the name is still
+        # news; the drop only pays off once repetition makes it redundant.
+        (
+            SessionCounters(1, "IPython cell", 90_000, 1),
+            "1 calls · 90.0k tok · last: IPython cell",
+        ),
+    ],
+)
+def test_activity_cell_constant_vs_varied_tools(counters, expected):
+    assert _activity_cell(ActivitySnapshot("connected", counters)) == expected
 
 
 def test_rollout_activity_snapshot_reads_acp_session():
@@ -334,83 +280,36 @@ def test_rollout_activity_snapshot_reads_acp_session():
 def test_dashboard_renders_activity_for_registered_running_task():
     # End-to-end through __rich__: a registered running task's activity must
     # appear in the rendered panel — reverting the table wiring fails this.
-    import io
-
-    from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
-
-    live_activity.register(
-        "edit-pdf",
-        SimpleNamespace(
-            activity_snapshot=lambda: ActivitySnapshot(
-                "connected", SessionCounters(38, "file_editor", None)
-            )
-        ),
-    )
-    try:
+    with _registered_rollouts(
+        {"edit-pdf": _counters_snap(None, calls=38, last="file_editor")}
+    ):
         d = _dash()
         d.on_plan(total=1, done=0, remaining=1)
         d.on_task_start("edit-pdf")
-        out = Console(file=io.StringIO(), width=120)
-        out.print(d.__rich__())
-        text = out.file.getvalue()
+        text = _rendered(d)
         assert "38 calls" in text
         assert "file_editor" in text
-    finally:
-        live_activity.unregister("edit-pdf")
 
 
 def test_activity_cell_shows_phase_label_before_session_exists():
     # Fresh-user dogfood follow-up: ~1.5min of sandbox create / agent install
     # (and the whole verifier) used to render a blank cell — indistinguishable
     # from a hang. Counter-less snapshots must surface the lifecycle phase.
-    from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import ActivitySnapshot
-    from benchflow.cli._live_progress import _activity_cell
-
-    phase = "setup"
-    live_activity.register(
-        "warming-up",
-        SimpleNamespace(activity_snapshot=lambda: ActivitySnapshot(phase, None)),
-    )
-    try:
-        assert _activity_cell("warming-up") == "creating sandbox…"
-        phase = "started"
-        assert _activity_cell("warming-up") == "installing agent…"
-        phase = "verifying"
-        assert _activity_cell("warming-up") == "verifying…"
-        # Unknown phases (e.g. "branched") still never blank the cell.
-        phase = "branched"
-        assert _activity_cell("warming-up") == "starting…"
-        d = _dash()
-        d.on_plan(total=1, done=0, remaining=1)
-        d.on_task_start("warming-up")
-        d.__rich__()  # builds the running-now table row; must not raise
-    finally:
-        live_activity.unregister("warming-up")
+    assert _activity_cell(ActivitySnapshot("setup", None)) == "creating sandbox…"
+    assert _activity_cell(ActivitySnapshot("started", None)) == "installing agent…"
+    assert _activity_cell(ActivitySnapshot("verifying", None)) == "verifying…"
+    # Unknown phases (e.g. "branched") still never blank the cell.
+    assert _activity_cell(ActivitySnapshot("branched", None)) == "starting…"
 
 
 def test_dashboard_renders_phase_label_for_counterless_task():
     # End-to-end through __rich__: the phase label must reach the rendered
     # panel, not just the cell helper — reverting the table wiring fails this.
-    import io
-
-    from benchflow._utils import live_activity
-    from benchflow._utils.live_activity import ActivitySnapshot
-
-    live_activity.register(
-        "edit-pdf",
-        SimpleNamespace(activity_snapshot=lambda: ActivitySnapshot("started", None)),
-    )
-    try:
+    with _registered_rollouts({"edit-pdf": ActivitySnapshot("started", None)}):
         d = _dash()
         d.on_plan(total=1, done=0, remaining=1)
         d.on_task_start("edit-pdf")
-        out = Console(file=io.StringIO(), width=120)
-        out.print(d.__rich__())
-        assert "installing agent…" in out.file.getvalue()
-    finally:
-        live_activity.unregister("edit-pdf")
+        assert "installing agent…" in _rendered(d)
 
 
 def test_rollout_verify_marks_verifying_phase():

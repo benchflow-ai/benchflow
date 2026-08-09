@@ -151,19 +151,21 @@ _PHASE_LABELS = {
 _PHASE_FALLBACK = "starting…"
 
 
-def _activity_cell(name: str) -> str:
+def _activity_cell(snap: live_activity.ActivitySnapshot | None) -> str:
     """Per-task activity for the "running now" table, e.g.
     ``38 calls · last: file_editor``.
 
-    Polls the live rollout's ACP session counters — the same ones the console
-    heartbeat logs, which the Live display otherwise mutes — via the
-    live-activity registry. Until the agent session exists (and after it is
-    closed for the verifier) the cell shows the rollout's lifecycle phase as a
-    label instead, so the row is never blank. Tokens appear only once the
+    Pure formatter over one polled :class:`~benchflow._utils.live_activity.
+    ActivitySnapshot` — ``__rich__`` polls the registry exactly once per
+    running task per frame and shares the snapshots with the footer's live
+    token sum. The counters are the same ones the console heartbeat logs,
+    which the Live display otherwise mutes. Until the agent session exists
+    (and after it is closed for the verifier) the cell shows the rollout's
+    lifecycle phase as a label instead, and a registry miss (None) shows the
+    fallback label, so the row is never blank. Tokens appear only once the
     session has a usage snapshot (i.e. after a completed prompt); once they
     do, a single-tool agent's cell is ``38 calls · 412.0k tok`` (no ``last:``).
     """
-    snap = live_activity.activity(name)
     if snap is None:
         return _PHASE_FALLBACK
     counters = snap.counters
@@ -343,6 +345,13 @@ class LiveEvalProgress:
 
         parts: list[RenderableType] = [header, bar, counts]
 
+        # ONE registry poll per running task per frame (each poll an O(1)
+        # counter read; see live_activity), shared by the running-now cells
+        # and the footer's live token sum — displayed rows are never polled
+        # twice, and cell vs footer can't read different snapshots within a
+        # frame.
+        snaps = {name: live_activity.activity(name) for name in running}
+
         # "Running now" — cap rows so short terminals don't overflow.
         if running:
             tbl = Table(
@@ -362,7 +371,7 @@ class LiveEvalProgress:
                 tbl.add_row(
                     Text(name),
                     _fmt_dur(now - running[name]),
-                    Text(_activity_cell(name), style="dim"),
+                    Text(_activity_cell(snaps.get(name)), style="dim"),
                 )
             extra = len(running) - _MAX_RUNNING_ROWS
             if extra > 0:
@@ -371,19 +380,24 @@ class LiveEvalProgress:
 
         # Footer: pass-rate (excl errors) + token/cost economics. Tokens sum
         # the completed tasks' trusted telemetry PLUS the running sessions'
-        # live ACP usage (one O(1) counter poll per running task; each task's
-        # count steps forward as its prompts complete), so a 51-minute agent
-        # phase shows its spend while it runs, not only at scoring. Show "—"
-        # (not 0 / $0.00) when neither signal exists, so a coverage-0 run
-        # reads broken, not free — matching the summary.json contract. Cost
-        # stays completed-tasks-only: $ comes from the sandbox LiteLLM
-        # gateway log imported at scoring time (BenchFlow computes no prices
-        # of its own), so there is no live $ to show.
-        live_tokens = 0
-        for name in running:
-            snap = live_activity.activity(name)
-            if snap is not None and snap.counters is not None:
-                live_tokens += snap.counters.total_tokens or 0
+        # live ACP usage (stepping forward as each prompt completes), so a
+        # 51-minute agent phase shows its spend while it runs, not only at
+        # scoring. The total is NOT monotonic across a task's completion
+        # boundary: scoring swaps the ACP self-report for the gateway
+        # measurement (which can be lower), and a task completing with
+        # untrusted/absent telemetry drops its live contribution entirely —
+        # a sole-task footer can collapse back to "— tokens". Clamping would
+        # falsify the trusted sum, so the dip is intended. Show "—" (not 0 /
+        # $0.00) when neither signal exists, so a coverage-0 run reads
+        # broken, not free — matching the summary.json contract. Cost stays
+        # completed-tasks-only: $ comes from the sandbox LiteLLM gateway log
+        # imported at scoring time (BenchFlow computes no prices of its own),
+        # so there is no live $ to show.
+        live_tokens = sum(
+            snap.counters.total_tokens or 0
+            for snap in snaps.values()
+            if snap is not None and snap.counters is not None
+        )
 
         footer = Text()
         scored = passed + failed

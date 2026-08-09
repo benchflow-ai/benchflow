@@ -356,8 +356,10 @@ class ACPSession:
         Single bookkeeping site for the two creation paths in
         :meth:`handle_update` (``tool_call``, and the ``tool_call_update``
         fallback for unseen ids), so the distinct-title tracker can never
-        drift from the record list. Titles are fixed at creation
-        (``update_status`` never rewrites them), so add-once is sound.
+        drift from the record list. ``title`` itself is never rewritten after
+        creation, but an empty-title record's display title follows ``kind``,
+        which the legacy-skill upgrade can rewrite — that site re-registers
+        the new display title (over-counting fails safe).
         """
         self.tool_calls.append(record)
         self._tool_call_map[record.tool_call_id] = record
@@ -426,6 +428,14 @@ class ACPSession:
                 record.kind, record.title, record.content
             ):
                 record.kind = "skill"
+                # An empty-title record's DISPLAY title falls back to kind, so
+                # this upgrade can change what renders. Re-register the new
+                # display title: the set may now over-count (creation-time
+                # fallback + "skill"), which fails safe — the cell keeps the
+                # last: suffix instead of falsely claiming a single tool.
+                self._seen_tool_titles.add(
+                    _tool_display_title(record.title, record.kind)
+                )
 
         elif update_type == "agent_message_chunk":
             content = update.get("content", {})
