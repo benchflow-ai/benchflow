@@ -690,6 +690,54 @@ class TestContainerTransportPtyNoise:
             '{"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}'
         ) == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
 
+    def test_valid_envelope_after_log_prefix_decodes_pre_latch(self) -> None:
+        """Deliberate edge, documented: pre-latch, a log line that embeds a
+        COMPLETE valid JSON-RPC envelope decodes as protocol. That is the
+        exact shape of the prompt-glued handshake bug; before the first
+        protocol message it cannot be told apart from the real thing.
+        """
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        assert _decode_pty_json_rpc_message(
+            'INFO sent {"jsonrpc": "2.0", "id": 3, "result": {}}'
+        ) == {"jsonrpc": "2.0", "id": 3, "result": {}}
+
+    @pytest.mark.asyncio
+    async def test_lenient_decode_latches_off_after_first_protocol_message(
+        self, tmp_path
+    ) -> None:
+        """After the first decoded protocol message the strict whole-line
+        decode rules: the same prefix-glued valid envelope that decodes
+        pre-latch is filed as noise post-latch, so a mid-session agent
+        echoing protocol envelopes into its logs cannot impersonate traffic.
+        """
+        glued_log = b'INFO sent {"jsonrpc": "2.0", "id": 3, "result": {}}\n'
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            side_effect=[
+                self.PROMPT_GLUED_INIT,  # lenient path decodes; latch sets
+                glued_log,  # post-latch: strict decode files it as noise
+                b'{"jsonrpc": "2.0", "id": 4, "result": {"ok": true}}\n',
+            ]
+        )
+        agent_log = tmp_path / "agent" / "prime_agent.txt"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        try:
+            first = await asyncio.wait_for(transport.receive(), timeout=5)
+            second = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert first["id"] == 100001
+        assert second == {"jsonrpc": "2.0", "id": 4, "result": {"ok": True}}
+        assert "INFO sent" in agent_log.read_text()
+
 
 class TestACPInterleaving:
     """Test that _read_until_response handles interleaved notifications and agent requests."""

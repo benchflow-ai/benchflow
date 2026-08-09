@@ -293,6 +293,11 @@ heartbeat is auto-gated off for multi-concurrency jobs. Setting
 shorthand for setting `BENCHFLOW_PROGRESS=off` for the run (so it also wins
 over an exported `on`).
 
+Set `BENCHFLOW_ACP_HANDSHAKE_TIMEOUT` to a number of seconds (default 60) to
+give slow-starting agents more time to answer the pre-prompt ACP handshake
+(`initialize`/`session_new`) — heavyweight task images can push agent startup
+past the default.
+
 Daytona batch runs collect provider token/cost telemetry by default with a
 sandbox-local LiteLLM gateway. Use `--usage-tracking required` when missing telemetry
 should fail the rollout, or `--usage-tracking off` for recovery runs that should
@@ -808,11 +813,6 @@ phase-level timeouts (a tripped deadline abandons the sandbox to the
 provider's reaper). Set `BENCHFLOW_ROLLOUT_HARD_DEADLINE` to a number of
 seconds to override the computed value, or to `off`/`none`/`0` to disable the
 backstop.
-
-Set `BENCHFLOW_ACP_HANDSHAKE_TIMEOUT` to a number of seconds (default 60) to
-give slow-starting agents more time to answer the pre-prompt ACP handshake
-(`initialize`/`session_new`) — heavyweight task images can push agent startup
-past the default.
 
 ## bench environment (deprecated)
 

@@ -19,12 +19,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import re
 import shlex
 import uuid
 from typing import Any
 
-from benchflow.sandbox.process._base import _ENV_KEY_RE, LiveProcess
+from benchflow.sandbox.process._base import (
+    _ANSI_CSI_RE_BYTES,
+    _ANSI_OSC_RE_BYTES,
+    _ENV_KEY_RE,
+    LiveProcess,
+    _timeout_sec_from_env,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,26 +43,10 @@ _READER_ENDED = object()
 _START_MARKER_TIMEOUT_SEC = 180
 _READLINE_TIMEOUT_ENV = "BENCHFLOW_AGENTCORE_READLINE_TIMEOUT"
 _READLINE_TIMEOUT_DEFAULT_SEC = 900.0
-_ANSI_CSI_RE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def _readline_timeout_sec() -> float:
-    import os
-
-    value = os.environ.get(_READLINE_TIMEOUT_ENV)
-    if value is None:
-        return _READLINE_TIMEOUT_DEFAULT_SEC
-    try:
-        timeout = float(value)
-    except ValueError:
-        logger.warning(
-            "Invalid %s=%r; using default %.0fs",
-            _READLINE_TIMEOUT_ENV,
-            value,
-            _READLINE_TIMEOUT_DEFAULT_SEC,
-        )
-        return _READLINE_TIMEOUT_DEFAULT_SEC
-    return timeout if timeout > 0 else _READLINE_TIMEOUT_DEFAULT_SEC
+    return _timeout_sec_from_env(_READLINE_TIMEOUT_ENV, _READLINE_TIMEOUT_DEFAULT_SEC)
 
 
 class AgentCoreProcess(LiveProcess):
@@ -119,9 +108,12 @@ class AgentCoreProcess(LiveProcess):
                     line, self._partial = self._partial.split(b"\n", 1)
                     # Bash/readline emits bracketed-paste CSI sequences when a
                     # command takes over the PTY, including a standalone
-                    # ``ESC[?2004l`` *after* the startup marker. Those bytes
-                    # are terminal state, never ACP JSON-RPC.
-                    line = _ANSI_CSI_RE.sub(b"", line.replace(b"\r", b""))
+                    # ``ESC[?2004l`` *after* the startup marker, and shell
+                    # prompts emit OSC window-title updates. Those bytes are
+                    # terminal state, never ACP JSON-RPC.
+                    line = line.replace(b"\r", b"")
+                    line = _ANSI_OSC_RE_BYTES.sub(b"", line)
+                    line = _ANSI_CSI_RE_BYTES.sub(b"", line)
                     if line:
                         await self._line_buffer.put(line + b"\n")
         except asyncio.CancelledError:
@@ -308,8 +300,10 @@ class AgentCoreProcess(LiveProcess):
             # before echo suppression takes effect. Substring matching accepts
             # that echoed command and releases startup too early, putting the
             # prompt/command noise into ACP's JSON-RPC stream. The real marker
-            # is its own line, possibly wrapped in bracketed-paste ANSI codes.
-            text = _ANSI_CSI_RE.sub(b"", line).decode(errors="replace").strip()
+            # is its own line, possibly wrapped in bracketed-paste ANSI codes
+            # or an OSC window-title update from the shell prompt.
+            cleaned = _ANSI_CSI_RE_BYTES.sub(b"", _ANSI_OSC_RE_BYTES.sub(b"", line))
+            text = cleaned.decode(errors="replace").strip()
             if text == marker:
                 return
 

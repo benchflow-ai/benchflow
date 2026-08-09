@@ -2,21 +2,15 @@
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any, TextIO
 
 from benchflow.sandbox.process import LiveProcess
+from benchflow.sandbox.process._base import _ANSI_CSI_RE, _ANSI_OSC_RE
 
 from .transport import Transport, decode_json_rpc_message
 
 logger = logging.getLogger(__name__)
-
-# Terminal control sequences a PTY-backed process can glue onto a protocol
-# line: CSI (e.g. bracketed-paste ``\x1b[?2004h``/``l``) and OSC (e.g. the
-# ``\x1b]0;<title>\x07`` window-title update emitted by shell prompts).
-_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
-_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 def _decode_pty_json_rpc_message(text: str) -> dict[str, Any] | None:
@@ -30,11 +24,15 @@ def _decode_pty_json_rpc_message(text: str) -> dict[str, Any] | None:
     as non-protocol noise, and the handshake "times out" with the completed
     initialize JSON sitting in the captured agent log — at ANY timeout.
 
-    Recovery is PTY-transport-specific (stdio pipes keep the strict
-    whole-line contract in :func:`decode_json_rpc_message`):
+    Recovery is bounded to where the bug lives: :meth:`ContainerTransport.
+    receive` calls this lenient path only until the first successfully
+    decoded protocol message per connection (prompt glue is by construction
+    a pre-first-message PTY phenomenon), and stdio pipes keep the strict
+    whole-line contract in :func:`decode_json_rpc_message`.
 
     1. fast path — the plain whole-line decode, unchanged;
-    2. retry from the first ``{`` (drops a glued prompt prefix);
+    2. retry from the first ``{`` when it is not at position 0 (drops a
+       glued prompt prefix);
     3. if the line carries ``\\x1b``, strip CSI/OSC sequences (drops escapes
        trailing or embedded around the JSON) and retry from the first ``{``.
 
@@ -47,9 +45,11 @@ def _decode_pty_json_rpc_message(text: str) -> dict[str, Any] | None:
         return message
     if "{" not in text:
         return None
-    message = decode_json_rpc_message(text[text.index("{") :])
-    if message is not None:
-        return message
+    brace = text.index("{")
+    if brace:  # brace == 0 would just repeat the whole-line decode
+        message = decode_json_rpc_message(text[brace:])
+        if message is not None:
+            return message
     if "\x1b" not in text:
         return None
     cleaned = _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", text))
@@ -80,6 +80,12 @@ class ContainerTransport(Transport):
         self._cwd = cwd
         self._agent_log_path = agent_log_path
         self._agent_log_file: TextIO | None = None
+        # First-message latch: the lenient PTY-noise decode applies only
+        # until the first successfully decoded protocol message (prompt glue
+        # is a startup phenomenon). Afterwards the strict whole-line decode
+        # rules, so an agent echoing valid protocol envelopes into its logs
+        # mid-session can never impersonate protocol traffic.
+        self._saw_protocol = False
 
     async def start(self) -> None:
         """Start the agent process inside the sandbox."""
@@ -111,8 +117,12 @@ class ContainerTransport(Transport):
             text = line.decode(errors="replace").strip()
             if not text:
                 continue
-            message = _decode_pty_json_rpc_message(text)
+            if self._saw_protocol:
+                message = decode_json_rpc_message(text)
+            else:
+                message = _decode_pty_json_rpc_message(text)
             if message is not None:
+                self._saw_protocol = True
                 return message
             # Capture non-protocol output (agent debug logs, errors, warnings).
             if self._agent_log_path:

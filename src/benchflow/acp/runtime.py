@@ -6,10 +6,11 @@ Owns the live agent-side of a run:
     - execute_prompts: send each prompt through the session, capture the
       ACP-native trajectory, and report tool-call counts
 
-The one allowed horizontal phase import in this refactor lives here:
-``from benchflow.sandbox.lockdown import build_priv_drop_cmd``. connect_acp wraps
-the agent launch command in the sandbox user's privilege-drop prefix
-before handing it to the transport. It is a single pure-function call
+The allowed horizontal phase imports in this refactor live here:
+``from benchflow.sandbox.lockdown import build_priv_drop_cmd`` (connect_acp
+wraps the agent launch command in the sandbox user's privilege-drop prefix
+before handing it to the transport) and the shared timeout-env parser from
+``benchflow.sandbox.process._base``. Both are single pure-function calls
 with no shared state — not a coupling of concerns.
 
 Does not own:
@@ -20,7 +21,6 @@ Does not own:
 import asyncio
 import contextlib
 import logging
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -47,6 +47,7 @@ from benchflow.sandbox.lockdown import (
     build_priv_drop_cmd,
     enforce_agent_egress_firewall,
 )
+from benchflow.sandbox.process._base import _timeout_sec_from_env
 from benchflow.trajectories._capture import _capture_session_trajectory
 
 # Re-exported for backwards compatibility — tests and downstream code
@@ -77,24 +78,14 @@ def _acp_handshake_timeout_sec() -> float:
     Agent startup cost scales with the task image — heavyweight images
     (workspace scanning, kernel prep) can push the ``initialize`` response
     past the 60s default, so operators can override it with
-    ``BENCHFLOW_ACP_HANDSHAKE_TIMEOUT`` (seconds). Read at use time rather
-    than cached at import so long-lived processes and tests see env changes.
-    Non-numeric or non-positive values fall back to the default.
+    ``BENCHFLOW_ACP_HANDSHAKE_TIMEOUT`` (seconds). Parsing (use-time read,
+    positive-float validation, warn-and-fall-back) is shared with the other
+    transport timeout knobs in :mod:`benchflow.sandbox.process._base`.
     """
-    raw = os.environ.get(_ACP_HANDSHAKE_TIMEOUT_ENV, "").strip()
-    if not raw:
-        return _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC
-    try:
-        value = float(raw)
-    except ValueError:
-        value = -1.0
-    if not value > 0:  # also rejects NaN
-        logger.debug(
-            f"{_ACP_HANDSHAKE_TIMEOUT_ENV}={raw!r} is not a positive number "
-            f"of seconds; using default {_ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC:g}s"
-        )
-        return _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC
-    return value
+    return _timeout_sec_from_env(
+        _ACP_HANDSHAKE_TIMEOUT_ENV,
+        _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC,
+    )
 
 
 async def _prepare_openhands_direct_execution(
