@@ -26,7 +26,7 @@ addresses it (`sha256:…`) so every run records exactly which environment it bo
 | entry | what it is |
 |-------|------------|
 | `env0@prod`   | env-0 — 8 services (mock-auth/-gmail/-gcal/-gdrive/-gdoc/-slack/-discord/-stripe), mirroring upstream `tasks/_manifests/env-0.toml` verbatim. The pinned production environment. |
-| `env0@outage` | Intended as the "Same state, tool outage" perturbation variant (gmail + slack removed). Since the 2026-08-09 upstream sync it declares the same 8 services as `env0@prod`; the outage perturbation needs re-applying before it differs. |
+| `env0@outage` | The "Same state, tool outage" perturbation variant: `env0@prod` minus the `mock-gmail` and `mock-slack` services (6 of the 8 declared). Bind the same task to both pins to attribute the reward delta to the environment. |
 
 ## Running env0 tasks
 
