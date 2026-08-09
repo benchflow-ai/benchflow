@@ -10,16 +10,31 @@ first one is all there is to know.
 
 Using an agent name BenchFlow doesn't recognize triggers a one-shot fetch of
 the declarative manifests from `benchflow-ai/agents@main`. Nothing to install
-or configure:
+or configure. End to end, from an empty directory to a scored rollout
+(verified as written: skillsbench `edit-pdf`, reward 1.0, ~23 min, ~$0.02 on
+`deepseek-v4-flash`):
 
 ```bash
+# Install. `uv tool install --python 3.12 'benchflow[sandbox-daytona]'` (the
+# README's global-CLI idiom) and a plain venv + pip both work; pick one.
 pip install 'benchflow[sandbox-daytona]'
+
 export DEEPSEEK_API_KEY=sk-...          # credentials for your --model provider
 export DAYTONA_API_KEY=dtn_...          # or use --sandbox docker
 
-bench eval run --tasks-dir ./tasks --agent prime-agent \
+# Get a task (sparse checkout of one SkillsBench task — same recipe as
+# getting-started; any task.md/Harbor-format task directory works):
+git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/benchflow-ai/skillsbench
+cd skillsbench && git sparse-checkout set tasks/edit-pdf
+
+bench eval run --tasks-dir tasks/edit-pdf --agent prime-agent \
   --model deepseek/deepseek-v4-flash --sandbox daytona
 ```
+
+Expect a quiet stretch while the agent works (its events stream to
+`trajectory/acp_trajectory.jsonl` in the rollout dir, not the console) — the
+console picks back up at the verifier and the `✓ Score` line.
 
 The first rollout runs the agent's `install_cmd` inside the sandbox (a few
 minutes for agents that bootstrap toolchains); artifacts land in the jobs dir
