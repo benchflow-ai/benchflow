@@ -74,8 +74,34 @@ _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 _PROXY_DOCS_DISABLE_ENV = {"DOCS_URL": "", "NO_DOCS": "true"}
 _SKILL_CATALOG_GATE_AGENT_ENV = "BENCHFLOW_SKILL_CATALOG_GATE_AGENT"
 _REQUIRED_SKILL_NAMES_ENV = "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON"
-_LIVE_CAPTURE_CHUNK_BYTES = 24 * 1024
+# Live callback-log capture budgets. The reader tails the gateway's
+# callback.jsonl by byte range, one command per read, and each read on the
+# sandbox path costs a full transient-exec round trip (Daytona: create
+# session, run, poll on a 1s interval, fetch logs, delete) — so the per-read
+# *yield* is what sets the tail's throughput ceiling, not the poll cadence.
+# The shipped 24KB-per-`dd bs=1` read put that ceiling near the rate a
+# full-message provider log grows at (#965 follow-up: DeepSeek writes the whole
+# conversation per record), and any single failed read silently cost the whole
+# tick — which is how the dashboard's token figure froze at a plausible number
+# for 20 minutes of a live run. 512KB per read (~700KB of base64 on the wire)
+# over 8 reads/tick raises the ceiling by ~20x per round trip while cutting
+# round trips per tick from 64 to 8.
+_LIVE_CAPTURE_CHUNK_BYTES = 512 * 1024
+_LIVE_CAPTURE_MAX_READS_PER_TICK = 8
+# dd block size inside the sandbox: the range is selected with
+# iflag=skip_bytes,count_bytes so the read is a seek plus a handful of
+# full-size reads, instead of `bs=1`'s two syscalls per byte.
+_LIVE_CAPTURE_READ_BLOCK_BYTES = 64 * 1024
+# Per-read sandbox deadline. A read that trips it advances nothing, so it must
+# clear the transport comfortably: Daytona polls session commands on a 1s
+# interval and this payload is ~700KB of base64.
+_LIVE_CAPTURE_READ_TIMEOUT_SEC = 20
 _LIVE_CAPTURE_INTERVAL_SEC = 1.0
+# Consecutive zero-progress polls (~1s each) before the stall is escalated from
+# debug to a single WARNING. A capture that is behind but still advancing is
+# normal backlog; one that has stopped advancing is the state that renders a
+# frozen-but-plausible token count.
+_LIVE_CAPTURE_STALL_WARN_TICKS = 30
 
 # Agents that cannot make model calls through LiteLLM. ``oracle`` has no model
 # at all. Gemini is routable through LiteLLM's native Google GenerateContent
@@ -95,6 +121,27 @@ class LiteLLMEndpoint:
     local_base_url: str
 
 
+@dataclass(frozen=True)
+class _CallbackChunk:
+    """One byte-ranged read of the gateway's callback log.
+
+    ``size`` is the log's size observed by the same command that produced
+    ``data``, or None when the read failed. It carries the two facts the
+    previous bare-``bytes`` return could not express, both of which the live
+    token counter depends on:
+
+    * an empty read is "caught up" only when the reader can see it is standing
+      at EOF (``offset >= size``). Without the size, a *failed* read looks
+      identical to a drained log — which is how a broken tail kept reporting a
+      stale total as if it were current.
+    * how far behind the tail is, in bytes, so the lag is a number in the log
+      rather than an invisible condition.
+    """
+
+    data: bytes
+    size: int | None = None
+
+
 class LiteLLMProcess:
     """Common interface for a running LiteLLM proxy."""
 
@@ -106,6 +153,12 @@ class LiteLLMProcess:
     # attribute access even before start_live_capture ever runs).
     _live_usage_total_tokens: int = 0
     _live_usage_seen: bool = False
+    # Live-capture lag bookkeeping. ``_live_capture_lag_bytes`` is 0 when the
+    # tail reached EOF on the last poll, a byte count when it is behind, and
+    # None when it is behind by an unknown amount (the read itself failed).
+    _live_capture_lag_bytes: int | None = 0
+    _live_capture_stall_ticks: int = 0
+    _live_capture_stall_warned: bool = False
 
     @property
     def base_url(self) -> str:
@@ -137,6 +190,9 @@ class LiteLLMProcess:
         # only observe None (fresh capture) — never a transient "0 tokens".
         self._live_usage_seen = False
         self._live_usage_total_tokens = 0
+        self._live_capture_lag_bytes = 0
+        self._live_capture_stall_ticks = 0
+        self._live_capture_stall_warned = False
         self._live_capture_task = asyncio.create_task(self._live_capture_loop())
 
     def live_usage_tokens(self) -> int | None:
@@ -157,7 +213,7 @@ class LiteLLMProcess:
             return None
         return self._live_usage_total_tokens
 
-    async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
+    async def _read_callback_chunk(self, offset: int, limit: int) -> _CallbackChunk:
         raise NotImplementedError
 
     async def _capture_live_records(self) -> None:
@@ -166,14 +222,37 @@ class LiteLLMProcess:
         if trajectory is None or writer is None:
             return
 
+        start_offset = int(getattr(self, "_live_callback_offset", 0))
         changed = False
-        for _ in range(64):
+        caught_up = False
+        log_size: int | None = None
+        for _ in range(_LIVE_CAPTURE_MAX_READS_PER_TICK):
             offset = int(getattr(self, "_live_callback_offset", 0))
-            chunk = await self._read_callback_chunk(offset, _LIVE_CAPTURE_CHUNK_BYTES)
-            if not chunk:
+            try:
+                chunk = await self._read_callback_chunk(
+                    offset, _LIVE_CAPTURE_CHUNK_BYTES
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A raising read (the sandbox's exec poll hitting its deadline,
+                # a teardown race) is a lag like any other failed read. Catch it
+                # HERE rather than letting the loop's blanket handler swallow
+                # it, so the tick still reaches the lag accounting below instead
+                # of stalling invisibly — the exact shape of the frozen counter
+                # this fix exists to surface.
+                logger.debug("Live LLM callback read failed: %s", exc)
+                chunk = _CallbackChunk(b"", None)
+            if chunk.size is not None:
+                log_size = chunk.size
+            if not chunk.data:
+                # Empty means "drained" ONLY when the reader could see the
+                # log's size and is standing at it. A failed read (size None)
+                # is a lag, and must not be recorded as having caught up.
+                caught_up = chunk.size is not None and offset >= chunk.size
                 break
-            self._live_callback_offset = offset + len(chunk)
-            data = getattr(self, "_live_callback_remainder", b"") + chunk
+            self._live_callback_offset = offset + len(chunk.data)
+            data = getattr(self, "_live_callback_remainder", b"") + chunk.data
             lines = data.split(b"\n")
             self._live_callback_remainder = lines.pop()
             for raw_line in lines:
@@ -200,10 +279,78 @@ class LiteLLMProcess:
                         )
                         self._live_usage_seen = True
                     changed = True
-            if len(chunk) < _LIVE_CAPTURE_CHUNK_BYTES:
+            if len(chunk.data) < _LIVE_CAPTURE_CHUNK_BYTES:
+                caught_up = True
                 break
         if changed:
             writer.write(trajectory)
+        self._note_live_capture_lag(
+            start_offset=start_offset, caught_up=caught_up, log_size=log_size
+        )
+
+    def _note_live_capture_lag(
+        self, *, start_offset: int, caught_up: bool, log_size: int | None
+    ) -> None:
+        """Record — and, once it persists, surface — a tail that is behind.
+
+        A poll that ends without reaching EOF is exactly the state that made
+        the dashboard's token figure lie: the cell keeps rendering a plausible
+        cumulative number that has silently stopped tracking the run. Every
+        behind poll is logged at debug with the byte lag; a tail that is behind
+        AND has stopped advancing altogether earns one WARNING (latched — a
+        stalled capture must not turn into a per-second log flood), because a
+        frozen-but-plausible spend figure is worse than a visibly absent one:
+        users read it to decide whether to kill a run.
+
+        The counter itself is deliberately left alone. It is a cumulative lower
+        bound at all times (the tail always trails the log by some amount), so
+        blanking it on a stall would trade a slightly stale number for no
+        number, and the dashboard already reconciles it as
+        ``max(acp_snapshot, gateway_live)`` — a None here would just hand the
+        cell to the other, equally lagging signal.
+        """
+        offset = int(getattr(self, "_live_callback_offset", 0))
+        if caught_up:
+            self._live_capture_lag_bytes = 0
+            self._live_capture_stall_ticks = 0
+            return
+
+        lag = max(log_size - offset, 0) if log_size is not None else None
+        self._live_capture_lag_bytes = lag
+        lag_text = "an unknown number of" if lag is None else str(lag)
+        if offset > start_offset:
+            # Behind but still draining: normal backlog after a burst.
+            self._live_capture_stall_ticks = 0
+            logger.debug(
+                "Live LLM capture is %s bytes behind the gateway log "
+                "(read through byte %d this poll).",
+                lag_text,
+                offset,
+            )
+            return
+
+        self._live_capture_stall_ticks += 1
+        logger.debug(
+            "Live LLM capture made no progress at byte %d (%s bytes behind, "
+            "%d consecutive stalled polls).",
+            offset,
+            lag_text,
+            self._live_capture_stall_ticks,
+        )
+        if (
+            self._live_capture_stall_ticks >= _LIVE_CAPTURE_STALL_WARN_TICKS
+            and not self._live_capture_stall_warned
+        ):
+            self._live_capture_stall_warned = True
+            logger.warning(
+                "Live token counter has stalled: the model-gateway log tail "
+                "has not advanced past byte %d in %d polls (%s bytes behind). "
+                "The live token/cost figures now UNDERCOUNT this run; the "
+                "final totals, imported from the full log, are unaffected.",
+                offset,
+                self._live_capture_stall_ticks,
+                lag_text,
+            )
 
     async def _live_capture_loop(self) -> None:
         while True:
@@ -297,14 +444,19 @@ class HostLiteLLMProcess(LiteLLMProcess):
         except OSError:
             return -1
 
-    async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
-        def _read() -> bytes:
+    async def _read_callback_chunk(self, offset: int, limit: int) -> _CallbackChunk:
+        def _read() -> _CallbackChunk:
             try:
                 with self.log_path.open("rb") as handle:
+                    size = os.fstat(handle.fileno()).st_size
                     handle.seek(offset)
-                    return handle.read(limit)
+                    return _CallbackChunk(handle.read(limit), size)
+            except FileNotFoundError:
+                # The proxy has not written its first record yet: nothing to
+                # read, and nothing behind — not a failed read.
+                return _CallbackChunk(b"", 0)
             except OSError:
-                return b""
+                return _CallbackChunk(b"", None)
 
         return await asyncio.to_thread(_read)
 
@@ -401,9 +553,29 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             return int((result.stdout or "-1").strip() or -1)
         return -1
 
-    async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
+    async def _read_callback_chunk(self, offset: int, limit: int) -> _CallbackChunk:
+        # One command per read, emitting ``<size>\n<base64 payload>``: the log
+        # size rides along for free so the caller can tell "drained" from
+        # "the read failed" and can quantify the lag without a second exec.
+        #
+        # The range is selected with iflag=skip_bytes,count_bytes so dd seeks
+        # and then reads in 64KB blocks. The previous `bs=1 skip=<offset>`
+        # form made dd issue two syscalls per byte transferred, which — on top
+        # of a full transient-exec round trip per read — is what held the tail
+        # to ~24KB per second-plus and let a fast-growing provider log outrun
+        # it permanently.
+        #
+        # Userland floor: `base64 -w 0` on this same line already requires GNU
+        # coreutils (BusyBox base64 has no -w), so the only new constraint is
+        # the version — skip_bytes/count_bytes landed in coreutils 8.11 (2011).
+        # An image that somehow lacks them now fails *visibly*: dd emits
+        # nothing, the size line still arrives, and the read is classified as a
+        # lag that escalates to a warning instead of freezing the counter.
+        path = shlex.quote(self.log_path)
         command = (
-            f"dd if={shlex.quote(self.log_path)} bs=1 skip={offset} count={limit} "
+            f"stat -c %s {path} 2>/dev/null || echo 0; "
+            f"dd if={path} iflag=skip_bytes,count_bytes,fullblock "
+            f"bs={_LIVE_CAPTURE_READ_BLOCK_BYTES} skip={offset} count={limit} "
             "2>/dev/null | base64 -w 0"
         )
         # Daytona otherwise retains one session wrapper shell for every
@@ -412,11 +584,24 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         # terminal calls. Providers without a transient-exec path keep the
         # existing behavior.
         execute = getattr(self.sandbox, "exec_transient", self.sandbox.exec)
-        result = await execute(command, timeout_sec=10)
-        encoded = (result.stdout or "").strip()
-        if result.return_code != 0 or not encoded:
-            return b""
-        return base64.b64decode(encoded, validate=True)
+        result = await execute(command, timeout_sec=_LIVE_CAPTURE_READ_TIMEOUT_SEC)
+        if result.return_code != 0:
+            return _CallbackChunk(b"", None)
+        head, _, payload = (result.stdout or "").strip().partition("\n")
+        try:
+            size = int(head)
+        except ValueError:
+            return _CallbackChunk(b"", None)
+        # Join before validating: the transport may re-wrap a long line, but a
+        # payload that is genuinely not base64 must stay a failed read rather
+        # than decode to silent garbage that would desync the byte offset.
+        encoded = "".join(payload.split())
+        if not encoded:
+            return _CallbackChunk(b"", size)
+        try:
+            return _CallbackChunk(base64.b64decode(encoded, validate=True), size)
+        except ValueError:
+            return _CallbackChunk(b"", None)
 
     async def _load_callback_log(self) -> None:
         text = ""
