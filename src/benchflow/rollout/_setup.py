@@ -551,8 +551,11 @@ async def _kill_orphan_verifier(env: Any) -> None:
     """
     with contextlib.suppress(Exception):
         await asyncio.wait_for(
-            env.exec("pkill -f '/verifier/test.sh' 2>/dev/null || true",
-                     user="root", timeout_sec=10),
+            env.exec(
+                "pkill -f '/verifier/test.sh' 2>/dev/null || true",
+                user="root",
+                timeout_sec=10,
+            ),
             timeout=30,
         )
 

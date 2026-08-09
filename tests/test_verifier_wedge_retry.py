@@ -43,7 +43,9 @@ def _mk_planes(verifier_stub):
 
 def _env_with_probe_output(stdout: str):
     env = SimpleNamespace()
-    env.exec = AsyncMock(return_value=SimpleNamespace(stdout=stdout, stderr="", return_code=0))
+    env.exec = AsyncMock(
+        return_value=SimpleNamespace(stdout=stdout, stderr="", return_code=0)
+    )
     return env
 
 
