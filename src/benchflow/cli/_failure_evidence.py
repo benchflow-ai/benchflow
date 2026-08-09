@@ -17,6 +17,9 @@ only):
   breakdown, then test-stdout tail); the first that yields a line wins.
 - Every read is bounded (``_ARTIFACT_READ_BYTES`` per file) and nothing here
   raises — any surprise degrades to ``None``, i.e. the bare reward reason.
+- The report block's ``(details: …)`` pointer is decided separately, by
+  :func:`verifier_dir_for` from dir existence alone — every failure block
+  with artifacts on disk gets one pointer, evidence or not.
 """
 
 from __future__ import annotations
@@ -151,6 +154,19 @@ def _display_test_name(raw_name: str) -> str:
     return head.rsplit("::", 1)[-1] + bracket + param
 
 
+def _bounded_json(path: Path) -> dict[str, Any] | None:
+    """The file parsed as a JSON object, or ``None`` when it can't serve.
+
+    JSON only parses whole — an oversized (> ``_ARTIFACT_READ_BYTES``) file is
+    skipped, not truncated, and a non-object payload is skipped the same way;
+    either way the next evidence source gets its turn.
+    """
+    if path.stat().st_size > _ARTIFACT_READ_BYTES:
+        return None
+    data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    return data if isinstance(data, dict) else None
+
+
 def _ctrf_failure_line(ctrf_path: Path) -> FailureLine | None:
     """``<test> failed[: <assertion>]`` from the first failed CTRF test.
 
@@ -162,11 +178,9 @@ def _ctrf_failure_line(ctrf_path: Path) -> FailureLine | None:
     carries a count suffix (``(+N more failures; P/T checks passed)``) so the
     console never under-reports how much is broken.
     """
-    if ctrf_path.stat().st_size > _ARTIFACT_READ_BYTES:
-        # JSON only parses whole — an oversized report is skipped (not
-        # truncated) and the next evidence source gets its turn.
+    data = _bounded_json(ctrf_path)
+    if data is None:
         return None
-    data = json.loads(ctrf_path.read_text(encoding="utf-8", errors="replace"))
     raw_tests = (data.get("results") or {}).get("tests") or []
     tests = [test for test in raw_tests if isinstance(test, dict)]
     failed = [test for test in tests if test.get("status") == "failed"]
@@ -213,12 +227,8 @@ def _reward_json_failure_line(reward_path: Path) -> FailureLine | None:
     not already say — it yields to the stdout tail. No count suffix: the
     breakdown is a metric summary, not a first-of-N failure pick.
     """
-    if reward_path.stat().st_size > _ARTIFACT_READ_BYTES:
-        # JSON only parses whole — an oversized file is skipped (not
-        # truncated) and the next evidence source gets its turn.
-        return None
-    data = json.loads(reward_path.read_text(encoding="utf-8", errors="replace"))
-    if not isinstance(data, dict):
+    data = _bounded_json(reward_path)
+    if data is None:
         return None
     shown = metric_breakdown(data)
     return FailureLine(shown) if shown is not None else None
@@ -242,17 +252,28 @@ def _stdout_tail_failure_line(stdout_path: Path) -> FailureLine | None:
     return FailureLine(last_failed) if last_failed is not None else None
 
 
-def artifact_failure_evidence(
-    job_dir: Path, rollout_name: str
-) -> tuple[FailureLine | None, Path | None]:
-    """``(line, verifier_dir)`` mined from the rollout's verifier artifacts.
+def verifier_dir_for(job_dir: Path, rollout_name: str) -> Path | None:
+    """The rollout's verifier dir when it exists on disk, else ``None``.
 
-    ``line`` is the structured one-liner from the first evidence source that
-    yields one, or ``None`` when every probe misses. ``verifier_dir`` is
-    non-``None`` whenever the rollout's verifier dir exists on disk — even
-    evidence-less: the report block's ``(details: …)`` pointer is most
-    valuable exactly when extraction fails, so the caller can still print
-    where to look. Never raises.
+    Powers the report block's ``(details: …)`` pointer rule: every failure
+    block with artifacts on disk gets one pointer — from dir existence alone,
+    independent of which tier supplied the reason line (the pointer is most
+    valuable exactly when evidence extraction fails). Never raises.
+    """
+    # Local import: RolloutPaths pulls in the task package (see
+    # artifact_failure_evidence).
+    from benchflow.task.paths import RolloutPaths
+
+    try:
+        verifier_dir = RolloutPaths(rollout_dir=job_dir / rollout_name).verifier_dir
+        return verifier_dir if verifier_dir.is_dir() else None
+    except Exception:
+        return None
+
+
+def artifact_failure_evidence(job_dir: Path, rollout_name: str) -> FailureLine | None:
+    """``FailureLine`` mined from the rollout's verifier artifacts, or ``None``
+    when every probe misses. Never raises.
     """
     # Local import: RolloutPaths pulls in the task package, which the CLI
     # shouldn't pay for until a failure actually needs artifact evidence.
@@ -277,8 +298,5 @@ def artifact_failure_evidence(
             # the report must never crash over evidence mining.
             continue
         if detail is not None:
-            return detail, verifier_dir
-    try:
-        return None, verifier_dir if verifier_dir.is_dir() else None
-    except OSError:
-        return None, None
+            return detail
+    return None

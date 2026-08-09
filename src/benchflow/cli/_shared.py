@@ -25,6 +25,7 @@ from benchflow.cli._failure_evidence import (
     FailureLine,
     artifact_failure_evidence,
     metric_breakdown,
+    verifier_dir_for,
 )
 
 if TYPE_CHECKING:
@@ -116,11 +117,8 @@ _MAX_FAILURE_LINES = 5
 _FAILURE_LINE_LIMIT = 100
 
 
-def _failure_reason(
-    failure: TaskFailure, job_dir: Path | None = None
-) -> tuple[FailureLine, Path | None]:
-    """One cheap line explaining why a FAILED (scored, reward != 1) task
-    failed, plus the verifier dir for the ``(details: …)`` pointer.
+def _failure_reason(failure: TaskFailure, job_dir: Path | None = None) -> FailureLine:
+    """One cheap line explaining why a FAILED (scored, reward != 1) task failed.
 
     Priority: the verifier's own error if set; else the reward plus a compact
     breakdown of the named metrics in the reward dict — flat, or flattened one
@@ -130,34 +128,25 @@ def _failure_reason(
     reads resolved via the ``rollout_name`` the engine records — the engine
     stays file-free); else just the reward. The reason is a ``FailureLine`` so
     the artifact tier's multi-failure count suffix stays separable from the
-    truncatable body (only the artifact tier ever sets it). The returned path
-    is non-``None`` only when the artifact tier ran and the rollout's verifier
-    dir exists — whether or not its probes yielded evidence, because the
-    pointer is most valuable exactly when they miss — so the caller can print
-    one ``(details: …)`` pointer per report block.
+    truncatable body (only the artifact tier ever sets it). The block's
+    ``(details: …)`` pointer is NOT decided here — the caller keys it off
+    on-disk artifacts alone, independent of which tier supplied the reason.
     """
     if failure.verifier_error:
         # Collapse whitespace: verifier errors are routinely multi-line.
-        return FailureLine(" ".join(failure.verifier_error.split())), None
+        return FailureLine(" ".join(failure.verifier_error.split()))
     rewards = failure.rewards or {}
     reward = rewards.get("reward")
     shown = metric_breakdown(rewards)
     if shown is not None:
-        return FailureLine(f"reward {reward} — {shown}"), None
+        return FailureLine(f"reward {reward} — {shown}")
     # No rollout_name (pre-#957-follow-up result.json, sharded aggregation):
     # nothing to resolve — the bare reward is as honest as it gets.
     if job_dir is not None and failure.rollout_name:
-        detail, verifier_dir = artifact_failure_evidence(job_dir, failure.rollout_name)
+        detail = artifact_failure_evidence(job_dir, failure.rollout_name)
         if detail is not None:
-            return (
-                FailureLine(f"reward {reward} — {detail.body}", detail.suffix),
-                verifier_dir,
-            )
-        # Every probe missed: keep the pointer anyway (non-None when the
-        # verifier dir exists) — losing the evidence AND the place to find it
-        # was the observed triple-miss.
-        return FailureLine(f"reward {reward}"), verifier_dir
-    return FailureLine(f"reward {reward}"), None
+            return FailureLine(f"reward {reward} — {detail.body}", detail.suffix)
+    return FailureLine(f"reward {reward}")
 
 
 def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -> None:
@@ -169,8 +158,9 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     dim ``✗ task: reason`` line (capped at ``_MAX_FAILURE_LINES``) so the "why"
     doesn't require opening summary.json; when ``job_dir`` is given, a reason
     that would otherwise be a bare ``reward X`` is upgraded from the rollout's
-    verifier artifacts (bounded reads, displayed failures only), with a single
-    ``(details: …/verifier)`` pointer line for the block. When ``job_dir`` is
+    verifier artifacts (bounded reads, displayed failures only), and every
+    failure block with artifacts on disk gets one ``(details: …/verifier)``
+    pointer line — evidence mined or not. When ``job_dir`` is
     given, the result/summary paths are printed so testers know where to look
     (the guide repeatedly says "read summary.json" but the CLI never said
     where).
@@ -209,9 +199,14 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     failures = getattr(result, "task_failures", None) or []
     artifact_pointer: Path | None = None
     for failure in failures[:_MAX_FAILURE_LINES]:
-        reason, verifier_dir = _failure_reason(failure, job_dir)
-        if artifact_pointer is None and verifier_dir is not None:
-            artifact_pointer = verifier_dir
+        reason = _failure_reason(failure, job_dir)
+        # Pointer rule: every failure block with artifacts on disk gets one
+        # (details:) pointer — the first displayed failure whose verifier dir
+        # exists, independent of which tier supplied its reason line (byte-
+        # identical reasons must not differ on provenance the console can't
+        # show, and the pointer matters most when every probe missed).
+        if artifact_pointer is None and job_dir is not None and failure.rollout_name:
+            artifact_pointer = verifier_dir_for(job_dir, failure.rollout_name)
         # The char budget governs only the free-text body; the multi-failure
         # count suffix is appended AFTER truncation so a long assertion can
         # never swallow the "more than this is broken" signal. Worst case the
