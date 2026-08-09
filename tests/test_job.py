@@ -657,6 +657,54 @@ class TestJobRunOrchestration:
         ]
 
     @pytest.mark.asyncio
+    async def test_run_computes_mean_reward_and_logs_fractional_rewards(
+        self, tmp_path, caplog
+    ):
+        """Partial credit must survive the binarized pass/fail view: run()
+        computes mean_reward over scored rollouts (errors excluded, not
+        zeroed), the per-task lines carry reward=, error lines don't, and the
+        job-complete line carries mean_reward=.
+        """
+        job = self._make_job(tmp_path, n_tasks=3, concurrency=1)
+        outcomes = {
+            "task-0": RunResult(task_name="task-0", rewards={"reward": 1.0}),
+            "task-1": RunResult(task_name="task-1", rewards={"reward": 0.3}),
+            "task-2": RunResult(task_name="task-2", error="agent crashed"),
+        }
+
+        async def fake_run(*, task_path, **kwargs):
+            return outcomes[task_path.name]
+
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(side_effect=fake_run)
+
+        with caplog.at_level(logging.INFO, logger="benchflow.evaluation"):
+            result = await job.run()
+
+        assert result.mean_reward == pytest.approx(0.65)
+        assert "[PASS] task-0 (reward=1.00, tools=0)" in caplog.text
+        assert "[FAIL] task-1 (reward=0.30, tools=0)" in caplog.text
+        assert "[ERR] task-2 (tools=0)" in caplog.text
+        assert "mean_reward=0.65" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_run_mean_reward_none_when_nothing_scored(self, tmp_path, caplog):
+        """An all-error job has no scored rollouts: mean_reward must be None
+        and the job-complete line must omit the field (a fabricated 0.00 would
+        read as a real capability result)."""
+        job = self._make_job(tmp_path, n_tasks=1, concurrency=1)
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(
+            return_value=RunResult(task_name="task-0", error="agent crashed")
+        )
+
+        with caplog.at_level(logging.INFO, logger="benchflow.evaluation"):
+            result = await job.run()
+
+        assert result.mean_reward is None
+        assert "mean_reward=" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_error_and_verifier_error_does_not_crash_invariant(self, tmp_path):
         """A result with BOTH error and verifier_error (rewards=None) must not
         be double-counted — otherwise the passed+failed+errored+verifier_errored

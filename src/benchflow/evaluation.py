@@ -609,6 +609,10 @@ class EvaluationResult:
     memory_score: float | None = None
     memory_scores: dict[str, float] = field(default_factory=dict)
     task_failures: list[TaskFailure] = field(default_factory=list)
+    # Mean of rewards over scored rollouts (None when nothing scored). The
+    # pass/fail counts binarize at reward==1, which erases partial credit —
+    # a 0.3 rubric score and a flat 0 both print as FAIL without this.
+    mean_reward: float | None = None
 
     @property
     def score(self) -> float:
@@ -1391,7 +1395,16 @@ class Evaluation:
         status = "PASS" if reward == 1 else ("FAIL" if reward is not None else "ERR")
         err_msg = result.error or result.verifier_error
         err = f" ({truncate_end(err_msg, 50)})" if err_msg else ""
-        logger.info(f"[{status}] {td.name} (tools={result.n_tool_calls}){err}")
+        # Show the fractional reward on scored lines: pass/fail binarizes at
+        # reward==1, so without it a 0.3 rubric score reads as a flat 0.
+        reward_part = (
+            f"reward={reward:.2f}, "
+            if isinstance(reward, (int, float)) and not isinstance(reward, bool)
+            else ""
+        )
+        logger.info(
+            f"[{status}] {td.name} ({reward_part}tools={result.n_tool_calls}){err}"
+        )
         self._fire_progress(self._on_result, td.name, result)
 
     async def _run_parallel_independent(
@@ -1812,6 +1825,15 @@ class Evaluation:
             for name, r in sorted(all_results.items())
             if classify_score_outcome(r) == "failed"
         ]
+        scored_rewards = [
+            rw
+            for r in all_results.values()
+            if isinstance(rw := (r.get("rewards") or {}).get("reward"), (int, float))
+            and not isinstance(rw, bool)
+        ]
+        mean_reward = (
+            sum(scored_rewards) / len(scored_rewards) if scored_rewards else None
+        )
         job_result = EvaluationResult(
             job_name=self._job_name,
             config=cfg,
@@ -1828,6 +1850,7 @@ class Evaluation:
             memory_score=memory["avg_score"],
             memory_scores=memory_scores,
             task_failures=task_failures,
+            mean_reward=mean_reward,
         )
 
         assert (
@@ -1885,6 +1908,7 @@ class Evaluation:
             "score_excl_errors_ratio": pass_rate_excl_errors(
                 passed=audit_counts["passed"], failed=audit_counts["failed"]
             ),
+            "mean_reward": job_result.mean_reward,
             "elapsed_sec": elapsed,
             "memory_score": job_result.memory_score,
             "memory_score_coverage": (
@@ -1984,9 +2008,14 @@ class Evaluation:
                     "This likely indicates a systemic verifier bug, not agent failure."
                 )
 
+        mean_part = (
+            f"mean_reward={job_result.mean_reward:.2f}, "
+            if job_result.mean_reward is not None
+            else ""
+        )
         logger.info(
             f"Job complete: {job_result.passed}/{job_result.total} "
-            f"({job_result.score:.1%}), errors={job_result.errored}, "
+            f"({job_result.score:.1%}), {mean_part}errors={job_result.errored}, "
             f"idle_timeouts={error_category_counts.get(IDLE_TIMEOUT, 0)}, "
             f"time={elapsed / 60:.1f}min"
         )
