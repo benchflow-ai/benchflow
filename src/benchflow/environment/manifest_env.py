@@ -138,6 +138,23 @@ class ManifestEnvironment:
                     continue  # binary missing or its package absent — skip
                 await self._start_service(svc)
                 self._started.append(svc)
+            if m.services and not self._started:
+                # Per-task images legitimately carry a SUBSET of the declared
+                # services — but ZERO startable services means the manifest and
+                # the image disagree entirely (stale CLI names, wrong image),
+                # and with no explicit readiness URLs the readiness gate then
+                # passes vacuously. That exact shape shipped a drifted
+                # env0@prod pin whose every rollout burned its budget and died
+                # at the verifier with connection-refused (2026-08-09). Fail
+                # here, loudly, instead.
+                declared = ", ".join(s.command.split()[0] for s in m.services)
+                raise RuntimeError(
+                    f"Environment manifest '{m.name}' declares "
+                    f"{len(m.services)} service(s) but NONE are startable in "
+                    f"this image (probed: {declared}). The manifest's service "
+                    "commands likely no longer match the image — verify the "
+                    "binary names against the image or update the manifest."
+                )
         endpoints = {p: f"http://localhost:{p}" for p in m.all_ports}
         self._handle = EnvHandle(name=m.name, endpoints=endpoints)
         # Capture a baseline of the declared state so ``reset`` can return the
