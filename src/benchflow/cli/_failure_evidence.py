@@ -4,15 +4,17 @@ The one file-touching corner of the CLI's final report block: when a failed
 task's reason would otherwise be the bare ``reward X`` fallback, mine the
 rollout's verifier artifacts for a one-line explanation. Lives in its own
 module so ``cli/_shared.py`` stays the side-effect-free display helpers it
-advertises.
+advertises. Also home of :func:`metric_breakdown`, the one canonical
+rewards-dict flattening — shared by ``_shared.py``'s in-memory metric tier and
+the ``reward.json`` probe here, so the two render identically.
 
 Contract (the engine stays file-free — these reads are CLI-side, report-time
 only):
 
 - The rollout dir is resolved exactly, from the ``rollout_name`` the engine
   records on every result — never guessed from globs.
-- Evidence sources are tried in order (CTRF report, then test-stdout tail);
-  the first that yields a line wins.
+- Evidence sources are tried in order (CTRF report, then reward.json metric
+  breakdown, then test-stdout tail); the first that yields a line wins.
 - Every read is bounded (``_ARTIFACT_READ_BYTES`` per file) and nothing here
   raises — any surprise degrades to ``None``, i.e. the bare reward reason.
 """
@@ -21,10 +23,10 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
 # Never read more than this many bytes per file, and evidence is only mined
@@ -32,6 +34,8 @@ if TYPE_CHECKING:
 _ARTIFACT_READ_BYTES = 64 * 1024
 # Pytest final summary, decoration stripped: "1 failed, 2 passed in 40.86s".
 _PYTEST_SUMMARY_RE = re.compile(r"\d+ failed\b")
+# Metric-breakdown cap: one metric-happy verifier can't flood the line.
+_BREAKDOWN_METRICS = 3
 
 
 class FailureLine(NamedTuple):
@@ -47,6 +51,88 @@ class FailureLine(NamedTuple):
 
     body: str
     suffix: str = ""
+
+
+def _numeric_items(mapping: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    """The named numeric metrics of one mapping level, insertion-ordered.
+
+    ``reward`` is excluded at every level: at the top it is the aggregate the
+    line already leads with, and a nested ``reward`` would render a confusing
+    ``reward 0.8 — reward 0.8``.
+    """
+    return [
+        (name, value)
+        for name, value in mapping.items()
+        if name != "reward" and isinstance(value, (bool, int, float))
+    ]
+
+
+def metric_breakdown(rewards: Mapping[str, Any]) -> str | None:
+    """Compact ``name value`` metric breakdown of a rewards mapping, capped at
+    ``_BREAKDOWN_METRICS`` — or ``None`` when it holds no named metrics.
+
+    The numeric evidence may sit flat in the mapping, or nested one level under
+    a ``metrics`` sub-dict (env0-style verifiers: ``{"reward": …, "metrics":
+    {…}, "details": {…}}``), or under ``details`` when ``metrics`` yields
+    nothing. Flat keys win outright — a flat rewards dict renders exactly as
+    before.
+
+    Ordering leads with the lowest-signal metrics — they explain the miss:
+
+    - A ``<name>_found`` metric with a matching positive numeric
+      ``<name>_total`` anywhere in the mapping renders as ``<name> found/total``
+      and sorts by that fraction, so ``deadlines 1/5`` leads even though 1 is
+      not 0. A total consumed by a pair is dropped from the shown list (the
+      fraction already carries it).
+    - Unpaired metrics keep the zero-first rule: zero/failed first, stable
+      within each group.
+    """
+    shown = _numeric_items(rewards)
+    if not shown:
+        for key in ("metrics", "details"):
+            sub = rewards.get(key)
+            if isinstance(sub, dict):
+                shown = _numeric_items(sub)
+                if shown:
+                    break
+    if not shown:
+        return None
+    # found/total pairing looks across ALL levels: env0 keeps the found counts
+    # under "metrics" and the totals under "details". First-seen wins.
+    totals: dict[str, Any] = {}
+    for source in (rewards, rewards.get("metrics"), rewards.get("details")):
+        if isinstance(source, dict):
+            for name, value in _numeric_items(source):
+                totals.setdefault(name, value)
+
+    def _pair_total(name: str, value: Any) -> Any | None:
+        """The positive numeric ``<base>_total`` for a ``<base>_found`` metric,
+        else ``None``. Bools (either side) and non-positive totals never pair."""
+        base = name.removesuffix("_found")
+        if base == name or isinstance(value, bool):
+            return None
+        total = totals.get(base + "_total")
+        if isinstance(total, bool) or not isinstance(total, (int, float)):
+            return None
+        return total if total > 0 else None
+
+    consumed = {
+        name.removesuffix("_found") + "_total"
+        for name, value in shown
+        if _pair_total(name, value) is not None
+    }
+    entries: list[tuple[float, str]] = []
+    for name, value in shown:
+        if name in consumed:
+            continue
+        total = _pair_total(name, value)
+        if total is not None:
+            base = name.removesuffix("_found")
+            entries.append((value / total, f"{base} {value}/{total}"))
+        else:
+            entries.append((0.0 if value == 0 else 1.0, f"{name} {value}"))
+    entries.sort(key=lambda entry: entry[0])  # stable: ties keep dict order
+    return ", ".join(fragment for _, fragment in entries[:_BREAKDOWN_METRICS])
 
 
 def _display_test_name(raw_name: str) -> str:
@@ -115,6 +201,29 @@ def _ctrf_failure_line(ctrf_path: Path) -> FailureLine | None:
     return FailureLine(f"{name} failed", suffix)
 
 
+def _reward_json_failure_line(reward_path: Path) -> FailureLine | None:
+    """Metric breakdown mined from the verifier's ``reward.json``.
+
+    env0-style verifiers write ``{"reward": …, "metrics": {…}, "details":
+    {…}}`` (and non-pytest stdout, no CTRF report) — when the result's rewards
+    dict was stripped to the bare aggregate (older persisted results, sharded
+    aggregation), the numeric evidence still sits on disk. Reuses the same
+    one-level flattening as the in-memory reward-dict tier so the two render
+    identically. A file with no named metrics repeats nothing the line does
+    not already say — it yields to the stdout tail. No count suffix: the
+    breakdown is a metric summary, not a first-of-N failure pick.
+    """
+    if reward_path.stat().st_size > _ARTIFACT_READ_BYTES:
+        # JSON only parses whole — an oversized file is skipped (not
+        # truncated) and the next evidence source gets its turn.
+        return None
+    data = json.loads(reward_path.read_text(encoding="utf-8", errors="replace"))
+    if not isinstance(data, dict):
+        return None
+    shown = metric_breakdown(data)
+    return FailureLine(shown) if shown is not None else None
+
+
 def _stdout_tail_failure_line(stdout_path: Path) -> FailureLine | None:
     """Last pytest summary ("N failed, M passed …") — else last ``FAILED …``
     line — from a bounded tail of the verifier's test-stdout capture. No count
@@ -135,11 +244,15 @@ def _stdout_tail_failure_line(stdout_path: Path) -> FailureLine | None:
 
 def artifact_failure_evidence(
     job_dir: Path, rollout_name: str
-) -> tuple[FailureLine, Path] | None:
-    """``FailureLine`` mined from the rollout's verifier artifacts, or ``None``.
+) -> tuple[FailureLine | None, Path | None]:
+    """``(line, verifier_dir)`` mined from the rollout's verifier artifacts.
 
-    Returns the structured one-liner plus the verifier dir it came from (for
-    the report block's single ``(details: …)`` pointer line). Never raises.
+    ``line`` is the structured one-liner from the first evidence source that
+    yields one, or ``None`` when every probe misses. ``verifier_dir`` is
+    non-``None`` whenever the rollout's verifier dir exists on disk — even
+    evidence-less: the report block's ``(details: …)`` pointer is most
+    valuable exactly when extraction fails, so the caller can still print
+    where to look. Never raises.
     """
     # Local import: RolloutPaths pulls in the task package, which the CLI
     # shouldn't pay for until a failure actually needs artifact evidence.
@@ -151,6 +264,7 @@ def artifact_failure_evidence(
         # ctrf.json has no RolloutPaths property — the verifier recovers it by
         # literal name (verifier_core.py, `_recover_main_verifier_outputs`).
         (verifier_dir / "ctrf.json", _ctrf_failure_line),
+        (rollout_paths.reward_json_path, _reward_json_failure_line),
         (rollout_paths.test_stdout_path, _stdout_tail_failure_line),
     ]
     for path, extract in attempts:
@@ -164,4 +278,7 @@ def artifact_failure_evidence(
             continue
         if detail is not None:
             return detail, verifier_dir
-    return None
+    try:
+        return None, verifier_dir if verifier_dir.is_dir() else None
+    except OSError:
+        return None, None

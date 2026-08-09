@@ -21,7 +21,11 @@ from rich.console import Console
 from rich.markup import escape
 
 from benchflow._utils.text import truncate_end
-from benchflow.cli._failure_evidence import FailureLine, artifact_failure_evidence
+from benchflow.cli._failure_evidence import (
+    FailureLine,
+    artifact_failure_evidence,
+    metric_breakdown,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -110,54 +114,49 @@ def _exit_if_evaluation_had_errors(result: object) -> None:
 # count suffix, which deliberately run ~40 chars past the budget.
 _MAX_FAILURE_LINES = 5
 _FAILURE_LINE_LIMIT = 100
-_FAILURE_REASON_METRICS = 3
 
 
 def _failure_reason(
     failure: TaskFailure, job_dir: Path | None = None
 ) -> tuple[FailureLine, Path | None]:
     """One cheap line explaining why a FAILED (scored, reward != 1) task
-    failed, plus the verifier dir when artifacts supplied the evidence.
+    failed, plus the verifier dir for the ``(details: …)`` pointer.
 
     Priority: the verifier's own error if set; else the reward plus a compact
-    breakdown of the named metrics in the reward dict (zero/failed metrics
-    first — they explain the miss); else the reward plus a one-liner mined
-    from the rollout's verifier artifacts (bounded CLI-side reads resolved via
-    the ``rollout_name`` the engine records — the engine stays file-free);
-    else just the reward. The reason is a ``FailureLine`` so the artifact
-    tier's multi-failure count suffix stays separable from the truncatable
-    body (only the artifact tier ever sets it). The returned path is
-    non-``None`` only for the artifact tier, so the caller can print one
-    ``(details: …)`` pointer per report block.
+    breakdown of the named metrics in the reward dict — flat, or flattened one
+    level from an env0-style ``metrics``/``details`` sub-dict, lowest-signal
+    metrics first (see :func:`metric_breakdown`); else the reward plus a
+    one-liner mined from the rollout's verifier artifacts (bounded CLI-side
+    reads resolved via the ``rollout_name`` the engine records — the engine
+    stays file-free); else just the reward. The reason is a ``FailureLine`` so
+    the artifact tier's multi-failure count suffix stays separable from the
+    truncatable body (only the artifact tier ever sets it). The returned path
+    is non-``None`` only when the artifact tier ran and the rollout's verifier
+    dir exists — whether or not its probes yielded evidence, because the
+    pointer is most valuable exactly when they miss — so the caller can print
+    one ``(details: …)`` pointer per report block.
     """
     if failure.verifier_error:
         # Collapse whitespace: verifier errors are routinely multi-line.
         return FailureLine(" ".join(failure.verifier_error.split())), None
     rewards = failure.rewards or {}
     reward = rewards.get("reward")
-    metrics = [
-        (name, value)
-        for name, value in rewards.items()
-        if name != "reward" and isinstance(value, (bool, int, float))
-    ]
-    if metrics:
-        # Zero/failed metrics first (stable within each group), capped so one
-        # metric-happy verifier can't flood the line.
-        metrics.sort(key=lambda kv: kv[1] != 0)
-        shown = ", ".join(
-            f"{name} {value}" for name, value in metrics[:_FAILURE_REASON_METRICS]
-        )
+    shown = metric_breakdown(rewards)
+    if shown is not None:
         return FailureLine(f"reward {reward} — {shown}"), None
     # No rollout_name (pre-#957-follow-up result.json, sharded aggregation):
     # nothing to resolve — the bare reward is as honest as it gets.
     if job_dir is not None and failure.rollout_name:
-        evidence = artifact_failure_evidence(job_dir, failure.rollout_name)
-        if evidence is not None:
-            detail, verifier_dir = evidence
+        detail, verifier_dir = artifact_failure_evidence(job_dir, failure.rollout_name)
+        if detail is not None:
             return (
                 FailureLine(f"reward {reward} — {detail.body}", detail.suffix),
                 verifier_dir,
             )
+        # Every probe missed: keep the pointer anyway (non-None when the
+        # verifier dir exists) — losing the evidence AND the place to find it
+        # was the observed triple-miss.
+        return FailureLine(f"reward {reward}"), verifier_dir
     return FailureLine(f"reward {reward}"), None
 
 
@@ -226,8 +225,9 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     extra = len(failures) - _MAX_FAILURE_LINES
     if extra > 0:
         console.print(f"[dim]  … and {extra} more[/dim]")
-    # One pointer per block (not per line): the first artifact-backed reason's
-    # verifier dir, so "where do I look next" needs no summary.json dig either.
+    # One pointer per block (not per line): the first displayed failure whose
+    # verifier dir exists — artifact-backed or not — so "where do I look next"
+    # needs no summary.json dig even when evidence mining came up empty.
     if artifact_pointer is not None:
         console.print(f"[dim]  (details: {escape(str(artifact_pointer))})[/dim]")
     if job_dir is not None:
