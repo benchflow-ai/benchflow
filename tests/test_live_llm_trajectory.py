@@ -43,28 +43,29 @@ def _trajectory(*, content: str = "ok") -> Trajectory:
     return trajectory
 
 
-def _callback_line(*, content: str = "ok") -> str:
-    return (
-        json.dumps(
-            {
-                "event": "success",
-                "request": {
-                    "method": "POST",
-                    "path": "/v1/chat/completions",
-                    "body": {
-                        "messages": [{"role": "user", "content": "hello"}],
-                        "api_key": "sk-secret",
-                    },
-                },
-                "response": {"choices": [{"message": {"content": content}}]},
-                "start_time": "2026-07-11T00:00:00Z",
-                "end_time": "2026-07-11T00:00:01Z",
-                "duration_ms": 1000,
+def _callback_line(*, content: str = "ok", usage: dict | None = None) -> str:
+    # Mirrors BenchFlowLiteLLMLogger.async_log_success_event's record shape:
+    # ``usage`` rides both top-level and (when present) inside the response
+    # body, exactly as the sandbox callback.jsonl contains it.
+    record = {
+        "event": "success",
+        "request": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "messages": [{"role": "user", "content": "hello"}],
+                "api_key": "sk-secret",
             },
-            separators=(",", ":"),
-        )
-        + "\n"
-    )
+        },
+        "response": {"choices": [{"message": {"content": content}}]},
+        "start_time": "2026-07-11T00:00:00Z",
+        "end_time": "2026-07-11T00:00:01Z",
+        "duration_ms": 1000,
+    }
+    if usage is not None:
+        record["usage"] = usage
+        record["response"]["usage"] = usage
+    return json.dumps(record, separators=(",", ":")) + "\n"
 
 
 def test_writer_redacts_and_atomically_replaces_snapshot(tmp_path):
@@ -213,6 +214,143 @@ async def test_daytona_proxy_incrementally_mirrors_callback(tmp_path, monkeypatc
     await process._stop_live_capture()
 
     assert len(output_path.read_text().splitlines()) == 2
+
+
+def _sandbox_process(sandbox, tmp_path=None) -> SandboxLiteLLMProcess:
+    del tmp_path
+    return SandboxLiteLLMProcess(
+        sandbox=sandbox,
+        route=SimpleNamespace(),
+        runtime_dir="/tmp/runtime",
+        endpoint=LiteLLMEndpoint("http://agent", "http://local"),
+        log_path="/tmp/runtime/callback.jsonl",
+        pid_path="/tmp/runtime/pid",
+        stdout_path="/tmp/runtime/stdout",
+        stderr_path="/tmp/runtime/stderr",
+        session_id="run",
+        agent_name="prime-agent",
+    )
+
+
+async def _wait_for(predicate, *, ticks: int = 100) -> bool:
+    for _ in range(ticks):
+        if predicate():
+            return True
+        await runtime_mod.asyncio.sleep(0.01)
+    return predicate()
+
+
+@pytest.mark.asyncio
+async def test_live_capture_accumulates_usage_tokens_mid_run(tmp_path, monkeypatch):
+    """Guards the mid-prompt live-token counter for the eval dashboard.
+
+    A single-prompt rollout has no ACP usage snapshot until the prompt
+    completes, so the dashboard's only mid-run token signal is the gateway's
+    live callback capture: ``live_usage_tokens()`` must be None before any
+    usage-bearing record, then advance per mirrored LLM request using the
+    same canonical parser/accounting scoring uses, and freeze (no leaked
+    poller) after ``_stop_live_capture``.
+    """
+    monkeypatch.setattr(runtime_mod, "_LIVE_CAPTURE_INTERVAL_SEC", 0.01)
+    sandbox = _SandboxWithCallbackLog(
+        _callback_line(
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+        ).encode()
+    )
+    process = _sandbox_process(sandbox)
+    assert process.live_usage_tokens() is None  # before capture starts
+
+    process.start_live_capture(tmp_path / "trajectory" / "llm_trajectory.jsonl")
+    assert await _wait_for(lambda: process.live_usage_tokens() == 120)
+
+    sandbox.data += _callback_line(
+        content="second",
+        usage={"prompt_tokens": 60, "completion_tokens": 20, "total_tokens": 80},
+    ).encode()
+    assert await _wait_for(lambda: process.live_usage_tokens() == 200)
+
+    await process._stop_live_capture()
+    sandbox.data += _callback_line(
+        content="late", usage={"prompt_tokens": 1, "completion_tokens": 1}
+    ).encode()
+    await runtime_mod.asyncio.sleep(0.05)
+    assert process.live_usage_tokens() == 200  # cancelled: no further advance
+
+
+@pytest.mark.asyncio
+async def test_live_usage_stays_none_without_usage_records(tmp_path, monkeypatch):
+    """Usage-less successes, garbage lines, and failure records: the counter
+    must stay None (the dashboard's "no signal yet"), never a fake zero, while
+    the exchange mirror itself keeps working."""
+    monkeypatch.setattr(runtime_mod, "_LIVE_CAPTURE_INTERVAL_SEC", 0.01)
+    failure = (
+        json.dumps(
+            {
+                "event": "failure",
+                "request": {"method": "POST", "path": "/v1/chat/completions"},
+                "error": {"type": "Timeout", "message": "boom"},
+                "start_time": "2026-07-11T00:00:00Z",
+                "end_time": "2026-07-11T00:00:01Z",
+            }
+        )
+        + "\n"
+    )
+    sandbox = _SandboxWithCallbackLog(
+        _callback_line().encode() + b"not json at all\n" + failure.encode()
+    )
+    process = _sandbox_process(sandbox)
+    output_path = tmp_path / "trajectory" / "llm_trajectory.jsonl"
+
+    process.start_live_capture(output_path)
+    assert await _wait_for(output_path.exists)
+    await process._stop_live_capture()
+
+    assert process.live_usage_tokens() is None
+
+
+@pytest.mark.asyncio
+async def test_live_usage_survives_exec_failure_silently(monkeypatch, tmp_path):
+    """A raising exec channel (sandbox teardown race, transient Daytona error)
+    must degrade to "no signal" — never propagate into the capture loop's
+    caller or the dashboard read."""
+    monkeypatch.setattr(runtime_mod, "_LIVE_CAPTURE_INTERVAL_SEC", 0.01)
+
+    class _BrokenSandbox:
+        async def exec(self, command: str, timeout_sec: int):
+            raise RuntimeError("exec channel down")
+
+    process = _sandbox_process(_BrokenSandbox())
+    process.start_live_capture(tmp_path / "llm_trajectory.jsonl")
+    await runtime_mod.asyncio.sleep(0.05)
+    await process._stop_live_capture()  # must not raise
+
+    assert process.live_usage_tokens() is None
+
+
+@pytest.mark.asyncio
+async def test_live_usage_resets_when_capture_restarts_on_new_path(
+    tmp_path, monkeypatch
+):
+    """A fresh capture target (new rollout attempt) must not inherit the
+    previous attempt's token total."""
+    monkeypatch.setattr(runtime_mod, "_LIVE_CAPTURE_INTERVAL_SEC", 0.01)
+    sandbox = _SandboxWithCallbackLog(
+        _callback_line(
+            usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10}
+        ).encode()
+    )
+    process = _sandbox_process(sandbox)
+    process.start_live_capture(tmp_path / "a" / "llm_trajectory.jsonl")
+    assert await _wait_for(lambda: process.live_usage_tokens() == 10)
+    await process._stop_live_capture()
+
+    process.start_live_capture(tmp_path / "b" / "llm_trajectory.jsonl")
+    try:
+        # The counter restarts from the log's beginning (offset reset), so it
+        # re-converges to the log's true total rather than double-counting.
+        assert await _wait_for(lambda: process.live_usage_tokens() == 10)
+    finally:
+        await process._stop_live_capture()
 
 
 @pytest.mark.asyncio

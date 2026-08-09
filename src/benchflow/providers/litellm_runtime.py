@@ -126,7 +126,27 @@ class LiteLLMProcess:
         )
         self._live_callback_offset = 0
         self._live_callback_remainder = b""
+        self._live_usage_total_tokens = 0
+        self._live_usage_seen = False
         self._live_capture_task = asyncio.create_task(self._live_capture_loop())
+
+    def live_usage_tokens(self) -> int | None:
+        """Cumulative provider tokens the live callback capture has mirrored.
+
+        Read-only, O(1) — safe to call from the dashboard's render thread while
+        the capture loop appends on the event loop (two monotonic attribute
+        reads; a torn read is at worst one record stale). None until a
+        usage-bearing gateway record has been parsed, so callers can tell "no
+        signal yet" from a genuine zero. The value updates per completed LLM
+        *request* — mid-prompt — which is exactly the granularity the ACP
+        per-completed-prompt snapshots lack (a single-prompt rollout otherwise
+        shows no tokens until scoring). It may lag the gateway log by the
+        capture cadence/backlog and is display-only: trusted usage still comes
+        from the full log import at ``stop()``.
+        """
+        if not getattr(self, "_live_usage_seen", False):
+            return None
+        return int(getattr(self, "_live_usage_total_tokens", 0))
 
     async def _read_callback_chunk(self, offset: int, limit: int) -> bytes:
         raise NotImplementedError
@@ -157,6 +177,17 @@ class LiteLLMProcess:
                 )
                 if parsed.exchanges:
                     trajectory.exchanges.extend(parsed.exchanges)
+                    # Live token counter for the eval dashboard: accumulate the
+                    # same canonical per-exchange accounting scoring sums at
+                    # stop() (Trajectory.total_provider_tokens over the same
+                    # parser's output), so the live figure converges to the
+                    # trusted total as the capture catches up. Failure records
+                    # carry no usage and leave the counter untouched.
+                    if parsed.has_provider_usage:
+                        self._live_usage_total_tokens = int(
+                            getattr(self, "_live_usage_total_tokens", 0)
+                        ) + int(parsed.total_provider_tokens)
+                        self._live_usage_seen = True
                     changed = True
             if len(chunk) < _LIVE_CAPTURE_CHUNK_BYTES:
                 break

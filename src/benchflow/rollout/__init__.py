@@ -581,6 +581,28 @@ async def _run_environment_healthcheck(env: Any, task: Any) -> None:
             await asyncio.sleep(delay)
 
 
+def _gateway_live_tokens(usage_runtime: Any) -> int | None:
+    """Cumulative provider tokens from the LiteLLM gateway's live capture.
+
+    Piggybacks on the llm_trajectory.jsonl mirror the proxy runtime already
+    runs for every rollout (``LiteLLMProcess.start_live_capture``, wired in
+    ``connect()`` and cancelled by the proxy's ``stop()`` in cleanup) — this
+    read generates no additional sandbox exec traffic, at any concurrency.
+    Best-effort by the dashboard contract: any absence (no runtime, a server
+    without the accessor, the reader raising, a non-int value) degrades to
+    None — #963's ACP-only behavior — never to a render error.
+    """
+    server = getattr(usage_runtime, "server", None)
+    read = getattr(server, "live_usage_tokens", None)
+    if read is None:
+        return None
+    try:
+        tokens = read()
+    except Exception:
+        return None
+    return tokens if isinstance(tokens, int) else None
+
+
 class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
@@ -765,17 +787,38 @@ class Rollout:
         ("creating sandbox…", "verifying…"), so a 90s sandbox create is not
         indistinguishable from a hang.
 
+        ``total_tokens`` reconciles two cumulative live signals as
+        ``max(acp_snapshot, gateway_live)``: the ACP session's self-reported
+        usage (updates only when a *prompt* completes — a single-prompt
+        rollout stays None for the whole agent phase) and the LiteLLM
+        gateway's live callback capture (updates per completed LLM *request*,
+        mid-prompt). max() because both inputs are non-decreasing counters, so
+        the cell/footer never step down mid-run whichever signal leads —
+        gateway-live can exceed the ACP self-report (requests the agent
+        discarded, cache accounting) and vice versa (capture lag behind large
+        log records) — and a dead gateway signal (None) degrades to exactly
+        the ACP-only behavior. The winner is display-only: at completion the
+        trusted scoring total replaces it (see the footer contract in
+        cli/_live_progress.py for the sanctioned non-monotonic boundary).
+
         Rollout owns the client/session dig so a rename breaks here — in
         typed, tested code — instead of silently blanking the dashboard cell
         (see benchflow._utils.live_activity). Session-factory agents have no
-        ACP client and always report counter-less snapshots.
+        ACP client and always report counter-less snapshots (their
+        gateway-live tokens are not surfaced — the counters seam is the only
+        token carrier).
         """
         session = self._acp_client.session if self._acp_client else None
         if session is None:
             return ActivitySnapshot(self._phase, None)
         calls, last_title = session.progress_snapshot()
         usage = session.latest_usage_totals()
-        tokens = usage.get("total_tokens") if usage else None
+        acp_tokens = usage.get("total_tokens") if usage else None
+        gateway_tokens = _gateway_live_tokens(getattr(self, "_usage_runtime", None))
+        if acp_tokens is None and gateway_tokens is None:
+            tokens = None
+        else:
+            tokens = max(acp_tokens or 0, gateway_tokens or 0)
         return ActivitySnapshot(
             self._phase,
             SessionCounters(calls, last_title, tokens, session.distinct_tool_titles),
