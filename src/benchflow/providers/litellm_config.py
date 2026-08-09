@@ -210,7 +210,7 @@ def _route_registered_provider(
     env: dict[str, str],
 ) -> LiteLLMRoute:
     bare = strip_provider_prefix(model)
-    params: dict[str, str | int | float | bool]
+    params: dict[str, str | int | float | bool | list[str]]
     required_env: list[str] = []
 
     if provider_name == "aws-bedrock":
@@ -388,7 +388,7 @@ def resolve_litellm_route(model: str, env: dict[str, str]) -> LiteLLMRoute:
         upstream = f"openai/{bare}"
         required = ("OPENAI_API_KEY",)
 
-    params: dict[str, str | int | float | bool] = {"model": upstream}
+    params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
     if upstream.lower().startswith("gemini/"):
         explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
         explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
