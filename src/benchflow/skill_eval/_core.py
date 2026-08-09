@@ -19,7 +19,6 @@ from string import Template
 from typing import Any, Literal
 
 import tomli_w
-import yaml
 
 from benchflow._paths import assert_within, safe_path_segment
 from benchflow.skill_policy import (
@@ -27,7 +26,7 @@ from benchflow.skill_policy import (
     SKILL_MODE_WITH_SKILL,
     validate_container_mount_path,
 )
-from benchflow.task.document import render_task_md
+from benchflow.task.document import dump_frontmatter_yaml, render_task_md
 
 from .schema import DEFAULT_SKILL_MOUNT_DIR, validate_evals_json
 
@@ -314,7 +313,7 @@ def _build_verifier_md(dataset: EvalDataset, case: EvalCase) -> str:
             },
         },
     }
-    rendered_frontmatter = yaml.safe_dump(frontmatter, sort_keys=False)
+    rendered_frontmatter = dump_frontmatter_yaml(frontmatter)
     return (
         f"---\n{rendered_frontmatter}---\n\n## role:reviewer\n\n"
         "Judge whether the agent trajectory satisfies the case-specific "
