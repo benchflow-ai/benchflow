@@ -106,7 +106,8 @@ def _exit_if_evaluation_had_errors(result: object) -> None:
 
 
 # Final-block failure lines: keep the block skimmable on big jobs and each
-# line inside a typical terminal width.
+# line inside a typical terminal width — except lines carrying a multi-failure
+# count suffix, which deliberately run ~40 chars past the budget.
 _MAX_FAILURE_LINES = 5
 _FAILURE_LINE_LIMIT = 100
 _FAILURE_REASON_METRICS = 3

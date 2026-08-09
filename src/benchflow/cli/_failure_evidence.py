@@ -40,9 +40,9 @@ class FailureLine(NamedTuple):
     ``body`` is the free-text evidence (test name plus assertion) and competes
     for the display line's char budget; ``suffix`` is the compact multi-failure
     roll-up count (empty when the evidence covers everything) and must survive
-    display truncation. Renderers shorten ``body`` to the remaining budget and
-    append ``suffix`` whole — never the concatenation, or a long assertion
-    would silently eat the "there is more broken than this" signal.
+    display truncation. Renderers give ``body`` the full line budget and append
+    ``suffix`` whole past it — never truncating the concatenation, or a long
+    assertion would silently eat the "there is more broken than this" signal.
     """
 
     body: str
@@ -56,9 +56,10 @@ def _display_test_name(raw_name: str) -> str:
     100-char line budget; keep the function name plus any ``[param]`` id.
     The split must not touch the bracket part — a param id may itself contain
     ``::`` — so only the text before the first ``[`` is segment-split. (When
-    the report was written by pytest-json-ctrf <= 0.5.3 the param id is
-    already gone — the plugin stores ``nodeid.split('[')[0]`` as ``name`` —
-    but other CTRF producers keep the full name, and we must not re-trim it.)
+    the report was written by pytest-json-ctrf — as of 0.5.x — the param id
+    is already gone — the plugin stores ``nodeid.split('[')[0]`` as ``name``
+    — but other CTRF producers keep the full name, and we must not re-trim
+    it.)
     """
     head, bracket, param = raw_name.partition("[")
     return head.rsplit("::", 1)[-1] + bracket + param
@@ -89,6 +90,7 @@ def _ctrf_failure_line(ctrf_path: Path) -> FailureLine | None:
     if len(failed) > 1:
         # Counts come from the same rolled-up test list the first-failure pick
         # uses, so the suffix can never disagree with the shown evidence.
+        # T is all entries — skips count against the denominator, not as passes.
         extra = len(failed) - 1
         passed = sum(1 for test in tests if test.get("status") == "passed")
         plural = "" if extra == 1 else "s"

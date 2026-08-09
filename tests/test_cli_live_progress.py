@@ -505,9 +505,9 @@ def test_ctrf_multi_failure_appends_count_suffix(tmp_path):
     # held 2 failed / 4 passed but the console named only the first failure —
     # a reader stopping at the console under-counted what was broken. With >1
     # failed test the line gains a count suffix, and a param id carried by the
-    # report's test name is preserved end-to-end. (pytest-json-ctrf <= 0.5.3
-    # strips the param id at generation time — nodeid.split('[')[0] — so this
-    # fixture uses the spec-conformant full name other CTRF producers emit.)
+    # report's test name is preserved end-to-end. (pytest-json-ctrf, as of
+    # 0.5.x, strips the param id at generation time — nodeid.split('[')[0] —
+    # so this fixture uses the spec-conformant full name other producers emit.)
     _write_ctrf_tests(
         tmp_path / "dialogue-parser__ab12cd34" / "verifier",
         [
