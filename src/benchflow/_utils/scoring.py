@@ -1,5 +1,6 @@
 """Pure scoring and classification helpers — no external dependencies."""
 
+import math
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
@@ -341,6 +342,26 @@ def count_audit_outcomes(results: Iterable[Mapping[str, Any]]) -> dict[str, int]
 def count_result_outcomes(results: Iterable[Mapping[str, Any]]) -> dict[str, int]:
     """Backward-compatible alias for audit/reporting outcome accounting."""
     return count_audit_outcomes(results)
+
+
+def mean_scored_reward(results: Iterable[Mapping[str, Any]]) -> float | None:
+    """Mean reward over scored rollouts, or None when nothing scored.
+
+    A rollout is scored when ``rewards.reward`` is a finite numeric value.
+    Bools are excluded — ``classify_result`` treats a persisted ``true`` as a
+    pass (``True == 1``), but a bool is not a reward magnitude — and so are
+    non-finite values, which the resume path can feed in unvalidated (Python's
+    ``json`` round-trips NaN). Errored rollouts (reward None) are excluded,
+    not zeroed: a mean diluted by infra errors would misread as capability.
+    """
+    scored = [
+        rw
+        for r in results
+        if isinstance(rw := extract_reward(r), (int, float))
+        and not isinstance(rw, bool)
+        and math.isfinite(rw)
+    ]
+    return sum(scored) / len(scored) if scored else None
 
 
 def pass_rate(*, passed: int, total: int) -> float:
