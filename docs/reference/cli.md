@@ -304,8 +304,12 @@ mutes INFO logging while it owns the screen; pair it with
 The dashboard footer also carries a live token total: completed tasks'
 trusted telemetry plus every running rollout's live usage (ACP session
 counters reconciled with the sandbox gateway's live capture), so spend is
-visible mid-run. Cost stays completed-tasks-only — `$` comes from the
-gateway log imported at scoring time.
+visible mid-run. The live figure is a lower bound — it trails the gateway
+log by however much the capture has yet to read — and if that tail ever
+stops advancing altogether, the run logs one `Live token counter has
+stalled` warning so a stale number is never passed off as a current one.
+Cost stays completed-tasks-only — `$` comes from the gateway log imported
+at scoring time.
 
 After the run, each failed task gets one dim `✗ task: reason` line —
 verifier error first, else a compact reward/metric breakdown, else the

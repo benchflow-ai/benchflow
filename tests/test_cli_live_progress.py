@@ -434,6 +434,75 @@ def test_rollout_verify_marks_verifying_phase():
     assert rollout._phase == "verifying"
 
 
+def test_phase_labels_never_walk_backwards_through_a_run():
+    # Fresh-user dogfood follow-up: the row showed "verifying…" and then
+    # "running agent…" again for the last ~90s of a 26-minute run. The label is
+    # a progress indicator — an earlier stage reappearing reads as the run
+    # having restarted, so the label sequence a rollout can produce must be
+    # monotonic.
+    from benchflow.cli._live_progress import _PHASE_LABELS
+
+    order = [
+        "creating sandbox…",
+        "installing agent…",
+        "running agent…",
+        "verifying…",
+        "cleaning up…",
+    ]
+    lifecycle = [
+        "created",
+        "setup",
+        "started",
+        "installed",
+        "connected",
+        "executed",
+        "verifying",
+        "verified",
+        "cleaned",
+    ]
+    ranks = [order.index(_PHASE_LABELS[phase]) for phase in lifecycle]
+    assert ranks == sorted(ranks)
+    # The specific inversion that shipped: verify() marks "verifying" at entry,
+    # so "executed" only ever renders inside disconnect() — agent teardown, not
+    # verification.
+    assert _PHASE_LABELS["executed"] == "running agent…"
+
+
+def test_rollout_disconnect_does_not_rewind_a_terminal_phase():
+    # cleanup() calls disconnect() *after* verify(), and the unguarded rewind
+    # to "installed" relabelled the whole teardown stretch "running agent…"
+    # (and transiently blanked Rollout.result, which is gated on the same
+    # phases). Between scenes the rewind is still correct: another agent turn
+    # follows, and connect_as() re-marks "connected".
+    import asyncio
+
+    from benchflow.rollout import Rollout
+
+    def _rollout(phase: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            _phase=phase,
+            _is_session_factory=False,
+            _capture_partial_acp_trajectory=lambda: None,
+            _acp_client=None,
+            _session=None,
+            _session_adapter=None,
+            _agent_launch="",
+            _env=None,
+            _active_role=None,
+            _session_tool_count=0,
+            _session_traj_count=0,
+        )
+
+    mid_run = _rollout("executed")
+    asyncio.run(Rollout.disconnect(mid_run))
+    assert mid_run._phase == "installed"
+
+    for terminal in ("verifying", "verified", "cleaned"):
+        done = _rollout(terminal)
+        asyncio.run(Rollout.disconnect(done))
+        assert done._phase == terminal
+
+
 def test_progress_enabled_respects_tty_and_optout(monkeypatch):
     tty = SimpleNamespace(is_terminal=True)
     notty = SimpleNamespace(is_terminal=False)

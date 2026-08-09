@@ -135,13 +135,21 @@ def _fmt_tokens(n: int) -> str:
 # while the session counters are unavailable — before the agent session
 # exists and after it is torn down — so sandbox create, agent install, and
 # the verifier read as work, not as a hang.
+#
+# The labels must be monotonic across a run: the row is a progress indicator,
+# so stepping back to an earlier stage reads as the run having restarted.
+# "executed" maps to the agent stage, not the verifier: since verify() marks
+# "verifying" at its own entry, the only stretch that renders under "executed"
+# is the inside of disconnect() (session already dropped, agent process being
+# killed) — labelling that "verifying…" made the row show "verifying…", then
+# "running agent…" (disconnect's "installed"), then "verifying…" again.
 _PHASE_LABELS = {
     "created": "creating sandbox…",
     "setup": "creating sandbox…",
     "started": "installing agent…",
     "installed": "running agent…",
     "connected": "running agent…",
-    "executed": "verifying…",
+    "executed": "running agent…",
     "verifying": "verifying…",
     "verified": "cleaning up…",
     "cleaned": "cleaning up…",

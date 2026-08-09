@@ -229,6 +229,12 @@ from benchflow.usage_tracking import (
 logger = logging.getLogger(__name__)
 _SETUP_COMMAND_LOCK_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
+# Lifecycle phases from verify() onward. The agent will not run again in this
+# rollout once one of these is set, so nothing may rewind ``_phase`` out of
+# them — the live dashboard renders the phase as a label and a backwards step
+# reads as the run having restarted (see disconnect()).
+_TERMINAL_PHASES = frozenset({"verifying", "verified", "cleaned"})
+
 
 _MCP_TRANSPORT_TO_ACP_TYPE = {
     "stdio": "stdio",
@@ -1385,7 +1391,16 @@ class Rollout:
         self._active_role = None
         self._session_tool_count = 0
         self._session_traj_count = 0
-        self._phase = "installed"
+        # Rewinding the phase to "installed" is right for the between-scenes
+        # disconnect (another agent turn follows, and connect_as() will mark
+        # "connected"), but disconnect() is ALSO called from cleanup(), after
+        # verify() has already moved the rollout into its terminal phases. Left
+        # unguarded, that rewind made the live dashboard walk backwards —
+        # "verifying…" and then "running agent…" again for the whole teardown
+        # stretch — and briefly blanked ``Rollout.result``, which is gated on
+        # the same terminal phases.
+        if getattr(self, "_phase", None) not in _TERMINAL_PHASES:
+            self._phase = "installed"
 
     def on_ask_user(self, handler: Any) -> None:
         """Register the agent-initiated ``session/request_permission`` handler.
