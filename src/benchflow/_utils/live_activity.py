@@ -19,12 +19,16 @@ class SessionCounters(NamedTuple):
     """The live ACP session counters the console heartbeat logs.
 
     ``total_tokens`` is None until the session has a usage snapshot (i.e.
-    after a completed prompt).
+    after a completed prompt). ``distinct_tools`` counts distinct tool
+    display titles seen this session; ``0`` means unknown, and renderers must
+    treat unknown like varied (keep the ``last:`` cell), so a producer that
+    omits it degrades to the always-``last:`` behaviour instead of mislabeling.
     """
 
     tool_calls: int
     last_tool: str
     total_tokens: int | None
+    distinct_tools: int = 0
 
 
 class ActivitySnapshot(NamedTuple):

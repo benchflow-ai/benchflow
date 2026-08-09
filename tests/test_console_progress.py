@@ -97,6 +97,56 @@ def test_progress_snapshot_whitespace_only_title(monkeypatch):
     assert s.progress_snapshot() == (1, "")
 
 
+def test_distinct_tool_titles_constant_vs_varied(monkeypatch):
+    """Incremental distinct-title counter behind the dashboard's single-tool
+    detection (prime-agent: N identical "IPython cell" calls)."""
+    monkeypatch.setenv("BENCHFLOW_PROGRESS", "off")
+    s = ACPSession("sid")
+    assert s.distinct_tool_titles == 0
+    _drive_tool_call(s, "tc1")
+    _drive_tool_call(s, "tc2")
+    assert s.distinct_tool_titles == 1  # same title twice stays constant
+    # The tool_call_update fallback path (unseen id) also records the title.
+    s.handle_update(
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc3",
+            "title": "file_editor",
+            "kind": "edit",
+            "status": "in_progress",
+        }
+    )
+    assert s.distinct_tool_titles == 2
+
+
+def test_distinct_tool_titles_normalize_like_the_display(monkeypatch):
+    """Distinct means "renders differently": multi-line titles compare by
+    first line (what the cell shows), and empty titles fall back to kind —
+    the same normalization progress_snapshot uses."""
+    monkeypatch.setenv("BENCHFLOW_PROGRESS", "off")
+    s = ACPSession("sid")
+    for call_id, title in (("a", "IPython cell\nx = 1"), ("b", "IPython cell\ny = 2")):
+        s.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": call_id,
+                "title": title,
+                "kind": "execute",
+            }
+        )
+    assert s.distinct_tool_titles == 1
+    for call_id in ("c", "d"):
+        s.handle_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": call_id,
+                "title": "",
+                "kind": "execute",
+            }
+        )
+    assert s.distinct_tool_titles == 2  # "IPython cell" + kind-fallback "execute"
+
+
 def test_heartbeat_silent_outside_prompt(monkeypatch, caplog):
     """No heartbeat before the first prompt or after mark_prompt_end."""
     monkeypatch.setenv("BENCHFLOW_PROGRESS", "on")

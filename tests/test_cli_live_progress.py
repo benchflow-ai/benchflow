@@ -93,7 +93,119 @@ def test_trusted_telemetry_accumulates():
     assert d._covered == 2
 
 
+def _rendered(d: LiveEvalProgress) -> str:
+    import io
+
+    out = Console(file=io.StringIO(), width=200)
+    out.print(d.__rich__())
+    return out.file.getvalue()
+
+
+def _live_session_rollout(tokens: int | None):
+    from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
+
+    return SimpleNamespace(
+        activity_snapshot=lambda: ActivitySnapshot(
+            "connected", SessionCounters(3, "file_editor", tokens, 2)
+        )
+    )
+
+
+def test_footer_sums_live_running_usage_with_completed():
+    # Mid-run spend visibility (51-min single-task dogfood: footer read
+    # "— tokens · $—" for the whole agent phase): the footer must sum the
+    # completed tasks' trusted telemetry PLUS every running session's live
+    # usage. Cost stays completed-only — $ exists only in the scoring-time
+    # LiteLLM gateway import.
+    from benchflow._utils import live_activity
+
+    live_activity.register("task-a", _live_session_rollout(1_000_000))
+    live_activity.register("task-b", _live_session_rollout(500_000))
+    try:
+        d = _dash()
+        d.on_plan(total=3, done=0, remaining=3)
+        for name in ("task-a", "task-b", "task-c"):
+            d.on_task_start(name)
+        d.on_result(
+            "task-c", _result(1.0, tokens=2_500_000, cost=0.02, src="provider_response")
+        )
+        text = _rendered(d)
+        assert "4.00M tokens" in text
+        assert "$0.02" in text
+    finally:
+        live_activity.unregister("task-a")
+        live_activity.unregister("task-b")
+
+
+def test_footer_shows_live_usage_before_any_completion():
+    # The single-task common case: no task has finished, but the running
+    # session has per-completed-prompt usage — real tokens render, and $
+    # stays "—" (no live price signal exists).
+    from benchflow._utils import live_activity
+
+    live_activity.register("task-a", _live_session_rollout(750_000))
+    try:
+        d = _dash()
+        d.on_plan(total=1, done=0, remaining=1)
+        d.on_task_start("task-a")
+        text = _rendered(d)
+        assert "750.0k tokens" in text
+        assert "$—" in text
+        assert "— tokens" not in text
+    finally:
+        live_activity.unregister("task-a")
+
+
+def test_footer_degrades_to_dash_without_any_usage_signal():
+    # No completed telemetry and no live counters (counter-less snapshot, a
+    # teardown-racing rollout whose snapshot raises, an unregistered task):
+    # the footer keeps the "—" contract — a coverage-0 run reads broken, not
+    # free — and never raises.
+    from benchflow._utils import live_activity
+    from benchflow._utils.live_activity import ActivitySnapshot
+
+    def _boom():
+        raise RuntimeError("teardown race")
+
+    live_activity.register(
+        "warming",
+        SimpleNamespace(activity_snapshot=lambda: ActivitySnapshot("setup", None)),
+    )
+    live_activity.register("racing", SimpleNamespace(activity_snapshot=_boom))
+    try:
+        d = _dash()
+        d.on_plan(total=3, done=0, remaining=3)
+        for name in ("warming", "racing", "unregistered"):
+            d.on_task_start(name)
+        text = _rendered(d)
+        assert "— tokens" in text
+        assert "$—" in text
+    finally:
+        live_activity.unregister("warming")
+        live_activity.unregister("racing")
+
+
+def test_footer_live_usage_ignores_sessions_without_usage():
+    # A running session before its first completed prompt reports
+    # total_tokens=None — it must contribute 0, not poison the sum.
+    from benchflow._utils import live_activity
+
+    live_activity.register("task-a", _live_session_rollout(None))
+    live_activity.register("task-b", _live_session_rollout(250_000))
+    try:
+        d = _dash()
+        d.on_plan(total=2, done=0, remaining=2)
+        d.on_task_start("task-a")
+        d.on_task_start("task-b")
+        assert "250.0k tokens" in _rendered(d)
+    finally:
+        live_activity.unregister("task-a")
+        live_activity.unregister("task-b")
+
+
 class _FakeSession:
+    distinct_tool_titles = 4
+
     def progress_snapshot(self):
         return 38, "file_editor"
 
@@ -113,7 +225,10 @@ def test_activity_cell_polls_live_session_counters():
         "edit-pdf",
         SimpleNamespace(
             activity_snapshot=lambda: ActivitySnapshot(
-                "connected", SessionCounters(38, "file_editor", 1500)
+                # distinct_tools defaults to 0 = unknown: an old-style producer
+                # must degrade to the full last:-suffixed cell, never mislabel.
+                "connected",
+                SessionCounters(38, "file_editor", 1500),
             )
         ),
     )
@@ -126,6 +241,77 @@ def test_activity_cell_polls_live_session_counters():
     assert _activity_cell("edit-pdf") == "starting…"
 
 
+def _register_counters(name: str, counters) -> None:
+    from benchflow._utils import live_activity
+    from benchflow._utils.live_activity import ActivitySnapshot
+
+    live_activity.register(
+        name,
+        SimpleNamespace(
+            activity_snapshot=lambda: ActivitySnapshot("connected", counters)
+        ),
+    )
+
+
+def test_activity_cell_constant_tool_shows_tokens_not_last():
+    # Single-tool agents (prime-agent funnels everything through one IPython
+    # tool): "last: IPython cell" is a constant across all N calls — once
+    # tokens are available they carry the information instead.
+    from benchflow._utils import live_activity
+    from benchflow._utils.live_activity import SessionCounters
+    from benchflow.cli._live_progress import _activity_cell
+
+    _register_counters("prime-task", SessionCounters(38, "IPython cell", 412_000, 1))
+    try:
+        assert _activity_cell("prime-task") == "38 calls · 412.0k tok"
+    finally:
+        live_activity.unregister("prime-task")
+
+
+def test_activity_cell_varied_tools_keep_last():
+    from benchflow._utils import live_activity
+    from benchflow._utils.live_activity import SessionCounters
+    from benchflow.cli._live_progress import _activity_cell
+
+    _register_counters("multi-task", SessionCounters(38, "file_editor", 412_000, 5))
+    try:
+        assert (
+            _activity_cell("multi-task") == "38 calls · 412.0k tok · last: file_editor"
+        )
+    finally:
+        live_activity.unregister("multi-task")
+
+
+def test_activity_cell_constant_tool_without_tokens_keeps_last():
+    # Before the first prompt completes there are no tokens to substitute —
+    # the name (shown once) is still the only signal, so it stays.
+    from benchflow._utils import live_activity
+    from benchflow._utils.live_activity import SessionCounters
+    from benchflow.cli._live_progress import _activity_cell
+
+    _register_counters("prime-task", SessionCounters(5, "IPython cell", None, 1))
+    try:
+        assert _activity_cell("prime-task") == "5 calls · last: IPython cell"
+    finally:
+        live_activity.unregister("prime-task")
+
+
+def test_activity_cell_first_lone_call_keeps_last():
+    # One call is trivially "constant" but the name is still news; the drop
+    # only pays off once repetition makes it redundant.
+    from benchflow._utils import live_activity
+    from benchflow._utils.live_activity import SessionCounters
+    from benchflow.cli._live_progress import _activity_cell
+
+    _register_counters("prime-task", SessionCounters(1, "IPython cell", 90_000, 1))
+    try:
+        assert (
+            _activity_cell("prime-task") == "1 calls · 90.0k tok · last: IPython cell"
+        )
+    finally:
+        live_activity.unregister("prime-task")
+
+
 def test_rollout_activity_snapshot_reads_acp_session():
     # The client/session dig lives on Rollout (typed, owner-side) so a rename
     # of session counters breaks HERE instead of silently blanking the cell.
@@ -136,7 +322,7 @@ def test_rollout_activity_snapshot_reads_acp_session():
         _acp_client=SimpleNamespace(session=_FakeSession()), _phase="connected"
     )
     assert Rollout.activity_snapshot(connected) == ActivitySnapshot(
-        "connected", SessionCounters(38, "file_editor", 1500)
+        "connected", SessionCounters(38, "file_editor", 1500, 4)
     )
     # Pre-connect (and session-factory) rollouts have no client: counters are
     # None but the lifecycle phase still rides out so the cell can label it.

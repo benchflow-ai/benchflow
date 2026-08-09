@@ -138,6 +138,17 @@ def _canonical_tool_kind(kind: object, title: object = "") -> str:
     return raw_kind
 
 
+def _tool_display_title(title: str, kind: str) -> str:
+    """A tool call's display title: first line of ``title``, else ``kind``.
+
+    ``split`` not ``splitlines`` so a whitespace-only title strips to ``""``
+    instead of raising on an empty line list. Shared by the heartbeat/dashboard
+    snapshot and the distinct-title tracker so "distinct" means exactly
+    "renders differently".
+    """
+    return (title or kind or "").strip().split("\n", 1)[0]
+
+
 class ToolCallRecord:
     """Record of a single tool call within a session.
 
@@ -191,6 +202,12 @@ class ACPSession:
         self.thought_chunks: list[str] = []
         self.tool_calls: list[ToolCallRecord] = []
         self._tool_call_map: dict[str, ToolCallRecord] = {}
+        # Distinct display titles across recorded tool calls, maintained
+        # incrementally at record creation so the eval dashboard can detect
+        # single-tool agents (prime-agent funnels everything through one
+        # IPython tool — a constant "last: IPython cell" carries no
+        # information) in O(1) at render time.
+        self._seen_tool_titles: set[str] = set()
         self.stop_reason: StopReason | None = None
         self.usage_snapshots: list[ACPUsageSnapshot] = []
         self.created_at = datetime.now()
@@ -226,14 +243,23 @@ class ACPSession:
         counters, also polled by the live eval dashboard's activity cell.
 
         The title is the raw first line (untruncated — display width belongs
-        to each render site); ``split`` not ``splitlines`` so a whitespace-only
-        title strips to ``""`` instead of raising on an empty line list.
+        to each render site; see :func:`_tool_display_title`).
         """
         title = ""
         if self.tool_calls:
             last = self.tool_calls[-1]
-            title = (last.title or last.kind or "").strip().split("\n", 1)[0]
+            title = _tool_display_title(last.title, last.kind)
         return len(self.tool_calls), title
+
+    @property
+    def distinct_tool_titles(self) -> int:
+        """Count of distinct display titles across recorded tool calls.
+
+        O(1) read for the eval dashboard: ``1`` with several calls means a
+        single-tool agent, whose activity cell drops the constant ``last:``
+        suffix in favour of the token count.
+        """
+        return len(self._seen_tool_titles)
 
     def _maybe_log_progress(self) -> None:
         if not self._progress_enabled or self._prompt_started_at is None:
@@ -324,6 +350,20 @@ class ACPSession:
         self.events.append(current)
         self._pending_text.clear()
 
+    def _record_tool_call(self, record: ToolCallRecord) -> None:
+        """Register a newly created tool-call record in every live structure.
+
+        Single bookkeeping site for the two creation paths in
+        :meth:`handle_update` (``tool_call``, and the ``tool_call_update``
+        fallback for unseen ids), so the distinct-title tracker can never
+        drift from the record list. Titles are fixed at creation
+        (``update_status`` never rewrites them), so add-once is sound.
+        """
+        self.tool_calls.append(record)
+        self._tool_call_map[record.tool_call_id] = record
+        self._seen_tool_titles.add(_tool_display_title(record.title, record.kind))
+        self.events.append({"type": "tool_call", "record": record})
+
     _RECOGNIZED_UPDATE_TYPES = frozenset(
         {
             "tool_call",
@@ -356,9 +396,7 @@ class ACPSession:
                     update.get("kind", "other"), update.get("title", "")
                 ),
             )
-            self.tool_calls.append(record)
-            self._tool_call_map[record.tool_call_id] = record
-            self.events.append({"type": "tool_call", "record": record})
+            self._record_tool_call(record)
 
         elif update_type == "tool_call_update":
             tc_id = update.get("toolCallId", "")
@@ -372,9 +410,7 @@ class ACPSession:
                         update.get("kind", "tool"), update.get("title", "")
                     ),
                 )
-                self.tool_calls.append(record)
-                self._tool_call_map[tc_id] = record
-                self.events.append({"type": "tool_call", "record": record})
+                self._record_tool_call(record)
             try:
                 status = ToolCallStatus(update.get("status", "in_progress"))
             except ValueError:

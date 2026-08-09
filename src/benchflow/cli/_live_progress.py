@@ -3,7 +3,9 @@
 Renders a single Rich :class:`~rich.live.Live` panel — a progress bar with ETA,
 queued/running/passed/failed/errored counts, a "running now" table, and running
 token / cost / pass-rate totals — fed by the :class:`~benchflow.evaluation.Evaluation`
-engine's ``on_plan`` / ``on_task_start`` / ``on_result`` hooks.
+engine's ``on_plan`` / ``on_task_start`` / ``on_result`` hooks, plus render-time
+polls of the live-activity registry for the running tasks' in-flight session
+counters (activity cells and the footer's live token sum).
 
 TTY-only by contract: the CLI keeps its plain ``logger.info`` lines when stdout
 isn't a terminal (CI, pipes, parity files), so machine-readable output is never
@@ -158,7 +160,8 @@ def _activity_cell(name: str) -> str:
     live-activity registry. Until the agent session exists (and after it is
     closed for the verifier) the cell shows the rollout's lifecycle phase as a
     label instead, so the row is never blank. Tokens appear only once the
-    session has a usage snapshot (i.e. after a completed prompt).
+    session has a usage snapshot (i.e. after a completed prompt); once they
+    do, a single-tool agent's cell is ``38 calls · 412.0k tok`` (no ``last:``).
     """
     snap = live_activity.activity(name)
     if snap is None:
@@ -169,7 +172,12 @@ def _activity_cell(name: str) -> str:
     cell = f"{counters.tool_calls} calls"
     if counters.total_tokens:
         cell += f" · {_fmt_tokens(counters.total_tokens)} tok"
-    if counters.last_tool:
+    # A single-tool agent (prime-agent funnels every call through one IPython
+    # tool) makes "last: <name>" a constant: once tokens carry the signal,
+    # drop it. Varied tool names — and unknown distinct counts (0), and a
+    # first lone call, where the name is still news — keep the last: suffix.
+    constant_tool = counters.tool_calls > 1 and counters.distinct_tools == 1
+    if counters.last_tool and not (constant_tool and counters.total_tokens):
         cell += f" · last: {counters.last_tool[:30]}"
     return cell
 
@@ -361,9 +369,22 @@ class LiveEvalProgress:
                 tbl.add_row(f"… {extra} more", "", "")
             parts.append(tbl)
 
-        # Footer: pass-rate (excl errors) + token/cost economics. Show "—" (not
-        # 0 / $0.00) when no trusted telemetry, so a coverage-0 run reads broken,
-        # not free — matching the summary.json contract.
+        # Footer: pass-rate (excl errors) + token/cost economics. Tokens sum
+        # the completed tasks' trusted telemetry PLUS the running sessions'
+        # live ACP usage (one O(1) counter poll per running task; each task's
+        # count steps forward as its prompts complete), so a 51-minute agent
+        # phase shows its spend while it runs, not only at scoring. Show "—"
+        # (not 0 / $0.00) when neither signal exists, so a coverage-0 run
+        # reads broken, not free — matching the summary.json contract. Cost
+        # stays completed-tasks-only: $ comes from the sandbox LiteLLM
+        # gateway log imported at scoring time (BenchFlow computes no prices
+        # of its own), so there is no live $ to show.
+        live_tokens = 0
+        for name in running:
+            snap = live_activity.activity(name)
+            if snap is not None and snap.counters is not None:
+                live_tokens += snap.counters.total_tokens or 0
+
         footer = Text()
         scored = passed + failed
         if scored:
@@ -371,7 +392,12 @@ class LiveEvalProgress:
         else:
             footer.append("pass-rate —", style="dim")
         footer.append(" · ")
-        footer.append(f"{_fmt_tokens(tokens)} tokens" if covered else "— tokens", "dim")
+        footer.append(
+            f"{_fmt_tokens(tokens + live_tokens)} tokens"
+            if covered or live_tokens
+            else "— tokens",
+            "dim",
+        )
         footer.append(" · ")
         footer.append(f"${cost:.2f}" if covered else "$—", style="dim")
         if completed:
