@@ -389,8 +389,9 @@ def eval_run(
         typer.Option(
             "--quiet",
             help=(
-                "Suppress the per-run console progress heartbeat (the "
-                "'… Nmin, K tool calls' lines during agent execution)."
+                "Suppress live progress output: the Rich dashboard on a TTY "
+                "and the per-run console progress heartbeat (the '… Nmin, K "
+                "tool calls' lines during agent execution)."
             ),
         ),
     ] = False,
@@ -597,6 +598,9 @@ def eval_run(
         # Explicit off beats the session layer's auto-gate; see
         # benchflow.acp.session._console_progress_enabled.
         os.environ["BENCHFLOW_PROGRESS"] = "off"
+        # --quiet silences ALL live progress: the heartbeat lines above and
+        # the TTY Rich dashboard (see cli._live_progress.progress_enabled).
+        os.environ["BENCHFLOW_NO_PROGRESS"] = "1"
 
     request = EvalCreateRequest(
         config_file=config_file,

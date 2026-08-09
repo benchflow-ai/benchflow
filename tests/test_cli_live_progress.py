@@ -6,6 +6,7 @@ exercised for "doesn't raise" rather than pixel-asserted.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from types import SimpleNamespace
 
@@ -105,28 +106,43 @@ def test_activity_cell_polls_live_session_counters():
     # 2026-08-09): the heartbeat's counters must reach the dashboard, since
     # the Live mutes the logged heartbeat line itself.
     from benchflow._utils import live_activity
+    from benchflow._utils.live_activity import ActivitySnapshot
     from benchflow.cli._live_progress import _activity_cell
 
     live_activity.register(
-        "edit-pdf", SimpleNamespace(activity_snapshot=lambda: (38, "file_editor", 1500))
+        "edit-pdf",
+        SimpleNamespace(
+            activity_snapshot=lambda: ActivitySnapshot(
+                38, "file_editor", 1500, "connected"
+            )
+        ),
     )
     try:
         assert _activity_cell("edit-pdf") == "38 calls · 1.5k tok · last: file_editor"
     finally:
         live_activity.unregister("edit-pdf")
-    # Unregistered tasks (and pre-session rollouts) degrade to empty, not raise.
-    assert _activity_cell("edit-pdf") == ""
+    # Unregistered tasks (pre-register, teardown races) degrade to the
+    # fallback label — a live row's cell must never be blank, and never raise.
+    assert _activity_cell("edit-pdf") == "starting…"
 
 
 def test_rollout_activity_snapshot_reads_acp_session():
     # The client/session dig lives on Rollout (typed, owner-side) so a rename
     # of session counters breaks HERE instead of silently blanking the cell.
+    from benchflow._utils.live_activity import ActivitySnapshot
     from benchflow.rollout import Rollout
 
-    connected = SimpleNamespace(_acp_client=SimpleNamespace(session=_FakeSession()))
-    assert Rollout.activity_snapshot(connected) == (38, "file_editor", 1500)
-    # Pre-connect (and session-factory) rollouts have no client -> None.
-    assert Rollout.activity_snapshot(SimpleNamespace(_acp_client=None)) is None
+    connected = SimpleNamespace(
+        _acp_client=SimpleNamespace(session=_FakeSession()), _phase="connected"
+    )
+    assert Rollout.activity_snapshot(connected) == ActivitySnapshot(
+        38, "file_editor", 1500, "connected"
+    )
+    # Pre-connect (and session-factory) rollouts have no client: counters are
+    # None but the lifecycle phase still rides out so the cell can label it.
+    assert Rollout.activity_snapshot(
+        SimpleNamespace(_acp_client=None, _phase="setup")
+    ) == ActivitySnapshot(None, None, None, "setup")
 
 
 def test_dashboard_renders_activity_for_registered_running_task():
@@ -135,9 +151,15 @@ def test_dashboard_renders_activity_for_registered_running_task():
     import io
 
     from benchflow._utils import live_activity
+    from benchflow._utils.live_activity import ActivitySnapshot
 
     live_activity.register(
-        "edit-pdf", SimpleNamespace(activity_snapshot=lambda: (38, "file_editor", None))
+        "edit-pdf",
+        SimpleNamespace(
+            activity_snapshot=lambda: ActivitySnapshot(
+                38, "file_editor", None, "connected"
+            )
+        ),
     )
     try:
         d = _dash()
@@ -152,23 +174,86 @@ def test_dashboard_renders_activity_for_registered_running_task():
         live_activity.unregister("edit-pdf")
 
 
-def test_activity_cell_empty_before_session_exists():
+def test_activity_cell_shows_phase_label_before_session_exists():
+    # Fresh-user dogfood follow-up: ~1.5min of sandbox create / agent install
+    # (and the whole verifier) used to render a blank cell — indistinguishable
+    # from a hang. Counter-less snapshots must surface the lifecycle phase.
     from benchflow._utils import live_activity
+    from benchflow._utils.live_activity import ActivitySnapshot
     from benchflow.cli._live_progress import _activity_cell
 
-    # Rollout registered but not yet connected (no ACP client / session):
-    # the cell stays empty and the render is unperturbed.
+    phase = "setup"
     live_activity.register(
-        "warming-up", SimpleNamespace(activity_snapshot=lambda: None)
+        "warming-up",
+        SimpleNamespace(
+            activity_snapshot=lambda: ActivitySnapshot(None, None, None, phase)
+        ),
     )
     try:
-        assert _activity_cell("warming-up") == ""
+        assert _activity_cell("warming-up") == "creating sandbox…"
+        phase = "started"
+        assert _activity_cell("warming-up") == "installing agent…"
+        phase = "verifying"
+        assert _activity_cell("warming-up") == "verifying…"
+        # Unknown phases (e.g. "branched") still never blank the cell.
+        phase = "branched"
+        assert _activity_cell("warming-up") == "starting…"
         d = _dash()
         d.on_plan(total=1, done=0, remaining=1)
         d.on_task_start("warming-up")
         d.__rich__()  # builds the running-now table row; must not raise
     finally:
         live_activity.unregister("warming-up")
+
+
+def test_dashboard_renders_phase_label_for_counterless_task():
+    # End-to-end through __rich__: the phase label must reach the rendered
+    # panel, not just the cell helper — reverting the table wiring fails this.
+    import io
+
+    from benchflow._utils import live_activity
+    from benchflow._utils.live_activity import ActivitySnapshot
+
+    live_activity.register(
+        "edit-pdf",
+        SimpleNamespace(
+            activity_snapshot=lambda: ActivitySnapshot(None, None, None, "started")
+        ),
+    )
+    try:
+        d = _dash()
+        d.on_plan(total=1, done=0, remaining=1)
+        d.on_task_start("edit-pdf")
+        out = Console(file=io.StringIO(), width=120)
+        out.print(d.__rich__())
+        assert "installing agent…" in out.file.getvalue()
+    finally:
+        live_activity.unregister("edit-pdf")
+
+
+def test_rollout_verify_marks_verifying_phase():
+    # verify() must flip _phase to "verifying" at ENTRY (other transitions
+    # mark completion): disconnect() has already reset the phase to
+    # "installed" by then, and the activity cell keys off this value for the
+    # minutes-long verifier stretch.
+    import asyncio
+
+    from benchflow.rollout import Rollout
+
+    rollout = SimpleNamespace(
+        _config=SimpleNamespace(primary_agent="x"),
+        _trajectory=[{"type": "tool_call"}],  # non-empty: skip the scrape path
+        _phase="installed",
+    )
+
+    async def run() -> None:
+        # The full verify flow needs a sandbox; stop at the first await and
+        # assert the phase already transitioned.
+        with contextlib.suppress(AttributeError):
+            await Rollout.verify(rollout)
+
+    asyncio.run(run())
+    assert rollout._phase == "verifying"
 
 
 def test_progress_enabled_respects_tty_and_optout(monkeypatch):
@@ -241,6 +326,110 @@ def test_report_eval_result_surfaces_verifier_errors(monkeypatch):
     out = rec.file.getvalue()
     assert "errors=0 verifier-errors=3" in out
     assert "Score: 0/3" in out
+
+
+def _reported(result) -> str:
+    """Render _report_eval_result through a captured Console, return the text."""
+    import io
+
+    from rich.console import Console
+
+    import benchflow.cli._shared as shared
+
+    rec = Console(file=io.StringIO(), width=200)
+    original = shared.console
+    shared.console = rec
+    try:
+        shared._report_eval_result(result)
+    finally:
+        shared.console = original
+    return rec.file.getvalue()
+
+
+def _failed_result(task_failures):
+    return SimpleNamespace(
+        passed=0,
+        total=len(task_failures),
+        errored=0,
+        verifier_errored=0,
+        score=0.0,
+        job_name="j",
+        task_failures=task_failures,
+    )
+
+
+def test_report_eval_result_prints_failure_reason_lines():
+    # Dogfood follow-up: "✗ Score: 0/1" alone forces a dig into summary.json.
+    # Each FAILED task gets one dim reason line — verifier_error first, else a
+    # compact reward/metric breakdown (zero metrics first), else the reward.
+    from benchflow.evaluation import TaskFailure
+
+    out = _reported(
+        _failed_result(
+            [
+                TaskFailure(
+                    task_name="edit-pdf",
+                    rewards={"reward": 0.0},
+                    verifier_error="AssertionError:\n  output.pdf missing",
+                ),
+                TaskFailure(
+                    task_name="plan-meeting",
+                    rewards={
+                        "reward": 0.3,
+                        "decisions_found": 0.0,
+                        "deadlines_found": 0.0,
+                        "sections": 1.0,
+                        "extra_metric": 1.0,
+                    },
+                    verifier_error=None,
+                ),
+                TaskFailure(
+                    task_name="sum-csv", rewards={"reward": 0.0}, verifier_error=None
+                ),
+            ]
+        )
+    )
+    # verifier_error wins and is collapsed to one line.
+    assert "✗ edit-pdf: AssertionError: output.pdf missing" in out
+    # Metric breakdown: zero/failed metrics first, capped at 3.
+    assert (
+        "✗ plan-meeting: reward 0.3 — decisions_found 0.0, deadlines_found 0.0, "
+        "sections 1.0" in out
+    )
+    assert "extra_metric" not in out
+    # No named metrics: just the reward.
+    assert "✗ sum-csv: reward 0.0" in out
+
+
+def test_report_eval_result_caps_failure_lines_at_five():
+    from benchflow.evaluation import TaskFailure
+
+    failures = [
+        TaskFailure(task_name=f"task-{i}", rewards={"reward": 0.0}, verifier_error=None)
+        for i in range(7)
+    ]
+    out = _reported(_failed_result(failures))
+    assert out.count("✗ task-") == 5
+    assert "… and 2 more" in out
+
+
+def test_report_eval_result_truncates_failure_lines():
+    from benchflow.evaluation import TaskFailure
+
+    out = _reported(
+        _failed_result(
+            [
+                TaskFailure(
+                    task_name="edit-pdf",
+                    rewards=None,
+                    verifier_error="boom " * 60,
+                )
+            ]
+        )
+    )
+    (line,) = [ln for ln in out.splitlines() if "✗ edit-pdf" in ln]
+    assert len(line.rstrip()) <= 100
+    assert line.rstrip().endswith("…")
 
 
 def test_fire_progress_swallows_callback_errors():

@@ -12,7 +12,25 @@ never to a render error.
 from __future__ import annotations
 
 import threading
-from typing import Any
+from typing import Any, NamedTuple
+
+
+class ActivitySnapshot(NamedTuple):
+    """One dashboard poll of a live rollout.
+
+    ``tool_calls`` / ``last_tool`` / ``total_tokens`` mirror the console
+    heartbeat's ACP session counters and are all None until the agent session
+    exists (session-factory agents never grow one). ``phase`` is the rollout's
+    lifecycle phase (``Rollout._phase``) so the activity cell can label the
+    long non-agent stretches — sandbox create, agent install, verify — instead
+    of blanking in a way that is indistinguishable from a hang.
+    """
+
+    tool_calls: int | None
+    last_tool: str | None
+    total_tokens: int | None
+    phase: str
+
 
 _lock = threading.Lock()
 # Task name -> live Rollout. Task basenames are unique keys by engine-wide
@@ -33,11 +51,13 @@ def unregister(task_name: str) -> None:
         _live.pop(task_name, None)
 
 
-def activity(task_name: str) -> tuple[int, str, int | None] | None:
-    """(tool calls, last tool title, total tokens) for a running task.
+def activity(task_name: str) -> ActivitySnapshot | None:
+    """The :class:`ActivitySnapshot` for a running task, or None when the
+    rollout isn't registered (pre-create, between retries, teardown).
 
-    None until the task's agent session exists — including non-ACP
-    (session-factory) agents, which never grow an ACP client. The dig into
+    Session counters inside the snapshot are None until the task's agent
+    session exists — including non-ACP (session-factory) agents, which never
+    grow an ACP client — but ``phase`` is always present. The dig into
     client/session state lives on ``Rollout.activity_snapshot()`` (typed,
     owner-side); the except here only guards renders racing rollout teardown.
     """

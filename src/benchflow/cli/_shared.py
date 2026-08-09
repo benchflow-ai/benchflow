@@ -18,10 +18,12 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
+from benchflow._utils.text import truncate_end
+
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from benchflow.evaluation import EvaluationResult
+    from benchflow.evaluation import EvaluationResult, TaskFailure
 
 console = Console()
 
@@ -100,14 +102,52 @@ def _exit_if_evaluation_had_errors(result: object) -> None:
         raise typer.Exit(1)
 
 
+# Final-block failure lines: keep the block skimmable on big jobs and each
+# line inside a typical terminal width.
+_MAX_FAILURE_LINES = 5
+_FAILURE_LINE_LIMIT = 100
+_FAILURE_REASON_METRICS = 3
+
+
+def _failure_reason(failure: TaskFailure) -> str:
+    """One cheap line explaining why a FAILED (scored, reward != 1) task
+    failed, from evidence already on the result — no file reads.
+
+    Priority: the verifier's own error if set; else the reward plus a compact
+    breakdown of the named metrics in the reward dict (zero/failed metrics
+    first — they explain the miss); else just the reward.
+    """
+    if failure.verifier_error:
+        # Collapse whitespace: verifier errors are routinely multi-line.
+        return " ".join(failure.verifier_error.split())
+    rewards = failure.rewards or {}
+    reward = rewards.get("reward")
+    metrics = [
+        (name, value)
+        for name, value in rewards.items()
+        if name != "reward" and isinstance(value, (bool, int, float))
+    ]
+    if not metrics:
+        return f"reward {reward}"
+    # Zero/failed metrics first (stable within each group), capped so one
+    # metric-happy verifier can't flood the line.
+    metrics.sort(key=lambda kv: kv[1] != 0)
+    shown = ", ".join(
+        f"{name} {value}" for name, value in metrics[:_FAILURE_REASON_METRICS]
+    )
+    return f"reward {reward} — {shown}"
+
+
 def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -> None:
     """Print the Score/errors summary line, colored by outcome, plus artifacts.
 
     A clean pass and a total failure used to look identical (both bold white);
     now the line is green only on a full clean pass, red on a shutout, amber
-    otherwise, and ``errors=N`` is red when non-zero. When ``job_dir`` is given,
-    the result/summary paths are printed so testers know where to look (the
-    guide repeatedly says "read summary.json" but the CLI never said where).
+    otherwise, and ``errors=N`` is red when non-zero. Each FAILED task gets one
+    dim ``✗ task: reason`` line (capped at ``_MAX_FAILURE_LINES``) so the "why"
+    doesn't require opening summary.json. When ``job_dir`` is given, the
+    result/summary paths are printed so testers know where to look (the guide
+    repeatedly says "read summary.json" but the CLI never said where).
     """
     errors = int(getattr(result, "errored", 0) or 0)
     verifier_errors = int(getattr(result, "verifier_errored", 0) or 0)
@@ -132,6 +172,19 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
         f"\n[{style}]{mark} Score: {result.passed}/{result.total} "
         f"({result.score:.1%})[/{style}]{err_part}"
     )
+    # One dim reason line per FAILED task, so "0/1" doesn't force a dig into
+    # summary.json to learn why. getattr(): sharded aggregation and older
+    # SimpleNamespace-style callers don't carry task_failures.
+    failures = getattr(result, "task_failures", None) or []
+    for failure in failures[:_MAX_FAILURE_LINES]:
+        line = truncate_end(
+            f"  ✗ {failure.task_name}: {_failure_reason(failure)}",
+            _FAILURE_LINE_LIMIT,
+        )
+        console.print(f"[dim]{escape(line)}[/dim]")
+    extra = len(failures) - _MAX_FAILURE_LINES
+    if extra > 0:
+        console.print(f"[dim]  … and {extra} more[/dim]")
     if job_dir is not None:
         console.print(f"[dim]Artifacts:[/dim] {escape(str(job_dir))}")
         console.print(f"[dim]Summary:  [/dim] {escape(str(job_dir))}/summary.json")

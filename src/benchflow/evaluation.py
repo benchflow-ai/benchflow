@@ -60,6 +60,7 @@ from benchflow._utils.scoring import (
     VERIFIER_TIMEOUT,
     api_error_is_transient,
     classify_error,
+    classify_score_outcome,
     classify_verifier_error,
     count_audit_outcomes,
     count_score_outcomes,
@@ -574,6 +575,21 @@ class EvaluationConfig:
             )
 
 
+@dataclass(frozen=True)
+class TaskFailure:
+    """Cheap failure evidence for one FAILED (scored, reward != 1) task.
+
+    Carried on :class:`EvaluationResult` so the CLI's final block can print a
+    one-line reason per failed task from data the engine already holds —
+    without re-reading result.json files. Errored tasks are excluded (they
+    already surface through the error counters and warning replay).
+    """
+
+    task_name: str
+    rewards: dict[str, Any] | None
+    verifier_error: str | None
+
+
 @dataclass
 class EvaluationResult:
     """Aggregated results for a job."""
@@ -588,6 +604,7 @@ class EvaluationResult:
     elapsed_sec: float = 0.0
     memory_score: float | None = None
     memory_scores: dict[str, float] = field(default_factory=dict)
+    task_failures: list[TaskFailure] = field(default_factory=list)
 
     @property
     def score(self) -> float:
@@ -1776,6 +1793,18 @@ class Evaluation:
         score_counts = count_score_outcomes(all_results.values())
         audit_counts = count_audit_outcomes(all_results.values())
         memory, memory_scores = memory_summary(all_results)
+        # Per-task failure evidence for the CLI's final block — FAILED (scored,
+        # reward != 1) tasks only, from data already in memory. Sorted by name
+        # so the printed lines are deterministic across resume/concurrency.
+        task_failures = [
+            TaskFailure(
+                task_name=name,
+                rewards=r.get("rewards"),
+                verifier_error=r.get("verifier_error"),
+            )
+            for name, r in sorted(all_results.items())
+            if classify_score_outcome(r) == "failed"
+        ]
         job_result = EvaluationResult(
             job_name=self._job_name,
             config=cfg,
@@ -1791,6 +1820,7 @@ class Evaluation:
             elapsed_sec=elapsed,
             memory_score=memory["avg_score"],
             memory_scores=memory_scores,
+            task_failures=task_failures,
         )
 
         assert (
