@@ -615,6 +615,129 @@ def test_report_eval_result_prints_failure_reason_lines():
     assert "✗ sum-csv: reward 0.0" in out
 
 
+def _env0_rewards(reward=0.8):
+    """env0-shaped rewards: numeric evidence nested one level under "metrics",
+    with the matching totals under "details" (observed on gdoc-extract-content)."""
+    return {
+        "reward": reward,
+        "metrics": {
+            "summary_doc_exists": 1,
+            "decisions_found": 5,
+            "deadlines_found": 1,
+            "originals_preserved": 1,
+            "agent_acted": 1,
+        },
+        "details": {"decisions_total": 5, "deadlines_total": 5},
+    }
+
+
+def _failure(
+    task_name: str, rollout_name: str | None = None, *, rewards: dict | None = None
+):
+    """A FAILED (scored) task; ``rewards`` defaults to the bare `reward 0.0`
+    fallback shape."""
+    from benchflow.evaluation import TaskFailure
+
+    return TaskFailure(
+        task_name=task_name,
+        rewards={"reward": 0.0} if rewards is None else rewards,
+        verifier_error=None,
+        rollout_name=rollout_name,
+    )
+
+
+def test_failure_reason_flattens_nested_metrics():
+    # env0 dogfood (gdoc-extract-content, reward 0.8): the decisive numbers sat
+    # one level under "metrics" and the console printed the bare `reward 0.8`
+    # fallback. The breakdown tier must flatten one level, pair <name>_found
+    # with a positive <name>_total (env0 keeps totals under "details"), and
+    # lead with the furthest-from-max metric — deadlines 1/5, not the
+    # insertion-ordered all-ones.
+    out = _reported(
+        _failed_result([_failure("gdoc-extract-content", rewards=_env0_rewards())])
+    )
+    assert (
+        "✗ gdoc-extract-content: reward 0.8 — deadlines 1/5, "
+        "summary_doc_exists 1, decisions 5/5" in out
+    )
+    # The 3-metric cap still applies after flattening.
+    assert "originals_preserved" not in out
+    assert "agent_acted" not in out
+
+
+def test_failure_reason_nested_details_when_no_metrics():
+    # No "metrics" sub-dict: "details" numerics carry the breakdown, and
+    # unpaired values keep the zero-first rule.
+    out = _reported(
+        _failed_result(
+            [
+                _failure(
+                    "report-task",
+                    rewards={"reward": 0.5, "details": {"sections": 1, "tables": 0}},
+                )
+            ]
+        )
+    )
+    assert "✗ report-task: reward 0.5 — tables 0, sections 1" in out
+
+
+def test_failure_reason_flat_metrics_win_over_nested():
+    # Flat numeric keys keep working exactly as before — a nested sub-dict
+    # never overrides them.
+    out = _reported(
+        _failed_result(
+            [
+                _failure(
+                    "flat-task",
+                    rewards={"reward": 0.2, "checks": 0, "metrics": {"x": 1}},
+                )
+            ]
+        )
+    )
+    assert "✗ flat-task: reward 0.2 — checks 0" in out
+    assert "x 1" not in out
+
+
+def test_failure_reason_pairing_consumes_total_key():
+    # found/total living in the SAME dict: the pair renders as a fraction and
+    # the consumed *_total key never renders as its own metric.
+    out = _reported(
+        _failed_result(
+            [
+                _failure(
+                    "pair-task",
+                    rewards={
+                        "reward": 0.4,
+                        "metrics": {
+                            "deadlines_found": 1,
+                            "deadlines_total": 5,
+                            "notes": 1,
+                        },
+                    },
+                )
+            ]
+        )
+    )
+    assert "✗ pair-task: reward 0.4 — deadlines 1/5, notes 1" in out
+    assert "deadlines_total" not in out
+
+
+def test_failure_reason_zero_total_never_pairs():
+    # A non-positive total can't pair (no division): both keys render as
+    # plain zero-first values, and nothing raises.
+    out = _reported(
+        _failed_result(
+            [
+                _failure(
+                    "zero-task",
+                    rewards={"reward": 0.0, "metrics": {"a_found": 0, "a_total": 0}},
+                )
+            ]
+        )
+    )
+    assert "✗ zero-task: reward 0.0 — a_found 0, a_total 0" in out
+
+
 def test_report_eval_result_caps_failure_lines_at_five():
     from benchflow.evaluation import TaskFailure
 
@@ -644,18 +767,6 @@ def test_report_eval_result_truncates_failure_lines():
     (line,) = [ln for ln in out.splitlines() if "✗ edit-pdf" in ln]
     assert len(line.rstrip()) <= 100
     assert line.rstrip().endswith("…")
-
-
-def _bare_failure(task_name: str, rollout_name: str | None = None):
-    """A FAILED task whose reason would be the bare `reward 0.0` fallback."""
-    from benchflow.evaluation import TaskFailure
-
-    return TaskFailure(
-        task_name=task_name,
-        rewards={"reward": 0.0},
-        verifier_error=None,
-        rollout_name=rollout_name,
-    )
 
 
 def _write_ctrf_tests(verifier_dir, tests: list[dict]) -> None:
@@ -692,6 +803,14 @@ def _write_stdout(verifier_dir, text: str) -> None:
     (verifier_dir / "test-stdout.txt").write_text(text)
 
 
+def _write_reward_json(verifier_dir, rewards: dict) -> None:
+    """Write the verifier's reward.json (env0 shape: reward + metrics/details)."""
+    import json
+
+    verifier_dir.mkdir(parents=True, exist_ok=True)
+    (verifier_dir / "reward.json").write_text(json.dumps(rewards))
+
+
 def test_failure_reason_artifact_tier_reads_ctrf(tmp_path):
     # Dogfood follow-up: `✗ fix-build: reward 0.0` while verifier/ctrf.json held
     # the real answer. A bare-reward reason is upgraded from the rollout dir the
@@ -707,7 +826,7 @@ def test_failure_reason_artifact_tier_reads_ctrf(tmp_path):
         ),
     )
     out = _reported(
-        _failed_result([_bare_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
+        _failed_result([_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
     )
     assert (
         "✗ fix-build: reward 0.0 — test_build_success failed: "
@@ -783,9 +902,7 @@ def test_ctrf_count_suffix_plural_and_param_id_with_colons(tmp_path):
             {"name": "tests/test_x.py::test_ok", "status": "passed"},
         ],
     )
-    out = _reported(
-        _failed_result([_bare_failure("multi", "multi__ab12cd34")]), tmp_path
-    )
+    out = _reported(_failed_result([_failure("multi", "multi__ab12cd34")]), tmp_path)
     assert (
         "✗ multi: reward 0.0 — test_foo[a::b] failed "
         "(+2 more failures; 1/4 checks passed)" in out
@@ -808,7 +925,7 @@ def test_ctrf_count_suffix_survives_truncation(tmp_path):
             {"name": "tests/test_x.py::test_ok", "status": "passed"},
         ],
     )
-    out = _reported(_failed_result([_bare_failure("long", "long__ab12cd34")]), tmp_path)
+    out = _reported(_failed_result([_failure("long", "long__ab12cd34")]), tmp_path)
     suffix = " (+1 more failure; 1/3 checks passed)"
     (line,) = [ln for ln in out.splitlines() if "✗ long" in ln]
     assert line.rstrip().endswith(f"…{suffix}")
@@ -825,7 +942,7 @@ def test_stdout_tail_tier_never_gets_count_suffix(tmp_path):
         "=========== 2 failed, 1 passed in 4.20s ===========\n",
     )
     out = _reported(
-        _failed_result([_bare_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
+        _failed_result([_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
     )
     assert "✗ fix-build: reward 0.0 — 2 failed, 1 passed in 4.20s" in out
     assert "(+" not in out
@@ -839,8 +956,8 @@ def test_failure_reason_artifact_tier_requires_rollout_name(tmp_path):
     out = _reported(
         _failed_result(
             [
-                _bare_failure("fix-build", None),
-                _bare_failure("other-task", "other-task__99999999"),
+                _failure("fix-build", None),
+                _failure("other-task", "other-task__99999999"),
             ]
         ),
         tmp_path,
@@ -861,7 +978,7 @@ def test_failure_reason_artifact_tier_stdout_tail_summary(tmp_path):
         "=========== 1 failed, 2 passed in 40.86s ===========\n",
     )
     out = _reported(
-        _failed_result([_bare_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
+        _failed_result([_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
     )
     assert "✗ fix-build: reward 0.0 — 1 failed, 2 passed in 40.86s" in out
 
@@ -874,7 +991,7 @@ def test_failure_reason_artifact_tier_stdout_failed_line(tmp_path):
         "FAILED tests/test_build.py::test_build - AssertionError: boom\n",
     )
     out = _reported(
-        _failed_result([_bare_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
+        _failed_result([_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
     )
     assert (
         "✗ fix-build: reward 0.0 — FAILED tests/test_build.py::test_build - "
@@ -896,8 +1013,8 @@ def test_failure_reason_artifact_tier_tries_sources_in_order(tmp_path):
     out = _reported(
         _failed_result(
             [
-                _bare_failure("task-a", "task-a__11111111"),
-                _bare_failure("task-b", "task-b__22222222"),
+                _failure("task-a", "task-a__11111111"),
+                _failure("task-b", "task-b__22222222"),
             ]
         ),
         tmp_path,
@@ -909,7 +1026,8 @@ def test_failure_reason_artifact_tier_tries_sources_in_order(tmp_path):
 def test_failure_reason_artifact_tier_never_raises(tmp_path):
     # The tier's safety contract: a corrupt CTRF report falls through to the
     # stdout tail; with no other evidence it degrades to the bare `reward 0.0`
-    # — no pointer, no exception.
+    # — no exception. The block's single pointer survives (first displayed
+    # failure with an existing verifier dir — evidence or not).
     corrupt = tmp_path / "corrupt-task__11111111" / "verifier"
     corrupt.mkdir(parents=True)
     (corrupt / "ctrf.json").write_text("{not json")
@@ -921,9 +1039,9 @@ def test_failure_reason_artifact_tier_never_raises(tmp_path):
     out = _reported(
         _failed_result(
             [
-                _bare_failure("corrupt-task", "corrupt-task__11111111"),
-                _bare_failure("empty-task", "empty-task__22222222"),
-                _bare_failure("salvaged-task", "salvaged-task__33333333"),
+                _failure("corrupt-task", "corrupt-task__11111111"),
+                _failure("empty-task", "empty-task__22222222"),
+                _failure("salvaged-task", "salvaged-task__33333333"),
             ]
         ),
         tmp_path,
@@ -934,27 +1052,105 @@ def test_failure_reason_artifact_tier_never_raises(tmp_path):
     assert out.count("(details:") == 1
 
 
+def test_failure_reason_artifact_tier_reads_reward_json(tmp_path):
+    # env0-style verifiers write reward.json + non-pytest stdout (no CTRF):
+    # when the result's rewards dict was stripped to the bare aggregate, the
+    # probe mines the same flattened low-metrics breakdown from disk — and the
+    # (details:) pointer prints.
+    _write_reward_json(tmp_path / "gdoc__ab12cd34" / "verifier", _env0_rewards())
+    out = _reported(
+        _failed_result([_failure("gdoc", "gdoc__ab12cd34", rewards={"reward": 0.8})]),
+        tmp_path,
+    )
+    assert (
+        "✗ gdoc: reward 0.8 — deadlines 1/5, summary_doc_exists 1, decisions 5/5" in out
+    )
+    assert f"(details: {tmp_path / 'gdoc__ab12cd34' / 'verifier'})" in out
+
+
+def test_reward_json_yields_to_ctrf(tmp_path):
+    # Probe order: the CTRF report (named failing checks) stays first;
+    # reward.json only fills in when CTRF yields nothing.
+    verifier = tmp_path / "both__ab12cd34" / "verifier"
+    _write_ctrf(verifier, name="t::test_x")
+    _write_reward_json(verifier, _env0_rewards())
+    out = _reported(_failed_result([_failure("both", "both__ab12cd34")]), tmp_path)
+    assert "✗ both: reward 0.0 — test_x failed" in out
+    assert "deadlines" not in out
+
+
+def test_reward_json_wins_over_stdout_tail(tmp_path):
+    # And the other side of the probe order: with BOTH reward.json and a
+    # pytest-shaped stdout tail present, the named metric breakdown beats the
+    # anonymous counts — reordering those two probes fails this.
+    verifier = tmp_path / "order__ab12cd34" / "verifier"
+    _write_reward_json(verifier, _env0_rewards())
+    _write_stdout(verifier, "=== 1 failed, 4 passed in 2.00s ===\n")
+    out = _reported(
+        _failed_result([_failure("order", "order__ab12cd34", rewards={"reward": 0.8})]),
+        tmp_path,
+    )
+    assert "✗ order: reward 0.8 — deadlines 1/5" in out
+    assert "1 failed, 4 passed" not in out
+
+
+def test_reward_json_corrupt_falls_through(tmp_path):
+    # The probe keeps the tier's never-raise contract: corrupt JSON falls
+    # through to the stdout tail.
+    verifier = tmp_path / "task__ab12cd34" / "verifier"
+    verifier.mkdir(parents=True)
+    (verifier / "reward.json").write_text("{not json")
+    _write_stdout(verifier, "=== 1 failed in 2.00s ===\n")
+    out = _reported(_failed_result([_failure("task", "task__ab12cd34")]), tmp_path)
+    assert "✗ task: reward 0.0 — 1 failed in 2.00s" in out
+
+
+def test_reward_json_without_named_metrics_yields(tmp_path):
+    # A bare {"reward": …} reward.json repeats nothing the line doesn't
+    # already say — the probe yields to the stdout tail.
+    verifier = tmp_path / "bare__ab12cd34" / "verifier"
+    _write_reward_json(verifier, {"reward": 0.0})
+    _write_stdout(verifier, "=== 2 failed, 1 passed in 1.50s ===\n")
+    out = _reported(_failed_result([_failure("bare", "bare__ab12cd34")]), tmp_path)
+    assert "✗ bare: reward 0.0 — 2 failed, 1 passed in 1.50s" in out
+
+
+def test_pointer_prints_when_every_probe_misses(tmp_path):
+    # The third stacked miss from the env0 dogfood: exactly when evidence
+    # extraction fails, the user also lost the pointer to find it themselves.
+    # A failed task whose verifier dir exists gets the (details:) pointer even
+    # beside a bare reward reason (here: non-pytest stdout, no CTRF, no
+    # reward.json — every probe misses).
+    verifier = tmp_path / "gdoc__ab12cd34" / "verifier"
+    _write_stdout(verifier, "verifier ran custom checks; see reward artifacts\n")
+    out = _reported(_failed_result([_failure("gdoc", "gdoc__ab12cd34")]), tmp_path)
+    assert "✗ gdoc: reward 0.0" in out
+    assert f"(details: {verifier})" in out
+
+
 def test_failure_reason_artifact_tier_yields_to_metric_breakdown(tmp_path):
     # Named metrics already explain the miss — artifacts are only for reasons
-    # that would otherwise be a bare `reward X`.
-    from benchflow.evaluation import TaskFailure
-
+    # that would otherwise be a bare `reward X`. The (details:) pointer is
+    # decided separately, by on-disk artifacts alone: it prints here even
+    # though the reason came from the in-memory metrics (an identical line
+    # mined from reward.json must not differ on provenance the console can't
+    # show).
     _write_ctrf(tmp_path / "plan-meeting__ab12cd34" / "verifier", name="t::test_x")
     out = _reported(
         _failed_result(
             [
-                TaskFailure(
-                    task_name="plan-meeting",
+                _failure(
+                    "plan-meeting",
+                    "plan-meeting__ab12cd34",
                     rewards={"reward": 0.3, "sections": 0.0},
-                    verifier_error=None,
-                    rollout_name="plan-meeting__ab12cd34",
                 )
             ]
         ),
         tmp_path,
     )
     assert "✗ plan-meeting: reward 0.3 — sections 0.0" in out
-    assert "details:" not in out
+    assert "test_x" not in out
+    assert f"(details: {tmp_path / 'plan-meeting__ab12cd34' / 'verifier'})" in out
 
 
 def test_report_eval_result_artifact_reads_stay_capped(tmp_path):
@@ -963,7 +1159,7 @@ def test_report_eval_result_artifact_reads_stay_capped(tmp_path):
     # once per block, not per line.
     for i in range(7):
         _write_ctrf(tmp_path / f"task-{i}__ab12cd34" / "verifier", name=f"t::test_{i}")
-    failures = [_bare_failure(f"task-{i}", f"task-{i}__ab12cd34") for i in range(7)]
+    failures = [_failure(f"task-{i}", f"task-{i}__ab12cd34") for i in range(7)]
     out = _reported(_failed_result(failures), tmp_path)
     assert out.count("✗ task-") == 5
     assert "… and 2 more" in out
