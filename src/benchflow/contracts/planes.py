@@ -13,6 +13,22 @@ from typing import Any, Protocol, runtime_checkable
 from benchflow.environment.manifest import EnvironmentManifest
 
 
+class LiveUsageGateway(Protocol):
+    """A provider gateway process that reports live cumulative token usage.
+
+    The eval dashboard's mid-prompt token signal reads this accessor through
+    the rollout kernel (``Rollout.activity_snapshot`` →
+    ``_gateway_live_tokens``), which cannot import the concrete provider
+    plane — so the NAME is agreed here, at the contract boundary.
+    ``LiteLLMProcess`` asserts static conformance in
+    ``benchflow.providers.litellm_runtime``; renaming the accessor on either
+    side fails the type checker there instead of silently blanking the
+    dashboard signal.
+    """
+
+    def live_usage_tokens(self) -> int | None: ...
+
+
 @runtime_checkable
 class RolloutPlanes(Protocol):
     """Concrete-plane operations the rollout kernel needs."""

@@ -301,6 +301,26 @@ alike (so it also wins over an exported `on`). Note that on a TTY,
 mutes INFO logging while it owns the screen; pair it with
 `BENCHFLOW_NO_PROGRESS=1` to get plain heartbeat lines on a TTY.
 
+The dashboard footer also carries a live token total: completed tasks'
+trusted telemetry plus every running rollout's live usage (ACP session
+counters reconciled with the sandbox gateway's live capture), so spend is
+visible mid-run. Cost stays completed-tasks-only — `$` comes from the
+gateway log imported at scoring time.
+
+After the run, each failed task gets one dim `✗ task: reason` line —
+verifier error first, else a compact reward/metric breakdown, else the
+scored reward, upgraded from small on-disk verifier artifacts (the CTRF
+report, `reward.json`, or a `test-stdout.txt` tail) when the in-memory
+reason is a bare reward. Multi-failure CTRF reports roll up as
+`(+N more failure(s); P/T checks passed)`, and a dim
+`(details: …/verifier)` pointer names the artifact directory whenever one
+exists on disk.
+
+The final `Score: P/T (…%)` line is pass-threshold aggregation — a task counts
+as passed only at reward 1.0 — while `mean reward` beside it is the average raw
+verifier reward, so `0/1 (0.0%)` next to `mean reward 0.80` means partial
+credit below the pass threshold, not a flat zero.
+
 Set `BENCHFLOW_ACP_HANDSHAKE_TIMEOUT` to a number of seconds (default 60) to
 give slow-starting agents more time to answer the pre-prompt ACP handshake
 (`initialize`/`session_new`) — heavyweight task images can push agent startup

@@ -162,9 +162,12 @@ def _activity_cell(snap: live_activity.ActivitySnapshot | None) -> str:
     which the Live display otherwise mutes. Until the agent session exists
     (and after it is closed for the verifier) the cell shows the rollout's
     lifecycle phase as a label instead, and a registry miss (None) shows the
-    fallback label, so the row is never blank. Tokens appear only once the
-    session has a usage snapshot (i.e. after a completed prompt); once they
-    do, a single-tool agent's cell is ``38 calls · 412.0k tok`` (no ``last:``).
+    fallback label, so the row is never blank. Tokens appear as soon as
+    either live signal exists — the gateway's live callback capture (per
+    completed LLM request, i.e. mid-prompt) or the ACP usage snapshot (per
+    completed prompt); ``Rollout.activity_snapshot`` reconciles the two as
+    max(). Once tokens are present, a single-tool agent's cell is
+    ``38 calls · 412.0k tok`` (no ``last:``).
     """
     if snap is None:
         return _PHASE_FALLBACK
@@ -379,12 +382,19 @@ class LiveEvalProgress:
             parts.append(tbl)
 
         # Footer: pass-rate (excl errors) + token/cost economics. Tokens sum
-        # the completed tasks' trusted telemetry PLUS the running sessions'
-        # live ACP usage (stepping forward as each prompt completes), so a
-        # 51-minute agent phase shows its spend while it runs, not only at
-        # scoring. The total is NOT monotonic across a task's completion
-        # boundary: scoring swaps the ACP self-report for the gateway
-        # measurement (which can be lower), and a task completing with
+        # the completed tasks' trusted telemetry PLUS the running rollouts'
+        # live usage — per running task, max(ACP prompt-completion snapshot,
+        # gateway live-capture total): the gateway side steps forward per
+        # completed LLM *request*, so a single-prompt agent phase shows its
+        # spend while the prompt runs, not only at scoring (the ACP side
+        # alone stays empty until the prompt completes). Reconciliation
+        # (documented at Rollout.activity_snapshot): max() keeps the running
+        # figure monotonic whichever signal leads, and degrades to the
+        # ACP-only value when the gateway capture is unavailable. The total
+        # is still NOT monotonic across a task's completion boundary: scoring
+        # swaps the live figure for the trusted gateway import (which can be
+        # lower than either live signal — untracked discards, cache
+        # accounting, ACP over-report), and a task completing with
         # untrusted/absent telemetry drops its live contribution entirely —
         # a sole-task footer can collapse back to "— tokens". Clamping would
         # falsify the trusted sum, so the dip is intended. Show "—" (not 0 /

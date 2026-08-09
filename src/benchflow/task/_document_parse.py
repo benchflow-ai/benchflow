@@ -8,8 +8,10 @@ normalization to :mod:`benchflow.task._document_normalize`.
 
 from __future__ import annotations
 
+import datetime
 import re
 import tomllib
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,10 +31,77 @@ from benchflow.task.imports import import_task_config_toml
 TASK_DOCUMENT_FILENAME = "task.md"
 
 _DOCUMENT_ONLY_FRONTMATTER_KEYS = {"agents", "benchflow", "scenes", "user"}
+_FLOW_SEQUENCE_MAX_WIDTH = 80
+# Flow lists render after a key prefix and indentation the representer cannot
+# see (PyYAML exposes no emit-time column), so charge a fixed allowance to
+# keep typical in-context lines within the width cap instead of measuring
+# the list standalone and overflowing by the prefix length.
+_FLOW_SEQUENCE_CONTEXT_ALLOWANCE = 8
+_FLOW_SEQUENCE_SCALAR_TYPES = (str, int, float, bool, datetime.date)
 _SECTION_RE = re.compile(
     r"^##\s+(prompt|role:[A-Za-z0-9_.-]+|scene:[A-Za-z0-9_.-]+|user-persona)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+
+
+class _CompactDumper(yaml.SafeDumper):
+    """SafeDumper that keeps short scalar-only lists in flow style.
+
+    Hand-written frontmatter like ``tags: [parsing, nlp]`` stays compact
+    across migrate/normalize round-trips instead of exploding into block
+    bullets. Long lists, lists with nested collections, and lists with
+    multiline strings keep PyYAML's block layout.
+    """
+
+
+def _sequence_flow_style(data: list[Any]) -> bool:
+    """Decide whether ``data`` renders as a single-line flow sequence.
+
+    Flow style requires every item to be a short scalar (``str``/``int``/
+    ``float``/``bool``/``date``/``None``, no embedded newlines) and the
+    standalone flow rendering — with PyYAML's own quoting applied — to fit
+    within :data:`_FLOW_SEQUENCE_MAX_WIDTH` minus
+    :data:`_FLOW_SEQUENCE_CONTEXT_ALLOWANCE` characters (the allowance stands
+    in for the key prefix and indentation the representer cannot see). The
+    check is a pure function of ``data``, so output stays deterministic.
+    """
+
+    for item in data:
+        if item is not None and not isinstance(item, _FLOW_SEQUENCE_SCALAR_TYPES):
+            return False
+        if isinstance(item, str) and "\n" in item:
+            return False
+    rendered = yaml.dump(
+        data,
+        Dumper=yaml.SafeDumper,
+        default_flow_style=True,
+        width=float("inf"),
+    ).strip()
+    return len(rendered) <= _FLOW_SEQUENCE_MAX_WIDTH - _FLOW_SEQUENCE_CONTEXT_ALLOWANCE
+
+
+def _represent_compact_sequence(
+    dumper: yaml.SafeDumper, data: Sequence[Any]
+) -> yaml.SequenceNode:
+    items = list(data)
+    return dumper.represent_sequence(
+        "tag:yaml.org,2002:seq", items, flow_style=_sequence_flow_style(items)
+    )
+
+
+_CompactDumper.add_representer(list, _represent_compact_sequence)
+_CompactDumper.add_representer(tuple, _represent_compact_sequence)
+
+
+def dump_frontmatter_yaml(data: dict[str, Any]) -> str:
+    """Serialize ``task.md`` frontmatter with compact flow-style arrays.
+
+    Canonical emitter for every frontmatter dump site: identical to
+    ``yaml.safe_dump(data, sort_keys=False)`` except that short scalar-only
+    lists render in flow style (see :class:`_CompactDumper`).
+    """
+
+    return yaml.dump(data, Dumper=_CompactDumper, sort_keys=False)
 
 
 @dataclass(frozen=True)
@@ -149,7 +218,7 @@ def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
             ("oracle" if key == "solution" else key): value
             for key, value in data.items()
         }
-    rendered_frontmatter = yaml.safe_dump(data, sort_keys=False)
+    rendered_frontmatter = dump_frontmatter_yaml(data)
     body = _escape_reserved_section_headings(instruction.strip())
     return f"---\n{rendered_frontmatter}---\n\n## prompt\n\n{body}\n"
 
@@ -196,7 +265,7 @@ def render_normalized_task_md(text: str, *, path: str | Path | None = None) -> s
     )
     _config_from_frontmatter(normalized)
     _parse_roles(normalized)
-    rendered_frontmatter = yaml.safe_dump(normalized, sort_keys=False)
+    rendered_frontmatter = dump_frontmatter_yaml(normalized)
     rendered_body = body.strip()
     suffix = f"\n\n{rendered_body}\n" if rendered_body else "\n"
     return f"---\n{rendered_frontmatter}---{suffix}"

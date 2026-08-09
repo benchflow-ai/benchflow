@@ -19,6 +19,7 @@ from benchflow.task.config import (
     VerifierSandboxMode,
 )
 from benchflow.task.document import (
+    dump_frontmatter_yaml,
     render_normalized_task_md,
     render_task_md,
     render_task_md_from_legacy,
@@ -158,6 +159,97 @@ Implement it.
         "multi-agent",
     ]
     assert set(document.roles) == {"architect", "implementer", "reviewer"}
+
+
+def test_frontmatter_short_scalar_list_renders_flow_style() -> None:
+    """Short scalar-only lists stay compact instead of exploding into bullets."""
+    rendered = render_task_md(
+        {"schema_version": "1.3", "metadata": {"tags": ["a", "b", "c"]}},
+        "Do it.",
+    )
+
+    assert "tags: [a, b, c]" in rendered
+    document = TaskDocument.from_text(rendered)
+    assert document.config.metadata["tags"] == ["a", "b", "c"]
+
+
+def test_frontmatter_long_list_stays_block_style() -> None:
+    """Lists whose flow rendering exceeds the width cap keep block bullets."""
+    tags = [f"item-{index:02d}" for index in range(20)]
+    rendered = dump_frontmatter_yaml({"metadata": {"tags": tags}})
+
+    assert "tags:\n" in rendered
+    assert "- item-00\n" in rendered
+    assert "[" not in rendered
+    assert yaml.safe_load(rendered) == {"metadata": {"tags": tags}}
+
+
+def test_frontmatter_single_long_item_stays_block_style() -> None:
+    """The width cap applies to rendered length, not item count."""
+    tags = ["x" * 100]
+    rendered = dump_frontmatter_yaml({"metadata": {"tags": tags}})
+
+    assert "[" not in rendered
+    assert yaml.safe_load(rendered) == {"metadata": {"tags": tags}}
+
+
+def test_frontmatter_nested_collection_list_stays_block_style() -> None:
+    """Lists holding mappings or lists never collapse to flow style."""
+    data = {"scenes": [{"name": "s1"}, {"name": "s2"}], "grid": [[1, 2], [3, 4]]}
+    rendered = dump_frontmatter_yaml(data)
+
+    assert "scenes:\n- name: s1\n- name: s2\n" in rendered
+    assert "grid:\n-" in rendered
+    assert yaml.safe_load(rendered) == data
+
+
+def test_frontmatter_multiline_string_item_stays_block_style() -> None:
+    data = {"metadata": {"notes": ["line1\nline2", "x"]}}
+    rendered = dump_frontmatter_yaml(data)
+
+    assert "notes:\n" in rendered
+    assert "[" not in rendered
+    assert yaml.safe_load(rendered) == data
+
+
+def test_frontmatter_special_character_items_round_trip_in_flow_style() -> None:
+    """PyYAML quoting keeps flow-style items with YAML metacharacters lossless."""
+    tags = ["a, b", "c: d", "[x]", " lead", "trail ", "unié中"]
+    data = {"metadata": {"tags": tags}}
+    dumped = dump_frontmatter_yaml(data)
+
+    assert "tags: [" in dumped
+    assert yaml.safe_load(dumped) == data
+    assert dump_frontmatter_yaml(yaml.safe_load(dumped)) == dumped
+
+
+def test_frontmatter_empty_list_renders_flow_style() -> None:
+    rendered = dump_frontmatter_yaml({"metadata": {"tags": []}})
+
+    assert "tags: []" in rendered
+    assert yaml.safe_load(rendered) == {"metadata": {"tags": []}}
+
+
+def test_normalize_preserves_hand_written_flow_arrays() -> None:
+    """Normalization keeps a compact hand-written array and stays a fixed point."""
+    source = """---
+schema_version: '1.3'
+metadata:
+  tags: [parsing, nlp]
+---
+## prompt
+
+Keep my tags compact.
+"""
+
+    normalized = render_normalized_task_md(source)
+
+    assert "tags: [parsing, nlp]" in normalized
+    assert render_normalized_task_md(normalized) == normalized
+    assert TaskDocument.from_text(normalized).config.metadata["tags"] == [
+        "parsing",
+        "nlp",
+    ]
 
 
 def test_task_document_unknown_profile_fails_closed() -> None:
