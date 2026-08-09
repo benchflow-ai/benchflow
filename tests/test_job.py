@@ -617,6 +617,42 @@ class TestJobRunOrchestration:
         assert any("unexpected exception: boom" in m for m in caplog.messages)
 
     @pytest.mark.asyncio
+    async def test_run_collects_task_failures_for_failed_tasks_only(self, tmp_path):
+        """EvaluationResult.task_failures carries per-task failure evidence for
+        FAILED (scored, reward != 1) tasks — name-sorted, excluding passes and
+        errored tasks — so the CLI's final block can print reasons without
+        re-reading result files.
+        """
+        from benchflow.evaluation import TaskFailure
+
+        job = self._make_job(tmp_path, n_tasks=3, concurrency=1)
+        outcomes = {
+            "task-0": RunResult(task_name="task-0", rewards={"reward": 1.0}),
+            "task-1": RunResult(
+                task_name="task-1",
+                rewards={"reward": 0.5, "decisions_found": 0.0},
+                verifier_error=None,
+            ),
+            "task-2": RunResult(task_name="task-2", error="agent crashed"),
+        }
+
+        async def fake_run(*, task_path, **kwargs):
+            return outcomes[task_path.name]
+
+        job._sdk = AsyncMock()
+        job._sdk.run = AsyncMock(side_effect=fake_run)
+
+        result = await job.run()
+
+        assert result.task_failures == [
+            TaskFailure(
+                task_name="task-1",
+                rewards={"reward": 0.5, "decisions_found": 0.0},
+                verifier_error=None,
+            )
+        ]
+
+    @pytest.mark.asyncio
     async def test_error_and_verifier_error_does_not_crash_invariant(self, tmp_path):
         """A result with BOTH error and verifier_error (rewards=None) must not
         be double-counted — otherwise the passed+failed+errored+verifier_errored

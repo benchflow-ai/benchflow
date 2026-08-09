@@ -128,24 +128,49 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
+# Rollout lifecycle phase (Rollout._phase — the completed phase, except
+# "verifying" which verify() marks at entry) -> what is running now. Shown
+# while the session counters are unavailable — before the agent session
+# exists and after it is torn down — so sandbox create, agent install, and
+# the verifier read as work, not as a hang.
+_PHASE_LABELS = {
+    "created": "creating sandbox…",
+    "setup": "creating sandbox…",
+    "started": "installing agent…",
+    "installed": "running agent…",
+    "connected": "running agent…",
+    "executed": "verifying…",
+    "verifying": "verifying…",
+    "verified": "cleaning up…",
+    "cleaned": "cleaning up…",
+}
+# Unknown phases (e.g. "branched") and pre-register/teardown races: still
+# never blank — a blank cell on a live row reads as a hang.
+_PHASE_FALLBACK = "starting…"
+
+
 def _activity_cell(name: str) -> str:
     """Per-task activity for the "running now" table, e.g.
     ``38 calls · last: file_editor``.
 
     Polls the live rollout's ACP session counters — the same ones the console
     heartbeat logs, which the Live display otherwise mutes — via the
-    live-activity registry. Empty until the agent session exists. Tokens appear
-    only once the session has a usage snapshot (i.e. after a completed prompt).
+    live-activity registry. Until the agent session exists (and after it is
+    closed for the verifier) the cell shows the rollout's lifecycle phase as a
+    label instead, so the row is never blank. Tokens appear only once the
+    session has a usage snapshot (i.e. after a completed prompt).
     """
     snap = live_activity.activity(name)
     if snap is None:
-        return ""
-    calls, last_title, tokens = snap
-    cell = f"{calls} calls"
-    if tokens:
-        cell += f" · {_fmt_tokens(tokens)} tok"
-    if last_title:
-        cell += f" · last: {last_title[:30]}"
+        return _PHASE_FALLBACK
+    counters = snap.counters
+    if counters is None:
+        return _PHASE_LABELS.get(snap.phase, _PHASE_FALLBACK)
+    cell = f"{counters.tool_calls} calls"
+    if counters.total_tokens:
+        cell += f" · {_fmt_tokens(counters.total_tokens)} tok"
+    if counters.last_tool:
+        cell += f" · last: {counters.last_tool[:30]}"
     return cell
 
 

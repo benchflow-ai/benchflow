@@ -252,7 +252,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--worker-retries` | `1` | Retry a crashed worker shard this many times, resuming its jobs dir |
 | `--worker-start-stagger-sec` | `1.0` | Seconds to stagger worker starts to avoid Daytona connection storms |
 | `--agent-idle-timeout` | (built-in default) | Abort ACP prompts after this many idle seconds; `0` disables idle detection |
-| `--quiet` | off | Suppress the per-run console progress heartbeat during agent execution |
+| `--quiet` | off | Suppress live progress output: the Rich dashboard on a TTY and the per-run console progress heartbeat during agent execution |
 | `--jobs-dir` | `jobs` | Output directory |
 | `--sandbox-user` | `agent` | Sandbox user (null for root) |
 | `--sandbox-setup-timeout` | `120` | Timeout in seconds for sandbox user setup |
@@ -286,12 +286,20 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 See [Architecture: skill loading](../architecture.md#skill-loading) for how
 `with-skill` mode is registered with each agent.
 
-Single-concurrency runs print a console progress heartbeat about every 45
-seconds while the agent works (`… 6.2min, 12 tool calls (last: …)`); the
-heartbeat is auto-gated off for multi-concurrency jobs. Setting
-`BENCHFLOW_PROGRESS=on`/`off` overrides the auto-gate; `--quiet` is
-shorthand for setting `BENCHFLOW_PROGRESS=off` for the run (so it also wins
-over an exported `on`).
+While the agent works, a terminal (TTY) shows the live Rich dashboard —
+progress bar, pass/fail counts, and a per-task activity column that tracks
+tool calls/tokens and labels the non-agent stretches (`creating sandbox…`,
+`installing agent…`, `verifying…`); `BENCHFLOW_NO_PROGRESS=1` disables it.
+Plain output (CI, pipes) prints a console progress heartbeat instead: about
+every 45 seconds on single-concurrency runs (`… 6.2min, 12 tool calls
+(last: …)`), auto-gated off for multi-concurrency jobs. Setting
+`BENCHFLOW_PROGRESS=on`/`off` overrides the heartbeat auto-gate; `--quiet`
+is shorthand for setting both `BENCHFLOW_PROGRESS=off` and
+`BENCHFLOW_NO_PROGRESS=1` for the run, silencing dashboard and heartbeat
+alike (so it also wins over an exported `on`). Note that on a TTY,
+`BENCHFLOW_PROGRESS=on` alone produces no heartbeat lines — the dashboard
+mutes INFO logging while it owns the screen; pair it with
+`BENCHFLOW_NO_PROGRESS=1` to get plain heartbeat lines on a TTY.
 
 Daytona batch runs collect provider token/cost telemetry by default with a
 sandbox-local LiteLLM gateway. Use `--usage-tracking required` when missing telemetry

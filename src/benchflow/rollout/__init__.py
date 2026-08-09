@@ -72,6 +72,7 @@ from benchflow._types import Role, Scene, Turn
 # / ``_capture_session_trajectory`` / ``default_rollout_planes`` keep affecting
 # the ``Rollout`` methods that call those names, because those methods stay
 # defined in this module.
+from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
 from benchflow._utils.scoring import classify_error as classify_error
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
@@ -755,22 +756,26 @@ class Rollout:
     def acp_client(self) -> Any:
         return self._acp_client
 
-    def activity_snapshot(self) -> tuple[int, str, int | None] | None:
-        """(tool calls, last tool title, total tokens) for the eval
-        dashboard's activity cell, or None before the agent session exists.
+    def activity_snapshot(self) -> ActivitySnapshot:
+        """The eval dashboard's per-task :class:`ActivitySnapshot`: the
+        current lifecycle phase plus the live :class:`SessionCounters` (tool
+        calls, last tool title, total tokens). ``counters`` is None before
+        the agent session exists — the phase then carries the cell
+        ("creating sandbox…", "verifying…"), so a 90s sandbox create is not
+        indistinguishable from a hang.
 
         Rollout owns the client/session dig so a rename breaks here — in
         typed, tested code — instead of silently blanking the dashboard cell
         (see benchflow._utils.live_activity). Session-factory agents have no
-        ACP client and always return None.
+        ACP client and always report counter-less snapshots.
         """
         session = self._acp_client.session if self._acp_client else None
         if session is None:
-            return None
+            return ActivitySnapshot(self._phase, None)
         calls, last_title = session.progress_snapshot()
         usage = session.latest_usage_totals()
         tokens = usage.get("total_tokens") if usage else None
-        return calls, last_title, tokens
+        return ActivitySnapshot(self._phase, SessionCounters(calls, last_title, tokens))
 
     @property
     def trajectory(self) -> list[dict]:
@@ -1736,6 +1741,12 @@ class Rollout:
     async def verify(self) -> dict | None:
         """Run the verifier and return rewards."""
         cfg = self._config
+
+        # Mark the phase at entry (the other transitions mark completion):
+        # the verifier can run for minutes after disconnect() reset the phase
+        # to "installed", and the dashboard's activity cell reads _phase to
+        # label that stretch "verifying…" instead of going blank.
+        self._phase = "verifying"
 
         if not self._trajectory and cfg.primary_agent != "oracle":
             scraped = await _scrape_agent_trajectory(

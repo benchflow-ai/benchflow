@@ -32,12 +32,15 @@ bench eval run --tasks-dir tasks/edit-pdf --agent prime-agent \
   --model deepseek/deepseek-v4-flash --sandbox daytona
 ```
 
-While the agent works, single-concurrency runs print a throttled progress
-heartbeat about every 45 seconds (`… 6.2min, 12 tool calls (last: …)`);
-`--quiet` suppresses it, and multi-concurrency jobs gate it off by default.
-The full event stream lands in `trajectory/acp_trajectory.jsonl` in the
-rollout dir; the console picks back up at the verifier and the `✓ Score`
-line.
+While the agent works, a terminal (TTY) shows the live Rich dashboard —
+progress bar, pass/fail counts, and a per-task activity column that tracks
+tool calls/tokens and labels the non-agent stretches (`creating sandbox…`,
+`installing agent…`, `verifying…`). Plain output (CI, pipes) keeps the
+throttled progress heartbeat instead: single-concurrency runs print a line
+about every 45 seconds (`… 6.2min, 12 tool calls (last: …)`), and
+multi-concurrency jobs gate it off by default. `--quiet` silences both. The
+full event stream lands in `trajectory/acp_trajectory.jsonl` in the rollout
+dir; the run ends with the `✓ Score` line either way.
 
 The first rollout runs the agent's `install_cmd` inside the sandbox (a few
 minutes for agents that bootstrap toolchains); artifacts land in the jobs dir
