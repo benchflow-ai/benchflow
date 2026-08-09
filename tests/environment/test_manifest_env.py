@@ -137,6 +137,20 @@ async def test_provision_skips_absent_service_binary():
     assert "claw-gmail" in starts[0]
 
 
+async def test_provision_fails_loud_when_no_declared_service_is_startable():
+    """A manifest/image mismatch must error, not pass vacuously.
+
+    Per-task images legitimately carry a subset of declared services, but ZERO
+    startable services means the manifest's commands no longer match the image
+    (the drifted env0@prod pin, 2026-08-09: every CLI name stale, readiness
+    passed vacuously, every rollout died at the verifier connection-refused).
+    """
+    sandbox = FakeSandbox(absent_binaries={"claw-gmail", "claw-gcal"})
+    env = ManifestEnvironment(CLAWS, sandbox=sandbox)
+    with pytest.raises(RuntimeError, match="NONE are startable"):
+        await env.provision(ctx=None)
+
+
 async def test_provision_detects_services_by_running_the_entry_point():
     """Detection probes `<binary> --help`, never bare `command -v`.
 
