@@ -117,6 +117,16 @@ class PackageInfo(TaskConfigModel):
         ...,
         description="Package name in org/name format (e.g., 'benchflow/hello-world')",
     )
+    version: str = Field(
+        default="",
+        description=(
+            "Package version (Harbor schema 1.3 [task] field). Informational "
+            "only — recorded, never interpreted. Absent from this model it was "
+            "extra_forbidden, which made every Harbor-1.3 task authored by the "
+            "govbench/frontier-bench curation pipeline unloadable (2026-08-09: "
+            "all 6 tasks in the local corpus failed on exactly this field)."
+        ),
+    )
     description: str = Field(
         default="",
         description="Human-readable description of the task",

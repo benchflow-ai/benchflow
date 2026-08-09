@@ -89,6 +89,7 @@ artifacts = [{ source = "/logs/artifacts", destination = "artifacts" }]
 
 [task]
 name = "benchflow/harbor-parity"
+version = "1.0.0"
 description = "Exercises Harbor-compatible task.toml fields"
 authors = [{ name = "BenchFlow", email = "benchflow@example.com" }]
 keywords = ["parity", "task-md"]
@@ -167,6 +168,9 @@ env = { STEP = "scaffold" }
     assert cfg.schema_version == "1.3"
     assert cfg.task is not None
     assert cfg.task.name == "benchflow/harbor-parity"
+    # Harbor 1.3 [task] version — informational, recorded verbatim. Its absence
+    # made every govbench/frontier-bench curated task unloadable (2026-08-09).
+    assert cfg.task.version == "1.0.0"
     assert cfg.metadata["custom"]["kept"] is True
     assert cfg.agent.network_mode == NetworkMode.ALLOWLIST
     assert cfg.agent.allowed_hosts == ["api.example.com"]
