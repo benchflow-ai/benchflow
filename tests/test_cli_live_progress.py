@@ -440,20 +440,11 @@ def _bare_failure(task_name: str, rollout_name: str | None = None):
     )
 
 
-def _write_ctrf(verifier_dir, *, name: str | None, trace: str | None = None) -> None:
-    """Write a minimal CTRF report (pytest-json-ctrf shape).
-
-    ``name`` is the failed test's node id; ``None`` writes an all-passed report.
-    """
+def _write_ctrf_tests(verifier_dir, tests: list[dict]) -> None:
+    """Write a CTRF report (pytest-json-ctrf shape) with the given tests."""
     import json
 
     verifier_dir.mkdir(parents=True, exist_ok=True)
-    tests = [{"name": "tests/test_x.py::test_ok", "status": "passed"}]
-    if name is not None:
-        test: dict = {"name": name, "status": "failed"}
-        if trace is not None:
-            test["trace"] = trace
-        tests.append(test)
     (verifier_dir / "ctrf.json").write_text(
         json.dumps(
             {
@@ -462,6 +453,20 @@ def _write_ctrf(verifier_dir, *, name: str | None, trace: str | None = None) -> 
             }
         )
     )
+
+
+def _write_ctrf(verifier_dir, *, name: str | None, trace: str | None = None) -> None:
+    """Write a minimal CTRF report.
+
+    ``name`` is the failed test's node id; ``None`` writes an all-passed report.
+    """
+    tests = [{"name": "tests/test_x.py::test_ok", "status": "passed"}]
+    if name is not None:
+        test: dict = {"name": name, "status": "failed"}
+        if trace is not None:
+            test["trace"] = trace
+        tests.append(test)
+    _write_ctrf_tests(verifier_dir, tests)
 
 
 def _write_stdout(verifier_dir, text: str) -> None:
@@ -491,6 +496,121 @@ def test_failure_reason_artifact_tier_reads_ctrf(tmp_path):
         "Build failed for py312" in out
     )
     assert f"(details: {tmp_path / 'fix-build__ab12cd34' / 'verifier'})" in out
+    # A single failed test needs no roll-up count.
+    assert "(+" not in out
+
+
+def test_ctrf_multi_failure_appends_count_suffix(tmp_path):
+    # Dogfood follow-up (skillsbench dialogue-parser, reward 0.667): the CTRF
+    # held 2 failed / 4 passed but the console named only the first failure —
+    # a reader stopping at the console under-counted what was broken. With >1
+    # failed test the line gains a count suffix, and a param id carried by the
+    # report's test name is preserved end-to-end. (pytest-json-ctrf <= 0.5.3
+    # strips the param id at generation time — nodeid.split('[')[0] — so this
+    # fixture uses the spec-conformant full name other CTRF producers emit.)
+    _write_ctrf_tests(
+        tmp_path / "dialogue-parser__ab12cd34" / "verifier",
+        [
+            {"name": "test_outputs.py::test_system_basics", "status": "passed"},
+            {"name": "test_outputs.py::test_narrative_content", "status": "passed"},
+            {
+                "name": "test_outputs.py::test_graph_logic[reachability]",
+                "status": "failed",
+                "trace": (
+                    ">           assert not unreachable\n"
+                    "E           AssertionError: Unreachable nodes found: "
+                    "['End']...\n"
+                ),
+            },
+            {
+                "name": "test_outputs.py::test_visualization_validity",
+                "status": "failed",
+            },
+            {"name": "test_outputs.py::test_content_integrity", "status": "passed"},
+            {"name": "test_outputs.py::test_structural_integrity", "status": "passed"},
+        ],
+    )
+    from benchflow.evaluation import TaskFailure
+
+    out = _reported(
+        _failed_result(
+            [
+                TaskFailure(
+                    task_name="dialogue-parser",
+                    rewards={"reward": 0.667},
+                    verifier_error=None,
+                    rollout_name="dialogue-parser__ab12cd34",
+                )
+            ]
+        ),
+        tmp_path,
+    )
+    # The body hits the 100-char budget and truncates; the suffix rides after
+    # it whole. Counts are report-wide: 1 extra failure, 4 of 6 checks passed.
+    assert (
+        "✗ dialogue-parser: reward 0.667 — test_graph_logic[reachability] "
+        "failed: Unreachable nodes found:… (+1 more failure; 4/6 checks passed)" in out
+    )
+
+
+def test_ctrf_count_suffix_plural_and_param_id_with_colons(tmp_path):
+    # 3 failed tests pluralize the suffix, and a param id containing "::" must
+    # not be mangled by the node-id segment split (`test_foo[a::b]`, not `b]`).
+    _write_ctrf_tests(
+        tmp_path / "multi__ab12cd34" / "verifier",
+        [
+            {"name": "tests/test_x.py::test_foo[a::b]", "status": "failed"},
+            {"name": "tests/test_x.py::test_bar", "status": "failed"},
+            {"name": "tests/test_x.py::test_baz", "status": "failed"},
+            {"name": "tests/test_x.py::test_ok", "status": "passed"},
+        ],
+    )
+    out = _reported(
+        _failed_result([_bare_failure("multi", "multi__ab12cd34")]), tmp_path
+    )
+    assert (
+        "✗ multi: reward 0.0 — test_foo[a::b] failed "
+        "(+2 more failures; 1/4 checks passed)" in out
+    )
+
+
+def test_ctrf_count_suffix_survives_truncation(tmp_path):
+    # A long assertion must not push the count suffix off the line: the body
+    # alone is truncated to the 100-char budget, then the suffix is appended
+    # whole — so the "more than this is broken" signal always survives.
+    _write_ctrf_tests(
+        tmp_path / "long__ab12cd34" / "verifier",
+        [
+            {
+                "name": "tests/test_x.py::test_long",
+                "status": "failed",
+                "trace": "E   AssertionError: " + "verbose diagnosis " * 20 + "\n",
+            },
+            {"name": "tests/test_x.py::test_other", "status": "failed"},
+            {"name": "tests/test_x.py::test_ok", "status": "passed"},
+        ],
+    )
+    out = _reported(_failed_result([_bare_failure("long", "long__ab12cd34")]), tmp_path)
+    suffix = " (+1 more failure; 1/3 checks passed)"
+    (line,) = [ln for ln in out.splitlines() if "✗ long" in ln]
+    assert line.rstrip().endswith(f"…{suffix}")
+    assert len(line.rstrip()) <= 100 + len(suffix)
+
+
+def test_stdout_tail_tier_never_gets_count_suffix(tmp_path):
+    # The suffix is a CTRF-tier concept: the stdout tail's pytest summary line
+    # already carries the full counts, so nothing is appended there.
+    _write_stdout(
+        tmp_path / "fix-build__ab12cd34" / "verifier",
+        "FAILED tests/test_build.py::test_a - AssertionError: boom\n"
+        "FAILED tests/test_build.py::test_b - AssertionError: boom\n"
+        "=========== 2 failed, 1 passed in 4.20s ===========\n",
+    )
+    out = _reported(
+        _failed_result([_bare_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
+    )
+    assert "✗ fix-build: reward 0.0 — 2 failed, 1 passed in 4.20s" in out
+    assert "(+" not in out
 
 
 def test_failure_reason_artifact_tier_requires_rollout_name(tmp_path):

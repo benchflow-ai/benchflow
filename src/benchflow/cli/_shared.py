@@ -21,7 +21,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from benchflow._utils.text import truncate_end
-from benchflow.cli._failure_evidence import artifact_failure_evidence
+from benchflow.cli._failure_evidence import FailureLine, artifact_failure_evidence
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -114,7 +114,7 @@ _FAILURE_REASON_METRICS = 3
 
 def _failure_reason(
     failure: TaskFailure, job_dir: Path | None = None
-) -> tuple[str, Path | None]:
+) -> tuple[FailureLine, Path | None]:
     """One cheap line explaining why a FAILED (scored, reward != 1) task
     failed, plus the verifier dir when artifacts supplied the evidence.
 
@@ -123,13 +123,15 @@ def _failure_reason(
     first — they explain the miss); else the reward plus a one-liner mined
     from the rollout's verifier artifacts (bounded CLI-side reads resolved via
     the ``rollout_name`` the engine records — the engine stays file-free);
-    else just the reward. The returned path is non-``None`` only for the
-    artifact tier, so the caller can print one ``(details: …)`` pointer per
-    report block.
+    else just the reward. The reason is a ``FailureLine`` so the artifact
+    tier's multi-failure count suffix stays separable from the truncatable
+    body (only the artifact tier ever sets it). The returned path is
+    non-``None`` only for the artifact tier, so the caller can print one
+    ``(details: …)`` pointer per report block.
     """
     if failure.verifier_error:
         # Collapse whitespace: verifier errors are routinely multi-line.
-        return " ".join(failure.verifier_error.split()), None
+        return FailureLine(" ".join(failure.verifier_error.split())), None
     rewards = failure.rewards or {}
     reward = rewards.get("reward")
     metrics = [
@@ -144,15 +146,18 @@ def _failure_reason(
         shown = ", ".join(
             f"{name} {value}" for name, value in metrics[:_FAILURE_REASON_METRICS]
         )
-        return f"reward {reward} — {shown}", None
+        return FailureLine(f"reward {reward} — {shown}"), None
     # No rollout_name (pre-#957-follow-up result.json, sharded aggregation):
     # nothing to resolve — the bare reward is as honest as it gets.
     if job_dir is not None and failure.rollout_name:
         evidence = artifact_failure_evidence(job_dir, failure.rollout_name)
         if evidence is not None:
             detail, verifier_dir = evidence
-            return f"reward {reward} — {detail}", verifier_dir
-    return f"reward {reward}", None
+            return (
+                FailureLine(f"reward {reward} — {detail.body}", detail.suffix),
+                verifier_dir,
+            )
+    return FailureLine(f"reward {reward}"), None
 
 
 def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -> None:
@@ -202,11 +207,16 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
         reason, verifier_dir = _failure_reason(failure, job_dir)
         if artifact_pointer is None and verifier_dir is not None:
             artifact_pointer = verifier_dir
-        line = truncate_end(
-            f"  ✗ {failure.task_name}: {reason}",
+        # The char budget governs only the free-text body; the multi-failure
+        # count suffix is appended AFTER truncation so a long assertion can
+        # never swallow the "more than this is broken" signal. Worst case the
+        # line runs ~40 chars past the budget — completeness beats strict
+        # width for this one signal.
+        body = truncate_end(
+            f"  ✗ {failure.task_name}: {reason.body}",
             _FAILURE_LINE_LIMIT,
         )
-        console.print(f"[dim]{escape(line)}[/dim]")
+        console.print(f"[dim]{escape(body + reason.suffix)}[/dim]")
     extra = len(failures) - _MAX_FAILURE_LINES
     if extra > 0:
         console.print(f"[dim]  … and {extra} more[/dim]")
