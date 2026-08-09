@@ -8,6 +8,7 @@ normalization to :mod:`benchflow.task._document_normalize`.
 
 from __future__ import annotations
 
+import datetime
 import re
 import tomllib
 from collections.abc import Sequence
@@ -31,7 +32,12 @@ TASK_DOCUMENT_FILENAME = "task.md"
 
 _DOCUMENT_ONLY_FRONTMATTER_KEYS = {"agents", "benchflow", "scenes", "user"}
 _FLOW_SEQUENCE_MAX_WIDTH = 80
-_FLOW_SEQUENCE_SCALAR_TYPES = (str, int, float, bool)
+# Flow lists render after a key prefix and indentation the representer cannot
+# see (PyYAML exposes no emit-time column), so charge a fixed allowance to
+# keep typical in-context lines within the width cap instead of measuring
+# the list standalone and overflowing by the prefix length.
+_FLOW_SEQUENCE_CONTEXT_ALLOWANCE = 8
+_FLOW_SEQUENCE_SCALAR_TYPES = (str, int, float, bool, datetime.date)
 _SECTION_RE = re.compile(
     r"^##\s+(prompt|role:[A-Za-z0-9_.-]+|scene:[A-Za-z0-9_.-]+|user-persona)\s*$",
     re.IGNORECASE | re.MULTILINE,
@@ -52,10 +58,12 @@ def _sequence_flow_style(data: list[Any]) -> bool:
     """Decide whether ``data`` renders as a single-line flow sequence.
 
     Flow style requires every item to be a short scalar (``str``/``int``/
-    ``float``/``bool``/``None``, no embedded newlines) and the standalone flow
-    rendering — with PyYAML's own quoting applied — to fit within
-    :data:`_FLOW_SEQUENCE_MAX_WIDTH` characters. The check is a pure function
-    of ``data``, so output stays deterministic.
+    ``float``/``bool``/``date``/``None``, no embedded newlines) and the
+    standalone flow rendering — with PyYAML's own quoting applied — to fit
+    within :data:`_FLOW_SEQUENCE_MAX_WIDTH` minus
+    :data:`_FLOW_SEQUENCE_CONTEXT_ALLOWANCE` characters (the allowance stands
+    in for the key prefix and indentation the representer cannot see). The
+    check is a pure function of ``data``, so output stays deterministic.
     """
 
     for item in data:
@@ -69,7 +77,7 @@ def _sequence_flow_style(data: list[Any]) -> bool:
         default_flow_style=True,
         width=float("inf"),
     ).strip()
-    return len(rendered) <= _FLOW_SEQUENCE_MAX_WIDTH
+    return len(rendered) <= _FLOW_SEQUENCE_MAX_WIDTH - _FLOW_SEQUENCE_CONTEXT_ALLOWANCE
 
 
 def _represent_compact_sequence(
