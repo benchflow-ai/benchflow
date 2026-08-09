@@ -77,6 +77,7 @@ def _run_terminal_gate(
     source: str = "success",
     detect: str = "success",
     rollout: str = "success",
+    fixtures: str = "success",
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", "-c", _release_gate_script(integration)],
@@ -86,6 +87,7 @@ def _run_terminal_gate(
             "SOURCE_CONCLUSION": source,
             "DETECT_SCOPE_RESULT": detect,
             "ROLLOUT_SMOKE_RESULT": rollout,
+            "FIXTURE_SCENARIOS_RESULT": fixtures,
             "TESTED_SHA": "b" * 40,
             "SOURCE_RUN_NUMBER": "456",
         },
@@ -146,7 +148,14 @@ def test_preview_publish_is_downstream_of_tested_main_live_gate() -> None:
         assert fail_closed_condition in integration_gate
 
     terminal_gate = integration["jobs"]["release-gate"]
-    assert terminal_gate["needs"] == ["detect-scope", "rollout-smoke"]
+    # fixture-scenarios grades the coherent PR-head code+fixture pair that
+    # rollout-smoke's src-only overlay structurally cannot; it is a gate, not
+    # advisory, so the preview chain must depend on it too.
+    assert terminal_gate["needs"] == [
+        "detect-scope",
+        "rollout-smoke",
+        "fixture-scenarios",
+    ]
     for terminal_condition in (
         "always()",
         "github.event_name == 'workflow_run'",
@@ -279,6 +288,20 @@ def test_terminal_gate_rejects_skipped_live_integration(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "live integration concluded skipped" in result.stdout
+
+
+def test_terminal_gate_rejects_failed_fixture_scenarios(tmp_path: Path) -> None:
+    """The coherent-tree job must gate the preview, not merely be waited on.
+
+    Listing a job in ``needs`` only makes the gate WAIT for it; without an
+    explicit conclusion check a red fixture-scenarios would still publish.
+    """
+    integration = _workflow("integration-light.yml")
+
+    result = _run_terminal_gate(tmp_path, integration, fixtures="failure")
+
+    assert result.returncode != 0
+    assert "fixture scenarios concluded failure" in result.stdout
 
 
 def test_terminal_gate_accepts_only_fully_green_chain(tmp_path: Path) -> None:
