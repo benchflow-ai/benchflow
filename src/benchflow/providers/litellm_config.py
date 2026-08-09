@@ -26,6 +26,15 @@ _PROVIDER_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
 
+#: Completions providers routed through LiteLLM's NATIVE provider integration
+#: (``<provider>/<model>``) instead of the generic ``openai/`` passthrough, so
+#: provider-specific params the agent sends (DeepSeek ``thinking`` /
+#: ``reasoning_effort``) survive ``drop_params``. Extend only after checking
+#: ``get_supported_openai_params(..., custom_llm_provider=<name>)`` on the
+#: pinned LiteLLM: a provider listed here whose integration DOESN'T support a
+#: param drops it exactly like the openai/ route would.
+_NATIVE_LITELLM_COMPLETIONS_PROVIDERS = frozenset({"deepseek"})
+
 # Per-token USD prices for models LiteLLM's built-in ``model_cost`` does not
 # already know (custom OpenAI-compatible endpoints such as private vLLM servers
 # or niche hosted models). When a route's upstream model matches a key here, the
@@ -305,23 +314,25 @@ def _route_registered_provider(
 
     if protocol == "anthropic-messages":
         upstream = f"anthropic/{bare}"
+    elif provider_name in _NATIVE_LITELLM_COMPLETIONS_PROVIDERS:
+        # Parity: the generic openai/ passthrough + global `drop_params: True`
+        # silently strips params outside the vanilla-OpenAI set — verified live
+        # 2026-08-08 with a capture proxy between the gateway and
+        # api.deepseek.com: the agent sent `thinking: {type: enabled}` +
+        # `reasoning_effort: high` and the upstream received NEITHER, so
+        # gateway-routed runs used the provider's DEFAULT thinking config while
+        # native runs used the agent's. LiteLLM's native provider integrations
+        # declare those params supported (deepseek does for both), so routing
+        # through the provider's own prefix forwards them while drop_params
+        # keeps protecting genuinely unsupported fields. (The pinned LiteLLM
+        # 1.89.0 has no per-deployment allowed_openai_params escape, so the
+        # provider prefix is the only faithful route.)
+        upstream = f"{provider_name}/{bare}"
     else:
         upstream = f"openai/{bare}"
     params: dict[str, str | int | float | bool | list[str]] = {"model": upstream}
     if api_base:
         params["api_base"] = api_base
-    if protocol != "anthropic-messages":
-        # Parity: the global `drop_params: True` makes LiteLLM's openai/
-        # passthrough silently strip reasoning params the agent sent, because
-        # they are not vanilla-OpenAI fields — verified live 2026-08-08 with a
-        # capture proxy between the gateway and api.deepseek.com: the agent
-        # sent `thinking: {type: enabled}` + `reasoning_effort: high` and the
-        # upstream received NEITHER, so gateway-routed runs silently used the
-        # provider's default thinking config while native runs used the
-        # agent's. Explicitly allow the reasoning params through; an upstream
-        # that does not know them rejects them exactly as it would a native
-        # client — which is the parity-correct behavior.
-        params["allowed_openai_params"] = ["thinking", "reasoning_effort"]
     api_key_ref = (
         _env_ref("BENCHFLOW_PROVIDER_API_KEY")
         if explicit_api_base and explicit_api_key

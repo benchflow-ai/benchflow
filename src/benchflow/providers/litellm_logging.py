@@ -322,6 +322,23 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                     cleaned = dict(data)
                 cleaned["tools"] = kept
 
+        # Forward ``reasoning_effort`` VERBATIM on deepseek routes. LiteLLM's
+        # deepseek transform consumes the top-level field (it maps it into its
+        # own thinking handling and drops the raw param — even with drop_params
+        # off; verified against a capture upstream 2026-08-08), while
+        # ``extra_body`` fields merge into the wire request untouched. Lifting
+        # the param means the upstream receives exactly what the agent sent —
+        # the same request a native (gateway-less) run produces. Scoped to
+        # deepseek, today's only natively-routed completions provider
+        # (_NATIVE_LITELLM_COMPLETIONS_PROVIDERS in litellm_config.py).
+        model_id = str(cleaned.get("model") or "")
+        if "deepseek" in model_id and cleaned.get("reasoning_effort") is not None:
+            if cleaned is data:
+                cleaned = dict(data)
+            extra = dict(cleaned.get("extra_body") or {})
+            extra.setdefault("reasoning_effort", cleaned.pop("reasoning_effort"))
+            cleaned["extra_body"] = extra
+
         capture_logprobs = (
             os.environ.get("BENCHFLOW_CAPTURE_TOKEN_LOGPROBS", "").strip().lower()
             in {"1", "true", "yes", "on"}
