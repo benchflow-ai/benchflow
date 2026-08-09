@@ -2,9 +2,47 @@
 
 ## [Unreleased]
 
+### Added
+- **Console progress heartbeat.** Single-concurrency eval runs print a
+  throttled progress line (`… 6.2min, 12 tool calls (last: …)`) about every
+  45 seconds while the agent works, so a long prompt is distinguishable from
+  a hang. The heartbeat is auto-gated off for multi-concurrency jobs;
+  `bench eval run --quiet` suppresses it, and `BENCHFLOW_PROGRESS=on`/`off`
+  overrides the auto-gate. (#951)
+
+### Changed
+- Migrated the clawsbench `archive-amazon-shipping` task to the native
+  `task.md` package layout (`bench tasks migrate --remove-legacy`), and a
+  clawsbench run launched without `--environment-manifest` now fails with an
+  actionable verifier message naming the exact flag to pass instead of an
+  opaque connection error. (#952)
+
 ### Fixed
 - Isolated pull-request and post-test integration concurrency groups so a
   credential-free workflow completion cannot cancel an active PR rollout.
+- **Host-side hard rollout deadline.** An await wedged below the phase-level
+  watchdogs (e.g. a Daytona PTY teardown on a dead websocket) could freeze an
+  entire eval job. Every rollout attempt now runs under a host-side hard
+  deadline derived from the task's own phase budgets plus a fixed margin; a
+  trip returns a retryable infra-error result and abandons the sandbox after
+  a bounded cleanup grace. Override with `BENCHFLOW_ROLLOUT_HARD_DEADLINE`
+  (seconds; `off`/`none`/`0` disables). Verifier timeouts that produced zero
+  output are retried once — that signature is an exec-layer wedge, not a slow
+  verifier. Agent-sent reasoning parameters are also forwarded through the
+  LLM gateway, and DeepSeek routes natively with `reasoning_effort` passed
+  verbatim. (#949)
+- Quieter Daytona teardown: successful runs end at the score line — the
+  atexit client cleanup no longer prints a cancelled-reader traceback after
+  `✓ Score`, and benign engineio PTY-disconnect errors are silenced. (#951)
+- Accept the Harbor 1.3 `[task] version` field in task configs. It is
+  informational and stored verbatim; the strict schema previously rejected
+  it, which made every Harbor-1.3 curated task unloadable. (#953)
+- Synced the committed `env0@prod` / `env0@outage` environment pins with the
+  upstream `benchflow-ai/env0` manifest (the pins had drifted to stale
+  service CLI names, a phantom service, and shifted ports), and a manifest
+  environment now fails loud when it declares services but none are startable
+  in the image, instead of passing a vacuous readiness gate and dying at the
+  verifier. (#954)
 
 ## 0.6.6 — 2026-08-04
 

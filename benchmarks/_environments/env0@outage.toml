@@ -2,7 +2,7 @@
 #
 # A perturbation variant for the "Same state, tool outage" experiment: bind the
 # SAME task to env0@prod vs env0@outage and attribute the reward delta to the
-# environment alone (the S axis). A task that needs slack (port 9002) scores 1.0
+# environment alone (the S axis). A task that needs slack (port 9005) scores 1.0
 # under env0@prod and fails under env0@outage because the service is absent.
 #
 #   bench eval create --tasks-dir <task> --environment-manifest env0@outage ...
@@ -32,10 +32,6 @@ name    = "mock-auth"
 command = "mock-auth --db /data/auth.db serve --host 0.0.0.0 --port 9000 --no-mcp"
 port    = 9000
 
-[[environment.services]]
-name    = "mock-gmail"
-command = "mock-gmail --db /data/gmail.db serve --host 0.0.0.0 --port 9001 --no-mcp"
-port    = 9001
 
 [[environment.services]]
 name    = "mock-gcal"
@@ -52,10 +48,6 @@ name    = "mock-gdoc"
 command = "mock-gdoc --db /data/gdoc.db serve --host 0.0.0.0 --port 9004 --no-mcp"
 port    = 9004
 
-[[environment.services]]
-name    = "mock-slack"
-command = "mock-slack --db /data/slack.db serve --host 0.0.0.0 --port 9005 --no-mcp"
-port    = 9005
 
 [[environment.services]]
 name    = "mock-discord"

@@ -178,9 +178,53 @@ bench eval run --tasks-dir benchmarks/clawsbench/tasks \
 YAML configs may declare the same seam with ``environment_manifest:
 <path>`` at the top level so the batch run is reproducible from disk.
 
+A task can also pin its own manifest in `task.md` frontmatter
+(`benchflow.environment.manifest: <path>`, resolved relative to the task
+directory). An explicit per-run binding always wins: `--state` beats
+`--environment-manifest`, and either flag beats the frontmatter pin, which
+applies only when no flag is given.
+
 `--environment-manifest` is distinct from `--sandbox`: the sandbox is *where*
 it runs (the Sandbox plane); the environment manifest is *the world* (the
 Environment plane).
+
+## Registry (`name@version`)
+
+`--environment-manifest` (and `--state`) also accept a **registry spec**
+instead of a file path: `name@version`, or a bare `name`, resolved against
+the directory named by `$BENCHFLOW_ENV_REGISTRY`
+([`_utils/env_registry.py`](../src/benchflow/_utils/env_registry.py)). The
+registry is just a local directory of manifest files:
+
+```
+<registry>/<name>@<version>.toml   # a pinned environment version
+<registry>/<name>.toml             # optional default for a bare <name>
+```
+
+`.yaml` / `.yml` work too. A bare `name` resolves to `<name>.toml` when
+present, else the highest-sorting pinned version. Every resolution is
+content-addressed (`env_hash = sha256(manifest bytes)`) so a run records
+exactly which environment it bound.
+
+```bash
+export BENCHFLOW_ENV_REGISTRY=benchmarks/_environments
+bench eval run --tasks-dir <tasks> --environment-manifest env0@prod ...
+```
+
+Any local directory works — a pip install has no repo checkout, so download
+the pinned manifest you need into one:
+
+```bash
+mkdir -p env-registry
+curl -fsSLo 'env-registry/env0@prod.toml' \
+  'https://raw.githubusercontent.com/benchflow-ai/benchflow/main/benchmarks/_environments/env0@prod.toml'
+export BENCHFLOW_ENV_REGISTRY=$PWD/env-registry
+```
+
+The repo commits two pins,
+[`benchmarks/_environments/env0@prod.toml`](../benchmarks/_environments/env0@prod.toml)
+and [`env0@outage.toml`](../benchmarks/_environments/env0@outage.toml) — see
+[`benchmarks/_environments/README.md`](../benchmarks/_environments/README.md).
 
 ## Exporting for training
 
