@@ -139,9 +139,47 @@ def test_env_var_registry_wins_entirely_no_builtin_fallback(tmp_path, monkeypatc
     """A name the env-var registry lacks does NOT fall back to the built-in."""
     monkeypatch.setenv("BENCHFLOW_ENV_REGISTRY", str(tmp_path))  # empty dir
     with pytest.raises(
-        EnvironmentRegistryError, match=r"not found in .*(available: none)"
+        EnvironmentRegistryError, match=r"not found in .*available: none"
     ):
         resolve_environment("env0@prod")
+
+
+def test_explicit_registry_argument_beats_set_env_var(tmp_path, monkeypatch):
+    """Resolution order: an explicit ``registry=`` beats a SET env var."""
+    env_dir = tmp_path / "from-env"
+    arg_dir = tmp_path / "from-arg"
+    env_dir.mkdir()
+    arg_dir.mkdir()
+    _write_env(env_dir, "env0@v1", base_image="img:env")
+    _write_env(arg_dir, "env0@v1", base_image="img:arg")
+    monkeypatch.setenv("BENCHFLOW_ENV_REGISTRY", str(env_dir))
+    r = resolve_environment("env0@v1", registry=arg_dir)
+    assert r.manifest_path.parent == arg_dir
+
+
+def test_empty_env_var_counts_as_unset(monkeypatch):
+    """``BENCHFLOW_ENV_REGISTRY=""`` resolves the built-in registry, exactly
+    like an unset var (empty counts as unset, pinned by the docstring)."""
+    monkeypatch.setenv("BENCHFLOW_ENV_REGISTRY", "")
+    r = resolve_environment("env0@prod")
+    assert (r.name, r.version) == ("env0", "prod")
+
+
+def test_env_var_not_a_directory_error_names_the_env_var(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_ENV_REGISTRY", str(tmp_path / "nope"))
+    with pytest.raises(
+        EnvironmentRegistryError,
+        match=r"from \$BENCHFLOW_ENV_REGISTRY.*is not a directory",
+    ):
+        resolve_environment("env0@prod")
+
+
+def test_registry_argument_not_a_directory_error_names_the_argument(tmp_path):
+    with pytest.raises(
+        EnvironmentRegistryError,
+        match=r"from the registry= argument.*is not a directory",
+    ):
+        resolve_environment("env0@prod", registry=tmp_path / "nope")
 
 
 def test_builtin_unknown_name_error_lists_available(monkeypatch):

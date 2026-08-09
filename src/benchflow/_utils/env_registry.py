@@ -17,7 +17,8 @@ Which directory is the registry:
 
 1. an explicit ``registry=`` argument (tests, embedders);
 2. else ``$BENCHFLOW_ENV_REGISTRY`` — when set it wins entirely (no fallback
-   into the built-in registry for names it does not contain);
+   into the built-in registry for names it does not contain); an empty value
+   counts as unset;
 3. else the **built-in registry** shipped inside the ``benchflow`` wheel
    (``benchflow/environment/_registry/``), so a bare ``pip install benchflow``
    resolves the committed pins (``env0@prod``, ``env0@outage``) with no
@@ -35,12 +36,9 @@ reproducibility contract from "Decouple the task from the harness."
 
 from __future__ import annotations
 
-import functools
-import importlib.resources
 import json
 import os
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -93,37 +91,27 @@ def looks_like_env_spec(value: str) -> bool:
     return bool(_SPEC_RE.match(value))
 
 
-@functools.cache
 def _builtin_registry_dir() -> Path | None:
     """Directory of the pinned manifests shipped inside the ``benchflow`` wheel.
 
     ``benchflow/environment/_registry/`` is package data, so a bare
-    ``pip install benchflow`` carries the committed pins. Looked up through
-    :mod:`importlib.resources` so zipped installs work too: when the package is
-    not a plain directory on disk the manifests are materialized once per
-    process into a temp dir (resolution needs real files for globbing and
-    content-addressed reads). Returns ``None`` when the packaged registry is
-    missing (a stripped or partial install).
+    ``pip install benchflow`` carries the committed pins. Path(__file__)-relative
+    like every other package-data lookup in the repo (compose files, default
+    rubric, demo task) — zip imports are unsupported package-wide. Returns
+    ``None`` when the packaged registry is missing (a stripped install).
     """
-    try:
-        root = importlib.resources.files("benchflow.environment") / "_registry"
-    except ModuleNotFoundError:  # pragma: no cover — broken install
-        return None
-    if not root.is_dir():
-        return None
-    direct = Path(str(root))
-    if direct.is_dir():  # normal install: resources are real files on disk
-        return direct
-    extracted = Path(tempfile.mkdtemp(prefix="benchflow-env-registry-"))
-    for entry in root.iterdir():
-        if entry.is_file():
-            (extracted / entry.name).write_bytes(entry.read_bytes())
-    return extracted
+    directory = Path(__file__).resolve().parents[1] / "environment" / "_registry"
+    return directory if directory.is_dir() else None
 
 
 def _registry_dir(registry: str | os.PathLike[str] | None) -> Path:
-    raw = registry if registry is not None else os.environ.get(ENV_REGISTRY_VAR)
-    if not raw:
+    if registry is not None:
+        raw: str | os.PathLike[str] | None = registry
+        source = "the registry= argument"
+    else:
+        raw = os.environ.get(ENV_REGISTRY_VAR)
+        source = f"${ENV_REGISTRY_VAR}"
+    if not raw:  # unset or empty — empty counts as unset
         builtin = _builtin_registry_dir()
         if builtin is not None:
             return builtin
@@ -136,7 +124,7 @@ def _registry_dir(registry: str | os.PathLike[str] | None) -> Path:
     directory = Path(raw).expanduser()
     if not directory.is_dir():
         raise EnvironmentRegistryError(
-            f"environment registry {directory} is not a directory"
+            f"environment registry {directory} (from {source}) is not a directory"
         )
     return directory
 
