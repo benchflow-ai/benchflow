@@ -6,10 +6,11 @@ Owns the live agent-side of a run:
     - execute_prompts: send each prompt through the session, capture the
       ACP-native trajectory, and report tool-call counts
 
-The one allowed horizontal phase import in this refactor lives here:
-``from benchflow.sandbox.lockdown import build_priv_drop_cmd``. connect_acp wraps
-the agent launch command in the sandbox user's privilege-drop prefix
-before handing it to the transport. It is a single pure-function call
+The allowed horizontal phase imports in this refactor live here:
+``from benchflow.sandbox.lockdown import build_priv_drop_cmd`` (connect_acp
+wraps the agent launch command in the sandbox user's privilege-drop prefix
+before handing it to the transport) and the shared timeout-env parser from
+``benchflow.sandbox.process._base``. Both are single pure-function calls
 with no shared state — not a coupling of concerns.
 
 Does not own:
@@ -46,6 +47,7 @@ from benchflow.sandbox.lockdown import (
     build_priv_drop_cmd,
     enforce_agent_egress_firewall,
 )
+from benchflow.sandbox.process._base import _timeout_sec_from_env
 from benchflow.trajectories._capture import _capture_session_trajectory
 
 # Re-exported for backwards compatibility — tests and downstream code
@@ -65,8 +67,25 @@ logger = logging.getLogger(__name__)
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
 _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
-_ACP_HANDSHAKE_TIMEOUT_SEC = 60
+_ACP_HANDSHAKE_TIMEOUT_ENV = "BENCHFLOW_ACP_HANDSHAKE_TIMEOUT"
+_ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC = 60.0
 _OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
+
+
+def _acp_handshake_timeout_sec() -> float:
+    """Effective timeout for the pre-prompt ACP handshake, in seconds.
+
+    Agent startup cost scales with the task image — heavyweight images
+    (workspace scanning, kernel prep) can push the ``initialize`` response
+    past the 60s default, so operators can override it with
+    ``BENCHFLOW_ACP_HANDSHAKE_TIMEOUT`` (seconds). Parsing (use-time read,
+    positive-float validation, warn-and-fall-back) is shared with the other
+    transport timeout knobs in :mod:`benchflow.sandbox.process._base`.
+    """
+    return _timeout_sec_from_env(
+        _ACP_HANDSHAKE_TIMEOUT_ENV,
+        _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC,
+    )
 
 
 async def _prepare_openhands_direct_execution(
@@ -129,13 +148,11 @@ async def _prepare_openhands_direct_execution(
 
 
 async def _wait_for_acp_handshake(awaitable, *, phase: str):
+    timeout_sec = _acp_handshake_timeout_sec()
     try:
-        return await asyncio.wait_for(awaitable, timeout=_ACP_HANDSHAKE_TIMEOUT_SEC)
+        return await asyncio.wait_for(awaitable, timeout=timeout_sec)
     except TimeoutError as e:
-        msg = (
-            f"ACP {phase} timed out after {_ACP_HANDSHAKE_TIMEOUT_SEC}s "
-            "before the first prompt"
-        )
+        msg = f"ACP {phase} timed out after {timeout_sec:g}s before the first prompt"
         raise TransportClosedError(
             msg,
             TransportClosedDiagnostic(

@@ -613,6 +613,132 @@ class TestTransportProtocolFiltering:
         )
 
 
+class TestContainerTransportPtyNoise:
+    """PTY-glued shell noise must not hide a protocol message on the same line.
+
+    Daytona's PTY transport gives the agent a real terminal; on BugSwarm-style
+    images the shell prompt (bracketed-paste CSI + OSC window title) lands on
+    the SAME pty line as the agent's initialize response. Whole-line json.loads
+    fails, the response is filed as non-protocol noise, and the handshake
+    "times out" at ANY window with the completed JSON sitting in the agent log
+    (observed 6/6 on fix-build-agentops at both 60s and 300s).
+    """
+
+    # Exact shape captured from the failing run's agent/prime_agent.txt:
+    # bracketed-paste on, OSC 0 window title, prompt, bracketed-paste off,
+    # then the agent's initialize response glued on the same line.
+    PROMPT_GLUED_INIT = (
+        b"\x1b[?2004h"
+        b"\x1b]0;root@9ec4903f-9479-4754-9039-d1b5a544cb28: /home/github/build\x07"
+        b"root@9ec4903f-9479-4754-9039-d1b5a544cb28:/home/github/build# "
+        b"\x1b[?2004l"
+        b'{"jsonrpc": "2.0", "id": 100001, "result": {"protocolVersion": 1}}\n'
+    )
+
+    @pytest.mark.asyncio
+    async def test_prompt_glued_initialize_response_decodes(self, tmp_path) -> None:
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(return_value=self.PROMPT_GLUED_INIT)
+        agent_log = tmp_path / "agent" / "prime_agent.txt"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        try:
+            msg = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert msg == {
+            "jsonrpc": "2.0",
+            "id": 100001,
+            "result": {"protocolVersion": 1},
+        }
+        # Decoded as protocol — nothing should be filed as noise.
+        assert not agent_log.exists()
+
+    def test_json_trailed_by_ansi_escapes_decodes(self) -> None:
+        """The CSI/OSC strip path recovers JSON with trailing escape noise."""
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        line = '\x1b[?2004l{"jsonrpc": "2.0", "id": 7, "result": {}}\x1b[K'
+        assert _decode_pty_json_rpc_message(line) == {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {},
+        }
+
+    def test_log_line_with_invalid_envelope_still_rejected(self) -> None:
+        """A log line that merely contains JSON must stay non-protocol noise."""
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        # Valid JSON after the first "{", but not a valid JSON-RPC envelope
+        # (no method, no result/error) — the envelope check must still reject.
+        assert (
+            _decode_pty_json_rpc_message('INFO {"jsonrpc": "2.0", "note": "boot"}')
+            is None
+        )
+        assert _decode_pty_json_rpc_message("plain log line, no json") is None
+
+    def test_plain_json_fast_path_unchanged(self) -> None:
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        assert _decode_pty_json_rpc_message(
+            '{"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}'
+        ) == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+
+    def test_valid_envelope_after_log_prefix_decodes_pre_latch(self) -> None:
+        """Deliberate edge, documented: pre-latch, a log line that embeds a
+        COMPLETE valid JSON-RPC envelope decodes as protocol. That is the
+        exact shape of the prompt-glued handshake bug; before the first
+        protocol message it cannot be told apart from the real thing.
+        """
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        assert _decode_pty_json_rpc_message(
+            'INFO sent {"jsonrpc": "2.0", "id": 3, "result": {}}'
+        ) == {"jsonrpc": "2.0", "id": 3, "result": {}}
+
+    @pytest.mark.asyncio
+    async def test_lenient_decode_latches_off_after_first_protocol_message(
+        self, tmp_path
+    ) -> None:
+        """After the first decoded protocol message the strict whole-line
+        decode rules: the same prefix-glued valid envelope that decodes
+        pre-latch is filed as noise post-latch, so a mid-session agent
+        echoing protocol envelopes into its logs cannot impersonate traffic.
+        """
+        glued_log = b'INFO sent {"jsonrpc": "2.0", "id": 3, "result": {}}\n'
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            side_effect=[
+                self.PROMPT_GLUED_INIT,  # lenient path decodes; latch sets
+                glued_log,  # post-latch: strict decode files it as noise
+                b'{"jsonrpc": "2.0", "id": 4, "result": {"ok": true}}\n',
+            ]
+        )
+        agent_log = tmp_path / "agent" / "prime_agent.txt"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        try:
+            first = await asyncio.wait_for(transport.receive(), timeout=5)
+            second = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert first["id"] == 100001
+        assert second == {"jsonrpc": "2.0", "id": 4, "result": {"ok": True}}
+        assert "INFO sent" in agent_log.read_text()
+
+
 class TestACPInterleaving:
     """Test that _read_until_response handles interleaved notifications and agent requests."""
 
@@ -912,6 +1038,55 @@ class TestIdleTimeoutDiagnostics:
             "agent_timeout",
         ]
         assert exc_info.value.trajectory[1]["status"] == ToolCallStatus.PENDING.value
+
+
+class TestAcpHandshakeTimeout:
+    """The pre-prompt handshake timeout is env-configurable at use time.
+
+    A fixed 60s is wrong for heavyweight task images — agent startup scales
+    with the image (workspace scanning, kernel prep), and on such images the
+    ``initialize`` response deterministically lands after the window. The
+    override is read per call (not cached at import) so long-lived processes
+    and these tests see env changes.
+    """
+
+    def test_default_is_60s_without_env(self, monkeypatch) -> None:
+        from benchflow.acp.runtime import _acp_handshake_timeout_sec
+
+        monkeypatch.delenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", raising=False)
+        assert _acp_handshake_timeout_sec() == 60.0
+
+    def test_env_override_is_honored(self, monkeypatch) -> None:
+        from benchflow.acp.runtime import _acp_handshake_timeout_sec
+
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", "300")
+        assert _acp_handshake_timeout_sec() == 300.0
+        # Float values are accepted too.
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", "90.5")
+        assert _acp_handshake_timeout_sec() == 90.5
+
+    @pytest.mark.parametrize("garbage", ["banana", "", "  ", "-5", "0", "nan"])
+    def test_garbage_or_non_positive_falls_back_to_default(
+        self, monkeypatch, garbage
+    ) -> None:
+        from benchflow.acp.runtime import _acp_handshake_timeout_sec
+
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", garbage)
+        assert _acp_handshake_timeout_sec() == 60.0
+
+    @pytest.mark.asyncio
+    async def test_timeout_error_carries_effective_value(self, monkeypatch) -> None:
+        """The TransportClosedError message interpolates the EFFECTIVE timeout."""
+        from benchflow.acp.runtime import _wait_for_acp_handshake
+        from benchflow.diagnostics import TransportClosedError
+
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", "0.05")
+
+        with pytest.raises(TransportClosedError) as exc_info:
+            await _wait_for_acp_handshake(asyncio.Future(), phase="initialize")
+
+        assert "timed out after 0.05s before the first prompt" in str(exc_info.value)
+        assert exc_info.value.diagnostic.transport_diagnosis == "acp_initialize_timeout"
 
 
 class TestConnectAcpModelSelection:

@@ -301,6 +301,11 @@ alike (so it also wins over an exported `on`). Note that on a TTY,
 mutes INFO logging while it owns the screen; pair it with
 `BENCHFLOW_NO_PROGRESS=1` to get plain heartbeat lines on a TTY.
 
+Set `BENCHFLOW_ACP_HANDSHAKE_TIMEOUT` to a number of seconds (default 60) to
+give slow-starting agents more time to answer the pre-prompt ACP handshake
+(`initialize`/`session_new`) — heavyweight task images can push agent startup
+past the default.
+
 Daytona batch runs collect provider token/cost telemetry by default with a
 sandbox-local LiteLLM gateway. Use `--usage-tracking required` when missing telemetry
 should fail the rollout, or `--usage-tracking off` for recovery runs that should

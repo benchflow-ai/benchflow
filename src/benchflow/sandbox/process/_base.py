@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 from abc import ABC, abstractmethod
 
@@ -32,6 +33,41 @@ _BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB readline buffer
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stderr in error messages
 _BOOTSTRAP_DONE = "__BENCHFLOW_BOOTSTRAP_DONE__"
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Terminal control sequences a PTY-backed transport can interleave with
+# protocol output: ECMA-48 CSI (parameter bytes 0x30-0x3F, intermediate
+# bytes 0x20-0x2F, one final byte 0x40-0x7E) and OSC (BEL- or ST-terminated,
+# e.g. the ``\x1b]0;<title>\x07`` window-title update shell prompts emit).
+# One canonical pair — the AgentCore stdout chunker and the ACP container
+# transport must not drift apart on what counts as terminal noise.
+_ANSI_CSI_PATTERN = r"\x1b\[[0-?]*[ -/]*[@-~]"
+_ANSI_OSC_PATTERN = r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+_ANSI_CSI_RE = re.compile(_ANSI_CSI_PATTERN)
+_ANSI_OSC_RE = re.compile(_ANSI_OSC_PATTERN)
+_ANSI_CSI_RE_BYTES = re.compile(_ANSI_CSI_PATTERN.encode())
+_ANSI_OSC_RE_BYTES = re.compile(_ANSI_OSC_PATTERN.encode())
+
+
+def _timeout_sec_from_env(env_var: str, default: float) -> float:
+    """Read a positive seconds value from *env_var*, else *default*.
+
+    The one parser for operator-tunable timeout knobs on this plane (PTY
+    readline timeouts, the ACP handshake window). Read at use time so
+    long-lived processes and tests see env changes. Unset or empty means
+    the default; non-numeric, non-positive, or NaN values warn and fall
+    back rather than disabling or breaking the guarded wait.
+    """
+    raw = os.environ.get(env_var)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not value > 0:  # also rejects NaN
+        logger.warning("Invalid %s=%r; using default %.0fs", env_var, raw, default)
+        return default
+    return value
 
 
 async def drain_oversized_line(reader: asyncio.StreamReader) -> int:
