@@ -86,6 +86,27 @@ _TAMPER_OP_RE = re.compile(
     r"(\brm\b|\bsed\s+-i\b|\bchmod\b|\bmv\b|\btruncate\b)",
     re.IGNORECASE,
 )
+# Agent-owned scratch roots. A file under these paths cannot define the score —
+# the verifier never reads them — so a verify/test-ish NAME there is the agent's
+# own scratch tooling, not grader tamper. Observed live (PR #949 rollout-smoke):
+# openhands created, ran, and deleted /tmp/verify.py as its own validation
+# script — reward 1.0, LLM judge explicitly benign — and the name-anywhere match
+# failed the job. Score-defining locations (/verifier, /logs/verifier, /oracle,
+# workspace tests/) can never sit under these roots, so the exemption cannot
+# mask a real tamper.
+_SCRATCH_PATH_RE = re.compile(r"^(?:/tmp|/var/tmp|/dev/shm)(?:/|$)")
+_SCRATCH_TOKEN_RE = re.compile(r"(?<![\w/])(?:/tmp|/var/tmp|/dev/shm)/[^\s;&|<>'\"]*")
+
+
+def _is_scratch_path(path: str) -> bool:
+    return bool(_SCRATCH_PATH_RE.match(path.strip().strip("'\"")))
+
+
+def _mask_scratch_paths(command: str) -> str:
+    """Blank scratch-rooted path tokens so the name sweep cannot match them."""
+    return _SCRATCH_TOKEN_RE.sub("<scratch>", command)
+
+
 _REDIRECT_TARGET_RE = re.compile(
     r"(?:\b(?:echo|printf|cat)\b[^|;&\n]*?)?>{1,2}\s*(?P<target>[^\s;&|]+)",
     re.IGNORECASE,
@@ -153,12 +174,15 @@ def _shell_tamper_hit(command: str) -> bool:
     look like grader tamper.
     """
     for match in _REDIRECT_TARGET_RE.finditer(command):
-        if _VERIFIER_FILE_RE.search(match.group("target")):
+        target = match.group("target")
+        if not _is_scratch_path(target) and _VERIFIER_FILE_RE.search(target):
             return True
     for match in _TEE_TARGET_RE.finditer(command):
-        if _VERIFIER_FILE_RE.search(match.group("target")):
+        target = match.group("target")
+        if not _is_scratch_path(target) and _VERIFIER_FILE_RE.search(target):
             return True
-    return bool(_VERIFIER_FILE_RE.search(command) and _TAMPER_OP_RE.search(command))
+    masked = _mask_scratch_paths(command)
+    return bool(_VERIFIER_FILE_RE.search(masked) and _TAMPER_OP_RE.search(masked))
 
 
 def _scan_native_tool_call(event: dict[str, Any]) -> list[str]:
@@ -179,7 +203,11 @@ def _scan_native_tool_call(event: dict[str, Any]) -> list[str]:
     # A write-like kind mutating a score-defining file (the mutation is implied
     # by the kind, so no destructive-op token is required in the title).
     target = _acp_write_target(title)
-    if kind in _ACP_WRITE_KINDS and _VERIFIER_FILE_RE.search(target):
+    if (
+        kind in _ACP_WRITE_KINDS
+        and not _is_scratch_path(target)
+        and _VERIFIER_FILE_RE.search(target)
+    ):
         return [f"{kind} -> {title[:160]}"]
     # execute / other: OpenHands writes the title as "<description>: $ <command>".
     # Scan ONLY the command so prose like "Verify the output" can't collide with
@@ -202,7 +230,7 @@ def _scan_nested_tool_calls(event: dict[str, Any]) -> list[str]:
             args = {}
         if name in _WRITE_TOOLS:
             path = str(args.get("path") or args.get("file_path") or "")
-            if path and _VERIFIER_FILE_RE.search(path):
+            if path and not _is_scratch_path(path) and _VERIFIER_FILE_RE.search(path):
                 flagged.append(f"{name} -> {path}")
         elif name in _SHELL_TOOLS:
             cmd = str(args.get("command") or args.get("cmd") or "")
