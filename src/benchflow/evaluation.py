@@ -588,6 +588,10 @@ class TaskFailure:
     task_name: str
     rewards: dict[str, Any] | None
     verifier_error: str | None
+    # The task's rollout dir name under the job dir (``<task>__<uuid8>``), so
+    # the CLI can find the rollout's verifier artifacts without guessing.
+    # None on results persisted before the key existed.
+    rollout_name: str | None = None
 
 
 @dataclass
@@ -1801,6 +1805,9 @@ class Evaluation:
                 task_name=name,
                 rewards=r.get("rewards"),
                 verifier_error=r.get("verifier_error"),
+                # `or None`: RolloutResult defaults rollout_name to "" — don't
+                # let that masquerade as a resolvable rollout dir.
+                rollout_name=r.get("rollout_name") or None,
             )
             for name, r in sorted(all_results.items())
             if classify_score_outcome(r) == "failed"

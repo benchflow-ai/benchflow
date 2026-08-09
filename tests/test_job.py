@@ -630,6 +630,7 @@ class TestJobRunOrchestration:
             "task-0": RunResult(task_name="task-0", rewards={"reward": 1.0}),
             "task-1": RunResult(
                 task_name="task-1",
+                rollout_name="task-1__ab12cd34",
                 rewards={"reward": 0.5, "decisions_found": 0.0},
                 verifier_error=None,
             ),
@@ -644,11 +645,14 @@ class TestJobRunOrchestration:
 
         result = await job.run()
 
+        # rollout_name rides along (via rollout_result_payload) so the CLI can
+        # resolve the rollout's artifact dir exactly, without globbing.
         assert result.task_failures == [
             TaskFailure(
                 task_name="task-1",
                 rewards={"reward": 0.5, "decisions_found": 0.0},
                 verifier_error=None,
+                rollout_name="task-1__ab12cd34",
             )
         ]
 
