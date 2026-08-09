@@ -1,6 +1,8 @@
 """ACP session lifecycle management."""
 
 import logging
+import os
+import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -15,6 +17,27 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Console progress heartbeat contract. ``BENCHFLOW_PROGRESS`` is the operator
+# switch (on/off); unset defers to ``BENCHFLOW_PROGRESS_AUTO``, which the
+# Evaluation layer sets to "0" for multi-concurrency jobs where interleaved
+# per-task lines would be noise. ``bench eval run --quiet`` sets the explicit
+# off value.
+_PROGRESS_ENV = "BENCHFLOW_PROGRESS"
+_PROGRESS_AUTO_ENV = "BENCHFLOW_PROGRESS_AUTO"
+_PROGRESS_INTERVAL_SEC = 45.0
+_PROGRESS_OFF_VALUES = frozenset({"off", "0", "false", "none"})
+_PROGRESS_ON_VALUES = frozenset({"on", "1", "true"})
+
+
+def _console_progress_enabled() -> bool:
+    raw = os.environ.get(_PROGRESS_ENV, "").strip().lower()
+    if raw in _PROGRESS_OFF_VALUES:
+        return False
+    if raw in _PROGRESS_ON_VALUES:
+        return True
+    return os.environ.get(_PROGRESS_AUTO_ENV, "1").strip() != "0"
+
 
 ACPUsageSnapshot = dict[str, int | None]
 
@@ -177,8 +200,17 @@ class ACPSession:
         # Optional sink invoked after every public state mutation so callers
         # can stream a trajectory snapshot to disk without polling.
         self.on_change: Callable[[ACPSession], None] | None = None
+        # Console progress heartbeat. Without it a first-run user stares at
+        # total silence between "Prompt 1/1: ..." and the verifier — observed
+        # 18 minutes on a passing rollout (fresh-user dogfood 2026-08-09) with
+        # no way to distinguish "working" from "hung". The throttle keys off
+        # _notify_change, which fires on every streamed update.
+        self._progress_enabled = _console_progress_enabled()
+        self._prompt_started_at: float | None = None
+        self._last_progress_at = 0.0
 
     def _notify_change(self) -> None:
+        self._maybe_log_progress()
         if self.on_change is None:
             return
         try:
@@ -189,15 +221,36 @@ class ACPSession:
             # which is otherwise easy to miss in a 64-concurrency log.
             logger.error(f"ACPSession on_change callback failed: {e}")
 
+    def _maybe_log_progress(self) -> None:
+        if not self._progress_enabled or self._prompt_started_at is None:
+            return
+        now = time.monotonic()
+        if now - self._last_progress_at < _PROGRESS_INTERVAL_SEC:
+            return
+        self._last_progress_at = now
+        elapsed_min = (now - self._prompt_started_at) / 60.0
+        line = f"  … {elapsed_min:.1f}min, {len(self.tool_calls)} tool calls"
+        if self.tool_calls:
+            last = self.tool_calls[-1]
+            title = (last.title or last.kind or "").strip().splitlines()[0][:60]
+            if title:
+                line += f" (last: {title})"
+        logger.info(line)
+
     def record_user_prompt(self, text: str) -> None:
         """Record a user prompt. Call before sending each ACP prompt."""
         self._events_active = True
+        self._prompt_started_at = time.monotonic()
+        # Grace period: the first heartbeat waits a full interval so short
+        # prompts stay single-line.
+        self._last_progress_at = time.monotonic()
         self._flush_agent_text()
         self.events.append({"type": "user_message", "text": text})
         self._notify_change()
 
     def mark_prompt_end(self) -> None:
         """Flush pending agent text after a prompt completes."""
+        self._prompt_started_at = None
         self._flush_agent_text()
         self._notify_change()
 

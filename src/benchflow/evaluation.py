@@ -1369,6 +1369,11 @@ class Evaluation:
     ) -> list[tuple[str, RunResult]]:
         """The default schedule — rollouts run concurrently and isolated."""
         cfg = self._config
+        # Console heartbeat auto-gate: interleaved per-task progress lines are
+        # noise at high concurrency, so the sessions' heartbeat defaults off
+        # for multi-concurrency jobs. An explicit BENCHFLOW_PROGRESS=on/off
+        # from the operator always wins (checked first in the session layer).
+        os.environ["BENCHFLOW_PROGRESS_AUTO"] = "1" if cfg.concurrency <= 1 else "0"
         # Floor at 1: Semaphore(0) deadlocks on first acquire. eval-create already
         # rejects <1 at plan time, but this guards every other caller (skills eval,
         # SDK) against a silent forever-hang on a bad concurrency.
