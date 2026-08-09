@@ -613,6 +613,84 @@ class TestTransportProtocolFiltering:
         )
 
 
+class TestContainerTransportPtyNoise:
+    """PTY-glued shell noise must not hide a protocol message on the same line.
+
+    Daytona's PTY transport gives the agent a real terminal; on BugSwarm-style
+    images the shell prompt (bracketed-paste CSI + OSC window title) lands on
+    the SAME pty line as the agent's initialize response. Whole-line json.loads
+    fails, the response is filed as non-protocol noise, and the handshake
+    "times out" at ANY window with the completed JSON sitting in the agent log
+    (observed 6/6 on fix-build-agentops at both 60s and 300s).
+    """
+
+    # Exact shape captured from the failing run's agent/prime_agent.txt:
+    # bracketed-paste on, OSC 0 window title, prompt, bracketed-paste off,
+    # then the agent's initialize response glued on the same line.
+    PROMPT_GLUED_INIT = (
+        b"\x1b[?2004h"
+        b"\x1b]0;root@9ec4903f-9479-4754-9039-d1b5a544cb28: /home/github/build\x07"
+        b"root@9ec4903f-9479-4754-9039-d1b5a544cb28:/home/github/build# "
+        b"\x1b[?2004l"
+        b'{"jsonrpc": "2.0", "id": 100001, "result": {"protocolVersion": 1}}\n'
+    )
+
+    @pytest.mark.asyncio
+    async def test_prompt_glued_initialize_response_decodes(self, tmp_path) -> None:
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(return_value=self.PROMPT_GLUED_INIT)
+        agent_log = tmp_path / "agent" / "prime_agent.txt"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        try:
+            msg = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert msg == {
+            "jsonrpc": "2.0",
+            "id": 100001,
+            "result": {"protocolVersion": 1},
+        }
+        # Decoded as protocol — nothing should be filed as noise.
+        assert not agent_log.exists()
+
+    def test_json_trailed_by_ansi_escapes_decodes(self) -> None:
+        """The CSI/OSC strip path recovers JSON with trailing escape noise."""
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        line = '\x1b[?2004l{"jsonrpc": "2.0", "id": 7, "result": {}}\x1b[K'
+        assert _decode_pty_json_rpc_message(line) == {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {},
+        }
+
+    def test_log_line_with_invalid_envelope_still_rejected(self) -> None:
+        """A log line that merely contains JSON must stay non-protocol noise."""
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        # Valid JSON after the first "{", but not a valid JSON-RPC envelope
+        # (no method, no result/error) — the envelope check must still reject.
+        assert (
+            _decode_pty_json_rpc_message('INFO {"jsonrpc": "2.0", "note": "boot"}')
+            is None
+        )
+        assert _decode_pty_json_rpc_message("plain log line, no json") is None
+
+    def test_plain_json_fast_path_unchanged(self) -> None:
+        from benchflow.acp.container_transport import _decode_pty_json_rpc_message
+
+        assert _decode_pty_json_rpc_message(
+            '{"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}'
+        ) == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+
+
 class TestACPInterleaving:
     """Test that _read_until_response handles interleaved notifications and agent requests."""
 

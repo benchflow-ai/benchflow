@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -10,6 +11,51 @@ from benchflow.sandbox.process import LiveProcess
 from .transport import Transport, decode_json_rpc_message
 
 logger = logging.getLogger(__name__)
+
+# Terminal control sequences a PTY-backed process can glue onto a protocol
+# line: CSI (e.g. bracketed-paste ``\x1b[?2004h``/``l``) and OSC (e.g. the
+# ``\x1b]0;<title>\x07`` window-title update emitted by shell prompts).
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def _decode_pty_json_rpc_message(text: str) -> dict[str, Any] | None:
+    """Decode one JSON-RPC message from a line that may carry PTY noise.
+
+    Daytona's PTY transport gives the agent a real terminal, so the shell
+    prompt (with its CSI/OSC escape sequences) can land on the SAME line as
+    the agent's first protocol message — observed on BugSwarm-style images
+    as ``\\x1b[?2004h\\x1b]0;root@…\\x07root@…# \\x1b[?2004l{"jsonrpc":…}``.
+    Whole-line ``json.loads`` fails on that prefix, the response is treated
+    as non-protocol noise, and the handshake "times out" with the completed
+    initialize JSON sitting in the captured agent log — at ANY timeout.
+
+    Recovery is PTY-transport-specific (stdio pipes keep the strict
+    whole-line contract in :func:`decode_json_rpc_message`):
+
+    1. fast path — the plain whole-line decode, unchanged;
+    2. retry from the first ``{`` (drops a glued prompt prefix);
+    3. if the line carries ``\\x1b``, strip CSI/OSC sequences (drops escapes
+       trailing or embedded around the JSON) and retry from the first ``{``.
+
+    Every retry still goes through :func:`decode_json_rpc_message`, so the
+    JSON-RPC 2.0 envelope check keeps rejecting agent log lines that merely
+    contain JSON (e.g. ``INFO {"jsonrpc": …}`` with a bad envelope).
+    """
+    message = decode_json_rpc_message(text)
+    if message is not None:
+        return message
+    if "{" not in text:
+        return None
+    message = decode_json_rpc_message(text[text.index("{") :])
+    if message is not None:
+        return message
+    if "\x1b" not in text:
+        return None
+    cleaned = _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", text))
+    if "{" not in cleaned:
+        return None
+    return decode_json_rpc_message(cleaned[cleaned.index("{") :])
 
 
 class ContainerTransport(Transport):
@@ -65,7 +111,7 @@ class ContainerTransport(Transport):
             text = line.decode(errors="replace").strip()
             if not text:
                 continue
-            message = decode_json_rpc_message(text)
+            message = _decode_pty_json_rpc_message(text)
             if message is not None:
                 return message
             # Capture non-protocol output (agent debug logs, errors, warnings).
