@@ -8,10 +8,20 @@ Lee's ``S`` axis in ``I_eval = {T, A, M, S, C, R, τ}`` — from the task, so it
 swappable per run exactly like ``--agent`` / ``--model`` / ``--sandbox`` already
 are, instead of being pinned by a relative path baked into the task file.
 
-Registry layout (filesystem; ``$BENCHFLOW_ENV_REGISTRY``)::
+Registry layout (a directory of manifest files)::
 
     <registry>/<name>@<version>.toml   # a pinned environment version
     <registry>/<name>.toml             # optional default ("latest")
+
+Which directory is the registry:
+
+1. an explicit ``registry=`` argument (tests, embedders);
+2. else ``$BENCHFLOW_ENV_REGISTRY`` — when set it wins entirely (no fallback
+   into the built-in registry for names it does not contain);
+3. else the **built-in registry** shipped inside the ``benchflow`` wheel
+   (``benchflow/environment/_registry/``), so a bare ``pip install benchflow``
+   resolves the committed pins (``env0@prod``, ``env0@outage``) with no
+   checkout and no env vars.
 
 Resolution::
 
@@ -25,9 +35,12 @@ reproducibility contract from "Decouple the task from the harness."
 
 from __future__ import annotations
 
+import functools
+import importlib.resources
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -80,12 +93,45 @@ def looks_like_env_spec(value: str) -> bool:
     return bool(_SPEC_RE.match(value))
 
 
+@functools.cache
+def _builtin_registry_dir() -> Path | None:
+    """Directory of the pinned manifests shipped inside the ``benchflow`` wheel.
+
+    ``benchflow/environment/_registry/`` is package data, so a bare
+    ``pip install benchflow`` carries the committed pins. Looked up through
+    :mod:`importlib.resources` so zipped installs work too: when the package is
+    not a plain directory on disk the manifests are materialized once per
+    process into a temp dir (resolution needs real files for globbing and
+    content-addressed reads). Returns ``None`` when the packaged registry is
+    missing (a stripped or partial install).
+    """
+    try:
+        root = importlib.resources.files("benchflow.environment") / "_registry"
+    except ModuleNotFoundError:  # pragma: no cover — broken install
+        return None
+    if not root.is_dir():
+        return None
+    direct = Path(str(root))
+    if direct.is_dir():  # normal install: resources are real files on disk
+        return direct
+    extracted = Path(tempfile.mkdtemp(prefix="benchflow-env-registry-"))
+    for entry in root.iterdir():
+        if entry.is_file():
+            (extracted / entry.name).write_bytes(entry.read_bytes())
+    return extracted
+
+
 def _registry_dir(registry: str | os.PathLike[str] | None) -> Path:
     raw = registry if registry is not None else os.environ.get(ENV_REGISTRY_VAR)
     if not raw:
+        builtin = _builtin_registry_dir()
+        if builtin is not None:
+            return builtin
         raise EnvironmentRegistryError(
-            f"no environment registry configured; set ${ENV_REGISTRY_VAR} or pass "
-            "--environment-manifest a manifest file path instead of a name@version spec"
+            "no environment registry available: the built-in registry shipped "
+            f"with benchflow is missing and ${ENV_REGISTRY_VAR} is unset; set "
+            f"${ENV_REGISTRY_VAR} or pass --environment-manifest a manifest "
+            "file path instead of a name@version spec"
         )
     directory = Path(raw).expanduser()
     if not directory.is_dir():
@@ -93,6 +139,11 @@ def _registry_dir(registry: str | os.PathLike[str] | None) -> Path:
             f"environment registry {directory} is not a directory"
         )
     return directory
+
+
+def _available_specs(directory: Path) -> list[str]:
+    """Sorted stems (``name`` / ``name@version``) present in the registry."""
+    return sorted({p.stem for ext in _MANIFEST_EXTS for p in directory.glob(f"*{ext}")})
 
 
 def _find_manifest(directory: Path, stem: str) -> Path | None:
@@ -124,9 +175,11 @@ def resolve_environment(
     if version is not None:
         path = _find_manifest(directory, f"{name}@{version}")
         if path is None:
+            available = ", ".join(_available_specs(directory)) or "none"
             raise EnvironmentRegistryError(
                 f"environment {spec!r} not found in {directory} "
-                f"(looked for {name}@{version}{{.toml,.yaml,.yml}})"
+                f"(looked for {name}@{version}{{.toml,.yaml,.yml}}; "
+                f"available: {available})"
             )
     else:
         path = _find_manifest(directory, name)
@@ -137,8 +190,10 @@ def resolve_environment(
                 p for ext in _MANIFEST_EXTS for p in directory.glob(f"{name}@*{ext}")
             )
             if not candidates:
+                available = ", ".join(_available_specs(directory)) or "none"
                 raise EnvironmentRegistryError(
-                    f"no versions of environment {name!r} found in {directory}"
+                    f"no versions of environment {name!r} found in {directory} "
+                    f"(available: {available})"
                 )
             path = candidates[-1]
             version = path.stem.split("@", 1)[1]

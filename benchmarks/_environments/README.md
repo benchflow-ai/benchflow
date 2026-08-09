@@ -1,32 +1,36 @@
-# Committed environment registry
+# Environment registry — moved into the package
 
-A git-tracked [environment registry](../../src/benchflow/_utils/env_registry.py)
-so the env-axis pins from PR #790 resolve from the repo instead of a `/tmp` dir.
+The committed environment pins that used to live here (`env0@prod.toml`,
+`env0@outage.toml`) are now **built-in registry** entries shipped inside the
+`benchflow` wheel:
 
-Each `<name>@<version>.toml` **or** `<name>@<version>.yaml` is an Environment-plane
-manifest. YAML is canonical for new manifests (consistent with the task / run /
-job configs); TOML stays supported for back-compat. Bind one at the command line,
-decoupled from the task:
+    src/benchflow/environment/_registry/
+
+That directory is the single source of truth — this one intentionally keeps no
+copies, so the pins cannot drift. The move fixes the pip-install gap: a bare
+`pip install benchflow` used to have no checkout to point
+`$BENCHFLOW_ENV_REGISTRY` at and had to hand-download the pins; now the specs
+resolve with **no env vars and no checkout**:
 
 ```bash
-export BENCHFLOW_ENV_REGISTRY=benchmarks/_environments
 bench eval create --tasks-dir <tasks> --environment-manifest env0@prod  --sandbox daytona ...
 bench eval create --tasks-dir <tasks> --environment-manifest env0@outage --sandbox daytona ...
 ```
 
-`$BENCHFLOW_ENV_REGISTRY` can be **any** local directory of
-`name@version.toml` files — a pip install has no repo checkout, so download
-the pinned manifest instead (e.g. from
-`https://raw.githubusercontent.com/benchflow-ai/benchflow/main/benchmarks/_environments/env0@prod.toml`
-into `./env-registry/`, then `export BENCHFLOW_ENV_REGISTRY=$PWD/env-registry`).
+`$BENCHFLOW_ENV_REGISTRY` still works and, when set, wins entirely: point it at
+any local directory of `name@version.toml` (or `.yaml`) files to resolve your
+own pins instead of the built-ins. In a checkout that is simply:
 
-`resolve_environment` parses `name@version`, looks it up here, and content-
-addresses it (`sha256:…`) so every run records exactly which environment it bound.
+```bash
+export BENCHFLOW_ENV_REGISTRY=src/benchflow/environment/_registry
+```
 
-| entry | what it is |
-|-------|------------|
-| `env0@prod`   | env-0 — 8 services (mock-auth/-gmail/-gcal/-gdrive/-gdoc/-slack/-discord/-stripe), mirroring upstream `tasks/_manifests/env-0.toml` verbatim. The pinned production environment. |
-| `env0@outage` | The "Same state, tool outage" perturbation variant: `env0@prod` minus the `mock-gmail` and `mock-slack` services (6 of the 8 declared). Bind the same task to both pins to attribute the reward delta to the environment. |
+Resolution stays content-addressed (`env_hash = sha256(manifest bytes)`) so
+every run records exactly which environment it bound. See
+[`docs/environment-plane.md`](../../docs/environment-plane.md#registry-nameversion)
+for the full registry contract and
+[`src/benchflow/_utils/env_registry.py`](../../src/benchflow/_utils/env_registry.py)
+for the resolver.
 
 ## Running env0 tasks
 

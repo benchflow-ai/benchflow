@@ -1,11 +1,20 @@
-# env0@outage — env-0 with the gmail + slack services removed.
+# env0@prod — pinned, content-addressed Environment-plane manifest for env-0.
 #
-# A perturbation variant for the "Same state, tool outage" experiment: bind the
-# SAME task to env0@prod vs env0@outage and attribute the reward delta to the
-# environment alone (the S axis). A task that needs slack (port 9005) scores 1.0
-# under env0@prod and fails under env0@outage because the service is absent.
+# This is a built-in registry entry, shipped inside the benchflow wheel
+# (benchflow/environment/_registry/) so PR #790's env-axis pin resolves on a
+# bare pip install — no checkout, no env vars:
 #
-#   bench eval create --tasks-dir <task> --environment-manifest env0@outage ...
+#   bench eval create --tasks-dir <env0 tasks> --environment-manifest env0@prod ...
+#
+# Set $BENCHFLOW_ENV_REGISTRY to a local directory of name@version.toml files
+# to override the built-in registry entirely.
+#
+# Mirrors benchflow-ai/env0 tasks/_manifests/env-0.toml (the source of truth). env-0's per-task images build
+# FROM the shared base and bake seed data; benchflow's ManifestEnvironment
+# probes each service's CLI and starts only the ones installed in the per-task
+# image, gating the agent on each service's /health.
+#
+# NOTE: xdotli/env0-base:latest is amd64-only — run env0 on Daytona (x86_64).
 
 [environment]
 name           = "env-0"
@@ -32,6 +41,10 @@ name    = "mock-auth"
 command = "mock-auth --db /data/auth.db serve --host 0.0.0.0 --port 9000 --no-mcp"
 port    = 9000
 
+[[environment.services]]
+name    = "mock-gmail"
+command = "mock-gmail --db /data/gmail.db serve --host 0.0.0.0 --port 9001 --no-mcp"
+port    = 9001
 
 [[environment.services]]
 name    = "mock-gcal"
@@ -48,6 +61,10 @@ name    = "mock-gdoc"
 command = "mock-gdoc --db /data/gdoc.db serve --host 0.0.0.0 --port 9004 --no-mcp"
 port    = 9004
 
+[[environment.services]]
+name    = "mock-slack"
+command = "mock-slack --db /data/slack.db serve --host 0.0.0.0 --port 9005 --no-mcp"
+port    = 9005
 
 [[environment.services]]
 name    = "mock-discord"
