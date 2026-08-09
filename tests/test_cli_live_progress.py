@@ -265,7 +265,9 @@ def test_rollout_activity_snapshot_reads_acp_session():
     from benchflow.rollout import Rollout
 
     connected = SimpleNamespace(
-        _acp_client=SimpleNamespace(session=_FakeSession()), _phase="connected"
+        _acp_client=SimpleNamespace(session=_FakeSession()),
+        _phase="connected",
+        _usage_runtime=None,
     )
     assert Rollout.activity_snapshot(connected) == ActivitySnapshot(
         "connected", SessionCounters(38, "file_editor", 1500, 4)
@@ -275,6 +277,101 @@ def test_rollout_activity_snapshot_reads_acp_session():
     assert Rollout.activity_snapshot(
         SimpleNamespace(_acp_client=None, _phase="setup")
     ) == ActivitySnapshot("setup", None)
+
+
+class _NoUsageSession(_FakeSession):
+    """An ACP session mid-first-prompt: counters exist, usage doesn't yet."""
+
+    def latest_usage_totals(self):
+        return None
+
+
+def _gateway_server(tokens):
+    if isinstance(tokens, Exception):
+
+        def _boom():
+            raise tokens
+
+        return SimpleNamespace(live_usage_tokens=_boom)
+    return SimpleNamespace(live_usage_tokens=lambda: tokens)
+
+
+def _rollout_ns(session, gateway):
+    return SimpleNamespace(
+        _acp_client=SimpleNamespace(session=session),
+        _phase="connected",
+        _usage_runtime=SimpleNamespace(server=_gateway_server(gateway)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("session", "gateway", "expected_tokens"),
+    [
+        # The round-7 failure case: a single-prompt rollout has NO ACP usage
+        # snapshot until the prompt completes — the gateway live capture is
+        # the only mid-run signal and must carry the counters.
+        (_NoUsageSession(), 412_000, 412_000),
+        # Both signals: max() — whichever cumulative counter leads wins, so
+        # the footer never steps down mid-run (documented at
+        # Rollout.activity_snapshot).
+        (_FakeSession(), 900, 1500),
+        (_FakeSession(), 2_000, 2_000),
+        # Gateway signal dead (no usage-bearing record yet / reader raising /
+        # garbage): degrade to exactly #963's ACP-only behavior.
+        (_FakeSession(), None, 1500),
+        (_FakeSession(), RuntimeError("teardown race"), 1500),
+        (_FakeSession(), "not-an-int", 1500),
+        (_NoUsageSession(), None, None),
+        (_NoUsageSession(), RuntimeError("teardown race"), None),
+    ],
+)
+def test_rollout_activity_snapshot_reconciles_acp_and_gateway_usage(
+    session, gateway, expected_tokens
+):
+    from benchflow.rollout import Rollout
+
+    snap = Rollout.activity_snapshot(_rollout_ns(session, gateway))
+    assert snap.counters is not None
+    assert snap.counters.total_tokens == expected_tokens
+
+
+def test_rollout_activity_snapshot_without_usage_runtime_matches_963():
+    # A rollout whose proxy never started (oracle, native-subscription auth)
+    # has no _usage_runtime server — the ACP-only path must be untouched.
+    from benchflow.rollout import Rollout
+
+    ns = SimpleNamespace(
+        _acp_client=SimpleNamespace(session=_NoUsageSession()),
+        _phase="connected",
+        _usage_runtime=None,
+    )
+    snap = Rollout.activity_snapshot(ns)
+    assert snap.counters is not None
+    assert snap.counters.total_tokens is None
+
+
+def test_footer_and_cell_render_gateway_live_tokens_mid_prompt():
+    # End-to-end through __rich__ with the REAL Rollout.activity_snapshot dig:
+    # a single-prompt run mid-prompt (no ACP usage) whose gateway capture has
+    # tokens must light BOTH the footer sum and the activity cell — the
+    # e2e acceptance criterion, unit-shaped.
+    from benchflow.rollout import Rollout
+
+    session = _NoUsageSession()
+    session.distinct_tool_titles = 1  # single-tool agent (prime-agent shape)
+    ns = _rollout_ns(session, 412_000)
+    rollout = SimpleNamespace(activity_snapshot=lambda: Rollout.activity_snapshot(ns))
+    live_activity.register("dialogue-parser", rollout)
+    try:
+        d = _dash()
+        d.on_plan(total=1, done=0, remaining=1)
+        d.on_task_start("dialogue-parser")
+        text = _rendered(d)
+    finally:
+        live_activity.unregister("dialogue-parser")
+    assert "412.0k tokens" in text  # footer live sum
+    assert "38 calls · 412.0k tok" in text  # constant-tool activity cell
+    assert "— tokens" not in text
 
 
 def test_dashboard_renders_activity_for_registered_running_task():

@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from benchflow.usage_tracking import UsageTrackingConfig
+
+if TYPE_CHECKING:
+    from benchflow.providers.litellm_runtime import LiteLLMProcess
 
 
 @dataclass
@@ -21,7 +24,11 @@ class ProviderRuntime:
     kind: str
     agent_base_url: str
     backend_model: str | None = None
-    server: Any | None = None
+    # Typed (not Any) so cross-module reads of the server's accessors —
+    # e.g. the dashboard's live_usage_tokens dig in rollout — are bound by
+    # the type checker: a rename on LiteLLMProcess breaks ty, not silently
+    # blanks a signal behind a getattr default.
+    server: LiteLLMProcess | None = None
     config_key: str | None = None
     master_key: str | None = None
 
