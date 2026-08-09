@@ -53,6 +53,8 @@ import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from benchflow._utils.text import describe_exception
+
 
 def _install_python_script(container_path: str, source: str) -> str:
     """Shell snippet that ensures python3 and writes `source` to container_path.
@@ -1469,7 +1471,7 @@ def _load_agent_plugin_packages() -> None:
     try:
         eps = entry_points(group="benchflow.agents")
     except Exception as exc:  # pragma: no cover - metadata backend quirks
-        FAILED_AGENT_PLUGINS["<entry-point-scan>"] = f"{type(exc).__name__}: {exc}"
+        FAILED_AGENT_PLUGINS["<entry-point-scan>"] = describe_exception(exc)
         logging.getLogger(__name__).warning(
             "benchflow.agents entry-point scan failed; ALL agent plugins are "
             "disabled: %s",
@@ -1483,7 +1485,7 @@ def _load_agent_plugin_packages() -> None:
             if callable(loaded):
                 loaded()
         except Exception as exc:
-            FAILED_AGENT_PLUGINS[ep.name] = f"{type(exc).__name__}: {exc}"
+            FAILED_AGENT_PLUGINS[ep.name] = describe_exception(exc)
             logging.getLogger(__name__).warning(
                 "benchflow.agents plugin %r failed to load (some or all of its "
                 "agents may be unavailable or partially registered): %s",

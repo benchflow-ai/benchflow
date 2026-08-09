@@ -578,15 +578,14 @@ async def test_proxy_start_failure_keeps_the_exception_type_and_retries(monkeypa
     blip that had not yet run any agent work.
     """
     from benchflow._utils.scoring import INFRA_ERROR, classify_error
+    from benchflow.diagnostics import TransientSandboxTransportError
 
-    class DaytonaTimeoutError(Exception):
-        def __init__(self, message: str) -> None:
-            super().__init__(message)
-            self.status_code = None
-            self.error_code = None
-
+    # What the sandbox corridor actually raises once the SDK boundary has
+    # judged the vendor exception transient and stamped it.
     async def fail_start(**_kwargs):
-        raise DaytonaTimeoutError("Failed to execute session command: ")
+        raise TransientSandboxTransportError(
+            "DaytonaTimeoutError: Failed to execute session command: (no detail)"
+        )
 
     monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
 

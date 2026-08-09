@@ -25,10 +25,10 @@ from uuid import uuid4
 import httpx
 import yaml
 
+from benchflow._utils.text import describe_exception
 from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
-from benchflow.diagnostics import describe_exception
 from benchflow.providers.litellm_bedrock_preflight import (
     BEDROCK_PATCH_PREFLIGHT_SOURCE,
     BedrockPatchPreflightError,

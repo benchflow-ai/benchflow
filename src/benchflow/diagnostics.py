@@ -477,42 +477,31 @@ class RolloutDiagnostics:
         return d if isinstance(d, TransportClosedDiagnostic) else None
 
 
-def describe_exception(exc: BaseException) -> str:
-    """Render ``exc`` as a one-line description that is never detail-free.
+TRANSIENT_SANDBOX_TRANSPORT_MARKER = "transient sandbox transport failure"
 
-    ``f"{exc}"`` keeps only ``str(exc)``, which for some SDK errors carries
-    no information at all. The Daytona SDK wraps every toolbox call with a
-    prefix plus ``str(underlying)``, and httpx raises its timeout and
-    connection errors with an *empty* message — so a read timeout on
-    ``execute_session_command`` stringifies to the bare
-    ``"Failed to execute session command: "``, a message whose detail after
-    the colon is empty. The exception *class* (``DaytonaTimeoutError`` vs
-    ``DaytonaConnectionError``) is then the only surviving evidence of what
-    actually went wrong, and plain interpolation discards it.
 
-    Lead with the class name so "the exec timed out" can never again be
-    indistinguishable from "the connection dropped", and append the
-    structured HTTP fields that ``DaytonaError`` carries when they are set.
+class TransientSandboxTransportError(ConnectionError):
+    """A sandbox-provider API call failed at the transport layer.
+
+    Raised at the SDK boundary, where the vendor exception *type* is still
+    alive, and carrying one stable marker so downstream classification never
+    has to keep a census of vendor message prefixes.
+
+    This exists because the vendor prefix is the wrong thing to match on.
+    The Daytona SDK stamps a different prefix per method — "Failed to
+    execute session command: ", "Failed to upload files: ", "Failed to get
+    file info: " — while the *failure* is identical in every case: an httpx
+    timeout or disconnect against the toolbox API, with an empty message.
+    Enumerating those prefixes in the classifier means one entry per vendor
+    method, silently incomplete the moment the SDK adds or renames one, and
+    it also over-matches: a permanent 401/400/409 shares the prefix but is
+    not transient. Deciding at the raise site, where
+    ``_is_daytona_transient_retry_error`` can inspect the real class, keeps
+    both halves honest.
     """
-    name = type(exc).__name__
-    message = str(exc).strip()
-    if message.endswith(":"):
-        # A wrapper prefix with nothing behind it: name the emptiness rather
-        # than trailing off, so the artifact records that the underlying
-        # exception carried no message (not that a detail was lost in
-        # formatting).
-        message = f"{message} (no detail)"
-    described = f"{name}: {message}" if message else f"{name} (no message)"
-    details: list[str] = []
-    status_code = getattr(exc, "status_code", None)
-    if status_code is not None:
-        details.append(f"status_code={status_code}")
-    error_code = getattr(exc, "error_code", None)
-    if error_code:
-        details.append(f"error_code={error_code}")
-    if details:
-        described = f"{described} [{', '.join(details)}]"
-    return described
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"{TRANSIENT_SANDBOX_TRANSPORT_MARKER}: {detail}")
 
 
 # Summary / check_results helpers driven by the registry
@@ -552,7 +541,8 @@ __all__ = [
     "IdleTimeoutError",
     "TransportClosedError",
     "RolloutDiagnostics",
-    "describe_exception",
+    "TRANSIENT_SANDBOX_TRANSPORT_MARKER",
+    "TransientSandboxTransportError",
     "summary_warning",
     "format_issue_for_field",
 ]

@@ -74,6 +74,7 @@ from benchflow._types import Role, Scene, Turn
 # defined in this module.
 from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
 from benchflow._utils.scoring import classify_error as classify_error
+from benchflow._utils.text import describe_exception
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
 from benchflow.agents.registry import AGENTS
@@ -2177,7 +2178,12 @@ class Rollout:
             self._error = str(e)
             logger.error(str(e))
         except Exception as e:
-            self._error = str(e)
+            # describe_exception, not str(e): this is the funnel every
+            # unclassified rollout failure lands in, and some SDK errors
+            # stringify to a bare wrapper prefix with no detail behind it.
+            # Persisting those raw leaves an artifact that names neither what
+            # failed nor that the detail was empty.
+            self._error = describe_exception(e)
             logger.error("Run failed", exc_info=True)
         finally:
             await self.cleanup()
