@@ -174,6 +174,14 @@ def _looks_like_infra_error(error: str) -> bool:
             "connection reset",
             "connection refused",
             "broken pipe",
+            # The three Daytona session-command calls fail the same way — a
+            # transport-level httpx timeout/disconnect on the toolbox API,
+            # surfaced by the SDK as a prefix with an empty detail. Only the
+            # ``get`` variant was listed, so an identical blip on ``create``
+            # or ``execute`` fell through to "other" and was never retried,
+            # even though the rollout had not started any agent work yet.
+            "failed to create session",
+            "failed to execute session command",
             "failed to get session command",
             "sandbox not found",
             "workspace not found",

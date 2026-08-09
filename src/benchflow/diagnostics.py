@@ -477,6 +477,44 @@ class RolloutDiagnostics:
         return d if isinstance(d, TransportClosedDiagnostic) else None
 
 
+def describe_exception(exc: BaseException) -> str:
+    """Render ``exc`` as a one-line description that is never detail-free.
+
+    ``f"{exc}"`` keeps only ``str(exc)``, which for some SDK errors carries
+    no information at all. The Daytona SDK wraps every toolbox call with a
+    prefix plus ``str(underlying)``, and httpx raises its timeout and
+    connection errors with an *empty* message — so a read timeout on
+    ``execute_session_command`` stringifies to the bare
+    ``"Failed to execute session command: "``, a message whose detail after
+    the colon is empty. The exception *class* (``DaytonaTimeoutError`` vs
+    ``DaytonaConnectionError``) is then the only surviving evidence of what
+    actually went wrong, and plain interpolation discards it.
+
+    Lead with the class name so "the exec timed out" can never again be
+    indistinguishable from "the connection dropped", and append the
+    structured HTTP fields that ``DaytonaError`` carries when they are set.
+    """
+    name = type(exc).__name__
+    message = str(exc).strip()
+    if message.endswith(":"):
+        # A wrapper prefix with nothing behind it: name the emptiness rather
+        # than trailing off, so the artifact records that the underlying
+        # exception carried no message (not that a detail was lost in
+        # formatting).
+        message = f"{message} (no detail)"
+    described = f"{name}: {message}" if message else f"{name} (no message)"
+    details: list[str] = []
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        details.append(f"status_code={status_code}")
+    error_code = getattr(exc, "error_code", None)
+    if error_code:
+        details.append(f"error_code={error_code}")
+    if details:
+        described = f"{described} [{', '.join(details)}]"
+    return described
+
+
 # Summary / check_results helpers driven by the registry
 
 
@@ -514,6 +552,7 @@ __all__ = [
     "IdleTimeoutError",
     "TransportClosedError",
     "RolloutDiagnostics",
+    "describe_exception",
     "summary_warning",
     "format_issue_for_field",
 ]

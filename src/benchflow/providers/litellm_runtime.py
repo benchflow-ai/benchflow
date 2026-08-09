@@ -28,6 +28,7 @@ import yaml
 from benchflow.agents.codex_config import apply_codex_provider_config
 from benchflow.agents.env import uses_native_subscription_auth
 from benchflow.agents.registry import AGENTS
+from benchflow.diagnostics import describe_exception
 from benchflow.providers.litellm_bedrock_preflight import (
     BEDROCK_PATCH_PREFLIGHT_SOURCE,
     BedrockPatchPreflightError,
@@ -1518,7 +1519,8 @@ async def ensure_litellm_runtime(
         await _raise_litellm_unavailable(
             runtime=None,
             error=(
-                f"LiteLLM proxy failed to start for model {model!r}: {exc}. "
+                f"LiteLLM proxy failed to start for model {model!r}: "
+                f"{describe_exception(exc)}. "
                 "BenchFlow never sends provider traffic directly, so this is fatal."
             ),
         )

@@ -101,6 +101,24 @@ class TestRetryConfig:
         cfg = RetryConfig()
         assert cfg.should_retry("Failed to get session command: ")
 
+    def test_should_retry_daytona_session_create_and_execute_failures(self):
+        """All three session calls fail the same way and must retry alike.
+
+        ``_sandbox_exec`` calls ``create_session`` then
+        ``execute_session_command`` then polls with ``get_session_command``.
+        A transport blip on the Daytona toolbox API can hit any of them, but
+        only the ``get`` prefix was listed as infra — so the same blip on the
+        other two classified as "other" and was never retried, even though no
+        agent work had started yet.
+        """
+        cfg = RetryConfig()
+        assert cfg.should_retry("Failed to create session: ")
+        assert cfg.should_retry(
+            "LiteLLM proxy failed to start for model 'deepseek/deepseek-v4-flash': "
+            "DaytonaTimeoutError: Failed to execute session command: (no detail). "
+            "BenchFlow never sends provider traffic directly, so this is fatal."
+        )
+
     def test_should_retry_sandbox_startup_failure(self):
         """Sandbox setup diagnostics are infra failures for retry purposes."""
         cfg = RetryConfig()
