@@ -1,7 +1,7 @@
 # env0@prod — pinned, content-addressed Environment-plane manifest for env-0.
 #
 # This is a built-in registry entry, shipped inside the benchflow wheel
-# (benchflow/environment/_registry/) so PR #790's env-axis pin resolves on a
+# (benchflow/environment/_registry/) so the env-axis pin resolves on a
 # bare pip install — no checkout, no env vars:
 #
 #   bench eval create --tasks-dir <env0 tasks> --environment-manifest env0@prod ...
@@ -9,16 +9,18 @@
 # Set $BENCHFLOW_ENV_REGISTRY to a local directory of name@version.toml files
 # to override the built-in registry entirely.
 #
-# Mirrors benchflow-ai/env0 tasks/_manifests/env-0.toml (the source of truth). env-0's per-task images build
-# FROM the shared base and bake seed data; benchflow's ManifestEnvironment
-# probes each service's CLI and starts only the ones installed in the per-task
-# image, gating the agent on each service's /health.
+# Mirrors benchflow-ai/env0 tasks/_manifests/env-0.toml (the source of truth).
+# env-0's per-task images build FROM the shared base and bake seed data;
+# benchflow's ManifestEnvironment probes each service's CLI and starts only
+# the ones installed in the per-task image, gating the agent on each
+# service's /health.
 #
-# NOTE: xdotli/env0-base:latest is amd64-only — run env0 on Daytona (x86_64).
+# NOTE: ghcr.io/benchflow-ai/env0:0.2.0 is amd64-only — run env0 on Daytona
+# (x86_64), not local Docker on Apple Silicon.
 
 [environment]
 name           = "env-0"
-base_image     = "xdotli/env0-base:latest"
+base_image     = "ghcr.io/benchflow-ai/env0:0.2.0"
 owns_lifecycle = false
 isolation      = "per_task"
 
@@ -28,13 +30,7 @@ mechanism = "image"
 [environment.readiness]
 timeout_sec = 60
 
-# Services below are copied VERBATIM from the upstream env-0.toml pin
-# (2026-08-09 sync). The previous pin had drifted: bare CLI names
-# (auth/gmail/...) that do not exist in ghcr.io/benchflow-ai/env0:0.2.0
-# images (which ship mock-auth/mock-gmail/... console scripts), plus a
-# phantom slack service and shifted ports — so ManifestEnvironment
-# probed, found ZERO startable services, and readiness passed vacuously
-# while every rollout died at the verifier with connection-refused.
+# Services below are copied VERBATIM from the upstream env-0.toml pin.
 
 [[environment.services]]
 name    = "mock-auth"

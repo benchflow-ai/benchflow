@@ -193,7 +193,7 @@ Each run writes under `--jobs-dir` (default `jobs/`):
 <jobs-dir>/
   summary.json                      # copy of the latest job summary (overwritten by the next run)
   <YYYY-MM-DD__HH-MM-SS>/           # job directory, named by start time
-    summary.json                    # job-level aggregate
+    summary.json                    # job-level aggregate (pass counts plus mean_reward — mean over scored rollouts)
     <task>__<hash8>/                # one rollout: task name + 8-char id
       result.json                   # rollout summary: rewards, errors, token usage/cost
       results.jsonl                 # Verifiers/Prime-RL shaped rollout row
