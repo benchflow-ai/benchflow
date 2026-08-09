@@ -3,7 +3,9 @@
 These are the cross-cutting, side-effect-free helpers that several CLI command
 groups (``cli/main.py`` and the ``cli/<group>.py`` modules) need in common: the
 shared Rich :data:`console`, the evaluation-result summary/exit helpers, and the
-agent ``Requires`` rendering used by ``agents``/``agent`` listings.
+agent ``Requires`` rendering used by ``agents``/``agent`` listings. The one
+file-reading step of the eval report (mining verifier artifacts for failure
+evidence) is delegated to :mod:`._failure_evidence` to keep that claim true.
 
 Keeping them here lets each command group import one stable surface instead of
 re-deriving the formatting, and lets ``cli/main.py`` stay a thin app + eval
@@ -19,6 +21,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from benchflow._utils.text import truncate_end
+from benchflow.cli._failure_evidence import artifact_failure_evidence
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -109,17 +112,24 @@ _FAILURE_LINE_LIMIT = 100
 _FAILURE_REASON_METRICS = 3
 
 
-def _failure_reason(failure: TaskFailure) -> str:
+def _failure_reason(
+    failure: TaskFailure, job_dir: Path | None = None
+) -> tuple[str, Path | None]:
     """One cheap line explaining why a FAILED (scored, reward != 1) task
-    failed, from evidence already on the result — no file reads.
+    failed, plus the verifier dir when artifacts supplied the evidence.
 
     Priority: the verifier's own error if set; else the reward plus a compact
     breakdown of the named metrics in the reward dict (zero/failed metrics
-    first — they explain the miss); else just the reward.
+    first — they explain the miss); else the reward plus a one-liner mined
+    from the rollout's verifier artifacts (bounded CLI-side reads resolved via
+    the ``rollout_name`` the engine records — the engine stays file-free);
+    else just the reward. The returned path is non-``None`` only for the
+    artifact tier, so the caller can print one ``(details: …)`` pointer per
+    report block.
     """
     if failure.verifier_error:
         # Collapse whitespace: verifier errors are routinely multi-line.
-        return " ".join(failure.verifier_error.split())
+        return " ".join(failure.verifier_error.split()), None
     rewards = failure.rewards or {}
     reward = rewards.get("reward")
     metrics = [
@@ -127,15 +137,22 @@ def _failure_reason(failure: TaskFailure) -> str:
         for name, value in rewards.items()
         if name != "reward" and isinstance(value, (bool, int, float))
     ]
-    if not metrics:
-        return f"reward {reward}"
-    # Zero/failed metrics first (stable within each group), capped so one
-    # metric-happy verifier can't flood the line.
-    metrics.sort(key=lambda kv: kv[1] != 0)
-    shown = ", ".join(
-        f"{name} {value}" for name, value in metrics[:_FAILURE_REASON_METRICS]
-    )
-    return f"reward {reward} — {shown}"
+    if metrics:
+        # Zero/failed metrics first (stable within each group), capped so one
+        # metric-happy verifier can't flood the line.
+        metrics.sort(key=lambda kv: kv[1] != 0)
+        shown = ", ".join(
+            f"{name} {value}" for name, value in metrics[:_FAILURE_REASON_METRICS]
+        )
+        return f"reward {reward} — {shown}", None
+    # No rollout_name (pre-#957-follow-up result.json, sharded aggregation):
+    # nothing to resolve — the bare reward is as honest as it gets.
+    if job_dir is not None and failure.rollout_name:
+        evidence = artifact_failure_evidence(job_dir, failure.rollout_name)
+        if evidence is not None:
+            detail, verifier_dir = evidence
+            return f"reward {reward} — {detail}", verifier_dir
+    return f"reward {reward}", None
 
 
 def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -> None:
@@ -145,9 +162,13 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     now the line is green only on a full clean pass, red on a shutout, amber
     otherwise, and ``errors=N`` is red when non-zero. Each FAILED task gets one
     dim ``✗ task: reason`` line (capped at ``_MAX_FAILURE_LINES``) so the "why"
-    doesn't require opening summary.json. When ``job_dir`` is given, the
-    result/summary paths are printed so testers know where to look (the guide
-    repeatedly says "read summary.json" but the CLI never said where).
+    doesn't require opening summary.json; when ``job_dir`` is given, a reason
+    that would otherwise be a bare ``reward X`` is upgraded from the rollout's
+    verifier artifacts (bounded reads, displayed failures only), with a single
+    ``(details: …/verifier)`` pointer line for the block. When ``job_dir`` is
+    given, the result/summary paths are printed so testers know where to look
+    (the guide repeatedly says "read summary.json" but the CLI never said
+    where).
     """
     errors = int(getattr(result, "errored", 0) or 0)
     verifier_errors = int(getattr(result, "verifier_errored", 0) or 0)
@@ -176,15 +197,23 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     # summary.json to learn why. getattr(): sharded aggregation and older
     # SimpleNamespace-style callers don't carry task_failures.
     failures = getattr(result, "task_failures", None) or []
+    artifact_pointer: Path | None = None
     for failure in failures[:_MAX_FAILURE_LINES]:
+        reason, verifier_dir = _failure_reason(failure, job_dir)
+        if artifact_pointer is None and verifier_dir is not None:
+            artifact_pointer = verifier_dir
         line = truncate_end(
-            f"  ✗ {failure.task_name}: {_failure_reason(failure)}",
+            f"  ✗ {failure.task_name}: {reason}",
             _FAILURE_LINE_LIMIT,
         )
         console.print(f"[dim]{escape(line)}[/dim]")
     extra = len(failures) - _MAX_FAILURE_LINES
     if extra > 0:
         console.print(f"[dim]  … and {extra} more[/dim]")
+    # One pointer per block (not per line): the first artifact-backed reason's
+    # verifier dir, so "where do I look next" needs no summary.json dig either.
+    if artifact_pointer is not None:
+        console.print(f"[dim]  (details: {escape(str(artifact_pointer))})[/dim]")
     if job_dir is not None:
         console.print(f"[dim]Artifacts:[/dim] {escape(str(job_dir))}")
         console.print(f"[dim]Summary:  [/dim] {escape(str(job_dir))}/summary.json")

@@ -73,6 +73,7 @@ def rollout_result_payload(
     )
     return {
         "task_name": result.task_name,
+        "rollout_name": result.rollout_name,
         "rewards": result.rewards,
         "error": result.error,
         "error_category": result.error_category,

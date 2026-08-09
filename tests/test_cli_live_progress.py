@@ -324,7 +324,7 @@ def test_report_eval_result_surfaces_verifier_errors(monkeypatch):
     assert "Score: 0/3" in out
 
 
-def _reported(result) -> str:
+def _reported(result, job_dir=None) -> str:
     """Render _report_eval_result through a captured Console, return the text."""
     import io
 
@@ -336,7 +336,7 @@ def _reported(result) -> str:
     original = shared.console
     shared.console = rec
     try:
-        shared._report_eval_result(result)
+        shared._report_eval_result(result, job_dir)
     finally:
         shared.console = original
     return rec.file.getvalue()
@@ -426,6 +426,210 @@ def test_report_eval_result_truncates_failure_lines():
     (line,) = [ln for ln in out.splitlines() if "✗ edit-pdf" in ln]
     assert len(line.rstrip()) <= 100
     assert line.rstrip().endswith("…")
+
+
+def _bare_failure(task_name: str, rollout_name: str | None = None):
+    """A FAILED task whose reason would be the bare `reward 0.0` fallback."""
+    from benchflow.evaluation import TaskFailure
+
+    return TaskFailure(
+        task_name=task_name,
+        rewards={"reward": 0.0},
+        verifier_error=None,
+        rollout_name=rollout_name,
+    )
+
+
+def _write_ctrf(verifier_dir, *, name: str | None, trace: str | None = None) -> None:
+    """Write a minimal CTRF report (pytest-json-ctrf shape).
+
+    ``name`` is the failed test's node id; ``None`` writes an all-passed report.
+    """
+    import json
+
+    verifier_dir.mkdir(parents=True, exist_ok=True)
+    tests = [{"name": "tests/test_x.py::test_ok", "status": "passed"}]
+    if name is not None:
+        test: dict = {"name": name, "status": "failed"}
+        if trace is not None:
+            test["trace"] = trace
+        tests.append(test)
+    (verifier_dir / "ctrf.json").write_text(
+        json.dumps(
+            {
+                "reportFormat": "CTRF",
+                "results": {"tool": {"name": "pytest"}, "tests": tests},
+            }
+        )
+    )
+
+
+def _write_stdout(verifier_dir, text: str) -> None:
+    verifier_dir.mkdir(parents=True, exist_ok=True)
+    (verifier_dir / "test-stdout.txt").write_text(text)
+
+
+def test_failure_reason_artifact_tier_reads_ctrf(tmp_path):
+    # Dogfood follow-up: `✗ fix-build: reward 0.0` while verifier/ctrf.json held
+    # the real answer. A bare-reward reason is upgraded from the rollout dir the
+    # engine recorded (rollout_name — no globbing), plus one (details: …) line.
+    # The redundant "AssertionError: " prefix is stripped from the assertion.
+    _write_ctrf(
+        tmp_path / "fix-build__ab12cd34" / "verifier",
+        name="tests/test_build.py::test_build_success",
+        trace=(
+            "def test_build_success():\n"
+            ">       assert result.ok, 'Build failed for py312'\n"
+            "E       AssertionError: Build failed for py312\n"
+        ),
+    )
+    out = _reported(
+        _failed_result([_bare_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
+    )
+    assert (
+        "✗ fix-build: reward 0.0 — test_build_success failed: "
+        "Build failed for py312" in out
+    )
+    assert f"(details: {tmp_path / 'fix-build__ab12cd34' / 'verifier'})" in out
+
+
+def test_failure_reason_artifact_tier_requires_rollout_name(tmp_path):
+    # No rollout_name (old result.json predating the key, sharded aggregation):
+    # nothing is resolved — even when a plausible dir exists on disk — and a
+    # stale rollout_name whose dir is gone degrades the same way.
+    _write_ctrf(tmp_path / "fix-build__ab12cd34" / "verifier", name="t::test_x")
+    out = _reported(
+        _failed_result(
+            [
+                _bare_failure("fix-build", None),
+                _bare_failure("other-task", "other-task__99999999"),
+            ]
+        ),
+        tmp_path,
+    )
+    assert "✗ fix-build: reward 0.0" in out
+    assert "✗ other-task: reward 0.0" in out
+    assert "test_x" not in out
+    assert "details:" not in out
+
+
+def test_failure_reason_artifact_tier_stdout_tail_summary(tmp_path):
+    # No CTRF report: fall back to the tail of test-stdout.txt — the pytest
+    # summary line wins over earlier FAILED lines, decoration stripped.
+    _write_stdout(
+        tmp_path / "fix-build__ab12cd34" / "verifier",
+        "collected 3 items\n"
+        "FAILED tests/test_build.py::test_build_success - AssertionError: boom\n"
+        "=========== 1 failed, 2 passed in 40.86s ===========\n",
+    )
+    out = _reported(
+        _failed_result([_bare_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
+    )
+    assert "✗ fix-build: reward 0.0 — 1 failed, 2 passed in 40.86s" in out
+
+
+def test_failure_reason_artifact_tier_stdout_failed_line(tmp_path):
+    # No summary line in the tail: the last FAILED line is the evidence.
+    _write_stdout(
+        tmp_path / "fix-build__ab12cd34" / "verifier",
+        "collected 1 item\n"
+        "FAILED tests/test_build.py::test_build - AssertionError: boom\n",
+    )
+    out = _reported(
+        _failed_result([_bare_failure("fix-build", "fix-build__ab12cd34")]), tmp_path
+    )
+    assert (
+        "✗ fix-build: reward 0.0 — FAILED tests/test_build.py::test_build - "
+        "AssertionError: boom" in out
+    )
+
+
+def test_failure_reason_artifact_tier_tries_sources_in_order(tmp_path):
+    # Try-in-order, first non-None wins: a CTRF report that parses but carries
+    # no failed test (reward zeroed by something else) yields to the stdout
+    # tail, as does an oversized (> 64KB) report that can't be tail-parsed.
+    no_failed = tmp_path / "task-a__11111111" / "verifier"
+    _write_ctrf(no_failed, name=None)
+    _write_stdout(no_failed, "=== 1 failed, 2 passed in 1.00s ===\n")
+    oversized = tmp_path / "task-b__22222222" / "verifier"
+    oversized.mkdir(parents=True)
+    (oversized / "ctrf.json").write_text('{"pad": "%s"}' % ("x" * 70_000))
+    _write_stdout(oversized, "=== 2 failed, 1 passed in 2.00s ===\n")
+    out = _reported(
+        _failed_result(
+            [
+                _bare_failure("task-a", "task-a__11111111"),
+                _bare_failure("task-b", "task-b__22222222"),
+            ]
+        ),
+        tmp_path,
+    )
+    assert "✗ task-a: reward 0.0 — 1 failed, 2 passed in 1.00s" in out
+    assert "✗ task-b: reward 0.0 — 2 failed, 1 passed in 2.00s" in out
+
+
+def test_failure_reason_artifact_tier_never_raises(tmp_path):
+    # The tier's safety contract: a corrupt CTRF report falls through to the
+    # stdout tail; with no other evidence it degrades to the bare `reward 0.0`
+    # — no pointer, no exception.
+    corrupt = tmp_path / "corrupt-task__11111111" / "verifier"
+    corrupt.mkdir(parents=True)
+    (corrupt / "ctrf.json").write_text("{not json")
+    salvaged = tmp_path / "salvaged-task__33333333" / "verifier"
+    salvaged.mkdir(parents=True)
+    (salvaged / "ctrf.json").write_text("{not json")
+    _write_stdout(salvaged, "=== 1 failed in 3.00s ===\n")
+    (tmp_path / "empty-task__22222222" / "verifier").mkdir(parents=True)
+    out = _reported(
+        _failed_result(
+            [
+                _bare_failure("corrupt-task", "corrupt-task__11111111"),
+                _bare_failure("empty-task", "empty-task__22222222"),
+                _bare_failure("salvaged-task", "salvaged-task__33333333"),
+            ]
+        ),
+        tmp_path,
+    )
+    assert "✗ corrupt-task: reward 0.0" in out
+    assert "✗ empty-task: reward 0.0" in out
+    assert "✗ salvaged-task: reward 0.0 — 1 failed in 3.00s" in out
+    assert out.count("(details:") == 1
+
+
+def test_failure_reason_artifact_tier_yields_to_metric_breakdown(tmp_path):
+    # Named metrics already explain the miss — artifacts are only for reasons
+    # that would otherwise be a bare `reward X`.
+    from benchflow.evaluation import TaskFailure
+
+    _write_ctrf(tmp_path / "plan-meeting__ab12cd34" / "verifier", name="t::test_x")
+    out = _reported(
+        _failed_result(
+            [
+                TaskFailure(
+                    task_name="plan-meeting",
+                    rewards={"reward": 0.3, "sections": 0.0},
+                    verifier_error=None,
+                    rollout_name="plan-meeting__ab12cd34",
+                )
+            ]
+        ),
+        tmp_path,
+    )
+    assert "✗ plan-meeting: reward 0.3 — sections 0.0" in out
+    assert "details:" not in out
+
+
+def test_report_eval_result_artifact_reads_stay_capped(tmp_path):
+    # The display cap also bounds artifact reads: 7 bare failures with readable
+    # artifacts still render 5 lines + "… and 2 more", and the pointer prints
+    # once per block, not per line.
+    for i in range(7):
+        _write_ctrf(tmp_path / f"task-{i}__ab12cd34" / "verifier", name=f"t::test_{i}")
+    failures = [_bare_failure(f"task-{i}", f"task-{i}__ab12cd34") for i in range(7)]
+    out = _reported(_failed_result(failures), tmp_path)
+    assert out.count("✗ task-") == 5
+    assert "… and 2 more" in out
+    assert out.count("(details:") == 1
 
 
 def test_fire_progress_swallows_callback_errors():
