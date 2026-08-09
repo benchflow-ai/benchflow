@@ -191,10 +191,9 @@ Environment plane).
 ## Registry (`name@version`)
 
 `--environment-manifest` (and `--state`) also accept a **registry spec**
-instead of a file path: `name@version`, or a bare `name`, resolved against
-the directory named by `$BENCHFLOW_ENV_REGISTRY`
-([`_utils/env_registry.py`](../src/benchflow/_utils/env_registry.py)). The
-registry is just a local directory of manifest files:
+instead of a file path: `name@version`, or a bare `name`, resolved by
+[`_utils/env_registry.py`](../src/benchflow/_utils/env_registry.py). The
+registry is just a directory of manifest files:
 
 ```
 <registry>/<name>@<version>.toml   # a pinned environment version
@@ -206,25 +205,28 @@ present, else the highest-sorting pinned version. Every resolution is
 content-addressed (`env_hash = sha256(manifest bytes)`) so a run records
 exactly which environment it bound.
 
+Which directory is the registry:
+
+1. **`$BENCHFLOW_ENV_REGISTRY`**, when set — any local directory of
+   `name@version.toml` files. It wins entirely: names it does not contain do
+   not fall back to the built-in registry.
+2. **The built-in registry** otherwise — the pinned manifests shipped inside
+   the `benchflow` wheel
+   ([`src/benchflow/environment/_registry/`](../src/benchflow/environment/_registry)):
+   [`env0@prod.toml`](../src/benchflow/environment/_registry/env0@prod.toml)
+   and
+   [`env0@outage.toml`](../src/benchflow/environment/_registry/env0@outage.toml).
+   A bare `pip install benchflow` resolves these with no checkout and no env
+   vars.
+
 ```bash
-export BENCHFLOW_ENV_REGISTRY=benchmarks/_environments
+# works on a bare pip install — no $BENCHFLOW_ENV_REGISTRY needed
 bench eval run --tasks-dir <tasks> --environment-manifest env0@prod ...
-```
 
-Any local directory works — a pip install has no repo checkout, so download
-the pinned manifest you need into one:
-
-```bash
-mkdir -p env-registry
-curl -fsSLo 'env-registry/env0@prod.toml' \
-  'https://raw.githubusercontent.com/benchflow-ai/benchflow/main/benchmarks/_environments/env0@prod.toml'
+# override with your own registry directory
 export BENCHFLOW_ENV_REGISTRY=$PWD/env-registry
+bench eval run --tasks-dir <tasks> --environment-manifest myenv@v1 ...
 ```
-
-The repo commits two pins,
-[`benchmarks/_environments/env0@prod.toml`](../benchmarks/_environments/env0@prod.toml)
-and [`env0@outage.toml`](../benchmarks/_environments/env0@outage.toml) — see
-[`benchmarks/_environments/README.md`](../benchmarks/_environments/README.md).
 
 ## Exporting for training
 

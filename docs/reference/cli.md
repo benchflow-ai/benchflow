@@ -242,7 +242,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--reasoning-effort` | — | Agent reasoning/thinking effort when the agent exposes one (e.g. `max`) |
 | `--sandbox` | `docker` | Sandbox: docker, daytona, modal, apple-container, or agentcore |
 | `--usage-tracking` | `auto` | Token usage telemetry policy: `auto`, `required`, or `off` |
-| `--environment-manifest` | — | Environment-plane manifest applied to every rollout in the batch: a path to an `environment.toml`, or a `name@version` registry spec resolved via `$BENCHFLOW_ENV_REGISTRY` (see [Environment plane: Registry](../environment-plane.md#registry-nameversion)). Overrides a task.md `benchflow.environment.manifest` pin |
+| `--environment-manifest` | — | Environment-plane manifest applied to every rollout in the batch: a path to an `environment.toml`, or a `name@version` registry spec resolved via `$BENCHFLOW_ENV_REGISTRY` when set, else the built-in registry shipped with benchflow (`env0@prod`, `env0@outage`; see [Environment plane: Registry](../environment-plane.md#registry-nameversion)). Overrides a task.md `benchflow.environment.manifest` pin |
 | `--state` | — | S-axis environment binding; inline JSON, registry `name@version`, or manifest path. Takes precedence over `--environment-manifest` |
 | `--prompt` | task prompt | Prompt to send to the agent; repeatable for multi-prompt runs |
 | `--config-override` | — | C-axis task config overlay; inline JSON/YAML/TOML or `@file`, deep-merged into each task's resolved config |

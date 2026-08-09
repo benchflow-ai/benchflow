@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Added
+- **Built-in environment registry.** The committed env-axis pins
+  (`env0@prod`, `env0@outage`) moved from `benchmarks/_environments/` into
+  the package (`benchflow/environment/_registry/`) and ship inside the
+  wheel, so `--environment-manifest env0@prod` resolves on a bare
+  `pip install benchflow` with no checkout and no env vars.
+  `$BENCHFLOW_ENV_REGISTRY`, when set, still wins entirely; resolution
+  stays content-addressed (sha256 logged), and unknown names now error
+  listing the available specs.
 - **Console progress heartbeat.** Single-concurrency eval runs print a
   throttled progress line (`… 6.2min, 12 tool calls (last: …)`) about every
   45 seconds while the agent works, so a long prompt is distinguishable from

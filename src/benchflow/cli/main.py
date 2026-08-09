@@ -297,10 +297,11 @@ def eval_run(
             "--environment-manifest",
             help=(
                 "Environment-plane manifest applied to every rollout: a path to "
-                "an environment.toml, OR a 'name@version' registry spec resolved "
-                "via $BENCHFLOW_ENV_REGISTRY (the S axis). The manifest-declared "
-                "stateful environment is provisioned, gated on readiness, and "
-                "torn down."
+                "an environment.toml, OR a 'name@version' registry spec (the S "
+                "axis) resolved via $BENCHFLOW_ENV_REGISTRY when set, else the "
+                "built-in registry shipped with benchflow (env0@prod, "
+                "env0@outage). The manifest-declared stateful environment is "
+                "provisioned, gated on readiness, and torn down."
             ),
         ),
     ] = None,

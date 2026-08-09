@@ -8,10 +8,21 @@ Lee's ``S`` axis in ``I_eval = {T, A, M, S, C, R, τ}`` — from the task, so it
 swappable per run exactly like ``--agent`` / ``--model`` / ``--sandbox`` already
 are, instead of being pinned by a relative path baked into the task file.
 
-Registry layout (filesystem; ``$BENCHFLOW_ENV_REGISTRY``)::
+Registry layout (a directory of manifest files)::
 
     <registry>/<name>@<version>.toml   # a pinned environment version
     <registry>/<name>.toml             # optional default ("latest")
+
+Which directory is the registry:
+
+1. an explicit ``registry=`` argument (tests, embedders);
+2. else ``$BENCHFLOW_ENV_REGISTRY`` — when set it wins entirely (no fallback
+   into the built-in registry for names it does not contain); an empty value
+   counts as unset;
+3. else the **built-in registry** shipped inside the ``benchflow`` wheel
+   (``benchflow/environment/_registry/``), so a bare ``pip install benchflow``
+   resolves the committed pins (``env0@prod``, ``env0@outage``) with no
+   checkout and no env vars.
 
 Resolution::
 
@@ -80,19 +91,47 @@ def looks_like_env_spec(value: str) -> bool:
     return bool(_SPEC_RE.match(value))
 
 
+def _builtin_registry_dir() -> Path | None:
+    """Directory of the pinned manifests shipped inside the ``benchflow`` wheel.
+
+    ``benchflow/environment/_registry/`` is package data, so a bare
+    ``pip install benchflow`` carries the committed pins. Path(__file__)-relative
+    like every other package-data lookup in the repo (compose files, default
+    rubric, demo task) — zip imports are unsupported package-wide. Returns
+    ``None`` when the packaged registry is missing (a stripped install).
+    """
+    directory = Path(__file__).resolve().parents[1] / "environment" / "_registry"
+    return directory if directory.is_dir() else None
+
+
 def _registry_dir(registry: str | os.PathLike[str] | None) -> Path:
-    raw = registry if registry is not None else os.environ.get(ENV_REGISTRY_VAR)
-    if not raw:
+    if registry is not None:
+        raw: str | os.PathLike[str] | None = registry
+        source = "the registry= argument"
+    else:
+        raw = os.environ.get(ENV_REGISTRY_VAR)
+        source = f"${ENV_REGISTRY_VAR}"
+    if not raw:  # unset or empty — empty counts as unset
+        builtin = _builtin_registry_dir()
+        if builtin is not None:
+            return builtin
         raise EnvironmentRegistryError(
-            f"no environment registry configured; set ${ENV_REGISTRY_VAR} or pass "
-            "--environment-manifest a manifest file path instead of a name@version spec"
+            "no environment registry available: the built-in registry shipped "
+            f"with benchflow is missing and ${ENV_REGISTRY_VAR} is unset; set "
+            f"${ENV_REGISTRY_VAR} or pass --environment-manifest a manifest "
+            "file path instead of a name@version spec"
         )
     directory = Path(raw).expanduser()
     if not directory.is_dir():
         raise EnvironmentRegistryError(
-            f"environment registry {directory} is not a directory"
+            f"environment registry {directory} (from {source}) is not a directory"
         )
     return directory
+
+
+def _available_specs(directory: Path) -> list[str]:
+    """Sorted stems (``name`` / ``name@version``) present in the registry."""
+    return sorted({p.stem for ext in _MANIFEST_EXTS for p in directory.glob(f"*{ext}")})
 
 
 def _find_manifest(directory: Path, stem: str) -> Path | None:
@@ -124,9 +163,11 @@ def resolve_environment(
     if version is not None:
         path = _find_manifest(directory, f"{name}@{version}")
         if path is None:
+            available = ", ".join(_available_specs(directory)) or "none"
             raise EnvironmentRegistryError(
                 f"environment {spec!r} not found in {directory} "
-                f"(looked for {name}@{version}{{.toml,.yaml,.yml}})"
+                f"(looked for {name}@{version}{{.toml,.yaml,.yml}}; "
+                f"available: {available})"
             )
     else:
         path = _find_manifest(directory, name)
@@ -137,8 +178,10 @@ def resolve_environment(
                 p for ext in _MANIFEST_EXTS for p in directory.glob(f"{name}@*{ext}")
             )
             if not candidates:
+                available = ", ".join(_available_specs(directory)) or "none"
                 raise EnvironmentRegistryError(
-                    f"no versions of environment {name!r} found in {directory}"
+                    f"no versions of environment {name!r} found in {directory} "
+                    f"(available: {available})"
                 )
             path = candidates[-1]
             version = path.stem.split("@", 1)[1]
