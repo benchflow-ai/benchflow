@@ -156,8 +156,13 @@ def _acp_write_target(title: str) -> str:
     prefix = "file_editor:"
     if not stripped.startswith(prefix):
         return title
+    # Titles carry trailing prose after the JSON payload (observed live:
+    # ``file_editor: {...}: Editing /tmp/test_rnn.py``), so parse the LEADING
+    # object with raw_decode instead of json.loads — a whole-title fallback
+    # here re-enables name-matching against file contents and prose, which is
+    # exactly the false-positive class this function exists to prevent.
     try:
-        payload = json.loads(stripped[len(prefix) :].strip())
+        payload, _ = json.JSONDecoder().raw_decode(stripped[len(prefix) :].strip())
     except json.JSONDecodeError:
         return title
     if not isinstance(payload, Mapping):
