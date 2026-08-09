@@ -949,7 +949,7 @@ semantics, and non-`main` verifier services on backends that cannot run them.
 It is wired into `bench tasks check --sandbox <backend>` and the shared sandbox
 factory used by rollouts and `Environment.from_task()`. Unsupported parsed
 semantics now raise `UnsupportedTaskFeatureError` before Docker, Daytona, or
-Modal construction. Safe absolute non-root `environment.workdir` values are
+Modal construction. Safe absolute non-root `sandbox.workdir` values are
 materialized before agent and verifier setup.
 
 P2: Split native and adapter validation modes.

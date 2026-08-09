@@ -16,7 +16,7 @@ from benchflow.task.config import (
     MultiStepRewardStrategy,
     NetworkMode,
     TaskOS,
-    VerifierEnvironmentMode,
+    VerifierSandboxMode,
 )
 from benchflow.task.document import (
     render_normalized_task_md,
@@ -330,7 +330,7 @@ verifier:
     JUDGE_API_KEY: ${JUDGE_API_KEY:-test}
   user: root
   network_mode: public
-  environment_mode: separate
+  sandbox_mode: separate
   pytest_plugins: [pytest_playwright]
   hardening:
     cleanup_conftests: false
@@ -401,7 +401,7 @@ Solve the parity task.
     assert cfg.task.name == "benchflow/harbor-parity"
     assert cfg.metadata["custom"]["kept"] is True
     assert cfg.agent.network_mode == NetworkMode.ALLOWLIST
-    assert cfg.verifier.environment_mode == VerifierEnvironmentMode.SEPARATE
+    assert cfg.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE
     assert cfg.verifier.hardening.cleanup_conftests is False
     assert cfg.verifier.sandbox is not None
     assert cfg.verifier.sandbox.allow_internet is False

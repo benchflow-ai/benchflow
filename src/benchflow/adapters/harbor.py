@@ -15,12 +15,14 @@ BenchFlow-native shape:
     └── tests/             # test.sh — the verifier
 
 This adapter is consequently a thin *normalizer*: it loads the foreign
-``task.toml`` through the native :class:`TaskConfig` validator (which already
-handles Harbor's ``[environment]``-keyed sandbox section and the
-``version`` -> ``schema_version`` rename), reads ``instruction.md``, and
-records the build/solution/test files under their native relative paths. No
-field remapping is needed — Harbor *is* the native format, which is exactly
-what makes Terminal-Bench backward-compatible through this edge.
+``task.toml`` through :func:`~benchflow.task.imports.import_task_config_toml`,
+whose toml import boundary translates Harbor's ``[environment]``-keyed
+sandbox section to the native ``sandbox`` key and handles the ``version`` ->
+``schema_version`` rename before native :class:`TaskConfig` validation. It
+then reads ``instruction.md`` and records the build/solution/test files under
+their native relative paths. Beyond that spelling translation no field
+remapping is needed — Harbor is structurally the native format, which is
+exactly what makes Terminal-Bench backward-compatible through this edge.
 """
 
 from __future__ import annotations

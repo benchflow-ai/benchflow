@@ -380,9 +380,14 @@ steps:
 
     report = export_task_to_split_layout(task_dir, out_dir)
 
+    # The harbor target emits Harbor's spelling: the merged native 'sandbox'
+    # table (including restored extras) leaves as '[environment]'.
     exported = tomllib.loads((out_dir / "task.toml").read_text())
     assert exported["harbor_ext"] == "kept"
-    assert exported["sandbox"]["modal"] == {"image": "registry.example.com/task:latest"}
+    assert "sandbox" not in exported
+    assert exported["environment"]["modal"] == {
+        "image": "registry.example.com/task:latest"
+    }
     assert exported["steps"][0]["name"] == "phase-one"
     assert exported["steps"][0]["runner"] == "harbor-step-runner"
     assert exported["verifier"]["reward_kit"] == {"metric": "exact_match"}
@@ -394,6 +399,57 @@ steps:
     ]
     loss_paths = {loss.path for loss in report.losses}
     assert "benchflow.compat" not in loss_paths
+
+
+def test_export_converts_pre_rename_compat_envelope_environment_extras(
+    tmp_path: Path,
+) -> None:
+    """A pre-rename compat envelope spelling extras 'environment.*' must not
+    export 'environment' NEXT TO 'sandbox' (a file that hard-errors on
+    re-import): the envelope is normalized to 'sandbox' before the merge, and
+    the harbor target then emits a single '[environment]' table."""
+    task_dir = tmp_path / "native"
+    out_dir = tmp_path / "exported"
+    _write_native_task(task_dir)
+    task_md = task_dir / "task.md"
+    task_md.write_text(
+        task_md.read_text().replace(
+            "benchflow:\n  teams:\n",
+            """benchflow:
+  compat:
+    source: harbor
+    extra_paths:
+      - environment.modal.image
+    extra:
+      environment:
+        modal:
+          image: registry.example.com/task:latest
+  teams:
+""",
+        )
+    )
+
+    export_task_to_split_layout(task_dir, out_dir)
+
+    exported_text = (out_dir / "task.toml").read_text()
+    exported = tomllib.loads(exported_text)
+    assert "sandbox" not in exported
+    assert exported["environment"]["network_mode"] == "no-network"
+    assert exported["environment"]["modal"] == {
+        "image": "registry.example.com/task:latest"
+    }
+    # The exported file re-imports cleanly (no both-spellings hard error);
+    # the foreign 'modal' extra goes back into a compat envelope, so the
+    # re-import path is the compat importer rather than the strict loader.
+    from benchflow.task import import_task_config_toml
+
+    reimported = import_task_config_toml(exported_text, source="harbor")
+    assert reimported.config.sandbox.network_mode is not None
+    assert reimported.report.extra_paths == ("sandbox.modal.image",)
+    # The parsed source document is not corrupted by the export-side
+    # conversion (the converter must operate on a copy of the envelope).
+    document = TaskDocument.from_path(task_md)
+    assert "environment" in document.benchflow["compat"]["extra"]
 
 
 def test_build_report_detects_alias_collisions(tmp_path: Path) -> None:

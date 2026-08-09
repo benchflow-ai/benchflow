@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import tempfile
@@ -12,6 +13,10 @@ from typing import Any, Literal
 
 import tomli_w
 
+from benchflow.task.config import (
+    convert_legacy_environment_keys,
+    convert_native_keys_to_legacy_environment,
+)
 from benchflow.task.document import TaskDocument, render_task_md_from_legacy
 from benchflow.task.imports import import_task_config_toml, merge_compat_extra
 from benchflow.task.package import TaskPackage
@@ -260,7 +265,7 @@ def export_task_to_split_layout(
         staged = Path(staging_root) / "export"
         staged.mkdir()
 
-        (staged / "task.toml").write_text(_export_task_toml(view))
+        (staged / "task.toml").write_text(_export_task_toml(view, target=target))
         (staged / "instruction.md").write_text(view.prompt.strip() + "\n")
 
         _copy_tree_if_exists(view.environment_dir, staged / "environment")
@@ -359,12 +364,27 @@ def _load_document(view: TaskRuntimeView) -> TaskDocument | None:
     return TaskDocument.from_path(path)
 
 
-def _export_task_toml(view: TaskRuntimeView) -> str:
+def _export_task_toml(
+    view: TaskRuntimeView, *, target: CompatibilityTarget = "harbor"
+) -> str:
     data = tomllib.loads(view.config.model_dump_toml())
     document = _load_document(view)
     extra = _compat_extra(document)
     if extra:
+        # Pre-rename compat envelopes may still spell preserved keys under
+        # 'environment'; normalize them to native 'sandbox' spelling first so
+        # the merge can never place an 'environment' table NEXT TO the dumped
+        # 'sandbox' table (which would export a file that hard-errors on
+        # re-import). The deepcopy is mandatory: the converter mutates in
+        # place and ``_compat_extra`` returns a live sub-dict of the parsed
+        # TaskDocument.
+        extra = convert_legacy_environment_keys(copy.deepcopy(extra))
         data = merge_compat_extra(data, extra)
+    if target == "harbor":
+        # Harbor speaks 'environment' / 'environment_mode'; emit the foreign
+        # spelling on the way out — the exact inverse of the import-side
+        # conversion — so a stock Harbor consumer can read the export.
+        data = convert_native_keys_to_legacy_environment(data)
     return tomli_w.dumps(data)
 
 

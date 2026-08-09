@@ -40,10 +40,63 @@ _VERIFIER_ENVIRONMENT_RENAMED_ERROR = (
     "rename the key (legacy task.toml imports convert "
     "'[verifier.environment]' automatically)"
 )
+_VERIFIER_ENVIRONMENT_MODE_RENAMED_ERROR = (
+    "the 'verifier.environment_mode' key was renamed to "
+    "'verifier.sandbox_mode' — rename the key (legacy task.toml imports "
+    "convert 'environment_mode' automatically)"
+)
+
+
+def _make_key_rename(old: str, new: str, reason: str):
+    """Build a rename closure with the key pair and error phrasing baked in.
+
+    ``reason`` explains, in the both-declared error, why one spelling must
+    win (e.g. which one is the legacy Harbor spelling).
+    """
+
+    def rename(table: Any, context: str) -> None:
+        if not isinstance(table, dict) or old not in table:
+            return
+        if new in table:
+            raise ValueError(
+                f"task config declares both '{context}{old}' and "
+                f"'{context}{new}' — they are the same section "
+                f"({reason}); keep only '{context}{new}'"
+            )
+        table[new] = table.pop(old)
+
+    return rename
+
+
+def _convert_sandbox_spelling(
+    data: dict[str, Any], *, old: str, new: str, old_mode: str, new_mode: str
+) -> dict[str, Any]:
+    # True in both directions; the "keep only '{new}'" tail names the
+    # direction-appropriate resolution.
+    rename_sandbox = _make_key_rename(
+        old, new, "'environment' is the legacy Harbor spelling"
+    )
+    rename_mode = _make_key_rename(
+        old_mode, new_mode, "'environment_mode' is the legacy Harbor spelling"
+    )
+
+    rename_sandbox(data, "")
+    verifier = data.get("verifier")
+    rename_sandbox(verifier, "verifier.")
+    rename_mode(verifier, "verifier.")
+    steps = data.get("steps")
+    if isinstance(steps, list):
+        for index in range(len(steps)):
+            step = steps[index]
+            if isinstance(step, dict):
+                step_verifier = step.get("verifier")
+                rename_sandbox(step_verifier, f"steps[{index}].verifier.")
+                rename_mode(step_verifier, f"steps[{index}].verifier.")
+    return data
 
 
 def convert_legacy_environment_keys(data: dict[str, Any]) -> dict[str, Any]:
-    """Rename legacy Harbor ``environment`` tables to native ``sandbox``.
+    """Rename legacy Harbor ``environment`` keys to native ``sandbox``.
 
     ``task.toml`` is a foreign/legacy format (Harbor's), so its
     ``environment`` spelling is translated here at the import boundary
@@ -54,40 +107,37 @@ def convert_legacy_environment_keys(data: dict[str, Any]) -> dict[str, Any]:
     a hard error rather than a silent merge.
 
     Converts the top-level ``environment`` table, ``verifier.environment``,
-    and ``steps[*].verifier.environment``. Mutates ``data`` in place and
-    returns it; callers pass freshly parsed or copied mappings.
+    ``verifier.environment_mode``, and their ``steps[*].verifier``
+    equivalents. Mutates ``data`` in place and returns it; callers pass
+    freshly parsed or copied mappings.
     """
 
-    def rename(table: Any, *, legacy: str, native: str, context: str) -> None:
-        if not isinstance(table, dict) or legacy not in table:
-            return
-        if native in table:
-            raise ValueError(
-                f"task config declares both '{context}{legacy}' and "
-                f"'{context}{native}' — they are the same section "
-                f"('{legacy}' is the legacy Harbor spelling); keep only "
-                f"'{context}{native}'"
-            )
-        table[native] = table.pop(legacy)
-
-    rename(data, legacy="environment", native="sandbox", context="")
-    rename(
-        data.get("verifier"),
-        legacy="environment",
-        native="sandbox",
-        context="verifier.",
+    return _convert_sandbox_spelling(
+        data,
+        old="environment",
+        new="sandbox",
+        old_mode="environment_mode",
+        new_mode="sandbox_mode",
     )
-    steps = data.get("steps")
-    if isinstance(steps, list):
-        for step in steps:
-            if isinstance(step, dict):
-                rename(
-                    step.get("verifier"),
-                    legacy="environment",
-                    native="sandbox",
-                    context="steps.verifier.",
-                )
-    return data
+
+
+def convert_native_keys_to_legacy_environment(data: dict[str, Any]) -> dict[str, Any]:
+    """Rename native ``sandbox`` keys to Harbor's ``environment`` spelling.
+
+    The exact inverse of :func:`convert_legacy_environment_keys`, for
+    Harbor-facing emitters (``bench tasks export``): a split layout written
+    for a stock Harbor consumer must spell the sandbox spec
+    ``[environment]`` / ``environment_mode``, which Harbor understands and
+    ``[sandbox]`` is invisible to. Mutates ``data`` in place and returns it.
+    """
+
+    return _convert_sandbox_spelling(
+        data,
+        old="sandbox",
+        new="environment",
+        old_mode="sandbox_mode",
+        new_mode="environment_mode",
+    )
 
 
 class TaskConfigModel(BaseModel):
@@ -116,8 +166,8 @@ class TaskOS(StrEnum):
     WINDOWS = "windows"
 
 
-class VerifierEnvironmentMode(StrEnum):
-    """Whether the verifier runs in the agent environment or a separate one."""
+class VerifierSandboxMode(StrEnum):
+    """Whether the verifier runs in the agent sandbox or a separate one."""
 
     SHARED = "shared"
     SEPARATE = "separate"
@@ -366,11 +416,11 @@ class VerifierConfig(TaskConfigModel):
         default=None,
         description="Hostnames reachable when network_mode='allowlist'.",
     )
-    environment_mode: VerifierEnvironmentMode | None = Field(
+    sandbox_mode: VerifierSandboxMode | None = Field(
         default=None,
         description=(
-            "Whether the verifier runs in the agent environment ('shared') "
-            "or a dedicated verifier environment ('separate')."
+            "Whether the verifier runs in the agent sandbox ('shared') "
+            "or a dedicated verifier sandbox ('separate')."
         ),
     )
     sandbox: SandboxConfig | None = Field(
@@ -428,20 +478,20 @@ class VerifierConfig(TaskConfigModel):
 
     @model_validator(mode="before")
     @classmethod
-    def reject_renamed_environment_key(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "environment" in data:
-            raise ValueError(_VERIFIER_ENVIRONMENT_RENAMED_ERROR)
+    def reject_renamed_environment_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "environment" in data:
+                raise ValueError(_VERIFIER_ENVIRONMENT_RENAMED_ERROR)
+            if "environment_mode" in data:
+                raise ValueError(_VERIFIER_ENVIRONMENT_MODE_RENAMED_ERROR)
         return data
 
     @model_validator(mode="after")
-    def validate_verifier_environment(self) -> VerifierConfig:
+    def validate_verifier_sandbox(self) -> VerifierConfig:
         _validate_network_policy_fields(self.network_mode, self.allowed_hosts)
-        if (
-            self.environment_mode == VerifierEnvironmentMode.SHARED
-            and self.sandbox is not None
-        ):
+        if self.sandbox_mode == VerifierSandboxMode.SHARED and self.sandbox is not None:
             raise ValueError(
-                "[verifier].environment_mode='shared' is incompatible with "
+                "[verifier].sandbox_mode='shared' is incompatible with "
                 "[verifier.sandbox]"
             )
         return self

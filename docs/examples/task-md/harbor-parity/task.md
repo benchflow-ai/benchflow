@@ -26,7 +26,7 @@ verifier:
     JUDGE_API_KEY: ${JUDGE_API_KEY:-test}
   user: root
   network_mode: public
-  environment_mode: separate
+  sandbox_mode: separate
   pytest_plugins: [pytest_playwright]
   hardening:
     cleanup_conftests: false

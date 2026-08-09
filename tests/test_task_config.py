@@ -7,7 +7,7 @@ from benchflow.task.config import (
     NetworkMode,
     TaskConfig,
     TaskOS,
-    VerifierEnvironmentMode,
+    VerifierSandboxMode,
 )
 
 
@@ -180,7 +180,7 @@ env = { STEP = "scaffold" }
     assert cfg.metadata["custom"]["kept"] is True
     assert cfg.agent.network_mode == NetworkMode.ALLOWLIST
     assert cfg.agent.allowed_hosts == ["api.example.com"]
-    assert cfg.verifier.environment_mode == VerifierEnvironmentMode.SEPARATE
+    assert cfg.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE
     assert cfg.verifier.hardening.cleanup_conftests is False
     assert cfg.verifier.sandbox is not None
     assert cfg.verifier.sandbox.allow_internet is False
@@ -432,3 +432,52 @@ def test_task_config_dump_emits_sandbox_key():
     dumped = cfg.model_dump_toml()
     assert "[sandbox]" in dumped
     assert "[environment]" not in dumped
+
+
+def test_task_config_rejects_renamed_verifier_environment_mode_key():
+    with pytest.raises(
+        ValueError,
+        match=r"the 'verifier\.environment_mode' key was renamed to "
+        r"'verifier\.sandbox_mode'",
+    ):
+        TaskConfig.model_validate({"verifier": {"environment_mode": "separate"}})
+
+
+def test_task_config_toml_converts_legacy_verifier_environment_mode():
+    cfg = TaskConfig.model_validate_toml(
+        'version = "1.0"\n[verifier]\nenvironment_mode = "separate"\n'
+    )
+    assert cfg.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE
+
+
+def test_task_config_toml_rejects_both_environment_mode_and_sandbox_mode():
+    with pytest.raises(
+        ValueError,
+        match=r"declares both 'verifier\.environment_mode' and "
+        r"'verifier\.sandbox_mode'",
+    ):
+        TaskConfig.model_validate_toml(
+            'version = "1.0"\n[verifier]\nenvironment_mode = "separate"\n'
+            'sandbox_mode = "separate"\n'
+        )
+
+
+def test_task_config_toml_converts_step_verifier_environment_with_indexed_error():
+    cfg = TaskConfig.model_validate_toml(
+        'version = "1.0"\n[[steps]]\nname = "one"\n'
+        "[steps.verifier.environment]\ncpus = 2\n"
+    )
+    assert cfg.steps is not None
+    assert cfg.steps[0].verifier.sandbox is not None
+    assert cfg.steps[0].verifier.sandbox.cpus == 2
+
+    with pytest.raises(
+        ValueError,
+        match=r"declares both 'steps\[0\]\.verifier\.environment' and "
+        r"'steps\[0\]\.verifier\.sandbox'",
+    ):
+        TaskConfig.model_validate_toml(
+            'version = "1.0"\n[[steps]]\nname = "one"\n'
+            "[steps.verifier.environment]\ncpus = 2\n"
+            "[steps.verifier.sandbox]\ncpus = 3\n"
+        )

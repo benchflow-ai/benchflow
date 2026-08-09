@@ -26,7 +26,7 @@ from benchflow.task.config import (
     NetworkMode,
     TaskConfig,
     TaskOS,
-    VerifierEnvironmentMode,
+    VerifierSandboxMode,
 )
 from benchflow.task.document import TaskDocument
 from benchflow.task.paths import TaskPaths, local_script_strategy_files
@@ -183,11 +183,11 @@ def _append_config_issues(
         sandbox=sandbox,
     )
 
-    if config.verifier.environment_mode == VerifierEnvironmentMode.SEPARATE:
+    if config.verifier.sandbox_mode == VerifierSandboxMode.SEPARATE:
         _issue(
             unsupported,
-            path="verifier.environment_mode",
-            reason="separate verifier environments are parsed but not executed",
+            path="verifier.sandbox_mode",
+            reason="separate verifier sandboxes are parsed but not executed",
             sandbox=sandbox,
         )
     if config.verifier.sandbox is not None:

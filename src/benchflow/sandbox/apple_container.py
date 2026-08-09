@@ -238,7 +238,7 @@ class AppleContainerSandbox(BaseSandbox):
             raise ValueError(
                 "apple-container does not currently enforce no-network sandboxing. "
                 "Use docker, daytona, or modal for tasks that require "
-                "environment.network_mode='no-network'."
+                "sandbox.network_mode='no-network'."
             )
 
     def _image_tag(self) -> str:
