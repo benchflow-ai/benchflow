@@ -759,7 +759,8 @@ class Rollout:
     def activity_snapshot(self) -> ActivitySnapshot:
         """The eval dashboard's per-task :class:`ActivitySnapshot`: the
         current lifecycle phase plus the live :class:`SessionCounters` (tool
-        calls, last tool title, total tokens). ``counters`` is None before
+        calls, last tool title, total tokens, distinct tool titles).
+        ``counters`` is None before
         the agent session exists — the phase then carries the cell
         ("creating sandbox…", "verifying…"), so a 90s sandbox create is not
         indistinguishable from a hang.
@@ -775,7 +776,10 @@ class Rollout:
         calls, last_title = session.progress_snapshot()
         usage = session.latest_usage_totals()
         tokens = usage.get("total_tokens") if usage else None
-        return ActivitySnapshot(self._phase, SessionCounters(calls, last_title, tokens))
+        return ActivitySnapshot(
+            self._phase,
+            SessionCounters(calls, last_title, tokens, session.distinct_tool_titles),
+        )
 
     @property
     def trajectory(self) -> list[dict]:
