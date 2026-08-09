@@ -914,6 +914,55 @@ class TestIdleTimeoutDiagnostics:
         assert exc_info.value.trajectory[1]["status"] == ToolCallStatus.PENDING.value
 
 
+class TestAcpHandshakeTimeout:
+    """The pre-prompt handshake timeout is env-configurable at use time.
+
+    A fixed 60s is wrong for heavyweight task images — agent startup scales
+    with the image (workspace scanning, kernel prep), and on such images the
+    ``initialize`` response deterministically lands after the window. The
+    override is read per call (not cached at import) so long-lived processes
+    and these tests see env changes.
+    """
+
+    def test_default_is_60s_without_env(self, monkeypatch) -> None:
+        from benchflow.acp.runtime import _acp_handshake_timeout_sec
+
+        monkeypatch.delenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", raising=False)
+        assert _acp_handshake_timeout_sec() == 60.0
+
+    def test_env_override_is_honored(self, monkeypatch) -> None:
+        from benchflow.acp.runtime import _acp_handshake_timeout_sec
+
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", "300")
+        assert _acp_handshake_timeout_sec() == 300.0
+        # Float values are accepted too.
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", "90.5")
+        assert _acp_handshake_timeout_sec() == 90.5
+
+    @pytest.mark.parametrize("garbage", ["banana", "", "  ", "-5", "0", "nan"])
+    def test_garbage_or_non_positive_falls_back_to_default(
+        self, monkeypatch, garbage
+    ) -> None:
+        from benchflow.acp.runtime import _acp_handshake_timeout_sec
+
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", garbage)
+        assert _acp_handshake_timeout_sec() == 60.0
+
+    @pytest.mark.asyncio
+    async def test_timeout_error_carries_effective_value(self, monkeypatch) -> None:
+        """The TransportClosedError message interpolates the EFFECTIVE timeout."""
+        from benchflow.acp.runtime import _wait_for_acp_handshake
+        from benchflow.diagnostics import TransportClosedError
+
+        monkeypatch.setenv("BENCHFLOW_ACP_HANDSHAKE_TIMEOUT", "0.05")
+
+        with pytest.raises(TransportClosedError) as exc_info:
+            await _wait_for_acp_handshake(asyncio.Future(), phase="initialize")
+
+        assert "timed out after 0.05s before the first prompt" in str(exc_info.value)
+        assert exc_info.value.diagnostic.transport_diagnosis == "acp_initialize_timeout"
+
+
 class TestConnectAcpModelSelection:
     """Verify connect_acp passes the right model string to set_model."""
 

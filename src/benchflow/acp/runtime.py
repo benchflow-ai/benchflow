@@ -20,6 +20,7 @@ Does not own:
 import asyncio
 import contextlib
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -65,8 +66,35 @@ logger = logging.getLogger(__name__)
 _ACP_CONNECT_MAX_RETRIES = 3
 _ACP_CONNECT_BASE_DELAY = 2.0
 _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
-_ACP_HANDSHAKE_TIMEOUT_SEC = 60
+_ACP_HANDSHAKE_TIMEOUT_ENV = "BENCHFLOW_ACP_HANDSHAKE_TIMEOUT"
+_ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC = 60.0
 _OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
+
+
+def _acp_handshake_timeout_sec() -> float:
+    """Effective timeout for the pre-prompt ACP handshake, in seconds.
+
+    Agent startup cost scales with the task image — heavyweight images
+    (workspace scanning, kernel prep) can push the ``initialize`` response
+    past the 60s default, so operators can override it with
+    ``BENCHFLOW_ACP_HANDSHAKE_TIMEOUT`` (seconds). Read at use time rather
+    than cached at import so long-lived processes and tests see env changes.
+    Non-numeric or non-positive values fall back to the default.
+    """
+    raw = os.environ.get(_ACP_HANDSHAKE_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        value = -1.0
+    if not value > 0:  # also rejects NaN
+        logger.debug(
+            f"{_ACP_HANDSHAKE_TIMEOUT_ENV}={raw!r} is not a positive number "
+            f"of seconds; using default {_ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC:g}s"
+        )
+        return _ACP_HANDSHAKE_TIMEOUT_DEFAULT_SEC
+    return value
 
 
 async def _prepare_openhands_direct_execution(
@@ -129,13 +157,11 @@ async def _prepare_openhands_direct_execution(
 
 
 async def _wait_for_acp_handshake(awaitable, *, phase: str):
+    timeout_sec = _acp_handshake_timeout_sec()
     try:
-        return await asyncio.wait_for(awaitable, timeout=_ACP_HANDSHAKE_TIMEOUT_SEC)
+        return await asyncio.wait_for(awaitable, timeout=timeout_sec)
     except TimeoutError as e:
-        msg = (
-            f"ACP {phase} timed out after {_ACP_HANDSHAKE_TIMEOUT_SEC}s "
-            "before the first prompt"
-        )
+        msg = f"ACP {phase} timed out after {timeout_sec:g}s before the first prompt"
         raise TransportClosedError(
             msg,
             TransportClosedDiagnostic(

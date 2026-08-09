@@ -809,6 +809,11 @@ provider's reaper). Set `BENCHFLOW_ROLLOUT_HARD_DEADLINE` to a number of
 seconds to override the computed value, or to `off`/`none`/`0` to disable the
 backstop.
 
+Set `BENCHFLOW_ACP_HANDSHAKE_TIMEOUT` to a number of seconds (default 60) to
+give slow-starting agents more time to answer the pre-prompt ACP handshake
+(`initialize`/`session_new`) — heavyweight task images can push agent startup
+past the default.
+
 ## bench environment (deprecated)
 
 `bench environment` is a hidden **deprecated alias group**, removed in 0.7. The
