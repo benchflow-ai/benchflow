@@ -23,6 +23,10 @@ done
 
 if ! curl -sf "$BASE/_admin/state" -o /tmp/gmail_state.json; then
   echo "verifier: could not reach $BASE/_admin/state" >&2
+  echo "verifier: the gmail mock was never started — the ClawsBench image has" >&2
+  echo "verifier: no service entrypoint by design; the run must pass" >&2
+  echo "verifier: --environment-manifest benchmarks/clawsbench/environment.toml" >&2
+  echo "verifier: (services start via the Environment plane, README line 24)." >&2
   echo "0.0" > "$LOGS_DIR/reward.txt"
   exit 0
 fi

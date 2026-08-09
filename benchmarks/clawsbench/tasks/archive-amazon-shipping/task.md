@@ -1,3 +1,25 @@
+---
+schema_version: '1.0'
+metadata:
+  author_name: benchflow
+  difficulty: easy
+  category: tool-use
+  tags:
+  - clawsbench
+  - gmail
+  - stateful
+agent:
+  timeout_sec: 300
+verifier:
+  timeout_sec: 120
+environment:
+  cpus: 1
+  memory_mb: 2048
+  allow_internet: true
+---
+
+## prompt
+
 Archive the Amazon shipping-confirmation email in my Gmail inbox.
 
 There is exactly one email in the inbox from the sender
