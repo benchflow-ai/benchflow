@@ -1123,7 +1123,11 @@ class TestConnectAcpModelSelection:
             # No prefix at all — unchanged.
             ("test-agent", "claude-sonnet-4-6", "claude-sonnet-4-6"),
             # Gemini CLI expects a bare model ID, unlike models.dev agents.
-            ("gemini", "google/gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite-preview"),
+            (
+                "gemini",
+                "google/gemini-3.1-flash-lite-preview",
+                "gemini-3.1-flash-lite-preview",
+            ),
         ],
         ids=["vllm-hf", "zai", "bare-hf", "vertex", "no-prefix", "gemini-google"],
     )
