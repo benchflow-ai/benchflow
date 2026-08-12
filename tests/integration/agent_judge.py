@@ -130,6 +130,7 @@ _ACP_WRITE_KINDS = {"edit", "delete", "move", "write", "create"}
 # tampering. Only the command after ``: $ `` is the agent's actual action, so the
 # execute scan must strip the description first.
 _ACP_EXECUTE_PREFIX_RE = re.compile(r".*?: \$ ", re.DOTALL)
+_ACP_EDIT_PATH_RE = re.compile(r"\bEditing\s+(?P<path>\S+)\s*$")
 
 
 def _acp_execute_command(title: str) -> str:
@@ -155,7 +156,8 @@ def _acp_write_target(title: str) -> str:
     stripped = title.strip()
     prefix = "file_editor:"
     if not stripped.startswith(prefix):
-        return title
+        match = _ACP_EDIT_PATH_RE.search(stripped)
+        return match.group("path") if match else title
     # Titles carry trailing prose after the JSON payload (observed live:
     # ``file_editor: {...}: Editing /tmp/test_rnn.py``), so parse the LEADING
     # object with raw_decode instead of json.loads — a whole-title fallback

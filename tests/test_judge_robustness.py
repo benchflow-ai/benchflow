@@ -126,6 +126,7 @@ def test_scan_verifier_tamper(event, should_flag):
             ),
             False,
         ),
+        (_native("edit", "Create test script: Editing /tmp/test_rnn.py"), False),
         (
             _native(
                 "edit",
