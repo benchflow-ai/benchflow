@@ -186,6 +186,11 @@ def test_js_acp_agents_use_isolated_node_runtime(name):
         )
 
 
+def test_openclaw_is_pinned_to_node_22_20_compatibility():
+    """Guards PR #704's Node 22.20.0 pin against floating OpenClaw releases."""
+    assert "openclaw@2026.6.9" in AGENTS["openclaw"].install_cmd
+
+
 # Bash-isms not supported by dash (Ubuntu/Debian's /bin/sh). The sandbox
 # Docker/Daytona exec paths invoke ``sh -c install_cmd``; if /bin/sh is dash
 # (ubuntu:24.04 base), any of these aborts the install on line 1. See #341.
