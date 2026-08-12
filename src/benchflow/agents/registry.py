@@ -126,9 +126,7 @@ _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
 )
-# Node >=22.19 is required by current openclaw (the JS agents install
-# @latest); keep this pin at or above that floor or the openclaw ACP
-# bootstrap aborts at its runtime version check (BF-10).
+# Node 22.20.0 supports OpenClaw 2026.6.9. Keep their pin pair in sync.
 _NODE_INSTALL = (
     "export DEBIAN_FRONTEND=noninteractive; "
     f"BF_NODE_DIR={_BENCHFLOW_NODE_PREFIX}; "
@@ -585,7 +583,7 @@ AGENTS: dict[str, AgentConfig] = {
         description="OpenClaw agent via ACP shim — model set at runtime via --model",
         skill_paths=["$HOME/.claude/skills", "$WORKSPACE/skills"],
         install_cmd=(
-            f"{_js_agent_install('openclaw', 'openclaw')} && "
+            f"{_js_agent_install('openclaw', 'openclaw@2026.6.9')} && "
             # Configure: auto-approve tools (no model — set at runtime via ACP set_model)
             "mkdir -p ~/.openclaw && "
             'echo \'{"version":1,"defaults":{"allow_all":true}}\''
