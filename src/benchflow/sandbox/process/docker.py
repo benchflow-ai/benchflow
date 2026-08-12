@@ -161,16 +161,15 @@ class DockerProcess(SubprocessLiveProcess):
 
         logger.debug(f"DockerProcess: {' '.join(cmd[:10])}...")
         try:
-            self._set_process(
-                await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=proc_env,
-                    limit=_BUFFER_LIMIT,
-                )
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=proc_env,
+                limit=_BUFFER_LIMIT,
             )
+            self._set_process(process)
         except BaseException:
             if env:
                 try:
@@ -182,6 +181,5 @@ class DockerProcess(SubprocessLiveProcess):
                     )
             raise
         logger.info(
-            f"Docker process started (pid={self._process.pid}, "
-            f"project={self._project_name})"
+            f"Docker process started (pid={process.pid}, project={self._project_name})"
         )

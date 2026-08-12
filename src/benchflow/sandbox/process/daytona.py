@@ -360,24 +360,23 @@ class DaytonaProcess(SubprocessLiveProcess):
                 "DaytonaProcess: ssh benchflow-daytona %s...",
                 remote_cmd[:100],
             )
-            self._set_process(
-                await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    limit=_BUFFER_LIMIT,
-                )
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=_BUFFER_LIMIT,
             )
+            self._set_process(process)
         except Exception:
             if remote_env_path:
                 await self._cleanup_remote_env_file(remote_env_path)
             await self.close()
             raise
         self._ssh_config_cleanup_task = asyncio.create_task(
-            self._cleanup_ssh_config_after_exit(self._process, ssh_config_path)
+            self._cleanup_ssh_config_after_exit(process, ssh_config_path)
         )
-        logger.info(f"Daytona process started (pid={self._process.pid})")
+        logger.info(f"Daytona process started (pid={process.pid})")
 
     async def close(self) -> None:
         try:
