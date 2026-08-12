@@ -17,6 +17,37 @@ from benchflow.sandbox.process import (
 )
 
 
+@pytest.mark.asyncio
+async def test_subprocess_close_cancels_stderr_drain_that_never_reaches_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #980 against waiting forever for inherited stderr FDs."""
+    from benchflow.sandbox.process import SubprocessLiveProcess
+
+    class _Process:
+        returncode = None
+        stdin = None
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        async def wait(self) -> None:
+            return None
+
+    class _LiveProcess(SubprocessLiveProcess):
+        async def start(self, command, env=None, cwd=None) -> None:
+            pass
+
+    process = _LiveProcess()
+    process._process = _Process()  # type: ignore[assignment]
+    process._stderr_task = asyncio.create_task(asyncio.Event().wait())
+    monkeypatch.setattr(
+        "benchflow.sandbox.process._base._STDERR_DRAIN_TIMEOUT_SEC", 0.01
+    )
+    await process.close()
+    assert process._stderr_task.cancelled()
+
+
 class _FakeStdin:
     def __init__(self):
         self.writes = []

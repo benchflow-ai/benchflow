@@ -161,13 +161,15 @@ class DockerProcess(SubprocessLiveProcess):
 
         logger.debug(f"DockerProcess: {' '.join(cmd[:10])}...")
         try:
-            self._process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=proc_env,
-                limit=_BUFFER_LIMIT,
+            self._set_process(
+                await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=proc_env,
+                    limit=_BUFFER_LIMIT,
+                )
             )
         except BaseException:
             if env:

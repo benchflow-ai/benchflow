@@ -360,12 +360,14 @@ class DaytonaProcess(SubprocessLiveProcess):
                 "DaytonaProcess: ssh benchflow-daytona %s...",
                 remote_cmd[:100],
             )
-            self._process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=_BUFFER_LIMIT,
+            self._set_process(
+                await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    limit=_BUFFER_LIMIT,
+                )
             )
         except Exception:
             if remote_env_path:
