@@ -616,8 +616,15 @@ async def connect_acp(
             )
             logger.info(f"ACP agent: {agent_name}")
 
+            registered = AGENTS.get(agent)
             session = await _wait_for_acp_handshake(
-                acp_client.session_new(cwd=agent_cwd, mcp_servers=mcp_servers),
+                acp_client.session_new(
+                    cwd=agent_cwd,
+                    mcp_servers=mcp_servers,
+                    session_meta=(registered.acp_session_meta or None)
+                    if registered
+                    else None,
+                ),
                 phase="session_new",
             )
             logger.info(f"Session: {session.session_id}")
