@@ -110,6 +110,13 @@ A Harvey LAB style `rubric.json` works too — set `rubric: rubrics/verifier.jso
 }
 ```
 
+This is a different contract from the detached `bench review` rubric, whose
+criteria use `{name, description, guidance}`. Passing a detached-review rubric
+to the LLM-judge loader is rejected: use `bench review`, or create a separate
+LLM-judge rubric and put the grading rule in `match_criteria`. This prevents the
+review-only `description` metadata from silently replacing the actual
+`guidance` in the judge prompt.
+
 That's it. Run the task as usual — the reward is the proportion of criteria
 passed (or the configured aggregation), a partial float in `[0, 1]`.
 

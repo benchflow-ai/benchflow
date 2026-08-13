@@ -183,6 +183,13 @@ def load_rubric_json(path: Path) -> RubricConfig:
     scoring = _parse_scoring(data.get("scoring", {}))
     criteria: list[Criterion] = []
     for idx, raw in enumerate(data.get("criteria", [])):
+        if "guidance" in raw:
+            raise ValueError(
+                f"Rubric criterion #{idx} in {path} uses 'guidance', which belongs "
+                "to the detached review rubric contract and is not read by "
+                "LLMJudgeRewardFunc. Use `bench review` for this rubric, or move "
+                "the grading rule to 'match_criteria' in an llm-judge rubric."
+            )
         description = (
             raw.get("match_criteria") or raw.get("description") or raw.get("title")
         )
