@@ -7,6 +7,7 @@ from typing import Any, TextIO
 
 from benchflow.sandbox.process import LiveProcess
 from benchflow.sandbox.process._base import _ANSI_CSI_RE, _ANSI_OSC_RE
+from benchflow.trajectories.types import redact_trajectory_text
 
 from .transport import Transport, decode_json_rpc_message
 
@@ -138,3 +139,7 @@ class ContainerTransport(Transport):
             self._agent_log_file.close()
             self._agent_log_file = None
         await self._cp.close()
+        stderr = getattr(self._cp, "stderr_tail", "")
+        if isinstance(stderr, str) and stderr and self._agent_log_path:
+            with self._agent_log_path.open("a") as agent_log:
+                agent_log.write(redact_trajectory_text(stderr))

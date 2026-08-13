@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 _BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB readline buffer
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stderr in error messages
+_STDERR_TAIL_LIMIT = 64 * 1024  # bounded stderr retained for rollout diagnostics
+_STDERR_DRAIN_TIMEOUT_SEC = 2
 _BOOTSTRAP_DONE = "__BENCHFLOW_BOOTSTRAP_DONE__"
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -136,6 +138,29 @@ class SubprocessLiveProcess(LiveProcess):
 
     _process: asyncio.subprocess.Process | None = None
 
+    def _set_process(self, process: asyncio.subprocess.Process) -> None:
+        """Store a subprocess and drain stderr without blocking its stdout pipe."""
+        self._process = process
+        self._stderr_tail = bytearray()
+        self._stderr_task = (
+            asyncio.create_task(self._drain_stderr(process.stderr))
+            if isinstance(process.stderr, asyncio.StreamReader)
+            else None
+        )
+
+    async def _drain_stderr(self, stderr: asyncio.StreamReader | None) -> None:
+        if stderr is None:
+            return
+        while chunk := await stderr.read(8192):
+            self._stderr_tail.extend(chunk)
+            if len(self._stderr_tail) > _STDERR_TAIL_LIMIT:
+                del self._stderr_tail[:-_STDERR_TAIL_LIMIT]
+
+    @property
+    def stderr_tail(self) -> str:
+        """Bounded stderr captured while the subprocess was alive."""
+        return bytes(getattr(self, "_stderr_tail", b"")).decode(errors="replace")
+
     async def readline(self) -> bytes:
         """Read one line from stdout."""
         if not self._process or not self._process.stdout:
@@ -149,8 +174,16 @@ class SubprocessLiveProcess(LiveProcess):
             # Return empty line — caller will retry readline
             return b""
         if not line:
-            stderr_text = ""
-            if self._process and self._process.stderr:
+            stderr_task = getattr(self, "_stderr_task", None)
+            if stderr_task:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        asyncio.shield(stderr_task), timeout=_STDERR_DRAIN_TIMEOUT_SEC
+                    )
+                stderr_text = self.stderr_tail.strip()
+            else:
+                stderr_text = ""
+            if not stderr_task and self._process and self._process.stderr:
                 try:
                     stderr_bytes = await asyncio.wait_for(
                         self._process.stderr.read(8192), timeout=2
@@ -179,7 +212,9 @@ class SubprocessLiveProcess(LiveProcess):
             msg = f"Process closed stdout (rc={rc}): {hint}"
             stderr_snippet: str | None = None
             if stderr_text:
-                stderr_snippet = stderr_text[:_DIAG_TRUNCATE]
+                from benchflow.trajectories.types import redact_trajectory_text
+
+                stderr_snippet = redact_trajectory_text(stderr_text)[:_DIAG_TRUNCATE]
                 msg += f"\nstderr: {stderr_snippet}"
             # Raise a structured TransportClosedError at the source so
             # downstream code (rollout._build_rollout_result) doesn't have
@@ -222,6 +257,16 @@ class SubprocessLiveProcess(LiveProcess):
                 except TimeoutError:
                     self._process.kill()
                     await self._process.wait()
+            stderr_task = getattr(self, "_stderr_task", None)
+            if stderr_task:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(stderr_task), timeout=_STDERR_DRAIN_TIMEOUT_SEC
+                    )
+                except TimeoutError:
+                    stderr_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await stderr_task
             logger.info("Process terminated")
 
     @property
