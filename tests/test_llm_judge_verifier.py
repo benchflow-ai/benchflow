@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from benchflow.rewards.builtins import JudgeScoringError
+from benchflow.rewards.rubric_paths import ReservedReviewRubricError
 from benchflow.task import RolloutPaths, Verifier
 from benchflow.task.config import TaskConfig
 from benchflow.task.verifier import (
@@ -49,14 +50,14 @@ timeout_sec = 600
 
 [verifier.judge]
 model = "claude-haiku-4-5"
-rubric_path = "tests/rubric.json"
+rubric_path = "tests/llm-judge.json"
 input_dir = "/app/output"
 input_type = "deliverables"
 """
         cfg = TaskConfig.model_validate_toml(toml)
         assert cfg.verifier.type == "llm-judge"
         assert cfg.verifier.judge.model == "claude-haiku-4-5"
-        assert cfg.verifier.judge.rubric_path == "tests/rubric.json"
+        assert cfg.verifier.judge.rubric_path == "tests/llm-judge.json"
         assert cfg.verifier.judge.input_dir == "/app/output"
         assert cfg.verifier.judge.input_type == "deliverables"
 
@@ -66,7 +67,7 @@ input_type = "deliverables"
             'version = "1.0"\n[verifier]\ntype = "llm-judge"\n'
         )
         assert cfg.verifier.judge.model == "claude-sonnet-4-6"
-        assert cfg.verifier.judge.rubric_path == "tests/rubric.toml"
+        assert cfg.verifier.judge.rubric_path == "verifier/rubrics/verifier.toml"
         assert cfg.verifier.judge.input_dir == "/app"
 
     def test_invalid_type_rejected(self) -> None:
@@ -96,7 +97,7 @@ def _make_task(tmp_path: Path, toml: str, instruction: str = "Do the task.") -> 
     return task
 
 
-def _judge_toml(rubric_path: str = "tests/rubric.json") -> str:
+def _judge_toml(rubric_path: str = "tests/llm-judge.json") -> str:
     return f"""\
 version = "1.0"
 
@@ -134,7 +135,7 @@ class TestLLMJudgeVerifier:
         mock_judge.return_value = _MOCK_PASS
         task = _make_task(tmp_path, _judge_toml())
         (task.task_dir / "tests").mkdir()
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "Correct?"}]})
         )
         sandbox = _make_sandbox({"answer.txt": "the answer"})
@@ -155,7 +156,7 @@ class TestLLMJudgeVerifier:
         mock_judge.side_effect = [_MOCK_PASS, _MOCK_FAIL]
         task = _make_task(tmp_path, _judge_toml())
         (task.task_dir / "tests").mkdir()
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps(
                 {
                     "criteria": [
@@ -191,7 +192,7 @@ class TestLLMJudgeVerifier:
             mock_judge.return_value = judge_failure
         task = _make_task(tmp_path, _judge_toml())
         (task.task_dir / "tests").mkdir()
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
         )
         sandbox = _make_sandbox({"out.txt": "output"})
@@ -249,7 +250,7 @@ class TestLLMJudgeVerifier:
         mock_judge.return_value = judge_response
         task = _make_task(tmp_path, _judge_toml())
         (task.task_dir / "tests").mkdir()
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [criterion]})
         )
         sandbox = _make_sandbox({"out.txt": "output"})
@@ -269,7 +270,7 @@ class TestLLMJudgeVerifier:
         mock_judge.return_value = _MOCK_PASS
         task = _make_task(tmp_path, _judge_toml())
         (task.task_dir / "tests").mkdir()
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
         )
         sandbox = _make_sandbox({"out.txt": "output"})
@@ -312,6 +313,50 @@ class TestLLMJudgeVerifier:
         with pytest.raises(RubricNotFoundError, match="rubric not found"):
             await Verifier(task, rollout_paths, sandbox).verify()
 
+    @pytest.mark.parametrize(
+        "reserved_path",
+        ["verifier/rubric.json", "tests/rubric.json"],
+    )
+    @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_reserved_review_rubric_cannot_score_verification(
+        self,
+        mock_judge: AsyncMock,
+        tmp_path: Path,
+        reserved_path: str,
+    ) -> None:
+        """Guards PR #981: review contracts can never influence reward."""
+
+        task = _make_task(tmp_path, _judge_toml(rubric_path=reserved_path))
+        rubric_path = task.task_dir / reserved_path
+        rubric_path.parent.mkdir(parents=True, exist_ok=True)
+        rubric_path.write_text(
+            json.dumps(
+                {
+                    "criteria": [
+                        {
+                            "name": "formal_exactness_and_trust",
+                            "description": "Category: research.",
+                            "guidance": "The detached review contract.",
+                        }
+                    ]
+                }
+            )
+        )
+        sandbox = _make_sandbox({"answer.txt": "candidate"})
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        with pytest.raises(
+            ReservedReviewRubricError,
+            match=r"reserved for post-run `bench review`",
+        ):
+            await Verifier(task, rollout_paths, sandbox).verify()
+
+        sandbox.download_dir.assert_not_awaited()
+        mock_judge.assert_not_awaited()
+        assert not rollout_paths.reward_json_path.exists()
+
     @patch("benchflow.rewards.llm.call_judge", new_callable=AsyncMock)
     @pytest.mark.asyncio
     async def test_judge_env_threaded_into_call_judge(
@@ -335,7 +380,7 @@ class TestLLMJudgeVerifier:
         toml = _judge_toml() + '\n[verifier.env]\nRESOLVED_KEY = "${MY_JUDGE_KEY}"\n'
         task = _make_task(tmp_path, toml)
         (task.task_dir / "tests").mkdir()
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
         )
         sandbox = _make_sandbox({"out.txt": "output"})
@@ -368,7 +413,7 @@ class TestLLMJudgeVerifier:
         toml = _judge_toml() + '\n[verifier.env]\nRESOLVED_KEY = "${MY_JUDGE_KEY}"\n'
         task = _make_task(tmp_path, toml)
         (task.task_dir / "tests").mkdir()
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
         )
         sandbox = _make_sandbox({"out.txt": "output"})
@@ -393,7 +438,7 @@ class TestLLMJudgeVerifier:
         )
         (task.task_dir / "tests").mkdir()
         # Rubric declares a *different* model — the task.toml override must win.
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps(
                 {
                     "judge": {"model": "claude-sonnet-4-6"},
@@ -430,7 +475,7 @@ class TestLLMJudgeVerifier:
         )
         task = _make_task(tmp_path, _judge_toml())
         (task.task_dir / "tests").mkdir()
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
         )
         sandbox = _make_sandbox({"answer.txt": "the answer"})
@@ -457,7 +502,7 @@ class TestLLMJudgeVerifier:
         mock_judge.return_value = _MOCK_FAIL
         task = _make_task(tmp_path, _judge_toml())
         (task.task_dir / "tests").mkdir()
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
         )
         sandbox = MagicMock()
@@ -478,7 +523,7 @@ class TestLLMJudgeVerifier:
         mock_judge.return_value = _MOCK_FAIL
         task = _make_task(tmp_path, _judge_toml())
         (task.task_dir / "tests").mkdir()
-        (task.task_dir / "tests" / "rubric.json").write_text(
+        (task.task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
         )
         rollout_paths = RolloutPaths(tmp_path / "rollout")

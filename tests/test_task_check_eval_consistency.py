@@ -291,7 +291,7 @@ def _make_legacy_llm_judge_task(
     parent: Path,
     name: str = "legacy-llm-judge",
     *,
-    rubric_path: str = "tests/rubric.toml",
+    rubric_path: str = "verifier/rubrics/verifier.toml",
     write_rubric: bool = True,
 ) -> Path:
     """Create a legacy llm-judge task: type llm-judge + rubric, no test.sh."""
@@ -308,8 +308,8 @@ def _make_legacy_llm_judge_task(
     (task / "instruction.md").write_text("# Judge me\n")
     (task / "environment").mkdir()
     (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
-    tests = task / "tests"
-    tests.mkdir()
+    verifier_dirname = "verifier" if rubric_path.startswith("verifier/") else "tests"
+    (task / verifier_dirname).mkdir()
     if write_rubric:
         rubric_file = task / rubric_path
         rubric_file.parent.mkdir(parents=True, exist_ok=True)
@@ -333,8 +333,7 @@ def test_check_task_accepts_legacy_llm_judge_without_test_sh(tmp_path):
 
 
 def test_check_task_accepts_legacy_llm_judge_default_rubric_path(tmp_path):
-    """The default rubric_path (tests/rubric.toml) is honored when the
-    [verifier.judge] section omits it explicitly."""
+    """Guards PR #981: the verifier-owned default rubric path is honored."""
     task = tmp_path / "legacy-llm-judge-default"
     task.mkdir()
     (task / "task.toml").write_text(
@@ -343,11 +342,9 @@ def test_check_task_accepts_legacy_llm_judge_default_rubric_path(tmp_path):
     (task / "instruction.md").write_text("# Judge me\n")
     (task / "environment").mkdir()
     (task / "environment" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
-    tests = task / "tests"
-    tests.mkdir()
-    (tests / "rubric.toml").write_text(
-        '[[criteria]]\nname = "ok"\nweight = 1.0\ndescription = "ok"\n'
-    )
+    rubric = task / "verifier" / "rubrics" / "verifier.toml"
+    rubric.parent.mkdir(parents=True)
+    rubric.write_text('[[criteria]]\nname = "ok"\nweight = 1.0\ndescription = "ok"\n')
     issues = check_task(task)
     assert not any("verifier entrypoint" in i for i in issues), (
         f"default rubric path not recognised: {issues}"

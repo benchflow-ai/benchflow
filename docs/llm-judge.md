@@ -111,11 +111,12 @@ A Harvey LAB style `rubric.json` works too — set `rubric: rubrics/verifier.jso
 ```
 
 This is a different contract from the detached `bench review` rubric, whose
-criteria use `{name, description, guidance}`. Passing a detached-review rubric
-to the LLM-judge loader is rejected: use `bench review`, or create a separate
-LLM-judge rubric and put the grading rule in `match_criteria`. This prevents the
-review-only `description` metadata from silently replacing the actual
-`guidance` in the judge prompt.
+criteria use `{name, description, guidance}`. The task-root
+`verifier/rubric.json` and legacy `tests/rubric.json` slots are reserved for
+that detached review contract. An LLM-judge must use a separate path such as
+`verifier/rubrics/verifier.toml` or `verifier/rubrics/llm-judge.json`; explicit
+references to either reserved slot fail before grading. This keeps the review
+contract completely outside reward computation.
 
 That's it. Run the task as usual — the reward is the proportion of criteria
 passed (or the configured aggregation), a partial float in `[0, 1]`.
@@ -161,8 +162,9 @@ score = asyncio.run(func.score(Path("/app")))
 print(f"Score: {score:.2f}")
 ```
 
-Auto-discovery — if `rubric.toml`/`rubric.json` is in the rollout directory or
-its parent, it's found automatically:
+Auto-discovery is intentionally TOML-only: if `rubric.toml` is in the rollout
+directory or its parent, it is found automatically. JSON scoring rubrics must
+be passed explicitly so a review-owned `rubric.json` is never inferred:
 
 ```python
 func = LLMJudgeRewardFunc()
@@ -415,7 +417,7 @@ from benchflow import (
 )
 
 # Load and inspect a rubric (TOML or Harvey LAB style JSON)
-rubric = load_rubric(Path("rubric.json"))
+rubric = load_rubric(Path("rubrics/llm-judge.json"))
 print(f"Model: {rubric.judge.model}")
 print(f"Criteria: {len(rubric.criteria)}")
 for c in rubric.criteria:

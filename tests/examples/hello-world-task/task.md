@@ -16,7 +16,7 @@ verifier:
   env: {}
   judge:
     model: claude-sonnet-4-6
-    rubric_path: tests/rubric.toml
+    rubric_path: verifier/rubrics/verifier.toml
     input_dir: /app
     input_type: deliverables
     context: ''

@@ -50,19 +50,17 @@ The contract is named **v0.1**; the document itself carries no version key
 A rubric must contain at least one criterion, names must be unique, and
 unknown fields are rejected. (Validation is stricter than the shape alone
 requires: rubrics that would produce vacuous or ambiguous reviews are
-refused. Every rubric that passes is exactly the v0.1 shape.) `rubric.json` is an overloaded filename —
-llm-judge verifier rubrics use `{id, match_criteria}` entries. Discovery is
-fail-closed: a `rubric.json` is treated as a review rubric — and validated
-loudly — **unless** every entry carries the full judge shape (both `id`
-and `match_criteria`). Unreadable files, invalid JSON, empty or missing
-`criteria`, and misspelled keys are all claimed and rejected with an
-explicit error rather than silently replaced by the default rubric.
+refused. Every rubric that passes is exactly the v0.1 shape.) The task-root
+`verifier/rubric.json` and legacy `tests/rubric.json` paths are reserved for
+this detached-review contract. Ownership is determined by the path, not by
+guessing a JSON dialect. Unreadable files, invalid JSON, empty or missing
+`criteria`, misspelled keys, and verifier-style `{id, match_criteria}` entries
+in either reserved slot are rejected explicitly.
 
 Rubric resolution order, per reviewed rollout:
 
 1. an explicit `--rubric/-r` file,
-2. the reviewed task's own `verifier/rubric.json` (or `tests/rubric.json`)
-   when it is shaped like a review rubric,
+2. the reviewed task's own `verifier/rubric.json` (or `tests/rubric.json`),
 3. the built-in default rubric (`reward_hacking`, `task_specification`).
 
 ## Running a review

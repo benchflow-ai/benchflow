@@ -25,6 +25,7 @@ from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from benchflow.rewards.rubric_paths import validate_llm_judge_rubric_path
 from benchflow.rewards.validation import (
     apply_aggregate_policy,
     declared_reward_range,
@@ -610,6 +611,10 @@ class Verifier:
                 else Path(self._task.paths.task_dir)
             )
             rubric_path = base_dir / rubric_path
+        validate_llm_judge_rubric_path(
+            rubric_path,
+            task_dir=self._task.paths.task_dir,
+        )
         if not rubric_path.exists():
             raise RubricNotFoundError(
                 f"llm-judge rubric not found at {rubric_path}. Set "

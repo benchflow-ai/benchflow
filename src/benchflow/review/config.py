@@ -172,48 +172,22 @@ def load_rubric(path: Path | None = None) -> Rubric:
 
 
 def is_review_rubric_file(path: Path) -> bool:
-    """Whether ``path`` claims this contract's dialect.
+    """Whether ``path`` occupies the detached-review rubric filename.
 
-    ``rubric.json`` is an overloaded filename: llm-judge verifier rubrics
-    use entries carrying the full ``{id, match_criteria}`` shape. Only that dialect is
-    disclaimed; **everything else in this slot is claimed** and then
-    validated loudly by :func:`load_rubric` — including empty ``criteria``
-    and rubrics with misspelled or missing review keys — so no malformed
-    review rubric can silently fall back to the built-in default.
+    Ownership is determined by the task-package slot, never by guessing the
+    JSON dialect. A ``rubric.json`` under ``verifier/`` or ``tests/`` belongs
+    to post-run review and is validated loudly as that contract.
     """
 
-    # Fail closed: unreadable files, invalid JSON, non-dict documents, and
-    # missing/non-list ``criteria`` are all CLAIMED so load_rubric reports
-    # them loudly — never silently replaced by the default rubric.
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return True
-    if not isinstance(data, dict):
-        return True
-    criteria = data.get("criteria")
-    if not isinstance(criteria, list):
-        return True
-
-    # Fail closed: everything in this filename slot is claimed as a review
-    # rubric — and validated loudly by load_rubric — UNLESS it is
-    # affirmatively the llm-judge dialect (id/match_criteria entries). A
-    # rubric with every review key misspelled is therefore claimed and
-    # rejected instead of silently replaced by the default rubric.
-    def is_judge_entry(entry: object) -> bool:
-        # FULL judge shape required: an entry carrying only one of the two
-        # keys is ambiguous and is claimed for loud validation instead.
-        return isinstance(entry, dict) and {"id", "match_criteria"} <= set(entry)
-
-    return not (criteria and all(is_judge_entry(entry) for entry in criteria))
+    return path.name == REVIEW_RUBRIC_FILENAME
 
 
 def find_task_rubric(task_path: Path) -> Path | None:
     """Return the review rubric a task ships, if any.
 
     Looks for ``rubric.json`` next to the task's test files (``verifier/`` or
-    ``tests/``). Only files affirmatively matching the full judge dialect are
-    left alone; every other shape is claimed and validated loudly.
+    ``tests/``). Those slots are reserved for detached post-run review; JSON
+    shape never transfers their ownership to the verifier.
     """
 
     for tests_dir_name in ("verifier", "tests"):

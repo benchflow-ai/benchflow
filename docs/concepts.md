@@ -155,7 +155,7 @@ the legacy names, so a task ships **one** of each row, not both:
 | Verifier directory | `verifier/` | `tests/` | `/verifier` (native), `/tests` (legacy) |
 | Script entry point | `verifier/test.sh` | `tests/test.sh` | executed as a script (chmod +x then run) inside the verifier dir |
 | Strategy declaration (how it's scored) | `verifier/verifier.md` | — (legacy uses `[verifier]` in `task.toml`) | not uploaded as a runtime target; selects the strategy |
-| LLM-judge rubric | `verifier/rubrics/verifier.md` + `verifier/rubrics/verifier.toml` | `tests/rubric.toml` (also `rubric.json`, Harvey-LAB style) | downloaded for the judge |
+| LLM-judge rubric | `verifier/rubrics/verifier.md` + `verifier/rubrics/verifier.toml` | `verifier/rubrics/verifier.toml` by default; another explicit non-reserved TOML/JSON path is allowed | downloaded for the judge |
 
 A plain `test.sh` is a complete verifier on its own: with no `verifier.md`
 strategy declared, the runtime just executes it. `verifier/verifier.md`

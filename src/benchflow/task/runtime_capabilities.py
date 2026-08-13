@@ -15,6 +15,10 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
+from benchflow.rewards.rubric_paths import (
+    ReservedReviewRubricError,
+    validate_llm_judge_rubric_path,
+)
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.providers import (
     NO_NETWORK_UNSUPPORTED_PROVIDERS,
@@ -94,7 +98,12 @@ def validate_task_runtime_support(
     if document is not None:
         _append_document_issues(unsupported, document=document, sandbox=sandbox)
     if task_dir is not None:
-        _append_layout_issues(unsupported, task_dir=Path(task_dir), sandbox=sandbox)
+        _append_layout_issues(
+            unsupported,
+            config=config,
+            task_dir=Path(task_dir),
+            sandbox=sandbox,
+        )
     return unsupported
 
 
@@ -479,6 +488,7 @@ def _append_prompt_policy_issues(
 def _append_layout_issues(
     unsupported: list[UnsupportedTaskFeature],
     *,
+    config: TaskConfig,
     task_dir: Path,
     sandbox: str,
 ) -> None:
@@ -515,6 +525,22 @@ def _append_layout_issues(
         reason="verifier/ and tests/ both exist but are not byte-equivalent",
         sandbox=sandbox,
     )
+    if config.verifier.type == "llm-judge":
+        rubric_path = Path(config.verifier.judge.rubric_path)
+        if not rubric_path.is_absolute():
+            rubric_path = paths.task_dir / rubric_path
+        try:
+            validate_llm_judge_rubric_path(
+                rubric_path,
+                task_dir=paths.task_dir,
+            )
+        except ReservedReviewRubricError as exc:
+            _issue(
+                unsupported,
+                path="verifier.judge.rubric_path",
+                reason=str(exc),
+                sandbox=sandbox,
+            )
     _append_verifier_strategy_issue(unsupported, paths=paths, sandbox=sandbox)
     _append_compose_issue(unsupported, task_dir=task_dir, sandbox=sandbox)
 
@@ -647,6 +673,20 @@ def _append_llm_judge_strategy_issue(
     context_file: str | None,
     sandbox: str,
 ) -> None:
+    rubric_path = paths.tests_dir / (rubric or "")
+    try:
+        validate_llm_judge_rubric_path(
+            rubric_path,
+            task_dir=paths.task_dir,
+        )
+    except ReservedReviewRubricError as exc:
+        _issue(
+            unsupported,
+            path=f"verifier.strategies.{strategy_name}",
+            reason=str(exc),
+            sandbox=sandbox,
+        )
+        return
     if not _strategy_file_exists(rubric, verifier_dir=paths.tests_dir):
         _issue(
             unsupported,

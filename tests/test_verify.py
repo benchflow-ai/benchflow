@@ -330,7 +330,7 @@ class TestSdkVerify:
 
         task_dir = tmp_path / "task"
         (task_dir / "tests").mkdir(parents=True)
-        (task_dir / "tests" / "rubric.json").write_text(
+        (task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
         )
         task = MagicMock()
@@ -345,7 +345,7 @@ type = "llm-judge"
 timeout_sec = 5
 
 [verifier.judge]
-rubric_path = "tests/rubric.json"
+rubric_path = "tests/llm-judge.json"
 input_dir = "/app/output"
 """
         )
@@ -385,7 +385,7 @@ input_dir = "/app/output"
         mock_judge.side_effect = RuntimeError("provider down")
         task_dir = tmp_path / "task"
         (task_dir / "tests").mkdir(parents=True)
-        (task_dir / "tests" / "rubric.json").write_text(
+        (task_dir / "tests" / "llm-judge.json").write_text(
             json.dumps({"criteria": [{"id": "c1", "match_criteria": "ok"}]})
         )
         task = MagicMock()
@@ -400,7 +400,7 @@ type = "llm-judge"
 timeout_sec = 5
 
 [verifier.judge]
-rubric_path = "tests/rubric.json"
+rubric_path = "tests/llm-judge.json"
 input_dir = "/app/output"
 """
         )

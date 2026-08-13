@@ -352,7 +352,7 @@ class TestLoadRubricJson:
             load_rubric_json(rubric_file)
 
     def test_detached_review_rubric_fails_closed(self, tmp_path: Path) -> None:
-        """Guards commit 630a58d1: review guidance must never be ignored."""
+        """Guards PR #981: review guidance must never be ignored."""
         rubric_file = tmp_path / "rubric.json"
         rubric_file.write_text(
             json.dumps(

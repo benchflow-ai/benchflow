@@ -147,9 +147,8 @@ def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str
     """Validate a review ``rubric.json`` when the task ships one.
 
     Review rubrics are ``{"criteria": [{name, description, guidance}]}``
-    JSON documents. A ``rubric.json`` that is not shaped like that (for
-    example an llm-judge rubric owned by the verifier-strategy machinery)
-    is not checked here.
+    JSON documents. The ``rubric.json`` filename in either verifier directory
+    is reserved for this contract, so every file in that slot is checked.
     """
     from benchflow.review.config import (
         ReviewRubricError,
@@ -159,8 +158,6 @@ def _check_review_rubric(verifier_dir: Path, *, verifier_label: str) -> list[str
 
     candidate = verifier_dir / "rubric.json"
     if not candidate.is_file() or not is_review_rubric_file(candidate):
-        # Absent, unreadable, or another rubric dialect (e.g. an llm-judge
-        # rubric with id/match_criteria entries) — not ours to validate.
         return []
     try:
         load_rubric(candidate)

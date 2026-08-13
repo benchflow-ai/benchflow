@@ -19,6 +19,7 @@ from benchflow.rewards.rubric_config import (
     _coerce_space,
     load_rubric,
 )
+from benchflow.rewards.rubric_paths import validate_llm_judge_rubric_path
 from benchflow.rewards.validation import is_valid_reward_number
 
 logger = logging.getLogger(__name__)
@@ -203,7 +204,12 @@ class LLMJudgeRewardFunc:
         """Resolve rubric config from explicit path, inline criteria, or
         auto-discovery in the rollout directory."""
         if self._rubric_path is not None:
-            return load_rubric(self._rubric_path)
+            rubric_path = Path(self._rubric_path)
+            validate_llm_judge_rubric_path(
+                rubric_path,
+                task_dir=rubric_path.parent.parent,
+            )
+            return load_rubric(rubric_path)
 
         if self._inline_criteria is not None:
             parsed = []
@@ -229,12 +235,11 @@ class LLMJudgeRewardFunc:
                 scoring=ScoringConfig(),
             )
 
-        # Auto-discover rubric.toml / rubric.json in rollout directory
+        # Auto-discovery is TOML-only. rubric.json is an explicit scoring
+        # format because task-root rubric.json slots belong to `bench review`.
         for candidate in [
             rollout_dir / "rubric.toml",
-            rollout_dir / "rubric.json",
             rollout_dir / ".." / "rubric.toml",
-            rollout_dir / ".." / "rubric.json",
         ]:
             if candidate.exists():
                 return load_rubric(candidate)

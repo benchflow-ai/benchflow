@@ -238,12 +238,19 @@ class TestRunReviews:
     async def test_rewards_of_reviewed_rollouts_are_never_modified(
         self, tmp_path, monkeypatch
     ):
-        """Guards PR #942's contract: review is report-only. The reviewed
-        rollout's result.json must be byte-identical after a review runs."""
+        """Guards PR #981: review starts after reward and remains report-only."""
         task = make_task(tmp_path, with_rubric=True)
         rollout = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
         before = (rollout / "result.json").read_bytes()
-        monkeypatch.setattr(benchflow, "run", FakeRun(review_payload=good_review()))
+
+        async def review_after_verification(config: RolloutConfig):
+            source_result = json.loads(
+                (rollout / "result.json").read_text(encoding="utf-8")
+            )
+            assert source_result["rewards"] == {"reward": 1.0}
+            return await FakeRun(review_payload=good_review())(config)
+
+        monkeypatch.setattr(benchflow, "run", review_after_verification)
 
         report, _ = await run_reviews(
             rollout,
@@ -364,6 +371,7 @@ class TestRunReviews:
 
     @pytest.mark.asyncio
     async def test_task_rubric_used_when_no_override(self, tmp_path, monkeypatch):
+        """Guards PR #981: bench review owns verifier/rubric.json."""
         task = make_task(tmp_path, with_rubric=True)
         rollout = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
         seen: dict = {}
@@ -372,6 +380,7 @@ class TestRunReviews:
             seen["criteria"] = json.loads(
                 (config.task_path / "tests" / "criteria.json").read_text("utf-8")
             )
+            seen["prompt"] = (config.task_path / "task.md").read_text("utf-8")
             return await FakeRun(review_payload=good_review())(config)
 
         monkeypatch.setattr(benchflow, "run", capture)
@@ -382,6 +391,8 @@ class TestRunReviews:
             tasks_root=tmp_path / "tasks",
         )
         assert seen["criteria"] == ["method_soundness"]
+        assert "method_soundness" in seen["prompt"]
+        assert "PASS when sound; FAIL otherwise." in seen["prompt"]
 
     @pytest.mark.asyncio
     async def test_default_rubric_when_task_ships_none(self, tmp_path, monkeypatch):
