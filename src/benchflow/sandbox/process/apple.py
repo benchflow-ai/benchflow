@@ -110,13 +110,14 @@ class AppleContainerProcess(SubprocessLiveProcess):
             args.extend(["--workdir", cwd])
         args.extend([self._container_name, "bash", "-c", command])
         try:
-            self._process = await asyncio.create_subprocess_exec(
+            process = await asyncio.create_subprocess_exec(
                 *args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 limit=_BUFFER_LIMIT,
             )
+            self._set_process(process)
         except BaseException:
             if env:
                 try:
@@ -129,6 +130,6 @@ class AppleContainerProcess(SubprocessLiveProcess):
             raise
         logger.info(
             "Apple Container process started (pid=%s, container=%s)",
-            self._process.pid,
+            process.pid,
             self._container_name,
         )

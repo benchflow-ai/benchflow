@@ -513,6 +513,72 @@ class TestTransportProtocolFiltering:
         assert not agent_log.exists()
 
     @pytest.mark.asyncio
+    async def test_container_transport_keeps_live_subprocess_stderr(
+        self, tmp_path
+    ) -> None:
+        """Guards PR #980 against losing stderr after a valid empty ACP result."""
+        from benchflow.sandbox.process import SubprocessLiveProcess
+
+        class _LocalProcess(SubprocessLiveProcess):
+            async def start(self, command, env=None, cwd=None) -> None:
+                self._set_process(
+                    await asyncio.create_subprocess_exec(
+                        sys.executable,
+                        "-c",
+                        "import sys, time; "
+                        "sys.stderr.write('api_key=AIzaSy12345678901234567890\\n'); "
+                        "sys.stderr.flush(); "
+                        'print(\'{\\"jsonrpc\\": \\"2.0\\", \\"id\\": 2, \\"result\\": {}}\', flush=True); '
+                        "time.sleep(60)",
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                )
+
+        agent_log = tmp_path / "agent.log"
+        transport = ContainerTransport(
+            _LocalProcess(), "agent acp", agent_log_path=agent_log
+        )
+        await transport.start()
+        assert await transport.receive() == {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {},
+        }
+        await transport.close()
+        assert "***REDACTED***" in agent_log.read_text()
+        assert "AIzaSy12345678901234567890" not in agent_log.read_text()
+
+    @pytest.mark.asyncio
+    async def test_container_transport_stderr_tail_is_bounded(self, tmp_path) -> None:
+        """Guards PR #980 against unbounded live ACP stderr retention."""
+        from benchflow.sandbox.process import SubprocessLiveProcess
+
+        class _LocalProcess(SubprocessLiveProcess):
+            async def start(self, command, env=None, cwd=None) -> None:
+                self._set_process(
+                    await asyncio.create_subprocess_exec(
+                        sys.executable,
+                        "-c",
+                        "import sys, time; sys.stderr.write('x' * 70000); "
+                        'sys.stderr.flush(); print(\'{\\"jsonrpc\\": \\"2.0\\", \\"id\\": 2, \\"result\\": {}}\', flush=True); time.sleep(60)',
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                )
+
+        process = _LocalProcess()
+        transport = ContainerTransport(
+            process, "agent acp", agent_log_path=tmp_path / "agent.log"
+        )
+        await transport.start()
+        await transport.receive()
+        await transport.close()
+        assert len(process.stderr_tail.encode()) == 64 * 1024
+
+    @pytest.mark.asyncio
     async def test_container_transport_clears_stale_log_on_retry(
         self, tmp_path
     ) -> None:
@@ -1542,7 +1608,7 @@ class TestTransportErrorDiagnostics:
                 return b""
 
             async def read(self, _n: int) -> bytes:
-                return b"Connection to sandbox lost"
+                return b"api_key=AIzaSy12345678901234567890"
 
         class _LP(SubprocessLiveProcess):
             async def start(
@@ -1558,7 +1624,8 @@ class TestTransportErrorDiagnostics:
         assert diag.process_exit_code == 255
         assert diag.transport_diagnosis == "process_exited"
         assert diag.stderr_snippet is not None
-        assert "Connection to sandbox lost" in diag.stderr_snippet
+        assert "***REDACTED***" in diag.stderr_snippet
+        assert "AIzaSy12345678901234567890" not in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_live_process_raises_typed_transport_error_when_remote_killed(
