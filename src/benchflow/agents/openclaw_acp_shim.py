@@ -47,6 +47,15 @@ _PARAM_MAP = {
     "BENCHFLOW_MODEL_TOP_P": "agents.defaults.params.topP",
     "BENCHFLOW_MODEL_MAX_TOKENS": "agents.defaults.params.maxTokens",
 }
+_MODEL_MAX_TOKENS = {
+    # OpenClaw derives an invalid ~172k default for GPT-5.4; ACP may send either ID.
+    "gpt-5.4": 128000,
+    "benchflow-openai-gpt-5.4": 128000,
+}
+
+
+def _default_max_tokens(model: str) -> int | None:
+    return _MODEL_MAX_TOKENS.get(model.removeprefix("openai/"))
 
 
 # ── ACP stdio I/O ─────────────────────────────────────────────────────────────
@@ -671,6 +680,7 @@ def main():
 
         elif method == "session/set_model":
             model = params.get("modelId", "")
+            requested_model = model
             # A provider-resolution / config-write failure here must NOT crash the
             # shim: an unhandled exception exits rc=1, which benchflow sees as the
             # ACP transport dying mid-set_model ("Process closed stdout (rc=1)") —
@@ -726,6 +736,25 @@ def main():
                             check=True,
                             timeout=10,
                         )
+                max_tokens = _default_max_tokens(requested_model)
+                configured_max_tokens = os.environ.get("BENCHFLOW_MODEL_MAX_TOKENS")
+                if max_tokens is not None and (
+                    not configured_max_tokens
+                    or not configured_max_tokens.isdigit()
+                    or int(configured_max_tokens) > max_tokens
+                ):
+                    subprocess.run(
+                        [
+                            _OPENCLAW_BIN,
+                            "config",
+                            "set",
+                            _PARAM_MAP["BENCHFLOW_MODEL_MAX_TOKENS"],
+                            str(max_tokens),
+                        ],
+                        capture_output=True,
+                        check=True,
+                        timeout=10,
+                    )
             except Exception as exc:
                 diag = (
                     f"[openclaw-acp-shim] set_model setup failed, continuing: {exc!r}"
