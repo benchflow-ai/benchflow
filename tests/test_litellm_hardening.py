@@ -437,12 +437,15 @@ async def test_vertex_sandbox_litellm_has_google_runtime_and_local_adc():
         path for path in sandbox.uploaded if path.endswith("launch_config.json")
     )
     assert (
-        json.loads(sandbox.uploaded[launch_path])["env"]["GOOGLE_APPLICATION_CREDENTIALS"]
+        json.loads(sandbox.uploaded[launch_path])["env"][
+            "GOOGLE_APPLICATION_CREDENTIALS"
+        ]
         == adc_path
     )
-    assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in json.loads(
-        sandbox.uploaded[launch_path]
-    )["env"]
+    assert (
+        "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+        not in json.loads(sandbox.uploaded[launch_path])["env"]
+    )
 
 
 @pytest.mark.asyncio
