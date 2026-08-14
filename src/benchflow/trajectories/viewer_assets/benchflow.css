@@ -1,0 +1,400 @@
+/* BenchFlow's layer on top of the vendored PostTrainBench stylesheet.
+ *
+ * Loads after ptb-styles.css and only ever *adds*. Two kinds of rules live
+ * here, and nothing else:
+ *
+ *   1. Adaptations — the vendored sheet assumes a page that BenchFlow does
+ *      not have (a Google-hosted webfont, a right rail of GPU charts).
+ *   2. Extensions — everything BenchFlow evaluates on that PostTrainBench
+ *      has no concept of: a reward with a pass/fail/errored/timeout
+ *      taxonomy, skill mode, four-phase timing, ACP tool kind + status,
+ *      oracle and timeout events, verifier notices.
+ *
+ * Every color here comes from the vendored token set (--accent-primary,
+ * --text-secondary, …) so both themes stay consistent with upstream. New
+ * tokens are defined for all three theme states, never inside one block.
+ */
+
+/* ── 1. Adaptations ──────────────────────────────────────────────────── */
+
+/* Upstream pulls JetBrains Mono from Google Fonts. A trace page has to
+   render with no network and under a strict CSP, so the same face is
+   inlined here and keeps the exact family name the vendored sheet asks
+   for. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("data:font/woff2;base64,__BF_FONT_DATA__") format("woff2");
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+}
+
+/* Upstream's third column is GPU/CPU telemetry. BenchFlow captures none, and
+   the plan's rule is that a field without data is not rendered — so the
+   layout drops to two columns rather than showing an empty rail. */
+.layout.bf-no-right-rail {
+  grid-template-columns: 320px minmax(0, 1fr);
+}
+
+@media (max-width: 1100px) {
+  .layout.bf-no-right-rail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The vendored sheet has only [data-theme] blocks — its page always stamps
+   one. BenchFlow pages are also opened straight off disk, where a failed
+   script would leave the document unstamped, so the OS preference is honored
+   as a fallback. Values are upstream's own light palette. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg-primary: #faf8f3;
+    --bg-secondary: #f3f0e8;
+    --bg-tertiary: #e8e4d9;
+    --text-primary: #2d2a23;
+    --text-secondary: #6b655a;
+    --border-color: #d9d4c8;
+    --accent-primary: #a66b4f;
+    --accent-secondary: #8d5d45;
+    --accent-text: #895940;
+    --selection-bg: rgb(166 107 79 / 28%);
+    --danger: #b04a3c;
+  }
+}
+
+/* ── 2. Extensions ───────────────────────────────────────────────────── */
+
+/* Run status. Upstream scores a benchmark percentage and needs only
+   good/bad; a BenchFlow rollout resolves to one of six outcomes, and the
+   difference between "failed" and "errored" or "not scored" is the whole
+   point of looking at the trace. */
+:root {
+  --bf-passed: #7d8c3f;
+  --bf-failed: #b8654a;
+  --bf-errored: #b04a3c;
+  --bf-timeout: #b3872f;
+  --bf-unscored: #857e70;
+}
+
+[data-theme="light"] {
+  --bf-passed: #56612e;
+  --bf-failed: #97553a;
+  --bf-errored: #a1382c;
+  --bf-timeout: #7a6224;
+  --bf-unscored: #6b655a;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bf-passed: #56612e;
+    --bf-failed: #97553a;
+    --bf-errored: #a1382c;
+    --bf-timeout: #7a6224;
+    --bf-unscored: #6b655a;
+  }
+}
+
+.bf-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.16rem 0.55rem;
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.bf-status::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentcolor;
+}
+
+.bf-status-passed { color: var(--bf-passed); }
+.bf-status-failed { color: var(--bf-failed); }
+.bf-status-errored,
+.bf-status-verifier-errored { color: var(--bf-errored); }
+.bf-status-timeout { color: var(--bf-timeout); }
+.bf-status-not-scored { color: var(--bf-unscored); }
+
+/* Reward. Upstream's .score-big is a benchmark percentage and appends "%"
+   through ::after; a BenchFlow reward is a scalar on its own scale, so the
+   unit is dropped and named explicitly beside the number instead. */
+.score-big::after {
+  content: none;
+}
+
+.bf-score-unit {
+  margin-left: 0.35rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+}
+
+.score-big.bf-unscored {
+  color: var(--bf-unscored);
+  font-size: 1.5rem;
+  letter-spacing: 0.01em;
+}
+
+.bf-score-status {
+  margin-top: 0.55rem;
+}
+
+/* Four-phase timing. Upstream reports one duration; BenchFlow separates
+   environment setup, agent setup, agent execution and verifier, and which
+   phase ate the wall clock is usually the first question asked. */
+.bf-timing {
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.bf-timing-row + .bf-timing-row {
+  margin-top: 0.5rem;
+}
+
+.bf-timing-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.bf-timing-track {
+  margin-top: 0.24rem;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-tertiary);
+  overflow: hidden;
+}
+
+.bf-timing-track > span {
+  display: block;
+  height: 100%;
+  background: var(--accent-primary);
+}
+
+.bf-timing-total {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--border-color);
+  font-size: 0.72rem;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Usage provenance. Token counts that don't say whether a provider reported
+   them or BenchFlow estimated them are a measurement pretending to be one. */
+.bf-usage-note {
+  margin-top: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.66rem;
+  overflow-wrap: anywhere;
+}
+
+/* Result-level notices: agent error, verifier error, partial trajectory.
+   Upstream surfaces an error log; these are typed and belong beside the
+   score, because they change how the whole trace should be read. */
+.bf-notice {
+  margin-top: 0.85rem;
+  padding: 0.6rem 0.7rem;
+  border-left: 2px solid currentcolor;
+  border-radius: 0 4px 4px 0;
+  background: var(--bg-tertiary);
+  font-size: 0.72rem;
+}
+
+.bf-notice-error { color: var(--bf-errored); }
+.bf-notice-warning { color: var(--bf-timeout); }
+
+.bf-notice strong {
+  display: block;
+  margin-bottom: 0.2rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.66rem;
+}
+
+.bf-notice span {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* ACP tool calls. Upstream branches on Claude Code tool *names* (Bash, Edit,
+   Read…); ACP hands every agent's tools over with a kind and a status, so
+   the status rides on the tool header for all 28 harnesses instead. */
+.bf-tool-status {
+  margin-left: auto;
+  padding-left: 0.5rem;
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tool-call > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.bf-tool-status-completed { color: var(--bf-passed); }
+.bf-tool-status-failed { color: var(--bf-errored); }
+.bf-tool-status-pending,
+.bf-tool-status-in_progress { color: var(--bf-timeout); }
+
+/* Oracle and timeout events have no upstream equivalent: one is BenchFlow
+   running the task's own solution, the other is the agent being cut off. A
+   timeout that looks like a clean finish is a misread run. */
+.bf-event-oracle .event-body > .tool-call {
+  border-color: var(--accent-secondary);
+}
+
+.bf-timeout-card {
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--bf-timeout);
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  color: var(--bf-timeout);
+  font-size: 0.78rem;
+}
+
+.bf-timeout-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 0.8rem;
+  margin: 0.5rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+.bf-timeout-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.event-marker .bf-role-timeout,
+.turn-role.bf-role-timeout {
+  color: var(--bf-timeout);
+}
+
+/* ANSI terminal colour. Upstream escapes tool output verbatim, so a pytest
+   run shows raw \x1b[31m; BenchFlow turns SGR codes into these spans. The
+   hues are pulled toward the vendored warm palette rather than pure VGA, so
+   a coloured test log still sits inside upstream's sepia/cream world. */
+:root {
+  --bf-ansi-red: #d98a72;
+  --bf-ansi-green: #9db06a;
+  --bf-ansi-yellow: #d6ab5c;
+  --bf-ansi-blue: #86a8c4;
+  --bf-ansi-magenta: #bd94bd;
+  --bf-ansi-cyan: #7fb0aa;
+  --bf-ansi-grey: #8a8274;
+}
+
+[data-theme="light"] {
+  --bf-ansi-red: #97553a;
+  --bf-ansi-green: #56612e;
+  --bf-ansi-yellow: #7a6224;
+  --bf-ansi-blue: #3c5f7d;
+  --bf-ansi-magenta: #74497a;
+  --bf-ansi-cyan: #316660;
+  --bf-ansi-grey: #6b655a;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bf-ansi-red: #97553a;
+    --bf-ansi-green: #56612e;
+    --bf-ansi-yellow: #7a6224;
+    --bf-ansi-blue: #3c5f7d;
+    --bf-ansi-magenta: #74497a;
+    --bf-ansi-cyan: #316660;
+    --bf-ansi-grey: #6b655a;
+  }
+}
+
+.ansi-bold { font-weight: 700; }
+.ansi-dim { opacity: 0.68; }
+.ansi-black,
+.ansi-bright-black { color: var(--bf-ansi-grey); }
+.ansi-red { color: var(--bf-ansi-red); }
+.ansi-green { color: var(--bf-ansi-green); }
+.ansi-yellow { color: var(--bf-ansi-yellow); }
+.ansi-blue { color: var(--bf-ansi-blue); }
+.ansi-magenta { color: var(--bf-ansi-magenta); }
+.ansi-cyan { color: var(--bf-ansi-cyan); }
+.ansi-white { color: var(--text-primary); }
+
+/* A thought the harness signalled but did not populate. Muted, one line: it
+   marks where reasoning happened without pretending to show it. */
+.bf-thought-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-style: italic;
+}
+
+.bf-thought-empty svg {
+  opacity: 0.7;
+}
+
+/* A clipped observation names what it dropped and where the full text is —
+   the alternative is a page that silently rewrites the evidence. */
+.bf-clip {
+  display: block;
+  margin: 0.4rem 0;
+  padding: 0.3rem 0.55rem;
+  border-left: 2px solid var(--bf-timeout);
+  color: var(--bf-timeout);
+  font-size: 0.7rem;
+}
+
+.bf-binary {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* Setup group: events that happen before the first prompt (oracle solve,
+   environment work) are not part of any turn and must not be numbered as
+   one. */
+.bf-setup-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0.4rem 0 0.2rem;
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.bf-setup-divider::before,
+.bf-setup-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-color);
+}
+
+.bf-empty-trace {
+  padding: 2rem;
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  text-align: center;
+}

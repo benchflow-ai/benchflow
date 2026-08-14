@@ -205,10 +205,17 @@ class TestTrajectoryJsonlSerialization:
 
 
 class TestViewerCompatibility:
-    """Verify viewer renders user_message events without duplication."""
+    """Verify viewer renders user_message events without duplication.
+
+    Shape change: the viewer moved from server-rendered HTML to a payload the
+    browser renders, so these assert on the payload's turn structure. The
+    behaviour under test is unchanged — an inline ``user_message`` must not be
+    duplicated by ``prompts.json``, and a trajectory without one must still
+    take its prompt from ``prompts.json``.
+    """
 
     def test_viewer_renders_user_message(self) -> None:
-        from benchflow.trajectories.viewer import _render_acp_trajectory
+        from benchflow.trajectories.viewer import build_run_payload
 
         events = [
             {"type": "user_message", "text": "Solve it"},
@@ -226,17 +233,23 @@ class TestViewerCompatibility:
                 "\n".join(json.dumps(e) for e in events)
             )
 
-            html = _render_acp_trajectory(
-                trial_dir, traj_dir / "acp_trajectory.jsonl", prompts=["Solve it"]
-            )
+            payload = build_run_payload(trial_dir, prompts=["Solve it"])
+            assert payload is not None
+            turns = payload["turns"]
 
-            # user_message in trajectory → should render inline, NOT duplicate at top
-            assert html.count("Solve it") == 1
-            assert "PROMPT 1" in html
+            # user_message in trajectory → one turn, NOT duplicated by prompts.json
+            prompts = [
+                event["text"]
+                for turn in turns
+                for event in turn["events"]
+                if event["type"] == "user_message"
+            ]
+            assert prompts == ["Solve it"]
+            assert [turn["number"] for turn in turns] == [1]
 
     def test_viewer_legacy_prompts_header(self) -> None:
-        """Old trajectory without user_message: prompts shown at top from prompts.json."""
-        from benchflow.trajectories.viewer import _render_acp_trajectory
+        """Old trajectory without user_message: prompt comes from prompts.json."""
+        from benchflow.trajectories.viewer import build_run_payload
 
         events = [
             {"type": "tool_call", "kind": "bash", "title": "ls", "status": "completed"},
@@ -253,9 +266,12 @@ class TestViewerCompatibility:
                 "\n".join(json.dumps(e) for e in events)
             )
 
-            html = _render_acp_trajectory(
-                trial_dir, traj_dir / "acp_trajectory.jsonl", prompts=["Old prompt"]
-            )
+            payload = build_run_payload(trial_dir, prompts=["Old prompt"])
+            assert payload is not None
+            first_turn = payload["turns"][0]
 
-            assert "Old prompt" in html
-            assert "PROMPT 1" in html
+            assert first_turn["number"] == 1
+            assert first_turn["events"][0] == {
+                "type": "user_message",
+                "text": "Old prompt",
+            }
