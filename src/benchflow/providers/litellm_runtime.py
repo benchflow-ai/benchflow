@@ -1022,7 +1022,11 @@ async def _upload_runtime_files_to_sandbox(
 
 
 async def _ensure_sandbox_litellm(
-    sandbox: Any, *, venv_dir: str, install_timeout_sec: int = 600
+    sandbox: Any,
+    *,
+    venv_dir: str,
+    extra_requirements: tuple[str, ...] = (),
+    install_timeout_sec: int = 600,
 ) -> str:
     vq = shlex.quote(venv_dir)
     # Prefer uv to bootstrap the venv: many sandbox base images ship a python3
@@ -1030,6 +1034,10 @@ async def _ensure_sandbox_litellm(
     # `python -m venv` and `pip install` fail. uv needs neither (it is the same
     # mechanism the openhands agent install already uses in-sandbox), with a
     # stdlib-venv fallback for images that have a working venv and lack uv.
+    requirements = " ".join(
+        shlex.quote(requirement)
+        for requirement in (LITELLM_VERSION_SPEC, "boto3>=1.40", *extra_requirements)
+    )
     command = f"""
 set -eu
 export PATH="$HOME/.local/bin:$PATH"
@@ -1041,7 +1049,7 @@ if [ -z "$UV" ]; then
 fi
 if [ -n "$UV" ]; then
   [ -x {vq}/bin/python ] || "$UV" venv {vq} >/dev/null 2>&1
-  "$UV" pip install --python {vq}/bin/python -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
+  "$UV" pip install --python {vq}/bin/python -q {requirements}
 else
   PY="$(command -v python3 || command -v python)"
   if [ ! -x {vq}/bin/python ]; then
@@ -1051,7 +1059,7 @@ else
     )
   fi
   {vq}/bin/python -m pip install -q --upgrade pip
-  {vq}/bin/python -m pip install -q '{LITELLM_VERSION_SPEC}' 'boto3>=1.40'
+  {vq}/bin/python -m pip install -q {requirements}
 fi
 {vq}/bin/python - <<'PY'
 import litellm
@@ -1167,10 +1175,22 @@ async def _start_sandbox_litellm(
         runtime_dir=runtime_dir,
         config=config,
     )
+    proxy_agent_env = dict(agent_env)
+    extra_requirements: tuple[str, ...] = ()
+    if route.provider_name in {"google-vertex", "anthropic-vertex"}:
+        extra_requirements = ("google-cloud-aiplatform>=1.133.0,<2.0",)
+        adc_json = proxy_agent_env.pop("GOOGLE_APPLICATION_CREDENTIALS_JSON", None)
+        if adc_json:
+            adc_path = f"{runtime_dir}/application_default_credentials.json"
+            await _upload_text(sandbox, adc_json, adc_path, ".json")
+            proxy_agent_env["GOOGLE_APPLICATION_CREDENTIALS"] = adc_path
     python = await _ensure_sandbox_litellm(
-        sandbox, venv_dir=paths["venv"], install_timeout_sec=install_timeout_sec
+        sandbox,
+        venv_dir=paths["venv"],
+        extra_requirements=extra_requirements,
+        install_timeout_sec=install_timeout_sec,
     )
-    env = dict(agent_env)
+    env = proxy_agent_env
     env.update(
         {
             "PYTHONPATH": f"{runtime_dir}:{env.get('PYTHONPATH', '')}",

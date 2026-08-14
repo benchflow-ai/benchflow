@@ -406,6 +406,46 @@ async def test_sandbox_litellm_install_uses_configured_setup_timeout():
 
 
 @pytest.mark.asyncio
+async def test_vertex_sandbox_litellm_has_google_runtime_and_local_adc():
+    route = resolve_litellm_route(
+        "anthropic-vertex/claude-sonnet-4-6",
+        {"GOOGLE_CLOUD_PROJECT": "project", "GOOGLE_CLOUD_LOCATION": "region"},
+    )
+    sandbox = _FakeSandbox()
+
+    await runtime_mod._start_sandbox_litellm(
+        sandbox=sandbox,
+        route=route,
+        master_key="sk-master",
+        agent_env={"GOOGLE_APPLICATION_CREDENTIALS_JSON": '{"type":"test"}'},
+        session_id="s",
+        agent_name="claude-agent-acp",
+    )
+
+    install_command = next(
+        command
+        for command in sandbox.exec_calls
+        if "pip install" in command and "litellm" in command
+    )
+    assert "google-cloud-aiplatform>=1.133.0,<2.0" in install_command
+    adc_path = next(
+        path
+        for path in sandbox.uploaded
+        if path.endswith("application_default_credentials.json")
+    )
+    launch_path = next(
+        path for path in sandbox.uploaded if path.endswith("launch_config.json")
+    )
+    assert (
+        json.loads(sandbox.uploaded[launch_path])["env"]["GOOGLE_APPLICATION_CREDENTIALS"]
+        == adc_path
+    )
+    assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in json.loads(
+        sandbox.uploaded[launch_path]
+    )["env"]
+
+
+@pytest.mark.asyncio
 async def test_sandbox_litellm_stop_imports_usage_and_cleans_up():
     route = resolve_litellm_route(
         "minimax/MiniMax-M3",
