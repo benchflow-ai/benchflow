@@ -293,9 +293,134 @@ module appears in the repository history.
 | 7 | **Agent version** | Hardcoded `"unknown"` by `trajectory_to_atif_record` | Documented in the code as deliberate rather than fabricated |
 | 8 | **ACP session token usage** | `ACPSession.usage_snapshots` is routed to `result.json`, never into the trajectory | The trajectory carries no usage at all |
 | 9 | **`stop_reason`** | Captured as `ACPSession.stop_reason`, never exported | Why the agent stopped is not in any trajectory format |
+| 10 | **`agent_thought` boundaries** | `ThoughtBuffer.take` joins buffered thoughts with a blank line | One thought containing a blank line and two consecutive thought events produce the same `reasoning_content`; the number of thought events is not recoverable. Reachable in production — `_parse_gemini_trajectory` appends one event per entry of a message's `thoughts` list |
 
 **FACT.** Loss #4 is worth noting on its own: the timeout marker is written to
 the trajectory so downstream consumers can see it, and every exporter drops it.
+It is not lost at rollout level — `trajectory_summary.event_type_counts` in
+`result.json` counts every event type including `agent_timeout`
+(`_utils/result_metadata.py`), and the `agent_timeout_info` diagnostic records
+it separately. The loss is confined to the exported trajectory documents.
+
+### 5.1 `ACP → ATIF`, field by field
+
+**FACT.** Every row below is asserted by
+`tests/trajectories/test_atif_preservation.py` against records built through
+the production capture path. This section describes what the conversion does
+today; it proposes nothing.
+
+Four classes are used, and the distinction between the last two is where a fix
+would have to land:
+
+- **preserved** — reaches the ATIF document unchanged.
+- **normalized** — reaches it relocated or reshaped, so a consumer must know
+  BenchFlow's convention to read it.
+- **dropped** — the capture events carry it and the converter discards it.
+  Fixable in `export_atif.py` alone.
+- **unsupported** — the capture events never carried it. `export_atif.py`
+  cannot fix these; the loss is upstream, at `handle_update` or in
+  `_events_to_trajectory`.
+
+| ACP capture field / event | In ATIF today | Class |
+|---|---|---|
+| `user_message.text`, `agent_message.text` | `step.message`, verbatim | preserved |
+| text-empty message or thought event | no step emitted | dropped |
+| `agent_thought.text` | joined into the next agent step's `reasoning_content` | normalized (loss #10) |
+| `tool_call.tool_call_id` | `tool_calls[].tool_call_id`; synthesized `call_{n}` when empty | preserved |
+| `tool_call.kind` | `tool_calls[].function_name`; `"tool"` when empty | normalized — an ACP kind is a category, not a function name |
+| tool arguments | `"arguments": {}`, always | unsupported — see §1 |
+| `tool_call.content`, text blocks | `observation.results[].content` | preserved |
+| `tool_call.content`, non-text blocks | absent | dropped (loss #5) |
+| `tool_call.status`, `tool_call.title` | `tool_calls[].extra`, stringified | normalized (loss #2) — `extra` is ATIF-v1.7 and non-standard |
+| `rawInput` / `rawOutput` / `locations` / `_meta` | absent | unsupported — dropped at the wire, never captured |
+| `ToolCallRecord.started_at` / `.finished_at` | absent | unsupported — never serialized (loss #3) |
+| event order | `step_id`, dense from 1 | preserved |
+| per-step token usage | no `metrics` on any step | unsupported (loss #6) |
+| `ACPSession.usage_snapshots`, `stop_reason` | absent | dropped (losses #8, #9) |
+| `agent_timeout` | absent | dropped (loss #4) |
+| unknown event types, non-dict entries | skipped silently, no gap in `step_id` | dropped, deliberate |
+| `oracle` record | `source: "agent"`, `message: "[oracle: <cmd>]"` | normalized — **ambiguous**, see below |
+| agent version | `"unknown"` | unsupported, deliberate (loss #7) |
+| `prompts` argument | leading `user` steps | addition — not an ACP event |
+
+**FACT — the `oracle` source is a live divergence.** The in-repo validator
+(`tests/integration/scenarios.py`) accepts `source` in
+`{"user", "agent", "oracle"}`; the emitter produces only `user` and `agent`,
+rendering oracle activity as an `agent` step with an `[oracle: …]` prefix. The
+produced set is therefore a strict subset of the accepted set, and a consumer
+cannot tell an oracle step from an agent step except by matching that string.
+Whether the emitter should produce the third value or the validator should drop
+it is open question 3 below; this document does not settle it, and the test
+suite asserts the divergence rather than either resolution.
+
+**FACT — an ATIF document is not a function of the capture file alone.**
+`prompts` adds steps with no corresponding ACP event, and text-empty events add
+none, so the event list cannot be reconstructed from the document. Any future
+round-trip claim has to account for both.
+
+### 5.2 Confirmed against real rollouts
+
+**FACT.** Two rollouts of the `gemini` agent were run through the production
+path — docker sandbox, ACP transport, the standard artifact writers — and their
+`acp_trajectory.jsonl`, `trainer/atif.json` and `result.json` were inspected by
+hand. Everything §5.1 describes held. This section records only what those
+artifacts showed.
+
+In both rollouts:
+
+- every `tool_call` capture record carried exactly `type`, `tool_call_id`,
+  `kind`, `title`, `status` and `content` — the six fields §5.1 predicts, and
+  nothing else;
+- every `tool_call_id` reached the ATIF document unchanged;
+- textual tool output reached `observation.results[].content`;
+- `kind` became `function_name`, with observed values `execute`, `read` and
+  `think` — none of them `ToolKind` members, corroborating §2.3;
+- `title` and `status` appeared only inside `tool_calls[].extra`;
+- every `arguments` was `{}`;
+- no ISO-8601 value appeared in either artifact;
+- `rawInput`, `rawOutput`, `locations` and `_meta` appeared in neither the ACP
+  capture nor the ATIF document.
+
+**FACT — the tool inputs existed and were dropped, not unavailable.** In the
+same rollouts the proxy capture (`llm_trajectory.jsonl`) carried non-empty
+tool-call `arguments` payloads — in one case keyed `command` and `description`,
+holding the shell command the agent ran — while the ATIF document recorded `{}`
+for that same call. The inputs were therefore present in traffic BenchFlow
+already captures, and absent from the exported trajectory.
+
+This is **not** evidence that the ACP `rawInput` family was on the wire. Those
+four fields occurred nowhere in the captured artifacts, the proxy capture
+included, which is expected because that capture is not ACP. Their absence from
+the ACP capture is consistent with `handle_update` never reading them (§1), but
+no observation in this repository shows them arriving.
+
+**FACT — the prompt-derived step duplicates the first user message.** Both ATIF
+documents opened with two `user` steps carrying identical text: one built from
+the `prompts` argument, one from the captured `user_message` event. A consumer
+counting user turns from an ATIF document over-counts by one.
+
+**FACT — `agent_timeout` is written to the capture and exported nowhere.** A
+rollout driven into its wall-clock budget recorded
+
+```json
+{"type": "agent_timeout", "reason": "wall_clock_timeout", "timeout_sec": 90.0,
+ "pending_tool_call_ids": [], "terminal_trajectory_complete": true}
+```
+
+in `acp_trajectory.jsonl`, and `result.json` counted it under
+`trajectory_summary.event_type_counts.agent_timeout`. The ATIF document for that
+same rollout carried no representation of it — confirming loss #4 end to end,
+including that the signal survives at rollout level (§5, note after the table).
+
+Note the shape observed: the budget expired between tool calls, so the pending
+list was empty and the capture was marked terminally complete. The other branch
+— a timeout with tool calls still in flight — is covered by the test suite but
+was not observed in a real rollout.
+
+**Not exercised by these rollouts**, and still resting on code reading plus the
+synthetic tests: the non-text content-block loss (#5), because neither agent
+emitted a file-edit or terminal block; and the `oracle` source divergence,
+because neither rollout ran in oracle mode.
 
 ---
 
