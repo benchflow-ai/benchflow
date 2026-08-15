@@ -57,6 +57,7 @@ from benchflow.cli.sandbox import register_sandbox
 from benchflow.cli.skills import register_skills
 from benchflow.cli.tasks import register_tasks
 from benchflow.cli.train import register_train
+from benchflow.cli.traj import register_traj
 from benchflow.eval_plan import EvalCreateRequest, EvalPlanError, build_eval_plan
 from benchflow.evaluation import DEFAULT_AGENT, effective_model
 from benchflow.sandbox.providers import providers_phrase
@@ -1242,6 +1243,7 @@ register_continue(eval_app, alias_app=app)
 register_skills(app)
 register_review(app)
 register_tasks(app)
+register_traj(app)
 register_train(app)
 register_hub(app)
 register_agent(app)

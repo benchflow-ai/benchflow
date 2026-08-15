@@ -81,6 +81,7 @@ Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/
 | Multi-agent: coder + reviewer, simulated user, BYOS, stateful envs | [Use cases](./docs/use-cases.md) |
 | Multi-round single-agent (progressive disclosure, oracle access) | [Progressive disclosure](./docs/progressive-disclosure.md) |
 | Skill evaluation (when the artifact is a skill, not a workspace) | [Skill eval](./docs/skill-eval.md) |
+| Contribute a trajectory capture | [Trajectory upload](./docs/traj-upload.md) |
 | Understand the security model | [Sandbox hardening](./docs/sandbox-hardening.md) |
 | Use public vs internal preview SDK releases | [Release channels](./docs/release.md) |
 | CLI flags + commands | [CLI reference](./docs/reference/cli.md) |
