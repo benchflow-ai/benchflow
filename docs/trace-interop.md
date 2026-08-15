@@ -590,9 +590,12 @@ Three design choices carry most of the weight:
 
 ### 8.3 Planned mapping
 
-**`ACP → IR` is implemented** (Slice C,
-[`src/benchflow/trajectories/ir_from_acp.py`](../src/benchflow/trajectories/ir_from_acp.py)),
-still unwired and still provisional. `ATIF ↔ IR` and the OTel direction are not.
+**`ACP → IR`** (Slice C,
+[`ir_from_acp.py`](../src/benchflow/trajectories/ir_from_acp.py)) **and
+`IR → ATIF`** (Slice D,
+[`ir_to_atif.py`](../src/benchflow/trajectories/ir_to_atif.py)) **are
+implemented**, both unwired and still provisional. `ATIF → IR` and the OTel
+direction are not.
 
 #### ACP-session capture events → IR
 
@@ -645,16 +648,77 @@ trace length.
 
 #### IR → ATIF
 
-| IR | ATIF | Loss to record |
-|---|---|---|
-| `events[].text` | `step.message` | — |
-| `reasoning` / `reasoning_segments` | `reasoning_content` (joined) | NORMALIZED — the segmentation does not survive |
-| `tool_call.name` | `function_name` | NORMALIZED — an ACP kind is not a function name |
-| `tool_call.call_id` empty or absent | synthesized `call_{n}` | SYNTHESIZED |
-| `tool_call.status` / `title` | `tool_calls[].extra` | NORMALIZED |
-| `agent.agent_version` absent | `"unknown"` | SYNTHESIZED |
-| `kind=timeout` | *(no ATIF representation)* | DROPPED |
-| opaque content blocks | *(no ATIF representation)* | DROPPED |
+**Implemented** (Slice D,
+[`src/benchflow/trajectories/ir_to_atif.py`](../src/benchflow/trajectories/ir_to_atif.py)),
+unwired: `export_atif.py` is untouched and still the only writer of
+`trainer/atif.json`.
+
+**FACT — the hub reproduces the direct exporter.** For any conformant capture
+input, `ir_to_atif(acp_events_to_ir(events), prompts=P)` produces the same
+document as `trajectory_to_atif_record(events=events, prompts=P)`, with one
+deliberate exception (oracle, below). Asserted by
+`tests/trajectories/test_ir_to_atif.py` over events driven through the
+production capture path and nine further shapes, and confirmed against the two
+real rollouts of §5.2: for both, the document produced through the hub is
+identical to the `trainer/atif.json` those rollouts actually wrote.
+
+This is the evidence that the IR is sufficient for this format — a hub that lost
+something the direct path carried would fail that equality.
+
+| IR | ATIF | Class | Loss recorded |
+|---|---|---|---|
+| `events[].text` | `step.message` | preserved | — |
+| `reasoning` / `reasoning_segments` | `reasoning_content`, joined by blank line | normalized | `events[].reasoning_segments`, once (#10) |
+| `events[].index` | `step_id`, dense from 1 over emitted steps | normalized | `events[].index`, once |
+| `tool_call.name` | `function_name` | preserved | — the ACP-kind semantics is what is lost, below |
+| `tool_call.name_semantics` | *(no slot)* | dropped | `events[].tool_call.name_semantics`, once |
+| `tool_call.call_id` empty or absent | `call_{n}` | **synthesized** | `events[i].tool_call.call_id` |
+| `tool_call.name` empty or absent | `"tool"` | **synthesized** | `events[i].tool_call.name` |
+| `tool_call.arguments = None` | `{}` | **synthesized** | `events[i].tool_call.arguments`, per call (#1) |
+| `tool_call.arguments` present | passed through | preserved | — nothing declared |
+| `tool_call.status` / `title` | `tool_calls[].extra`, stringified | normalized | — (shape unchanged from the direct path) |
+| text content blocks | `observation.results[].content` | preserved | — |
+| opaque content blocks | *(no slot)* | dropped | `events[i].tool_call.content` (#5) |
+| `kind=timeout` | *(no slot)* | dropped | `events[i]` (#4) |
+| `kind=unknown` | *(no slot)* | dropped | `events[i]` |
+| text-empty event | *(no step)* | dropped | `events[i]` |
+| `kind=oracle` | `source: "oracle"`, command as `message` | normalized | `events[i].extensions` — **deviation, see below** |
+| `agent.agent_name` absent | `"unknown"` | **synthesized** | `agent.agent_name` |
+| `agent.agent_version` absent | `"unknown"` | **synthesized** | `agent.agent_version` (#7) |
+| `usage.input/output/cache_read` | `final_metrics.total_prompt/completion/cached_tokens` | preserved | — |
+| `usage.cache_creation_tokens`, `.reasoning_tokens`, `.total_tokens`, `.source` | *(no slot)* | dropped | `usage.<field>` |
+| `outcome.*` | *(no slot)* | dropped | `outcome`, once |
+| `events[].provenance`, `.source_type`, `.extensions` | *(no slot)* | dropped | once each |
+| *(the `prompts` argument)* | leading `user` steps | **synthesized** | `steps[i]`, **target space** |
+| *(none)* | `steps[].message` on tool / flushed-thought steps | **synthesized** | `steps[].message`, **target space**, once |
+| *(none)* | `final_metrics.total_steps` | **synthesized** | `final_metrics.total_steps`, **target space** |
+
+**FACT — the one deliberate deviation is `oracle`.** `acp_events_to_atif_steps`
+renders an oracle record as a `source: "agent"` step prefixed `[oracle: …]`,
+recoverable only by string matching; §5.1 records this as a live divergence,
+since the in-repo validator already accepts `source: "oracle"` while no emitter
+produces it. The IR carries the role, so this edge emits `source: "oracle"` with
+the command as the message and no prefix. A test asserts that this is the *only*
+step that differs on a trajectory containing every capture event type plus an
+oracle record.
+
+**FACT — measured on the same two real rollouts.** H1 produces **12** outbound
+records (6 synthesized, 4 dropped, 2 normalized; 9 hub, 3 target); H2, whose
+trajectory contains a real wall-clock timeout, produces **14** (5 synthesized,
+7 dropped, 2 normalized), the extra drops being the timeout event, its
+`extensions` and the trace `outcome`.
+
+**FACT — the two reports compose.** For H1, `events[2].tool_call.arguments`
+carries `unsupported` in the `acp -> ir` report and `synthesized` in the
+`ir -> atif` one: the source never had arguments and the target demanded them
+anyway, joined on one hub path (§8.2, choice 5).
+
+**Known gap: the IR cannot express cost.** `TraceUsage` has no cost field, so
+`final_metrics.total_cost_usd` — which the direct exporter accepts as an
+argument — cannot be produced through the hub. Neither real rollout carries one
+(agent-native runs have no proxy cost), so parity is unaffected there, but this
+is a hub gap rather than a converter one and closing it means adding a field to
+the IR.
 
 #### IR ↔ OpenTelemetry
 
@@ -920,17 +984,22 @@ here.
 
 ### 8.7 Status
 
-- **Implemented:** the IR types, the loss model, the invariants, the validation
-  suite, this section, and the `ACP → IR` converter with its loss report.
-- **Not implemented, deliberately:** `ATIF ↔ IR`, any OTel work, any wiring into
+- **Implemented:** the IR types, the loss model with its path spaces, the
+  invariants, the validation suite, this section, the `ACP → IR` converter and
+  the `IR → ATIF` converter, each with its loss report.
+- **Not implemented, deliberately:** `ATIF → IR`, any OTel work, any wiring into
   a run path, any on-disk artifact, any capture-layer enrichment.
 - **Unchanged:** every existing format, exporter, artifact and code path.
+  `export_atif.py` in particular is untouched and remains the only writer of
+  `trainer/atif.json`.
 
-The isolation property is unchanged in substance and restated at a new
-boundary: `ir.py` and `ir_from_acp.py` form a closed family that may import each
-other, and `test_only_the_ir_family_imports_the_ir` asserts that nothing else in
-`src/benchflow` imports either. The converter itself imports one benchflow
-module — the IR — and reads the capture format as data.
+The isolation property is unchanged in substance and restated at a new boundary:
+`ir.py`, `ir_from_acp.py` and `ir_to_atif.py` form a closed family that may
+import each other, and `test_only_the_ir_family_imports_the_ir` asserts that
+nothing else in `src/benchflow` imports any of them. Each converter imports one
+benchflow module — the IR — and reads or writes its own format as data; in
+particular `ir_to_atif` does not import `export_atif`, and pins the shared schema
+version by test instead.
 
 ### 8.8 What the first converter showed
 
@@ -966,3 +1035,22 @@ forces a converter to *declare* an absence; it cannot stop one from writing
 and no loss record is valid. Verified by hand. Closing that would mean the IR
 taking a position on what an empty map means for each source, which §8.2's
 tri-state rule deliberately leaves to the converter.
+
+### 8.9 What the first outbound converter showed
+
+**FACT.** `IR → ATIF` was the first edge that had to *fabricate* rather than
+declare an absence, and it settled three things the inbound edge could not:
+
+- **`SYNTHESIZED` earns its place.** Seven values ATIF requires and the IR does
+  not carry are now produced and recorded — an agent version, a tool-call id, a
+  function name, an empty argument map, an empty step message, a step count, and
+  the prompt-derived steps. Without the class, each would be an invented value
+  indistinguishable from an observed one, which is exactly how the `{}` in
+  today's documents reads.
+- **The hub is sufficient for this format, demonstrably.** Parity with the
+  direct exporter holds byte-for-byte on real captured rollouts, so the
+  round trip through the IR costs nothing that ATIF was previously getting.
+- **The report's ownership had to be settled**, and target-only values forced
+  `PathSpace` into existence (§8.2, choice 5). A prompt-derived step has no IR
+  antecedent at all, so it cannot be addressed in the hub vocabulary — and
+  before this edge, `LossRecord` had no way to say so.
