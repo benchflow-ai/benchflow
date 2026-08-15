@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.6.8 — 2026-08-15
+
 ### Added
 - **Public trajectory contribution.** `bench traj upload PATH` validates and
   structurally redacts trajectory JSONL, creates a content-addressed manifest,
@@ -36,6 +38,29 @@
   (`--environment-manifest`, `benchflow.environment.manifest`, the
   eval-config `environment:` docker/daytona selector) is a different
   subsystem and is unchanged.
+
+### Fixed
+- **Coherent integration coverage for code-and-fixture changes.** The
+  credential-free fixture job now tests pull-request source together with its
+  task fixtures, while the secret-bearing smoke job retains trusted fixtures;
+  the release gate requires both results. (#969)
+- **Retryable Daytona transport failures stay retryable.** Transient SDK
+  transport errors are stamped while their vendor type is still available,
+  empty exception messages retain useful type information, and permanent
+  errors remain outside the retry policy. (#970)
+- **Live token counters no longer freeze behind callback-log reads.** Larger,
+  bounded ranged reads distinguish EOF from read failure, expose lag, and keep
+  terminal phase labels from moving backwards. (#971)
+- **Fresh OpenClaw installs and GPT-5.4 calls use compatible limits.** OpenClaw
+  is pinned to a Node-compatible runtime, and raw plus ACP-alias GPT-5.4 model
+  IDs clamp output tokens to the provider's 128,000-token limit. (#977, #986)
+- **Anthropic Vertex routes include their required runtime.** The gateway now
+  installs the Google Cloud Vertex AI SDK used by LiteLLM's Anthropic Vertex
+  path. (#978)
+- **ACP subprocess diagnostics survive normal teardown.** A bounded, redacted
+  stderr tail is retained even when stdout remains open; stderr drain failures
+  cannot mask the structured transport diagnosis, and repeated process close
+  calls are idempotent. (#980)
 
 ## 0.6.7 — 2026-08-09
 

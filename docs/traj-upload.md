@@ -28,11 +28,12 @@ one expected blob at a time; they do not grant list, read, or delete access.
 An Event Grid-triggered validator independently checks the manifest contract,
 the 8 MiB per-record JSONL bound and structural complexity limits,
 allowlisted object names, byte sizes, SHA-256 hashes, strict JSONL syntax, and
-final artifact and manifest secret scans. Only then does it copy artifacts into the immutable
-`sources/community/<digest>/` namespace, with `manifest.json` as the commit
-marker. Failed captures are removed from the live quarantine namespace and are
-never promoted. Blob versioning and lifecycle policy bound recovery and
-retention for attempted overwrites.
+final artifact and manifest secret scans. Only then does it copy artifacts into
+the content-addressed `sources/community/<digest>/` namespace, with
+`manifest.json` as the commit marker. Failed captures are removed from the live
+quarantine namespace and are never promoted. Blob versioning and lifecycle
+policy provide recovery and bound retention for attempted overwrites; the
+deployment does not configure an immutable-storage policy.
 
 The digest excludes contributor labels, timestamps, and transport details, so
 the same redacted bytes are idempotent across machines. Repeating an ingested
@@ -55,8 +56,11 @@ bench traj upload path/to/trial --direct \
 ```
 
 Direct mode uses `DefaultAzureCredential` and create-only blob calls. The
-identity needs `Storage Blob Data Creator` on the target container. For routine
-community contributions, use the default broker mode.
+identity needs a custom role with blob create/write data actions on the target
+container. The production deployment creates this as
+`TasksMiner Blob Data Creator`; Azure's broader `Storage Blob Data Contributor`
+role also works but grants more than direct upload needs. For routine community
+contributions, use the default broker mode.
 
 Deployment configuration and verification live in
 [`infra/trajectory-upload/`](../infra/trajectory-upload/README.md).

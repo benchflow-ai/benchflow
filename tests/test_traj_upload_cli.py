@@ -291,6 +291,11 @@ def test_broker_put_conflicts_are_cloud_neutral_skips(
 
 def test_help_exposes_only_the_planned_upload_command() -> None:
     """The trajectory CLI surface remains a single clean command."""
+    traj_group = next(group for group in app.registered_groups if group.name == "traj")
+    assert {
+        command.name for command in traj_group.typer_instance.registered_commands
+    } == {"upload"}
+
     result = runner.invoke(app, ["traj", "--help"])
     assert result.exit_code == 0
     assert "upload" in result.output

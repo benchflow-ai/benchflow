@@ -104,19 +104,19 @@ Internal preview:
 
 1. Merge a PR to `main`.
 2. `.github/workflows/test.yml` runs.
-3. `.github/workflows/integration-eval.yml` runs a real rollout after the
+3. `.github/workflows/integration-light.yml` runs a real rollout after the
    tested `main` commit passes.
 4. The terminal integration gate uploads the exact tested commit and source
    run number as provenance. `.github/workflows/internal-preview-release.yml`
    downloads and validates that artifact from the successful integration run,
    verifies the commit is on `main`, then publishes it.
 
-The integration gate selects the first configured live LLM provider that can
+The integration gate selects the first exposed live LLM provider that can
 answer a small probe request, then uses that same provider for the smoke rollout
-and agent judge. Configure at least one of `DEEPSEEK_API_KEY`, `GLM_API_KEY`,
-`QWEN_API_KEY`, `LITELLM_API_KEY`/`BF_TOKEN`, `OPENAI_API_KEY`, or
-`GITHUB_MODELS_TOKEN` as GitHub Actions secrets for the job environment.
-`DAYTONA_API_KEY` is optional and enables the Daytona parity and reaper checks.
+and agent judge. The workflow maps DeepSeek and GLM credentials from the
+`pypi-internal-preview` environment and falls back to GitHub Models through the
+workflow token. Keep at least one of those routes working; the L1 job does not
+receive Daytona or reviewer credentials.
 
 The GitHub Deployments page for `pypi-internal-preview` can show integration
 gate statuses because the integration workflow uses that same GitHub environment

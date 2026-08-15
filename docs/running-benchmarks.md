@@ -500,10 +500,9 @@ export AWS_BEARER_TOKEN_BEDROCK=...
 export AWS_REGION=us-west-2 AWS_DEFAULT_REGION=us-west-2
 export GEMINI_API_KEY=...
 
-# 4. MAX thinking for Opus-4.8 (opt-in). WITHOUT this the run uses the agent's
-#    default effort = adaptive-thinking `high`, NOT max. LiteLLM receives this
-#    env var on both Daytona and Docker.
-export BENCHFLOW_BEDROCK_THINKING_EFFORT=max
+# 4. Adaptive thinking for Opus-4.8. Current LiteLLM Bedrock support clamps
+#    requested xhigh/max to high, so request the effective value directly.
+export BENCHFLOW_BEDROCK_THINKING_EFFORT=high
 
 # 5. Strip stale external gateway vars; BenchFlow will generate its own LiteLLM config:
 unset LLM_BASE_URL LLM_API_KEY OPENAI_BASE_URL BENCHFLOW_PROVIDER_BASE_URL \
@@ -512,8 +511,8 @@ unset LLM_BASE_URL LLM_API_KEY OPENAI_BASE_URL BENCHFLOW_PROVIDER_BASE_URL \
 
 > Pick a **light** task — Daytona caps each sandbox at 10 GB (see the note above).
 > `citation-check` is a good default; heavy tasks need `--sandbox docker`. Note that
-> MAX effort makes each Opus turn much slower (deep server-side reasoning — a
-> `citation-check` cell took ~10–15 min at `max` vs ~3 min at the default effort).
+> Opus adaptive thinking can make each turn substantially slower than the
+> Gemini cells, so keep the first validation task light.
 
 ### Run the four cells
 
@@ -522,11 +521,11 @@ TASK=citation-check
 COMMON="--tasks-dir $SKILLSBENCH/tasks --include $TASK --agent openhands \
   --sandbox daytona --concurrency 1 --usage-tracking required --agent-idle-timeout none"
 
-# (1) Opus-4.8 (MAX) — with skills
+# (1) Opus-4.8 (adaptive high) — with skills
 bench eval run $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
   --skill-mode with-skill --jobs-dir jobs/opus-skill
 
-# (2) Opus-4.8 (MAX) — without skills
+# (2) Opus-4.8 (adaptive high) — without skills
 bench eval run $COMMON --model aws-bedrock/us.anthropic.claude-opus-4-8 \
   --skill-mode no-skill --jobs-dir jobs/opus-noskill
 
@@ -539,9 +538,10 @@ bench eval run $COMMON --model gemini-3.5-flash --agent-env LLM_CACHING_PROMPT=f
   --skill-mode no-skill --jobs-dir jobs/gemini-noskill
 ```
 
-`BENCHFLOW_BEDROCK_THINKING_EFFORT=max` is what makes the two Opus cells actually
-run at MAX. LiteLLM writes the provider call metadata to
-`trajectory/llm_trajectory.jsonl`; confirm the adaptive thinking effort there.
+LiteLLM writes provider call metadata to `trajectory/llm_trajectory.jsonl`;
+confirm that the effective adaptive thinking effort is `high` there. Requested
+`xhigh` or `max` values are also recorded as `high` after the compatibility
+clamp.
 
 | Model (`--model`) | Skills | Cell-specific flags |
 |-------------------|--------|---------------------|
@@ -571,7 +571,7 @@ Quick smoke checks before the full audit (per jobs-dir):
 J=jobs/opus-skill
 find $J -name rewards.jsonl -exec tail -1 {} \;                                  # reward
 grep -ho '"usage_source": "[a-z_]*"' $(find $J -name result.json)                # expect provider_response
-grep -ho '"effort": "[a-z]*"' $(find $J -name llm_trajectory.jsonl) | sort -u    # Opus MAX -> "max"
+grep -ho '"effort": "[a-z]*"' $(find $J -name llm_trajectory.jsonl) | sort -u    # Opus -> "high"
 python3 .agents/skills/benchflow-experiment-review/scripts/extract_harness_skills.py \
   "$(find $J -name llm_trajectory.jsonl | head -1)" --task-skill <task-skill-name>
 ```
