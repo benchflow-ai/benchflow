@@ -26,6 +26,7 @@ from services.trajectory_upload.contract import (
 )
 from services.trajectory_upload.validation import (
     CaptureRejected,
+    _validate_and_scan_jsonl,
     validate_local_capture,
 )
 from services.trajectory_upload.validator import (
@@ -219,6 +220,11 @@ def test_validator_recomputes_bytes_jsonl_and_secret_scan(tmp_path: Path) -> Non
         with pytest.raises(CaptureRejected, match="secret-like"):
             validate_local_capture(manifest_bytes, paths)
 
+    invalid_utf8 = tmp_path / "llm_trajectory.jsonl"
+    invalid_utf8.write_bytes(b"\xff\n")
+    with pytest.raises(CaptureRejected, match="must be UTF-8"):
+        _validate_and_scan_jsonl(invalid_utf8, "trajectory/llm_trajectory.jsonl")
+
 
 class FakeDownloader:
     def __init__(self, content: bytes) -> None:
@@ -357,7 +363,7 @@ def test_duplicate_terminal_event_is_an_idempotent_no_op(
     tmp_path: Path, terminal_status: str
 ) -> None:
     """At-least-once Event Grid delivery cannot reopen a terminal capture."""
-    digest, _ = _quarantine_capture(tmp_path)
+    digest, blobs = _quarantine_capture(tmp_path)
     event = json.dumps(
         {
             "data": {
@@ -379,12 +385,11 @@ def test_duplicate_terminal_event_is_an_idempotent_no_op(
         ]
     )
 
-    assert (
-        AzureCaptureValidator(
-            container=FakeContainer({}), queue=queue, table=table
-        ).run_once()
-        is True
-    )
+    container = FakeContainer(blobs)
+    assert AzureCaptureValidator(
+        container=container, queue=queue, table=table
+    ).run_once()
+    assert not any(name.startswith(f"inbox/{digest}/") for name in container.blobs)
     assert queue.deleted == [("m1", "p1")]
 
 

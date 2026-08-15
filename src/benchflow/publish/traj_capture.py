@@ -16,12 +16,8 @@ from typing import Any
 
 from benchflow import __version__
 from benchflow.publish.redact import redact_value
-from benchflow.trajectories.export_prime_sft import (
-    PrimeSftTrajectoryJsonlError,
-    load_llm_trajectory_jsonl,
-)
 
-MAX_FILE_BYTES = 1024**3
+MAX_FILE_BYTES = 128 * 1024**2
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 
 
@@ -170,15 +166,6 @@ def _validate_jsonl(path: Path) -> None:
         )
     if size == 0:
         raise ValueError(f"trajectory JSONL is empty: {path}")
-    if path.name == "llm_trajectory.jsonl":
-        try:
-            records = load_llm_trajectory_jsonl(path, strict=True)
-        except PrimeSftTrajectoryJsonlError as exc:
-            raise ValueError(str(exc)) from exc
-        if not records:
-            raise ValueError(f"trajectory JSONL has no records: {path}")
-        return
-
     records = 0
     try:
         with path.open(encoding="utf-8") as stream:

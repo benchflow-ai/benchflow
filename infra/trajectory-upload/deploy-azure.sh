@@ -267,8 +267,8 @@ az containerapp job create \
     --registry-server "${task_acr}.azurecr.io" \
     --registry-identity "$task_validator_identity_id" \
     --command /app/services/trajectory_upload/validator-entrypoint \
-    --cpu 0.5 \
-    --memory 1.0Gi \
+    --cpu 1.0 \
+    --memory 2.0Gi \
     --replica-timeout 1800 \
     --replica-retry-limit 3 \
     --parallelism 1 \

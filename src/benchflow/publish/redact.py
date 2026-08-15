@@ -54,6 +54,9 @@ VALUE_PATTERNS = (
 
 def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int]:
     """Return a structurally redacted JSON value and replacement count."""
+    if field_name is not None and _is_sensitive_key(field_name):
+        return (value, 0) if value == REDACTED else (REDACTED, 1)
+
     if isinstance(value, Mapping):
         redacted: dict[Any, Any] = {}
         replacements = 0
@@ -77,8 +80,6 @@ def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int
 
     if not isinstance(value, str):
         return value, 0
-    if field_name is not None and _is_sensitive_key(field_name):
-        return (REDACTED, 1) if value != REDACTED else (value, 0)
 
     redacted_text = value
     replacements = 0

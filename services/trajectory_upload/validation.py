@@ -10,10 +10,6 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from benchflow.publish.redact import redact_value
-from benchflow.trajectories.export_prime_sft import (
-    PrimeSftTrajectoryJsonlError,
-    load_llm_trajectory_jsonl,
-)
 from services.trajectory_upload.contract import (
     MAX_MANIFEST_BYTES,
     ContributionManifest,
@@ -63,17 +59,6 @@ def validate_local_capture(
 
 
 def _validate_and_scan_jsonl(path: Path, relname: str) -> None:
-    if path.name == "llm_trajectory.jsonl":
-        try:
-            records = load_llm_trajectory_jsonl(path, strict=True)
-        except PrimeSftTrajectoryJsonlError as exc:
-            raise CaptureRejected(str(exc)) from exc
-        if not records:
-            raise CaptureRejected(f"{relname}: trajectory JSONL has no records")
-        for line_number, record in enumerate(records, start=1):
-            _reject_secrets(record, relname, line_number)
-        return
-
     records = 0
     try:
         with path.open(encoding="utf-8") as stream:

@@ -78,6 +78,7 @@ class AzureCaptureValidator:
             return True
 
         if self._capture_status(digest) in {"ingested", "rejected"}:
+            self._cleanup_prefix(prefix)
             self._delete_message(message)
             return True
 

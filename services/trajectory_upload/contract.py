@@ -10,11 +10,11 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from benchflow.publish.traj_capture import validate_source_id
+from benchflow.publish.traj_capture import MAX_FILE_BYTES, validate_source_id
 
 MAX_ARTIFACTS = 8
-MAX_ARTIFACT_BYTES = 1024**3
-MAX_CAPTURE_BYTES = 2 * 1024**3
+MAX_ARTIFACT_BYTES = MAX_FILE_BYTES
+MAX_CAPTURE_BYTES = 2 * MAX_ARTIFACT_BYTES
 MAX_MANIFEST_BYTES = 1024**2
 ARTIFACT_NAME = re.compile(r"^trajectory/[A-Za-z0-9._-]{1,128}\.jsonl$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")

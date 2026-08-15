@@ -144,6 +144,11 @@ def test_invalid_empty_and_oversize_inputs_fail_cleanly(
     with pytest.raises(ValueError, match="empty"):
         stage_trajectory_capture(empty, source_id="demo").__enter__()
 
+    invalid_utf8 = tmp_path / "llm_trajectory.jsonl"
+    invalid_utf8.write_bytes(b"\xff\n")
+    with pytest.raises(ValueError, match="must be UTF-8"):
+        stage_trajectory_capture(invalid_utf8, source_id="demo").__enter__()
+
     import benchflow.publish.traj_capture as capture_module
 
     monkeypatch.setattr(capture_module, "MAX_FILE_BYTES", 1)
@@ -166,6 +171,9 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
                     {
                         "nested": {"api_key": "prefixless"},
                         "OPENAI_API_KEY": "another-prefixless-value",
+                        "credentials": {"token": "opaque-object-secret"},
+                        "secret": ["opaque-list-secret"],
+                        "password": 123456,
                         "text": f"token={secret}",
                     }
                 )
@@ -178,10 +186,13 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
         payload = staged.files[0].local_path.read_text(encoding="utf-8")
         assert payload.startswith(untouched)
         assert secret not in payload
+        assert "opaque-object-secret" not in payload
+        assert "opaque-list-secret" not in payload
+        assert "123456" not in payload
         assert '"api_key":"[REDACTED]"' in payload
         assert "another-prefixless-value" not in payload
-        assert staged.redaction_replacements == 3
-        assert staged.manifest["redaction"] == {"applied": True, "replacements": 3}
+        assert staged.redaction_replacements == 6
+        assert staged.manifest["redaction"] == {"applied": True, "replacements": 6}
 
     with stage_trajectory_capture(trial, source_id="demo", redact=False) as staged:
         assert secret in staged.files[0].local_path.read_text(encoding="utf-8")
