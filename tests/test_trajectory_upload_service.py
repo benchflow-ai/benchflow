@@ -697,7 +697,10 @@ def test_deploy_selects_event_topic_by_storage_source() -> None:
     """Guards PR #989 against attaching events to an unrelated system topic."""
     script = Path("infra/trajectory-upload/deploy-azure.sh").read_text()
 
-    assert "map(select(.source == $source))[0].name // empty" in script
+    assert (
+        "map(select((.source | ascii_downcase) == ($source | ascii_downcase)))"
+        in script
+    )
     assert "--query '[0].name'" not in script
 
 

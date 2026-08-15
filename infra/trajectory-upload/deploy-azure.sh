@@ -185,7 +185,7 @@ task_system_topic="$(az eventgrid system-topic list \
     --resource-group "$task_rg" \
     --output json | jq -r \
         --arg source "$task_storage_id" \
-        'map(select(.source == $source))[0].name // empty')"
+        'map(select((.source | ascii_downcase) == ($source | ascii_downcase)))[0].name // empty')"
 if [[ -z "$task_system_topic" ]]; then
     task_system_topic="trajectory-storage-events"
     az eventgrid system-topic create \
