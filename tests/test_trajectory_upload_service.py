@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,7 +28,10 @@ from services.trajectory_upload.validation import (
     CaptureRejected,
     validate_local_capture,
 )
-from services.trajectory_upload.validator import AzureCaptureValidator
+from services.trajectory_upload.validator import (
+    AzureCaptureValidator,
+    _capture_from_event,
+)
 
 
 def _trial(tmp_path: Path, text: str = "safe") -> Path:
@@ -288,6 +292,24 @@ def test_queue_validator_promotes_manifest_last_and_cleans_quarantine(
     assert not any(name.startswith(f"inbox/{digest}/") for name in container.blobs)
     assert table.entities[-1]["status"] == "ingested"
     assert queue.deleted == [("m1", "p1")]
+
+
+def test_event_grid_queue_base64_envelope_is_decoded(tmp_path: Path) -> None:
+    """Guards the live Azure queue fix after commit 0717c061 discarded events."""
+    digest, _ = _quarantine_capture(tmp_path)
+    event = json.dumps(
+        {
+            "data": {
+                "url": (
+                    "https://account.blob.core.windows.net/bronze/"
+                    f"inbox/{digest}/manifest.json"
+                )
+            }
+        }
+    )
+    encoded = base64.b64encode(event.encode()).decode()
+
+    assert _capture_from_event(encoded) == (f"inbox/{digest}/", digest)
 
 
 def test_queue_validator_rejects_corruption_without_promotion(tmp_path: Path) -> None:

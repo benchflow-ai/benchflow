@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -179,6 +180,14 @@ class AzureCaptureValidator:
 
 
 def _capture_from_event(content: str) -> tuple[str, str]:
+    # Event Grid's Storage Queue destination base64-encodes its JSON envelope;
+    # accepting plain JSON as well keeps the parser usable with test and replay
+    # tools that already decode queue messages.
+    if not content.lstrip().startswith(("{", "[")):
+        try:
+            content = base64.b64decode(content, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise CaptureRejected("invalid base64 Event Grid message") from exc
     try:
         event = json.loads(content)
         if isinstance(event, list):

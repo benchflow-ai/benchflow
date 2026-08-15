@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -135,6 +136,31 @@ def test_broker_mode_uses_exact_manifest_and_server_order(
     assert result.exit_code == 0, result.output
     assert [request.method for request in requests] == ["POST", "PUT", "PUT"]
     assert requests[-1].url.path.endswith("manifest.json")
+
+
+def test_broker_never_logs_signed_upload_urls(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Signed SAS query parameters never enter BenchFlow's global INFO log."""
+    trial = _trial(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            payload = _broker_payload(request)
+            for item in payload["objects"]:
+                item["put_url"] += "?sig=must-not-be-logged"
+            return httpx.Response(200, json=payload)
+        return httpx.Response(201)
+
+    caplog.set_level(logging.INFO)
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        upload_capture_via_broker(
+            staged,
+            broker_url="https://broker.test",
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+
+    assert "must-not-be-logged" not in caplog.text
 
 
 def test_broker_conflict_is_success_and_rate_limit_is_actionable(

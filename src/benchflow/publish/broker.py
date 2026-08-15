@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+import logging
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,7 +43,7 @@ def upload_capture_via_broker(
     }
     manager = nullcontext(http_client) if http_client is not None else httpx.Client()
     try:
-        with manager as client:
+        with _quiet_httpx_request_logging(), manager as client:
             response = client.post(endpoint, json=request_body, timeout=30)
             if response.status_code == 409:
                 return _already_uploaded_result(response, staged, broker_url)
@@ -79,6 +80,18 @@ def upload_capture_via_broker(
         uploaded=tuple(uploaded),
         skipped=tuple(skipped),
     )
+
+
+@contextmanager
+def _quiet_httpx_request_logging():
+    """Keep short-lived signed upload URLs out of the global INFO stream."""
+    httpx_logger = logging.getLogger("httpx")
+    previous_level = httpx_logger.level
+    httpx_logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        httpx_logger.setLevel(previous_level)
 
 
 def _already_uploaded_result(
