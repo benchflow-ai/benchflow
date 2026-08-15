@@ -1,12 +1,18 @@
-"""Regression tests for branch deltas + lineage artifacts (rollout-branching RFC, FrontierPhysics#73).
+"""Regression tests for branch deltas + lineage artifacts.
+
+Guards the deltas + lineage layer ("feat(branch): per-child deltas + branch
+lineage artifacts"; docs/rollout-branching-rfc.md WS-2; FrontierPhysics#73).
+PR number to be added on submission.
 
 A branch child's delta (RFC §3.3) is the recorded exactly-one-controlled-change
 it runs under: v1 executes ``injected_prompt`` (the child's user-visible first
 message), while ``environment_ref`` / ``config_override`` / ``skill_mode`` are
 schema-and-provenance-stable but fail closed until the child-as-fresh-rollout
 follow-on. Lineage (RFC §3.4) makes a branch leave evidence: a deterministic
-``tree.json`` plus per-child ``provenance.json`` / ``reward.json``, with
-artifact-write failures isolated from the branch result.
+``tree.json`` (each node carrying the delta provenance the engine attached at
+fork time) plus per-child
+``branches/<branch-node-id>/children/<child-node-id>/provenance.json`` /
+``reward.json``, with artifact-write failures isolated from the branch result.
 
 These are unit tests against fakes — no Docker, Daytona, or API keys.
 """
@@ -14,6 +20,7 @@ These are unit tests against fakes — no Docker, Daytona, or API keys.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -24,9 +31,12 @@ from benchflow.branch_delta import BranchDelta
 from benchflow.branch_lineage import child_provenance, serialize_tree
 from benchflow.environment.protocol import StateSnapshot
 from benchflow.rollout import _TERMINAL_PHASES, Rollout, RolloutConfig, Scene
-from benchflow.rollout_branch import BranchDeltaNotSupported
+from benchflow.rollout_branch import (
+    _UNSUPPORTED_DELTA_FIELDS,
+    BranchDeltaNotSupported,
+)
 from benchflow.sandbox.protocol import SandboxImage
-from benchflow.trajectories.tree import RolloutTree
+from benchflow.trajectories.tree import RolloutTree, Step
 
 
 class FakeEnvironment:
@@ -243,7 +253,7 @@ async def test_injected_prompt_becomes_the_childs_continuation_prompt(
 async def test_injected_prompt_provenance_records_the_hash_not_the_text(
     tmp_path: Path, monkeypatch
 ):
-    """children/<i>/provenance.json carries injected_prompt_sha256 only."""
+    """branches/<node>/children/<child>/provenance.json carries the sha only."""
     rollout = _rollout(tmp_path)
     rollout._environment = FakeEnvironment()
     run_dir = tmp_path / "run"
@@ -255,10 +265,11 @@ async def test_injected_prompt_provenance_records_the_hash_not_the_text(
     prompt = "Execute PLAN.md verbatim; do not re-research."
     await rollout.branch(2, deltas=[None, BranchDelta(injected_prompt=prompt)])
 
-    prov = json.loads((run_dir / "children" / "1" / "provenance.json").read_text())
+    children_dir = run_dir / "branches" / "root" / "children"
+    prov = json.loads((children_dir / "n2" / "provenance.json").read_text())
     assert prov["delta"]["injected_prompt_sha256"] == sha256_prefixed(prompt.encode())
-    assert prompt not in (run_dir / "children" / "1" / "provenance.json").read_text()
-    zero = json.loads((run_dir / "children" / "0" / "provenance.json").read_text())
+    assert prompt not in (children_dir / "n2" / "provenance.json").read_text()
+    zero = json.loads((children_dir / "n1" / "provenance.json").read_text())
     assert zero["delta"]["injected_prompt_sha256"] is None
 
 
@@ -310,7 +321,9 @@ async def test_tree_json_records_nodes_snapshot_refs_rewards_and_deltas(
 
 def test_serialize_tree_is_deterministic_across_calls(tmp_path: Path):
     """Two serializations of the same tree are byte-identical — sorted keys,
-    trailing newline, no wall-clock timestamps."""
+    trailing newline, no wall-clock timestamps. Node entries come from each
+    node's own recorded state (snapshot / reward / delta), never from
+    positional guessing."""
     tree = RolloutTree()
     snap = StageSnapshot(
         environment_ref=StateSnapshot(id="env-snap-1", path="/tmp/x"),
@@ -319,16 +332,19 @@ def test_serialize_tree_is_deterministic_across_calls(tmp_path: Path):
     )
     tree.root.state["snapshot"] = snap
     tree.root.state["value"] = 0.5
-    for reward in (0.0, 1.0):
+    deltas = [None, BranchDelta(injected_prompt="plan")]
+    for reward, delta in zip((0.0, 1.0), deltas, strict=True):
         child = tree.attach(tree.root)
         child.state["reward"] = reward
-    deltas = [None, BranchDelta(injected_prompt="plan")]
+        child.state["delta"] = (
+            delta if delta is not None else BranchDelta()
+        ).provenance_dict()
 
     first_dir, second_dir = tmp_path / "a", tmp_path / "b"
     first_dir.mkdir()
     second_dir.mkdir()
-    first = serialize_tree(tree, run_dir=first_dir, snapshot=snap, deltas=deltas)
-    second = serialize_tree(tree, run_dir=second_dir, snapshot=snap, deltas=deltas)
+    first = serialize_tree(tree, run_dir=first_dir)
+    second = serialize_tree(tree, run_dir=second_dir)
 
     text = first.read_text()
     assert text == second.read_text()
@@ -365,8 +381,9 @@ async def test_artifact_write_failure_never_corrupts_the_branch_result(
 
 
 async def test_children_artifacts_are_written_and_parseable(tmp_path: Path):
-    """children/<index>/ gets provenance.json (kind benchflow-branch, legacy
-    env-only snapshot ref, cursor-tagged stage) and reward.json."""
+    """branches/<branch-node-id>/children/<child-node-id>/ gets provenance.json
+    (kind benchflow-branch, legacy env-only snapshot ref, cursor-tagged stage)
+    and reward.json."""
     rollout = _rollout(tmp_path)
     rollout._environment = FakeEnvironment()
     run_dir = tmp_path / "run"
@@ -380,8 +397,8 @@ async def test_children_artifacts_are_written_and_parseable(tmp_path: Path):
 
     await rollout.branch(2, run_child=run_child)
 
-    for index, expected in enumerate([0.25, 0.75]):
-        child_dir = run_dir / "children" / str(index)
+    for child_id, expected in [("n1", 0.25), ("n2", 0.75)]:
+        child_dir = run_dir / "branches" / "root" / "children" / child_id
         prov = json.loads((child_dir / "provenance.json").read_text())
         assert prov["kind"] == "benchflow-branch"
         assert prov["parent_rollout"] == str(run_dir)
@@ -392,6 +409,102 @@ async def test_children_artifacts_are_written_and_parseable(tmp_path: Path):
         assert json.loads((child_dir / "reward.json").read_text()) == {
             "reward": expected
         }
+
+
+async def test_second_branch_at_the_same_parent_never_misattributes(
+    tmp_path: Path, monkeypatch
+):
+    """Two sequential branch() calls at one parent keep both events' evidence.
+
+    Deltas are attached to each child node at fork time, so the second event
+    cannot claim the first event's children; artifacts are namespaced by node
+    id, so nothing is overwritten.
+    """
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    rollout._rollout_dir = run_dir
+    received: list[list[str] | None] = []
+    _fake_agent_boundary(monkeypatch, received)
+
+    first, second = "first-event plan", "second-event plan"
+    await rollout.branch(2, deltas=[None, BranchDelta(injected_prompt=first)])
+    await rollout.branch(2, deltas=[BranchDelta(injected_prompt=second), None])
+
+    children_dir = run_dir / "branches" / "root" / "children"
+    shas = {
+        child_id: json.loads(
+            (children_dir / child_id / "provenance.json").read_text()
+        )["delta"]["injected_prompt_sha256"]
+        for child_id in ("n1", "n2", "n3", "n4")
+    }
+    # first event: n1 zero-delta, n2 first prompt; second event: n3 second
+    # prompt, n4 zero-delta — no overwrites, no misattribution.
+    assert shas == {
+        "n1": None,
+        "n2": sha256_prefixed(first.encode()),
+        "n3": sha256_prefixed(second.encode()),
+        "n4": None,
+    }
+    nodes = {
+        node["id"]: node
+        for node in json.loads((run_dir / "tree.json").read_text())["nodes"]
+    }
+    assert nodes["n2"]["delta"]["injected_prompt_sha256"] == sha256_prefixed(
+        first.encode()
+    )
+    assert nodes["n3"]["delta"]["injected_prompt_sha256"] == sha256_prefixed(
+        second.encode()
+    )
+    assert nodes["n1"]["delta"]["injected_prompt_sha256"] is None
+    assert nodes["n4"]["delta"]["injected_prompt_sha256"] is None
+
+
+async def test_two_branch_points_keep_per_node_delta_provenance(
+    tmp_path: Path, monkeypatch
+):
+    """A tree with two branch points records every child's delta on its node
+    — the old unique-branch-point fallback dropped all delta provenance
+    here."""
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    rollout._rollout_dir = run_dir
+    received: list[list[str] | None] = []
+    _fake_agent_boundary(monkeypatch, received)
+
+    first, second = "root-event plan", "deep-event plan"
+    await rollout.branch(2, deltas=[None, BranchDelta(injected_prompt=first)])
+    # continue linearly past the branch, then branch again at the new cursor
+    rollout._cursor = rollout._tree.advance(rollout._cursor, Step(id="s1"))
+    await rollout.branch(2, deltas=[BranchDelta(injected_prompt=second), None])
+
+    # first event at root (children n1, n2); linear node n3; second event at
+    # n3 (children n4, n5)
+    root_children = run_dir / "branches" / "root" / "children"
+    deep_children = run_dir / "branches" / "n3" / "children"
+    assert json.loads((root_children / "n2" / "provenance.json").read_text())[
+        "delta"
+    ]["injected_prompt_sha256"] == sha256_prefixed(first.encode())
+    assert json.loads((deep_children / "n4" / "provenance.json").read_text())[
+        "delta"
+    ]["injected_prompt_sha256"] == sha256_prefixed(second.encode())
+
+    nodes = {
+        node["id"]: node
+        for node in json.loads((run_dir / "tree.json").read_text())["nodes"]
+    }
+    assert nodes["n2"]["delta"]["injected_prompt_sha256"] == sha256_prefixed(
+        first.encode()
+    )
+    assert nodes["n4"]["delta"]["injected_prompt_sha256"] == sha256_prefixed(
+        second.encode()
+    )
+    assert nodes["n1"]["delta"]["injected_prompt_sha256"] is None
+    assert nodes["n5"]["delta"]["injected_prompt_sha256"] is None
+    assert "delta" not in nodes["n3"]  # the linear node carries no delta
 
 
 def test_child_provenance_shape_matches_the_rfc():
@@ -422,17 +535,30 @@ def test_child_provenance_shape_matches_the_rfc():
     }
 
 
-# 5. "branched" is a terminal phase
+# 5. Engine: the derived unsupported-field set fails closed by construction
 
 
-async def test_branched_phase_is_terminal_and_result_is_reachable(
-    tmp_path: Path, monkeypatch
-):
-    """Rollout.result no longer returns None after a branch-first workflow.
+def test_unsupported_delta_fields_are_derived_from_the_schema():
+    """The blocklist is derived at import (all BranchDelta fields minus the
+    executable set), so a future BranchDelta field is unsupported-by-default
+    — the engine fails closed on it instead of silently ignoring it. Today
+    that derivation yields exactly the three records-only fields."""
+    assert set(_UNSUPPORTED_DELTA_FIELDS) == {
+        "config_override",
+        "environment_ref",
+        "skill_mode",
+    }
 
-    Guards the terminal-phase change: "branched" joined _TERMINAL_PHASES and
-    the result gate, so a branch-first run can read its result without a
-    linear verify()/cleanup() pass.
+
+# 6. "branched" is a terminal phase and the result is real
+
+
+async def test_branch_first_result_is_none_without_setup(tmp_path: Path):
+    """A branch-first rollout that never ran setup() reads result as None.
+
+    "branched" is terminal, but with no run directory there is nothing to
+    build result artifacts in — the property stays graceful (the pre-branch
+    contract) instead of raising RuntimeError from _require_rollout_dir.
     """
     assert "branched" in _TERMINAL_PHASES
 
@@ -444,8 +570,36 @@ async def test_branched_phase_is_terminal_and_result_is_reachable(
 
     assert rollout.result is None  # pre-branch: no terminal phase yet
     await rollout.branch(2, run_child=run_child)
-    assert rollout._phase == "branched"
 
-    sentinel = object()
-    monkeypatch.setattr(rollout, "_build_result", lambda: sentinel)
-    assert rollout.result is sentinel
+    assert rollout._phase == "branched"
+    assert rollout.result is None  # no setup() -> no run dir -> graceful None
+
+
+async def test_branched_result_surfaces_the_branch_aggregate(tmp_path: Path):
+    """A set-up rollout's branched result carries V(cursor), not rewards=None.
+
+    branch() restores the parent's linear state, so ``_rewards`` rolls back
+    to its pre-branch value even though the children verified; the built
+    result must surface the aggregate the engine recorded on the branch
+    point as ``rewards={"reward": <V>, "source": "branch_aggregate"}`` —
+    exercised through the real result/_build_result path (no monkeypatch).
+    """
+    rollout = _rollout(tmp_path)
+    rollout._environment = FakeEnvironment()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    rollout._rollout_dir = run_dir
+    rollout._started_at = datetime.now()
+
+    returns = iter([0.25, 0.75])
+
+    async def run_child(child):
+        return next(returns)
+
+    await rollout.branch(2, run_child=run_child)
+
+    result = rollout.result
+    assert result is not None
+    assert result.rewards == {"reward": 0.5, "source": "branch_aggregate"}
+    persisted = json.loads((run_dir / "result.json").read_text())
+    assert persisted["rewards"] == {"reward": 0.5, "source": "branch_aggregate"}
