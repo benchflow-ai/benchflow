@@ -392,6 +392,8 @@ def _load_run_metadata(metadata_dir: Path | None) -> dict[str, Any]:
 
 
 def _read_object(path: Path) -> dict[str, Any]:
+    if path.is_symlink():
+        return {}
     try:
         value = strict_json_loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError):

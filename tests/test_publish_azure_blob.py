@@ -155,6 +155,14 @@ def test_staging_rejects_symlinked_trajectory_inputs(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="directory must not be a symlink"):
         stage_trajectory_capture(trial, source_id="demo").__enter__()
 
+    metadata_trial = _trial(tmp_path)
+    external_metadata = tmp_path / "external-result.json"
+    external_metadata.write_text('{"agent":"outside-secret"}', encoding="utf-8")
+    (metadata_trial / "result.json").symlink_to(external_metadata)
+    with stage_trajectory_capture(metadata_trial, source_id="demo") as staged:
+        assert staged.manifest["run"]["agent"] is None
+        assert "outside-secret" not in json.dumps(staged.manifest)
+
 
 def test_staging_enforces_shared_capture_count_and_size_limits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
