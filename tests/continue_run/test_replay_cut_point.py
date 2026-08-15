@@ -1,12 +1,18 @@
-"""Replay cut-point tests — rollout-branching RFC §3.5, FrontierPhysics#73.
+"""Replay cut-point tests.
+
+Guards the replay cut-point ("feat(continue): replay cut-point — replay first
+K exchanges, then go live"; docs/rollout-branching-rfc.md WS-3;
+FrontierPhysics#73). PR number to be added on submission.
 
 ``max_exchanges`` replays at most the first K recorded exchanges, then switches
 the proxy to live passthrough exactly as if the recording had ended there. The
 router exposes cut-point accounting (``n_replayed_exchanges`` +
 ``cut_point_digest``), a cut continue-run's ``source_provenance`` gains a
-``cut_point`` block, and ``stage_tags`` + ``cut_stage`` name a cut by recorded
-stage. Unit tests against the existing continue_run test doubles — no Docker,
-no API keys.
+``cut_point`` block (configured at build time, reconciled with the served
+counts post-run in host proxy mode), and ``stage_tags`` + ``cut_stage`` name a
+cut by recorded stage — ``stage_tags[stage]`` is the 1-based count of
+exchanges that had completed when the stage closed. Unit tests against the
+existing continue_run test doubles — no Docker, no API keys.
 """
 
 from __future__ import annotations
@@ -24,7 +30,11 @@ from benchflow.continue_run.orchestrator import (
     build_rollout_config,
     cut_point_provenance,
     resolve_cut_point,
+    served_cut_point,
     stitched_trajectory_lines,
+    summarize_llm_trajectory_usage,
+    update_continued_metadata,
+    write_stitched_trajectory,
 )
 from benchflow.continue_run.replay_proxy import (
     ReplayCutPointError,
@@ -32,7 +42,7 @@ from benchflow.continue_run.replay_proxy import (
     request_body_digest,
     validate_max_exchanges,
 )
-from benchflow.continue_run.run_folder import RunFolderError, load_run_folder
+from benchflow.continue_run.run_folder import load_run_folder
 
 from ._helpers import completion, exchange, write_run_folder
 
@@ -194,6 +204,10 @@ def test_provenance_gains_cut_point_block(tmp_path):
     cut = cfg.source_provenance["cut_point"]
     assert cut["n_replayed_exchanges"] == 2
     assert cut["cut_point_digest"] == request_body_digest(run.exchanges[1].request.body)
+    # config-time blocks are computed from the recording, and say so — sandbox
+    # proxy mode (truncated upload, no live router to read back) keeps this
+    # basis in the final artifacts.
+    assert cut["accounting"] == "configured"
     assert "branch_stage" not in cut
     # existing provenance fields are preserved alongside the new block
     assert cfg.source_provenance["kind"] == "benchflow-continue"
@@ -207,12 +221,98 @@ def test_provenance_natural_end_documents_cut_point(tmp_path):
     cut = cfg.source_provenance["cut_point"]
     assert cut["n_replayed_exchanges"] == 3
     assert cut["cut_point_digest"] == request_body_digest(run.exchanges[2].request.body)
+    assert cut["accounting"] == "configured"
+
+
+# ── host-mode reconciliation: the served cut_point block ──────────────────
+
+
+def test_served_cut_point_records_what_the_router_actually_served():
+    """A run that went live before reaching the configured cut is visible.
+
+    The router's served counters had no production readers — the block now
+    records n_replayed_exchanges / cut_point_digest as observed (accounting
+    "served") plus the requested configured_max_exchanges, so a
+    served-vs-configured divergence is detectable in artifacts.
+    """
+    recorded = _recorded(3)
+    router = ReplayRouter(
+        recorded, live_forwarder=lambda req: completion(content="L"), max_exchanges=3
+    )
+    # the agent only ever replays 2 of the configured 3 exchanges
+    for i in range(2):
+        router.next_response(_request(i))
+
+    block = served_cut_point(router, configured_max_exchanges=3)
+
+    assert block == {
+        "n_replayed_exchanges": 2,
+        "cut_point_digest": request_body_digest(recorded[1].request.body),
+        "accounting": "served",
+        "configured_max_exchanges": 3,
+    }
+
+
+def test_served_cut_point_natural_end_and_stage_shape():
+    recorded = _recorded(2)
+    router = ReplayRouter(recorded, live_forwarder=lambda req: completion(content="L"))
+    for i in range(3):
+        router.next_response(_request(i))
+
+    block = served_cut_point(router, branch_stage="post-research")
+
+    assert block == {
+        "n_replayed_exchanges": 2,
+        "cut_point_digest": request_body_digest(recorded[1].request.body),
+        "accounting": "served",
+        "branch_stage": "post-research",
+    }
+
+
+def test_update_continued_metadata_reconciles_cut_point_in_both_files(tmp_path):
+    """Host mode's post-run patch replaces the configured block with served."""
+    rollout_dir = tmp_path / "rollout"
+    rollout_dir.mkdir()
+    configured = {
+        "n_replayed_exchanges": 3,
+        "cut_point_digest": "sha256:configured",
+        "accounting": "configured",
+    }
+    (rollout_dir / "config.json").write_text(
+        json.dumps({"model": None, "source": {"cut_point": configured}})
+    )
+    (rollout_dir / "result.json").write_text(
+        json.dumps({"model": None, "source": {"cut_point": configured}})
+    )
+    traj = tmp_path / "llm_trajectory.jsonl"
+    traj.write_text("")
+    served = {
+        "n_replayed_exchanges": 2,
+        "cut_point_digest": "sha256:served",
+        "accounting": "served",
+        "configured_max_exchanges": 3,
+    }
+
+    update_continued_metadata(
+        rollout_dir,
+        live_model="live-model",
+        usage=summarize_llm_trajectory_usage(traj, n_recorded=2),
+        environment="docker",
+        cut_point=served,
+    )
+
+    config = json.loads((rollout_dir / "config.json").read_text())
+    result = json.loads((rollout_dir / "result.json").read_text())
+    assert config["source"]["cut_point"] == served
+    assert result["source"]["cut_point"] == served
 
 
 # ── stage-named cuts ──────────────────────────────────────────────────────
 
 
 def test_stage_named_cut_resolves_and_records_branch_stage():
+    """stage_tags[stage] = the 1-based count of exchanges completed when the
+    stage closed; a cut at that stage replays exactly that many."""
     tags = {"env-ready": 1, "post-research": 2}
     resolved, stage = resolve_cut_point(
         None, stage_tags=tags, cut_stage="post-research"
@@ -227,18 +327,26 @@ def test_stage_named_cut_resolves_and_records_branch_stage():
 
 def test_unknown_cut_stage_names_available_stages():
     tags = {"env-ready": 1, "post-research": 2}
-    with pytest.raises(RunFolderError, match="env-ready, post-research"):
+    with pytest.raises(ReplayCutPointError, match="env-ready, post-research"):
         resolve_cut_point(None, stage_tags=tags, cut_stage="pre-verify")
 
 
 def test_cut_stage_without_stage_tags_fails_closed():
-    with pytest.raises(RunFolderError, match="stage_tags"):
+    with pytest.raises(ReplayCutPointError, match="stage_tags"):
         resolve_cut_point(None, cut_stage="post-research")
 
 
 def test_cut_stage_and_max_exchanges_are_exclusive():
-    with pytest.raises(RunFolderError, match="not both"):
+    with pytest.raises(ReplayCutPointError, match="not both"):
         resolve_cut_point(2, stage_tags={"env-ready": 1}, cut_stage="env-ready")
+
+
+@pytest.mark.parametrize("bad_tag", [0, -3])
+def test_stage_tag_below_one_fails_closed(bad_tag):
+    """A stage tag is a 1-based completed-exchange count — 0/negative is a
+    caller bug, rejected as ReplayCutPointError at resolve time."""
+    with pytest.raises(ReplayCutPointError, match="1-based"):
+        resolve_cut_point(None, stage_tags={"env-ready": bad_tag}, cut_stage="env-ready")
 
 
 def test_resolve_cut_point_passthrough_without_stage():
@@ -246,20 +354,59 @@ def test_resolve_cut_point_passthrough_without_stage():
     assert resolve_cut_point(4) == (4, None)
 
 
-# ── stitched trajectory: prefix truncated at the cut ──────────────────────
+# ── stitched trajectory: prefix = the K parsed (replayed) exchanges ───────
 
 
-def test_stitched_prefix_truncated_at_cut(tmp_path):
-    original = tmp_path / "orig.jsonl"
-    original.write_text('{"a": 1}\n{"b": 2}\n{"c": 3}\n')
+def test_stitched_prefix_truncated_at_cut():
+    recorded_lines = ['{"a": 1}', '{"b": 2}', '{"c": 3}']
     lines = stitched_trajectory_lines(
-        original, [exchange(completion(content="L"))], max_recorded=2
+        recorded_lines, [exchange(completion(content="L"))], max_recorded=2
     )
     assert len(lines) == 3
     assert json.loads(lines[0]) == {"a": 1}
     assert json.loads(lines[1]) == {"b": 2}
     last = json.loads(lines[2])
     assert last["response"]["body"]["choices"][0]["message"]["content"] == "L"
+
+
+def test_stitched_prefix_counts_parsed_exchanges_not_raw_lines(tmp_path):
+    """A malformed recorded line is never replayed — and never stitched.
+
+    Replay counts *parsed* exchanges (load_llm_exchanges skips malformed
+    lines), so the stitched prefix must be the raw lines of the first K
+    parsed exchanges. Truncating by raw file-line index used to embed the
+    malformed (never-replayed) line and drop a replayed one, and shifted the
+    recorded/live usage-accounting boundary.
+    """
+    recorded = _recorded(3)
+    folder = write_run_folder(tmp_path / "run", exchanges=recorded)
+    traj = folder / "trajectory" / "llm_trajectory.jsonl"
+    good_lines = traj.read_text().splitlines()
+    traj.write_text(
+        "\n".join([good_lines[0], "this is not json", *good_lines[1:]]) + "\n"
+    )
+    run = load_run_folder(folder)
+    assert run.n_recorded_exchanges == 3  # malformed line skipped at load
+
+    live = [exchange(completion(content="LIVE"))]
+    stitched = write_stitched_trajectory(
+        tmp_path / "rollout", run.exchange_lines, live, max_recorded=2
+    )
+
+    lines = stitched.read_text().splitlines()
+    # exactly the 2 replayed exchanges' verbatim lines + the live suffix
+    assert len(lines) == 3
+    assert lines[0] == good_lines[0]
+    assert lines[1] == good_lines[1]
+    assert "this is not json" not in stitched.read_text()
+    assert (
+        json.loads(lines[2])["response"]["body"]["choices"][0]["message"]["content"]
+        == "LIVE"
+    )
+    # the recorded/live usage split lands on the true replay boundary
+    usage = summarize_llm_trajectory_usage(stitched, n_recorded=2)
+    assert usage.recorded_total_tokens == 4  # 2 replayed exchanges x 2 tokens
+    assert usage.live_total_tokens == 2  # 1 live exchange x 2 tokens
 
 
 # ── CLI: --max-exchanges reaches the orchestrator ─────────────────────────

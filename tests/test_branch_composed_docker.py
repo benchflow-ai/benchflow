@@ -1,5 +1,10 @@
 """T2 oracle-invariant proofs for composed checkpoints, against real Docker.
 
+Guards the composed-checkpoint layer ("feat(branch): compose sandbox +
+environment checkpoints in the branch engine"; docs/rollout-branching-rfc.md
+WS-1, T2 tier per WS-3/§5; FrontierPhysics#73). PR number to be added on
+submission.
+
 The rollout-branching RFC's validation plan (docs/rollout-branching-rfc.md §5)
 names three tiers; ``tests/test_branch_composed.py`` is T1 (fakes). This file
 is the T2 tier: an executable proof on a live ``DockerSandbox`` that the
