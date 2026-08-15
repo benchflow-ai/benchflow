@@ -19,7 +19,7 @@ representative 3-agent SUBSET at L2 and the full DeepSeek roster (5 agents) at L
 via `expanded`, with the 2 gated native agents (`codex-acp`, `claude-agent-acp`)
 running only via affected-agent, plus the per-agent model policy and
 credential-aware emission. Vocabulary shared across the docs and the
-`benchflow-experiment-review` skill is in the [Glossary](#glossary) (§12).
+`benchflow-experiment-review` skill is in the [Glossary](#12-glossary) (§12).
 
 > **Terminology rename.** The deterministic verdict is user-facing as
 > **`mergeable`** / **`mergeable with quarantines`** / **`not mergeable`**. These
