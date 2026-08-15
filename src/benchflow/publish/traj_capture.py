@@ -23,11 +23,18 @@ MAX_CAPTURE_BYTES = 2 * MAX_FILE_BYTES
 MAX_MANIFEST_BYTES = 1024**2
 MAX_RUN_METADATA_BYTES = 1024**2
 MAX_UPLOADED_BY_LENGTH = 256
+MAX_GITHUB_ID_LENGTH = 39
+MAX_EMAIL_LENGTH = 254
 MAX_JSONL_RECORD_BYTES = 8 * 1024**2
 MAX_JSON_NESTING = 100
 MAX_JSON_NODES = 100_000
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 ARTIFACT_NAME_PATTERN = re.compile(r"^trajectory/[A-Za-z0-9._-]{1,128}\.jsonl$")
+GITHUB_ID_PATTERN = re.compile(
+    rf"^[A-Za-z0-9](?:[A-Za-z0-9-]{{0,{MAX_GITHUB_ID_LENGTH - 2}}}[A-Za-z0-9])?$"
+)
+EMAIL_LOCAL_PATTERN = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$")
+EMAIL_DOMAIN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$")
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -102,6 +109,42 @@ def validate_source_id(source_id: str) -> str:
     return normalized
 
 
+def validate_github_id(github_id: str) -> str:
+    """Validate a self-asserted GitHub username stored as contributor provenance."""
+    normalized = github_id.strip()
+    if not GITHUB_ID_PATTERN.fullmatch(normalized) or "--" in normalized:
+        raise ValueError(
+            "invalid GitHub ID; use the 1-39 character username without '@'"
+        )
+    return normalized
+
+
+def validate_email(email: str) -> str:
+    """Validate a bounded ASCII contributor email address."""
+    normalized = email.strip()
+    if len(normalized) > MAX_EMAIL_LENGTH or normalized.count("@") != 1:
+        raise ValueError("invalid contributor email address")
+    local, domain = normalized.rsplit("@", 1)
+    labels = domain.split(".")
+    if (
+        not local
+        or len(local) > 64
+        or local.startswith(".")
+        or local.endswith(".")
+        or ".." in local
+        or not EMAIL_LOCAL_PATTERN.fullmatch(local)
+        or len(labels) < 2
+        or any(
+            not label
+            or len(label) > 63
+            or not EMAIL_DOMAIN_LABEL_PATTERN.fullmatch(label)
+            for label in labels
+        )
+    ):
+        raise ValueError("invalid contributor email address")
+    return normalized
+
+
 def validate_artifact_name(name: str) -> str:
     """Require the canonical public trajectory object namespace."""
     if not ARTIFACT_NAME_PATTERN.fullmatch(name):
@@ -119,6 +162,8 @@ def stage_trajectory_capture(
     source_id: str,
     redact: bool = True,
     uploaded_by: str | None = None,
+    github_id: str | None = None,
+    email: str | None = None,
 ) -> Iterator[StagedCapture]:
     """Validate and stage a trajectory capture without mutating its source."""
     source_id = validate_source_id(source_id)
@@ -126,6 +171,14 @@ def stage_trajectory_capture(
         raise ValueError(
             f"trajectory contributor label exceeds {MAX_UPLOADED_BY_LENGTH} characters"
         )
+    contributor: dict[str, str] | None = None
+    if github_id is not None or email is not None:
+        if github_id is None or email is None:
+            raise ValueError("GitHub ID and email must be provided together")
+        contributor = {
+            "github_id": validate_github_id(github_id),
+            "email": validate_email(email),
+        }
     resolved = _resolve_input(path)
     if len(resolved.files) > MAX_ARTIFACTS:
         raise ValueError(
@@ -176,6 +229,7 @@ def stage_trajectory_capture(
             payloads=payloads,
             metadata_dir=resolved.metadata_dir,
             uploaded_by=uploaded_by,
+            contributor=contributor,
             redact=redact,
             replacement_count=replacement_count,
         )
@@ -183,6 +237,8 @@ def stage_trajectory_capture(
             redacted_manifest, manifest_replacements = redact_value(manifest)
             if redacted_manifest["source_id"] != manifest["source_id"]:
                 raise ValueError("source id contains a secret-like value")
+            if redacted_manifest.get("contributor") != manifest.get("contributor"):
+                raise ValueError("contributor metadata resembles a secret-like value")
             replacement_count += manifest_replacements
             redacted_manifest["redaction"]["replacements"] = replacement_count
             manifest = redacted_manifest
@@ -384,11 +440,12 @@ def _build_manifest(
     payloads: list[StagedFile],
     metadata_dir: Path | None,
     uploaded_by: str | None,
+    contributor: dict[str, str] | None,
     redact: bool,
     replacement_count: int,
 ) -> dict[str, Any]:
-    return {
-        "schema_version": "1.0.0",
+    manifest = {
+        "schema_version": "1.1.0" if contributor is not None else "1.0.0",
         "kind": "bronze.trajectory",
         "created_at": datetime.now(UTC)
         .replace(microsecond=0)
@@ -405,6 +462,9 @@ def _build_manifest(
         ],
         "redaction": {"applied": redact, "replacements": replacement_count},
     }
+    if contributor is not None:
+        manifest["contributor"] = contributor
+    return manifest
 
 
 def _load_run_metadata(metadata_dir: Path | None) -> dict[str, Any]:

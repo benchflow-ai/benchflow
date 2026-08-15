@@ -4,7 +4,9 @@ Anyone with BenchFlow installed can contribute a completed trajectory with one
 command:
 
 ```bash
-bench traj upload path/to/trial
+bench traj upload path/to/trial \
+  --github-id YOUR_GITHUB_ID \
+  --email YOU@example.com
 ```
 
 `path/to/trial` may be a trial directory containing `trajectory/`, a directory
@@ -14,6 +16,13 @@ values in both artifacts and manifest metadata, computes a content digest, and
 uploads a manifest last. Use `--dry-run` to inspect the
 staged file list, digest, sizes, ignored siblings, and redaction count without
 making a network request.
+
+`--github-id` and `--email` are required for both public and direct uploads.
+They are self-asserted contributor provenance, not proof of account ownership,
+and are stored in `manifest.json` as
+`{"contributor":{"github_id":"...","email":"..."}}`. The email is not
+printed by the CLI, but dataset operators may retain or publish the manifest;
+use an address you are comfortable associating with the contribution.
 
 The public broker URL is built into the CLI. `BENCHFLOW_TRAJ_BROKER_URL` can
 override it for development or disaster recovery, and
@@ -52,6 +61,8 @@ staging and manifest contract:
 uv tool install 'benchflow[azure]'
 az login
 bench traj upload path/to/trial --direct \
+  --github-id YOUR_GITHUB_ID \
+  --email YOU@example.com \
   --container-url https://ACCOUNT.blob.core.windows.net/bronze
 ```
 

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+- **Trajectory uploads require contributor provenance.** The single
+  `bench traj upload` command now requires `--github-id` and `--email`; both
+  values are validated locally and server-side and stored in `manifest.json`
+  under the structured `contributor` field. Existing 0.6.8 manifests remain
+  readable by the validator during the client transition.
+
 ## 0.6.8 — 2026-08-15
 
 ### Added

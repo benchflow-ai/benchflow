@@ -16,6 +16,8 @@ from benchflow.publish.broker import upload_capture_via_broker
 from benchflow.publish.traj_capture import stage_trajectory_capture
 
 runner = CliRunner()
+GITHUB_ID = "benchflow-user"
+EMAIL = "user@example.com"
 
 
 def _trial(tmp_path: Path) -> Path:
@@ -26,6 +28,19 @@ def _trial(tmp_path: Path) -> Path:
         '{"type":"message","text":"demo"}\n', encoding="utf-8"
     )
     return trial
+
+
+def _upload_command(path: Path, *args: str) -> list[str]:
+    return [
+        "traj",
+        "upload",
+        str(path),
+        "--github-id",
+        GITHUB_ID,
+        "--email",
+        EMAIL,
+        *args,
+    ]
 
 
 def test_stock_cli_has_the_verified_public_broker() -> None:
@@ -72,12 +87,13 @@ def test_dry_run_stages_without_constructing_a_transport(
         raise AssertionError("network client constructed during --dry-run")
 
     monkeypatch.setattr(httpx, "Client", fail_client)
-    result = runner.invoke(app, ["traj", "upload", str(trial), "--dry-run"])
+    result = runner.invoke(app, _upload_command(trial, "--dry-run"))
 
     assert result.exit_code == 0, result.output
     assert "sha256:" in result.output
     assert "trajectory/acp_trajectory.jsonl" in result.output
     assert "manifest.json" in result.output
+    assert EMAIL not in result.output
 
 
 def test_direct_mode_reports_azure_destination(
@@ -87,6 +103,10 @@ def test_direct_mode_reports_azure_destination(
     trial = _trial(tmp_path)
 
     def fake_upload(staged, *, container_url):
+        assert staged.manifest["contributor"] == {
+            "github_id": GITHUB_ID,
+            "email": EMAIL,
+        }
         return SimpleNamespace(
             url=f"{container_url}/sources/demo/{staged.traj_digest}/",
             uploaded=("payload", "manifest"),
@@ -98,14 +118,12 @@ def test_direct_mode_reports_azure_destination(
     )
     result = runner.invoke(
         app,
-        [
-            "traj",
-            "upload",
-            str(trial),
+        _upload_command(
+            trial,
             "--direct",
             "--container-url",
             "https://tasksminerdata.blob.core.windows.net/bronze",
-        ],
+        ),
     )
 
     assert result.exit_code == 0, result.output
@@ -130,9 +148,20 @@ def test_broker_mode_uses_exact_manifest_and_server_order(
                 "source_id",
                 "traj_digest",
                 "uploaded_by",
+                "contributor",
                 "artifacts",
             }
+            assert body["contributor"] == {
+                "github_id": GITHUB_ID,
+                "email": EMAIL,
+            }
+            assert body["schema_version"] == "1.1.0"
             return httpx.Response(200, json=_broker_payload(request))
+        if request.url.path.endswith("manifest.json"):
+            assert json.loads(request.content)["contributor"] == {
+                "github_id": GITHUB_ID,
+                "email": EMAIL,
+            }
         assert request.headers["x-ms-blob-type"] == "BlockBlob"
         assert request.headers["if-none-match"] == "*"
         return httpx.Response(201)
@@ -140,7 +169,7 @@ def test_broker_mode_uses_exact_manifest_and_server_order(
     client = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: client)
     monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
-    result = runner.invoke(app, ["traj", "upload", str(trial)])
+    result = runner.invoke(app, _upload_command(trial))
 
     assert result.exit_code == 0, result.output
     assert [request.method for request in requests] == ["POST", "PUT", "PUT"]
@@ -198,12 +227,12 @@ def test_broker_conflict_is_success_and_rate_limit_is_actionable(
         )
     )
     monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: conflict)
-    result = runner.invoke(app, ["traj", "upload", str(trial)])
+    result = runner.invoke(app, _upload_command(trial))
     assert result.exit_code == 0, result.output
     assert "Already uploaded" in result.output
 
     monkeypatch.setattr("benchflow.publish.broker.httpx.Client", lambda: limited)
-    result = runner.invoke(app, ["traj", "upload", str(trial)])
+    result = runner.invoke(app, _upload_command(trial))
     assert result.exit_code == 1
     assert "retry after 60" in result.output
 
@@ -215,7 +244,7 @@ def test_missing_broker_names_both_available_modes(
     trial = _trial(tmp_path)
     monkeypatch.delenv("BENCHFLOW_TRAJ_BROKER_URL", raising=False)
     monkeypatch.setattr("benchflow.cli.traj.DEFAULT_TRAJ_BROKER_URL", None)
-    result = runner.invoke(app, ["traj", "upload", str(trial)])
+    result = runner.invoke(app, _upload_command(trial))
 
     assert result.exit_code == 1
     assert "BENCHFLOW_TRAJ_BROKER_URL" in result.output
@@ -231,7 +260,7 @@ def test_validation_failure_names_the_bad_file(
     path = trial / "trajectory" / "acp_trajectory.jsonl"
     path.write_text("{bad\n", encoding="utf-8")
     monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
-    result = runner.invoke(app, ["traj", "upload", str(trial)])
+    result = runner.invoke(app, _upload_command(trial))
 
     assert result.exit_code == 1
     assert "acp_trajectory.jsonl" in result.output.replace("\n", "")
@@ -299,3 +328,44 @@ def test_help_exposes_only_the_planned_upload_command() -> None:
     result = runner.invoke(app, ["traj", "--help"])
     assert result.exit_code == 0
     assert "upload" in result.output
+
+    upload_help = runner.invoke(app, ["traj", "upload", "--help"])
+    assert upload_help.exit_code == 0
+    assert "--github-id" in upload_help.output
+    assert "--email" in upload_help.output
+
+
+def test_upload_requires_github_id_and_email_parameters(tmp_path: Path) -> None:
+    """Every CLI upload names its contributor in the generated manifest."""
+    trial = _trial(tmp_path)
+    result = runner.invoke(app, ["traj", "upload", str(trial)])
+
+    assert result.exit_code == 2
+    assert "--github-id" in result.output
+
+    result = runner.invoke(
+        app,
+        ["traj", "upload", str(trial), "--github-id", GITHUB_ID],
+    )
+    assert result.exit_code == 2
+    assert "--email" in result.output
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("--github-id", "@not-a-github-id", "--email", EMAIL), "GitHub ID"),
+        (("--github-id", GITHUB_ID, "--email", "not-an-email"), "email"),
+    ],
+)
+def test_upload_validates_contributor_parameters_locally(
+    tmp_path: Path, args: tuple[str, ...], message: str
+) -> None:
+    """Malformed contributor provenance fails before the upload handshake."""
+    result = runner.invoke(
+        app,
+        ["traj", "upload", str(_trial(tmp_path)), *args, "--dry-run"],
+    )
+
+    assert result.exit_code == 1
+    assert message in result.output

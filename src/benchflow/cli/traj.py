@@ -29,6 +29,14 @@ def register_traj(app: typer.Typer) -> None:
             Path,
             typer.Argument(help="Trajectory JSONL file, directory, or trial directory"),
         ],
+        github_id: Annotated[
+            str,
+            typer.Option("--github-id", help="Contributor GitHub username"),
+        ],
+        email: Annotated[
+            str,
+            typer.Option("--email", help="Contributor email stored in the manifest"),
+        ],
         source_id: Annotated[
             str | None,
             typer.Option("--source-id", help="Stable contributor source identifier"),
@@ -84,6 +92,8 @@ def register_traj(app: typer.Typer) -> None:
                 path,
                 source_id=selected_source_id,
                 uploaded_by=os.environ.get("BENCHFLOW_TRAJ_UPLOADED_BY"),
+                github_id=github_id,
+                email=email,
             ) as staged:
                 if dry_run:
                     _print_dry_run(staged, destination=destination, direct=direct)

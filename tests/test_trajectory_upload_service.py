@@ -53,7 +53,7 @@ def _trial(tmp_path: Path, text: str = "safe") -> Path:
 
 
 def _request_from_manifest(manifest: dict) -> dict:
-    return {
+    request = {
         key: manifest[key]
         for key in (
             "schema_version",
@@ -64,6 +64,9 @@ def _request_from_manifest(manifest: dict) -> dict:
             "artifacts",
         )
     }
+    if "contributor" in manifest:
+        request["contributor"] = manifest["contributor"]
+    return request
 
 
 class FakeBroker:
@@ -158,7 +161,12 @@ def test_upload_contract_recomputes_digest_and_rejects_object_injection(
 ) -> None:
     """The broker accepts only content-addressed trajectory JSONL object names."""
     trial = _trial(tmp_path)
-    with stage_trajectory_capture(trial, source_id="demo") as staged:
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
         body = _request_from_manifest(staged.manifest)
         request = UploadRequest.model_validate(body)
         assert request.traj_digest == staged.manifest["traj_digest"]
@@ -167,11 +175,77 @@ def test_upload_contract_recomputes_digest_and_rejects_object_injection(
         with pytest.raises(ValidationError, match="outside trajectory"):
             UploadRequest.model_validate(body)
 
-    with stage_trajectory_capture(trial, source_id="demo") as staged:
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
         body = _request_from_manifest(staged.manifest)
         body["traj_digest"] = "sha256:" + "0" * 64
         with pytest.raises(ValidationError, match="does not match"):
             UploadRequest.model_validate(body)
+
+
+def test_contributor_contract_is_validated_at_broker_and_manifest_boundaries(
+    tmp_path: Path,
+) -> None:
+    """Self-asserted GitHub and email provenance remains typed server-side."""
+    trial = _trial(tmp_path)
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
+        request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
+        manifest = validate_manifest_bytes(staged.files[-1].local_path.read_bytes())
+
+    assert request.contributor is not None
+    assert request.schema_version == "1.1.0"
+    assert request.contributor.github_id == "benchflow-ai"
+    assert request.contributor.email == "contributor@benchflow.ai"
+    assert manifest.contributor == request.contributor
+
+    invalid = _request_from_manifest(staged.manifest)
+    invalid["contributor"] = {
+        "github_id": "@invalid",
+        "email": "not-an-email",
+    }
+    with pytest.raises(ValidationError):
+        UploadRequest.model_validate(invalid)
+
+    missing = _request_from_manifest(staged.manifest)
+    missing.pop("contributor")
+    with pytest.raises(ValidationError, match="Field required"):
+        UploadRequest.model_validate(missing)
+
+    legacy_request = dict(missing)
+    legacy_request["schema_version"] = "1.0.0"
+    with pytest.raises(ValidationError, match="literal_error"):
+        UploadRequest.model_validate(legacy_request)
+
+    with stage_trajectory_capture(trial, source_id="legacy") as legacy:
+        legacy_manifest = validate_manifest_bytes(
+            legacy.files[-1].local_path.read_bytes()
+        )
+    assert legacy_manifest.schema_version == "1.0.0"
+    assert legacy_manifest.contributor is None
+
+
+def test_broker_rejects_new_legacy_uploads_without_contributor(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #992 against granting contributor-free schema 1.0 uploads."""
+    with stage_trajectory_capture(_trial(tmp_path), source_id="legacy") as staged:
+        body = _request_from_manifest(staged.manifest)
+
+    response = TestClient(create_app(FakeBroker(AssertionError()))).post(
+        "/v1/uploads", json=body
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"][0]["type"] == "literal_error"
 
 
 def test_broker_http_surface_returns_scoped_grants_and_protocol_statuses(
@@ -179,7 +253,12 @@ def test_broker_http_surface_returns_scoped_grants_and_protocol_statuses(
 ) -> None:
     """The public endpoint emits v1 grants, conflict, and Retry-After responses."""
     trial = _trial(tmp_path)
-    with stage_trajectory_capture(trial, source_id="demo") as staged:
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
         body = _request_from_manifest(staged.manifest)
         grant = UploadGrant(
             upload_id="u_demo",
@@ -240,7 +319,12 @@ def test_broker_validation_errors_are_fail_closed_and_json_safe(
 ) -> None:
     """Guards the live Azure fix after malformed handshakes returned HTTP 500."""
     trial = _trial(tmp_path)
-    with stage_trajectory_capture(trial, source_id="demo") as staged:
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
         body = _request_from_manifest(staged.manifest)
 
     injected = json.loads(json.dumps(body))
@@ -550,7 +634,12 @@ def test_broker_regrant_does_not_downgrade_ledger_state(
 ) -> None:
     """Guards PR #989 against a retry clearing an active validation lease."""
     trial = _trial(tmp_path)
-    with stage_trajectory_capture(trial, source_id="demo") as staged:
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         digest = staged.traj_digest
     table = FakeTable(
@@ -589,7 +678,12 @@ def test_broker_persists_declared_artifact_sizes(
 ) -> None:
     """Guards PR #989 against artifact-only uploads exceeding their declaration."""
     trial = _trial(tmp_path)
-    with stage_trajectory_capture(trial, source_id="demo") as staged:
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         expected = {item.name: item.bytes for item in request.artifacts}
     table = FakeTable()
@@ -619,7 +713,12 @@ def test_broker_reopens_rejected_digest_in_isolated_attempt(
 ) -> None:
     """Guards PR #989 against a rejected attempt poisoning a valid digest."""
     trial = _trial(tmp_path)
-    with stage_trajectory_capture(trial, source_id="demo") as staged:
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         digest = staged.traj_digest
     old_attempt = "u_" + "0" * 32
@@ -660,7 +759,12 @@ def test_terminal_digest_handshakes_consume_rate_limit(
 ) -> None:
     """Guards PR #989 against terminal ledger lookups bypassing broker quotas."""
     trial = _trial(tmp_path)
-    with stage_trajectory_capture(trial, source_id="demo") as staged:
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         digest = staged.traj_digest
     table = FakeTable(
@@ -683,7 +787,12 @@ def test_terminal_digest_handshakes_consume_rate_limit(
 
 def _quarantine_capture(tmp_path: Path) -> tuple[str, dict[str, bytes]]:
     trial = _trial(tmp_path)
-    with stage_trajectory_capture(trial, source_id="demo") as staged:
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
         digest = staged.traj_digest
         prefix = f"inbox/{digest}/"
         blobs = {
@@ -714,6 +823,13 @@ def test_queue_validator_promotes_manifest_last_and_cleans_quarantine(
 
     assert validator.run_once() is True
     assert container.uploaded[-1] == f"sources/community/{digest}/manifest.json"
+    promoted_manifest = json.loads(
+        container.blobs[f"sources/community/{digest}/manifest.json"]
+    )
+    assert promoted_manifest["contributor"] == {
+        "github_id": "benchflow-ai",
+        "email": "contributor@benchflow.ai",
+    }
     assert not any(name.startswith(f"inbox/{digest}/") for name in container.blobs)
     assert table.entities[-1]["status"] == "ingested"
     assert queue.deleted == [("m1", "p1")]
