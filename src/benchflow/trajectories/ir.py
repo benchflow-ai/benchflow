@@ -421,6 +421,17 @@ class TraceUsage(BaseModel):
     mean the same thing. The IR refuses to pick one and instead records which
     was used — a consumer can then compare like with like. Documented values:
     ``"llm_proxy_normalized"``, ``"acp_session_snapshot"``.
+
+    Cost sits here rather than in its own section because that is where every
+    BenchFlow object already puts it — ``agent_result``, ``TaskTelemetry`` and
+    ATIF's ``final_metrics`` all carry it beside the token totals — and because
+    it is derived from them. ``price_source`` is to ``cost_usd`` what ``source``
+    is to the counters: BenchFlow computes no prices of its own, it imports a
+    number from the model gateway's log, so a cost without the table that
+    produced it is not comparable. Runtime values: ``"litellm"`` or ``None``.
+
+    Deliberately **trace-level only**. Per-call cost exists in the proxy capture
+    and modelling it is a larger question this proposal does not open.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -432,6 +443,8 @@ class TraceUsage(BaseModel):
     reasoning_tokens: int | None = None
     total_tokens: int | None = None
     source: str | None = None
+    cost_usd: float | None = None
+    price_source: str | None = None
 
 
 class TraceEvent(BaseModel):

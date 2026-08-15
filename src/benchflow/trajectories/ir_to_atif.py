@@ -76,10 +76,23 @@ from benchflow.trajectories.ir import (
     LossClass,
     LossReport,
     PathSpace,
+    Role,
     TraceEvent,
 )
 
 LOSS_DIRECTION = "ir->atif"
+
+# The ATIF `source` is derived from the event kind, not from the IR role, and
+# for anything an ACP capture produces the two agree. They can disagree in a
+# trace from another source, and then the role is information this edge cannot
+# carry — declared per event, because it is a fact about that one event.
+_IMPLIED_ROLE = {
+    EventKind.USER_MESSAGE: Role.USER,
+    EventKind.AGENT_MESSAGE: Role.AGENT,
+    EventKind.AGENT_REASONING: Role.AGENT,
+    EventKind.TOOL_CALL: Role.AGENT,
+    EventKind.ORACLE: Role.ORACLE,
+}
 
 ATIF_SCHEMA_VERSION = "ATIF-v1.7"
 """Deliberately not imported from ``export_atif``.
@@ -195,6 +208,20 @@ def ir_to_atif(
 
     for event in trace.events:
         where = f"events[{event.index}]"
+
+        implied_role = _IMPLIED_ROLE.get(event.kind)
+        if (
+            event.role is not None
+            and implied_role is not None
+            and event.role is not implied_role
+        ):
+            losses.add(
+                f"{where}.role",
+                LossClass.DROPPED,
+                f"the IR attributes this event to {event.role.value!r}, but ATIF "
+                f"derives step source from the event kind and will write "
+                f"{implied_role.value!r}; the disagreement has no ATIF slot",
+            )
 
         if event.kind is EventKind.USER_MESSAGE:
             if event.text:
@@ -360,6 +387,7 @@ def ir_to_atif(
             ("input_tokens", "total_prompt_tokens"),
             ("output_tokens", "total_completion_tokens"),
             ("cache_read_tokens", "total_cached_tokens"),
+            ("cost_usd", "total_cost_usd"),
         ):
             value = getattr(trace.usage, source_field)
             if value is not None:
@@ -369,6 +397,7 @@ def ir_to_atif(
             "reasoning_tokens",
             "total_tokens",
             "source",
+            "price_source",
         ):
             if getattr(trace.usage, unmapped) is not None:
                 losses.add(
@@ -391,13 +420,62 @@ def ir_to_atif(
 def _declare_systemic_losses(trace: CanonicalTrace, losses: LossReport) -> None:
     """Losses that hold for the conversion rather than for one event.
 
-    Declared **only when the trace actually carries the value**. An ACP-derived
-    trace has no per-event timestamps or usage, and the inbound report already
-    declared those absences as ``UNSUPPORTED``; repeating them here as
-    ``DROPPED`` would double-count one fact and misdescribe this edge, which
-    loses nothing it was given.
+    Declared **only when the trace actually carries the value**, which is the
+    rule this edge is built on: *the outbound report describes what is lost from
+    the trace it received, not what an ACP-derived trace typically lacks*. An
+    ACP trace has no per-event timestamps or usage, and the inbound report
+    already declared those absences ``UNSUPPORTED``; repeating them here as
+    ``DROPPED`` would double-count one fact and misdescribe an edge that loses
+    nothing it was given. A trace from a richer source carries them, and then
+    every one is declared.
+
+    Two IR fields are deliberately never declared, because they describe the
+    representation rather than the run: ``ir_version`` and ``losses``. Every
+    other field of every IR model is accounted for here or in the event walk,
+    and a test derives that list from the models themselves so a new field
+    cannot be added without a disposition.
     """
     events = trace.events
+
+    if trace.trace_id:
+        losses.add("trace_id", LossClass.DROPPED, "ATIF documents carry no trace id")
+    for field in ("started_at", "finished_at"):
+        if getattr(trace, field) is not None:
+            losses.add(
+                field,
+                LossClass.DROPPED,
+                "ATIF has no run-level timestamps; wall clock lives in "
+                "timing.json for the direct path too",
+            )
+    losses.add(
+        "provenance",
+        LossClass.DROPPED,
+        "ATIF records no provenance for the document it describes",
+    )
+    if trace.extensions:
+        losses.add("extensions", LossClass.DROPPED, "carried by the IR, no ATIF slot")
+    if trace.agent.provider:
+        losses.add(
+            "agent.provider",
+            LossClass.DROPPED,
+            "ATIF's agent block is name/version/model_name only",
+        )
+    if trace.outcome and any(
+        value is not None
+        for value in (
+            trace.outcome.status,
+            trace.outcome.stop_reason,
+            trace.outcome.reward,
+            trace.outcome.error_category,
+        )
+    ):
+        losses.add(
+            "outcome",
+            LossClass.DROPPED,
+            "ATIF has no run-outcome section; reward and error category live in "
+            "result.json for the direct path too",
+        )
+
     if not events:
         return
 
@@ -447,27 +525,43 @@ def _declare_systemic_losses(trace: CanonicalTrace, losses: LossReport) -> None:
             LossClass.DROPPED,
             "ATIF per-step metrics are not emitted by this converter",
         )
-    if any(event.started_at or event.finished_at for event in events) or any(
-        event.tool_call and (event.tool_call.started_at or event.tool_call.finished_at)
+    if any(event.outcome and event.kind is not EventKind.TIMEOUT for event in events):
+        losses.add(
+            "events[].outcome",
+            LossClass.DROPPED,
+            "ATIF steps carry no per-step outcome; a timeout event is dropped "
+            "whole and declared at its own index instead",
+        )
+    for field in ("started_at", "finished_at"):
+        if any(getattr(event, field) is not None for event in events):
+            losses.add(
+                f"events[].{field}",
+                LossClass.DROPPED,
+                "ATIF steps carry no timestamps",
+            )
+        # Addressed under the tool call, never under the event: they are
+        # different values, and blaming the event would misdescribe which one
+        # was dropped.
+        if any(
+            event.tool_call and getattr(event.tool_call, field) is not None
+            for event in events
+        ):
+            losses.add(
+                f"events[].tool_call.{field}",
+                LossClass.DROPPED,
+                "ATIF tool calls carry no timestamps",
+            )
+    if any(
+        event.tool_call
+        and any(
+            block.kind is ContentBlockKind.TEXT and block.raw is not None
+            for block in event.tool_call.content
+        )
         for event in events
     ):
         losses.add(
-            "events[].started_at",
+            "events[].tool_call.content[].raw",
             LossClass.DROPPED,
-            "ATIF steps carry no timestamps",
-        )
-    if trace.outcome and any(
-        value is not None
-        for value in (
-            trace.outcome.status,
-            trace.outcome.stop_reason,
-            trace.outcome.reward,
-            trace.outcome.error_category,
-        )
-    ):
-        losses.add(
-            "outcome",
-            LossClass.DROPPED,
-            "ATIF has no run-outcome section; reward and error category live in "
-            "result.json for the direct path too",
+            "only the rendered text of a block reaches observation; the source "
+            "block the IR kept verbatim does not",
         )

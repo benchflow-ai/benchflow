@@ -686,9 +686,16 @@ something the direct path carried would fail that equality.
 | `agent.agent_name` absent | `"unknown"` | **synthesized** | `agent.agent_name` |
 | `agent.agent_version` absent | `"unknown"` | **synthesized** | `agent.agent_version` (#7) |
 | `usage.input/output/cache_read` | `final_metrics.total_prompt/completion/cached_tokens` | preserved | — |
-| `usage.cache_creation_tokens`, `.reasoning_tokens`, `.total_tokens`, `.source` | *(no slot)* | dropped | `usage.<field>` |
+| `usage.cost_usd` | `final_metrics.total_cost_usd` | preserved | — |
+| `usage.cache_creation_tokens`, `.reasoning_tokens`, `.total_tokens`, `.source`, `.price_source` | *(no slot)* | dropped | `usage.<field>` |
 | `outcome.*` | *(no slot)* | dropped | `outcome`, once |
-| `events[].provenance`, `.source_type`, `.extensions` | *(no slot)* | dropped | once each |
+| `trace_id`, `started_at`, `finished_at`, `provenance`, `extensions` | *(no slot)* | dropped | once each |
+| `agent.provider` | *(no slot)* | dropped | `agent.provider` |
+| `events[].provenance`, `.source_type`, `.extensions`, `.outcome`, `.usage` | *(no slot)* | dropped | once each |
+| `events[].started_at` / `.finished_at` | *(no slot)* | dropped | once each |
+| `events[].tool_call.started_at` / `.finished_at` | *(no slot)* | dropped | once each, **under the tool call** |
+| `events[].tool_call.content[].raw` on text blocks | *(only the rendered text survives)* | dropped | once |
+| `events[].role`, when it disagrees with the source the kind implies | *(no slot)* | dropped | `events[i].role`, per event |
 | *(the `prompts` argument)* | leading `user` steps | **synthesized** | `steps[i]`, **target space** |
 | *(none)* | `steps[].message` on tool / flushed-thought steps | **synthesized** | `steps[].message`, **target space**, once |
 | *(none)* | `final_metrics.total_steps` | **synthesized** | `final_metrics.total_steps`, **target space** |
@@ -702,10 +709,20 @@ the command as the message and no prefix. A test asserts that this is the *only*
 step that differs on a trajectory containing every capture event type plus an
 oracle record.
 
-**FACT — measured on the same two real rollouts.** H1 produces **12** outbound
-records (6 synthesized, 4 dropped, 2 normalized; 9 hub, 3 target); H2, whose
-trajectory contains a real wall-clock timeout, produces **14** (5 synthesized,
-7 dropped, 2 normalized), the extra drops being the timeout event, its
+**FACT — the outbound report describes the trace it received, not ACP's
+habits.** A loss is declared only when the IR actually carries the value. An
+ACP-derived trace has no per-event timestamps or usage, and the inbound report
+already declared those absences `unsupported`; re-declaring them here would
+count one fact twice and misdescribe an edge that loses nothing it was given.
+The same conversion run over a trace that *does* carry them declares every one.
+Both halves are asserted, the second as a complete set, and a companion test
+derives the field list from the IR models themselves — so a field added to the
+IR that ATIF cannot represent fails the suite until its fate is decided.
+
+**FACT — measured on the same two real rollouts.** H1 produces **14** outbound
+records (6 synthesized, 6 dropped, 2 normalized; 11 hub, 3 target); H2, whose
+trajectory contains a real wall-clock timeout, produces **16** (5 synthesized,
+9 dropped, 2 normalized), the extra drops being the timeout event, its
 `extensions` and the trace `outcome`.
 
 **FACT — the two reports compose.** For H1, `events[2].tool_call.arguments`
@@ -713,12 +730,29 @@ carries `unsupported` in the `acp -> ir` report and `synthesized` in the
 `ir -> atif` one: the source never had arguments and the target demanded them
 anyway, joined on one hub path (§8.2, choice 5).
 
-**Known gap: the IR cannot express cost.** `TraceUsage` has no cost field, so
-`final_metrics.total_cost_usd` — which the direct exporter accepts as an
-argument — cannot be produced through the hub. Neither real rollout carries one
-(agent-native runs have no proxy cost), so parity is unaffected there, but this
-is a hub gap rather than a converter one and closing it means adding a field to
-the IR.
+**Cost.** `TraceUsage` carries `cost_usd` and `price_source`, so
+`final_metrics.total_cost_usd` survives the hub.
+
+**FACT — the writing path exists.** The LiteLLM callback log's per-entry `cost`
+is summed into `Trajectory.metadata["cost_usd"]`
+(`providers/litellm_logging.py:618-623`), surfaces as `AgentResult.cost_usd`
+with `price_source: "litellm"` (`extract_usage_from_trajectory`), and is handed
+to the ATIF writer by `rollout/_results.py:448`. The agent-native ACP path sets
+it to `None` explicitly (`rollout/__init__.py:1737`).
+
+**FACT — and it has not been observed producing a value here.** Every rollout
+artifact on the machine this was developed on carries `cost_usd: null`,
+including four whose `usage_source` is `provider_response` — they went through
+the proxy, and their gateway log simply carried no per-entry cost, so
+`price_source` stayed `None` too. So the field's *production* is established by
+reading the code, not by observation, and parity with a cost is asserted on
+synthetic input on both sides. Without the field, though, the hub would be
+unable to carry a value the direct exporter's own API accepts — a gap in the
+contract regardless of how often it is exercised.
+
+`price_source` has no ATIF slot and is declared dropped: BenchFlow computes no
+prices of its own, so a cost without the table that produced it is not
+comparable. Per-call cost stays out of scope.
 
 #### IR ↔ OpenTelemetry
 
@@ -882,7 +916,9 @@ its source-specific fields in `extensions` rather than as four new IR fields.
     "cache_creation_tokens": null,
     "reasoning_tokens": null,
     "total_tokens": 1276,
-    "source": "llm_proxy_normalized"
+    "source": "llm_proxy_normalized",
+    "cost_usd": null,
+    "price_source": null
   },
   "outcome": {
     "status": "timeout",

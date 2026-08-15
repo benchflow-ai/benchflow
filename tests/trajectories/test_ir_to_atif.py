@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,7 @@ from benchflow.trajectories.ir import (
     ToolCall,
     ToolStatus,
     TraceEvent,
+    TraceOutcome,
     TraceUsage,
     validate_trace,
 )
@@ -583,6 +585,408 @@ def test_systemic_losses_are_declared_once_and_only_when_they_apply():
 # ---------------------------------------------------------------------------
 # Isolation
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# The rule: outbound loss depends on the IR received, not on ACP's habits
+# ---------------------------------------------------------------------------
+
+# Fields the IR can carry that ATIF cannot represent. Asserted as a complete
+# set against a trace that really carries all of them, so a value silently
+# dropped by this edge fails here.
+RICH_DROPPED = {
+    "trace_id",
+    "started_at",
+    "finished_at",
+    "provenance",
+    "extensions",
+    "agent.provider",
+    "outcome",
+    "events[].provenance",
+    "events[].source_type",
+    "events[].extensions",
+    "events[].outcome",
+    "events[].usage",
+    "events[].started_at",
+    "events[].finished_at",
+    "events[].tool_call.started_at",
+    "events[].tool_call.finished_at",
+    "events[].tool_call.name_semantics",
+    "events[].tool_call.content[].raw",
+    "events[1].role",
+    "usage.cache_creation_tokens",
+    "usage.reasoning_tokens",
+    "usage.total_tokens",
+    "usage.source",
+    "usage.price_source",
+}
+
+T0 = datetime(2026, 8, 15, 10, 0, 0)
+T1 = datetime(2026, 8, 15, 10, 0, 5)
+
+
+def _same_shape_from_acp() -> CanonicalTrace:
+    """A user message, a thought and a tool call — through the ACP edge."""
+    return acp_events_to_ir(
+        [
+            {"type": "user_message", "text": "u"},
+            {"type": "agent_thought", "text": "why"},
+            {
+                "type": "tool_call",
+                "tool_call_id": "t",
+                "kind": "execute",
+                "title": "ls",
+                "status": "completed",
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "out"}}
+                ],
+            },
+        ],
+        session_id="s",
+        agent_name="a",
+        model="m",
+    )
+
+
+def _same_shape_rich() -> CanonicalTrace:
+    """The same shape, with every field the ACP edge leaves empty filled in."""
+    provenance = Provenance(source_format="rich", producer="probe", captured_at=T0)
+    return CanonicalTrace(
+        trace_id="trace-abc",
+        session_id="s",
+        agent=ModelInfo(
+            agent_name="a", agent_version="9.9", model="m", provider="anthropic"
+        ),
+        started_at=T0,
+        finished_at=T1,
+        provenance=provenance,
+        extensions={"run": "x"},
+        events=[
+            TraceEvent(
+                index=0,
+                kind=EventKind.USER_MESSAGE,
+                source_type="user_message",
+                role=Role.USER,
+                text="u",
+                started_at=T0,
+                finished_at=T1,
+                outcome="ok",
+                usage=TraceUsage(input_tokens=1),
+                extensions={"seq": 1},
+                provenance=provenance,
+            ),
+            TraceEvent(
+                index=1,
+                kind=EventKind.TOOL_CALL,
+                source_type="tool_call",
+                # Disagrees with the source ATIF will derive from the kind.
+                role=Role.ENVIRONMENT,
+                tool_call=ToolCall(
+                    call_id="t",
+                    name="execute",
+                    name_semantics="acp_kind",
+                    title="ls",
+                    status=ToolStatus.COMPLETED,
+                    arguments={"cmd": "ls"},
+                    started_at=T0,
+                    finished_at=T1,
+                    content=[
+                        ContentBlock(
+                            kind=ContentBlockKind.TEXT,
+                            text="out",
+                            raw={"type": "content", "meta": "kept"},
+                        )
+                    ],
+                ),
+                started_at=T0,
+                finished_at=T1,
+                usage=TraceUsage(output_tokens=2),
+                provenance=provenance,
+            ),
+        ],
+        usage=TraceUsage(
+            input_tokens=1,
+            output_tokens=2,
+            cache_read_tokens=3,
+            cache_creation_tokens=4,
+            reasoning_tokens=5,
+            total_tokens=6,
+            source="llm_proxy_normalized",
+            cost_usd=0.25,
+            price_source="litellm",
+        ),
+        outcome=TraceOutcome(reward=1.0),
+    )
+
+
+def test_an_acp_shaped_trace_declares_none_of_the_richness_it_never_had():
+    """Half one of the rule. The inbound report already owns those absences."""
+    _, report = ir_to_atif(_same_shape_from_acp())
+    declared = _fields(report)
+    assert declared & RICH_DROPPED == {
+        # The two an ACP trace really does carry.
+        "events[].provenance",
+        "events[].source_type",
+        "events[].tool_call.name_semantics",
+        "events[].tool_call.content[].raw",
+        "provenance",
+    }, sorted(declared & RICH_DROPPED)
+
+
+def test_a_rich_trace_declares_every_field_atif_cannot_represent():
+    """Half two, asserted as a complete set.
+
+    A value the IR carries and ATIF drops must appear here. Adding a field to
+    the IR that this edge cannot represent fails this test until it is
+    declared — which is the point.
+    """
+    document, report = ir_to_atif(_same_shape_rich())
+    dropped = {
+        r.field for r in report.by_class(LossClass.DROPPED) if r.space is PathSpace.HUB
+    }
+    assert dropped == RICH_DROPPED, {
+        "missing": sorted(RICH_DROPPED - dropped),
+        "unexpected": sorted(dropped - RICH_DROPPED),
+    }
+
+    # None of it reached the document.
+    text = json.dumps(document)
+    for probe in ("trace-abc", "anthropic", "2026-08-15T10:00:00", "kept", '"reward"'):
+        assert probe not in text, probe
+
+
+def test_the_role_disagreement_is_declared_at_the_event_that_has_it():
+    """Per event, because it is a fact about one event and not about the trace."""
+    document, report = ir_to_atif(_same_shape_rich())
+    assert document["steps"][1]["source"] == "agent"
+    record = report.for_field("events[1].role")[0]
+    assert record.loss_class is LossClass.DROPPED
+    assert "environment" in record.detail
+    # The event whose role agrees with its kind declares nothing.
+    assert report.for_field("events[0].role") == []
+
+
+def test_tool_call_timestamps_are_addressed_under_the_tool_call():
+    """A path that blamed the event would misdescribe which value was dropped."""
+    _, report = ir_to_atif(_same_shape_rich())
+    declared = _fields(report)
+    assert "events[].tool_call.started_at" in declared
+    assert "events[].tool_call.finished_at" in declared
+    assert "events[].started_at" in declared
+    assert "events[].finished_at" in declared
+
+
+def test_only_the_timestamp_actually_present_is_declared():
+    """Each timestamp is its own claim, not a single "timestamps" bucket."""
+    provenance = Provenance(source_format="probe")
+    trace = CanonicalTrace(
+        provenance=provenance,
+        events=[
+            TraceEvent(
+                index=0,
+                kind=EventKind.AGENT_MESSAGE,
+                text="a",
+                finished_at=T1,
+                provenance=provenance,
+            )
+        ],
+    )
+    declared = _fields(ir_to_atif(trace)[1])
+    assert "events[].finished_at" in declared
+    assert "events[].started_at" not in declared
+
+
+# Every field of every IR model, and what this edge does with it. A field
+# missing from these tables fails `test_every_ir_field_has_a_disposition`,
+# which is how a new IR field cannot be added without deciding its fate here.
+FIELD_DISPOSITION: dict[str, dict[str, str]] = {
+    "CanonicalTrace": {
+        "ir_version": "representation",
+        "losses": "representation",
+        "trace_id": "declared",
+        "session_id": "mapped",
+        "agent": "container",
+        "started_at": "declared",
+        "finished_at": "declared",
+        "events": "container",
+        "usage": "container",
+        "outcome": "declared",
+        "provenance": "declared",
+        "extensions": "declared",
+    },
+    "TraceEvent": {
+        "index": "normalized",
+        "kind": "mapped",
+        "source_type": "declared",
+        "role": "declared",
+        "text": "mapped",
+        "reasoning": "mapped",
+        "reasoning_segments": "normalized",
+        "tool_call": "container",
+        "started_at": "declared",
+        "finished_at": "declared",
+        "outcome": "declared",
+        "usage": "declared",
+        "provenance": "declared",
+        "extensions": "declared",
+    },
+    "ToolCall": {
+        "call_id": "mapped",
+        "name": "mapped",
+        "name_semantics": "declared",
+        "title": "mapped",
+        "status": "mapped",
+        "arguments": "mapped",
+        "content": "container",
+        "started_at": "declared",
+        "finished_at": "declared",
+    },
+    "ModelInfo": {
+        "agent_name": "mapped",
+        "agent_version": "mapped",
+        "model": "mapped",
+        "provider": "declared",
+    },
+    "TraceUsage": {
+        "input_tokens": "mapped",
+        "output_tokens": "mapped",
+        "cache_read_tokens": "mapped",
+        "cost_usd": "mapped",
+        "cache_creation_tokens": "declared",
+        "reasoning_tokens": "declared",
+        "total_tokens": "declared",
+        "source": "declared",
+        "price_source": "declared",
+    },
+    "TraceOutcome": {
+        "status": "declared-with-outcome",
+        "stop_reason": "declared-with-outcome",
+        "reward": "declared-with-outcome",
+        "error_category": "declared-with-outcome",
+    },
+    "ContentBlock": {
+        "kind": "mapped",
+        "text": "mapped",
+        "raw": "declared",
+    },
+}
+
+
+def test_every_ir_field_has_a_disposition_at_this_edge():
+    """Read off the models, so a new IR field cannot slip through undecided.
+
+    ``mapped`` reaches ATIF, ``normalized`` reaches it reshaped, ``declared``
+    is dropped *and* recorded, ``container`` holds fields covered by their own
+    entry, and ``representation`` describes the IR rather than the run.
+    """
+    models = {
+        "CanonicalTrace": CanonicalTrace,
+        "TraceEvent": TraceEvent,
+        "ToolCall": ToolCall,
+        "ModelInfo": ModelInfo,
+        "TraceUsage": TraceUsage,
+        "TraceOutcome": TraceOutcome,
+        "ContentBlock": ContentBlock,
+    }
+    for name, model in models.items():
+        assert set(model.model_fields) == set(FIELD_DISPOSITION[name]), {
+            "model": name,
+            "undecided": sorted(set(model.model_fields) - set(FIELD_DISPOSITION[name])),
+            "stale": sorted(set(FIELD_DISPOSITION[name]) - set(model.model_fields)),
+        }
+
+
+def test_every_declared_disposition_really_produces_a_record():
+    """The table is not decoration: each `declared` field must fire on a trace
+    that carries it."""
+    _, report = ir_to_atif(_same_shape_rich())
+    declared = _fields(report)
+    expected = set()
+    for model_name, fields_ in FIELD_DISPOSITION.items():
+        for field_name, disposition in fields_.items():
+            if disposition != "declared":
+                continue
+            if model_name == "CanonicalTrace":
+                expected.add(field_name)
+            elif model_name == "TraceEvent":
+                expected.add(f"events[].{field_name}")
+            elif model_name == "ToolCall":
+                expected.add(f"events[].tool_call.{field_name}")
+            elif model_name == "ModelInfo":
+                expected.add(f"agent.{field_name}")
+            elif model_name == "TraceUsage":
+                expected.add(f"usage.{field_name}")
+            elif model_name == "ContentBlock":
+                expected.add(f"events[].tool_call.content[].{field_name}")
+    # `role` is declared per event rather than once, so it is addressed by index.
+    expected.discard("events[].role")
+    missing = expected - declared
+    assert not missing, sorted(missing)
+
+
+# ---------------------------------------------------------------------------
+# Cost
+# ---------------------------------------------------------------------------
+
+
+def test_cost_reaches_atif_and_is_not_declared_lost():
+    trace = acp_events_to_ir(_rich_events(), agent_name="a")
+    trace.usage = TraceUsage(
+        input_tokens=100, output_tokens=20, cost_usd=1.25, price_source="litellm"
+    )
+    document, report = ir_to_atif(trace)
+
+    assert document["final_metrics"]["total_cost_usd"] == 1.25
+    assert report.for_field("usage.cost_usd") == []
+    # The table that produced the number has no ATIF slot, and says so.
+    priced = report.for_field("usage.price_source")
+    assert priced and priced[0].loss_class is LossClass.DROPPED
+
+
+def test_no_cost_means_no_invented_total_cost_usd():
+    trace = acp_events_to_ir(_rich_events(), agent_name="a")
+    trace.usage = TraceUsage(input_tokens=100, output_tokens=20)
+    document, report = ir_to_atif(trace)
+
+    assert "total_cost_usd" not in document["final_metrics"]
+    assert report.for_field("usage.cost_usd") == []
+    assert report.for_field("usage.price_source") == []
+
+
+def test_cost_survives_the_full_pipeline_with_parity():
+    """The case H1/H2 cannot exercise: a proxy-backed run carries a cost.
+
+    Both paths are given the same cost, so this is parity for the LiteLLM path
+    the two real rollouts (agent-native, cost `None`) never reach.
+    """
+    events = _rich_events()
+    direct = trajectory_to_atif_record(
+        session_id="s",
+        agent_name="a",
+        events=events,
+        prompts=PROMPTS,
+        model="m",
+        total_prompt_tokens=100,
+        total_completion_tokens=20,
+        total_cached_tokens=5,
+        total_cost_usd=1.25,
+    )
+    trace = acp_events_to_ir(events, session_id="s", agent_name="a", model="m")
+    trace.usage = TraceUsage(
+        input_tokens=100,
+        output_tokens=20,
+        cache_read_tokens=5,
+        cost_usd=1.25,
+        source="llm_proxy_normalized",
+    )
+    through_hub, report = ir_to_atif(trace, prompts=PROMPTS)
+
+    assert through_hub == direct
+    assert through_hub["final_metrics"]["total_cost_usd"] == 1.25
+    # `source` is the only usage field lost here; cost is not.
+    assert {r.field for r in report.records if r.field.startswith("usage.")} == {
+        "usage.source"
+    }
 
 
 def test_the_converter_imports_only_the_ir():
