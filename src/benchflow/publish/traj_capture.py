@@ -21,6 +21,7 @@ MAX_FILE_BYTES = 128 * 1024**2
 MAX_ARTIFACTS = 8
 MAX_CAPTURE_BYTES = 2 * MAX_FILE_BYTES
 MAX_MANIFEST_BYTES = 1024**2
+MAX_RUN_METADATA_BYTES = 1024**2
 MAX_JSONL_RECORD_BYTES = 8 * 1024**2
 MAX_JSON_NESTING = 100
 MAX_JSON_NODES = 100_000
@@ -414,7 +415,11 @@ def _read_object(path: Path) -> dict[str, Any]:
     if path.is_symlink():
         return {}
     try:
-        value = strict_json_loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_RUN_METADATA_BYTES + 1)
+        if len(payload) > MAX_RUN_METADATA_BYTES:
+            return {}
+        value = strict_json_loads(payload)
     except (OSError, UnicodeDecodeError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}

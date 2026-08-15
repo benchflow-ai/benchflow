@@ -229,6 +229,28 @@ def test_staging_rejects_generated_manifest_over_shared_limit(
         stage_trajectory_capture(trial, source_id="demo").__enter__()
 
 
+def test_staging_bounds_optional_run_metadata_before_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #989 against oversized agent-produced metadata exhausting memory."""
+    import benchflow.publish.traj_capture as capture_module
+
+    trial = _trial(tmp_path)
+    metadata = trial / "result.json"
+    metadata.write_text(json.dumps({"agent": "must-not-be-read"}), encoding="utf-8")
+    monkeypatch.setattr(capture_module, "MAX_RUN_METADATA_BYTES", 8)
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path: Path, *args, **kwargs):
+        if path == metadata:
+            raise AssertionError("oversized metadata was read")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        assert staged.manifest["run"]["agent"] is None
+
+
 def test_invalid_empty_and_oversize_inputs_fail_cleanly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -354,6 +376,9 @@ def test_contribution_redactor_covers_canonical_credential_families(token: str) 
         "token",
         "accessToken",
         "clientSecret",
+        "api key",
+        "access.token",
+        "client secret",
         "refreshToken",
         "bearerToken",
         "serviceCredentials",

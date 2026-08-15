@@ -79,6 +79,7 @@ class AzureUploadBroker:
     def create_upload(self, request: UploadRequest, *, client_ip: str) -> UploadGrant:
         digest = request.traj_digest.removeprefix("sha256:")
         with self._state_lock:
+            self._consume_rate_limit(client_ip)
             status = self._capture_status(digest)
             if status == "ingested":
                 raise AlreadyUploaded(
@@ -87,7 +88,6 @@ class AzureUploadBroker:
                 )
             if status == "rejected":
                 raise RejectedUpload
-            self._consume_rate_limit(client_ip)
             if status is None:
                 self.table.upsert_entity(
                     {

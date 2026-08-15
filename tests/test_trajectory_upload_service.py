@@ -320,7 +320,10 @@ def test_validator_rejects_credential_shaped_mapping_keys(tmp_path: Path) -> Non
         _validate_and_scan_jsonl(artifact, "trajectory/credential-key.jsonl")
 
 
-@pytest.mark.parametrize("field_name", ["token", "accessToken", "clientSecret"])
+@pytest.mark.parametrize(
+    "field_name",
+    ["token", "accessToken", "clientSecret", "api key", "access.token"],
+)
 def test_validator_rejects_prefixless_credentials_in_common_fields(
     tmp_path: Path, field_name: str
 ) -> None:
@@ -555,6 +558,34 @@ def test_broker_does_not_reopen_rejected_digest(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RejectedUpload):
+        backend.create_upload(request, client_ip="127.0.0.1")
+
+
+@pytest.mark.parametrize(
+    ("status", "terminal_exception"),
+    [("ingested", AlreadyUploaded), ("rejected", RejectedUpload)],
+)
+def test_terminal_digest_handshakes_consume_rate_limit(
+    tmp_path: Path, status: str, terminal_exception: type[Exception]
+) -> None:
+    """Guards PR #989 against terminal ledger lookups bypassing broker quotas."""
+    trial = _trial(tmp_path)
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
+        digest = staged.traj_digest
+    table = FakeTable([{"PartitionKey": "capture", "RowKey": digest, "status": status}])
+    backend = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=table,
+        blob_service=SimpleNamespace(),
+        ip_hash_key=b"test",
+        rate_limit=1,
+    )
+
+    with pytest.raises(terminal_exception):
+        backend.create_upload(request, client_ip="127.0.0.1")
+    with pytest.raises(RateLimited):
         backend.create_upload(request, client_ip="127.0.0.1")
 
 

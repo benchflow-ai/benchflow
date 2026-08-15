@@ -105,7 +105,7 @@ def _redact_text(value: str) -> tuple[str, int]:
 def _is_sensitive_key(field_name: str) -> bool:
     normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", field_name)
     normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
-    normalized = normalized.casefold().replace("-", "_")
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized.casefold()).strip("_")
     return normalized in DENYLISTED_KEYS or normalized.endswith(
         (
             "_api_key",
