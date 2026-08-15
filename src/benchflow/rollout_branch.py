@@ -28,6 +28,7 @@ value land on the right node.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -55,7 +56,15 @@ _SNAPSHOT_LAYERS = frozenset({"environment", "sandbox"})
 # The BranchDelta fields the v1 engine executes vs records-only. Only
 # ``injected_prompt`` executes today; the rest exist in the schema and
 # provenance so the artifact format is stable, and fail closed here.
-_UNSUPPORTED_DELTA_FIELDS = ("environment_ref", "config_override", "skill_mode")
+# Derived from the schema (all BranchDelta fields minus the executable set)
+# so a future BranchDelta field is unsupported-by-default — it fails closed
+# here instead of being silently ignored. Sorted for deterministic errors.
+_EXECUTABLE_DELTA_FIELDS = frozenset({"injected_prompt"})
+_UNSUPPORTED_DELTA_FIELDS = tuple(
+    sorted(
+        {f.name for f in dataclasses.fields(BranchDelta)} - _EXECUTABLE_DELTA_FIELDS
+    )
+)
 
 
 class BranchDeltaNotSupported(NotImplementedError):
@@ -178,7 +187,8 @@ async def branch(
     After this returns, ``rollout``'s linear state is exactly what it was
     before — the tree gained ``n`` children at the cursor, nothing else
     moved; when the rollout knows its run directory, the branch also leaves
-    lineage artifacts (``tree.json``, ``children/<index>/``), with any
+    lineage artifacts (``tree.json``,
+    ``branches/<branch-node-id>/children/<child-node-id>/``), with any
     artifact-write failure logged and isolated from the branch result.
     """
     layers = frozenset(snapshot_layers)
@@ -297,7 +307,15 @@ async def branch(
         # Attach a *pending* branch-child node — its real continuation Step is
         # filled in place by the child's first execute(), so the child's work
         # lands on the child node, not a descendant placeholder.
+        delta = deltas[index] if deltas is not None else None
         child = rollout._tree.attach(parent)
+        # The child's delta provenance is recorded on the node itself at fork
+        # time (``None`` = the zero delta), so lineage serialization reads it
+        # from the node — never by positional alignment — and a second
+        # branch() at the same parent can never misattribute deltas.
+        child.state["delta"] = (
+            delta if delta is not None else BranchDelta()
+        ).provenance_dict()
         children.append(child)
 
         # restore the checkpointed layers (sandbox first, then env — the
@@ -314,7 +332,6 @@ async def branch(
         # a per-child default runner — the formalized version of the caller's
         # per-child-prompt closure (validated above to not combine with an
         # explicit run_child).
-        delta = deltas[index] if deltas is not None else None
         child_runner = runner
         if run_child is None and delta is not None and delta.injected_prompt is not None:
             child_runner = make_default_runner(
@@ -343,7 +360,6 @@ async def branch(
                 tree=rollout._tree,
                 parent=parent,
                 children=children,
-                deltas=deltas,
             )
         except Exception:
             logger.warning(

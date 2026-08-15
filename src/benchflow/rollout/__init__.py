@@ -898,10 +898,25 @@ class Rollout:
 
     @property
     def result(self) -> RolloutResult | None:
-        # "branched" is terminal for a branch-first workflow (rollout-branching
-        # RFC §3.4) — the children carried the verification, so the result is
-        # reachable without the linear verify()/cleanup() path.
+        """The terminal :class:`RolloutResult`, or ``None`` before one exists.
+
+        "branched" is terminal for a branch-first workflow (rollout-branching
+        RFC §3.4) — the children carried the verification, so the result is
+        reachable without the linear verify()/cleanup() path. Two branch
+        specifics: a branch-first rollout that never ran setup() has no run
+        directory to build artifacts in, so ``result`` stays ``None``
+        (the pre-branch contract — never a RuntimeError); and because
+        branch() restores the parent's linear state (``_rewards`` rolls back
+        to its pre-branch value), a built branched result surfaces the branch
+        aggregate V(cursor) recorded by the engine as
+        ``rewards={"reward": <value>, "source": "branch_aggregate"}`` when no
+        linear rewards exist (see :meth:`_build_result`).
+        """
         if self._phase not in ("verified", "cleaned", "branched"):
+            return None
+        if self._phase == "branched" and self._rollout_dir is None:
+            # Branch-first rollout without setup(): no run directory to build
+            # result artifacts in — stay graceful instead of raising.
             return None
         return self._build_result()
 
@@ -2684,6 +2699,19 @@ class Rollout:
         # to the resolved base prompts when no execute() ran (e.g. setup
         # failure paths).
         prompts = self._executed_prompts or self._resolved_prompts
+        rewards = self._rewards
+        # getattr() keeps tests that bypass __init__ via Rollout.__new__()
+        # working (the established pattern in this module).
+        if rewards is None and getattr(self, "_phase", None) == "branched":
+            # branch() restores the parent's linear state, so ``_rewards``
+            # rolls back to its pre-branch value even though the children
+            # verified. The honest terminal signal for a branched rollout is
+            # the branch aggregate V(cursor) the engine recorded on the
+            # branch-point node (rollout_branch.branch -> aggregate()).
+            cursor = getattr(self, "_cursor", None)
+            value = cursor.state.get("value") if cursor is not None else None
+            if value is not None:
+                rewards = {"reward": float(value), "source": "branch_aggregate"}
         return _build_rollout_result(
             rollout_dir,
             task_name=self._config.task_path.name,
@@ -2699,7 +2727,7 @@ class Rollout:
             trajectory=self._trajectory,
             partial_trajectory=self._partial_trajectory,
             trajectory_source=self._trajectory_source,
-            rewards=self._rewards,
+            rewards=rewards,
             started_at=self._require_started_at(),
             timing=self._timing,
             scenes=self._config.effective_scenes,
