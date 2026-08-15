@@ -1403,8 +1403,11 @@ class Evaluation:
             if isinstance(reward, (int, float)) and not isinstance(reward, bool)
             else ""
         )
+        # Chat-only completions (#988): the agent answered but never called a
+        # tool — mark the line so a sweep log shows the no-op at a glance.
+        no_op = ", no-op" if getattr(result, "no_tool_completion", False) else ""
         logger.info(
-            f"[{status}] {td.name} ({reward_part}tools={result.n_tool_calls}){err}"
+            f"[{status}] {td.name} ({reward_part}tools={result.n_tool_calls}{no_op}){err}"
         )
         self._fire_progress(self._on_result, td.name, result)
 
@@ -1890,6 +1893,11 @@ class Evaluation:
             "error": audit_counts["errored"],
             "verifier_errored": audit_counts["verifier_errored"],
             "idle_timeout": error_category_counts.get(IDLE_TIMEOUT, 0),
+            "no_tool_call_completions": sum(
+                1
+                for r in all_results.values()
+                if r.get("no_tool_call_completion_info")
+            ),
             "error_categories": error_category_counts or None,
             "verifier_error_categories": verifier_error_category_counts or None,
             "score": f"{pass_rate(passed=audit_counts['passed'], total=job_result.total):.1%}",
@@ -1968,13 +1976,19 @@ class Evaluation:
         # new diagnostic class adds its warning automatically (issue #503).
         for diag_cls in DIAGNOSTIC_REGISTRY:
             if diag_cls.category is None:
-                continue
-            counts = (
-                error_category_counts
-                if diag_cls.channel == "error"
-                else verifier_error_category_counts
-            )
-            count = counts.get(diag_cls.category, 0)
+                # Category-less diagnostics are behavior flags (e.g. chat-only
+                # completions, #988) that surface no error channel — count
+                # them by field presence in result.json instead.
+                count = sum(
+                    1 for r in all_results.values() if r.get(diag_cls.field)
+                )
+            else:
+                counts = (
+                    error_category_counts
+                    if diag_cls.channel == "error"
+                    else verifier_error_category_counts
+                )
+                count = counts.get(diag_cls.category, 0)
             if count > 0:
                 logger.warning(summary_warning(diag_cls, count, job_result.total))
 

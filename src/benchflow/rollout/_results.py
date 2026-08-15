@@ -346,6 +346,9 @@ def _build_rollout_result(
         verifier_error_category=verifier_error_category,
         export_error=export_error,
         partial_trajectory=partial_trajectory,
+        no_tool_completion=(
+            diagnostics.get("no_tool_call_completion_info") is not None
+        ),
         trajectory_source=trajectory_source,
         evolved_skills=evolved_skills,
         source_provenance=source_provenance,
