@@ -734,6 +734,23 @@ def test_deploy_selects_event_topic_by_storage_source() -> None:
     assert "--query '[0].name'" not in script
 
 
+def test_deploy_scopes_event_delivery_identity_to_validation_queue() -> None:
+    """Guards PR #989 against granting Event Grid account-wide queue access."""
+    script = Path("infra/trajectory-upload/deploy-azure.sh").read_text()
+
+    assert (
+        '"$task_system_topic_principal_id" \\\n'
+        '    "Storage Queue Data Message Sender" \\\n'
+        '    "$task_queue_scope"'
+    ) in script
+    assert (
+        "az role assignment delete \\\n"
+        '        --assignee-object-id "$task_system_topic_principal_id" \\\n'
+        '        --role "Storage Queue Data Message Sender" \\\n'
+        '        --scope "$task_storage_id"'
+    ) in script
+
+
 def test_manifest_contract_is_validated_before_artifact_downloads(
     tmp_path: Path,
 ) -> None:

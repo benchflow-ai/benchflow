@@ -214,7 +214,21 @@ task_system_topic_principal_id="$(az eventgrid system-topic show \
 ensure_role_assignment \
     "$task_system_topic_principal_id" \
     "Storage Queue Data Message Sender" \
-    "$task_storage_id"
+    "$task_queue_scope"
+
+# Early revisions scoped this role at the full storage account. This topic is
+# dedicated to one queue, so converge existing deployments to the narrow scope.
+task_legacy_event_sender_count="$(az role assignment list \
+    --assignee-object-id "$task_system_topic_principal_id" \
+    --scope "$task_storage_id" \
+    --query "[?roleDefinitionName=='Storage Queue Data Message Sender'] | length(@)" \
+    -o tsv)"
+if [[ "$task_legacy_event_sender_count" != "0" ]]; then
+    az role assignment delete \
+        --assignee-object-id "$task_system_topic_principal_id" \
+        --role "Storage Queue Data Message Sender" \
+        --scope "$task_storage_id"
+fi
 
 az acr build \
     --registry "$task_acr" \
