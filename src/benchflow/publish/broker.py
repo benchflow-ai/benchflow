@@ -42,6 +42,8 @@ def upload_capture_via_broker(
         "uploaded_by": staged.manifest["uploaded_by"],
         "artifacts": artifacts,
     }
+    if contributor := staged.manifest.get("contributor"):
+        request_body["contributor"] = contributor
     manager = nullcontext(http_client) if http_client is not None else httpx.Client()
     try:
         with _quiet_httpx_request_logging(), manager as client:

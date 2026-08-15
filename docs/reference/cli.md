@@ -863,13 +863,17 @@ writes a content-addressed manifest last, and treats an already-ingested digest
 as a successful no-op.
 
 ```bash
-bench traj upload path/to/trial
-bench traj upload path/to/trajectory.jsonl --source-id my-project/run-42
-bench traj upload path/to/trial --dry-run
+bench traj upload path/to/trial --github-id octocat --email octocat@example.com
+bench traj upload path/to/trajectory.jsonl --github-id octocat \
+  --email octocat@example.com --source-id my-project/run-42
+bench traj upload path/to/trial --github-id octocat \
+  --email octocat@example.com --dry-run
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--github-id` | required | Self-asserted GitHub username stored in `manifest.json` |
+| `--email` | required | Contributor email stored in `manifest.json`; not printed by the CLI |
 | `--source-id` | derived from `PATH` | Stable contributor/run label stored in the manifest |
 | `--dry-run` | `false` | Validate, redact, hash, and list staged files without network traffic |
 | `--direct` | `false` | Use local Azure credentials instead of the public broker; requires the `azure` extra |

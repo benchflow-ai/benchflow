@@ -271,6 +271,53 @@ def test_staging_enforces_contributor_label_bound(tmp_path: Path) -> None:
         ).__enter__()
 
 
+def test_manifest_contains_validated_contributor_provenance(tmp_path: Path) -> None:
+    """CLI contributor parameters survive in the manifest uploaded last."""
+    trial = _trial(tmp_path)
+    contributor = {
+        "github_id": "benchflow-ai",
+        "email": "contributor+demo@benchflow.ai",
+    }
+
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id=contributor["github_id"],
+        email=contributor["email"],
+    ) as staged:
+        assert staged.manifest["schema_version"] == "1.1.0"
+        assert staged.manifest["contributor"] == contributor
+        persisted = json.loads(staged.files[-1].local_path.read_text(encoding="utf-8"))
+        assert persisted["contributor"] == contributor
+
+
+@pytest.mark.parametrize(
+    ("github_id", "email", "message"),
+    [
+        ("@benchflow-ai", "user@benchflow.ai", "GitHub ID"),
+        ("benchflow--ai", "user@benchflow.ai", "GitHub ID"),
+        ("benchflow-ai", "not-an-email", "email"),
+        ("benchflow-ai", "user@localhost", "email"),
+        (None, "user@benchflow.ai", "provided together"),
+        ("benchflow-ai", None, "provided together"),
+    ],
+)
+def test_staging_rejects_invalid_or_partial_contributor_provenance(
+    tmp_path: Path,
+    github_id: str | None,
+    email: str | None,
+    message: str,
+) -> None:
+    """Malformed contributor metadata never reaches a transport."""
+    with pytest.raises(ValueError, match=message):
+        stage_trajectory_capture(
+            _trial(tmp_path),
+            source_id="demo",
+            github_id=github_id,
+            email=email,
+        ).__enter__()
+
+
 @pytest.mark.parametrize(
     "filename", ["capture with space.jsonl", "capture.JSONL", "x" * 129 + ".jsonl"]
 )

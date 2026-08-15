@@ -53,7 +53,7 @@ def _trial(tmp_path: Path, text: str = "safe") -> Path:
 
 
 def _request_from_manifest(manifest: dict) -> dict:
-    return {
+    request = {
         key: manifest[key]
         for key in (
             "schema_version",
@@ -64,6 +64,9 @@ def _request_from_manifest(manifest: dict) -> dict:
             "artifacts",
         )
     }
+    if "contributor" in manifest:
+        request["contributor"] = manifest["contributor"]
+    return request
 
 
 class FakeBroker:
@@ -172,6 +175,40 @@ def test_upload_contract_recomputes_digest_and_rejects_object_injection(
         body["traj_digest"] = "sha256:" + "0" * 64
         with pytest.raises(ValidationError, match="does not match"):
             UploadRequest.model_validate(body)
+
+
+def test_contributor_contract_is_validated_at_broker_and_manifest_boundaries(
+    tmp_path: Path,
+) -> None:
+    """Self-asserted GitHub and email provenance remains typed server-side."""
+    trial = _trial(tmp_path)
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
+        request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
+        manifest = validate_manifest_bytes(staged.files[-1].local_path.read_bytes())
+
+    assert request.contributor is not None
+    assert request.schema_version == "1.1.0"
+    assert request.contributor.github_id == "benchflow-ai"
+    assert request.contributor.email == "contributor@benchflow.ai"
+    assert manifest.contributor == request.contributor
+
+    invalid = _request_from_manifest(staged.manifest)
+    invalid["contributor"] = {
+        "github_id": "@invalid",
+        "email": "not-an-email",
+    }
+    with pytest.raises(ValidationError):
+        UploadRequest.model_validate(invalid)
+
+    missing = _request_from_manifest(staged.manifest)
+    missing.pop("contributor")
+    with pytest.raises(ValidationError, match="requires contributor"):
+        UploadRequest.model_validate(missing)
 
 
 def test_broker_http_surface_returns_scoped_grants_and_protocol_statuses(
@@ -683,7 +720,12 @@ def test_terminal_digest_handshakes_consume_rate_limit(
 
 def _quarantine_capture(tmp_path: Path) -> tuple[str, dict[str, bytes]]:
     trial = _trial(tmp_path)
-    with stage_trajectory_capture(trial, source_id="demo") as staged:
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        github_id="benchflow-ai",
+        email="contributor@benchflow.ai",
+    ) as staged:
         digest = staged.traj_digest
         prefix = f"inbox/{digest}/"
         blobs = {
@@ -714,6 +756,13 @@ def test_queue_validator_promotes_manifest_last_and_cleans_quarantine(
 
     assert validator.run_once() is True
     assert container.uploaded[-1] == f"sources/community/{digest}/manifest.json"
+    promoted_manifest = json.loads(
+        container.blobs[f"sources/community/{digest}/manifest.json"]
+    )
+    assert promoted_manifest["contributor"] == {
+        "github_id": "benchflow-ai",
+        "email": "contributor@benchflow.ai",
+    }
     assert not any(name.startswith(f"inbox/{digest}/") for name in container.blobs)
     assert table.entities[-1]["status"] == "ingested"
     assert queue.deleted == [("m1", "p1")]

@@ -16,9 +16,13 @@ from benchflow.publish.traj_capture import (
 from benchflow.publish.traj_capture import (
     MAX_ARTIFACTS,
     MAX_CAPTURE_BYTES,
+    MAX_EMAIL_LENGTH,
     MAX_FILE_BYTES,
+    MAX_GITHUB_ID_LENGTH,
     MAX_UPLOADED_BY_LENGTH,
     validate_artifact_name,
+    validate_email,
+    validate_github_id,
     validate_source_id,
 )
 from benchflow.publish.traj_capture import (
@@ -51,14 +55,32 @@ class Artifact(BaseModel):
         return value
 
 
+class ContributorInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    github_id: str = Field(min_length=1, max_length=MAX_GITHUB_ID_LENGTH)
+    email: str = Field(min_length=3, max_length=MAX_EMAIL_LENGTH)
+
+    @field_validator("github_id")
+    @classmethod
+    def validate_github(cls, value: str) -> str:
+        return validate_github_id(value)
+
+    @field_validator("email")
+    @classmethod
+    def validate_contributor_email(cls, value: str) -> str:
+        return validate_email(value)
+
+
 class UploadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.0.0"]
+    schema_version: Literal["1.0.0", "1.1.0"]
     kind: Literal["bronze.trajectory"]
     source_id: str
     traj_digest: str
     uploaded_by: str | None = Field(default=None, max_length=MAX_UPLOADED_BY_LENGTH)
+    contributor: ContributorInfo | None = None
     artifacts: list[Artifact] = Field(min_length=1, max_length=MAX_ARTIFACTS)
 
     @field_validator("source_id")
@@ -76,6 +98,8 @@ class UploadRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_capture(self) -> Self:
+        if self.schema_version == "1.1.0" and self.contributor is None:
+            raise ValueError("schema 1.1.0 requires contributor metadata")
         names = [artifact.name for artifact in self.artifacts]
         if len(names) != len(set(names)):
             raise ValueError("artifact names must be unique")
