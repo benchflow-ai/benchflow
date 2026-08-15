@@ -106,6 +106,9 @@ def validate_artifact_name(name: str) -> str:
     """Require the canonical public trajectory object namespace."""
     if not ARTIFACT_NAME_PATTERN.fullmatch(name):
         raise ValueError("artifact name is outside trajectory/*.jsonl")
+    _, replacements = redact_value(name)
+    if replacements:
+        raise ValueError("artifact filename resembles a secret")
     return name
 
 

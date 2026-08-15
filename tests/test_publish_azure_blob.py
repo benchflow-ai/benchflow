@@ -450,11 +450,33 @@ def test_contribution_redactor_covers_sensitive_command_arguments(command) -> No
     assert replacements == 1
 
 
+@pytest.mark.parametrize("label", ["name", "key", "Name", "Key"])
+def test_contribution_redactor_propagates_structured_secret_carriers(
+    label: str,
+) -> None:
+    """Guards PR #989 against prefixless secrets in name/value carriers."""
+    value = {"headers": [{label: "Authorization", "Value": "opaque-value"}]}
+
+    redacted, replacements = redact_value(value)
+
+    assert redacted["headers"][0]["Value"] == "[REDACTED]"
+    assert replacements == 1
+
+
 def test_contribution_redactor_preserves_kebab_case_sk_identifiers() -> None:
     """Guards PR #989 against corrupting ordinary sk-prefixed task identifiers."""
     value = {"output": "task-sk-us-east-1-refactor-auth"}
 
     assert redact_value(value) == (value, 0)
+
+
+def test_staging_rejects_credential_like_artifact_filename(tmp_path: Path) -> None:
+    """Guards PR #989 against manifest-only filename redaction."""
+    trajectory = tmp_path / "sk-abcdefghijklmnop.jsonl"
+    trajectory.write_text('{"type":"message","text":"safe"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="artifact filename resembles a secret"):
+        stage_trajectory_capture(trajectory, source_id="demo").__enter__()
 
 
 def test_contribution_redactor_replaces_credential_mapping_keys_without_collision() -> (

@@ -251,6 +251,14 @@ def test_broker_validation_errors_are_fail_closed_and_json_safe(
     assert injection_response.status_code == 400
     assert injection_response.json()["detail"][0]["type"] == "value_error"
 
+    secret_named = json.loads(json.dumps(body))
+    secret_named["artifacts"][0]["name"] = "trajectory/sk-abcdefghijklmnop.jsonl"
+    secret_name_response = TestClient(create_app(FakeBroker(AssertionError()))).post(
+        "/v1/uploads", json=secret_named
+    )
+    assert secret_name_response.status_code == 400
+    assert secret_name_response.json()["detail"][0]["type"] == "value_error"
+
     oversized = json.loads(json.dumps(body))
     oversized["artifacts"][0]["bytes"] = 1024**3 + 1
     oversized_response = TestClient(create_app(FakeBroker(AssertionError()))).post(
@@ -303,6 +311,19 @@ def test_validator_recomputes_bytes_jsonl_and_secret_scan(tmp_path: Path) -> Non
     )
     with pytest.raises(CaptureRejected, match="secret-like"):
         _validate_and_scan_jsonl(aws_session_key, "trajectory/aws-session.jsonl")
+
+    structured_header = tmp_path / "structured-header.jsonl"
+    structured_header.write_text(
+        json.dumps(
+            {"headers": [{"name": "Authorization", "value": "opaque-prefixless-value"}]}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CaptureRejected, match="secret-like"):
+        _validate_and_scan_jsonl(
+            structured_header, "trajectory/structured-header.jsonl"
+        )
 
 
 @pytest.mark.parametrize("encoding", ["utf-16", "utf-32"])
@@ -586,50 +607,65 @@ def test_broker_persists_declared_artifact_sizes(
         "azure.storage.blob.generate_blob_sas", lambda **_kwargs: "sp=c&sig=test"
     )
 
-    backend.create_upload(request, client_ip="127.0.0.1")
+    grant = backend.create_upload(request, client_ip="127.0.0.1")
 
     assert json.loads(table.entities[-1]["declared_artifacts"]) == expected
+    assert table.entities[-1]["attempt_id"] == grant.upload_id
+    assert grant.prefix.endswith(f"/{grant.upload_id}/")
 
 
-def test_broker_does_not_reopen_rejected_digest(tmp_path: Path) -> None:
-    """Guards PR #989 against downgrading a terminal rejected capture."""
+def test_broker_reopens_rejected_digest_in_isolated_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #989 against a rejected attempt poisoning a valid digest."""
     trial = _trial(tmp_path)
     with stage_trajectory_capture(trial, source_id="demo") as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         digest = staged.traj_digest
+    old_attempt = "u_" + "0" * 32
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "rejected",
+                "attempt_id": old_attempt,
+            }
+        ]
+    )
     backend = AzureUploadBroker(
         account_name="account",
         container="bronze",
-        table=FakeTable(
-            [
-                {
-                    "PartitionKey": "capture",
-                    "RowKey": digest,
-                    "status": "rejected",
-                }
-            ]
+        table=table,
+        blob_service=SimpleNamespace(
+            get_user_delegation_key=lambda **_kwargs: "delegation-key"
         ),
-        blob_service=SimpleNamespace(),
         ip_hash_key=b"test",
     )
+    monkeypatch.setattr(backend, "_consume_rate_limit", lambda _client_ip: None)
+    monkeypatch.setattr(
+        "azure.storage.blob.generate_blob_sas", lambda **_kwargs: "sp=c&sig=test"
+    )
 
-    with pytest.raises(RejectedUpload):
-        backend.create_upload(request, client_ip="127.0.0.1")
+    grant = backend.create_upload(request, client_ip="127.0.0.1")
+
+    assert grant.upload_id != old_attempt
+    assert grant.prefix == f"inbox/{digest}/{grant.upload_id}/"
+    assert table.entities[-1]["status"] == "pending"
+    assert table.entities[-1]["attempt_id"] == grant.upload_id
 
 
-@pytest.mark.parametrize(
-    ("status", "terminal_exception"),
-    [("ingested", AlreadyUploaded), ("rejected", RejectedUpload)],
-)
 def test_terminal_digest_handshakes_consume_rate_limit(
-    tmp_path: Path, status: str, terminal_exception: type[Exception]
+    tmp_path: Path,
 ) -> None:
     """Guards PR #989 against terminal ledger lookups bypassing broker quotas."""
     trial = _trial(tmp_path)
     with stage_trajectory_capture(trial, source_id="demo") as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         digest = staged.traj_digest
-    table = FakeTable([{"PartitionKey": "capture", "RowKey": digest, "status": status}])
+    table = FakeTable(
+        [{"PartitionKey": "capture", "RowKey": digest, "status": "ingested"}]
+    )
     backend = AzureUploadBroker(
         account_name="account",
         container="bronze",
@@ -639,7 +675,7 @@ def test_terminal_digest_handshakes_consume_rate_limit(
         rate_limit=1,
     )
 
-    with pytest.raises(terminal_exception):
+    with pytest.raises(AlreadyUploaded):
         backend.create_upload(request, client_ip="127.0.0.1")
     with pytest.raises(RateLimited):
         backend.create_upload(request, client_ip="127.0.0.1")
@@ -701,8 +737,122 @@ def test_event_grid_queue_base64_envelope_is_decoded(tmp_path: Path) -> None:
     assert _capture_from_event(encoded) == (
         f"inbox/{digest}/",
         digest,
+        None,
         "manifest.json",
     )
+
+
+def test_attempt_scoped_event_path_is_parsed(tmp_path: Path) -> None:
+    """Guards PR #989 attempt isolation in Event Grid validation."""
+    digest, _ = _quarantine_capture(tmp_path)
+    attempt_id = "u_" + "a" * 32
+    event = json.dumps(
+        {
+            "data": {
+                "url": (
+                    "https://account.blob.core.windows.net/bronze/"
+                    f"inbox/{digest}/{attempt_id}/manifest.json"
+                )
+            }
+        }
+    )
+
+    assert _capture_from_event(event) == (
+        f"inbox/{digest}/{attempt_id}/",
+        digest,
+        attempt_id,
+        "manifest.json",
+    )
+
+
+def test_stale_attempt_event_cleans_only_its_prefix(tmp_path: Path) -> None:
+    """Guards PR #989 against an old SAS attempt changing the active ledger."""
+    digest, legacy_blobs = _quarantine_capture(tmp_path)
+    old_attempt = "u_" + "0" * 32
+    current_attempt = "u_" + "1" * 32
+    old_prefix = f"inbox/{digest}/{old_attempt}/"
+    current_prefix = f"inbox/{digest}/{current_attempt}/"
+    blobs = {
+        name.replace(f"inbox/{digest}/", old_prefix): value
+        for name, value in legacy_blobs.items()
+    }
+    blobs[current_prefix + "trajectory/current.jsonl"] = b'{"safe":true}\n'
+    event = json.dumps(
+        {
+            "data": {
+                "url": (
+                    "https://account.blob.core.windows.net/bronze/"
+                    f"{old_prefix}manifest.json"
+                )
+            }
+        }
+    )
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "pending",
+                "attempt_id": current_attempt,
+            }
+        ]
+    )
+    container = FakeContainer(blobs)
+    queue = FakeQueue(event)
+
+    assert AzureCaptureValidator(
+        container=container, queue=queue, table=table
+    ).run_once()
+
+    assert not any(name.startswith(old_prefix) for name in container.blobs)
+    assert current_prefix + "trajectory/current.jsonl" in container.blobs
+    assert table.entities[-1]["status"] == "pending"
+    assert table.entities[-1]["attempt_id"] == current_attempt
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_queue_validator_promotes_attempt_scoped_capture(tmp_path: Path) -> None:
+    """Guards PR #989 end-to-end validation of an isolated upload attempt."""
+    digest, legacy_blobs = _quarantine_capture(tmp_path)
+    attempt_id = "u_" + "a" * 32
+    legacy_prefix = f"inbox/{digest}/"
+    prefix = f"{legacy_prefix}{attempt_id}/"
+    blobs = {
+        name.replace(legacy_prefix, prefix): value
+        for name, value in legacy_blobs.items()
+    }
+    event = json.dumps(
+        {
+            "data": {
+                "url": (
+                    "https://account.blob.core.windows.net/bronze/"
+                    f"{prefix}manifest.json"
+                )
+            }
+        }
+    )
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "pending",
+                "attempt_id": attempt_id,
+            }
+        ]
+    )
+    container = FakeContainer(blobs)
+    queue = FakeQueue(event)
+
+    assert AzureCaptureValidator(
+        container=container, queue=queue, table=table
+    ).run_once()
+
+    assert container.uploaded[-1] == f"sources/community/{digest}/manifest.json"
+    assert not any(name.startswith(prefix) for name in container.blobs)
+    assert table.entities[-1]["status"] == "ingested"
+    assert table.entities[-1]["attempt_id"] == attempt_id
+    assert queue.deleted == [("m1", "p1")]
 
 
 def test_pending_artifact_event_waits_for_manifest_commit(tmp_path: Path) -> None:

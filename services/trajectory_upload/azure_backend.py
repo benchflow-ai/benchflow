@@ -15,7 +15,6 @@ from urllib.parse import quote
 from services.trajectory_upload.broker_app import (
     AlreadyUploaded,
     RateLimited,
-    RejectedUpload,
 )
 from services.trajectory_upload.contract import (
     UploadGrant,
@@ -78,22 +77,38 @@ class AzureUploadBroker:
 
     def create_upload(self, request: UploadRequest, *, client_ip: str) -> UploadGrant:
         digest = request.traj_digest.removeprefix("sha256:")
+        upload_id = f"u_{uuid.uuid4().hex}"
         with self._state_lock:
             self._consume_rate_limit(client_ip)
-            status = self._capture_status(digest)
+            entity = self._capture_entity(digest)
+            status = entity.get("status") if entity is not None else None
             if status == "ingested":
                 raise AlreadyUploaded(
                     base_url=self.container_url,
                     prefix=f"sources/community/{digest}/",
                 )
-            if status == "rejected":
-                raise RejectedUpload
-            if status is None:
+            if status in {"pending", "validating"}:
+                if entity is None:  # pragma: no cover - implied by status above
+                    raise RuntimeError("active capture ledger entry is missing")
+                persisted_attempt = entity.get("attempt_id")
+                if persisted_attempt and not _valid_upload_id(persisted_attempt):
+                    raise RuntimeError(
+                        "active capture ledger has an invalid attempt id"
+                    )
+                if isinstance(persisted_attempt, str) and persisted_attempt:
+                    upload_id = persisted_attempt
+                    prefix = f"inbox/{digest}/{upload_id}/"
+                else:
+                    # Preserve the pre-attempt namespace for captures that were
+                    # already in flight when this version was deployed.
+                    prefix = f"inbox/{digest}/"
+            else:
                 self.table.upsert_entity(
                     {
                         "PartitionKey": "capture",
                         "RowKey": digest,
                         "status": "pending",
+                        "attempt_id": upload_id,
                         "source_id": request.source_id,
                         "declared_artifacts": json.dumps(
                             {
@@ -104,13 +119,15 @@ class AzureUploadBroker:
                             sort_keys=True,
                         ),
                         "updated_at": datetime.now(UTC).isoformat(),
+                        "validation_lease_until": "",
+                        "detail": "",
                     }
                 )
+                prefix = f"inbox/{digest}/{upload_id}/"
 
         now = datetime.now(UTC)
         expires_at = now + timedelta(minutes=self.sas_minutes)
         delegation_key = self._user_delegation_key(now)
-        prefix = f"inbox/{digest}/"
         objects = tuple(
             self._upload_object(
                 prefix=prefix,
@@ -126,7 +143,7 @@ class AzureUploadBroker:
             ]
         )
         return UploadGrant(
-            upload_id=f"u_{uuid.uuid4().hex}",
+            upload_id=upload_id,
             bucket=self.container,
             base_url=self.container_url,
             prefix=prefix,
@@ -138,15 +155,13 @@ class AzureUploadBroker:
     def container_url(self) -> str:
         return f"https://{self.account_name}.blob.core.windows.net/{self.container}"
 
-    def _capture_status(self, digest: str) -> str | None:
+    def _capture_entity(self, digest: str) -> Any | None:
         from azure.core.exceptions import ResourceNotFoundError
 
         try:
-            entity = self.table.get_entity(partition_key="capture", row_key=digest)
+            return self.table.get_entity(partition_key="capture", row_key=digest)
         except ResourceNotFoundError:
             return None
-        status = entity.get("status")
-        return status if isinstance(status, str) else None
 
     def _consume_rate_limit(self, client_ip: str) -> None:
         from azure.core.exceptions import ResourceNotFoundError
@@ -228,3 +243,12 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"required environment variable is not set: {name}")
     return value
+
+
+def _valid_upload_id(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 34
+        and value.startswith("u_")
+        and all(char in "0123456789abcdef" for char in value[2:])
+    )

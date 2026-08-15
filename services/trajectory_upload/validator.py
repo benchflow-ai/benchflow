@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import os
+import re
 import tempfile
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 # prevents a replacement worker from overlapping a replica that Azure has not
 # terminated yet; an abandoned queue message can reclaim the digest afterward.
 VALIDATION_LEASE = timedelta(minutes=35)
+ATTEMPT_ID = re.compile(r"^u_[0-9a-f]{32}$")
 
 
 class AzureCaptureValidator:
@@ -81,13 +83,13 @@ class AzureCaptureValidator:
         if message is None:
             return False
         try:
-            prefix, digest, relname = _capture_from_event(message.content)
+            prefix, digest, attempt_id, relname = _capture_from_event(message.content)
         except CaptureRejected as exc:
             logger.warning("discarding invalid validation event: %s", exc)
             self._delete_message(message)
             return True
 
-        status = self._capture_status(digest)
+        status = self._capture_status(digest, attempt_id)
         if status in {"ingested", "rejected"} or status is None:
             self._cleanup_prefix(prefix)
             self._delete_message(message)
@@ -98,18 +100,20 @@ class AzureCaptureValidator:
         # as a prematurely committed upload.
         if relname != "manifest.json":
             violation = (
-                self._artifact_violation(digest, prefix, relname)
+                self._artifact_violation(digest, attempt_id, prefix, relname)
                 if status == "pending"
                 else None
             )
             if violation is not None:
-                if self._claim_capture(digest):
+                if self._claim_capture(digest, attempt_id):
                     logger.warning("capture %s rejected: %s", digest, violation)
-                    self._record_status(digest, "rejected", detail=violation)
+                    self._record_status(
+                        digest, attempt_id, "rejected", detail=violation
+                    )
                     self._cleanup_prefix(prefix)
                     self._delete_message(message)
                 else:
-                    status = self._capture_status(digest)
+                    status = self._capture_status(digest, attempt_id)
                     if status in {"ingested", "rejected"} or status is None:
                         self._cleanup_prefix(prefix)
                         self._delete_message(message)
@@ -117,11 +121,11 @@ class AzureCaptureValidator:
             self._delete_message(message)
             return True
 
-        if not self._claim_capture(digest):
+        if not self._claim_capture(digest, attempt_id):
             # A concurrent worker owns an unexpired validation lease. Leave the
             # queue message for a later retry so a crashed owner cannot strand
             # the capture permanently.
-            status = self._capture_status(digest)
+            status = self._capture_status(digest, attempt_id)
             if status in {"ingested", "rejected"} or status is None:
                 self._cleanup_prefix(prefix)
                 self._delete_message(message)
@@ -142,16 +146,22 @@ class AzureCaptureValidator:
                 self._promote(validated, digest)
         except CaptureRejected as exc:
             logger.warning("capture %s rejected: %s", digest, exc)
-            self._record_status(digest, "rejected", detail=str(exc)[:512])
+            self._record_status(digest, attempt_id, "rejected", detail=str(exc)[:512])
             self._cleanup_prefix(prefix)
         else:
-            self._record_status(digest, "ingested")
+            self._record_status(digest, attempt_id, "ingested")
             self._cleanup_prefix(prefix)
             logger.info("capture %s promoted", digest)
         self._delete_message(message)
         return True
 
-    def _artifact_violation(self, digest: str, prefix: str, relname: str) -> str | None:
+    def _artifact_violation(
+        self,
+        digest: str,
+        attempt_id: str | None,
+        prefix: str,
+        relname: str,
+    ) -> str | None:
         from azure.core.exceptions import ResourceNotFoundError
 
         try:
@@ -163,7 +173,7 @@ class AzureCaptureValidator:
         if properties.size > MAX_ARTIFACT_BYTES:
             return f"artifact exceeds {MAX_ARTIFACT_BYTES} bytes: {relname}"
 
-        declared = self._declared_artifacts(digest)
+        declared = self._declared_artifacts(digest, attempt_id)
         if declared is not None and declared.get(relname) != properties.size:
             return f"artifact size does not match declaration: {relname}"
 
@@ -185,9 +195,13 @@ class AzureCaptureValidator:
                 return f"capture exceeds {MAX_CAPTURE_BYTES} bytes"
         return None
 
-    def _declared_artifacts(self, digest: str) -> dict[str, int] | None:
+    def _declared_artifacts(
+        self, digest: str, attempt_id: str | None
+    ) -> dict[str, int] | None:
         entity = self._capture_entity(digest)
-        raw = entity.get("declared_artifacts") if entity is not None else None
+        if entity is None or entity.get("attempt_id") != attempt_id:
+            return None
+        raw = entity.get("declared_artifacts")
         if not isinstance(raw, str):
             return None
         try:
@@ -263,19 +277,26 @@ class AzureCaptureValidator:
         for blob in self.container.list_blobs(name_starts_with=prefix):
             self.container.delete_blob(blob.name)
 
-    def _record_status(self, digest: str, status: str, **extra: str) -> None:
-        self.table.upsert_entity(
-            {
-                "PartitionKey": "capture",
-                "RowKey": digest,
-                "status": status,
-                "updated_at": datetime.now(UTC).isoformat(),
-                "validation_lease_until": "",
-                **extra,
-            }
-        )
+    def _record_status(
+        self,
+        digest: str,
+        attempt_id: str | None,
+        status: str,
+        **extra: str,
+    ) -> None:
+        entity = {
+            "PartitionKey": "capture",
+            "RowKey": digest,
+            "status": status,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "validation_lease_until": "",
+            **extra,
+        }
+        if attempt_id is not None:
+            entity["attempt_id"] = attempt_id
+        self.table.upsert_entity(entity)
 
-    def _claim_capture(self, digest: str) -> bool:
+    def _claim_capture(self, digest: str, attempt_id: str | None) -> bool:
         from azure.core import MatchConditions
         from azure.core.exceptions import ResourceModifiedError, ResourceNotFoundError
 
@@ -283,6 +304,8 @@ class AzureCaptureValidator:
         try:
             entity = self.table.get_entity(partition_key="capture", row_key=digest)
         except ResourceNotFoundError:
+            return False
+        if entity.get("attempt_id") != attempt_id:
             return False
         status = entity.get("status")
         lease_until = _parse_datetime(entity.get("validation_lease_until"))
@@ -312,9 +335,9 @@ class AzureCaptureValidator:
             return False
         return True
 
-    def _capture_status(self, digest: str) -> str | None:
+    def _capture_status(self, digest: str, attempt_id: str | None) -> str | None:
         entity = self._capture_entity(digest)
-        if entity is None:
+        if entity is None or entity.get("attempt_id") != attempt_id:
             return None
         status = entity.get("status")
         return status if isinstance(status, str) else None
@@ -331,7 +354,7 @@ class AzureCaptureValidator:
         self.queue.delete_message(message.id, message.pop_receipt)
 
 
-def _capture_from_event(content: str) -> tuple[str, str, str]:
+def _capture_from_event(content: str) -> tuple[str, str, str | None, str]:
     # Event Grid's Storage Queue destination base64-encodes its JSON envelope;
     # accepting plain JSON as well keeps the parser usable with test and replay
     # tools that already decode queue messages.
@@ -357,10 +380,12 @@ def _capture_from_event(content: str) -> tuple[str, str, str]:
     digest = parts[2]
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise CaptureRejected("event contains an invalid trajectory digest")
-    relname = "/".join(parts[3:])
+    attempt_id = parts[3] if ATTEMPT_ID.fullmatch(parts[3]) else None
+    relname = "/".join(parts[4:] if attempt_id is not None else parts[3:])
     if relname != "manifest.json" and ARTIFACT_NAME.fullmatch(relname) is None:
         raise CaptureRejected("event is not for a declared capture object")
-    return f"inbox/{digest}/", digest, relname
+    prefix = f"inbox/{digest}/{attempt_id}/" if attempt_id else f"inbox/{digest}/"
+    return prefix, digest, attempt_id, relname
 
 
 def _required_env(name: str) -> str:

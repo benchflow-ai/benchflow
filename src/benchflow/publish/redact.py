@@ -87,6 +87,17 @@ def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int
         replacements = 0
         original_keys = set(value)
         secret_key_index = 0
+        carrier_field = next(
+            (
+                item
+                for key, item in value.items()
+                if isinstance(key, str)
+                and _normalize_key(key) in {"key", "name"}
+                and isinstance(item, str)
+                and _is_sensitive_key(item)
+            ),
+            None,
+        )
         for key, item in value.items():
             clean_key = key
             if isinstance(key, str):
@@ -100,7 +111,14 @@ def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int
                     replacements += key_replacements
             clean, count = redact_value(
                 item,
-                field_name=key if isinstance(key, str) else None,
+                field_name=(
+                    carrier_field
+                    if isinstance(key, str)
+                    and _normalize_key(key) in {"value", "values"}
+                    else key
+                    if isinstance(key, str)
+                    else None
+                ),
             )
             redacted[clean_key] = clean
             replacements += count
@@ -177,11 +195,15 @@ def _redact_argv(
 
 
 def _is_sensitive_key(field_name: str) -> bool:
-    normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", field_name)
-    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
-    normalized = re.sub(r"[^a-z0-9]+", "_", normalized.casefold()).strip("_")
+    normalized = _normalize_key(field_name)
     return (
         normalized in DENYLISTED_KEYS
         or normalized.endswith(SEPARATED_SENSITIVE_KEY_SUFFIXES)
         or normalized.replace("_", "").endswith(COMPACT_SENSITIVE_KEY_SUFFIXES)
     )
+
+
+def _normalize_key(field_name: str) -> str:
+    normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", field_name)
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
+    return re.sub(r"[^a-z0-9]+", "_", normalized.casefold()).strip("_")
