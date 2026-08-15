@@ -23,7 +23,7 @@ BenchFlow is a universal environment framework: it runs AI agents against task e
 - **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
 - **Training-ready output** — scored rollouts emit a Verifiers/ORS reward record and best-effort ATIF (`trainer/atif.json`) / ADP (`trainer/adp.jsonl`) conversions; ATIF is omitted when the trajectory is empty, and conversion errors are reported in the rollout result
 
-## 1. Upload a trajectory
+## Qucik start: 1. Upload a trajectory
 
 No BenchFlow account, Azure credentials, or API key is required:
 
@@ -42,7 +42,7 @@ file. Both contributor fields are required and are stored in `manifest.json`.
 See the concise [upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md)
 or the [trajectory upload guide](./docs/traj-upload.md).
 
-## 2. Run with a ChatGPT or Claude subscription
+## Qucik start: 2. Run with a ChatGPT or Claude subscription
 
 No OpenAI or Anthropic API key is required. Start Docker, install BenchFlow,
 then run **one** of these options. BenchFlow detects the saved host login and
