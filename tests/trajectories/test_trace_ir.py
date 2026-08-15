@@ -16,9 +16,10 @@ Four groups, in the order they matter:
   ACP enum, both read from source. Adding a branch to the capture path fails
   this suite until the IR accounts for it, exactly as the Slice A conformance
   suite does for the schema.
-* **Isolation** — nothing under ``src/benchflow`` imports the IR. This is the
-  executable form of "zero runtime behaviour change"; if a future PR wires the
-  IR into a run path, this test is the one that must be deliberately updated.
+* **Isolation** — nothing outside the IR module family imports the IR. This is
+  the executable form of "zero runtime behaviour change"; if a future PR wires
+  the IR into a run path, this test is the one that must be deliberately
+  updated.
 * **The worked example** — the JSON in ``docs/trace-interop.md`` §8 is built
   here in code and compared to the block in the document, so the documented
   example cannot drift from what the models actually produce.
@@ -424,35 +425,65 @@ def test_the_oracle_record_has_its_own_kind_and_role():
 # ---------------------------------------------------------------------------
 
 
-def _imports_the_ir(path: Path) -> bool:
+IR_FAMILY = ("ir", "ir_from_acp")
+"""The unwired modules of the proposal: the IR and its converters.
+
+They may import each other — a converter that could not import the IR would be
+useless — but nothing else may import them. Growing this tuple is how a new
+converter joins the family; it is not a way to let a run path in.
+"""
+
+IR_FAMILY_PATHS = {f"src/benchflow/trajectories/{name}.py" for name in IR_FAMILY}
+
+
+def _imported_ir_modules(path: Path) -> set[str]:
+    """Which members of :data:`IR_FAMILY` *path* imports, read by AST."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            if any(alias.name == "benchflow.trajectories.ir" for alias in node.names):
-                return True
+            for alias in node.names:
+                for name in IR_FAMILY:
+                    if alias.name == f"benchflow.trajectories.{name}":
+                        found.add(name)
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            if module == "benchflow.trajectories.ir" or (node.level and module == "ir"):
-                return True
-            if module in ("benchflow.trajectories", "") and any(
-                alias.name == "ir" for alias in node.names
-            ):
-                return True
-    return False
+            for name in IR_FAMILY:
+                if module == f"benchflow.trajectories.{name}" or (
+                    node.level and module == name
+                ):
+                    found.add(name)
+            if module in ("benchflow.trajectories", ""):
+                found.update(
+                    alias.name for alias in node.names if alias.name in IR_FAMILY
+                )
+    return found
 
 
-def test_no_runtime_module_imports_the_ir():
-    """Slice B is reversible: deleting ``ir.py`` cannot break a run path.
+def test_only_the_ir_family_imports_the_ir():
+    """The proposal is reversible: deleting it cannot break a run path.
+
+    Slice B stated this as "nothing under ``src/benchflow`` imports the IR".
+    Slice C adds `ir_from_acp`, which necessarily imports it, so the property
+    is restated at the boundary that actually matters — the family is closed,
+    and no module outside it may reach in.
 
     When the IR is deliberately wired into production, this test is the one to
-    update — and updating it is the moment the reversibility claim ends.
+    update, and updating it is the moment the reversibility claim ends.
     """
-    importers = [
+    importers = {
         path.relative_to(REPO_ROOT).as_posix()
         for path in sorted(SRC_ROOT.rglob("*.py"))
-        if _imports_the_ir(path)
-    ]
-    assert importers == [], importers
+        if _imported_ir_modules(path)
+    }
+    outside = importers - IR_FAMILY_PATHS
+    assert outside == set(), sorted(outside)
+
+
+def test_every_ir_family_module_exists():
+    """A stale name in :data:`IR_FAMILY` would silently weaken the test above."""
+    missing = [path for path in IR_FAMILY_PATHS if not (REPO_ROOT / path).exists()]
+    assert missing == [], missing
 
 
 def test_the_ir_module_imports_no_benchflow_runtime_module():

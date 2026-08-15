@@ -549,23 +549,58 @@ Three design choices carry most of the weight:
 
 ### 8.3 Planned mapping
 
-**PROPOSAL — none of these converters is implemented.** Slice B is the IR
-alone; `ACP → IR` and `ATIF ↔ IR` are deliberately not in it, so the
-representation can be reviewed before anything depends on it.
+**`ACP → IR` is implemented** (Slice C,
+[`src/benchflow/trajectories/ir_from_acp.py`](../src/benchflow/trajectories/ir_from_acp.py)),
+still unwired and still provisional. `ATIF ↔ IR` and the OTel direction are not.
 
 #### ACP-session capture events → IR
 
-| Capture event (§2.2) | IR | Loss recorded |
-|---|---|---|
-| `user_message` | `kind=user_message`, `role=user`, `text` | — |
-| `agent_message` | `kind=agent_message`, `role=agent`, `text` | — |
-| `agent_thought` | `kind=agent_reasoning`, `reasoning_segments=[text]` | none — the segment list is what preserves loss #10 |
-| `tool_call` | `kind=tool_call` + `ToolCall`; `kind`→`name` with `name_semantics="acp_kind"` | `arguments` → UNSUPPORTED (#1); `started_at`/`finished_at` → UNSUPPORTED (#3) |
-| `tool_call.content`, text block | `ContentBlock(kind=text)` | — |
-| `tool_call.content`, other blocks | `ContentBlock(kind=opaque, raw=…)` | none — carrying the block verbatim is how loss #5 stops being a loss |
-| `agent_timeout` | `kind=timeout`, `outcome="wall_clock_timeout"`, the rest in `extensions` | none — loss #4 becomes representable |
-| `oracle` record (§2.4) | `kind=oracle`, `role=oracle` | none — no `[oracle: …]` string prefix, so a consumer need not string-match |
-| unrecognized `type` | `kind=unknown` with `source_type` verbatim | — |
+**FACT** for the implemented rows — asserted by
+`tests/trajectories/test_ir_from_acp.py` against events produced by driving a
+real `ACPSession` through the production capture path.
+
+| Capture field / event (§2.2) | IR | Class | Loss recorded |
+|---|---|---|---|
+| event order | `events[].index`, dense from 0 | preserved | — |
+| `type` | `kind` **and** `source_type` verbatim | preserved | — |
+| `user_message.text` | `text`, `role=user` | preserved | — |
+| `agent_message.text` | `text`, `role=agent` | preserved | — |
+| text-empty message (`""`) | `text=""`, event kept | preserved | — (both exporters drop the event) |
+| `agent_thought.text` | `reasoning` **and** `reasoning_segments=[text]` | preserved | — the segment list is what avoids loss #10 |
+| `tool_call.tool_call_id` | `tool_call.call_id`, `""` kept as `""` | preserved | — (ATIF/ADP synthesize here) |
+| `tool_call.kind` | `tool_call.name` + `name_semantics="acp_kind"` | preserved | — the semantics is recorded instead of assumed |
+| `tool_call.title` | `tool_call.title` | preserved | — |
+| `tool_call.status` | `tool_call.status` | preserved | — |
+| `tool_call.content`, text blocks | `ContentBlock(kind=text)` + `raw` | preserved | — |
+| `tool_call.content`, other blocks | `ContentBlock(kind=opaque, raw=…)` | preserved | — carrying the block verbatim is how loss #5 stops being a loss |
+| tool arguments | `arguments=None` | unsupported | `events[i].tool_call.arguments`, per call (#1) |
+| `ToolCallRecord.started_at`/`.finished_at` | `None` | unsupported | `events[].tool_call.*`, once (#3) |
+| `agent_timeout` | `kind=timeout`, `outcome=reason`, rest in `extensions`; trace `outcome.status=timeout` | preserved | — loss #4 becomes representable |
+| `oracle` record (§2.4) | `kind=oracle`, `role=oracle`, fields in `extensions` | preserved | — no `[oracle: …]` prefix, so no string matching |
+| unrecognized `type` | `kind=unknown`, `source_type` verbatim, record in `extensions` | preserved | — every exporter skips these today |
+| unrecognized extra field on a known record | `extensions` | preserved | — |
+| per-event usage | `None` | unsupported | `events[].usage`, once (#6, #8) |
+| agent version | `None` | unsupported | `agent.agent_version`, once (#7) |
+| `stop_reason` | `None` | unsupported | `outcome.stop_reason`, once (#9) |
+| non-object entry in the list | *(no IR event)* | dropped | `source[i]` |
+| non-string where a string is expected | coerced with `str()` | normalized | `events[i].<field>` |
+| status outside the ACP vocabulary | `unknown`, original in `extensions.source_status` | normalized | `events[i].tool_call.status` |
+
+Two rows are deliberately absent. The converter does **not** prepend the
+`prompts` argument as leading `user` events, though `acp_events_to_atif_steps`
+and `acp_events_to_adp_content` both do: those steps are not ACP events, and
+§5.2 records what they cost — an ATIF document that opens with two identical
+`user` steps, so user turns over-count by one. A target that wants them adds
+them at its own edge as `SYNTHESIZED`. And it reads no other artifact:
+`result.json`, `timing.json` and the proxy capture are not consulted, so a value
+that lives only there is a declared loss rather than a silent enrichment.
+
+**FACT — measured on two real rollouts.** The `gemini` rollouts of §5.2,
+converted through this path: H1 (5 events, 2 tool calls) produces **7** loss
+records, H2 (4 events, 1 tool call, one real wall-clock timeout) produces **6**.
+All `unsupported`. In both, 5 records are systemic and the rest are the
+per-call `arguments`, so the report is `n_tool_calls + 5` and does not grow with
+trace length.
 
 #### IR → ATIF
 
@@ -791,7 +826,32 @@ here.
 ### 8.7 Status
 
 - **Implemented:** the IR types, the loss model, the invariants, the validation
-  suite and this section.
-- **Not implemented, deliberately:** `ACP → IR`, `ATIF ↔ IR`, any OTel work, any
-  wiring into a run path, any on-disk artifact.
+  suite, this section, and the `ACP → IR` converter with its loss report.
+- **Not implemented, deliberately:** `ATIF ↔ IR`, any OTel work, any wiring into
+  a run path, any on-disk artifact, any capture-layer enrichment.
 - **Unchanged:** every existing format, exporter, artifact and code path.
+
+The isolation property is unchanged in substance and restated at a new
+boundary: `ir.py` and `ir_from_acp.py` form a closed family that may import each
+other, and `test_only_the_ir_family_imports_the_ir` asserts that nothing else in
+`src/benchflow` imports either. The converter itself imports one benchflow
+module — the IR — and reads the capture format as data.
+
+### 8.8 What the first converter showed
+
+**FACT.** Writing `ACP → IR` was also the first stress test of §8.2's
+declared-absence rule, and two things came out of it that a design document
+could not have settled:
+
+- **The rule is affordable, because the report is bounded by tool calls rather
+  than by trace length.** Systemic absences — timestamps, per-event usage, agent
+  version, stop reason — are declared once each under an unindexed
+  `events[].…` path; only `arguments`, which `validate_trace` requires per
+  event, scales. A 50-tool-call trace declares 55 records that carry one
+  sentence of distinct information between them, which is why the converter
+  ships `loss_summary`.
+- **The per-event requirement is the part to review.** It is what makes an
+  undeclared absence a test failure rather than a habit, and it is also the
+  reason 50 records say the same thing. An `events[*].…` wildcard would collapse
+  them at the cost of making a single missed call invisible. That trade is open;
+  §8.6 already lists this contract as the most likely thing to change.
