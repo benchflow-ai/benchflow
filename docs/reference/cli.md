@@ -1102,7 +1102,9 @@ The original top-level `bench continue` still works as a hidden, deprecated alia
 Key options: `--model` (override the live-continuation model; defaults to the
 original run's model), `--timeout`, `--output`, `--require-timeout`,
 `--strict-divergence`, `--replay-only` (rebuild via replay and stop at the
-cut-point — no live model or API key needed), and `--proxy-mode` (replay
+cut-point — no live model or API key needed), `--max-exchanges` (replay only
+the first K recorded LLM exchanges, then go live; default: all recorded — see
+[Cut-points](../continue-runs.md#cut-points)), and `--proxy-mode` (replay
 proxy placement: `auto`, `host`, or `sandbox`; default `auto` uses
 sandbox-local replay for Daytona/Modal and host replay for Docker).
 
