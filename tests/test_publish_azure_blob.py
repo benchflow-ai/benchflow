@@ -251,6 +251,40 @@ def test_staging_bounds_optional_run_metadata_before_reading(
         assert staged.manifest["run"]["agent"] is None
 
 
+def test_staging_ignores_recursive_optional_run_metadata(tmp_path: Path) -> None:
+    """Guards PR #989 against malformed optional metadata leaking RecursionError."""
+    trial = _trial(tmp_path)
+    nested = '{"child":' * 1_200 + '"leaf"' + "}" * 1_200
+    (trial / "result.json").write_text(nested, encoding="utf-8")
+
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        assert staged.manifest["run"]["agent"] is None
+
+
+def test_staging_enforces_contributor_label_bound(tmp_path: Path) -> None:
+    """Guards PR #989 against producing a broker-invalid contributor label."""
+    trial = _trial(tmp_path)
+
+    with pytest.raises(ValueError, match="contributor label exceeds 256"):
+        stage_trajectory_capture(
+            trial, source_id="demo", uploaded_by="x" * 257
+        ).__enter__()
+
+
+@pytest.mark.parametrize(
+    "filename", ["capture with space.jsonl", "capture.JSONL", "x" * 129 + ".jsonl"]
+)
+def test_staging_rejects_noncanonical_artifact_names(
+    tmp_path: Path, filename: str
+) -> None:
+    """Guards PR #989 against direct uploads bypassing artifact-name validation."""
+    source = tmp_path / filename
+    source.write_text('{"type":"message"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"outside trajectory/\*\.jsonl"):
+        stage_trajectory_capture(source, source_id="demo").__enter__()
+
+
 def test_invalid_empty_and_oversize_inputs_fail_cleanly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -374,6 +408,9 @@ def test_contribution_redactor_covers_canonical_credential_families(token: str) 
     "field_name",
     [
         "token",
+        "passwd",
+        "clientsecret",
+        "accesskey",
         "accessToken",
         "clientSecret",
         "api key",

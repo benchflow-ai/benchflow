@@ -11,18 +11,23 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from benchflow.publish.traj_capture import (
+    ARTIFACT_NAME_PATTERN as _ARTIFACT_NAME_PATTERN,
+)
+from benchflow.publish.traj_capture import (
     MAX_ARTIFACTS,
     MAX_CAPTURE_BYTES,
     MAX_FILE_BYTES,
+    MAX_UPLOADED_BY_LENGTH,
+    validate_artifact_name,
     validate_source_id,
 )
 from benchflow.publish.traj_capture import (
     MAX_MANIFEST_BYTES as _MAX_MANIFEST_BYTES,
 )
 
+ARTIFACT_NAME = _ARTIFACT_NAME_PATTERN
 MAX_ARTIFACT_BYTES = MAX_FILE_BYTES
 MAX_MANIFEST_BYTES = _MAX_MANIFEST_BYTES
-ARTIFACT_NAME = re.compile(r"^trajectory/[A-Za-z0-9._-]{1,128}\.jsonl$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -36,9 +41,7 @@ class Artifact(BaseModel):
     @field_validator("name")
     @classmethod
     def validate_name(cls, value: str) -> str:
-        if not ARTIFACT_NAME.fullmatch(value):
-            raise ValueError("artifact name is outside trajectory/*.jsonl")
-        return value
+        return validate_artifact_name(value)
 
     @field_validator("sha256")
     @classmethod
@@ -55,7 +58,7 @@ class UploadRequest(BaseModel):
     kind: Literal["bronze.trajectory"]
     source_id: str
     traj_digest: str
-    uploaded_by: str | None = Field(default=None, max_length=256)
+    uploaded_by: str | None = Field(default=None, max_length=MAX_UPLOADED_BY_LENGTH)
     artifacts: list[Artifact] = Field(min_length=1, max_length=MAX_ARTIFACTS)
 
     @field_validator("source_id")

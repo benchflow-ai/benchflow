@@ -322,7 +322,7 @@ def test_validator_rejects_credential_shaped_mapping_keys(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize(
     "field_name",
-    ["token", "accessToken", "clientSecret", "api key", "access.token"],
+    ["token", "passwd", "accessToken", "clientSecret", "api key", "access.token"],
 )
 def test_validator_rejects_prefixless_credentials_in_common_fields(
     tmp_path: Path, field_name: str

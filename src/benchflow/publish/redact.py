@@ -25,12 +25,38 @@ DENYLISTED_KEYS = frozenset(
         "aws_bearer_token_bedrock",
         "aws_secret_access_key",
         "access_token",
+        "access_key",
+        "account_key",
+        "credential",
         "refresh_token",
         "client_secret",
+        "encryption_key",
         "password",
+        "passwd",
         "secret",
+        "secret_key",
         "token",
     }
+)
+SENSITIVE_KEY_SUFFIXES = (
+    "api_key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "access_key",
+    "secret_key",
+    "account_key",
+    "private_key",
+    "encryption_key",
+    "credential",
+    "credentials",
+)
+SEPARATED_SENSITIVE_KEY_SUFFIXES = tuple(
+    f"_{suffix}" for suffix in SENSITIVE_KEY_SUFFIXES
+)
+COMPACT_SENSITIVE_KEY_SUFFIXES = tuple(
+    suffix.replace("_", "") for suffix in SENSITIVE_KEY_SUFFIXES
 )
 
 
@@ -106,19 +132,8 @@ def _is_sensitive_key(field_name: str) -> bool:
     normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", field_name)
     normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
     normalized = re.sub(r"[^a-z0-9]+", "_", normalized.casefold()).strip("_")
-    return normalized in DENYLISTED_KEYS or normalized.endswith(
-        (
-            "_api_key",
-            "_token",
-            "_secret",
-            "_password",
-            "_passwd",
-            "_access_key",
-            "_secret_key",
-            "_account_key",
-            "_private_key",
-            "_encryption_key",
-            "_credential",
-            "_credentials",
-        )
+    return (
+        normalized in DENYLISTED_KEYS
+        or normalized.endswith(SEPARATED_SENSITIVE_KEY_SUFFIXES)
+        or normalized.replace("_", "").endswith(COMPACT_SENSITIVE_KEY_SUFFIXES)
     )

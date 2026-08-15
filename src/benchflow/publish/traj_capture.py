@@ -22,10 +22,12 @@ MAX_ARTIFACTS = 8
 MAX_CAPTURE_BYTES = 2 * MAX_FILE_BYTES
 MAX_MANIFEST_BYTES = 1024**2
 MAX_RUN_METADATA_BYTES = 1024**2
+MAX_UPLOADED_BY_LENGTH = 256
 MAX_JSONL_RECORD_BYTES = 8 * 1024**2
 MAX_JSON_NESTING = 100
 MAX_JSON_NODES = 100_000
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
+ARTIFACT_NAME_PATTERN = re.compile(r"^trajectory/[A-Za-z0-9._-]{1,128}\.jsonl$")
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -100,6 +102,13 @@ def validate_source_id(source_id: str) -> str:
     return normalized
 
 
+def validate_artifact_name(name: str) -> str:
+    """Require the canonical public trajectory object namespace."""
+    if not ARTIFACT_NAME_PATTERN.fullmatch(name):
+        raise ValueError("artifact name is outside trajectory/*.jsonl")
+    return name
+
+
 @contextmanager
 def stage_trajectory_capture(
     path: Path,
@@ -110,6 +119,10 @@ def stage_trajectory_capture(
 ) -> Iterator[StagedCapture]:
     """Validate and stage a trajectory capture without mutating its source."""
     source_id = validate_source_id(source_id)
+    if uploaded_by is not None and len(uploaded_by) > MAX_UPLOADED_BY_LENGTH:
+        raise ValueError(
+            f"trajectory contributor label exceeds {MAX_UPLOADED_BY_LENGTH} characters"
+        )
     resolved = _resolve_input(path)
     if len(resolved.files) > MAX_ARTIFACTS:
         raise ValueError(
@@ -130,7 +143,7 @@ def stage_trajectory_capture(
         payloads: list[StagedFile] = []
         replacement_count = 0
         for source in resolved.files:
-            relname = f"trajectory/{source.name}"
+            relname = validate_artifact_name(f"trajectory/{source.name}")
             target = staging_dir / relname
             target.parent.mkdir(parents=True, exist_ok=True)
             if redact:
@@ -420,7 +433,7 @@ def _read_object(path: Path) -> dict[str, Any]:
         if len(payload) > MAX_RUN_METADATA_BYTES:
             return {}
         value = strict_json_loads(payload)
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (OSError, RecursionError, UnicodeDecodeError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
 
