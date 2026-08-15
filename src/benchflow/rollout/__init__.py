@@ -52,6 +52,7 @@ import shlex
 import shutil
 import tarfile
 import tempfile
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -78,6 +79,7 @@ from benchflow._utils.text import describe_exception
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.credentials import upload_credential
 from benchflow.agents.registry import AGENTS
+from benchflow.branch_delta import BranchDelta
 from benchflow.contracts import (
     AgentProtocolError,
     AskUserRequest,
@@ -229,11 +231,12 @@ from benchflow.usage_tracking import (
 logger = logging.getLogger(__name__)
 _SETUP_COMMAND_LOCK_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-# Lifecycle phases from verify() onward. The agent will not run again in this
-# rollout once one of these is set, so nothing may rewind ``_phase`` out of
-# them — the live dashboard renders the phase as a label and a backwards step
-# reads as the run having restarted (see disconnect()).
-_TERMINAL_PHASES = frozenset({"verifying", "verified", "cleaned"})
+# Lifecycle phases from verify() onward, plus the branch-first terminal
+# ("branched"). The agent will not run again in this rollout once one of these
+# is set, so nothing may rewind ``_phase`` out of them — the live dashboard
+# renders the phase as a label and a backwards step reads as the run having
+# restarted (see disconnect()).
+_TERMINAL_PHASES = frozenset({"verifying", "verified", "cleaned", "branched"})
 
 
 _MCP_TRANSPORT_TO_ACP_TYPE = {
@@ -895,7 +898,10 @@ class Rollout:
 
     @property
     def result(self) -> RolloutResult | None:
-        if self._phase not in ("verified", "cleaned"):
+        # "branched" is terminal for a branch-first workflow (rollout-branching
+        # RFC §3.4) — the children carried the verification, so the result is
+        # reachable without the linear verify()/cleanup() path.
+        if self._phase not in ("verified", "cleaned", "branched"):
             return None
         return self._build_result()
 
@@ -1790,6 +1796,7 @@ class Rollout:
         *,
         require_sandbox_snapshot: bool = False,
         snapshot_layers: frozenset[str] | set[str] = frozenset({"environment"}),
+        deltas: Sequence[BranchDelta | None] | None = None,
     ) -> float:
         """Branch the rollout at the cursor into ``n`` child continuations.
 
@@ -1818,6 +1825,13 @@ class Rollout:
         ``{"sandbox"}`` alone branches a stateless environment on the
         container layer only. Missing capability on a requested layer fails
         closed before anything is snapshotted.
+
+        ``deltas`` — one :class:`~benchflow.branch_delta.BranchDelta` (or
+        ``None``) per child, the recorded exactly-one-controlled-change each
+        child runs under (RFC §3.3). v1 executes ``injected_prompt`` only
+        (the child's user-visible first message, hash-recorded in
+        provenance); the other fields fail closed with
+        ``BranchDeltaNotSupported`` before any child runs.
         """
         return await _branch_engine(
             self,
@@ -1825,6 +1839,7 @@ class Rollout:
             run_child,
             require_sandbox_snapshot=require_sandbox_snapshot,
             snapshot_layers=snapshot_layers,
+            deltas=deltas,
         )
 
     # Phase 4: VERIFY
