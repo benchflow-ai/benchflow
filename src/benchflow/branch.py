@@ -98,11 +98,23 @@ def fork(tree: RolloutTree, node: RolloutNode, n: int) -> list[RolloutNode]:
 
 
 async def restore(node: RolloutNode, environment: Any) -> None:
-    """Roll the environment back to ``node``'s recorded checkpoint."""
+    """Roll the environment back to ``node``'s recorded checkpoint.
+
+    Legacy environment-only restore: it accepts the bare ``StateSnapshot``
+    recorded by :func:`checkpoint`. A :class:`StageSnapshot` recorded by
+    :func:`checkpoint_composed` is rejected *before* the environment is
+    touched — its layer refs are not an environment snapshot, and passing
+    one through would fail deep inside the environment implementation.
+    """
     snap = node.state.get(_SNAPSHOT_KEY)
     if snap is None:
         raise ValueError(
             f"node {node.id!r} has no checkpoint — call checkpoint() before restore()"
+        )
+    if isinstance(snap, StageSnapshot):
+        raise ValueError(
+            f"node {node.id!r} was checkpointed with checkpoint_composed(); "
+            "use restore_composed() to roll back a composed StageSnapshot"
         )
     await environment.restore(snap)
 
