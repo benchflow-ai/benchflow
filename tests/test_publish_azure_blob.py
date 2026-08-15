@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -243,6 +244,32 @@ def test_direct_upload_preserves_canonical_order_and_metadata(
     assert all("-" not in key for key in client.calls[0]["metadata"])
     assert client.calls[0]["content_settings"].content_type == "application/jsonl"
     assert result.url.startswith("https://tasksminerdata.blob.core.windows.net/bronze/")
+
+
+def test_direct_upload_suppresses_azure_sdk_info_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Azure request diagnostics do not clutter or disclose the direct CLI path."""
+
+    class LoggingClient(FakeContainerClient):
+        def upload_blob(self, **kwargs) -> None:
+            logging.getLogger("azure.core.pipeline").info(
+                "signed request %s", kwargs["name"]
+            )
+            super().upload_blob(**kwargs)
+
+    client = LoggingClient()
+    _install_fake_azure(monkeypatch, client)
+    caplog.set_level(logging.INFO)
+    trial = _trial(tmp_path)
+
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        upload_capture_direct(
+            staged,
+            container_url="https://tasksminerdata.blob.core.windows.net/bronze",
+        )
+
+    assert "signed request" not in caplog.text
 
 
 def test_direct_upload_skips_existing_blobs_and_continues_manifest(

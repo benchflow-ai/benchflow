@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -48,55 +50,56 @@ def upload_capture_direct(
             "install with: pip install 'benchflow[azure]'"
         ) from exc
 
-    account, container = _parse_container_url(container_url)
-    auth = credential if credential is not None else DefaultAzureCredential()
-    client = ContainerClient.from_container_url(container_url, credential=auth)
-    prefix = f"sources/{staged.source_id}/{staged.traj_digest}/"
-    metadata = {
-        "source_id": staged.source_id,
-        "traj_digest": f"sha256:{staged.traj_digest}",
-        "schema_version": str(staged.manifest["schema_version"]),
-        "manifest": "manifest.json",
-        "benchflow_version": __version__,
-    }
-    uploaded: list[str] = []
-    skipped: list[str] = []
-    for staged_file in staged.files:
-        blob_name = prefix + staged_file.relname
-        try:
-            with staged_file.local_path.open("rb") as stream:
-                client.upload_blob(
-                    name=blob_name,
-                    data=stream,
-                    overwrite=False,
-                    content_settings=ContentSettings(
-                        content_type=staged_file.content_type
-                    ),
-                    metadata=metadata,
-                )
-        except ResourceExistsError:
-            skipped.append(blob_name)
-        except ResourceNotFoundError as exc:
-            raise ValueError(
-                f"Azure container not found: {container_url}; create the storage "
-                "account and private container before using --direct"
-            ) from exc
-        except ClientAuthenticationError as exc:
-            raise ValueError(
-                "Azure authentication failed; run 'az login' (or configure managed "
-                "identity) and grant the Blob Data Creator role"
-            ) from exc
-        except HttpResponseError as exc:
-            if getattr(exc, "status_code", None) == 403:
+    with _quiet_azure_request_logging():
+        account, container = _parse_container_url(container_url)
+        auth = credential if credential is not None else DefaultAzureCredential()
+        client = ContainerClient.from_container_url(container_url, credential=auth)
+        prefix = f"sources/{staged.source_id}/{staged.traj_digest}/"
+        metadata = {
+            "source_id": staged.source_id,
+            "traj_digest": f"sha256:{staged.traj_digest}",
+            "schema_version": str(staged.manifest["schema_version"]),
+            "manifest": "manifest.json",
+            "benchflow_version": __version__,
+        }
+        uploaded: list[str] = []
+        skipped: list[str] = []
+        for staged_file in staged.files:
+            blob_name = prefix + staged_file.relname
+            try:
+                with staged_file.local_path.open("rb") as stream:
+                    client.upload_blob(
+                        name=blob_name,
+                        data=stream,
+                        overwrite=False,
+                        content_settings=ContentSettings(
+                            content_type=staged_file.content_type
+                        ),
+                        metadata=metadata,
+                    )
+            except ResourceExistsError:
+                skipped.append(blob_name)
+            except ResourceNotFoundError as exc:
                 raise ValueError(
-                    "Azure upload was forbidden; run 'az login' (or configure "
-                    "managed identity) and grant the Blob Data Creator role"
+                    f"Azure container not found: {container_url}; create the storage "
+                    "account and private container before using --direct"
                 ) from exc
-            raise ValueError(
-                f"Azure Blob upload failed for {blob_name}: {exc}"
-            ) from exc
-        else:
-            uploaded.append(blob_name)
+            except ClientAuthenticationError as exc:
+                raise ValueError(
+                    "Azure authentication failed; run 'az login' (or configure managed "
+                    "identity) and grant the Blob Data Creator role"
+                ) from exc
+            except HttpResponseError as exc:
+                if getattr(exc, "status_code", None) == 403:
+                    raise ValueError(
+                        "Azure upload was forbidden; run 'az login' (or configure "
+                        "managed identity) and grant the Blob Data Creator role"
+                    ) from exc
+                raise ValueError(
+                    f"Azure Blob upload failed for {blob_name}: {exc}"
+                ) from exc
+            else:
+                uploaded.append(blob_name)
     return BlobPublishResult(
         account=account,
         container=container,
@@ -104,6 +107,18 @@ def upload_capture_direct(
         uploaded=tuple(uploaded),
         skipped=tuple(skipped),
     )
+
+
+@contextmanager
+def _quiet_azure_request_logging():
+    """Keep Azure SDK request diagnostics out of the one-line CLI result."""
+    azure_logger = logging.getLogger("azure")
+    previous_level = azure_logger.level
+    azure_logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        azure_logger.setLevel(previous_level)
 
 
 def _parse_container_url(container_url: str) -> tuple[str, str]:

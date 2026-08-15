@@ -11,9 +11,11 @@ from rich.markup import escape
 
 from benchflow.cli._shared import console, print_error
 
-# Set to the production Container App endpoint after deployment. The environment
-# variable remains an override for development and disaster recovery.
-DEFAULT_TRAJ_BROKER_URL: str | None = None
+# The environment variable remains an override for development and disaster
+# recovery.
+DEFAULT_TRAJ_BROKER_URL: str | None = (
+    "https://tasksminer-traj-broker.nicewave-c3abaecf.westus2.azurecontainerapps.io"
+)
 
 
 def register_traj(app: typer.Typer) -> None:

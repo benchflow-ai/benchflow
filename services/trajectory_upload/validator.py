@@ -77,6 +77,10 @@ class AzureCaptureValidator:
             self._delete_message(message)
             return True
 
+        if self._capture_status(digest) in {"ingested", "rejected"}:
+            self._delete_message(message)
+            return True
+
         try:
             with tempfile.TemporaryDirectory(prefix="benchflow-validator-") as name:
                 validated = self._download_and_validate(prefix, Path(name))
@@ -174,6 +178,16 @@ class AzureCaptureValidator:
                 **extra,
             }
         )
+
+    def _capture_status(self, digest: str) -> str | None:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        try:
+            entity = self.table.get_entity(partition_key="capture", row_key=digest)
+        except ResourceNotFoundError:
+            return None
+        status = entity.get("status")
+        return status if isinstance(status, str) else None
 
     def _delete_message(self, message: Any) -> None:
         self.queue.delete_message(message.id, message.pop_receipt)

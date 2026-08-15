@@ -854,6 +854,29 @@ and hosted-provider browsing to [`bench hub list`](#bench-hub). The old
 `bench environment create|list|cleanup` and `show|inspect` (plus `list
 --provider`/`--hub`) still work, each printing a one-line stderr notice.
 
+## bench traj upload
+
+Validate, redact, and contribute trajectory JSONL through BenchFlow's public
+broker. `PATH` can be one JSONL file, a directory of JSONL files, or a trial
+directory containing `trajectory/`. The command stages only JSONL artifacts,
+writes a content-addressed manifest last, and treats an already-ingested digest
+as a successful no-op.
+
+```bash
+bench traj upload path/to/trial
+bench traj upload path/to/trajectory.jsonl --source-id my-project/run-42
+bench traj upload path/to/trial --dry-run
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--source-id` | derived from `PATH` | Stable contributor/run label stored in the manifest |
+| `--dry-run` | `false` | Validate, redact, hash, and list staged files without network traffic |
+| `--direct` | `false` | Use local Azure credentials instead of the public broker; requires the `azure` extra |
+| `--container-url` | — | Azure Blob container URL for `--direct`; alternatively set `BENCHFLOW_AZURE_CONTAINER_URL` |
+
+See [Trajectory upload](../traj-upload.md) for privacy and operator details.
+
 ## bench hub
 
 External environment hubs: browse a hub's environments (`list`/`show`/`inspect`)

@@ -163,6 +163,38 @@ def test_broker_http_surface_returns_scoped_grants_and_protocol_statuses(
     assert limited.headers["Retry-After"] == "42"
 
 
+def test_broker_validation_errors_are_fail_closed_and_json_safe(
+    tmp_path: Path,
+) -> None:
+    """Guards the live Azure fix after malformed handshakes returned HTTP 500."""
+    trial = _trial(tmp_path)
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        body = _request_from_manifest(staged.manifest)
+
+    injected = json.loads(json.dumps(body))
+    injected["artifacts"][0]["name"] = "../private.jsonl"
+    injection_response = TestClient(create_app(FakeBroker(AssertionError()))).post(
+        "/v1/uploads", json=injected
+    )
+    assert injection_response.status_code == 400
+    assert injection_response.json()["detail"][0]["type"] == "value_error"
+
+    oversized = json.loads(json.dumps(body))
+    oversized["artifacts"][0]["bytes"] = 1024**3 + 1
+    oversized_response = TestClient(create_app(FakeBroker(AssertionError()))).post(
+        "/v1/uploads", json=oversized
+    )
+    assert oversized_response.status_code == 413
+    assert oversized_response.json()["detail"][0]["type"] == "less_than_equal"
+
+    body_limit_response = TestClient(create_app(FakeBroker(AssertionError()))).post(
+        "/v1/uploads",
+        content=b"{}",
+        headers={"Content-Length": str(1024**2 + 1)},
+    )
+    assert body_limit_response.status_code == 413
+
+
 def test_validator_recomputes_bytes_jsonl_and_secret_scan(tmp_path: Path) -> None:
     """Promotion validation rejects digest corruption, malformed JSONL, and secrets."""
     trial = _trial(tmp_path)
@@ -249,11 +281,22 @@ class FakeQueue:
 
 
 class FakeTable:
-    def __init__(self) -> None:
-        self.entities: list[dict] = []
+    def __init__(self, entities: list[dict] | None = None) -> None:
+        self.entities = entities or []
 
     def upsert_entity(self, entity: dict) -> None:
         self.entities.append(entity)
+
+    def get_entity(self, *, partition_key: str, row_key: str) -> dict:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        for entity in reversed(self.entities):
+            if (
+                entity["PartitionKey"] == partition_key
+                and entity["RowKey"] == row_key
+            ):
+                return entity
+        raise ResourceNotFoundError("not found")
 
 
 def _quarantine_capture(tmp_path: Path) -> tuple[str, dict[str, bytes]]:
@@ -310,6 +353,42 @@ def test_event_grid_queue_base64_envelope_is_decoded(tmp_path: Path) -> None:
     encoded = base64.b64encode(event.encode()).decode()
 
     assert _capture_from_event(encoded) == (f"inbox/{digest}/", digest)
+
+
+@pytest.mark.parametrize("terminal_status", ["ingested", "rejected"])
+def test_duplicate_terminal_event_is_an_idempotent_no_op(
+    tmp_path: Path, terminal_status: str
+) -> None:
+    """At-least-once Event Grid delivery cannot reopen a terminal capture."""
+    digest, _ = _quarantine_capture(tmp_path)
+    event = json.dumps(
+        {
+            "data": {
+                "url": (
+                    "https://account.blob.core.windows.net/bronze/"
+                    f"inbox/{digest}/manifest.json"
+                )
+            }
+        }
+    )
+    queue = FakeQueue(event)
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": terminal_status,
+            }
+        ]
+    )
+
+    assert (
+        AzureCaptureValidator(
+            container=FakeContainer({}), queue=queue, table=table
+        ).run_once()
+        is True
+    )
+    assert queue.deleted == [("m1", "p1")]
 
 
 def test_queue_validator_rejects_corruption_without_promotion(tmp_path: Path) -> None:

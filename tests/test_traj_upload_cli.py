@@ -28,6 +28,15 @@ def _trial(tmp_path: Path) -> Path:
     return trial
 
 
+def test_stock_cli_has_the_verified_public_broker() -> None:
+    """A wheel install can contribute without private endpoint configuration."""
+    from benchflow.cli.traj import DEFAULT_TRAJ_BROKER_URL
+
+    assert DEFAULT_TRAJ_BROKER_URL == (
+        "https://tasksminer-traj-broker.nicewave-c3abaecf.westus2.azurecontainerapps.io"
+    )
+
+
 def _broker_payload(
     request: httpx.Request, *, objects: list[dict] | None = None
 ) -> dict:

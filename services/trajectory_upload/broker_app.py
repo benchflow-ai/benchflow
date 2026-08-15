@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse
 
 from services.trajectory_upload.contract import UploadGrant, UploadRequest
 
+MAX_HANDSHAKE_BYTES = 1024**2
+
 
 class AlreadyUploaded(Exception):
     def __init__(self, *, base_url: str, prefix: str) -> None:
@@ -42,16 +44,48 @@ def create_app(
         app.state.backend = backend
     app.state.backend_factory = backend_factory or _azure_backend
 
+    @app.middleware("http")
+    async def limit_handshake_body(request: Request, call_next):
+        if request.method == "POST" and request.url.path == "/v1/uploads":
+            content_length = request.headers.get("content-length")
+            if content_length is None:
+                return JSONResponse(
+                    status_code=411,
+                    content={"detail": "Content-Length is required"},
+                )
+            try:
+                body_size = int(content_length)
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"detail": "invalid Content-Length"},
+                )
+            if body_size < 0 or body_size > MAX_HANDSHAKE_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "upload handshake exceeds 1 MiB"},
+                )
+        return await call_next(request)
+
     @app.exception_handler(RequestValidationError)
     async def validation_error(
         _request: Request, exc: RequestValidationError
     ) -> JSONResponse:
+        errors = exc.errors()
         oversized = any(
-            error["type"] in {"less_than_equal", "too_long"} for error in exc.errors()
+            error["type"] in {"less_than_equal", "too_long"} for error in errors
         )
+        details = [
+            {
+                "type": str(error["type"]),
+                "loc": [str(part) for part in error["loc"]],
+                "msg": str(error["msg"]),
+            }
+            for error in errors
+        ]
         return JSONResponse(
             status_code=413 if oversized else 400,
-            content={"detail": exc.errors(include_url=False)},
+            content={"detail": details},
         )
 
     @app.get("/healthz")
