@@ -59,7 +59,12 @@ def validate_manifest_bytes(manifest_bytes: bytes) -> ContributionManifest:
     try:
         raw_manifest = json.loads(manifest_bytes)
         manifest = ContributionManifest.model_validate(raw_manifest)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as exc:
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RecursionError,
+        ValidationError,
+    ) as exc:
         raise CaptureRejected(f"invalid manifest: {exc}") from exc
     return manifest
 

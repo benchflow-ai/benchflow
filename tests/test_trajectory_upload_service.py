@@ -667,6 +667,40 @@ def test_queue_validator_rejects_invalid_utf8_manifest(tmp_path: Path) -> None:
     assert queue.deleted == [("m1", "p1")]
 
 
+def test_queue_validator_rejects_excessively_nested_manifest(tmp_path: Path) -> None:
+    """Guards PR #989 against retrying JSON parser recursion failures."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    manifest_name = f"inbox/{digest}/manifest.json"
+    blobs[manifest_name] = b"[" * 2_000 + b"]" * 2_000
+    container = FakeContainer(blobs)
+    queue = FakeQueue(
+        json.dumps(
+            {
+                "data": {
+                    "url": (
+                        "https://account.blob.core.windows.net/bronze/" + manifest_name
+                    )
+                }
+            }
+        )
+    )
+    table = _pending_table(digest)
+
+    AzureCaptureValidator(container=container, queue=queue, table=table).run_once()
+
+    assert table.entities[-1]["status"] == "rejected"
+    assert "invalid manifest" in table.entities[-1]["detail"]
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_deploy_selects_event_topic_by_storage_source() -> None:
+    """Guards PR #989 against attaching events to an unrelated system topic."""
+    script = Path("infra/trajectory-upload/deploy-azure.sh").read_text()
+
+    assert "map(select(.source == $source))[0].name // empty" in script
+    assert "--query '[0].name'" not in script
+
+
 def test_manifest_contract_is_validated_before_artifact_downloads(
     tmp_path: Path,
 ) -> None:

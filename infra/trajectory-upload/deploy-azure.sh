@@ -183,7 +183,9 @@ ensure_role_assignment "$task_validator_principal_id" "AcrPull" "$task_acr_id"
 # directly on the storage source produces an identity-less implicit topic.
 task_system_topic="$(az eventgrid system-topic list \
     --resource-group "$task_rg" \
-    --query '[0].name' -o tsv)"
+    --output json | jq -r \
+        --arg source "$task_storage_id" \
+        'map(select(.source == $source))[0].name // empty')"
 if [[ -z "$task_system_topic" ]]; then
     task_system_topic="trajectory-storage-events"
     az eventgrid system-topic create \
