@@ -13,16 +13,15 @@ REDACTED = "[REDACTED]"
 DENYLISTED_KEYS = frozenset(
     {
         "authorization",
-        "proxy-authorization",
-        "x-api-key",
-        "api-key",
+        "proxy_authorization",
+        "x_api_key",
         "api_key",
         "apikey",
         "cookie",
         "credentials",
         "private_key",
-        "set-cookie",
-        "x-goog-api-key",
+        "set_cookie",
+        "x_goog_api_key",
         "aws_bearer_token_bedrock",
         "aws_secret_access_key",
         "access_token",
@@ -30,6 +29,7 @@ DENYLISTED_KEYS = frozenset(
         "client_secret",
         "password",
         "secret",
+        "token",
     }
 )
 
@@ -103,7 +103,22 @@ def _redact_text(value: str) -> tuple[str, int]:
 
 
 def _is_sensitive_key(field_name: str) -> bool:
-    normalized = field_name.casefold()
+    normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", field_name)
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
+    normalized = normalized.casefold().replace("-", "_")
     return normalized in DENYLISTED_KEYS or normalized.endswith(
-        ("_api_key", "-api-key", "_secret", "-secret", "_password", "-password")
+        (
+            "_api_key",
+            "_token",
+            "_secret",
+            "_password",
+            "_passwd",
+            "_access_key",
+            "_secret_key",
+            "_account_key",
+            "_private_key",
+            "_encryption_key",
+            "_credential",
+            "_credentials",
+        )
     )

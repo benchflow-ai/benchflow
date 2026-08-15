@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import threading
 import uuid
@@ -94,6 +95,14 @@ class AzureUploadBroker:
                         "RowKey": digest,
                         "status": "pending",
                         "source_id": request.source_id,
+                        "declared_artifacts": json.dumps(
+                            {
+                                artifact.name: artifact.bytes
+                                for artifact in request.artifacts
+                            },
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
                         "updated_at": datetime.now(UTC).isoformat(),
                     }
                 )

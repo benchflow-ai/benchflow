@@ -16,9 +16,12 @@ from benchflow.publish.traj_capture import (
     MAX_FILE_BYTES,
     validate_source_id,
 )
+from benchflow.publish.traj_capture import (
+    MAX_MANIFEST_BYTES as _MAX_MANIFEST_BYTES,
+)
 
 MAX_ARTIFACT_BYTES = MAX_FILE_BYTES
-MAX_MANIFEST_BYTES = 1024**2
+MAX_MANIFEST_BYTES = _MAX_MANIFEST_BYTES
 ARTIFACT_NAME = re.compile(r"^trajectory/[A-Za-z0-9._-]{1,128}\.jsonl$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 

@@ -320,6 +320,21 @@ def test_validator_rejects_credential_shaped_mapping_keys(tmp_path: Path) -> Non
         _validate_and_scan_jsonl(artifact, "trajectory/credential-key.jsonl")
 
 
+@pytest.mark.parametrize("field_name", ["token", "accessToken", "clientSecret"])
+def test_validator_rejects_prefixless_credentials_in_common_fields(
+    tmp_path: Path, field_name: str
+) -> None:
+    """Guards PR #989 against promoting raw token and camelCase fields."""
+    artifact = tmp_path / "credential-field.jsonl"
+    artifact.write_text(
+        json.dumps({field_name: "opaque-prefixless-value"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CaptureRejected, match="secret-like"):
+        _validate_and_scan_jsonl(artifact, "trajectory/credential-field.jsonl")
+
+
 def test_validator_bounds_record_bytes_and_complexity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -489,6 +504,34 @@ def test_broker_regrant_does_not_downgrade_ledger_state(
     assert len(table.entities) == 1
 
 
+def test_broker_persists_declared_artifact_sizes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #989 against artifact-only uploads exceeding their declaration."""
+    trial = _trial(tmp_path)
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
+        expected = {item.name: item.bytes for item in request.artifacts}
+    table = FakeTable()
+    backend = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=table,
+        blob_service=SimpleNamespace(
+            get_user_delegation_key=lambda **_kwargs: "delegation-key"
+        ),
+        ip_hash_key=b"test",
+    )
+    monkeypatch.setattr(backend, "_consume_rate_limit", lambda _client_ip: None)
+    monkeypatch.setattr(
+        "azure.storage.blob.generate_blob_sas", lambda **_kwargs: "sp=c&sig=test"
+    )
+
+    backend.create_upload(request, client_ip="127.0.0.1")
+
+    assert json.loads(table.entities[-1]["declared_artifacts"]) == expected
+
+
 def test_broker_does_not_reopen_rejected_digest(tmp_path: Path) -> None:
     """Guards PR #989 against downgrading a terminal rejected capture."""
     trial = _trial(tmp_path)
@@ -624,6 +667,71 @@ def test_pending_oversized_artifact_event_is_rejected_and_cleaned(
     assert not any(name.startswith(f"inbox/{digest}/") for name in container.blobs)
     assert table.entities[-1]["status"] == "rejected"
     assert "artifact exceeds 1 bytes" in table.entities[-1]["detail"]
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_pending_artifact_event_enforces_declared_size(tmp_path: Path) -> None:
+    """Guards PR #989 against uploads larger than broker-declared artifact bytes."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    prefix = f"inbox/{digest}/"
+    artifact = next(name for name in blobs if name.endswith(".jsonl"))
+    relname = artifact.removeprefix(prefix)
+    event = json.dumps(
+        {"data": {"url": ("https://account.blob.core.windows.net/bronze/" + artifact)}}
+    )
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "pending",
+                "declared_artifacts": json.dumps({relname: 1}),
+            }
+        ]
+    )
+    container = FakeContainer(blobs)
+    queue = FakeQueue(event)
+
+    assert AzureCaptureValidator(
+        container=container, queue=queue, table=table
+    ).run_once()
+
+    assert not any(name.startswith(prefix) for name in container.blobs)
+    assert table.entities[-1]["status"] == "rejected"
+    assert "does not match declaration" in table.entities[-1]["detail"]
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_pending_artifact_event_enforces_legacy_aggregate_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #989 against aggregate amplification without ledger metadata."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    prefix = f"inbox/{digest}/"
+    artifact = next(name for name in blobs if name.endswith(".jsonl"))
+    content = blobs[artifact]
+    blobs[prefix + "trajectory/second.jsonl"] = content
+    capture_limit = len(content) * 2 - 1
+    event = json.dumps(
+        {"data": {"url": ("https://account.blob.core.windows.net/bronze/" + artifact)}}
+    )
+    table = _pending_table(digest)
+    container = FakeContainer(blobs)
+    queue = FakeQueue(event)
+    monkeypatch.setattr(
+        "services.trajectory_upload.validator.MAX_ARTIFACT_BYTES", len(content) + 1
+    )
+    monkeypatch.setattr(
+        "services.trajectory_upload.validator.MAX_CAPTURE_BYTES", capture_limit
+    )
+
+    assert AzureCaptureValidator(
+        container=container, queue=queue, table=table
+    ).run_once()
+
+    assert not any(name.startswith(prefix) for name in container.blobs)
+    assert table.entities[-1]["status"] == "rejected"
+    assert f"capture exceeds {capture_limit} bytes" in table.entities[-1]["detail"]
     assert queue.deleted == [("m1", "p1")]
 
 

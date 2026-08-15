@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlparse
 from services.trajectory_upload.contract import (
     ARTIFACT_NAME,
     MAX_ARTIFACT_BYTES,
+    MAX_CAPTURE_BYTES,
     MAX_MANIFEST_BYTES,
 )
 from services.trajectory_upload.validation import (
@@ -96,11 +97,15 @@ class AzureCaptureValidator:
         # to clean terminal-state replays without treating an in-flight capture
         # as a prematurely committed upload.
         if relname != "manifest.json":
-            if status == "pending" and self._artifact_exceeds_limit(prefix + relname):
+            violation = (
+                self._artifact_violation(digest, prefix, relname)
+                if status == "pending"
+                else None
+            )
+            if violation is not None:
                 if self._claim_capture(digest):
-                    detail = f"artifact exceeds {MAX_ARTIFACT_BYTES} bytes: {relname}"
-                    logger.warning("capture %s rejected: %s", digest, detail)
-                    self._record_status(digest, "rejected", detail=detail)
+                    logger.warning("capture %s rejected: %s", digest, violation)
+                    self._record_status(digest, "rejected", detail=violation)
                     self._cleanup_prefix(prefix)
                     self._delete_message(message)
                 else:
@@ -146,14 +151,58 @@ class AzureCaptureValidator:
         self._delete_message(message)
         return True
 
-    def _artifact_exceeds_limit(self, blob_name: str) -> bool:
+    def _artifact_violation(self, digest: str, prefix: str, relname: str) -> str | None:
         from azure.core.exceptions import ResourceNotFoundError
 
         try:
-            properties = self.container.get_blob_client(blob_name).get_blob_properties()
+            properties = self.container.get_blob_client(
+                prefix + relname
+            ).get_blob_properties()
         except ResourceNotFoundError:
-            return False
-        return properties.size > MAX_ARTIFACT_BYTES
+            return None
+        if properties.size > MAX_ARTIFACT_BYTES:
+            return f"artifact exceeds {MAX_ARTIFACT_BYTES} bytes: {relname}"
+
+        declared = self._declared_artifacts(digest)
+        if declared is not None and declared.get(relname) != properties.size:
+            return f"artifact size does not match declaration: {relname}"
+
+        capture_bytes = 0
+        for item in self.container.list_blobs(name_starts_with=prefix):
+            item_relname = item.name.removeprefix(prefix)
+            if ARTIFACT_NAME.fullmatch(item_relname) is None:
+                continue
+            try:
+                size = (
+                    self.container.get_blob_client(item.name).get_blob_properties().size
+                )
+            except ResourceNotFoundError:
+                continue
+            if size > MAX_ARTIFACT_BYTES:
+                return f"artifact exceeds {MAX_ARTIFACT_BYTES} bytes: {item_relname}"
+            capture_bytes += size
+            if capture_bytes > MAX_CAPTURE_BYTES:
+                return f"capture exceeds {MAX_CAPTURE_BYTES} bytes"
+        return None
+
+    def _declared_artifacts(self, digest: str) -> dict[str, int] | None:
+        entity = self._capture_entity(digest)
+        raw = entity.get("declared_artifacts") if entity is not None else None
+        if not isinstance(raw, str):
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(parsed, dict) or not all(
+            isinstance(name, str)
+            and isinstance(size, int)
+            and not isinstance(size, bool)
+            and size > 0
+            for name, size in parsed.items()
+        ):
+            return None
+        return parsed
 
     def _download_and_validate(
         self, prefix: str, staging_dir: Path
@@ -264,14 +313,19 @@ class AzureCaptureValidator:
         return True
 
     def _capture_status(self, digest: str) -> str | None:
-        from azure.core.exceptions import ResourceNotFoundError
-
-        try:
-            entity = self.table.get_entity(partition_key="capture", row_key=digest)
-        except ResourceNotFoundError:
+        entity = self._capture_entity(digest)
+        if entity is None:
             return None
         status = entity.get("status")
         return status if isinstance(status, str) else None
+
+    def _capture_entity(self, digest: str) -> Any | None:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        try:
+            return self.table.get_entity(partition_key="capture", row_key=digest)
+        except ResourceNotFoundError:
+            return None
 
     def _delete_message(self, message: Any) -> None:
         self.queue.delete_message(message.id, message.pop_receipt)

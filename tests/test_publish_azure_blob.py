@@ -181,6 +181,54 @@ def test_staging_enforces_shared_capture_count_and_size_limits(
         stage_trajectory_capture(trial, source_id="demo").__enter__()
 
 
+def test_staging_rechecks_file_limit_after_redaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #989 against redaction expanding an artifact past its limit."""
+    import benchflow.publish.traj_capture as capture_module
+
+    source = tmp_path / "capture.jsonl"
+    source.write_text('{"password":"x"}\n', encoding="utf-8")
+    monkeypatch.setattr(capture_module, "MAX_FILE_BYTES", source.stat().st_size)
+
+    with pytest.raises(ValueError, match="staged trajectory file exceeds"):
+        stage_trajectory_capture(source, source_id="demo").__enter__()
+
+
+def test_staging_rechecks_capture_limit_after_redaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #989 against redaction expanding the aggregate capture size."""
+    import benchflow.publish.traj_capture as capture_module
+
+    source_dir = tmp_path / "capture"
+    source_dir.mkdir()
+    for name in ("first.jsonl", "second.jsonl"):
+        (source_dir / name).write_text('{"password":"x"}\n', encoding="utf-8")
+    source_bytes = sum(path.stat().st_size for path in source_dir.iterdir())
+    monkeypatch.setattr(capture_module, "MAX_FILE_BYTES", 1024)
+    monkeypatch.setattr(capture_module, "MAX_CAPTURE_BYTES", source_bytes)
+
+    with pytest.raises(ValueError, match="staged trajectory capture exceeds"):
+        stage_trajectory_capture(source_dir, source_id="demo").__enter__()
+
+
+def test_staging_rejects_generated_manifest_over_shared_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #989 against uploading a manifest the validator must reject."""
+    import benchflow.publish.traj_capture as capture_module
+
+    trial = _trial(tmp_path)
+    (trial / "result.json").write_text(
+        json.dumps({"model": "x" * 2_000}), encoding="utf-8"
+    )
+    monkeypatch.setattr(capture_module, "MAX_MANIFEST_BYTES", 1024)
+
+    with pytest.raises(ValueError, match="trajectory manifest exceeds 1024 bytes"):
+        stage_trajectory_capture(trial, source_id="demo").__enter__()
+
+
 def test_invalid_empty_and_oversize_inputs_fail_cleanly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -297,6 +345,29 @@ def test_contribution_redactor_covers_canonical_credential_families(token: str) 
     redacted, replacements = redact_value({"output": token})
 
     assert token not in redacted["output"]
+    assert replacements == 1
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "token",
+        "accessToken",
+        "clientSecret",
+        "refreshToken",
+        "bearerToken",
+        "serviceCredentials",
+        "set-cookie",
+        "x-goog-api-key",
+    ],
+)
+def test_contribution_redactor_covers_token_and_camel_case_fields(
+    field_name: str,
+) -> None:
+    """Guards PR #989 against prefixless credentials in common JSON fields."""
+    redacted, replacements = redact_value({field_name: "opaque-prefixless-value"})
+
+    assert redacted[field_name] == "[REDACTED]"
     assert replacements == 1
 
 

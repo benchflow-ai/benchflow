@@ -20,6 +20,7 @@ from benchflow.publish.redact import redact_value
 MAX_FILE_BYTES = 128 * 1024**2
 MAX_ARTIFACTS = 8
 MAX_CAPTURE_BYTES = 2 * MAX_FILE_BYTES
+MAX_MANIFEST_BYTES = 1024**2
 MAX_JSONL_RECORD_BYTES = 8 * 1024**2
 MAX_JSON_NESTING = 100
 MAX_JSON_NODES = 100_000
@@ -139,6 +140,18 @@ def stage_trajectory_capture(
             payloads.append(_staged_file(target, relname, "application/jsonl"))
 
         payloads.sort(key=lambda item: item.relname)
+        for payload in payloads:
+            if payload.size_bytes > MAX_FILE_BYTES:
+                raise ValueError(
+                    f"staged trajectory file exceeds {MAX_FILE_BYTES} bytes: "
+                    f"{payload.relname} ({payload.size_bytes} bytes)"
+                )
+        staged_capture_bytes = sum(payload.size_bytes for payload in payloads)
+        if staged_capture_bytes > MAX_CAPTURE_BYTES:
+            raise ValueError(
+                f"staged trajectory capture exceeds {MAX_CAPTURE_BYTES} bytes: "
+                f"{staged_capture_bytes} bytes"
+            )
         traj_digest = _trajectory_digest(payloads)
         manifest = _build_manifest(
             source_id=source_id,
@@ -161,6 +174,12 @@ def stage_trajectory_capture(
             json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
+        manifest_size = manifest_path.stat().st_size
+        if manifest_size > MAX_MANIFEST_BYTES:
+            raise ValueError(
+                f"trajectory manifest exceeds {MAX_MANIFEST_BYTES} bytes: "
+                f"{manifest_size} bytes"
+            )
         manifest_file = _staged_file(
             manifest_path,
             "manifest.json",
