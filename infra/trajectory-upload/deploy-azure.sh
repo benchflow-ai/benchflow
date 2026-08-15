@@ -213,8 +213,7 @@ az containerapp job create \
     --mi-user-assigned "$task_validator_identity_id" \
     --registry-server "${task_acr}.azurecr.io" \
     --registry-identity "$task_validator_identity_id" \
-    --command python \
-    --args -m services.trajectory_upload.validator \
+    --command /app/services/trajectory_upload/validator-entrypoint \
     --cpu 0.5 \
     --memory 1.0Gi \
     --replica-timeout 1800 \

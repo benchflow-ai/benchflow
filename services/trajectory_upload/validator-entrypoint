@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+exec python -m services.trajectory_upload.validator
