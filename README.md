@@ -13,16 +13,6 @@
 
 BenchFlow is a universal environment framework: it runs AI agents against task environments and scores them through one hardened contract. **A benchmark is just a frozen environment** — point BenchFlow at any of them, drive it with *any* ACP agent, and run single-agent, multi-agent, or multi-round patterns over the same Scene-based lifecycle.
 
-- **Run any benchmark** — three-layer routing runs supported frameworks natively, translates unknown formats and proves equivalence with a parity gate, or runs a bespoke harness as-is; every layer emits one scored-trajectory contract. See [Run any benchmark](./docs/running-any-benchmark.md)
-- **Any ACP agent** — Gemini CLI, Claude Code, Codex, OpenCode, OpenHands, Pi, or your own
-- **Single + multi + progressive** — single-agent / multi-agent (coder + reviewer, simulated user) / multi-round with a Python `BaseUser` callback
-- **Loop strategies** — wrap any agent in a `--loop-strategy` (`verify-retry`, `self-review`); every rollout captures a per-iteration reward + token trajectory, so you can plot capability against cost (can a cheap model + loops match an expensive one at equal token spend?)
-- **`task.md` tasks** — one file (YAML frontmatter + prompt body) replaces the split `task.toml` + `instruction.md` layout; author with `bench tasks init` / `check` / `migrate` / `export`
-- **Hosted environments** — run external PrimeIntellect / Verifiers environments through `--source-env`, without converting them to BenchFlow tasks
-- **Sandboxes** — Docker locally, Apple Container on Apple Silicon Macs, Daytona for parallel cloud runs (orphaned sandboxes auto-reaped at eval start), Modal for serverless/GPU-backed task environments, and AgentCore for AWS-hosted runtimes
-- **Hardened verifier** — defaults block BenchJack/Meerkat-style reward-hacking; tasks opt out per-feature
-- **Training-ready output** — scored rollouts emit a Verifiers/ORS reward record and best-effort ATIF (`trainer/atif.json`) / ADP (`trainer/adp.jsonl`) conversions; ATIF is omitted when the trajectory is empty, and conversion errors are reported in the rollout result
-
 ## Qucik start: 1. Upload a trajectory
 
 For local Claude Code or Codex jsonl formatted trajectory files that you are proud of (contain challenging tasks you dealed with via chatting to agents), you can upload that file to BenchFlow to join the competition for winning $2,000 cash reward. No BenchFlow account, credentials, or API key is required:
