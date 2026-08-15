@@ -442,6 +442,11 @@ them.
    both? The only implementation ever written was inbound, and it was removed
    deliberately.
 
+**Still open.** §8 takes a *provisional* position on question 1 — a canonical
+hub — and implements it in isolation so it can be reviewed as code. That is a
+proposal, not an answer: no maintainer has agreed it, nothing depends on it, and
+questions 2–5 are untouched by it.
+
 ---
 
 ## 7. Known divergences from this schema
@@ -467,18 +472,326 @@ testing practice and not a claim about the file format.
 
 ---
 
-## 8. Ideas not yet agreed
+## 8. Canonical Trace IR v0 — provisional
 
-> **PROPOSAL — none of this is approved, scheduled, or implemented.**
+> **PROPOSAL — not approved.** This section describes a design decision taken
+> *without* maintainer sign-off, so the task could continue while the questions
+> in §6 stayed open. It is implemented in
+> [`src/benchflow/trajectories/ir.py`](../src/benchflow/trajectories/ir.py) so it
+> can be reviewed as code rather than as a sketch. **Nothing imports it, nothing
+> writes it to disk, and no existing format, artifact or code path changes
+> because it exists** — a property pinned by a test
+> (`test_no_runtime_module_imports_the_ir`). Deleting the module and its test
+> returns the tree to its previous behaviour.
+>
+> Statements about the *current code* below remain FACT, with references, as
+> everywhere else in this document. Statements about the IR are PROPOSAL.
 
-The reconnaissance that produced this document also sketched a canonical
-intermediate representation, so that conversion between trace formats would be
-`N ↔ 1` rather than `N²`, with each conversion returning an explicit report of
-the fields it could not carry.
+### 8.1 Why a hub, and why not pairwise converters
 
-That idea is recorded here only so this document is not silently read as an
-argument for it. **It has not been reviewed by a maintainer, no design has been
-agreed, and nothing in this repository implements it.** Any such work depends on
-the open questions in §6 being answered first — in particular whether the capture
-path may change at all, since several of the losses in §5 cannot be closed
-downstream of it.
+**FACT.** Four trace-shaped representations already exist in this repository —
+the ACP-session capture events (§2), ATIF (§4.1), ADP and the Verifiers/ORS
+record — and all three exporters walk the same ACP event list from the same call
+site, `_write_trainer_artifact`. OpenTelemetry (§4.2) would be a fifth.
+
+Pairwise conversion costs `N*(N-1)` directed edges, but the cost that matters is
+not the edge count. It is that **each edge answers the same questions
+privately**, and in this codebase those answers already diverge:
+
+**FACT.** For the identical ACP `tool_call` event, ATIF emits
+`"arguments": {}` while ADP emits `"kwargs": {}`; ATIF preserves the tool status
+in a non-standard `extra` while ADP drops it (§5, losses #1–#2). Both join
+thought boundaries irreversibly through the same `ThoughtBuffer` (loss #10), and
+neither represents `agent_timeout` at all (loss #4) — three independent
+decisions about the same event, taken three times, recorded nowhere.
+
+A hub turns each format into one edge against a written contract, and — the
+actual point — makes the loss a **typed value** rather than a comment in a
+module docstring. See `LossReport` / `LossRecord` in the module.
+
+The alternative shapes considered and not taken:
+
+| Option | Why not |
+|---|---|
+| **Direct pairwise converters** | What exists today. Each new format multiplies the decisions above, and none of them is recorded anywhere a consumer can read |
+| **Promote ATIF to the hub** | ATIF has no reader, no models and no vendored schema in this repository (§4.1); it cannot represent `agent_timeout` or per-event timestamps, so it would bake today's losses into the hub |
+| **Promote the ACP capture events to the hub** | It is a lossy projection of the protocol by construction (§1), has no artifact-level contract (§2.1), and its file can hold non-ACP records (§2.4) |
+| **Extend the capture format instead** | Changes the on-disk artifact that the consumers in §3.2 already parse — a compatibility decision, and precisely open question 3 |
+
+### 8.2 What the IR carries, and on what evidence
+
+**PROPOSAL.** The rule the module is built on: *the IR is a pragmatic superset
+of what BenchFlow can observe, not a model of what an agent trace could contain*.
+Every field is in one of four states, and the distinction is deliberate:
+
+| Class | Meaning | Fields |
+|---|---|---|
+| **Supported today** | Some source in this repository carries the value now | event order · event kind · role · text · reasoning · tool call id / kind / title / status · content blocks · outcome status · trace-level usage · session id · agent + model name |
+| **Optional** | Carried when the source has it, absent without loss when it does not | trace id · provider · reward · error category · stop reason · per-event usage |
+| **Needs enrichment first** | The slot exists because the value demonstrably exists *upstream* of the capture, and is dropped before disk | tool `arguments` (the ACP `rawInput` family, §1) · per-event `started_at` / `finished_at` (`ToolCallRecord` tracks both, loss #3) |
+| **Must not be invented** | The IR deliberately has no way to fabricate these | agent version (`"unknown"` is ATIF's requirement, not a fact) · synthetic tool-call ids (`call_{n}`, `call_NNNNNN`) · timestamps for sources that carry none · OTel span/trace ids |
+
+Three design choices carry most of the weight:
+
+1. **Tri-state optionality.** A value, `None` ("this source never carried it"),
+   and an empty value ("carried, and empty") are three different facts.
+   `arguments={}` and `arguments=None` are the case that matters: every
+   ACP-derived tool call is the second, and both ATIF and ADP serialize the
+   first, which is why their documents read as though every tool was called with
+   no arguments.
+2. **Absence must be declared.** A `None` argument map without a matching
+   `LossRecord` is an *invalid* trace (`validate_trace`, invariant 7). This is
+   what makes the loss report a contract instead of documentation.
+3. **Normalization is never destructive.** `TraceEvent.source_type` keeps the
+   source's own type string next to the normalized `kind`, and
+   `ToolCall.name_semantics` records that an ACP `kind` is a category rather
+   than a function name — the normalization §5.1 currently performs silently.
+
+### 8.3 Planned mapping
+
+**PROPOSAL — none of these converters is implemented.** Slice B is the IR
+alone; `ACP → IR` and `ATIF ↔ IR` are deliberately not in it, so the
+representation can be reviewed before anything depends on it.
+
+#### ACP-session capture events → IR
+
+| Capture event (§2.2) | IR | Loss recorded |
+|---|---|---|
+| `user_message` | `kind=user_message`, `role=user`, `text` | — |
+| `agent_message` | `kind=agent_message`, `role=agent`, `text` | — |
+| `agent_thought` | `kind=agent_reasoning`, `reasoning_segments=[text]` | none — the segment list is what preserves loss #10 |
+| `tool_call` | `kind=tool_call` + `ToolCall`; `kind`→`name` with `name_semantics="acp_kind"` | `arguments` → UNSUPPORTED (#1); `started_at`/`finished_at` → UNSUPPORTED (#3) |
+| `tool_call.content`, text block | `ContentBlock(kind=text)` | — |
+| `tool_call.content`, other blocks | `ContentBlock(kind=opaque, raw=…)` | none — carrying the block verbatim is how loss #5 stops being a loss |
+| `agent_timeout` | `kind=timeout`, `outcome="wall_clock_timeout"`, the rest in `extensions` | none — loss #4 becomes representable |
+| `oracle` record (§2.4) | `kind=oracle`, `role=oracle` | none — no `[oracle: …]` string prefix, so a consumer need not string-match |
+| unrecognized `type` | `kind=unknown` with `source_type` verbatim | — |
+
+#### IR → ATIF
+
+| IR | ATIF | Loss to record |
+|---|---|---|
+| `events[].text` | `step.message` | — |
+| `reasoning` / `reasoning_segments` | `reasoning_content` (joined) | NORMALIZED — the segmentation does not survive |
+| `tool_call.name` | `function_name` | NORMALIZED — an ACP kind is not a function name |
+| `tool_call.call_id` empty or absent | synthesized `call_{n}` | SYNTHESIZED |
+| `tool_call.status` / `title` | `tool_calls[].extra` | NORMALIZED |
+| `agent.agent_version` absent | `"unknown"` | SYNTHESIZED |
+| `kind=timeout` | *(no ATIF representation)* | DROPPED |
+| opaque content blocks | *(no ATIF representation)* | DROPPED |
+
+#### IR ↔ OpenTelemetry
+
+**PROPOSAL, and unverified.** §4.2 is FACT — there is no OTel dependency and no
+`gen_ai.*` handling in this repository — so the mapping below is a sketch
+against the OpenTelemetry GenAI semantic conventions **as remembered, not as
+vendored**: no version of that specification is pinned in this repo, nothing
+validates against it, and the conventions have been changing. It is written down
+to show the hub is reachable from OTel, not as a design to implement as-is.
+
+| IR | OTel sketch |
+|---|---|
+| `CanonicalTrace` | one root span per rollout |
+| `trace_id` | the OTel trace id — `None` until a source provides one; never invented |
+| `events[]` ordering | child span order / span events |
+| `tool_call` | a child span; `name` → `gen_ai.tool.name`, `call_id` → `gen_ai.tool.call.id` |
+| `usage` | `gen_ai.usage.input_tokens` / `.output_tokens` |
+| `agent.model` | `gen_ai.request.model` |
+| `outcome.status` | span status |
+| `extensions` | span attributes, verbatim |
+
+Which direction is wanted — receiver, emitter, or both — is **open question 5**
+and stays open. The IR is symmetric on purpose so the answer does not invalidate
+it.
+
+### 8.4 A worked example
+
+**FACT.** The document below is produced by the models in `ir.py` and compared
+against this block by `test_the_documented_example_matches_the_models`, so it
+cannot drift from what the code emits.
+
+It shows the four properties the design exists for: an unavailable value that is
+absent *and* declared (`arguments`), a thought whose boundaries survive next to
+the joined form, a non-text content block carried as `opaque` instead of
+skipped, and a timeout that is representable at all — with its source-specific
+fields in `extensions` rather than as four new IR fields.
+
+<!-- ir-example -->
+```json
+{
+  "ir_version": "bf-trace-ir-v0",
+  "session_id": "rollout-7f3a",
+  "agent": {
+    "agent_name": "gemini",
+    "model": "gemini-2.5-flash"
+  },
+  "events": [
+    {
+      "index": 0,
+      "kind": "user_message",
+      "source_type": "user_message",
+      "role": "user",
+      "text": "Count the rows in data.csv",
+      "provenance": {
+        "source_format": "acp-capture-v1",
+        "producer": "_events_to_trajectory"
+      },
+      "extensions": {}
+    },
+    {
+      "index": 1,
+      "kind": "tool_call",
+      "source_type": "tool_call",
+      "role": "agent",
+      "reasoning": "Check the file first.\n\nThen count.",
+      "reasoning_segments": [
+        "Check the file first.",
+        "Then count."
+      ],
+      "tool_call": {
+        "call_id": "tc_1",
+        "name": "execute",
+        "name_semantics": "acp_kind",
+        "title": "wc -l data.csv",
+        "status": "completed",
+        "content": [
+          {
+            "kind": "text",
+            "text": "42 data.csv",
+            "raw": {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "42 data.csv"
+              }
+            }
+          },
+          {
+            "kind": "opaque",
+            "raw": {
+              "type": "diff",
+              "path": "/w/data.csv",
+              "oldText": "a",
+              "newText": "b"
+            }
+          }
+        ]
+      },
+      "provenance": {
+        "source_format": "acp-capture-v1",
+        "producer": "_events_to_trajectory"
+      },
+      "extensions": {}
+    },
+    {
+      "index": 2,
+      "kind": "timeout",
+      "source_type": "agent_timeout",
+      "outcome": "wall_clock_timeout",
+      "provenance": {
+        "source_format": "acp-capture-v1",
+        "producer": "_events_to_trajectory"
+      },
+      "extensions": {
+        "timeout_sec": 90.0,
+        "pending_tool_call_ids": [],
+        "terminal_trajectory_complete": true
+      }
+    }
+  ],
+  "usage": {
+    "input_tokens": 1180,
+    "output_tokens": 96,
+    "total_tokens": 1276,
+    "source": "llm_proxy_normalized"
+  },
+  "outcome": {
+    "status": "timeout"
+  },
+  "provenance": {
+    "source_format": "acp-capture-v1",
+    "producer": "_events_to_trajectory"
+  },
+  "extensions": {},
+  "losses": {
+    "direction": "acp->ir",
+    "ir_version": "bf-trace-ir-v0",
+    "records": [
+      {
+        "field": "events[1].tool_call.arguments",
+        "loss_class": "unsupported",
+        "detail": "ACPSession.handle_update reads five fields and rawInput is not one of them, so no ACP-derived tool call carries arguments.",
+        "doc_ref": "§5 loss #1"
+      },
+      {
+        "field": "events[1].tool_call.started_at",
+        "loss_class": "unsupported",
+        "detail": "ToolCallRecord tracks started_at/finished_at in memory and _events_to_trajectory serializes neither.",
+        "doc_ref": "§5 loss #3"
+      }
+    ]
+  }
+}
+```
+
+### 8.5 Invariants
+
+**PROPOSAL.** Checked by `validate_trace`, which returns one string per
+violation rather than raising, and asserted in
+`tests/trajectories/test_trace_ir.py` with both a violating and a clean trace
+for each:
+
+1. `ir_version` equals `bf-trace-ir-v0` — v0 defines no migration path.
+2. `events[i].index == i` — dense and ordered, so a dropped event leaves a hole
+   rather than disappearing.
+3. `kind == tool_call` if and only if a `tool_call` payload is present.
+4. A `text` block carries text; an `opaque` block carries `raw`. An opaque block
+   with no payload would be a dropped block claiming preservation.
+5. When both are present, `"\n\n".join(reasoning_segments) == reasoning` — the
+   segments are a strictly richer encoding of the same value, never a second
+   divergent one.
+6. An `agent_reasoning` event carries reasoning in one of the two fields.
+7. **Every `arguments is None` has a matching loss record.** Absence is declared,
+   never silent.
+8. A `user_message` is attributed to `user` or to nobody. Agent-side attribution
+   is genuinely ambiguous today (§5.1, the `oracle` divergence) and the IR does
+   not pretend to settle it.
+
+Two further properties are pinned by tests rather than by `validate_trace`: the
+IR's tool-status vocabulary is a superset of the ACP `ToolCallStatus` enum, read
+off the enum itself; and every event type `_events_to_trajectory` emits maps to
+an `EventKind`, with the producer's vocabulary read from source by AST — the
+same mechanism the Slice A conformance suite uses (§2.2).
+
+### 8.6 What is provisional, and what a review can still change
+
+Everything in §8 is provisional. In particular, a review can reject any of the
+following without any other work having to be undone, because nothing depends on
+them:
+
+- **the hub itself** — if direct converters are preferred (open question 1), the
+  module is deleted and the loss taxonomy survives as documentation;
+- **the tri-state / declared-absence contract** — the strongest opinion here,
+  and the one most likely to feel heavy in a converter;
+- **`name_semantics` and `reasoning_segments`** — both exist to preserve a
+  distinction the current exporters discard; if that distinction is not wanted,
+  both fields go and losses #10 and the `kind`→`function_name` normalization
+  stay as they are;
+- **`extensions` as the escape hatch** — the alternative is a field per source
+  quirk, which is how a pragmatic superset becomes a spec;
+- **`TraceUsage.source`** — it exists only because open question 4 is open. If a
+  canonical definition of `input_tokens` is chosen, the field can go;
+- **the version string and the absence of migration machinery**;
+- **the module's location** (`benchflow.trajectories.ir`) and every name in it.
+
+What a review cannot change by rejecting the IR: the losses in §5 are properties
+of the current code, not of this proposal, and they remain whatever happens
+here.
+
+### 8.7 Status
+
+- **Implemented:** the IR types, the loss model, the invariants, the validation
+  suite and this section.
+- **Not implemented, deliberately:** `ACP → IR`, `ATIF ↔ IR`, any OTel work, any
+  wiring into a run path, any on-disk artifact.
+- **Unchanged:** every existing format, exporter, artifact and code path.
