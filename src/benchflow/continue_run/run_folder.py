@@ -43,6 +43,10 @@ class RunFolder:
 
     Only fields ``benchflow continue`` needs are surfaced; the raw ``config``
     and ``result`` dicts are kept for anything else the orchestrator wants.
+    ``exchange_lines[i]`` is the verbatim source line of ``exchanges[i]`` —
+    malformed lines are skipped at load time and therefore never appear here,
+    so a stitched trajectory built from these lines contains exactly what the
+    replay serves.
     """
 
     path: Path
@@ -50,6 +54,7 @@ class RunFolder:
     result: dict[str, Any]
     prompts: list[str]
     exchanges: list[LLMExchange]
+    exchange_lines: list[str]
 
     # ── derived task identity (from config.json) ──────────────────────────
     @property
@@ -141,12 +146,19 @@ def _load_prompts(path: Path) -> list[str]:
     return [str(p) for p in data if p is not None]
 
 
-def load_llm_exchanges(path: Path) -> list[LLMExchange]:
-    """Parse ``llm_trajectory.jsonl`` into ordered :class:`LLMExchange` records.
+def load_llm_exchanges_with_lines(
+    path: Path,
+) -> tuple[list[LLMExchange], list[str]]:
+    """Parse ``llm_trajectory.jsonl`` into exchanges plus their raw lines.
 
     One exchange per line (``Trajectory.to_jsonl``). Blank lines are skipped;
     a malformed line is skipped with a warning rather than aborting the whole
-    resume (a single bad record should not strand a recoverable run).
+    resume (a single bad record should not strand a recoverable run). The
+    second list carries, per *parsed* exchange, its verbatim source line —
+    the replay counts parsed exchanges, so consumers that reconstruct the
+    replayed prefix (trajectory stitching) must select these lines rather
+    than truncating by raw file-line index, or a skipped malformed line would
+    shift the cut.
     """
     if not path.is_file():
         raise RunFolderError(
@@ -154,6 +166,7 @@ def load_llm_exchanges(path: Path) -> list[LLMExchange]:
             "trajectory. Was this run captured with usage tracking enabled?"
         )
     exchanges: list[LLMExchange] = []
+    lines: list[str] = []
     for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
         if not raw.strip():
             continue
@@ -161,11 +174,22 @@ def load_llm_exchanges(path: Path) -> list[LLMExchange]:
             exchanges.append(LLMExchange.model_validate_json(raw))
         except Exception as exc:
             logger.warning("skipping malformed llm_trajectory line %d: %s", lineno, exc)
+        else:
+            lines.append(raw)
     if not exchanges:
         raise RunFolderError(
             f"{path} contained no usable LLM exchanges — nothing to replay."
         )
-    return exchanges
+    return exchanges, lines
+
+
+def load_llm_exchanges(path: Path) -> list[LLMExchange]:
+    """Parse ``llm_trajectory.jsonl`` into ordered :class:`LLMExchange` records.
+
+    The original public contract, kept backward compatible; see
+    :func:`load_llm_exchanges_with_lines` for the raw-line-aware variant.
+    """
+    return load_llm_exchanges_with_lines(path)[0]
 
 
 def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> RunFolder:
@@ -183,7 +207,9 @@ def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> Run
     config = _read_json(path / "config.json", required=True)
     result = _read_json(path / "result.json", required=False)
     prompts = _load_prompts(path / "prompts.json")
-    exchanges = load_llm_exchanges(path / "trajectory" / "llm_trajectory.jsonl")
+    exchanges, exchange_lines = load_llm_exchanges_with_lines(
+        path / "trajectory" / "llm_trajectory.jsonl"
+    )
 
     run = RunFolder(
         path=path,
@@ -191,6 +217,7 @@ def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> Run
         result=result,
         prompts=prompts,
         exchanges=exchanges,
+        exchange_lines=exchange_lines,
     )
 
     if run.agent != "openhands":

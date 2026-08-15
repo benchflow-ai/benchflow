@@ -90,15 +90,24 @@ went wrong in.
   sandbox boots.
 - The continued run's `source_provenance` gains a `cut_point` block:
   `n_replayed_exchanges` plus `cut_point_digest` (a sha256 over the canonical
-  JSON of the last replayed request), so a silently-diverged replay is
-  detectable in artifacts. A natural-end continuation records the same block,
-  documenting the end of the recording.
+  JSON of the last replayed request). The block's `accounting` field names its
+  basis: in **host** proxy mode the orchestrator reconciles the block after
+  the run with what the live replay proxy *actually served*
+  (`accounting: "served"`, plus `configured_max_exchanges` when a cut was
+  requested — so a run that went live before reaching the requested cut is
+  visible in artifacts); in **sandbox** proxy mode the uploaded recording is
+  truncated to the configured prefix and the block records that basis
+  (`accounting: "configured"`). A natural-end continuation records the same
+  block, documenting the end of the recording.
 - The stitched `llm_trajectory.jsonl` contains only the replayed prefix (the
-  first K recorded exchanges) plus the live suffix.
-- Naming cut-points by stage instead of by number (`stage_tags` + `cut_stage`,
-  resolving to the exchange index that closed the stage) is available through
-  the Python API (`benchflow.continue_run.orchestrator.continue_run`); the
-  resolved stage is recorded as `branch_stage` in the `cut_point` block.
+  first K *parsed* recorded exchanges — a malformed recorded line is never
+  replayed and never stitched) plus the live suffix.
+- Naming cut-points by stage instead of by number is available through the
+  Python API (`benchflow.continue_run.orchestrator.continue_run`):
+  `stage_tags[stage]` is the 1-based count of exchanges that had completed
+  when the stage closed — a cut at that stage replays exactly that many
+  exchanges. The resolved stage is recorded as `branch_stage` in the
+  `cut_point` block; invalid stage cuts raise `ReplayCutPointError`.
   Recording stage tags at run time is a named follow-on in the RFC.
 
 ## Limitations and caveats

@@ -32,6 +32,7 @@ from typing import Any, cast
 
 from benchflow._utils.text import describe_exception
 from benchflow.continue_run.replay_proxy import (
+    ReplayCutPointError,
     ReplayProxy,
     ReplayRouter,
     request_body_digest,
@@ -102,30 +103,41 @@ def resolve_cut_point(
 ) -> tuple[int | None, str | None]:
     """Resolve an optional stage-named cut into a ``max_exchanges`` value.
 
-    ``stage_tags`` maps stage names to the exchange index that closed each
-    stage (rollout-branching RFC §3.5 — externally supplied; recording stage
-    tags at run time is a named follow-on). With ``cut_stage`` given, the cut
-    resolves to ``stage_tags[cut_stage]``; an unknown stage fails closed naming
-    the available stages. Returns ``(max_exchanges, branch_stage)``.
+    ``stage_tags[stage]`` is the 1-based count of exchanges that had completed
+    when the stage closed — a cut at that stage replays exactly that many
+    exchanges. (Rollout-branching RFC §3.5 — externally supplied; recording
+    stage tags at run time is a named follow-on.) With ``cut_stage`` given,
+    the cut resolves to ``stage_tags[cut_stage]``; every misuse — combining
+    ``cut_stage`` with ``max_exchanges``, a missing ``stage_tags`` mapping, an
+    unknown stage, or a tag below 1 — fails closed with
+    :class:`ReplayCutPointError`. Returns ``(max_exchanges, branch_stage)``.
     """
     if cut_stage is None:
         return max_exchanges, None
     if max_exchanges is not None:
-        raise RunFolderError(
+        raise ReplayCutPointError(
             "pass either max_exchanges or cut_stage, not both — a stage-named "
             "cut resolves max_exchanges from stage_tags."
         )
     if not stage_tags:
-        raise RunFolderError(
+        raise ReplayCutPointError(
             f"cut_stage={cut_stage!r} given but no stage_tags were provided; a "
-            "stage-named cut needs the stage-name → exchange-index mapping."
+            "stage-named cut needs the stage-name → completed-exchange-count "
+            "mapping."
         )
     if cut_stage not in stage_tags:
-        raise RunFolderError(
+        raise ReplayCutPointError(
             f"unknown cut stage {cut_stage!r}; available stages: "
             f"{', '.join(sorted(stage_tags))}."
         )
-    return stage_tags[cut_stage], cut_stage
+    resolved = stage_tags[cut_stage]
+    if resolved < 1:
+        raise ReplayCutPointError(
+            f"stage_tags[{cut_stage!r}] must be >= 1 — a stage tag is the "
+            f"1-based count of exchanges completed when the stage closed, got "
+            f"{resolved}."
+        )
+    return resolved, cut_stage
 
 
 def cut_point_provenance(
@@ -134,14 +146,18 @@ def cut_point_provenance(
     max_exchanges: int | None = None,
     branch_stage: str | None = None,
 ) -> dict[str, Any]:
-    """The ``cut_point`` block recorded in source_provenance (RFC §3.5).
+    """The configured ``cut_point`` block recorded in source_provenance (RFC §3.5).
 
-    ``n_replayed_exchanges`` is the replay prefix the run is configured to
+    ``n_replayed_exchanges`` is the replay prefix the run is *configured* to
     serve (the natural end when ``max_exchanges`` is ``None``) and
     ``cut_point_digest`` the canonical-JSON sha256 of the last replayed
-    exchange's request — both computed from the recording, so a cut and a
-    natural-end continuation carry the same divergence-detectable evidence.
-    ``branch_stage`` is recorded only for a stage-named cut.
+    exchange's request — both computed from the recording at config time, so
+    the block carries ``accounting: "configured"``. In sandbox proxy mode the
+    uploaded recording is truncated to exactly this prefix, so configured
+    accounting is the honest basis there; in host proxy mode the orchestrator
+    reconciles the block after the run with what the live router actually
+    served (:func:`served_cut_point`). ``branch_stage`` is recorded only for
+    a stage-named cut.
     """
     n_replayed = validate_max_exchanges(max_exchanges, len(exchanges))
     block: dict[str, Any] = {
@@ -151,7 +167,36 @@ def cut_point_provenance(
             if n_replayed > 0
             else None
         ),
+        "accounting": "configured",
     }
+    if branch_stage is not None:
+        block["branch_stage"] = branch_stage
+    return block
+
+
+def served_cut_point(
+    router: ReplayRouter,
+    *,
+    configured_max_exchanges: int | None = None,
+    branch_stage: str | None = None,
+) -> dict[str, Any]:
+    """The post-run ``cut_point`` block reconciled with what was served.
+
+    Host proxy mode keeps the live :class:`ReplayRouter` in-process, so after
+    the run the block can record the replay prefix the proxy *actually*
+    served — ``n_replayed_exchanges`` and ``cut_point_digest`` as observed
+    (``accounting: "served"``) rather than as configured. When an explicit
+    cut was requested, ``configured_max_exchanges`` preserves the requested
+    K so a served/configured divergence (e.g. the agent stopped asking before
+    the cut) stays visible; ``branch_stage`` is kept for a stage-named cut.
+    """
+    block: dict[str, Any] = {
+        "n_replayed_exchanges": router.n_replayed_exchanges,
+        "cut_point_digest": router.cut_point_digest,
+        "accounting": "served",
+    }
+    if configured_max_exchanges is not None:
+        block["configured_max_exchanges"] = configured_max_exchanges
     if branch_stage is not None:
         block["branch_stage"] = branch_stage
     return block
@@ -329,24 +374,23 @@ class LiteLLMLiveForwarder:
 
 
 def stitched_trajectory_lines(
-    original_llm_trajectory: Path,
+    recorded_lines: list[str],
     live_exchanges: list[LLMExchange],
     *,
     max_recorded: int | None = None,
 ) -> list[str]:
     """Build the continuous llm_trajectory: recorded prefix + live suffix.
 
-    The recorded prefix is taken verbatim from the source file (already redacted
-    and byte-identical to what the agent replayed); the live suffix is the
-    exchanges the proxy captured after the cut-point, redacted on the way out.
-    ``max_recorded`` truncates the prefix at a replay cut-point so a cut
-    continuation's stitched file holds only the exchanges actually replayed.
+    ``recorded_lines`` are the *parsed* exchanges' verbatim source lines
+    (:func:`~benchflow.continue_run.run_folder.load_llm_exchanges_with_lines`
+    — already redacted and byte-identical to what the agent replayed). The
+    replay counts parsed exchanges, so ``max_recorded`` selects exactly the
+    first K replayed exchanges' lines — a malformed (never-replayed) line in
+    the source file can neither appear in the stitched prefix nor shift the
+    cut. The live suffix is the exchanges the proxy captured after the
+    cut-point, redacted on the way out.
     """
-    lines: list[str] = []
-    if original_llm_trajectory.is_file():
-        for raw in original_llm_trajectory.read_text().splitlines():
-            if raw.strip():
-                lines.append(raw)
+    lines = list(recorded_lines)
     if max_recorded is not None:
         lines = lines[:max_recorded]
     for exchange in live_exchanges:
@@ -357,7 +401,7 @@ def stitched_trajectory_lines(
 
 def write_stitched_trajectory(
     rollout_dir: Path,
-    original_llm_trajectory: Path,
+    recorded_lines: list[str],
     live_exchanges: list[LLMExchange],
     *,
     max_recorded: int | None = None,
@@ -366,7 +410,7 @@ def write_stitched_trajectory(
     out = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = stitched_trajectory_lines(
-        original_llm_trajectory, live_exchanges, max_recorded=max_recorded
+        recorded_lines, live_exchanges, max_recorded=max_recorded
     )
     out.write_text("\n".join(lines) + ("\n" if lines else ""))
     return out
@@ -439,6 +483,7 @@ def update_continued_metadata(
     live_model: str | None,
     usage: ContinuedUsageSummary,
     environment: str,
+    cut_point: dict[str, Any] | None = None,
 ) -> None:
     """Patch output metadata that Rollout could not know while model=None.
 
@@ -446,12 +491,19 @@ def update_continued_metadata(
     provider resolution does not clobber the replay proxy. After the run, the
     HF-compatible artifacts still need the actual live model and token usage.
     The stitched LLM trajectory is authoritative for provider usage.
+
+    ``cut_point`` (host proxy mode) replaces the configured ``cut_point``
+    block in both files' ``source`` with the served-accounting block
+    (:func:`served_cut_point`) — reconciling provenance with what the live
+    router actually replayed.
     """
     config_path = rollout_dir / "config.json"
     if config_path.is_file():
         config = json.loads(config_path.read_text())
         config["model"] = live_model
         config.setdefault("source", {})["usage_source"] = "stitched_llm_trajectory"
+        if cut_point is not None:
+            config.setdefault("source", {})["cut_point"] = cut_point
         config["usage_tracking"] = {
             "requested": "required",
             "status": (
@@ -472,6 +524,12 @@ def update_continued_metadata(
         return
     result = json.loads(result_path.read_text())
     result["model"] = live_model
+    if cut_point is not None:
+        source = result.get("source")
+        if not isinstance(source, dict):
+            source = {}
+            result["source"] = source
+        source["cut_point"] = cut_point
     agent_result = result.setdefault("agent_result", {})
     if isinstance(agent_result, dict):
         agent_result.update(usage.as_agent_result_patch())
@@ -585,8 +643,10 @@ async def continue_run(
     ``replay_only`` skips the live leg (rebuild-and-stop) — useful for testing
     the replay without provider credentials.
     ``max_exchanges`` replays only the first K recorded exchanges, then goes
-    live (the RFC §3.5 cut-point); ``stage_tags`` + ``cut_stage`` name the cut
-    by recorded stage instead of by number.
+    live (the RFC §3.5 cut-point). ``stage_tags`` + ``cut_stage`` name the cut
+    by recorded stage instead: ``stage_tags[stage]`` is the 1-based count of
+    exchanges that had completed when the stage closed — a cut at that stage
+    replays exactly that many exchanges.
     """
     run = load_run_folder(folder, require_timeout=require_timeout)
     max_exchanges, branch_stage = resolve_cut_point(
@@ -662,9 +722,9 @@ async def continue_run(
 
     stitched_path = write_stitched_trajectory(
         rollout_dir,
-        run.path / "trajectory" / "llm_trajectory.jsonl",
+        run.exchange_lines,
         router.live_exchanges,
-        max_recorded=max_exchanges,
+        max_recorded=n_replay,
     )
     update_continued_metadata(
         rollout_dir,
@@ -674,6 +734,13 @@ async def continue_run(
             n_recorded=n_replay,
         ),
         environment=run.environment,
+        # Reconcile the configured cut_point block with what the live router
+        # actually served — host mode's post-run accounting.
+        cut_point=served_cut_point(
+            router,
+            configured_max_exchanges=max_exchanges,
+            branch_stage=branch_stage,
+        ),
     )
 
     return ContinueResult(
@@ -741,9 +808,9 @@ async def _continue_run_with_sandbox_proxy(
         live_exchanges = replay_proxy.live_exchanges if replay_proxy is not None else []
         stitched_path = write_stitched_trajectory(
             rollout_dir,
-            run.path / "trajectory" / "llm_trajectory.jsonl",
+            run.exchange_lines,
             live_exchanges,
-            max_recorded=max_exchanges,
+            max_recorded=n_replay,
         )
         update_continued_metadata(
             rollout_dir,

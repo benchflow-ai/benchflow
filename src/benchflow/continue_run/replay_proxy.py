@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 
-from benchflow._utils.content_address import sha256_prefixed
+from benchflow._utils.config_override import overlay_hash
 from benchflow.trajectories.types import LLMExchange, LLMRequest, LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -78,11 +78,12 @@ def validate_max_exchanges(max_exchanges: int | None, n_recorded: int) -> int:
 def request_body_digest(body: dict[str, Any]) -> str:
     """Content address of a request body — canonical JSON, ``sha256:`` form.
 
-    The same canonicalization as the config-overlay hash (#790): sorted keys,
-    compact separators, hashed via :func:`sha256_prefixed`.
+    A thin wrapper over the config-overlay hash
+    (:func:`benchflow._utils.config_override.overlay_hash`, #790) so the two
+    canonicalizations can never drift: sorted keys, compact separators,
+    ``sha256:``-prefixed digest.
     """
-    payload = json.dumps(body, sort_keys=True, separators=(",", ":"))
-    return sha256_prefixed(payload.encode())
+    return overlay_hash(body)
 
 
 class ReplayRouter:
