@@ -469,8 +469,13 @@ def acp_events_to_ir(
         events=ir_events,
         # A timeout marker in the stream is an observation about how the run
         # ended. Every other outcome — pass, fail, reward — lives in
-        # ``result.json``, which this converter does not read.
-        outcome=TraceOutcome(status=OutcomeStatus.TIMEOUT) if timed_out else None,
+        # ``result.json``, which this converter does not read, so the status
+        # stays ``None`` rather than being guessed. The section itself is always
+        # present: ``outcome.stop_reason`` is a loss this converter always
+        # declares, and a record cannot address a path through a null parent.
+        outcome=TraceOutcome(
+            status=OutcomeStatus.TIMEOUT if timed_out else None,
+        ),
         provenance=Provenance(source_format=ACP_TRAJECTORY_SOURCE),
         losses=losses,
     )

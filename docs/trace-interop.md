@@ -546,6 +546,23 @@ Three design choices carry most of the weight:
    source's own type string next to the normalized `kind`, and
    `ToolCall.name_semantics` records that an ACP `kind` is a category rather
    than a function name — the normalization §5.1 currently performs silently.
+4. **The canonical JSON encoding keeps the nulls.** A trace serializes with
+   `model_dump(mode="json")`; **`exclude_none=True` is not a valid encoding of a
+   Trace IR document.** `None` is a positive statement — *the source did not
+   carry this* — and the `LossRecord` that legalizes it addresses the field **by
+   path**. Drop the key and that address stops resolving, so the declaration
+   becomes unverifiable inside the document that carries it. Both encodings
+   re-validate to an equal pydantic model, which is exactly why the rule lives
+   in a test rather than in the type; the audience of an interchange format
+   reads the JSON. The corollary is that a record names the outermost absent
+   node — a conversion with no usage declares `usage`, not `usage.input_tokens`
+   — and that sections every conversion has an opinion about (`agent`,
+   `outcome`) are always present, with `None` fields inside them. The normative
+   statement lives in the `ir.py` module docstring.
+
+   *This rule was written after the fact: §8.4 was first published with
+   `exclude_none=True`, and a human end-to-end read of a converted rollout found
+   the loss records pointing at keys the document did not contain.*
 
 ### 8.3 Planned mapping
 
@@ -643,23 +660,32 @@ it.
 
 **FACT.** The document below is produced by the models in `ir.py` and compared
 against this block by `test_the_documented_example_matches_the_models`, so it
-cannot drift from what the code emits.
+cannot drift from what the code emits. It is written in the **canonical
+encoding** — nulls retained (§8.2). An earlier revision published it with
+`exclude_none=True`, which dropped `arguments` from the document while the loss
+report kept addressing it; the two together are the point of the example, so
+they are now shown together.
 
 It shows the four properties the design exists for: an unavailable value that is
-absent *and* declared (`arguments`), a thought whose boundaries survive next to
-the joined form, a non-text content block carried as `opaque` instead of
-skipped, and a timeout that is representable at all — with its source-specific
-fields in `extensions` rather than as four new IR fields.
+`null` *and* declared (`arguments`, beside its `LossRecord`), a thought whose
+boundaries survive next to the joined form, a non-text content block carried as
+`opaque` instead of skipped, and a timeout that is representable at all — with
+its source-specific fields in `extensions` rather than as four new IR fields.
 
 <!-- ir-example -->
 ```json
 {
   "ir_version": "bf-trace-ir-v0",
+  "trace_id": null,
   "session_id": "rollout-7f3a",
   "agent": {
     "agent_name": "gemini",
-    "model": "gemini-2.5-flash"
+    "agent_version": null,
+    "model": "gemini-2.5-flash",
+    "provider": null
   },
+  "started_at": null,
+  "finished_at": null,
   "events": [
     {
       "index": 0,
@@ -667,9 +693,17 @@ fields in `extensions` rather than as four new IR fields.
       "source_type": "user_message",
       "role": "user",
       "text": "Count the rows in data.csv",
+      "reasoning": null,
+      "reasoning_segments": null,
+      "tool_call": null,
+      "started_at": null,
+      "finished_at": null,
+      "outcome": null,
+      "usage": null,
       "provenance": {
         "source_format": "acp-capture-v1",
-        "producer": "_events_to_trajectory"
+        "producer": "_events_to_trajectory",
+        "captured_at": null
       },
       "extensions": {}
     },
@@ -678,6 +712,7 @@ fields in `extensions` rather than as four new IR fields.
       "kind": "tool_call",
       "source_type": "tool_call",
       "role": "agent",
+      "text": null,
       "reasoning": "Check the file first.\n\nThen count.",
       "reasoning_segments": [
         "Check the file first.",
@@ -689,6 +724,7 @@ fields in `extensions` rather than as four new IR fields.
         "name_semantics": "acp_kind",
         "title": "wc -l data.csv",
         "status": "completed",
+        "arguments": null,
         "content": [
           {
             "kind": "text",
@@ -703,6 +739,7 @@ fields in `extensions` rather than as four new IR fields.
           },
           {
             "kind": "opaque",
+            "text": null,
             "raw": {
               "type": "diff",
               "path": "/w/data.csv",
@@ -710,11 +747,18 @@ fields in `extensions` rather than as four new IR fields.
               "newText": "b"
             }
           }
-        ]
+        ],
+        "started_at": null,
+        "finished_at": null
       },
+      "started_at": null,
+      "finished_at": null,
+      "outcome": null,
+      "usage": null,
       "provenance": {
         "source_format": "acp-capture-v1",
-        "producer": "_events_to_trajectory"
+        "producer": "_events_to_trajectory",
+        "captured_at": null
       },
       "extensions": {}
     },
@@ -722,10 +766,19 @@ fields in `extensions` rather than as four new IR fields.
       "index": 2,
       "kind": "timeout",
       "source_type": "agent_timeout",
+      "role": null,
+      "text": null,
+      "reasoning": null,
+      "reasoning_segments": null,
+      "tool_call": null,
+      "started_at": null,
+      "finished_at": null,
       "outcome": "wall_clock_timeout",
+      "usage": null,
       "provenance": {
         "source_format": "acp-capture-v1",
-        "producer": "_events_to_trajectory"
+        "producer": "_events_to_trajectory",
+        "captured_at": null
       },
       "extensions": {
         "timeout_sec": 90.0,
@@ -737,15 +790,22 @@ fields in `extensions` rather than as four new IR fields.
   "usage": {
     "input_tokens": 1180,
     "output_tokens": 96,
+    "cache_read_tokens": null,
+    "cache_creation_tokens": null,
+    "reasoning_tokens": null,
     "total_tokens": 1276,
     "source": "llm_proxy_normalized"
   },
   "outcome": {
-    "status": "timeout"
+    "status": "timeout",
+    "stop_reason": null,
+    "reward": null,
+    "error_category": null
   },
   "provenance": {
     "source_format": "acp-capture-v1",
-    "producer": "_events_to_trajectory"
+    "producer": "_events_to_trajectory",
+    "captured_at": null
   },
   "extensions": {},
   "losses": {
@@ -756,18 +816,23 @@ fields in `extensions` rather than as four new IR fields.
         "field": "events[1].tool_call.arguments",
         "loss_class": "unsupported",
         "detail": "ACPSession.handle_update reads five fields and rawInput is not one of them, so no ACP-derived tool call carries arguments.",
-        "doc_ref": "§5 loss #1"
+        "doc_ref": "\u00a75 loss #1"
       },
       {
         "field": "events[1].tool_call.started_at",
         "loss_class": "unsupported",
         "detail": "ToolCallRecord tracks started_at/finished_at in memory and _events_to_trajectory serializes neither.",
-        "doc_ref": "§5 loss #3"
+        "doc_ref": "\u00a75 loss #3"
       }
     ]
   }
 }
 ```
+
+Read it beside the `losses.records` at the bottom: every `LossRecord.field` is a
+path into this same document, and following it lands on a key that is present
+and `null`. That resolvability is what `exclude_none` broke, and what
+`test_every_concrete_loss_path_resolves_in_the_canonical_encoding` now guards.
 
 ### 8.5 Invariants
 
@@ -792,11 +857,15 @@ for each:
    is genuinely ambiguous today (§5.1, the `oracle` divergence) and the IR does
    not pretend to settle it.
 
-Two further properties are pinned by tests rather than by `validate_trace`: the
-IR's tool-status vocabulary is a superset of the ACP `ToolCallStatus` enum, read
-off the enum itself; and every event type `_events_to_trajectory` emits maps to
+Three further properties are pinned by tests rather than by `validate_trace`:
+the IR's tool-status vocabulary is a superset of the ACP `ToolCallStatus` enum,
+read off the enum itself; every event type `_events_to_trajectory` emits maps to
 an `EventKind`, with the producer's vocabulary read from source by AST — the
-same mechanism the Slice A conformance suite uses (§2.2).
+same mechanism the Slice A conformance suite uses (§2.2); and **every concrete
+`LossRecord.field` resolves to a key that is present in the canonical encoding**
+(§8.2, choice 4). The last one asserts in the same test that the discarded
+`exclude_none` encoding *fails* to resolve those paths, so it cannot pass for
+both encodings at once.
 
 ### 8.6 What is provisional, and what a review can still change
 
@@ -839,9 +908,9 @@ module — the IR — and reads the capture format as data.
 
 ### 8.8 What the first converter showed
 
-**FACT.** Writing `ACP → IR` was also the first stress test of §8.2's
-declared-absence rule, and two things came out of it that a design document
-could not have settled:
+**FACT.** Writing `ACP → IR` — and then reading a converted real rollout by hand
+— was the first stress test of §8.2's declared-absence rule. Three things came
+out of it that a design document could not have settled:
 
 - **The rule is affordable, because the report is bounded by tool calls rather
   than by trace length.** Systemic absences — timestamps, per-event usage, agent
@@ -855,3 +924,19 @@ could not have settled:
   reason 50 records say the same thing. An `events[*].…` wildcard would collapse
   them at the cost of making a single missed call invisible. That trade is open;
   §8.6 already lists this contract as the most likely thing to change.
+- **A loss report addressed by path constrains the encoding, which the design
+  had not noticed.** Reading a converted rollout by hand — not running the test
+  suite, which was green and self-consistent — showed the §8.4 example published
+  with `exclude_none=True`, its loss records pointing at keys the document did
+  not contain. The rule in §8.2 choice 4 and the guard in §8.5 are the result.
+  Applying that guard immediately found a second instance of the same class:
+  `outcome.stop_reason` could not resolve in any trace that did not time out,
+  because the section itself was `None`, which is why `outcome` is now always
+  present.
+
+**Worth stating plainly, because it is a limit and not a fix.** The invariant
+forces a converter to *declare* an absence; it cannot stop one from writing
+`arguments: {}` instead of `null`. A trace with a fabricated empty argument map
+and no loss record is valid. Verified by hand. Closing that would mean the IR
+taking a position on what an empty map means for each source, which §8.2's
+tri-state rule deliberately leaves to the converter.

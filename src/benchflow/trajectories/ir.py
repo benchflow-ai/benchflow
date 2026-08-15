@@ -48,6 +48,37 @@ preserve the distinction:
 Today every ACP-derived tool call is the second; ATIF and ADP both serialize the
 first, which is why their documents read as though the agent called every tool
 with no arguments.
+
+## Canonical JSON encoding
+
+A trace serializes with **every null retained** — ``model_dump(mode="json")`` or
+``model_dump_json()``. **``exclude_none=True`` is not a valid encoding of a
+Trace IR document.**
+
+This is a semantic rule, not a formatting preference. ``None`` here is a
+positive statement — *the source did not carry this field* — and every such
+statement is paired with a :class:`LossRecord` that addresses the field **by
+path**. Drop the key and the record points at something a reader of the document
+cannot find: the declaration that makes the absence legal becomes unverifiable
+inside the very document that carries it, and "we looked and it was not there"
+becomes indistinguishable from "this version has no such field".
+
+A pydantic consumer is unaffected either way — both encodings re-validate to an
+equal model — but the audience of an interchange format reads the JSON, and it
+is the JSON that has to be self-describing.
+
+No dedicated serializer ships with this module. There is no on-disk artifact
+yet, and providing a writer would anticipate an interface this proposal has not
+earned. The rule is enforced by
+``test_every_concrete_loss_path_resolves_in_the_canonical_encoding`` rather than
+by a function, so a future writer inherits it instead of redefining it.
+
+**Corollary — address the outermost absent node.** A record may only name a path
+that resolves, so when a whole section is missing the record names the section,
+not a field inside it: a conversion with no usage at all declares ``usage``, not
+``usage.input_tokens``. Sections that every conversion has an opinion about —
+:attr:`CanonicalTrace.agent`, :attr:`CanonicalTrace.outcome` — are therefore
+always present, with ``None`` fields inside them.
 """
 
 from __future__ import annotations
@@ -400,9 +431,12 @@ class TraceOutcome(BaseModel):
 
     ``stop_reason`` is captured on ``ACPSession`` and exported nowhere (§5 loss
     #9); ``reward`` and ``error_category`` live in ``result.json``, outside the
-    trajectory. All optional — a trace built from the capture file alone has
-    none of them, and that is a declarable loss rather than a reason to fake a
-    value.
+    trajectory. All fields optional — a trace built from the capture file alone
+    has none of them, and that is a declarable loss rather than a reason to fake
+    a value.
+
+    The *section* is not optional on :class:`CanonicalTrace`, unlike its fields;
+    see :attr:`CanonicalTrace.outcome`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -428,7 +462,19 @@ class CanonicalTrace(BaseModel):
     finished_at: datetime | None = None
     events: list[TraceEvent] = Field(default_factory=list)
     usage: TraceUsage | None = None
-    outcome: TraceOutcome | None = None
+    """``None`` when no source measured usage at all. A conversion that has none
+    declares the loss against ``usage``, the outermost absent node — see the
+    addressing rule in the module docstring."""
+
+    outcome: TraceOutcome = Field(default_factory=TraceOutcome)
+    """Always present, like :attr:`agent`, even when every field inside it is
+    ``None``.
+
+    It was briefly optional, and that made ``outcome.stop_reason`` — a loss
+    every ACP conversion declares — unresolvable in any trace that did not time
+    out, because the parent object was ``null``. A section that loss records
+    address by path has to exist for the path to land."""
+
     provenance: Provenance
     extensions: dict[str, Any] = Field(default_factory=dict)
 
@@ -467,7 +513,9 @@ def validate_trace(trace: CanonicalTrace) -> list[str]:
     7. **No silent absence.** Every ``arguments is None`` has a matching loss
        record at ``events[i].tool_call.arguments``. This is the invariant that
        makes the loss report a contract instead of documentation: a converter
-       that quietly fails to carry arguments produces an invalid trace.
+       that quietly fails to carry arguments produces an invalid trace. Note
+       that the record addresses the field *by path*, which is why the canonical
+       encoding has to keep that path resolvable — see the module docstring.
     8. **Role coherence.** A ``USER_MESSAGE`` is attributed to ``USER`` or to
        nobody. The IR checks only this direction; agent-side attribution is
        genuinely ambiguous today (§5, the ``oracle`` divergence) and the IR does

@@ -59,6 +59,7 @@ from tests.trajectories.test_atif_preservation import (
     TIMEOUT_SEC,
     _rich_events,
 )
+from tests.trajectories.test_trace_ir import resolve_ir_path
 
 # The systemic records every conversion of a tool-bearing trace declares. Held
 # as a literal so adding one is a deliberate edit to this suite.
@@ -239,6 +240,76 @@ def test_the_serialized_trace_never_carries_an_empty_argument_map():
     assert '"arguments": {}' not in json.dumps(document, indent=1)
 
 
+def test_the_canonical_document_shows_null_arguments_beside_their_loss_record():
+    """The three facts that have to hold together, checked together.
+
+    Found by hand during the Slice C human E2E: the E2E procedure claimed no
+    ``arguments`` key should appear at all, which inverted the property. What
+    must hold is that the key **is** there, explicitly null, and that the loss
+    record declaring it resolves to that exact key in the canonical encoding.
+
+    Written as one test because the three facts are only meaningful together:
+    a null with no record is an undeclared absence, a record with no key is an
+    unverifiable declaration, and ``{}`` is a fabrication.
+    """
+    trace = acp_events_to_ir(_rich_events())
+    document = trace.model_dump(mode="json")
+    serialized = json.dumps(document, indent=1)
+
+    tool_events = [e for e in document["events"] if e["kind"] == "tool_call"]
+    assert tool_events, "the fixture must contain a tool call"
+
+    for event in tool_events:
+        # 1. the key is present and explicitly null …
+        assert "arguments" in event["tool_call"]
+        assert event["tool_call"]["arguments"] is None
+        # 2. … and its declaration resolves to that key.
+        field = f"events[{event['index']}].tool_call.arguments"
+        assert trace.losses.for_field(field), field
+        resolved, value = resolve_ir_path(document, field)
+        assert resolved and value is None, (field, resolved, value)
+
+    # 3. never the fabricated form ATIF and ADP ship.
+    assert '"arguments": {}' not in serialized
+    assert '"arguments": null' in serialized
+
+    # The encoding this replaced satisfies none of it.
+    lean = trace.model_dump(mode="json", exclude_none=True)
+    assert all(
+        "arguments" not in e["tool_call"]
+        for e in lean["events"]
+        if e["kind"] == "tool_call"
+    )
+    assert not resolve_ir_path(
+        lean, f"events[{tool_events[0]['index']}].tool_call.arguments"
+    )[0]
+
+
+def test_every_concrete_loss_path_of_a_converted_trace_resolves():
+    """The IR-level encoding rule, applied to real converter output.
+
+    ``test_trace_ir.py`` pins it on the documented example; this pins it on
+    every shape this suite converts, so a future converter that invents a path
+    for a field it did not emit fails here.
+    """
+    shapes: list[list[Any]] = [
+        _rich_events(),
+        [{"type": "tool_call", "tool_call_id": "t", "content": ["bare"]}],
+        [{"type": "agent_message", "text": 42}],
+        [{"type": "tool_call", "status": "exploded"}],
+    ]
+    for events in shapes:
+        trace = acp_events_to_ir(events)
+        document = trace.model_dump(mode="json")
+        for record in trace.losses.records:
+            if record.field.startswith("events[]") or record.field.startswith(
+                "source["
+            ):
+                continue  # systemic and source-side paths address no IR field
+            resolved, _ = resolve_ir_path(document, record.field)
+            assert resolved, (record.field, events)
+
+
 # ---------------------------------------------------------------------------
 # 4. Timeout
 # ---------------------------------------------------------------------------
@@ -260,10 +331,24 @@ def test_the_timeout_marker_survives_with_its_fields():
     assert trace.outcome.status is OutcomeStatus.TIMEOUT
 
 
-def test_a_trace_without_a_timeout_claims_no_outcome():
-    """The capture events say nothing about pass/fail; that lives in result.json."""
+def test_a_trace_without_a_timeout_claims_no_outcome_status():
+    """The capture events say nothing about pass/fail; that lives in result.json.
+
+    The outcome *section* is still present with every field ``None``: this
+    converter always declares ``outcome.stop_reason`` as a loss, and that path
+    could not resolve through a null parent.
+    """
     trace = acp_events_to_ir([{"type": "agent_message", "text": "done"}])
-    assert trace.outcome is None
+    assert trace.outcome.status is None
+    assert trace.outcome.stop_reason is None
+    document = trace.model_dump(mode="json")
+    assert document["outcome"] == {
+        "status": None,
+        "stop_reason": None,
+        "reward": None,
+        "error_category": None,
+    }
+    assert resolve_ir_path(document, "outcome.stop_reason") == (True, None)
 
 
 # ---------------------------------------------------------------------------

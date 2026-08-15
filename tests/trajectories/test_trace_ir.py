@@ -20,9 +20,12 @@ Four groups, in the order they matter:
   the executable form of "zero runtime behaviour change"; if a future PR wires
   the IR into a run path, this test is the one that must be deliberately
   updated.
-* **The worked example** — the JSON in ``docs/trace-interop.md`` §8 is built
-  here in code and compared to the block in the document, so the documented
-  example cannot drift from what the models actually produce.
+* **The worked example and the canonical encoding** — the JSON in
+  ``docs/trace-interop.md`` §8 is built here in code and compared to the block
+  in the document, so the documented example cannot drift from what the models
+  actually produce. The encoding it is written in is itself pinned: nulls are
+  retained, because a dropped key leaves the loss record that declares it
+  pointing at nothing.
 
 Nothing here writes outside ``tmp_path`` and no runtime module is imported for
 its side effects.
@@ -34,6 +37,7 @@ import ast
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -631,6 +635,80 @@ def test_the_example_demonstrates_what_the_ir_is_for():
     assert trace.events[2].extensions["timeout_sec"] == 90.0
 
 
+def resolve_ir_path(document: dict, path: str) -> tuple[bool, Any]:
+    """Walk a `LossRecord.field` path through a serialized trace.
+
+    Returns ``(resolved, value)``. ``resolved`` is False as soon as a segment
+    names a key the document does not contain — which is the whole point: a
+    loss record that addresses a missing key is a declaration nobody can check.
+
+    Shared with the Slice C suite, so both directions of the hub check the same
+    property with the same walker.
+    """
+    node: Any = document
+    for part in re.findall(r"[^.\[\]]+|\[\d+\]", path):
+        if part.startswith("["):
+            index = int(part[1:-1])
+            if not isinstance(node, list) or index >= len(node):
+                return False, None
+            node = node[index]
+        else:
+            if not isinstance(node, dict) or part not in node:
+                return False, None
+            node = node[part]
+    return True, node
+
+
+def test_every_concrete_loss_path_resolves_in_the_canonical_encoding():
+    """The canonical encoding keeps every declared absence addressable.
+
+    Guards a real defect: the §8.4 example was published with
+    ``exclude_none=True``, which drops ``arguments`` entirely while the loss
+    report kept pointing at it — the declaration that makes the absence legal
+    addressed a key no reader of that document could find.
+
+    The second half is what makes this a guard rather than a tautology: it
+    asserts the discarded encoding *fails*, so the test cannot pass for both.
+    """
+    trace = _example_trace()
+    canonical = trace.model_dump(mode="json")
+
+    concrete = [
+        record.field
+        for record in trace.losses.records
+        if record.field.startswith("events[")
+        and not record.field.startswith("events[]")
+    ]
+    assert concrete, "the example must declare at least one concrete-path loss"
+
+    unresolved = [
+        field for field in concrete if not resolve_ir_path(canonical, field)[0]
+    ]
+    assert unresolved == [], unresolved
+
+    # Every one of them addresses a field that is present and explicitly null —
+    # the positive statement "the source did not carry this".
+    for field in concrete:
+        resolved, value = resolve_ir_path(canonical, field)
+        assert resolved and value is None, (field, value)
+
+    # And the encoding this replaced does not resolve them.
+    lean = trace.model_dump(mode="json", exclude_none=True)
+    assert all(not resolve_ir_path(lean, field)[0] for field in concrete), (
+        "exclude_none must not resolve these paths; if it does, this guard has "
+        "stopped discriminating between the two encodings"
+    )
+
+
+def test_the_canonical_encoding_round_trips_like_the_model():
+    """Keeping the nulls costs nothing in fidelity — it only adds legibility."""
+    trace = _example_trace()
+    canonical = trace.model_dump(mode="json")
+    restored = CanonicalTrace.model_validate(json.loads(json.dumps(canonical)))
+    assert restored == trace
+    assert validate_trace(restored) == []
+
+
 def _documented_example() -> dict:
     """The JSON block tagged ``<!-- ir-example -->`` in the interop document."""
     text = DOCS_PATH.read_text(encoding="utf-8")
@@ -644,6 +722,11 @@ def _documented_example() -> dict:
 
 
 def test_the_documented_example_matches_the_models():
-    """A doc example that cannot drift, because the drift fails a test."""
-    produced = _example_trace().model_dump(mode="json", exclude_none=True)
+    """A doc example that cannot drift, because the drift fails a test.
+
+    Serialized in the canonical encoding — nulls retained. The example is the
+    one place a reviewer sees what a trace looks like, so it must not be the
+    one place that shows an encoding the IR does not accept.
+    """
+    produced = _example_trace().model_dump(mode="json")
     assert produced == _documented_example()
