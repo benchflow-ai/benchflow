@@ -1,4 +1,8 @@
-"""Regression tests for the composed checkpoint layer (rollout-branching RFC, FrontierPhysics#73).
+"""Regression tests for the composed checkpoint layer.
+
+Guards the composed-checkpoint layer ("feat(branch): compose sandbox +
+environment checkpoints in the branch engine"; docs/rollout-branching-rfc.md
+WS-1; FrontierPhysics#73). PR number to be added on submission.
 
 The composed checkpoint (RFC §3.1) layers the container snapshot
 (``Sandbox.snapshot``) with the environment-state snapshot into one
@@ -19,6 +23,7 @@ from benchflow.branch import (
     StageSnapshot,
     checkpoint,
     checkpoint_composed,
+    restore,
     restore_composed,
 )
 from benchflow.environment.manifest import EnvironmentManifest
@@ -223,6 +228,25 @@ async def test_restore_composed_rejects_a_live_object_without_a_layer():
         await restore_composed(tree.root, environment=env, sandbox=sandbox)
 
     assert sandbox.restored == []
+
+
+async def test_legacy_restore_rejects_a_composed_stage_snapshot():
+    """A StageSnapshot node fails closed in legacy restore() — use restore_composed.
+
+    A node checkpointed via checkpoint_composed() holds a StageSnapshot, not a
+    bare StateSnapshot; passing it to the legacy restore() used to explode deep
+    inside the environment (AttributeError on ``.path``). It must be rejected
+    with a clear ValueError *before* the environment is touched.
+    """
+    tree = RolloutTree()
+    env, sandbox = FakeEnv(), FakeSnapSandbox()
+    await checkpoint_composed(tree.root, environment=env, sandbox=sandbox)
+
+    with pytest.raises(ValueError, match="restore_composed"):
+        await restore(tree.root, env)
+
+    assert env.restored == []
+    assert env.calls == ["env.snapshot"]  # checkpoint only — no restore call
 
 
 async def test_restore_composed_rejects_a_sandbox_against_a_legacy_snapshot():
