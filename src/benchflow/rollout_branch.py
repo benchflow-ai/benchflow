@@ -34,12 +34,18 @@ from typing import TYPE_CHECKING
 
 from benchflow.branch import aggregate as _aggregate_branch
 from benchflow.branch import checkpoint as _checkpoint_branch
+from benchflow.branch import checkpoint_composed as _checkpoint_composed
 from benchflow.branch import restore as _restore_branch
+from benchflow.branch import restore_composed as _restore_composed
 from benchflow.models import TrajectorySource
 from benchflow.trajectories.tree import RolloutNode
 
 if TYPE_CHECKING:
     from benchflow.rollout import Rollout
+
+# The checkpoint layers a branch can compose (RFC §3.1). Agent-session is
+# layer three and explicitly out of scope for v1.
+_SNAPSHOT_LAYERS = frozenset({"environment", "sandbox"})
 
 # The per-child runner: given the child's branch node, run its continuation and
 # return the scalar return. No ``int`` index — a caller that needs per-child
@@ -103,6 +109,7 @@ async def branch(
     run_child: ChildRunner | None = None,
     *,
     require_sandbox_snapshot: bool = False,
+    snapshot_layers: frozenset[str] | set[str] = frozenset({"environment"}),
 ) -> float:
     """Branch ``rollout`` at its cursor into ``n`` child continuations.
 
@@ -126,10 +133,32 @@ async def branch(
     runs the continuation, scores it, and disconnects. A caller that needs
     per-child prompts binds them into the ``run_child`` closure.
 
+    ``snapshot_layers`` selects which checkpoint layers compose the roll-back
+    point (RFC §3.1). The default ``{"environment"}`` keeps the legacy
+    environment-state-only checkpoint — same behavior, same bare
+    ``StateSnapshot`` shape on the node. Adding ``"sandbox"`` composes a
+    container-level snapshot with it (environment first on checkpoint, sandbox
+    first on restore); ``{"sandbox"}`` alone branches a stateless environment
+    on the container layer only, never touching environment snapshot/restore.
+    Missing capability on any requested layer fails closed before anything is
+    snapshotted.
+
     After this returns, ``rollout``'s linear state is exactly what it was
     before — the tree gained ``n`` children at the cursor, nothing else moved.
     """
-    if rollout._environment is None:
+    layers = frozenset(snapshot_layers)
+    unknown = layers - _SNAPSHOT_LAYERS
+    if unknown:
+        raise ValueError(
+            f"unknown snapshot_layers {sorted(unknown)!r} — allowed layers "
+            f"are {sorted(_SNAPSHOT_LAYERS)!r}"
+        )
+    if not layers:
+        raise ValueError(
+            "snapshot_layers must request at least one layer — a branch "
+            "without a checkpoint has no roll-back point"
+        )
+    if "environment" in layers and rollout._environment is None:
         raise RuntimeError(
             "branch() needs the Environment plane — there is no world to "
             "snapshot. Pass RolloutConfig(environment_manifest=...)."
@@ -137,25 +166,36 @@ async def branch(
     if n < 2:
         raise ValueError(f"a branch forks into >= 2 children, got n={n}")
 
-    # Fail closed when the run requires a three-layer checkpoint but the
-    # sandbox cannot snapshot the container layer (#384). The Branch
-    # lifecycle composes container ⊃ environment-state ⊃ agent-session;
-    # without the container layer, restoring only environment state can
-    # produce inconsistent state for runs that mutate process/service state
-    # the Environment manifest does not capture.
-    if require_sandbox_snapshot:
+    # Fail closed when the run requires the container checkpoint layer but the
+    # sandbox cannot snapshot it (#384). The Branch lifecycle composes
+    # container ⊃ environment-state ⊃ agent-session; without the container
+    # layer, restoring only environment state can produce inconsistent state
+    # for runs that mutate process/service state the Environment manifest does
+    # not capture. ``require_sandbox_snapshot`` keeps its original check-only
+    # semantics; requesting the layer via ``snapshot_layers`` gates the same
+    # way and then actually composes the sandbox into the checkpoint.
+    if require_sandbox_snapshot or "sandbox" in layers:
         sandbox = getattr(rollout, "_env", None)
         supports = getattr(sandbox, "supports_snapshot", False)
         if not supports:
+            requested = (
+                "require_sandbox_snapshot=True"
+                if require_sandbox_snapshot
+                else f"snapshot_layers={sorted(layers)!r}"
+            )
             sandbox_name = type(sandbox).__name__ if sandbox else "<none>"
             raise RuntimeError(
-                f"branch(require_sandbox_snapshot=True) cannot run: the active "
+                f"branch({requested}) cannot run: the active "
                 f"sandbox {sandbox_name!r} does not implement container-level "
                 "snapshot/restore. Use a provider whose Sandbox satisfies the "
                 "checkpoint contract (DockerSandbox or DaytonaSandbox in direct "
-                "mode), or drop require_sandbox_snapshot if Environment-state "
+                "mode), or drop the sandbox layer if Environment-state "
                 "checkpoint is sufficient for this run."
             )
+
+    snap_env = rollout._environment if "environment" in layers else None
+    snap_sandbox = getattr(rollout, "_env", None) if "sandbox" in layers else None
+    composed = layers != frozenset({"environment"})
 
     parent = rollout._cursor
     runner = run_child if run_child is not None else make_default_runner(rollout)
@@ -164,8 +204,23 @@ async def branch(
     # consistent (the Branch lifecycle quiesces first).
     await rollout.disconnect()
 
-    # checkpoint — snapshot the env at the parent; the roll-back point.
-    await _checkpoint_branch(parent, rollout._environment)
+    # checkpoint — snapshot the requested layers at the parent; the roll-back
+    # point. The default environment-only request keeps the legacy path (and
+    # the legacy bare-StateSnapshot shape on node.state["snapshot"]) intact.
+    try:
+        if composed:
+            await _checkpoint_composed(
+                parent, environment=snap_env, sandbox=snap_sandbox
+            )
+        else:
+            await _checkpoint_branch(parent, rollout._environment)
+    except Exception as exc:
+        exc.add_note(
+            f"branch(snapshot_layers={sorted(layers)!r}) failed during "
+            "checkpoint — the branch fails closed; no partial checkpoint was "
+            "recorded on the node."
+        )
+        raise
 
     # The parent's linear state, captured once. Each child runs against a fresh
     # restore of this; the parent is restored to it at the end.
@@ -177,9 +232,13 @@ async def branch(
         # lands on the child node, not a descendant placeholder.
         child = rollout._tree.attach(parent)
 
-        # restore the env to the parent's checkpoint, reset the parent's linear
-        # state, and point the cursor at the pending child for the sub-rollout.
-        await _restore_branch(parent, rollout._environment)
+        # restore the checkpointed layers (sandbox first, then env — the
+        # reverse of checkpoint order), reset the parent's linear state, and
+        # point the cursor at the pending child for the sub-rollout.
+        if composed:
+            await _restore_composed(parent, environment=snap_env, sandbox=snap_sandbox)
+        else:
+            await _restore_branch(parent, rollout._environment)
         saved.restore_onto(rollout)
         rollout._cursor = child
 

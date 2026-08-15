@@ -1789,6 +1789,7 @@ class Rollout:
         run_child: ChildRunner | None = None,
         *,
         require_sandbox_snapshot: bool = False,
+        snapshot_layers: frozenset[str] | set[str] = frozenset({"environment"}),
     ) -> float:
         """Branch the rollout at the cursor into ``n`` child continuations.
 
@@ -1809,9 +1810,21 @@ class Rollout:
         without that capability (Modal, Daytona DinD) fail closed with a clear
         diagnostic rather than running with a half-consistent checkpoint
         (#384, Branch lifecycle in docs/architecture.md).
+
+        ``snapshot_layers`` selects which checkpoint layers compose the
+        roll-back point (rollout-branching RFC §3.1). The default
+        ``{"environment"}`` is the legacy environment-state-only checkpoint;
+        adding ``"sandbox"`` composes a container-level snapshot with it, and
+        ``{"sandbox"}`` alone branches a stateless environment on the
+        container layer only. Missing capability on a requested layer fails
+        closed before anything is snapshotted.
         """
         return await _branch_engine(
-            self, n, run_child, require_sandbox_snapshot=require_sandbox_snapshot
+            self,
+            n,
+            run_child,
+            require_sandbox_snapshot=require_sandbox_snapshot,
+            snapshot_layers=snapshot_layers,
         )
 
     # Phase 4: VERIFY
