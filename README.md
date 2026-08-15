@@ -25,7 +25,7 @@ BenchFlow is a universal environment framework: it runs AI agents against task e
 
 ## Qucik start: 1. Upload a trajectory
 
-No BenchFlow account, Azure credentials, or API key is required:
+For local Claude Code or Codex jsonl formatted trajectory files that you are proud of (contain challenging tasks you dealed with via chatting to agents), you can upload that file to BenchFlow to join the competition for winning $2,000 cash reward. No BenchFlow account, credentials, or API key is required:
 
 ```bash
 # Install or upgrade BenchFlow
