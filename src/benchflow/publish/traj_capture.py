@@ -62,9 +62,7 @@ def default_source_id(path: Path) -> str:
 def validate_source_id(source_id: str) -> str:
     """Validate and normalize a source id used in object names."""
     normalized = source_id.strip().strip("/")
-    invalid_segment = any(
-        segment in {".", ".."} for segment in normalized.split("/")
-    )
+    invalid_segment = any(segment in {".", ".."} for segment in normalized.split("/"))
     if (
         not SOURCE_ID_PATTERN.fullmatch(normalized)
         or "//" in normalized
@@ -296,9 +294,7 @@ def _load_run_metadata(metadata_dir: Path | None) -> dict[str, Any]:
     result = _read_object(metadata_dir / "result.json") if metadata_dir else {}
     config = _read_object(metadata_dir / "config.json") if metadata_dir else {}
     raw_rewards = result.get("rewards")
-    rewards: Mapping[str, Any] = (
-        raw_rewards if isinstance(raw_rewards, Mapping) else {}
-    )
+    rewards: Mapping[str, Any] = raw_rewards if isinstance(raw_rewards, Mapping) else {}
     return {
         "agent": _first_scalar(result.get("agent"), config.get("agent")),
         "model": _first_scalar(result.get("model"), config.get("model")),

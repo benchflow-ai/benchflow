@@ -291,10 +291,7 @@ class FakeTable:
         from azure.core.exceptions import ResourceNotFoundError
 
         for entity in reversed(self.entities):
-            if (
-                entity["PartitionKey"] == partition_key
-                and entity["RowKey"] == row_key
-            ):
+            if entity["PartitionKey"] == partition_key and entity["RowKey"] == row_key:
                 return entity
         raise ResourceNotFoundError("not found")
 
