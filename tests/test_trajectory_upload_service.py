@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -86,6 +86,40 @@ def test_first_delegation_key_request_does_not_underflow() -> None:
     )
 
     assert backend._user_delegation_key(datetime.now(UTC)) == "delegation-key"
+
+
+def test_broker_sas_permission_is_service_enforced_create_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller cannot omit If-None-Match to turn a grant into an overwrite."""
+    captured: dict = {}
+
+    def fake_generate_blob_sas(**kwargs) -> str:
+        captured.update(kwargs)
+        return "sp=c&sig=test"
+
+    monkeypatch.setattr("azure.storage.blob.generate_blob_sas", fake_generate_blob_sas)
+    backend = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=SimpleNamespace(),
+        blob_service=SimpleNamespace(),
+        ip_hash_key=b"test",
+    )
+    now = datetime.now(UTC)
+
+    grant = backend._upload_object(
+        prefix="inbox/" + "a" * 64 + "/",
+        relname="trajectory/capture.jsonl",
+        content_type="application/jsonl",
+        delegation_key="delegation-key",
+        starts_at=now,
+        expires_at=now + timedelta(minutes=5),
+    )
+
+    assert captured["permission"].create is True
+    assert captured["permission"].write is False
+    assert grant.headers["If-None-Match"] == "*"
 
 
 def test_upload_contract_recomputes_digest_and_rejects_object_injection(
@@ -243,6 +277,10 @@ class FakeBlobClient:
         self.name = name
 
     def get_blob_properties(self):
+        if self.name not in self.container.blobs:
+            from azure.core.exceptions import ResourceNotFoundError
+
+            raise ResourceNotFoundError("missing test blob")
         content = self.container.blobs[self.name]
         return SimpleNamespace(size=len(content))
 
@@ -417,4 +455,33 @@ def test_queue_validator_rejects_corruption_without_promotion(tmp_path: Path) ->
 
     assert not any(name.startswith("sources/community/") for name in container.blobs)
     assert table.entities[-1]["status"] == "rejected"
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_queue_validator_rejects_missing_declared_artifact(tmp_path: Path) -> None:
+    """An incomplete anonymous commit is terminal and cannot retry for seven days."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    artifact = next(name for name in blobs if name.endswith(".jsonl"))
+    blobs.pop(artifact)
+    container = FakeContainer(blobs)
+    queue = FakeQueue(
+        json.dumps(
+            {
+                "data": {
+                    "url": (
+                        "https://account.blob.core.windows.net/bronze/"
+                        f"inbox/{digest}/manifest.json"
+                    )
+                }
+            }
+        )
+    )
+    table = FakeTable()
+
+    AzureCaptureValidator(container=container, queue=queue, table=table).run_once()
+
+    assert not any(name.startswith("sources/community/") for name in container.blobs)
+    assert not any(name.startswith(f"inbox/{digest}/") for name in container.blobs)
+    assert table.entities[-1]["status"] == "rejected"
+    assert "missing" in table.entities[-1]["detail"]
     assert queue.deleted == [("m1", "p1")]

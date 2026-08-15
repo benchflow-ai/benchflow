@@ -82,9 +82,14 @@ class AzureCaptureValidator:
             self._delete_message(message)
             return True
 
+        from azure.core.exceptions import ResourceNotFoundError
+
         try:
             with tempfile.TemporaryDirectory(prefix="benchflow-validator-") as name:
-                validated = self._download_and_validate(prefix, Path(name))
+                try:
+                    validated = self._download_and_validate(prefix, Path(name))
+                except ResourceNotFoundError as exc:
+                    raise CaptureRejected("a declared capture blob is missing") from exc
                 if validated.manifest.traj_digest != f"sha256:{digest}":
                     raise CaptureRejected(
                         "manifest digest does not match its quarantine prefix"

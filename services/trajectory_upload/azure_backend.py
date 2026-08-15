@@ -191,7 +191,7 @@ class AzureUploadBroker:
             container_name=self.container,
             blob_name=blob_name,
             user_delegation_key=delegation_key,
-            permission=BlobSasPermissions(create=True, write=True),
+            permission=BlobSasPermissions(create=True),
             start=starts_at,
             expiry=expires_at,
             protocol="https",
