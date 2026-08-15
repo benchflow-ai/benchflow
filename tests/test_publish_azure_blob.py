@@ -254,6 +254,28 @@ def test_contribution_redactor_preserves_kebab_case_sk_identifiers() -> None:
     assert redact_value(value) == (value, 0)
 
 
+def test_contribution_redactor_replaces_credential_mapping_keys_without_collision() -> (
+    None
+):
+    """Guards PR #989 against tokens used as JSON object keys."""
+    first = "dtn_1234567890abcdefghijklmnop"
+    second = "hf_1234567890abcdefghijklmnop"
+    value = {
+        first: "first",
+        "***REDACTED_KEY_1***": "reserved",
+        second: "second",
+    }
+
+    redacted, replacements = redact_value(value)
+
+    assert first not in redacted
+    assert second not in redacted
+    assert redacted["***REDACTED_KEY_1***"] == "reserved"
+    assert redacted["***REDACTED_KEY_2***"] == "first"
+    assert redacted["***REDACTED_KEY_3***"] == "second"
+    assert replacements == 2
+
+
 def test_manifest_free_text_is_redacted_and_counted(tmp_path: Path) -> None:
     """Guards PR #989 against leaking contributor and run metadata."""
     token = "dtn_1234567890abcdefghijklmnop"

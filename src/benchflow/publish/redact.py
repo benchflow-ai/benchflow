@@ -58,12 +58,24 @@ def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int
     if isinstance(value, Mapping):
         redacted: dict[Any, Any] = {}
         replacements = 0
+        original_keys = set(value)
+        secret_key_index = 0
         for key, item in value.items():
+            clean_key = key
+            if isinstance(key, str):
+                _, key_replacements = _redact_text(key)
+                if key_replacements:
+                    secret_key_index += 1
+                    clean_key = f"***REDACTED_KEY_{secret_key_index}***"
+                    while clean_key in original_keys or clean_key in redacted:
+                        secret_key_index += 1
+                        clean_key = f"***REDACTED_KEY_{secret_key_index}***"
+                    replacements += key_replacements
             clean, count = redact_value(
                 item,
                 field_name=key if isinstance(key, str) else None,
             )
-            redacted[key] = clean
+            redacted[clean_key] = clean
             replacements += count
         return redacted, replacements
 
@@ -79,6 +91,10 @@ def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int
     if not isinstance(value, str):
         return value, 0
 
+    return _redact_text(value)
+
+
+def _redact_text(value: str) -> tuple[str, int]:
     redacted_text, replacements = redact_trajectory_text_with_count(value)
     for pattern, replacement in VALUE_PATTERNS:
         redacted_text, count = pattern.subn(replacement, redacted_text)

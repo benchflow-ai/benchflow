@@ -308,6 +308,18 @@ def test_validator_scans_manifest_strings_before_artifacts(tmp_path: Path) -> No
             validate_local_capture(manifest_bytes, paths)
 
 
+def test_validator_rejects_credential_shaped_mapping_keys(tmp_path: Path) -> None:
+    """Guards PR #989 against tokens used as JSON object keys."""
+    artifact = tmp_path / "credential-key.jsonl"
+    artifact.write_text(
+        '{"dtn_1234567890abcdefghijklmnop":"result"}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CaptureRejected, match="secret-like"):
+        _validate_and_scan_jsonl(artifact, "trajectory/credential-key.jsonl")
+
+
 def test_validator_bounds_record_bytes_and_complexity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
