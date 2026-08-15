@@ -283,17 +283,16 @@ def test_self_gen_mode_still_requires_runtime_orchestration(tmp_path: Path) -> N
         _ = cfg.effective_scenes
 
 
-def test_self_gen_mode_defaults_to_repo_claude_skill_creator(
+def test_self_gen_mode_requires_external_creator_after_catalog_cleanup(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Self-gen mode defaults to the repo's official skill-creator pack."""
+    """Guards the six-skill catalog cleanup from PR #1000 on clean runners."""
     monkeypatch.delenv("BENCHFLOW_SKILL_CREATOR_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
 
-    skills_root, skill_name = _resolve_skill_creator_root(None)
-
-    assert skills_root.parts[-2:] == (".claude", "skills")
-    assert (skills_root / "skill-creator" / "SKILL.md").exists()
-    assert skill_name == "skill-creator"
+    with pytest.raises(FileNotFoundError, match="Pass --skill-creator-dir"):
+        _resolve_skill_creator_root(None)
 
 
 def test_self_gen_mode_uses_custom_creator_skill_name(tmp_path: Path) -> None:
