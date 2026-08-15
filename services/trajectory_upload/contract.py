@@ -75,12 +75,12 @@ class ContributorInfo(BaseModel):
 class UploadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.0.0", "1.1.0"]
+    schema_version: Literal["1.1.0"]
     kind: Literal["bronze.trajectory"]
     source_id: str
     traj_digest: str
     uploaded_by: str | None = Field(default=None, max_length=MAX_UPLOADED_BY_LENGTH)
-    contributor: ContributorInfo | None = None
+    contributor: ContributorInfo
     artifacts: list[Artifact] = Field(min_length=1, max_length=MAX_ARTIFACTS)
 
     @field_validator("source_id")
@@ -98,8 +98,6 @@ class UploadRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_capture(self) -> Self:
-        if self.schema_version == "1.1.0" and self.contributor is None:
-            raise ValueError("schema 1.1.0 requires contributor metadata")
         names = [artifact.name for artifact in self.artifacts]
         if len(names) != len(set(names)):
             raise ValueError("artifact names must be unique")
@@ -145,10 +143,18 @@ class RedactionInfo(BaseModel):
 class ContributionManifest(UploadRequest):
     model_config = ConfigDict(extra="forbid")
 
+    schema_version: Literal["1.0.0", "1.1.0"]
+    contributor: ContributorInfo | None = None
     created_at: datetime
     tool: ToolInfo
     run: RunInfo
     redaction: RedactionInfo
+
+    @model_validator(mode="after")
+    def validate_manifest_version(self) -> Self:
+        if self.schema_version == "1.1.0" and self.contributor is None:
+            raise ValueError("schema 1.1.0 requires contributor metadata")
+        return self
 
 
 @dataclass(frozen=True)
