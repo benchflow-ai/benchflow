@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 
+from benchflow._utils.content_address import sha256_prefixed
 from benchflow.trajectories.types import LLMExchange, LLMRequest, LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -53,8 +54,44 @@ def _n_messages(body: dict[str, Any]) -> int:
     return len(msgs) if isinstance(msgs, list) else 0
 
 
+class ReplayCutPointError(ValueError):
+    """Raised when a requested replay cut-point lies outside the recording."""
+
+
+def validate_max_exchanges(max_exchanges: int | None, n_recorded: int) -> int:
+    """Resolve the replay prefix length; fail closed on an out-of-range cut.
+
+    ``None`` means the full recorded prefix (today's behavior). An explicit cut
+    must satisfy ``0 < K <= n_recorded`` — validated here, at configuration
+    time, never mid-flight.
+    """
+    if max_exchanges is None:
+        return n_recorded
+    if not 0 < max_exchanges <= n_recorded:
+        raise ReplayCutPointError(
+            f"max_exchanges must be in 1..{n_recorded} (the recorded exchange "
+            f"count), got {max_exchanges}"
+        )
+    return max_exchanges
+
+
+def request_body_digest(body: dict[str, Any]) -> str:
+    """Content address of a request body — canonical JSON, ``sha256:`` form.
+
+    The same canonicalization as the config-overlay hash (#790): sorted keys,
+    compact separators, hashed via :func:`sha256_prefixed`.
+    """
+    payload = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return sha256_prefixed(payload.encode())
+
+
 class ReplayRouter:
     """Serve recorded responses in order, then live — the core replay logic.
+
+    ``max_exchanges`` cuts the replay short (rollout-branching RFC §3.5): at
+    most the first K recorded exchanges are served, then the router switches to
+    live passthrough exactly as if the recording had ended there. ``None``
+    replays the full recorded prefix.
 
     Thread-safe: a single agent is typically serial, but ``ThreadingHTTPServer``
     may overlap requests, so the cursor is advanced under a lock.
@@ -66,8 +103,10 @@ class ReplayRouter:
         *,
         live_forwarder: LiveForwarder | None = None,
         strict_divergence: bool = False,
+        max_exchanges: int | None = None,
     ) -> None:
         self._recorded = recorded
+        self._n_replay = validate_max_exchanges(max_exchanges, len(recorded))
         self._live_forwarder = live_forwarder
         self._strict = strict_divergence
         self._lock = threading.Lock()
@@ -78,7 +117,25 @@ class ReplayRouter:
 
     @property
     def exhausted(self) -> bool:
-        return self._cursor >= len(self._recorded)
+        return self._cursor >= self._n_replay
+
+    @property
+    def n_replayed_exchanges(self) -> int:
+        """Recorded exchanges actually served so far (== the cut once live)."""
+        return min(self._cursor, self._n_replay)
+
+    @property
+    def cut_point_digest(self) -> str | None:
+        """Content digest of the last replayed exchange's request body.
+
+        Cut-point accounting (RFC §3.5): sha256 over the canonical JSON of the
+        last replayed request, so a silently-diverged replay is detectable in
+        artifacts. ``None`` while nothing has been replayed.
+        """
+        n_replayed = self.n_replayed_exchanges
+        if n_replayed == 0:
+            return None
+        return request_body_digest(self._recorded[n_replayed - 1].request.body)
 
     def _check_divergence(
         self, incoming: dict[str, Any], recorded_req: dict[str, Any]
@@ -104,7 +161,7 @@ class ReplayRouter:
     def next_response(self, request_body: dict[str, Any]) -> ReplayResult:
         """Route one request to its recorded response, or to the live model."""
         with self._lock:
-            if self._cursor < len(self._recorded):
+            if self._cursor < self._n_replay:
                 exchange = self._recorded[self._cursor]
                 self._check_divergence(request_body, exchange.request.body)
                 self._cursor += 1

@@ -31,7 +31,12 @@ from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.text import describe_exception
-from benchflow.continue_run.replay_proxy import ReplayProxy, ReplayRouter
+from benchflow.continue_run.replay_proxy import (
+    ReplayProxy,
+    ReplayRouter,
+    request_body_digest,
+    validate_max_exchanges,
+)
 from benchflow.continue_run.run_folder import RunFolder, RunFolderError, load_run_folder
 from benchflow.continue_run.sandbox_proxy import (
     SandboxReplayProxy,
@@ -87,6 +92,69 @@ def continued_rollout_name(run: RunFolder) -> str:
     if not cleaned:
         cleaned = run.task_name or "run"
     return f"{cleaned}__continued"
+
+
+def resolve_cut_point(
+    max_exchanges: int | None,
+    *,
+    stage_tags: dict[str, int] | None = None,
+    cut_stage: str | None = None,
+) -> tuple[int | None, str | None]:
+    """Resolve an optional stage-named cut into a ``max_exchanges`` value.
+
+    ``stage_tags`` maps stage names to the exchange index that closed each
+    stage (rollout-branching RFC §3.5 — externally supplied; recording stage
+    tags at run time is a named follow-on). With ``cut_stage`` given, the cut
+    resolves to ``stage_tags[cut_stage]``; an unknown stage fails closed naming
+    the available stages. Returns ``(max_exchanges, branch_stage)``.
+    """
+    if cut_stage is None:
+        return max_exchanges, None
+    if max_exchanges is not None:
+        raise RunFolderError(
+            "pass either max_exchanges or cut_stage, not both — a stage-named "
+            "cut resolves max_exchanges from stage_tags."
+        )
+    if not stage_tags:
+        raise RunFolderError(
+            f"cut_stage={cut_stage!r} given but no stage_tags were provided; a "
+            "stage-named cut needs the stage-name → exchange-index mapping."
+        )
+    if cut_stage not in stage_tags:
+        raise RunFolderError(
+            f"unknown cut stage {cut_stage!r}; available stages: "
+            f"{', '.join(sorted(stage_tags))}."
+        )
+    return stage_tags[cut_stage], cut_stage
+
+
+def cut_point_provenance(
+    exchanges: list[LLMExchange],
+    *,
+    max_exchanges: int | None = None,
+    branch_stage: str | None = None,
+) -> dict[str, Any]:
+    """The ``cut_point`` block recorded in source_provenance (RFC §3.5).
+
+    ``n_replayed_exchanges`` is the replay prefix the run is configured to
+    serve (the natural end when ``max_exchanges`` is ``None``) and
+    ``cut_point_digest`` the canonical-JSON sha256 of the last replayed
+    exchange's request — both computed from the recording, so a cut and a
+    natural-end continuation carry the same divergence-detectable evidence.
+    ``branch_stage`` is recorded only for a stage-named cut.
+    """
+    n_replayed = validate_max_exchanges(max_exchanges, len(exchanges))
+    block: dict[str, Any] = {
+        "n_replayed_exchanges": n_replayed,
+        "cut_point_digest": (
+            request_body_digest(exchanges[n_replayed - 1].request.body)
+            if n_replayed > 0
+            else None
+        ),
+    }
+    if branch_stage is not None:
+        block["branch_stage"] = branch_stage
+    return block
 
 
 @dataclass(frozen=True)
@@ -161,6 +229,8 @@ def build_rollout_config(
     timeout: int | None,
     output_dir: str | Path,
     rollout_name: str,
+    max_exchanges: int | None = None,
+    branch_stage: str | None = None,
 ) -> Any:
     """Assemble the RolloutConfig that re-runs the task through the proxy.
 
@@ -198,6 +268,11 @@ def build_rollout_config(
             "original_model": run.model,
             "live_model": live_model,
             "n_recorded_exchanges": run.n_recorded_exchanges,
+            "cut_point": cut_point_provenance(
+                run.exchanges,
+                max_exchanges=max_exchanges,
+                branch_stage=branch_stage,
+            ),
         },
     )
 
@@ -254,19 +329,26 @@ class LiteLLMLiveForwarder:
 
 
 def stitched_trajectory_lines(
-    original_llm_trajectory: Path, live_exchanges: list[LLMExchange]
+    original_llm_trajectory: Path,
+    live_exchanges: list[LLMExchange],
+    *,
+    max_recorded: int | None = None,
 ) -> list[str]:
     """Build the continuous llm_trajectory: recorded prefix + live suffix.
 
     The recorded prefix is taken verbatim from the source file (already redacted
     and byte-identical to what the agent replayed); the live suffix is the
     exchanges the proxy captured after the cut-point, redacted on the way out.
+    ``max_recorded`` truncates the prefix at a replay cut-point so a cut
+    continuation's stitched file holds only the exchanges actually replayed.
     """
     lines: list[str] = []
     if original_llm_trajectory.is_file():
         for raw in original_llm_trajectory.read_text().splitlines():
             if raw.strip():
                 lines.append(raw)
+    if max_recorded is not None:
+        lines = lines[:max_recorded]
     for exchange in live_exchanges:
         raw = json.dumps(exchange.model_dump(mode="json"), default=str)
         lines.append(redact_trajectory_text(raw))
@@ -274,12 +356,18 @@ def stitched_trajectory_lines(
 
 
 def write_stitched_trajectory(
-    rollout_dir: Path, original_llm_trajectory: Path, live_exchanges: list[LLMExchange]
+    rollout_dir: Path,
+    original_llm_trajectory: Path,
+    live_exchanges: list[LLMExchange],
+    *,
+    max_recorded: int | None = None,
 ) -> Path:
     """Write the stitched continuous trajectory into the new rollout folder."""
     out = rollout_dir / "trajectory" / "llm_trajectory.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
-    lines = stitched_trajectory_lines(original_llm_trajectory, live_exchanges)
+    lines = stitched_trajectory_lines(
+        original_llm_trajectory, live_exchanges, max_recorded=max_recorded
+    )
     out.write_text("\n".join(lines) + ("\n" if lines else ""))
     return out
 
@@ -486,6 +574,9 @@ async def continue_run(
     strict_divergence: bool = False,
     replay_only: bool = False,
     proxy_mode: str = "auto",
+    max_exchanges: int | None = None,
+    stage_tags: dict[str, int] | None = None,
+    cut_stage: str | None = None,
 ) -> ContinueResult:
     """Resume ``folder`` to completion via record-replay + live continuation.
 
@@ -493,8 +584,15 @@ async def continue_run(
     ``gemini-3.1-flash-lite-preview``); defaults to the original run's model.
     ``replay_only`` skips the live leg (rebuild-and-stop) — useful for testing
     the replay without provider credentials.
+    ``max_exchanges`` replays only the first K recorded exchanges, then goes
+    live (the RFC §3.5 cut-point); ``stage_tags`` + ``cut_stage`` name the cut
+    by recorded stage instead of by number.
     """
     run = load_run_folder(folder, require_timeout=require_timeout)
+    max_exchanges, branch_stage = resolve_cut_point(
+        max_exchanges, stage_tags=stage_tags, cut_stage=cut_stage
+    )
+    n_replay = validate_max_exchanges(max_exchanges, run.n_recorded_exchanges)
     task_path = resolve_task_path(run, tasks_dir)
 
     live_model = model or run.model
@@ -528,12 +626,15 @@ async def continue_run(
             output_dir=out_root,
             rollout_name=rollout_name,
             strict_divergence=strict_divergence,
+            max_exchanges=max_exchanges,
+            branch_stage=branch_stage,
         )
 
     router = ReplayRouter(
         run.exchanges,
         live_forwarder=live_forwarder,
         strict_divergence=strict_divergence,
+        max_exchanges=max_exchanges,
     )
 
     bind_host, advertise_host = _host_proxy_binding(run.environment)
@@ -550,6 +651,8 @@ async def continue_run(
             timeout=timeout if timeout is not None else run.timeout_sec,
             output_dir=out_root,
             rollout_name=rollout_name,
+            max_exchanges=max_exchanges,
+            branch_stage=branch_stage,
         )
         rollout = await Rollout.create(config)
         result = await rollout.run()
@@ -561,13 +664,14 @@ async def continue_run(
         rollout_dir,
         run.path / "trajectory" / "llm_trajectory.jsonl",
         router.live_exchanges,
+        max_recorded=max_exchanges,
     )
     update_continued_metadata(
         rollout_dir,
         live_model=live_model,
         usage=summarize_llm_trajectory_usage(
             stitched_path,
-            n_recorded=run.n_recorded_exchanges,
+            n_recorded=n_replay,
         ),
         environment=run.environment,
     )
@@ -576,7 +680,7 @@ async def continue_run(
         rollout_dir=rollout_dir,
         rewards=getattr(result, "rewards", None),
         error=getattr(result, "error", None),
-        n_recorded=run.n_recorded_exchanges,
+        n_recorded=n_replay,
         n_live=len(router.live_exchanges),
         divergences=router.divergences,
     )
@@ -591,6 +695,8 @@ async def _continue_run_with_sandbox_proxy(
     output_dir: Path,
     rollout_name: str,
     strict_divergence: bool,
+    max_exchanges: int | None = None,
+    branch_stage: str | None = None,
 ) -> ContinueResult:
     """Run continuation with replay and provider proxies inside the sandbox."""
     from benchflow.providers.runtime import (
@@ -599,6 +705,10 @@ async def _continue_run_with_sandbox_proxy(
     )
     from benchflow.rollout import Rollout
 
+    # The in-sandbox proxy replays exactly the recording it is given, so a cut
+    # is threaded by truncating the uploaded prefix — the switch to live then
+    # happens exactly as if the recording had ended there.
+    n_replay = validate_max_exchanges(max_exchanges, run.n_recorded_exchanges)
     config = build_rollout_config(
         run,
         task_path=task_path,
@@ -607,6 +717,8 @@ async def _continue_run_with_sandbox_proxy(
         timeout=timeout if timeout is not None else run.timeout_sec,
         output_dir=output_dir,
         rollout_name=rollout_name,
+        max_exchanges=max_exchanges,
+        branch_stage=branch_stage,
     )
     rollout = await Rollout.create(config)
     replay_proxy: SandboxReplayProxy | None = None
@@ -631,13 +743,14 @@ async def _continue_run_with_sandbox_proxy(
             rollout_dir,
             run.path / "trajectory" / "llm_trajectory.jsonl",
             live_exchanges,
+            max_recorded=max_exchanges,
         )
         update_continued_metadata(
             rollout_dir,
             live_model=live_model,
             usage=summarize_llm_trajectory_usage(
                 stitched_path,
-                n_recorded=run.n_recorded_exchanges,
+                n_recorded=n_replay,
             ),
             environment=run.environment,
         )
@@ -661,7 +774,7 @@ async def _continue_run_with_sandbox_proxy(
         )
         replay_proxy = await SandboxReplayProxy.start(
             sandbox=rollout.env,
-            recorded=run.exchanges,
+            recorded=run.exchanges[:n_replay],
             upstream_url=provider_env["LLM_BASE_URL"],
             upstream_api_key=provider_env["LLM_API_KEY"],
             upstream_model=provider_env["LLM_MODEL"],
@@ -741,7 +854,7 @@ async def _continue_run_with_sandbox_proxy(
         rollout_dir=rollout_dir,
         rewards=getattr(result, "rewards", None),
         error=getattr(result, "error", None),
-        n_recorded=run.n_recorded_exchanges,
+        n_recorded=n_replay,
         n_live=len(live_exchanges),
         divergences=0,
     )

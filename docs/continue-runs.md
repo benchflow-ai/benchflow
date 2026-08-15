@@ -64,6 +64,7 @@ optional.
 | `--require-timeout` | off | Refuse runs whose recorded status isn't a timeout. |
 | `--strict-divergence` | off | Abort if replay leaves the original rails. |
 | `--replay-only` | off | Rebuild via replay and stop at the cut-point (no live model needed). |
+| `--max-exchanges K` | all recorded | Replay only the first K recorded exchanges, then go live ([Cut-points](#cut-points)). |
 
 ### Models and credentials
 
@@ -74,6 +75,31 @@ optional.
   recording. Only the **live continuation** calls the real provider, so the
   host needs that provider's credentials (e.g. `GEMINI_API_KEY`) in its
   environment. `--replay-only` skips the live leg entirely.
+
+## Cut-points
+
+By default the proxy replays the **entire** recorded prefix before going live.
+`--max-exchanges K` cuts the replay short: the first K recorded exchanges are
+replayed, then the proxy switches to the live model exactly as if the recording
+had ended there. This is the replay cut-point API from the
+[rollout-branching RFC §3.5](./rollout-branching-rfc.md) — replay a trajectory
+verbatim up to a stage boundary, then go live, to localize which stage a run
+went wrong in.
+
+- `K` must satisfy `1 <= K <= n_recorded`; anything else fails closed before a
+  sandbox boots.
+- The continued run's `source_provenance` gains a `cut_point` block:
+  `n_replayed_exchanges` plus `cut_point_digest` (a sha256 over the canonical
+  JSON of the last replayed request), so a silently-diverged replay is
+  detectable in artifacts. A natural-end continuation records the same block,
+  documenting the end of the recording.
+- The stitched `llm_trajectory.jsonl` contains only the replayed prefix (the
+  first K recorded exchanges) plus the live suffix.
+- Naming cut-points by stage instead of by number (`stage_tags` + `cut_stage`,
+  resolving to the exchange index that closed the stage) is available through
+  the Python API (`benchflow.continue_run.orchestrator.continue_run`); the
+  resolved stage is recorded as `branch_stage` in the `cut_point` block.
+  Recording stage tags at run time is a named follow-on in the RFC.
 
 ## Limitations and caveats
 
