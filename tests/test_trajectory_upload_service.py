@@ -568,7 +568,11 @@ def test_event_grid_queue_base64_envelope_is_decoded(tmp_path: Path) -> None:
     )
     encoded = base64.b64encode(event.encode()).decode()
 
-    assert _capture_from_event(encoded) == (f"inbox/{digest}/", digest, True)
+    assert _capture_from_event(encoded) == (
+        f"inbox/{digest}/",
+        digest,
+        "manifest.json",
+    )
 
 
 def test_pending_artifact_event_waits_for_manifest_commit(tmp_path: Path) -> None:
@@ -596,6 +600,30 @@ def test_pending_artifact_event_waits_for_manifest_commit(tmp_path: Path) -> Non
     assert container.blobs == blobs
     assert container.uploaded == []
     assert table.entities[-1]["status"] == "pending"
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_pending_oversized_artifact_event_is_rejected_and_cleaned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #989 against retaining artifact-only storage amplification."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    artifact = next(name for name in blobs if name.endswith(".jsonl"))
+    event = json.dumps(
+        {"data": {"url": ("https://account.blob.core.windows.net/bronze/" + artifact)}}
+    )
+    queue = FakeQueue(event)
+    table = _pending_table(digest)
+    container = FakeContainer(blobs)
+    monkeypatch.setattr("services.trajectory_upload.validator.MAX_ARTIFACT_BYTES", 1)
+
+    assert AzureCaptureValidator(
+        container=container, queue=queue, table=table
+    ).run_once()
+
+    assert not any(name.startswith(f"inbox/{digest}/") for name in container.blobs)
+    assert table.entities[-1]["status"] == "rejected"
+    assert "artifact exceeds 1 bytes" in table.entities[-1]["detail"]
     assert queue.deleted == [("m1", "p1")]
 
 

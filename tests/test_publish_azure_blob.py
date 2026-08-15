@@ -128,6 +128,51 @@ def test_file_and_bare_directory_normalize_under_trajectory(
         assert staged.files[0].relname == "trajectory/capture.jsonl"
 
 
+def test_staging_rejects_symlinked_trajectory_inputs(tmp_path: Path) -> None:
+    """Guards PR #989 against reading trajectory data outside the selected tree."""
+    external = tmp_path / "external.jsonl"
+    external.write_text('{"type":"outside"}\n', encoding="utf-8")
+
+    file_link = tmp_path / "capture.jsonl"
+    file_link.symlink_to(external)
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        stage_trajectory_capture(file_link, source_id="demo").__enter__()
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "capture.jsonl").symlink_to(external)
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        stage_trajectory_capture(bare, source_id="demo").__enter__()
+
+    trial = tmp_path / "trial-symlink"
+    trial.mkdir()
+    external_dir = tmp_path / "external-trajectory"
+    external_dir.mkdir()
+    (external_dir / "capture.jsonl").write_text(
+        '{"type":"outside"}\n', encoding="utf-8"
+    )
+    (trial / "trajectory").symlink_to(external_dir, target_is_directory=True)
+    with pytest.raises(ValueError, match="directory must not be a symlink"):
+        stage_trajectory_capture(trial, source_id="demo").__enter__()
+
+
+def test_staging_enforces_shared_capture_count_and_size_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #989 against direct uploads bypassing contribution limits."""
+    import benchflow.publish.traj_capture as capture_module
+
+    trial = _trial(tmp_path)
+    monkeypatch.setattr(capture_module, "MAX_ARTIFACTS", 1)
+    with pytest.raises(ValueError, match="exceeds 1 artifact files"):
+        stage_trajectory_capture(trial, source_id="demo").__enter__()
+
+    monkeypatch.setattr(capture_module, "MAX_ARTIFACTS", 8)
+    monkeypatch.setattr(capture_module, "MAX_CAPTURE_BYTES", 1)
+    with pytest.raises(ValueError, match="capture exceeds 1 bytes"):
+        stage_trajectory_capture(trial, source_id="demo").__enter__()
+
+
 def test_invalid_empty_and_oversize_inputs_fail_cleanly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

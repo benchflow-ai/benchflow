@@ -18,6 +18,8 @@ from benchflow import __version__
 from benchflow.publish.redact import redact_value
 
 MAX_FILE_BYTES = 128 * 1024**2
+MAX_ARTIFACTS = 8
+MAX_CAPTURE_BYTES = 2 * MAX_FILE_BYTES
 MAX_JSONL_RECORD_BYTES = 8 * 1024**2
 MAX_JSON_NESTING = 100
 MAX_JSON_NODES = 100_000
@@ -107,6 +109,17 @@ def stage_trajectory_capture(
     """Validate and stage a trajectory capture without mutating its source."""
     source_id = validate_source_id(source_id)
     resolved = _resolve_input(path)
+    if len(resolved.files) > MAX_ARTIFACTS:
+        raise ValueError(
+            f"trajectory capture exceeds {MAX_ARTIFACTS} artifact files: "
+            f"{len(resolved.files)} files"
+        )
+    capture_bytes = sum(source.stat().st_size for source in resolved.files)
+    if capture_bytes > MAX_CAPTURE_BYTES:
+        raise ValueError(
+            f"trajectory capture exceeds {MAX_CAPTURE_BYTES} bytes: "
+            f"{capture_bytes} bytes"
+        )
     for source in resolved.files:
         _validate_jsonl(source)
 
@@ -164,7 +177,10 @@ def stage_trajectory_capture(
 
 
 def _resolve_input(path: Path) -> _ResolvedInput:
-    resolved = path.expanduser().resolve()
+    expanded = path.expanduser()
+    if expanded.is_symlink():
+        raise ValueError(f"trajectory path must not be a symlink: {expanded}")
+    resolved = expanded.resolve()
     if resolved.is_file():
         if resolved.suffix.casefold() != ".jsonl":
             raise ValueError(f"trajectory file must end in .jsonl: {resolved}")
@@ -172,13 +188,23 @@ def _resolve_input(path: Path) -> _ResolvedInput:
     if not resolved.is_dir():
         raise ValueError(f"trajectory path not found: {resolved}")
 
-    trial_dir = resolved if (resolved / "trajectory").is_dir() else None
-    payload_dir = resolved / "trajectory" if trial_dir is not None else resolved
+    trajectory_dir = resolved / "trajectory"
+    if trajectory_dir.is_symlink():
+        raise ValueError(
+            f"trajectory directory must not be a symlink: {trajectory_dir}"
+        )
+    trial_dir = resolved if trajectory_dir.is_dir() else None
+    payload_dir = trajectory_dir if trial_dir is not None else resolved
     entries = sorted(payload_dir.iterdir(), key=lambda item: item.name)
+    for item in entries:
+        if item.is_symlink() and item.suffix.casefold() == ".jsonl":
+            raise ValueError(f"trajectory file must not be a symlink: {item}")
     files = tuple(
         item
         for item in entries
-        if item.is_file() and item.suffix.casefold() == ".jsonl"
+        if not item.is_symlink()
+        and item.is_file()
+        and item.suffix.casefold() == ".jsonl"
     )
     ignored = tuple(
         item.name

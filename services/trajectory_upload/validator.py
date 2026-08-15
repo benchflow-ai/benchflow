@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from services.trajectory_upload.contract import ARTIFACT_NAME, MAX_MANIFEST_BYTES
+from services.trajectory_upload.contract import (
+    ARTIFACT_NAME,
+    MAX_ARTIFACT_BYTES,
+    MAX_MANIFEST_BYTES,
+)
 from services.trajectory_upload.validation import (
     CaptureRejected,
     ValidatedCapture,
@@ -76,13 +80,14 @@ class AzureCaptureValidator:
         if message is None:
             return False
         try:
-            prefix, digest, is_manifest = _capture_from_event(message.content)
+            prefix, digest, relname = _capture_from_event(message.content)
         except CaptureRejected as exc:
             logger.warning("discarding invalid validation event: %s", exc)
             self._delete_message(message)
             return True
 
-        if self._capture_status(digest) in {"ingested", "rejected"}:
+        status = self._capture_status(digest)
+        if status in {"ingested", "rejected"} or status is None:
             self._cleanup_prefix(prefix)
             self._delete_message(message)
             return True
@@ -90,7 +95,20 @@ class AzureCaptureValidator:
         # Artifacts arrive before the manifest. Their events keep the Job able
         # to clean terminal-state replays without treating an in-flight capture
         # as a prematurely committed upload.
-        if not is_manifest:
+        if relname != "manifest.json":
+            if status == "pending" and self._artifact_exceeds_limit(prefix + relname):
+                if self._claim_capture(digest):
+                    detail = f"artifact exceeds {MAX_ARTIFACT_BYTES} bytes: {relname}"
+                    logger.warning("capture %s rejected: %s", digest, detail)
+                    self._record_status(digest, "rejected", detail=detail)
+                    self._cleanup_prefix(prefix)
+                    self._delete_message(message)
+                else:
+                    status = self._capture_status(digest)
+                    if status in {"ingested", "rejected"} or status is None:
+                        self._cleanup_prefix(prefix)
+                        self._delete_message(message)
+                return True
             self._delete_message(message)
             return True
 
@@ -127,6 +145,15 @@ class AzureCaptureValidator:
             logger.info("capture %s promoted", digest)
         self._delete_message(message)
         return True
+
+    def _artifact_exceeds_limit(self, blob_name: str) -> bool:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        try:
+            properties = self.container.get_blob_client(blob_name).get_blob_properties()
+        except ResourceNotFoundError:
+            return False
+        return properties.size > MAX_ARTIFACT_BYTES
 
     def _download_and_validate(
         self, prefix: str, staging_dir: Path
@@ -250,7 +277,7 @@ class AzureCaptureValidator:
         self.queue.delete_message(message.id, message.pop_receipt)
 
 
-def _capture_from_event(content: str) -> tuple[str, str, bool]:
+def _capture_from_event(content: str) -> tuple[str, str, str]:
     # Event Grid's Storage Queue destination base64-encodes its JSON envelope;
     # accepting plain JSON as well keeps the parser usable with test and replay
     # tools that already decode queue messages.
@@ -277,10 +304,9 @@ def _capture_from_event(content: str) -> tuple[str, str, bool]:
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise CaptureRejected("event contains an invalid trajectory digest")
     relname = "/".join(parts[3:])
-    is_manifest = relname == "manifest.json"
-    if not is_manifest and ARTIFACT_NAME.fullmatch(relname) is None:
+    if relname != "manifest.json" and ARTIFACT_NAME.fullmatch(relname) is None:
         raise CaptureRejected("event is not for a declared capture object")
-    return f"inbox/{digest}/", digest, is_manifest
+    return f"inbox/{digest}/", digest, relname
 
 
 def _required_env(name: str) -> str:
