@@ -1,0 +1,31 @@
+{
+  "rules": [
+    {
+      "enabled": true,
+      "name": "expire-trajectory-inbox",
+      "type": "Lifecycle",
+      "definition": {
+        "actions": {
+          "baseBlob": {
+            "delete": {
+              "daysAfterModificationGreaterThan": 2
+            }
+          },
+          "version": {
+            "delete": {
+              "daysAfterCreationGreaterThan": 2
+            }
+          }
+        },
+        "filters": {
+          "blobTypes": [
+            "blockBlob"
+          ],
+          "prefixMatch": [
+            "bronze/inbox/"
+          ]
+        }
+      }
+    }
+  ]
+}

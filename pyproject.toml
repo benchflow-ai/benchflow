@@ -40,6 +40,20 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+azure = [
+    # Direct Azure Blob trajectory uploads (bench traj upload --direct).
+    # Broker-mode uploads need neither package.
+    "azure-storage-blob>=12.19",
+    "azure-identity>=1.16",
+]
+azure-service = [
+    # Dependencies baked into the public trajectory broker/validator image.
+    "azure-storage-blob>=12.19",
+    "azure-identity>=1.16",
+    "azure-data-tables>=12.5",
+    "azure-storage-queue>=12.9",
+    "uvicorn>=0.30",
+]
 dev = [
     "pre-commit>=3.7",
     # AgentCore's CodeBuild path must reproduce Docker's ignore rules in tests
