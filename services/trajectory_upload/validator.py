@@ -202,7 +202,6 @@ class AzureCaptureValidator:
     def _claim_capture(self, digest: str) -> bool:
         from azure.core import MatchConditions
         from azure.core.exceptions import ResourceModifiedError, ResourceNotFoundError
-        from azure.data.tables import UpdateMode
 
         now = datetime.now(UTC)
         try:
@@ -229,7 +228,7 @@ class AzureCaptureValidator:
         try:
             self.table.update_entity(
                 entity=claimed,
-                mode=UpdateMode.MERGE,
+                mode="merge",
                 etag=entity.metadata["etag"],
                 match_condition=MatchConditions.IfNotModified,
             )
