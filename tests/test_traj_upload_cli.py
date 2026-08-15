@@ -238,7 +238,7 @@ def test_validation_failure_names_the_bad_file(
     assert "line 1" in result.output
 
 
-@pytest.mark.parametrize("shape", ["unknown", "missing"])
+@pytest.mark.parametrize("shape", ["unknown", "missing", "insecure_url"])
 def test_broker_mapping_violation_sends_zero_puts(tmp_path: Path, shape: str) -> None:
     """A non-bijective broker response fails before any trajectory bytes leave."""
     trial = _trial(tmp_path)
@@ -249,8 +249,10 @@ def test_broker_mapping_violation_sends_zero_puts(tmp_path: Path, shape: str) ->
         payload = _broker_payload(request)
         if shape == "unknown":
             payload["objects"][0]["name"] = "trajectory/unknown.jsonl"
-        else:
+        elif shape == "missing":
             payload["objects"].pop()
+        else:
+            payload["objects"][0]["put_url"] = "http://upload.test/capture"
         return httpx.Response(200, json=payload)
 
     with (

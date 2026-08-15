@@ -165,6 +165,7 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
                 + json.dumps(
                     {
                         "nested": {"api_key": "prefixless"},
+                        "OPENAI_API_KEY": "another-prefixless-value",
                         "text": f"token={secret}",
                     }
                 )
@@ -178,12 +179,23 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
         assert payload.startswith(untouched)
         assert secret not in payload
         assert '"api_key":"[REDACTED]"' in payload
-        assert staged.redaction_replacements == 2
-        assert staged.manifest["redaction"] == {"applied": True, "replacements": 2}
+        assert "another-prefixless-value" not in payload
+        assert staged.redaction_replacements == 3
+        assert staged.manifest["redaction"] == {"applied": True, "replacements": 3}
 
     with stage_trajectory_capture(trial, source_id="demo", redact=False) as staged:
         assert secret in staged.files[0].local_path.read_text(encoding="utf-8")
         assert staged.manifest["redaction"] == {"applied": False, "replacements": 0}
+
+
+@pytest.mark.parametrize("source_id", ["../private", "team/../private", "team/./run"])
+def test_source_id_rejects_relative_path_segments(
+    tmp_path: Path, source_id: str
+) -> None:
+    """Direct upload labels cannot introduce relative-looking blob segments."""
+    trial = _trial(tmp_path)
+    with pytest.raises(ValueError, match="invalid source id"):
+        stage_trajectory_capture(trial, source_id=source_id).__enter__()
 
 
 def test_digest_manifest_and_metadata_are_transport_independent(tmp_path: Path) -> None:

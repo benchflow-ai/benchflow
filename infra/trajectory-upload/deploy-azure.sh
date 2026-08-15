@@ -16,6 +16,23 @@ task_repo_root="$(git rev-parse --show-toplevel)"
 task_image_tag="$(git rev-parse --short=12 HEAD)"
 task_image="${task_acr}.azurecr.io/trajectory-upload:${task_image_tag}"
 
+for task_provider in \
+    Microsoft.App \
+    Microsoft.ContainerRegistry \
+    Microsoft.EventGrid \
+    Microsoft.Insights \
+    Microsoft.ManagedIdentity \
+    Microsoft.OperationalInsights \
+    Microsoft.Storage; do
+    az provider register --namespace "$task_provider" --wait --output none
+done
+az extension add \
+    --name containerapp \
+    --upgrade \
+    --allow-preview true \
+    --yes \
+    --output none
+
 ensure_role_assignment() {
     local principal_id="$1"
     local role="$2"

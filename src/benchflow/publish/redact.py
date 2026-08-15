@@ -16,7 +16,12 @@ DENYLISTED_KEYS = frozenset(
         "api-key",
         "api_key",
         "apikey",
+        "cookie",
+        "credentials",
+        "private_key",
+        "set-cookie",
         "x-goog-api-key",
+        "aws_bearer_token_bedrock",
         "aws_secret_access_key",
         "access_token",
         "refresh_token",
@@ -72,7 +77,7 @@ def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int
 
     if not isinstance(value, str):
         return value, 0
-    if field_name is not None and field_name.casefold() in DENYLISTED_KEYS:
+    if field_name is not None and _is_sensitive_key(field_name):
         return (REDACTED, 1) if value != REDACTED else (value, 0)
 
     redacted_text = value
@@ -81,3 +86,10 @@ def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int
         redacted_text, count = pattern.subn(replacement, redacted_text)
         replacements += count
     return redacted_text, replacements
+
+
+def _is_sensitive_key(field_name: str) -> bool:
+    normalized = field_name.casefold()
+    return normalized in DENYLISTED_KEYS or normalized.endswith(
+        ("_api_key", "-api-key", "_secret", "-secret", "_password", "-password")
+    )

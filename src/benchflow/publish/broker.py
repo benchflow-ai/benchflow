@@ -6,6 +6,7 @@ import logging
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -139,8 +140,20 @@ def _validated_objects(
             "the staged files in canonical manifest-last order"
         )
     for item in objects:
-        if not isinstance(item.get("put_url"), str):
+        put_url = item.get("put_url")
+        if not isinstance(put_url, str):
             raise ValueError("trajectory broker protocol violation: missing put_url")
+        parsed_url = urlparse(put_url)
+        if (
+            parsed_url.scheme != "https"
+            or not parsed_url.hostname
+            or parsed_url.username is not None
+            or parsed_url.password is not None
+        ):
+            raise ValueError(
+                "trajectory broker protocol violation: put_url must be an "
+                "authenticated HTTPS URL"
+            )
         headers = item.get("headers")
         if not isinstance(headers, dict) or not all(
             isinstance(key, str) and isinstance(value, str)

@@ -62,7 +62,14 @@ def default_source_id(path: Path) -> str:
 def validate_source_id(source_id: str) -> str:
     """Validate and normalize a source id used in object names."""
     normalized = source_id.strip().strip("/")
-    if not SOURCE_ID_PATTERN.fullmatch(normalized) or "//" in normalized:
+    invalid_segment = any(
+        segment in {".", ".."} for segment in normalized.split("/")
+    )
+    if (
+        not SOURCE_ID_PATTERN.fullmatch(normalized)
+        or "//" in normalized
+        or invalid_segment
+    ):
         raise ValueError(
             "invalid source id; use --source-id with 1-128 letters, numbers, "
             "dots, underscores, hyphens, or single path separators"
