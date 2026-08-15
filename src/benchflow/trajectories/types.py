@@ -419,9 +419,16 @@ def redact_trajectory_text(text: str) -> str:
     forms; this includes generic ``*TOKEN*``/``*SECRET*`` carriers so a
     ``GITHUB_TOKEN=...`` env dump is scrubbed even without a known prefix.
     """
+    return redact_trajectory_text_with_count(text)[0]
+
+
+def redact_trajectory_text_with_count(text: str) -> tuple[str, int]:
+    """Apply the canonical patterns and report how many matches were replaced."""
+    replacements = 0
     for pattern, replacement in _REDACTION_PATTERNS:
-        text = pattern.sub(replacement, text)
-    return text
+        text, count = pattern.subn(replacement, text)
+        replacements += count
+    return text, replacements
 
 
 def redact_trajectory_obj(obj: Any) -> Any:

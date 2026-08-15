@@ -11,6 +11,7 @@ from types import ModuleType
 import pytest
 
 from benchflow.publish.azure_blob import upload_capture_direct
+from benchflow.publish.redact import redact_value
 from benchflow.publish.traj_capture import stage_trajectory_capture
 
 
@@ -139,6 +140,16 @@ def test_invalid_empty_and_oversize_inputs_fail_cleanly(
     with pytest.raises(ValueError, match=r"bad\.jsonl: line 1"):
         stage_trajectory_capture(malformed, source_id="demo").__enter__()
 
+    duplicate = tmp_path / "duplicate.jsonl"
+    duplicate.write_text('{"password":"live","password":"[REDACTED]"}\n')
+    with pytest.raises(ValueError, match="duplicate JSON object key"):
+        stage_trajectory_capture(duplicate, source_id="demo").__enter__()
+
+    non_finite = tmp_path / "non-finite.jsonl"
+    non_finite.write_text('{"reward":NaN}\n')
+    with pytest.raises(ValueError, match="non-finite JSON number"):
+        stage_trajectory_capture(non_finite, source_id="demo").__enter__()
+
     empty = tmp_path / "empty.jsonl"
     empty.write_text("", encoding="utf-8")
     with pytest.raises(ValueError, match="empty"):
@@ -214,6 +225,54 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
     with stage_trajectory_capture(trial, source_id="demo", redact=False) as staged:
         assert secret in staged.files[0].local_path.read_text(encoding="utf-8")
         assert staged.manifest["redaction"] == {"applied": False, "replacements": 0}
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "dtn_1234567890abcdefghijklmnop",
+        "gsk_1234567890abcdefghijklmnop",
+        "xai-1234567890abcdefghijklmnop",
+        "r8_1234567890abcdefghijklmnop",
+        "hf_1234567890abcdefghijklmnop",
+        "fw_1234567890abcdefghijklmnop",
+        "eyJabcdefghij.abcdef.abcdefghijklmnopqrst",
+    ],
+)
+def test_contribution_redactor_covers_canonical_credential_families(token: str) -> None:
+    """Guards PR #989 by sharing BenchFlow's established credential families."""
+    redacted, replacements = redact_value({"output": token})
+
+    assert token not in redacted["output"]
+    assert replacements == 1
+
+
+def test_contribution_redactor_preserves_kebab_case_sk_identifiers() -> None:
+    """Guards PR #989 against corrupting ordinary sk-prefixed task identifiers."""
+    value = {"output": "task-sk-us-east-1-refactor-auth"}
+
+    assert redact_value(value) == (value, 0)
+
+
+def test_manifest_free_text_is_redacted_and_counted(tmp_path: Path) -> None:
+    """Guards PR #989 against leaking contributor and run metadata."""
+    token = "dtn_1234567890abcdefghijklmnop"
+    trial = _trial(tmp_path)
+    (trial / "result.json").write_text(
+        json.dumps({"model": token}),
+        encoding="utf-8",
+    )
+
+    with stage_trajectory_capture(
+        trial,
+        source_id="demo",
+        uploaded_by=token,
+    ) as staged:
+        assert staged.manifest["uploaded_by"] == "***REDACTED***"
+        assert staged.manifest["run"]["model"] == "***REDACTED***"
+        assert staged.manifest["redaction"]["replacements"] == 2
+        assert staged.redaction_replacements == 2
+        assert token not in staged.files[-1].local_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("source_id", ["../private", "team/../private", "team/./run"])

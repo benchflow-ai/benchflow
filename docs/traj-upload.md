@@ -8,9 +8,10 @@ bench traj upload path/to/trial
 ```
 
 `path/to/trial` may be a trial directory containing `trajectory/`, a directory
-of JSONL files, or one JSONL file. BenchFlow validates every line as JSON,
-structurally redacts credential-bearing keys and secret-like values, computes a
-content digest, and uploads a manifest last. Use `--dry-run` to inspect the
+of JSONL files, or one JSONL file. BenchFlow rejects duplicate object keys and
+non-finite numbers, structurally redacts credential-bearing keys and secret-like
+values in both artifacts and manifest metadata, computes a content digest, and
+uploads a manifest last. Use `--dry-run` to inspect the
 staged file list, digest, sizes, ignored siblings, and redaction count without
 making a network request.
 
@@ -26,8 +27,8 @@ The broker issues short-lived user-delegation SAS URLs scoped to create
 one expected blob at a time; they do not grant list, read, or delete access.
 An Event Grid-triggered validator independently checks the manifest contract,
 the 8 MiB per-record JSONL bound and structural complexity limits,
-allowlisted object names, byte sizes, SHA-256 hashes, JSONL syntax, and a final
-secret scan. Only then does it copy artifacts into the immutable
+allowlisted object names, byte sizes, SHA-256 hashes, strict JSONL syntax, and
+final artifact and manifest secret scans. Only then does it copy artifacts into the immutable
 `sources/community/<digest>/` namespace, with `manifest.json` as the commit
 marker. Failed captures are removed from the live quarantine namespace and are
 never promoted. Blob versioning and lifecycle policy bound recovery and

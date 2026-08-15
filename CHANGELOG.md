@@ -8,7 +8,8 @@
   and uploads through the built-in public broker. Azure Blob quarantine,
   versioning, short-lived create-only user-delegation SAS grants, and an
   event-driven fail-closed validator keep untrusted captures out of the
-  community namespace until hashes, sizes, JSONL, and secret scans pass.
+  community namespace until hashes, sizes, strict JSONL (including duplicate-key
+  and non-finite-number rejection), and artifact/manifest secret scans pass.
   Replaying an ingested digest is a no-op; trusted operators can opt into direct
   Azure upload with the `azure` extra and `--direct`.
 

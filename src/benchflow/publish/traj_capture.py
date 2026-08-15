@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 from benchflow import __version__
 from benchflow.publish.redact import redact_value
@@ -22,6 +22,28 @@ MAX_JSONL_RECORD_BYTES = 8 * 1024**2
 MAX_JSON_NESTING = 100
 MAX_JSON_NODES = 100_000
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in parsed:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        parsed[key] = item
+    return parsed
+
+
+def _reject_non_finite_json(constant: str) -> Never:
+    raise ValueError(f"non-finite JSON number: {constant}")
+
+
+def strict_json_loads(value: str | bytes) -> Any:
+    """Parse standards-compliant JSON while rejecting ambiguous object keys."""
+    return json.loads(
+        value,
+        object_pairs_hook=_reject_duplicate_json_keys,
+        parse_constant=_reject_non_finite_json,
+    )
 
 
 @dataclass(frozen=True)
@@ -114,9 +136,16 @@ def stage_trajectory_capture(
             redact=redact,
             replacement_count=replacement_count,
         )
+        if redact:
+            redacted_manifest, manifest_replacements = redact_value(manifest)
+            if redacted_manifest["source_id"] != manifest["source_id"]:
+                raise ValueError("source id contains a secret-like value")
+            replacement_count += manifest_replacements
+            redacted_manifest["redaction"]["replacements"] = replacement_count
+            manifest = redacted_manifest
         manifest_path = staging_dir / "manifest.json"
         manifest_path.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
         manifest_file = _staged_file(
@@ -188,8 +217,8 @@ def _validate_jsonl(path: Path) -> None:
             if not line.strip():
                 continue
             try:
-                value = json.loads(line)
-            except (json.JSONDecodeError, RecursionError) as exc:
+                value = strict_json_loads(line)
+            except (RecursionError, ValueError) as exc:
                 raise ValueError(
                     f"{path}: line {line_number}: invalid JSON: {exc}"
                 ) from exc
@@ -217,7 +246,7 @@ def _redact_jsonl(source: Path, target: Path) -> int:
             if not body.strip():
                 output_stream.write(line)
                 continue
-            value = json.loads(body)
+            value = strict_json_loads(body)
             try:
                 redacted, count = redact_value(value)
             except RecursionError as exc:  # defense in depth after complexity gate
@@ -338,8 +367,8 @@ def _load_run_metadata(metadata_dir: Path | None) -> dict[str, Any]:
 
 def _read_object(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        value = strict_json_loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
 

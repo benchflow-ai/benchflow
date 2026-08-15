@@ -6,6 +6,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
 
+from benchflow.trajectories.types import redact_trajectory_text_with_count
+
 REDACTED = "[REDACTED]"
 
 DENYLISTED_KEYS = frozenset(
@@ -38,16 +40,12 @@ class RedactionPattern(NamedTuple):
 
 
 VALUE_PATTERNS = (
-    RedactionPattern(re.compile(r"sk-[A-Za-z0-9_-]{16,}"), REDACTED),
-    RedactionPattern(re.compile(r"AIza[0-9A-Za-z_-]{35}"), REDACTED),
-    RedactionPattern(re.compile(r"AQ\.[0-9A-Za-z_-]{20,}"), REDACTED),
-    RedactionPattern(re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"), REDACTED),
-    RedactionPattern(re.compile(r"ghp_[A-Za-z0-9]{36,}"), REDACTED),
-    RedactionPattern(re.compile(r"github_pat_[A-Za-z0-9_]{22,}"), REDACTED),
-    RedactionPattern(re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), REDACTED),
+    # Google AI Studio's newer token format is not covered by the canonical
+    # trajectory redactor yet.
+    RedactionPattern(re.compile(r"AQ\.[0-9A-Za-z_-]{20,}"), "***REDACTED***"),
     RedactionPattern(
         re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{16,}", re.IGNORECASE),
-        f"Bearer {REDACTED}",
+        "Bearer ***REDACTED***",
     ),
 )
 
@@ -81,8 +79,7 @@ def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int
     if not isinstance(value, str):
         return value, 0
 
-    redacted_text = value
-    replacements = 0
+    redacted_text, replacements = redact_trajectory_text_with_count(value)
     for pattern, replacement in VALUE_PATTERNS:
         redacted_text, count = pattern.subn(replacement, redacted_text)
         replacements += count

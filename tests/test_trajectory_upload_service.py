@@ -275,6 +275,39 @@ def test_validator_recomputes_bytes_jsonl_and_secret_scan(tmp_path: Path) -> Non
         _validate_and_scan_jsonl(aws_session_key, "trajectory/aws-session.jsonl")
 
 
+@pytest.mark.parametrize(
+    "record, message",
+    [
+        ('{"password":"live","password":"[REDACTED]"}\n', "duplicate JSON"),
+        ('{"reward":NaN}\n', "non-finite JSON"),
+        ('{"reward":Infinity}\n', "non-finite JSON"),
+        ('{"reward":-Infinity}\n', "non-finite JSON"),
+    ],
+)
+def test_validator_rejects_ambiguous_or_nonstandard_json(
+    tmp_path: Path, record: str, message: str
+) -> None:
+    """Guards PR #989 against duplicate keys and non-finite JSON numbers."""
+    artifact = tmp_path / "strict.jsonl"
+    artifact.write_text(record, encoding="utf-8")
+
+    with pytest.raises(CaptureRejected, match=message):
+        _validate_and_scan_jsonl(artifact, "trajectory/strict.jsonl")
+
+
+def test_validator_scans_manifest_strings_before_artifacts(tmp_path: Path) -> None:
+    """Guards PR #989 against secrets in contributor and run metadata."""
+    trial = _trial(tmp_path)
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        manifest = dict(staged.manifest)
+        manifest["uploaded_by"] = "dtn_1234567890abcdefghijklmnop"
+        manifest_bytes = json.dumps(manifest).encode()
+        paths = {item.relname: item.local_path for item in staged.files[:-1]}
+
+        with pytest.raises(CaptureRejected, match="manifest contains a secret-like"):
+            validate_local_capture(manifest_bytes, paths)
+
+
 def test_validator_bounds_record_bytes_and_complexity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

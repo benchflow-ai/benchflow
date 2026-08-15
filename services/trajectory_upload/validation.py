@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from pathlib import Path
-
-from pydantic import ValidationError
 
 from benchflow.publish.redact import redact_value
 from benchflow.publish.traj_capture import (
     MAX_JSONL_RECORD_BYTES,
+    strict_json_loads,
     validate_json_complexity,
 )
 from services.trajectory_upload.contract import (
@@ -61,15 +59,18 @@ def validate_manifest_bytes(manifest_bytes: bytes) -> ContributionManifest:
     if len(manifest_bytes) > MAX_MANIFEST_BYTES:
         raise CaptureRejected("manifest exceeds the 1 MiB limit")
     try:
-        raw_manifest = json.loads(manifest_bytes)
+        raw_manifest = strict_json_loads(manifest_bytes)
         manifest = ContributionManifest.model_validate(raw_manifest)
-    except (
-        UnicodeDecodeError,
-        json.JSONDecodeError,
-        RecursionError,
-        ValidationError,
-    ) as exc:
+    except (UnicodeDecodeError, RecursionError, ValueError) as exc:
         raise CaptureRejected(f"invalid manifest: {exc}") from exc
+    try:
+        _, replacements = redact_value(raw_manifest)
+    except RecursionError as exc:
+        raise CaptureRejected(
+            "invalid manifest: JSON nesting exceeds the limit"
+        ) from exc
+    if replacements:
+        raise CaptureRejected("manifest contains a secret-like value")
     return manifest
 
 
@@ -93,8 +94,8 @@ def _validate_and_scan_jsonl(path: Path, relname: str) -> None:
             if not line.strip():
                 continue
             try:
-                record = json.loads(line)
-            except (json.JSONDecodeError, RecursionError) as exc:
+                record = strict_json_loads(line)
+            except (RecursionError, ValueError) as exc:
                 raise CaptureRejected(
                     f"{relname}: line {line_number}: invalid JSON: {exc}"
                 ) from exc
