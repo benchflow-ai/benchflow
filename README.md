@@ -64,6 +64,27 @@ subscription auth (`claude auth login` / `codex login`). Provider-prefixed model
 may need provider-specific credentials; Azure Foundry uses `AZURE_API_KEY` +
 `AZURE_API_ENDPOINT`.
 
+## Upload trajectories
+
+Anyone can contribute completed trajectories through the public service; no
+Azure account or API key is required. Run one command per capture:
+
+```bash
+# Install or upgrade the latest stable CLI
+uv tool install --python 3.12 --upgrade benchflow
+
+# Upload each capture
+bench traj upload /path/to/traj-1 --github-id YOUR_GITHUB_ID --email YOU@example.com
+bench traj upload /path/to/traj-2 --github-id YOUR_GITHUB_ID --email YOU@example.com
+bench traj upload /path/to/traj-3 --github-id YOUR_GITHUB_ID --email YOU@example.com
+```
+
+Both contributor fields are required and are stored under `contributor` in the
+uploaded `manifest.json`. A path may be a trial directory, a directory of JSONL
+files, or one JSONL file. See the concise
+[upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md) for agent use and
+[trajectory upload guide](./docs/traj-upload.md) for privacy and security details.
+
 ## Documentation
 
 Start with [Getting started](./docs/getting-started.md), then [Concepts](./docs/concepts.md) for the mental model. Prefer to have an AI coding agent run the whole quickstart for you? Paste the [agent quickstart prompt](./docs/agent-quickstart.md) into Claude Code, Codex CLI, or Gemini CLI. Then by goal:
