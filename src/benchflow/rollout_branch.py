@@ -28,7 +28,8 @@ value land on the right node.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import logging
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -37,15 +38,35 @@ from benchflow.branch import checkpoint as _checkpoint_branch
 from benchflow.branch import checkpoint_composed as _checkpoint_composed
 from benchflow.branch import restore as _restore_branch
 from benchflow.branch import restore_composed as _restore_composed
+from benchflow.branch_delta import BranchDelta
+from benchflow.branch_lineage import write_branch_artifacts
 from benchflow.models import TrajectorySource
 from benchflow.trajectories.tree import RolloutNode
 
 if TYPE_CHECKING:
     from benchflow.rollout import Rollout
 
+logger = logging.getLogger(__name__)
+
 # The checkpoint layers a branch can compose (RFC §3.1). Agent-session is
 # layer three and explicitly out of scope for v1.
 _SNAPSHOT_LAYERS = frozenset({"environment", "sandbox"})
+
+# The BranchDelta fields the v1 engine executes vs records-only. Only
+# ``injected_prompt`` executes today; the rest exist in the schema and
+# provenance so the artifact format is stable, and fail closed here.
+_UNSUPPORTED_DELTA_FIELDS = ("environment_ref", "config_override", "skill_mode")
+
+
+class BranchDeltaNotSupported(NotImplementedError):
+    """A BranchDelta field the v1 branch engine cannot execute (fail closed).
+
+    ``environment_ref``, ``config_override`` and ``skill_mode`` are schema-
+    and provenance-stable now but execute only in the RFC follow-on
+    (child-as-fresh-rollout via ``use_prebuilt_env``). Until then a branch
+    request naming them fails closed here — before any child runs — rather
+    than running a child that silently ignores its delta.
+    """
 
 # The per-child runner: given the child's branch node, run its continuation and
 # return the scalar return. No ``int`` index — a caller that needs per-child
@@ -110,6 +131,7 @@ async def branch(
     *,
     require_sandbox_snapshot: bool = False,
     snapshot_layers: frozenset[str] | set[str] = frozenset({"environment"}),
+    deltas: Sequence[BranchDelta | None] | None = None,
 ) -> float:
     """Branch ``rollout`` at its cursor into ``n`` child continuations.
 
@@ -143,8 +165,21 @@ async def branch(
     Missing capability on any requested layer fails closed before anything is
     snapshotted.
 
+    ``deltas`` records the exactly-one-controlled-change each child runs
+    under (RFC §3.3) — one :class:`BranchDelta` (or ``None`` = zero delta)
+    per child, validated before anything runs. v1 executes
+    ``injected_prompt`` only: it becomes the child's continuation prompt,
+    delivered as the child's user-visible first message through the default
+    runner and recorded in provenance as a content hash. The other fields
+    (``environment_ref``, ``config_override``, ``skill_mode``) raise
+    :class:`BranchDeltaNotSupported` — fail closed before any child runs —
+    until the child-as-fresh-rollout follow-on executes them.
+
     After this returns, ``rollout``'s linear state is exactly what it was
-    before — the tree gained ``n`` children at the cursor, nothing else moved.
+    before — the tree gained ``n`` children at the cursor, nothing else
+    moved; when the rollout knows its run directory, the branch also leaves
+    lineage artifacts (``tree.json``, ``children/<index>/``), with any
+    artifact-write failure logged and isolated from the branch result.
     """
     layers = frozenset(snapshot_layers)
     unknown = layers - _SNAPSHOT_LAYERS
@@ -165,6 +200,37 @@ async def branch(
         )
     if n < 2:
         raise ValueError(f"a branch forks into >= 2 children, got n={n}")
+
+    # Validate the whole delta vector before anything runs — a bad or
+    # not-yet-executable delta fails closed with nothing quiesced,
+    # checkpointed, or run.
+    if deltas is not None:
+        if len(deltas) != n:
+            raise ValueError(
+                f"deltas must carry exactly one entry per child: got "
+                f"{len(deltas)} deltas for n={n}"
+            )
+        for index, delta in enumerate(deltas):
+            if delta is None:
+                continue
+            for field_name in _UNSUPPORTED_DELTA_FIELDS:
+                if getattr(delta, field_name) is not None:
+                    raise BranchDeltaNotSupported(
+                        f"deltas[{index}].{field_name} is set, but the v1 "
+                        "branch engine executes injected_prompt only — "
+                        f"{field_name!r} runs in the rollout-branching RFC "
+                        "follow-on (child-as-fresh-rollout via "
+                        "use_prebuilt_env). The field is already recorded in "
+                        "the schema and provenance; drop it to branch today."
+                    )
+            if delta.injected_prompt is not None and run_child is not None:
+                raise ValueError(
+                    f"deltas[{index}].injected_prompt cannot be combined "
+                    "with an explicit run_child — the caller's runner owns "
+                    "the child's prompts. Bind the prompt into the "
+                    "run_child closure, or drop run_child so the default "
+                    "runner delivers it."
+                )
 
     # Fail closed when the run requires the container checkpoint layer but the
     # sandbox cannot snapshot it (#384). The Branch lifecycle composes
@@ -226,11 +292,13 @@ async def branch(
     # restore of this; the parent is restored to it at the end.
     saved = _LinearState.capture(rollout)
 
-    for _ in range(n):
+    children: list[RolloutNode] = []
+    for index in range(n):
         # Attach a *pending* branch-child node — its real continuation Step is
         # filled in place by the child's first execute(), so the child's work
         # lands on the child node, not a descendant placeholder.
         child = rollout._tree.attach(parent)
+        children.append(child)
 
         # restore the checkpointed layers (sandbox first, then env — the
         # reverse of checkpoint order), reset the parent's linear state, and
@@ -242,7 +310,18 @@ async def branch(
         saved.restore_onto(rollout)
         rollout._cursor = child
 
-        ret = await runner(child)
+        # An injected-prompt delta binds the child's continuation prompt into
+        # a per-child default runner — the formalized version of the caller's
+        # per-child-prompt closure (validated above to not combine with an
+        # explicit run_child).
+        delta = deltas[index] if deltas is not None else None
+        child_runner = runner
+        if run_child is None and delta is not None and delta.injected_prompt is not None:
+            child_runner = make_default_runner(
+                rollout, prompts=[delta.injected_prompt]
+            )
+
+        ret = await child_runner(child)
         child.state["reward"] = float(ret)
 
     # restore the parent's linear state — the tree grew, nothing else moved.
@@ -252,10 +331,33 @@ async def branch(
     value = _aggregate_branch(parent)
     parent.state["value"] = value
     rollout._phase = "branched"
+
+    # Lineage artifacts (RFC §3.4) — written only when the rollout knows its
+    # run directory, and failure-isolated: an artifact-write error is logged
+    # and never corrupts the branch result.
+    run_dir = getattr(rollout, "_rollout_dir", None)
+    if run_dir is not None:
+        try:
+            write_branch_artifacts(
+                run_dir=run_dir,
+                tree=rollout._tree,
+                parent=parent,
+                children=children,
+                deltas=deltas,
+            )
+        except Exception:
+            logger.warning(
+                "branch lineage artifact write under %s failed — the branch "
+                "result is unaffected",
+                run_dir,
+                exc_info=True,
+            )
     return value
 
 
-def make_default_runner(rollout: Rollout) -> ChildRunner:
+def make_default_runner(
+    rollout: Rollout, *, prompts: list[str] | None = None
+) -> ChildRunner:
     """Build the default per-child runner bound to ``rollout``.
 
     The default runner re-runs the child from the parent's env checkpoint with
@@ -265,13 +367,18 @@ def make_default_runner(rollout: Rollout) -> ChildRunner:
     no two children's agents overlap (the next child connects only after the
     previous one disconnected). ``verify()`` returning ``None`` or an empty
     dict falls back to a ``0.0`` return.
+
+    ``prompts`` — the child's continuation prompts; ``None`` keeps the
+    rollout's resolved prompts. An ``injected_prompt`` delta (RFC §3.3) binds
+    here, so the injection is the child's user-visible first message — never
+    silently merged into other prompt content (#908).
     """
 
     async def _runner(child: RolloutNode) -> float:
         await rollout.connect()
         # Fill the pending branch-child node in place — the continuation Step
         # lands on `child` itself, no content-free placeholder.
-        await rollout.execute(node=child)
+        await rollout.execute(prompts, node=child)
         rewards = await rollout.verify()
         await rollout.disconnect()
         if not rewards:
