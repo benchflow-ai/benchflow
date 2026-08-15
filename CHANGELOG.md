@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.6.9 — 2026-08-15
+
 ### Changed
 - **Trajectory uploads require contributor provenance.** The single
   `bench traj upload` command now requires `--github-id` and `--email`; both
