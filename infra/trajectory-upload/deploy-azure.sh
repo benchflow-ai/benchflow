@@ -161,6 +161,42 @@ ensure_role_assignment "$task_validator_principal_id" "Storage Queue Data Messag
 ensure_role_assignment "$task_validator_principal_id" "Storage Table Data Contributor" "$task_table_scope"
 ensure_role_assignment "$task_validator_principal_id" "AcrPull" "$task_acr_id"
 
+# Event Grid needs an identity on the parent system topic before an event
+# subscription can use managed-identity delivery. Creating a subscription
+# directly on the storage source produces an identity-less implicit topic.
+task_system_topic="$(az eventgrid system-topic list \
+    --resource-group "$task_rg" \
+    --query '[0].name' -o tsv)"
+if [[ -z "$task_system_topic" ]]; then
+    task_system_topic="trajectory-storage-events"
+    az eventgrid system-topic create \
+        --resource-group "$task_rg" \
+        --name "$task_system_topic" \
+        --location "$task_location" \
+        --topic-type microsoft.storage.storageaccounts \
+        --source "$task_storage_id" \
+        --identity systemassigned \
+        --output none
+else
+    az eventgrid system-topic update \
+        --resource-group "$task_rg" \
+        --name "$task_system_topic" \
+        --identity systemassigned \
+        --output none
+fi
+task_system_topic_id="$(az eventgrid system-topic show \
+    --resource-group "$task_rg" \
+    --name "$task_system_topic" \
+    --query id -o tsv)"
+task_system_topic_principal_id="$(az eventgrid system-topic show \
+    --resource-group "$task_rg" \
+    --name "$task_system_topic" \
+    --query identity.principalId -o tsv)"
+ensure_role_assignment \
+    "$task_system_topic_principal_id" \
+    "Storage Queue Data Message Sender" \
+    "$task_storage_id"
+
 az acr build \
     --registry "$task_acr" \
     --image "trajectory-upload:${task_image_tag}" \
@@ -240,29 +276,14 @@ az containerapp job create \
     --output none
 
 task_event_name="trajectory-manifest-created"
-task_event_exists="$(az eventgrid event-subscription show \
-    --name "$task_event_name" \
-    --source-resource-id "$task_storage_id" \
-    --query name -o tsv 2>/dev/null || true)"
-if [[ -z "$task_event_exists" ]]; then
-    az eventgrid event-subscription create \
-        --name "$task_event_name" \
-        --source-resource-id "$task_storage_id" \
-        --included-event-types Microsoft.Storage.BlobCreated \
-        --subject-begins-with "/blobServices/default/containers/bronze/blobs/inbox/" \
-        --subject-ends-with "manifest.json" \
-        --delivery-identity systemassigned \
-        --delivery-identity-endpoint-type storagequeue \
-        --delivery-identity-endpoint "$task_queue_scope" \
-        --max-delivery-attempts 30 \
-        --event-ttl 1440 \
-        --output none
-fi
-task_event_principal_id="$(az eventgrid event-subscription show \
-    --name "$task_event_name" \
-    --source-resource-id "$task_storage_id" \
-    --query deliveryWithResourceIdentity.identity.principalId -o tsv)"
-ensure_role_assignment "$task_event_principal_id" "Storage Queue Data Message Sender" "$task_queue_scope"
+task_event_body="$(jq -n \
+    --arg storage "$task_storage_id" \
+    '{properties:{deliveryWithResourceIdentity:{identity:{type:"SystemAssigned"},destination:{endpointType:"StorageQueue",properties:{resourceId:$storage,queueName:"trajectory-validation",queueMessageTimeToLiveInSeconds:604800}}},filter:{isSubjectCaseSensitive:false,subjectBeginsWith:"/blobServices/default/containers/bronze/blobs/inbox/",subjectEndsWith:"manifest.json",includedEventTypes:["Microsoft.Storage.BlobCreated"]},retryPolicy:{maxDeliveryAttempts:30,eventTimeToLiveInMinutes:1440},eventDeliverySchema:"EventGridSchema"}}')"
+az rest \
+    --method put \
+    --url "https://management.azure.com${task_system_topic_id}/eventSubscriptions/${task_event_name}?api-version=2025-02-15" \
+    --body "$task_event_body" \
+    --output none
 
 az storage account update \
     --name "$task_storage" \

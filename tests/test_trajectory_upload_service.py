@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from benchflow.publish.traj_capture import stage_trajectory_capture
+from services.trajectory_upload.azure_backend import AzureUploadBroker
 from services.trajectory_upload.broker_app import (
     AlreadyUploaded,
     RateLimited,
@@ -64,6 +65,22 @@ class FakeBroker:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+def test_first_delegation_key_request_does_not_underflow() -> None:
+    """Guards the live Azure fix against the underflow in commit 158ef108."""
+    blob_service = SimpleNamespace(
+        get_user_delegation_key=lambda **_kwargs: "delegation-key"
+    )
+    backend = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=SimpleNamespace(),
+        blob_service=blob_service,
+        ip_hash_key=b"test",
+    )
+
+    assert backend._user_delegation_key(datetime.now(UTC)) == "delegation-key"
 
 
 def test_upload_contract_recomputes_digest_and_rejects_object_injection(

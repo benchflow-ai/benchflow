@@ -161,7 +161,10 @@ class AzureUploadBroker:
         )
 
     def _user_delegation_key(self, now: datetime):
-        if now < self._delegation_key_expires - timedelta(minutes=10):
+        if (
+            self._delegation_key is not None
+            and now < self._delegation_key_expires - timedelta(minutes=10)
+        ):
             return self._delegation_key
         self._delegation_key_expires = now + timedelta(hours=1)
         self._delegation_key = self.blob_service.get_user_delegation_key(
