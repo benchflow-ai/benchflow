@@ -81,7 +81,11 @@ class ToolInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: Literal["benchflow"]
-    version: str = Field(min_length=1, max_length=64)
+    version: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$",
+    )
 
 
 Scalar = str | int | float | bool | None

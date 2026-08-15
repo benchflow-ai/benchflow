@@ -41,7 +41,7 @@ VALUE_PATTERNS = (
     RedactionPattern(re.compile(r"sk-[A-Za-z0-9_-]{16,}"), REDACTED),
     RedactionPattern(re.compile(r"AIza[0-9A-Za-z_-]{35}"), REDACTED),
     RedactionPattern(re.compile(r"AQ\.[0-9A-Za-z_-]{20,}"), REDACTED),
-    RedactionPattern(re.compile(r"AKIA[0-9A-Z]{16}"), REDACTED),
+    RedactionPattern(re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"), REDACTED),
     RedactionPattern(re.compile(r"ghp_[A-Za-z0-9]{36,}"), REDACTED),
     RedactionPattern(re.compile(r"github_pat_[A-Za-z0-9_]{22,}"), REDACTED),
     RedactionPattern(re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), REDACTED),

@@ -10,6 +10,10 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from benchflow.publish.redact import redact_value
+from benchflow.publish.traj_capture import (
+    MAX_JSONL_RECORD_BYTES,
+    validate_json_complexity,
+)
 from services.trajectory_upload.contract import (
     MAX_MANIFEST_BYTES,
     ContributionManifest,
@@ -71,25 +75,44 @@ def validate_manifest_bytes(manifest_bytes: bytes) -> ContributionManifest:
 
 def _validate_and_scan_jsonl(path: Path, relname: str) -> None:
     records = 0
-    try:
-        with path.open(encoding="utf-8") as stream:
-            for line_number, line in enumerate(stream, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise CaptureRejected(
-                        f"{relname}: line {line_number}: invalid JSON: {exc}"
-                    ) from exc
-                if not isinstance(record, dict):
-                    raise CaptureRejected(
-                        f"{relname}: line {line_number}: top-level record must be an object"
-                    )
+    with path.open("rb") as stream:
+        line_number = 0
+        while line_bytes := stream.readline(MAX_JSONL_RECORD_BYTES + 1):
+            line_number += 1
+            if len(line_bytes) > MAX_JSONL_RECORD_BYTES:
+                raise CaptureRejected(
+                    f"{relname}: line {line_number}: JSONL record exceeds "
+                    f"{MAX_JSONL_RECORD_BYTES} bytes"
+                )
+            try:
+                line = line_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise CaptureRejected(
+                    f"{relname}: trajectory JSONL must be UTF-8"
+                ) from exc
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, RecursionError) as exc:
+                raise CaptureRejected(
+                    f"{relname}: line {line_number}: invalid JSON: {exc}"
+                ) from exc
+            if not isinstance(record, dict):
+                raise CaptureRejected(
+                    f"{relname}: line {line_number}: top-level record must be an object"
+                )
+            try:
+                validate_json_complexity(record)
+            except ValueError as exc:
+                raise CaptureRejected(f"{relname}: line {line_number}: {exc}") from exc
+            try:
                 _reject_secrets(record, relname, line_number)
-                records += 1
-    except UnicodeDecodeError as exc:
-        raise CaptureRejected(f"{relname}: trajectory JSONL must be UTF-8") from exc
+            except RecursionError as exc:  # defense in depth after complexity gate
+                raise CaptureRejected(
+                    f"{relname}: line {line_number}: JSON nesting exceeds the limit"
+                ) from exc
+            records += 1
     if records == 0:
         raise CaptureRejected(f"{relname}: trajectory JSONL has no records")
 

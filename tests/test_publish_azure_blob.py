@@ -151,6 +151,21 @@ def test_invalid_empty_and_oversize_inputs_fail_cleanly(
 
     import benchflow.publish.traj_capture as capture_module
 
+    bounded = tmp_path / "bounded.jsonl"
+    bounded.write_text(json.dumps({"text": "x" * 64}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(capture_module, "MAX_JSONL_RECORD_BYTES", 32)
+    with pytest.raises(ValueError, match="JSONL record exceeds"):
+        stage_trajectory_capture(bounded, source_id="demo").__enter__()
+
+    nested: object = "leaf"
+    for _ in range(101):
+        nested = {"child": nested}
+    deeply_nested = tmp_path / "deeply-nested.jsonl"
+    deeply_nested.write_text(json.dumps(nested) + "\n", encoding="utf-8")
+    monkeypatch.setattr(capture_module, "MAX_JSONL_RECORD_BYTES", 8 * 1024**2)
+    with pytest.raises(ValueError, match="JSON nesting exceeds"):
+        stage_trajectory_capture(deeply_nested, source_id="demo").__enter__()
+
     monkeypatch.setattr(capture_module, "MAX_FILE_BYTES", 1)
     with pytest.raises(ValueError, match="exceeds"):
         stage_trajectory_capture(malformed, source_id="demo").__enter__()
@@ -174,6 +189,7 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
                         "credentials": {"token": "opaque-object-secret"},
                         "secret": ["opaque-list-secret"],
                         "password": 123456,
+                        "aws_session_key": "ASIAQWERTYUIOPASDFGH",
                         "text": f"token={secret}",
                     }
                 )
@@ -189,10 +205,11 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
         assert "opaque-object-secret" not in payload
         assert "opaque-list-secret" not in payload
         assert "123456" not in payload
+        assert "ASIAQWERTYUIOPASDFGH" not in payload
         assert '"api_key":"[REDACTED]"' in payload
         assert "another-prefixless-value" not in payload
-        assert staged.redaction_replacements == 6
-        assert staged.manifest["redaction"] == {"applied": True, "replacements": 6}
+        assert staged.redaction_replacements == 7
+        assert staged.manifest["redaction"] == {"applied": True, "replacements": 7}
 
     with stage_trajectory_capture(trial, source_id="demo", redact=False) as staged:
         assert secret in staged.files[0].local_path.read_text(encoding="utf-8")

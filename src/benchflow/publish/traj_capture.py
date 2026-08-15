@@ -18,6 +18,9 @@ from benchflow import __version__
 from benchflow.publish.redact import redact_value
 
 MAX_FILE_BYTES = 128 * 1024**2
+MAX_JSONL_RECORD_BYTES = 8 * 1024**2
+MAX_JSON_NESTING = 100
+MAX_JSON_NODES = 100_000
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 
 
@@ -167,24 +170,38 @@ def _validate_jsonl(path: Path) -> None:
     if size == 0:
         raise ValueError(f"trajectory JSONL is empty: {path}")
     records = 0
-    try:
-        with path.open(encoding="utf-8") as stream:
-            for line_number, line in enumerate(stream, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    value = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"{path}: line {line_number}: invalid JSON: {exc}"
-                    ) from exc
-                if not isinstance(value, dict):
-                    raise ValueError(
-                        f"{path}: line {line_number}: top-level record must be an object"
-                    )
-                records += 1
-    except UnicodeDecodeError as exc:
-        raise ValueError(f"{path}: trajectory JSONL must be UTF-8: {exc}") from exc
+    with path.open("rb") as stream:
+        line_number = 0
+        while line_bytes := stream.readline(MAX_JSONL_RECORD_BYTES + 1):
+            line_number += 1
+            if len(line_bytes) > MAX_JSONL_RECORD_BYTES:
+                raise ValueError(
+                    f"{path}: line {line_number}: JSONL record exceeds "
+                    f"{MAX_JSONL_RECORD_BYTES} bytes"
+                )
+            try:
+                line = line_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(
+                    f"{path}: trajectory JSONL must be UTF-8: {exc}"
+                ) from exc
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except (json.JSONDecodeError, RecursionError) as exc:
+                raise ValueError(
+                    f"{path}: line {line_number}: invalid JSON: {exc}"
+                ) from exc
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"{path}: line {line_number}: top-level record must be an object"
+                )
+            try:
+                validate_json_complexity(value)
+            except ValueError as exc:
+                raise ValueError(f"{path}: line {line_number}: {exc}") from exc
+            records += 1
     if records == 0:
         raise ValueError(f"trajectory JSONL has no records: {path}")
 
@@ -201,7 +218,10 @@ def _redact_jsonl(source: Path, target: Path) -> int:
                 output_stream.write(line)
                 continue
             value = json.loads(body)
-            redacted, count = redact_value(value)
+            try:
+                redacted, count = redact_value(value)
+            except RecursionError as exc:  # defense in depth after complexity gate
+                raise ValueError("trajectory JSONL nesting exceeds the limit") from exc
             if count:
                 output_stream.write(
                     json.dumps(redacted, separators=(",", ":"), ensure_ascii=False)
@@ -219,6 +239,25 @@ def _split_newline(line: str) -> tuple[str, str]:
     if line.endswith("\n") or line.endswith("\r"):
         return line[:-1], line[-1]
     return line, ""
+
+
+def validate_json_complexity(value: Any) -> None:
+    """Bound container depth and nodes before recursive redaction."""
+    nodes = 0
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_JSON_NODES:
+            raise ValueError(f"JSON record exceeds {MAX_JSON_NODES} values")
+        if isinstance(item, Mapping):
+            if depth >= MAX_JSON_NESTING:
+                raise ValueError(f"JSON nesting exceeds {MAX_JSON_NESTING} levels")
+            stack.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list):
+            if depth >= MAX_JSON_NESTING:
+                raise ValueError(f"JSON nesting exceeds {MAX_JSON_NESTING} levels")
+            stack.extend((child, depth + 1) for child in item)
 
 
 def _sha256(path: Path) -> str:

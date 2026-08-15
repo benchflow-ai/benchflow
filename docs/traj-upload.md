@@ -22,9 +22,10 @@ credentials or personal data in either label.
 ## What reaches the dataset
 
 Public uploads first enter a private, versioned Azure Blob quarantine prefix.
-The broker issues short-lived user-delegation SAS URLs scoped to create/write
+The broker issues short-lived user-delegation SAS URLs scoped to create
 one expected blob at a time; they do not grant list, read, or delete access.
 An Event Grid-triggered validator independently checks the manifest contract,
+the 8 MiB per-record JSONL bound and structural complexity limits,
 allowlisted object names, byte sizes, SHA-256 hashes, JSONL syntax, and a final
 secret scan. Only then does it copy artifacts into the immutable
 `sources/community/<digest>/` namespace, with `manifest.json` as the commit

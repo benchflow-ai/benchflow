@@ -266,6 +266,36 @@ def test_validator_recomputes_bytes_jsonl_and_secret_scan(tmp_path: Path) -> Non
     with pytest.raises(CaptureRejected, match="must be UTF-8"):
         _validate_and_scan_jsonl(invalid_utf8, "trajectory/llm_trajectory.jsonl")
 
+    aws_session_key = tmp_path / "aws-session.jsonl"
+    aws_session_key.write_text(
+        json.dumps({"output": "ASIAQWERTYUIOPASDFGH"}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CaptureRejected, match="secret-like"):
+        _validate_and_scan_jsonl(aws_session_key, "trajectory/aws-session.jsonl")
+
+
+def test_validator_bounds_record_bytes_and_complexity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #989 against JSONL record memory and recursion bombs."""
+    import services.trajectory_upload.validation as validation_module
+
+    oversized = tmp_path / "oversized.jsonl"
+    oversized.write_text(json.dumps({"text": "x" * 64}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(validation_module, "MAX_JSONL_RECORD_BYTES", 32)
+    with pytest.raises(CaptureRejected, match="JSONL record exceeds"):
+        _validate_and_scan_jsonl(oversized, "trajectory/oversized.jsonl")
+
+    nested: object = "leaf"
+    for _ in range(101):
+        nested = {"child": nested}
+    recursive = tmp_path / "recursive.jsonl"
+    recursive.write_text(json.dumps(nested) + "\n", encoding="utf-8")
+    monkeypatch.setattr(validation_module, "MAX_JSONL_RECORD_BYTES", 8 * 1024**2)
+    with pytest.raises(CaptureRejected, match="JSON nesting exceeds"):
+        _validate_and_scan_jsonl(recursive, "trajectory/recursive.jsonl")
+
 
 class FakeDownloader:
     def __init__(self, content: bytes) -> None:
@@ -731,6 +761,37 @@ def test_manifest_contract_is_validated_before_artifact_downloads(
 
     assert container.requested == [manifest_name]
     assert table.entities[-1]["status"] == "rejected"
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_manifest_rejects_unsafe_metadata_version_before_promotion(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #989 against injecting invalid Azure metadata headers."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    manifest_name = f"inbox/{digest}/manifest.json"
+    manifest = json.loads(blobs[manifest_name])
+    manifest["tool"]["version"] = "bad\nvalue"
+    blobs[manifest_name] = json.dumps(manifest).encode()
+    container = FakeContainer(blobs)
+    queue = FakeQueue(
+        json.dumps(
+            {
+                "data": {
+                    "url": (
+                        "https://account.blob.core.windows.net/bronze/" + manifest_name
+                    )
+                }
+            }
+        )
+    )
+    table = _pending_table(digest)
+
+    AzureCaptureValidator(container=container, queue=queue, table=table).run_once()
+
+    assert container.requested == [manifest_name]
+    assert table.entities[-1]["status"] == "rejected"
+    assert container.uploaded == []
     assert queue.deleted == [("m1", "p1")]
 
 

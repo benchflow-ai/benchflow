@@ -6,7 +6,7 @@
 - **Public trajectory contribution.** `bench traj upload PATH` validates and
   structurally redacts trajectory JSONL, creates a content-addressed manifest,
   and uploads through the built-in public broker. Azure Blob quarantine,
-  versioning, short-lived create/write-only user-delegation SAS grants, and an
+  versioning, short-lived create-only user-delegation SAS grants, and an
   event-driven fail-closed validator keep untrusted captures out of the
   community namespace until hashes, sizes, JSONL, and secret scans pass.
   Replaying an ingested digest is a no-op; trusted operators can opt into direct
