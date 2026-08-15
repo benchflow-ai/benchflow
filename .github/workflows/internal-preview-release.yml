@@ -12,14 +12,46 @@ permissions:
   id-token: write
 
 jobs:
-  publish:
-    name: Publish internal preview to PyPI
+  provenance:
+    name: Find tested release provenance
     if: >-
       ${{
         github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'workflow_run' &&
         github.event.workflow_run.head_branch == 'main'
       }}
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.artifact.outputs.available }}
+
+    steps:
+      - name: Find tested release provenance
+        id: artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INTEGRATION_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          artifact_count="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$INTEGRATION_RUN_ID/artifacts" \
+              --jq '[.artifacts[] | select(.name == "internal-preview-provenance" and .expired == false)] | length'
+          )"
+          if [ "$artifact_count" -eq 0 ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::integration run has no release provenance; preview publication is not applicable"
+            exit 0
+          fi
+          if [ "$artifact_count" -ne 1 ]; then
+            echo "::error::expected exactly one internal-preview-provenance artifact, found $artifact_count"
+            exit 1
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish internal preview to PyPI
+    needs: provenance
+    if: needs.provenance.outputs.available == 'true'
     runs-on: ubuntu-latest
     environment: pypi-internal-preview
 
