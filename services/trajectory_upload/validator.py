@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from services.trajectory_upload.contract import MAX_MANIFEST_BYTES
+from services.trajectory_upload.contract import ARTIFACT_NAME, MAX_MANIFEST_BYTES
 from services.trajectory_upload.validation import (
     CaptureRejected,
     ValidatedCapture,
@@ -71,7 +71,7 @@ class AzureCaptureValidator:
         if message is None:
             return False
         try:
-            prefix, digest = _capture_from_event(message.content)
+            prefix, digest, is_manifest = _capture_from_event(message.content)
         except CaptureRejected as exc:
             logger.warning("discarding invalid validation event: %s", exc)
             self._delete_message(message)
@@ -79,6 +79,13 @@ class AzureCaptureValidator:
 
         if self._capture_status(digest) in {"ingested", "rejected"}:
             self._cleanup_prefix(prefix)
+            self._delete_message(message)
+            return True
+
+        # Artifacts arrive before the manifest. Their events keep the Job able
+        # to clean terminal-state replays without treating an in-flight capture
+        # as a prematurely committed upload.
+        if not is_manifest:
             self._delete_message(message)
             return True
 
@@ -199,7 +206,7 @@ class AzureCaptureValidator:
         self.queue.delete_message(message.id, message.pop_receipt)
 
 
-def _capture_from_event(content: str) -> tuple[str, str]:
+def _capture_from_event(content: str) -> tuple[str, str, bool]:
     # Event Grid's Storage Queue destination base64-encodes its JSON envelope;
     # accepting plain JSON as well keeps the parser usable with test and replay
     # tools that already decode queue messages.
@@ -220,12 +227,16 @@ def _capture_from_event(content: str) -> tuple[str, str]:
     if not isinstance(blob_url, str):
         raise CaptureRejected("Event Grid blob URL must be a string")
     parts = unquote(urlparse(blob_url).path).strip("/").split("/")
-    if len(parts) != 4 or parts[1] != "inbox" or parts[3] != "manifest.json":
-        raise CaptureRejected("event is not for inbox/<digest>/manifest.json")
+    if len(parts) < 4 or parts[1] != "inbox":
+        raise CaptureRejected("event is not for an inbox capture object")
     digest = parts[2]
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise CaptureRejected("event contains an invalid trajectory digest")
-    return f"inbox/{digest}/", digest
+    relname = "/".join(parts[3:])
+    is_manifest = relname == "manifest.json"
+    if not is_manifest and ARTIFACT_NAME.fullmatch(relname) is None:
+        raise CaptureRejected("event is not for a declared capture object")
+    return f"inbox/{digest}/", digest, is_manifest
 
 
 def _required_env(name: str) -> str:

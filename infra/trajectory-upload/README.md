@@ -6,8 +6,9 @@
   containers, Shared Key and anonymous access disabled;
 - a scale-to-zero Container App broker with a user-assigned identity limited to
   create/write blob data actions, delegation-key signing, and the upload ledger;
-- Event Grid delivery of committed inbox manifests to an Entra-authenticated
-  Storage Queue;
+- Event Grid delivery of inbox object creations to an Entra-authenticated
+  Storage Queue, so manifests commit pending captures and terminal replays are
+  cleaned;
 - an event-driven Container Apps validator Job with separate read, promotion,
   cleanup, queue, and ledger authority;
 - two-day inbox/version expiry plus storage read/write/delete diagnostics.

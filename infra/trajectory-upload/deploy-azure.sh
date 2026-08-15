@@ -295,7 +295,7 @@ az containerapp job create \
 task_event_name="trajectory-manifest-created"
 task_event_body="$(jq -n \
     --arg storage "$task_storage_id" \
-    '{properties:{deliveryWithResourceIdentity:{identity:{type:"SystemAssigned"},destination:{endpointType:"StorageQueue",properties:{resourceId:$storage,queueName:"trajectory-validation",queueMessageTimeToLiveInSeconds:604800}}},filter:{isSubjectCaseSensitive:false,subjectBeginsWith:"/blobServices/default/containers/bronze/blobs/inbox/",subjectEndsWith:"manifest.json",includedEventTypes:["Microsoft.Storage.BlobCreated"]},retryPolicy:{maxDeliveryAttempts:30,eventTimeToLiveInMinutes:1440},eventDeliverySchema:"EventGridSchema"}}')"
+    '{properties:{deliveryWithResourceIdentity:{identity:{type:"SystemAssigned"},destination:{endpointType:"StorageQueue",properties:{resourceId:$storage,queueName:"trajectory-validation",queueMessageTimeToLiveInSeconds:604800}}},filter:{isSubjectCaseSensitive:false,subjectBeginsWith:"/blobServices/default/containers/bronze/blobs/inbox/",includedEventTypes:["Microsoft.Storage.BlobCreated"]},retryPolicy:{maxDeliveryAttempts:30,eventTimeToLiveInMinutes:1440},eventDeliverySchema:"EventGridSchema"}}')"
 az rest \
     --method put \
     --url "https://management.azure.com${task_system_topic_id}/eventSubscriptions/${task_event_name}?api-version=2025-02-15" \

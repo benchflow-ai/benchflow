@@ -393,7 +393,61 @@ def test_event_grid_queue_base64_envelope_is_decoded(tmp_path: Path) -> None:
     )
     encoded = base64.b64encode(event.encode()).decode()
 
-    assert _capture_from_event(encoded) == (f"inbox/{digest}/", digest)
+    assert _capture_from_event(encoded) == (f"inbox/{digest}/", digest, True)
+
+
+def test_pending_artifact_event_waits_for_manifest_commit(tmp_path: Path) -> None:
+    """Guards PR #989 against treating artifact creation as a partial upload."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    artifact = next(name for name in blobs if name.endswith(".jsonl"))
+    event = json.dumps(
+        {"data": {"url": ("https://account.blob.core.windows.net/bronze/" + artifact)}}
+    )
+    queue = FakeQueue(event)
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "pending",
+            }
+        ]
+    )
+    container = FakeContainer(blobs)
+
+    assert AzureCaptureValidator(
+        container=container, queue=queue, table=table
+    ).run_once()
+    assert container.blobs == blobs
+    assert container.uploaded == []
+    assert table.entities[-1]["status"] == "pending"
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_terminal_artifact_replay_is_cleaned(tmp_path: Path) -> None:
+    """Guards PR #989 against replaying a grant after terminal cleanup."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    artifact = next(name for name in blobs if name.endswith(".jsonl"))
+    event = json.dumps(
+        {"data": {"url": ("https://account.blob.core.windows.net/bronze/" + artifact)}}
+    )
+    queue = FakeQueue(event)
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "ingested",
+            }
+        ]
+    )
+    container = FakeContainer(blobs)
+
+    assert AzureCaptureValidator(
+        container=container, queue=queue, table=table
+    ).run_once()
+    assert not any(name.startswith(f"inbox/{digest}/") for name in container.blobs)
+    assert queue.deleted == [("m1", "p1")]
 
 
 @pytest.mark.parametrize("terminal_status", ["ingested", "rejected"])
