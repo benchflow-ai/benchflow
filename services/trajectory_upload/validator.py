@@ -8,7 +8,7 @@ import logging
 import os
 import tempfile
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -18,9 +18,14 @@ from services.trajectory_upload.validation import (
     CaptureRejected,
     ValidatedCapture,
     validate_local_capture,
+    validate_manifest_bytes,
 )
 
 logger = logging.getLogger(__name__)
+# The Container Apps Job times out after 30 minutes. A slightly longer lease
+# prevents a replacement worker from overlapping a replica that Azure has not
+# terminated yet; an abandoned queue message can reclaim the digest afterward.
+VALIDATION_LEASE = timedelta(minutes=35)
 
 
 class AzureCaptureValidator:
@@ -89,6 +94,16 @@ class AzureCaptureValidator:
             self._delete_message(message)
             return True
 
+        if not self._claim_capture(digest):
+            # A concurrent worker owns an unexpired validation lease. Leave the
+            # queue message for a later retry so a crashed owner cannot strand
+            # the capture permanently.
+            status = self._capture_status(digest)
+            if status in {"ingested", "rejected"} or status is None:
+                self._cleanup_prefix(prefix)
+                self._delete_message(message)
+            return True
+
         from azure.core.exceptions import ResourceNotFoundError
 
         try:
@@ -104,11 +119,11 @@ class AzureCaptureValidator:
                 self._promote(validated, digest)
         except CaptureRejected as exc:
             logger.warning("capture %s rejected: %s", digest, exc)
-            self._cleanup_prefix(prefix)
             self._record_status(digest, "rejected", detail=str(exc)[:512])
-        else:
             self._cleanup_prefix(prefix)
+        else:
             self._record_status(digest, "ingested")
+            self._cleanup_prefix(prefix)
             logger.info("capture %s promoted", digest)
         self._delete_message(message)
         return True
@@ -121,22 +136,13 @@ class AzureCaptureValidator:
         if properties.size > MAX_MANIFEST_BYTES:
             raise CaptureRejected("manifest exceeds the 1 MiB limit")
         manifest_bytes = manifest_blob.download_blob().readall()
-        try:
-            manifest_data = json.loads(manifest_bytes)
-            artifacts = manifest_data["artifacts"]
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            raise CaptureRejected(f"invalid manifest: {exc}") from exc
-        if not isinstance(artifacts, list):
-            raise CaptureRejected("manifest artifacts must be a list")
+        manifest = validate_manifest_bytes(manifest_bytes)
 
         artifact_paths: dict[str, Path] = {}
-        for item in artifacts:
-            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
-                raise CaptureRejected("manifest contains an invalid artifact entry")
-            relname = item["name"]
+        for artifact in manifest.artifacts:
+            relname = artifact.name
             blob = self.container.get_blob_client(prefix + relname)
-            expected_size = item.get("bytes")
-            if blob.get_blob_properties().size != expected_size:
+            if blob.get_blob_properties().size != artifact.bytes:
                 raise CaptureRejected(f"size mismatch for {relname}")
             local_path = staging_dir / Path(relname).name
             with local_path.open("wb") as output:
@@ -188,9 +194,48 @@ class AzureCaptureValidator:
                 "RowKey": digest,
                 "status": status,
                 "updated_at": datetime.now(UTC).isoformat(),
+                "validation_lease_until": "",
                 **extra,
             }
         )
+
+    def _claim_capture(self, digest: str) -> bool:
+        from azure.core import MatchConditions
+        from azure.core.exceptions import ResourceModifiedError, ResourceNotFoundError
+        from azure.data.tables import UpdateMode
+
+        now = datetime.now(UTC)
+        try:
+            entity = self.table.get_entity(partition_key="capture", row_key=digest)
+        except ResourceNotFoundError:
+            return False
+        status = entity.get("status")
+        lease_until = _parse_datetime(entity.get("validation_lease_until"))
+        if status in {"ingested", "rejected"}:
+            return False
+        if status == "validating" and lease_until is not None and lease_until > now:
+            return False
+        if status not in {"pending", "validating"}:
+            return False
+
+        claimed = dict(entity)
+        claimed.update(
+            {
+                "status": "validating",
+                "updated_at": now.isoformat(),
+                "validation_lease_until": (now + VALIDATION_LEASE).isoformat(),
+            }
+        )
+        try:
+            self.table.update_entity(
+                entity=claimed,
+                mode=UpdateMode.MERGE,
+                etag=entity.metadata["etag"],
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except ResourceModifiedError:
+            return False
+        return True
 
     def _capture_status(self, digest: str) -> str | None:
         from azure.core.exceptions import ResourceNotFoundError
@@ -244,6 +289,16 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"required environment variable is not set: {name}")
     return value
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def main() -> None:

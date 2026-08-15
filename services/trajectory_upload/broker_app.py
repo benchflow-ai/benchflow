@@ -25,6 +25,10 @@ class RateLimited(Exception):
         self.retry_after = retry_after
 
 
+class RejectedUpload(Exception):
+    """The same immutable capture digest already failed validation."""
+
+
 class UploadBroker(Protocol):
     def create_upload(
         self, request: UploadRequest, *, client_ip: str
@@ -107,6 +111,11 @@ def create_app(
                 status_code=429,
                 headers={"Retry-After": str(exc.retry_after)},
                 content={"detail": "upload rate limit exceeded"},
+            )
+        except RejectedUpload:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "trajectory capture was previously rejected"},
             )
         return JSONResponse(status_code=200, content=grant.as_dict())
 

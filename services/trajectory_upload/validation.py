@@ -32,13 +32,7 @@ def validate_local_capture(
     artifact_paths: dict[str, Path],
 ) -> ValidatedCapture:
     """Validate manifest, digests, strict JSONL shape, and secret redaction."""
-    if len(manifest_bytes) > MAX_MANIFEST_BYTES:
-        raise CaptureRejected("manifest exceeds the 1 MiB limit")
-    try:
-        raw_manifest = json.loads(manifest_bytes)
-        manifest = ContributionManifest.model_validate(raw_manifest)
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise CaptureRejected(f"invalid manifest: {exc}") from exc
+    manifest = validate_manifest_bytes(manifest_bytes)
 
     expected_names = {artifact.name for artifact in manifest.artifacts}
     if set(artifact_paths) != expected_names:
@@ -56,6 +50,18 @@ def validate_local_capture(
         artifact_paths=artifact_paths,
         manifest_bytes=manifest_bytes,
     )
+
+
+def validate_manifest_bytes(manifest_bytes: bytes) -> ContributionManifest:
+    """Parse the complete manifest contract before touching declared artifacts."""
+    if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+        raise CaptureRejected("manifest exceeds the 1 MiB limit")
+    try:
+        raw_manifest = json.loads(manifest_bytes)
+        manifest = ContributionManifest.model_validate(raw_manifest)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as exc:
+        raise CaptureRejected(f"invalid manifest: {exc}") from exc
+    return manifest
 
 
 def _validate_and_scan_jsonl(path: Path, relname: str) -> None:

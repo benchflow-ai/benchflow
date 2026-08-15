@@ -17,6 +17,7 @@ from services.trajectory_upload.azure_backend import AzureUploadBroker
 from services.trajectory_upload.broker_app import (
     AlreadyUploaded,
     RateLimited,
+    RejectedUpload,
     create_app,
 )
 from services.trajectory_upload.contract import (
@@ -197,6 +198,12 @@ def test_broker_http_surface_returns_scoped_grants_and_protocol_statuses(
     assert limited.status_code == 429
     assert limited.headers["Retry-After"] == "42"
 
+    rejected = TestClient(create_app(FakeBroker(RejectedUpload()))).post(
+        "/v1/uploads", json=body
+    )
+    assert rejected.status_code == 422
+    assert "previously rejected" in rejected.json()["detail"]
+
 
 def test_broker_validation_errors_are_fail_closed_and_json_safe(
     tmp_path: Path,
@@ -292,8 +299,10 @@ class FakeContainer:
     def __init__(self, blobs: dict[str, bytes]) -> None:
         self.blobs = dict(blobs)
         self.uploaded: list[str] = []
+        self.requested: list[str] = []
 
     def get_blob_client(self, name: str) -> FakeBlobClient:
+        self.requested.append(name)
         return FakeBlobClient(self, name)
 
     def upload_blob(self, *, name: str, data, **_kwargs) -> None:
@@ -324,20 +333,111 @@ class FakeQueue:
         self.deleted.append((message_id, pop_receipt))
 
 
+class FakeEntity(dict):
+    def __init__(self, entity: dict, etag: str) -> None:
+        super().__init__(entity)
+        self.metadata = {"etag": etag}
+
+
 class FakeTable:
     def __init__(self, entities: list[dict] | None = None) -> None:
         self.entities = entities or []
+        self.version = len(self.entities)
 
     def upsert_entity(self, entity: dict) -> None:
         self.entities.append(entity)
+        self.version += 1
+
+    def update_entity(self, *, entity: dict, etag: str, **_kwargs) -> None:
+        assert etag == str(self.version)
+        self.entities.append(entity)
+        self.version += 1
 
     def get_entity(self, *, partition_key: str, row_key: str) -> dict:
         from azure.core.exceptions import ResourceNotFoundError
 
         for entity in reversed(self.entities):
             if entity["PartitionKey"] == partition_key and entity["RowKey"] == row_key:
-                return entity
+                return FakeEntity(entity, str(self.version))
         raise ResourceNotFoundError("not found")
+
+
+def _pending_table(digest: str) -> FakeTable:
+    return FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "pending",
+            }
+        ]
+    )
+
+
+@pytest.mark.parametrize("status", ["pending", "validating"])
+def test_broker_regrant_does_not_downgrade_ledger_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """Guards PR #989 against a retry clearing an active validation lease."""
+    trial = _trial(tmp_path)
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
+        digest = staged.traj_digest
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": status,
+                "validation_lease_until": "future" if status == "validating" else "",
+            }
+        ]
+    )
+    backend = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=table,
+        blob_service=SimpleNamespace(
+            get_user_delegation_key=lambda **_kwargs: "delegation-key"
+        ),
+        ip_hash_key=b"test",
+    )
+    monkeypatch.setattr(backend, "_consume_rate_limit", lambda _client_ip: None)
+    monkeypatch.setattr(
+        "azure.storage.blob.generate_blob_sas", lambda **_kwargs: "sp=c&sig=test"
+    )
+
+    grant = backend.create_upload(request, client_ip="127.0.0.1")
+
+    assert grant.prefix == f"inbox/{digest}/"
+    assert table.entities[-1]["status"] == status
+    assert len(table.entities) == 1
+
+
+def test_broker_does_not_reopen_rejected_digest(tmp_path: Path) -> None:
+    """Guards PR #989 against downgrading a terminal rejected capture."""
+    trial = _trial(tmp_path)
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
+        digest = staged.traj_digest
+    backend = AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=FakeTable(
+            [
+                {
+                    "PartitionKey": "capture",
+                    "RowKey": digest,
+                    "status": "rejected",
+                }
+            ]
+        ),
+        blob_service=SimpleNamespace(),
+        ip_hash_key=b"test",
+    )
+
+    with pytest.raises(RejectedUpload):
+        backend.create_upload(request, client_ip="127.0.0.1")
 
 
 def _quarantine_capture(tmp_path: Path) -> tuple[str, dict[str, bytes]]:
@@ -368,7 +468,7 @@ def test_queue_validator_promotes_manifest_last_and_cleans_quarantine(
         }
     )
     queue = FakeQueue(event)
-    table = FakeTable()
+    table = _pending_table(digest)
     validator = AzureCaptureValidator(container=container, queue=queue, table=table)
 
     assert validator.run_once() is True
@@ -503,7 +603,7 @@ def test_queue_validator_rejects_corruption_without_promotion(tmp_path: Path) ->
             }
         )
     )
-    table = FakeTable()
+    table = _pending_table(digest)
 
     AzureCaptureValidator(container=container, queue=queue, table=table).run_once()
 
@@ -530,7 +630,7 @@ def test_queue_validator_rejects_missing_declared_artifact(tmp_path: Path) -> No
             }
         )
     )
-    table = FakeTable()
+    table = _pending_table(digest)
 
     AzureCaptureValidator(container=container, queue=queue, table=table).run_once()
 
@@ -538,4 +638,134 @@ def test_queue_validator_rejects_missing_declared_artifact(tmp_path: Path) -> No
     assert not any(name.startswith(f"inbox/{digest}/") for name in container.blobs)
     assert table.entities[-1]["status"] == "rejected"
     assert "missing" in table.entities[-1]["detail"]
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_queue_validator_rejects_invalid_utf8_manifest(tmp_path: Path) -> None:
+    """Guards PR #989 against retrying an undecodable anonymous manifest."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    manifest_name = f"inbox/{digest}/manifest.json"
+    blobs[manifest_name] = b"\xff"
+    container = FakeContainer(blobs)
+    queue = FakeQueue(
+        json.dumps(
+            {
+                "data": {
+                    "url": (
+                        "https://account.blob.core.windows.net/bronze/" + manifest_name
+                    )
+                }
+            }
+        )
+    )
+    table = _pending_table(digest)
+
+    AzureCaptureValidator(container=container, queue=queue, table=table).run_once()
+
+    assert table.entities[-1]["status"] == "rejected"
+    assert "invalid manifest" in table.entities[-1]["detail"]
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_manifest_contract_is_validated_before_artifact_downloads(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #989 against manifest-driven download amplification."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    manifest_name = f"inbox/{digest}/manifest.json"
+    manifest = json.loads(blobs[manifest_name])
+    manifest["artifacts"] = manifest["artifacts"] * 9
+    blobs[manifest_name] = json.dumps(manifest).encode()
+    container = FakeContainer(blobs)
+    queue = FakeQueue(
+        json.dumps(
+            {
+                "data": {
+                    "url": (
+                        "https://account.blob.core.windows.net/bronze/" + manifest_name
+                    )
+                }
+            }
+        )
+    )
+    table = _pending_table(digest)
+
+    AzureCaptureValidator(container=container, queue=queue, table=table).run_once()
+
+    assert container.requested == [manifest_name]
+    assert table.entities[-1]["status"] == "rejected"
+    assert queue.deleted == [("m1", "p1")]
+
+
+def test_concurrent_manifest_event_waits_for_validation_lease(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #989 against duplicate workers downgrading an ingested capture."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    event = json.dumps(
+        {
+            "data": {
+                "url": (
+                    "https://account.blob.core.windows.net/bronze/"
+                    f"inbox/{digest}/manifest.json"
+                )
+            }
+        }
+    )
+    queue = FakeQueue(event)
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "validating",
+                "validation_lease_until": (
+                    datetime.now(UTC) + timedelta(minutes=10)
+                ).isoformat(),
+            }
+        ]
+    )
+    container = FakeContainer(blobs)
+
+    assert AzureCaptureValidator(
+        container=container, queue=queue, table=table
+    ).run_once()
+    assert container.blobs == blobs
+    assert container.uploaded == []
+    assert queue.deleted == []
+
+
+def test_expired_validation_lease_is_reclaimed(tmp_path: Path) -> None:
+    """Guards PR #989 against stranding a capture after a validator crash."""
+    digest, blobs = _quarantine_capture(tmp_path)
+    event = json.dumps(
+        {
+            "data": {
+                "url": (
+                    "https://account.blob.core.windows.net/bronze/"
+                    f"inbox/{digest}/manifest.json"
+                )
+            }
+        }
+    )
+    table = FakeTable(
+        [
+            {
+                "PartitionKey": "capture",
+                "RowKey": digest,
+                "status": "validating",
+                "validation_lease_until": (
+                    datetime.now(UTC) - timedelta(minutes=1)
+                ).isoformat(),
+            }
+        ]
+    )
+    container = FakeContainer(blobs)
+    queue = FakeQueue(event)
+
+    assert AzureCaptureValidator(
+        container=container, queue=queue, table=table
+    ).run_once()
+    assert table.entities[-1]["status"] == "ingested"
+    assert container.uploaded[-1] == f"sources/community/{digest}/manifest.json"
     assert queue.deleted == [("m1", "p1")]

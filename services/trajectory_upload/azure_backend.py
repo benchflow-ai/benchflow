@@ -11,7 +11,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
-from services.trajectory_upload.broker_app import AlreadyUploaded, RateLimited
+from services.trajectory_upload.broker_app import (
+    AlreadyUploaded,
+    RateLimited,
+    RejectedUpload,
+)
 from services.trajectory_upload.contract import (
     UploadGrant,
     UploadObject,
@@ -80,16 +84,19 @@ class AzureUploadBroker:
                     base_url=self.container_url,
                     prefix=f"sources/community/{digest}/",
                 )
+            if status == "rejected":
+                raise RejectedUpload
             self._consume_rate_limit(client_ip)
-            self.table.upsert_entity(
-                {
-                    "PartitionKey": "capture",
-                    "RowKey": digest,
-                    "status": "pending",
-                    "source_id": request.source_id,
-                    "updated_at": datetime.now(UTC).isoformat(),
-                }
-            )
+            if status is None:
+                self.table.upsert_entity(
+                    {
+                        "PartitionKey": "capture",
+                        "RowKey": digest,
+                        "status": "pending",
+                        "source_id": request.source_id,
+                        "updated_at": datetime.now(UTC).isoformat(),
+                    }
+                )
 
         now = datetime.now(UTC)
         expires_at = now + timedelta(minutes=self.sas_minutes)
