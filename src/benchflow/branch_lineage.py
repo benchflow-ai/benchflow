@@ -22,12 +22,13 @@ from typing import Any
 from benchflow.branch import StageSnapshot
 from benchflow.branch_delta import BranchDelta
 from benchflow.environment.protocol import StateSnapshot
-from benchflow.trajectories.tree import RolloutNode, RolloutTree, branch_points
+from benchflow.trajectories.tree import RolloutNode, RolloutTree
 
 _SCHEMA_VERSION = 1
 _SNAPSHOT_KEY = "snapshot"
 _REWARD_KEY = "reward"
 _VALUE_KEY = "value"
+_DELTA_KEY = "delta"
 
 
 def _snapshot_refs(snap: Any) -> dict[str, str | None] | None:
@@ -50,68 +51,53 @@ def _snapshot_refs(snap: Any) -> dict[str, str | None] | None:
     return None
 
 
-def _provenance(delta: BranchDelta | None) -> dict[str, Any]:
-    """A delta's provenance dict; ``None`` records as the zero delta."""
-    return (delta if delta is not None else BranchDelta()).provenance_dict()
+def _provenance(delta: BranchDelta | dict[str, Any] | None) -> dict[str, Any]:
+    """A delta's provenance dict; ``None`` records as the zero delta.
+
+    Accepts an already-serialized provenance dict verbatim — the branch
+    engine records each child's delta provenance on the node at fork time
+    (``node.state["delta"]``), and the writers here pass it through.
+    """
+    if delta is None:
+        return BranchDelta().provenance_dict()
+    if isinstance(delta, BranchDelta):
+        return delta.provenance_dict()
+    return delta
 
 
 def serialize_tree(
     tree: RolloutTree,
     *,
     run_dir: Path,
-    stage: str | None = None,
-    snapshot: StageSnapshot | StateSnapshot | None = None,
-    deltas: Sequence[BranchDelta | None] | None = None,
     cut_point: dict[str, Any] | None = None,
 ) -> Path:
     """Write ``<run_dir>/tree.json`` — the deterministic lineage artifact.
 
-    Every node serializes as id / parent / stage tag / snapshot refs, plus
-    ``reward`` and ``value`` when recorded on the node. The keyword context
-    describes the branch just taken: ``snapshot`` identifies the branch node
-    (matched by identity against ``node.state["snapshot"]``, falling back to
-    the tree's unique branch point), ``stage`` names its boundary when the
-    snapshot itself does not, ``deltas`` aligns positionally with that node's
-    children (each child entry gains a ``delta`` provenance dict), and
-    ``cut_point`` is recorded at the top level. Output is deterministic —
-    sorted keys, indented, trailing newline, no wall-clock timestamps.
+    Every node serializes from its *own* recorded state: id / parent / stage
+    tag (the recorded checkpoint's ``stage``) / snapshot refs, plus
+    ``reward``, ``value`` and ``delta`` (the provenance dict the engine
+    attached at fork time) when present on the node. Nothing is inferred
+    from position — a tree with several branch points, or several branch
+    events at the same parent, serializes each node's provenance exactly as
+    recorded. ``cut_point`` is recorded at the top level. Output is
+    deterministic — sorted keys, indented, trailing newline, no wall-clock
+    timestamps.
     """
-    branch_node: RolloutNode | None = None
-    if snapshot is not None:
-        for node in tree.nodes():
-            if node.state.get(_SNAPSHOT_KEY) is snapshot:
-                branch_node = node
-                break
-    if branch_node is None and deltas:
-        candidates = branch_points(tree)
-        if len(candidates) == 1:
-            branch_node = candidates[0]
-
-    delta_for: dict[int, dict[str, Any]] = {}
-    if branch_node is not None and deltas is not None:
-        # Positional alignment, non-strict: a post-branch linear continuation
-        # may have grown extra children past the delta'd ones.
-        for child, delta in zip(branch_node.children, deltas, strict=False):
-            delta_for[id(child)] = _provenance(delta)
-
     nodes_payload: list[dict[str, Any]] = []
     for node in tree.nodes():
         snap = node.state.get(_SNAPSHOT_KEY)
-        node_stage = getattr(snap, "stage", None)
-        if node is branch_node and node_stage is None:
-            node_stage = stage
         entry: dict[str, Any] = {
             "id": node.id,
             "parent": node.parent.id if node.parent is not None else None,
-            "stage": node_stage,
+            "stage": getattr(snap, "stage", None),
             "snapshot": _snapshot_refs(snap),
         }
         if _REWARD_KEY in node.state:
             entry["reward"] = float(node.state[_REWARD_KEY])
         if _VALUE_KEY in node.state:
             entry["value"] = float(node.state[_VALUE_KEY])
-        if id(node) in delta_for:
-            entry["delta"] = delta_for[id(node)]
+        if _DELTA_KEY in node.state:
+            entry["delta"] = node.state[_DELTA_KEY]
         nodes_payload.append(entry)
 
     payload = {
@@ -129,7 +115,7 @@ def child_provenance(
     *,
     branch_stage: str,
     snapshot: StageSnapshot | StateSnapshot | None,
-    delta: BranchDelta | None,
+    delta: BranchDelta | dict[str, Any] | None,
     cut_point: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The ``kind="benchflow-branch"`` source-provenance dict (RFC §3.4).
@@ -137,7 +123,9 @@ def child_provenance(
     The branch twin of the ``kind="benchflow-continue"`` provenance a
     continued run carries: which rollout the child forked from, at which stage
     boundary, from which snapshot refs, and under which (content-addressed)
-    delta. ``cut_point`` stays ``None`` until the replay cut-point API lands.
+    delta — either a :class:`BranchDelta` or the provenance dict the engine
+    recorded on the child node at fork time. ``cut_point`` stays ``None``
+    until the replay cut-point API lands.
     """
     refs = _snapshot_refs(snapshot) or {"environment": None, "sandbox": None}
     return {
@@ -159,30 +147,32 @@ def write_branch_artifacts(
     tree: RolloutTree,
     parent: RolloutNode,
     children: Sequence[RolloutNode],
-    deltas: Sequence[BranchDelta | None] | None,
 ) -> None:
     """Write a completed branch's lineage artifacts under ``run_dir``.
 
-    ``tree.json`` at the top level; per child, ``children/<index>/``
-    holding ``provenance.json`` and — when the child recorded a return —
-    ``reward.json``. The caller isolates failures: any exception here must be
-    caught and logged so an artifact-write error never corrupts branch
-    results.
+    ``tree.json`` at the top level; per child,
+    ``branches/<branch-node-id>/children/<child-node-id>/`` holding
+    ``provenance.json`` and — when the child recorded a return —
+    ``reward.json``. Namespacing by node id (unique within the tree) means a
+    second branch event — at the same parent or a different one — can never
+    overwrite an earlier event's artifacts. Each child's delta provenance is
+    read from ``child.state["delta"]`` (attached by the engine at fork time),
+    never inferred positionally. The caller isolates failures: any exception
+    here must be caught and logged so an artifact-write error never corrupts
+    branch results.
     """
     snapshot = parent.state.get(_SNAPSHOT_KEY)
     stage = getattr(snapshot, "stage", None)
     branch_stage = stage if stage is not None else f"cursor:{parent.id}"
-    serialize_tree(
-        tree, run_dir=run_dir, stage=stage, snapshot=snapshot, deltas=deltas
-    )
-    for index, child in enumerate(children):
-        child_dir = Path(run_dir) / "children" / str(index)
+    serialize_tree(tree, run_dir=run_dir)
+    for child in children:
+        child_dir = Path(run_dir) / "branches" / parent.id / "children" / child.id
         child_dir.mkdir(parents=True, exist_ok=True)
         provenance = child_provenance(
             str(run_dir),
             branch_stage=branch_stage,
             snapshot=snapshot,
-            delta=deltas[index] if deltas is not None else None,
+            delta=child.state.get(_DELTA_KEY),
         )
         (child_dir / "provenance.json").write_text(
             json.dumps(provenance, sort_keys=True, indent=2) + "\n"
