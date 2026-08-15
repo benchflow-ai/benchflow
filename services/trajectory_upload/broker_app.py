@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from threading import Lock
 from typing import Protocol
 
 from fastapi import FastAPI, Request
@@ -47,6 +48,7 @@ def create_app(
     if backend is not None:
         app.state.backend = backend
     app.state.backend_factory = backend_factory or _azure_backend
+    app.state.backend_lock = Lock()
 
     @app.middleware("http")
     async def limit_handshake_body(request: Request, call_next):
@@ -124,7 +126,9 @@ def create_app(
 
 def _backend(app: FastAPI) -> UploadBroker:
     if not hasattr(app.state, "backend"):
-        app.state.backend = app.state.backend_factory()
+        with app.state.backend_lock:
+            if not hasattr(app.state, "backend"):
+                app.state.backend = app.state.backend_factory()
     return app.state.backend
 
 

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import base64
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +21,7 @@ from services.trajectory_upload.broker_app import (
     AlreadyUploaded,
     RateLimited,
     RejectedUpload,
+    _backend,
     create_app,
 )
 from services.trajectory_upload.contract import (
@@ -29,6 +33,7 @@ from services.trajectory_upload.validation import (
     CaptureRejected,
     _validate_and_scan_jsonl,
     validate_local_capture,
+    validate_manifest_bytes,
 )
 from services.trajectory_upload.validator import (
     AzureCaptureValidator,
@@ -71,6 +76,31 @@ class FakeBroker:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+def test_broker_cold_start_constructs_one_shared_backend() -> None:
+    """Guards PR #989 against cold-start requests splitting quota locks."""
+    service = FakeBroker(AssertionError())
+    calls = 0
+
+    def factory() -> FakeBroker:
+        nonlocal calls
+        calls += 1
+        time.sleep(0.02)
+        return service
+
+    app = create_app(backend_factory=factory)
+    barrier = Barrier(8)
+
+    def load_backend() -> object:
+        barrier.wait()
+        return _backend(app)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        backends = list(executor.map(lambda _item: load_backend(), range(8)))
+
+    assert calls == 1
+    assert all(backend is service for backend in backends)
 
 
 def test_first_delegation_key_request_does_not_underflow() -> None:
@@ -275,6 +305,19 @@ def test_validator_recomputes_bytes_jsonl_and_secret_scan(tmp_path: Path) -> Non
         _validate_and_scan_jsonl(aws_session_key, "trajectory/aws-session.jsonl")
 
 
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-32"])
+def test_validator_rejects_non_utf8_manifest_bytes(
+    tmp_path: Path, encoding: str
+) -> None:
+    """Guards PR #989 against JSON byte-parser encoding auto-detection."""
+    trial = _trial(tmp_path)
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        encoded = json.dumps(staged.manifest).encode(encoding)
+
+    with pytest.raises(CaptureRejected, match="must be UTF-8"):
+        validate_manifest_bytes(encoded)
+
+
 @pytest.mark.parametrize(
     "record, message",
     [
@@ -336,6 +379,19 @@ def test_validator_rejects_prefixless_credentials_in_common_fields(
 
     with pytest.raises(CaptureRejected, match="secret-like"):
         _validate_and_scan_jsonl(artifact, "trajectory/credential-field.jsonl")
+
+
+def test_validator_rejects_prefixless_secret_in_argv_sequence(tmp_path: Path) -> None:
+    """Guards PR #989 against raw credentials following sensitive CLI flags."""
+    artifact = tmp_path / "command.jsonl"
+    artifact.write_text(
+        json.dumps({"command": ["tool", "--api-key", "opaque-prefixless-value"]})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CaptureRejected, match="secret-like"):
+        _validate_and_scan_jsonl(artifact, "trajectory/command.jsonl")
 
 
 def test_validator_bounds_record_bytes_and_complexity(

@@ -433,6 +433,23 @@ def test_contribution_redactor_covers_token_and_camel_case_fields(
     assert replacements == 1
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["tool", "--api-key", "opaque-prefixless-value"],
+        ["tool", "--client-secret", "opaque-prefixless-value"],
+        ["tool", "--access_token=opaque-prefixless-value"],
+        "tool --api-key opaque-prefixless-value",
+    ],
+)
+def test_contribution_redactor_covers_sensitive_command_arguments(command) -> None:
+    """Guards PR #989 against prefixless credentials following CLI flags."""
+    redacted, replacements = redact_value({"command": command})
+
+    assert "opaque-prefixless-value" not in json.dumps(redacted)
+    assert replacements == 1
+
+
 def test_contribution_redactor_preserves_kebab_case_sk_identifiers() -> None:
     """Guards PR #989 against corrupting ordinary sk-prefixed task identifiers."""
     value = {"output": "task-sk-us-east-1-refactor-auth"}

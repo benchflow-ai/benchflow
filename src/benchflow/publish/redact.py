@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
 
@@ -106,13 +107,7 @@ def redact_value(value: Any, *, field_name: str | None = None) -> tuple[Any, int
         return redacted, replacements
 
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        redacted_items = []
-        replacements = 0
-        for item in value:
-            clean, count = redact_value(item)
-            redacted_items.append(clean)
-            replacements += count
-        return redacted_items, replacements
+        return _redact_argv(value, redact_other_values=True)
 
     if not isinstance(value, str):
         return value, 0
@@ -125,7 +120,60 @@ def _redact_text(value: str) -> tuple[str, int]:
     for pattern, replacement in VALUE_PATTERNS:
         redacted_text, count = pattern.subn(replacement, redacted_text)
         replacements += count
+    cli_redacted, cli_replacements = _redact_cli_text(redacted_text)
+    redacted_text = cli_redacted
+    replacements += cli_replacements
     return redacted_text, replacements
+
+
+def _redact_cli_text(value: str) -> tuple[str, int]:
+    if "--" not in value:
+        return value, 0
+    try:
+        argv = shlex.split(value)
+    except ValueError:
+        return value, 0
+    redacted, replacements = _redact_argv(argv, redact_other_values=False)
+    return (shlex.join(redacted), replacements) if replacements else (value, 0)
+
+
+def _redact_argv(
+    values: Sequence[Any], *, redact_other_values: bool
+) -> tuple[list[Any], int]:
+    redacted: list[Any] = []
+    replacements = 0
+    redact_next = False
+    for item in values:
+        if redact_next:
+            if item == REDACTED or item == "***REDACTED***":
+                redacted.append(item)
+            else:
+                redacted.append(REDACTED)
+                replacements += 1
+            redact_next = False
+            continue
+
+        if isinstance(item, str) and item.startswith("-"):
+            option, separator, option_value = item.partition("=")
+            if _is_sensitive_key(option):
+                if separator and option_value:
+                    if option_value in {REDACTED, "***REDACTED***"}:
+                        redacted.append(item)
+                    else:
+                        redacted.append(f"{option}={REDACTED}")
+                        replacements += 1
+                else:
+                    redacted.append(item)
+                    redact_next = not separator
+                continue
+
+        if redact_other_values:
+            clean, count = redact_value(item)
+            redacted.append(clean)
+            replacements += count
+        else:
+            redacted.append(item)
+    return redacted, replacements
 
 
 def _is_sensitive_key(field_name: str) -> bool:

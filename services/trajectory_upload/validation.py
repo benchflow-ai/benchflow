@@ -59,9 +59,13 @@ def validate_manifest_bytes(manifest_bytes: bytes) -> ContributionManifest:
     if len(manifest_bytes) > MAX_MANIFEST_BYTES:
         raise CaptureRejected("manifest exceeds the 1 MiB limit")
     try:
-        raw_manifest = strict_json_loads(manifest_bytes)
+        manifest_text = manifest_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CaptureRejected("invalid manifest: content must be UTF-8") from exc
+    try:
+        raw_manifest = strict_json_loads(manifest_text)
         manifest = ContributionManifest.model_validate(raw_manifest)
-    except (UnicodeDecodeError, RecursionError, ValueError) as exc:
+    except (RecursionError, ValueError) as exc:
         raise CaptureRejected(f"invalid manifest: {exc}") from exc
     try:
         _, replacements = redact_value(raw_manifest)
