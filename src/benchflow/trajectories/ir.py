@@ -79,6 +79,45 @@ not a field inside it: a conversion with no usage at all declares ``usage``, not
 ``usage.input_tokens``. Sections that every conversion has an opinion about —
 :attr:`CanonicalTrace.agent`, :attr:`CanonicalTrace.outcome` — are therefore
 always present, with ``None`` fields inside them.
+
+Both rules apply to :attr:`PathSpace.HUB` records only; see below.
+
+## Path spaces
+
+Not every record is about a node of the IR. An inbound edge can read an input
+element that becomes no IR node at all, and an outbound edge can emit a value
+the IR never held — a field its target format requires, or one supplied by the
+conversion context rather than by the trace. Neither has an IR path, and
+inventing one would produce an address that does not resolve.
+
+:class:`PathSpace` states which document a record's path addresses, so the space
+is a property of the record rather than something inferred from the string. See
+that class for the three values and why three is enough for any format.
+
+Two consequences worth stating plainly:
+
+- **Only ``HUB`` records compose across edges.** The IR is the output of an
+  inbound conversion and the input of an outbound one, so ``events[1].tool_call.arguments``
+  denotes the same field in both reports and the two records join on it: the
+  ACP edge declares it ``UNSUPPORTED`` (the source never carried arguments), the
+  ATIF edge declares it ``SYNTHESIZED`` (the target required a value). Read
+  together they are the whole history of one field along the pipeline.
+- **``SOURCE`` and ``TARGET`` records are terminal.** They name objects in
+  documents that only one edge ever sees, so joining them across edges would be
+  meaningless.
+
+## Which side owns the report
+
+A report belongs to a *conversion*, not to a document — but for one direction
+the distinction collapses, and that is why :attr:`CanonicalTrace.losses` exists:
+
+- **Inbound** (``X -> IR``): a trace is built exactly once, by one conversion,
+  so its report may be attached to it. A trace separated from the record of what
+  building it cost is a trace whose absences cannot be checked.
+- **Outbound** (``IR -> Y``): one trace may be converted to ATIF, to OTel and to
+  ADP, so there are *N* reports and none of them describes how the trace came to
+  exist. An outbound converter therefore **returns** its report alongside its
+  document and leaves ``trace.losses`` untouched.
 """
 
 from __future__ import annotations
@@ -120,15 +159,50 @@ class LossClass(StrEnum):
     observed one (ATIF's ``call_{n}`` ids, ADP's ``call_NNNNNN``)."""
 
 
+class PathSpace(StrEnum):
+    """Which document a :attr:`LossRecord.field` path addresses.
+
+    Every conversion has the IR on exactly one side, so it has exactly one
+    non-hub space: an inbound edge (``X -> IR``) can talk about its *source*, an
+    outbound edge (``IR -> Y``) about its *target*. Three spaces therefore cover
+    every direction, and a new format adds none.
+
+    The space is a property of the record, never of the string: ``field`` is the
+    path *inside* its space and carries no prefix announcing which one. Two
+    records may legitimately hold the identical path in different spaces — for
+    ``acp -> ir``, source ``events[3]`` and hub ``events[3]`` are different
+    objects whenever an earlier entry produced no IR event.
+    """
+
+    HUB = "hub"
+    """A node of the canonical IR. **The only composable space**: the IR is the
+    output of an inbound edge and the input of an outbound one, so the same path
+    means the same thing in both reports and their records join on it."""
+
+    SOURCE = "source"
+    """An element of an inbound edge's input with no corresponding IR node."""
+
+    TARGET = "target"
+    """A value an outbound edge produced with no IR antecedent — required by the
+    target format, or supplied by the conversion context rather than by the
+    trace."""
+
+
 class LossRecord(BaseModel):
     """One declared information loss, addressed to a field."""
 
     model_config = ConfigDict(extra="forbid")
 
     field: str
-    """Dotted path in IR terms, e.g. ``events[3].tool_call.arguments``. The
-    path addresses the IR, not the source document, so one vocabulary covers
-    every direction."""
+    """Dotted path **within** :attr:`space`, e.g. ``events[3].tool_call.arguments``.
+
+    For :attr:`PathSpace.HUB` — the default, and the only one the resolvability
+    guard checks — this addresses the canonical IR, so one vocabulary covers
+    every direction and records from different edges join on it."""
+
+    space: PathSpace = PathSpace.HUB
+    """Which document :attr:`field` addresses. Defaults to the hub, so every
+    record written before this field existed keeps its meaning."""
 
     loss_class: LossClass
     detail: str
@@ -160,18 +234,34 @@ class LossReport(BaseModel):
         loss_class: LossClass,
         detail: str,
         doc_ref: str | None = None,
+        space: PathSpace = PathSpace.HUB,
     ) -> None:
         self.records.append(
             LossRecord(
-                field=field, loss_class=loss_class, detail=detail, doc_ref=doc_ref
+                field=field,
+                space=space,
+                loss_class=loss_class,
+                detail=detail,
+                doc_ref=doc_ref,
             )
         )
 
     def by_class(self, loss_class: LossClass) -> list[LossRecord]:
         return [r for r in self.records if r.loss_class is loss_class]
 
-    def for_field(self, field: str) -> list[LossRecord]:
-        return [r for r in self.records if r.field == field]
+    def by_space(self, space: PathSpace) -> list[LossRecord]:
+        return [r for r in self.records if r.space is space]
+
+    def for_field(
+        self, field: str, space: PathSpace = PathSpace.HUB
+    ) -> list[LossRecord]:
+        """Records addressing *field* in *space*.
+
+        The space is part of the address: the same string in two spaces names
+        two different objects, so it is not defaulted away silently — the
+        default is the hub because that is the composable space.
+        """
+        return [r for r in self.records if r.field == field and r.space is space]
 
     @property
     def lossless(self) -> bool:
@@ -510,12 +600,15 @@ def validate_trace(trace: CanonicalTrace) -> list[str]:
        second, divergent one.
     6. **Reasoning presence.** An ``AGENT_REASONING`` event carries reasoning in
        one of the two fields.
-    7. **No silent absence.** Every ``arguments is None`` has a matching loss
-       record at ``events[i].tool_call.arguments``. This is the invariant that
-       makes the loss report a contract instead of documentation: a converter
-       that quietly fails to carry arguments produces an invalid trace. Note
-       that the record addresses the field *by path*, which is why the canonical
-       encoding has to keep that path resolvable — see the module docstring.
+    7. **No silent absence.** Every ``arguments is None`` has a matching
+       :attr:`PathSpace.HUB` loss record at ``events[i].tool_call.arguments``.
+       This is the invariant that makes the loss report a contract instead of
+       documentation: a converter that quietly fails to carry arguments produces
+       an invalid trace. The space is checked, not guessed from the string — a
+       ``TARGET`` record that happens to hold the same path addresses another
+       document and does not declare anything about this one. And because the
+       record addresses the field *by path*, the canonical encoding has to keep
+       that path resolvable; see the module docstring.
     8. **Role coherence.** A ``USER_MESSAGE`` is attributed to ``USER`` or to
        nobody. The IR checks only this direction; agent-side attribution is
        genuinely ambiguous today (§5, the ``oracle`` divergence) and the IR does
@@ -529,7 +622,11 @@ def validate_trace(trace: CanonicalTrace) -> list[str]:
             "v0 defines no migration"
         )
 
-    declared_losses = {r.field for r in (trace.losses.records if trace.losses else [])}
+    declared_losses = {
+        record.field
+        for record in (trace.losses.records if trace.losses else [])
+        if record.space is PathSpace.HUB
+    }
 
     for position, event in enumerate(trace.events):
         where = f"events[{position}]"

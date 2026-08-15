@@ -38,6 +38,7 @@ from benchflow.trajectories.ir import (
     EventKind,
     LossClass,
     OutcomeStatus,
+    PathSpace,
     Role,
     ToolStatus,
     validate_trace,
@@ -190,11 +191,12 @@ def test_ordering_and_dense_indices_are_preserved():
 
 
 def test_an_unrepresentable_entry_leaves_no_hole():
-    """A skipped source entry is declared under ``source[i]``, not ``events[i]``.
+    """A skipped source entry is declared in the SOURCE space, not the hub.
 
-    The distinction matters: index 1 of the IR belongs to the event that
-    followed the skipped entry, so addressing the loss as ``events[1]`` would
-    blame a different event.
+    The distinction matters and the space is what carries it: index 1 of the IR
+    belongs to the event that followed the skipped entry, so a *hub* record at
+    ``events[1]`` would blame a different event. The identical path in the
+    source space names the input entry instead.
     """
     events: list[Any] = [
         {"type": "agent_message", "text": "a"},
@@ -205,9 +207,12 @@ def test_an_unrepresentable_entry_leaves_no_hole():
 
     assert [e.index for e in trace.events] == [0, 1]
     assert [e.text for e in trace.events] == ["a", "b"]
-    dropped = trace.losses.for_field("source[1]")
+
+    dropped = trace.losses.for_field("events[1]", PathSpace.SOURCE)
     assert len(dropped) == 1
     assert dropped[0].loss_class is LossClass.DROPPED
+    # …and nothing was declared about the hub event that now holds index 1.
+    assert trace.losses.for_field("events[1]") == []
     assert validate_trace(trace) == []
 
 
@@ -302,10 +307,10 @@ def test_every_concrete_loss_path_of_a_converted_trace_resolves():
         trace = acp_events_to_ir(events)
         document = trace.model_dump(mode="json")
         for record in trace.losses.records:
-            if record.field.startswith("events[]") or record.field.startswith(
-                "source["
-            ):
-                continue  # systemic and source-side paths address no IR field
+            if record.space is not PathSpace.HUB:
+                continue  # addresses another document entirely
+            if record.field.startswith("events[]"):
+                continue  # the unindexed systemic form, by convention
             resolved, _ = resolve_ir_path(document, record.field)
             assert resolved, (record.field, events)
 

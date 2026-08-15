@@ -34,14 +34,16 @@ arguments. Those are target-side obligations (§8.2).
 
 ## Loss addressing
 
-Two path shapes appear in the report, and the difference is load-bearing:
+Records come in two path spaces, and the difference is load-bearing:
 
-- ``events[i].…`` — a field of the IR event at index *i*. This is what
+- :attr:`~benchflow.trajectories.ir.PathSpace.HUB`, ``events[i].…`` — a field of
+  the IR event at index *i*. This is what
   :func:`~benchflow.trajectories.ir.validate_trace` matches against, so the
   per-call `arguments` records must use it.
-- ``source[i]`` — an entry of the *input* list that produced no IR event at all.
-  It cannot be addressed as ``events[i]``, because that index belongs to a
-  different event once an entry is skipped.
+- :attr:`~benchflow.trajectories.ir.PathSpace.SOURCE`, ``events[i]`` — an entry
+  of the *input* list that produced no IR event at all. It cannot be a hub path,
+  because that index belongs to a different event once an entry is skipped; the
+  space is what distinguishes the two, not the string.
 
 Systemic losses — the ones that hold for every event of a kind rather than for
 one event — are declared **once** with an unindexed ``events[].…`` path. Writing
@@ -78,6 +80,7 @@ from benchflow.trajectories.ir import (
     LossReport,
     ModelInfo,
     OutcomeStatus,
+    PathSpace,
     Provenance,
     Role,
     ToolCall,
@@ -337,10 +340,11 @@ def acp_events_to_ir(
     for source_position, raw in enumerate(events):
         if not isinstance(raw, dict):
             losses.add(
-                f"source[{source_position}]",
+                f"events[{source_position}]",
                 LossClass.DROPPED,
                 f"entry is {type(raw).__name__}, not a JSON object; the IR has no "
                 "representation for it",
+                space=PathSpace.SOURCE,
             )
             continue
 
@@ -493,15 +497,20 @@ def loss_summary(report: LossReport) -> dict[str, int]:
     return summary
 
 
-def _is_per_event(field: str) -> bool:
+def _is_per_event(record: LossRecord) -> bool:
     """True for a record addressed to one event or one source entry.
 
-    ``events[]…`` is the unindexed, systemic form and is deliberately not
-    per-event, so the prefix test has to run before the general one.
+    Within the hub space, ``events[]…`` is the unindexed *systemic* form and
+    ``events[i]…`` the per-event one, so that prefix test runs first. Source
+    records are per-entry by construction.
     """
-    if field.startswith("events[]"):
+    if record.space is PathSpace.SOURCE:
+        return True
+    if record.space is not PathSpace.HUB:
         return False
-    return field.startswith(("events[", "source["))
+    if record.field.startswith("events[]"):
+        return False
+    return record.field.startswith("events[")
 
 
 def systemic_losses(report: LossReport) -> list[LossRecord]:
@@ -510,9 +519,9 @@ def systemic_losses(report: LossReport) -> list[LossRecord]:
     The complement — :func:`per_event_losses` — is the part that grows with the
     trace, and is what makes the report's size worth watching.
     """
-    return [record for record in report.records if not _is_per_event(record.field)]
+    return [record for record in report.records if not _is_per_event(record)]
 
 
 def per_event_losses(report: LossReport) -> list[LossRecord]:
     """The records addressed to a single event or a single source entry."""
-    return [record for record in report.records if _is_per_event(record.field)]
+    return [record for record in report.records if _is_per_event(record)]

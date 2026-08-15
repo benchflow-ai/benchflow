@@ -51,9 +51,11 @@ from benchflow.trajectories.ir import (
     ContentBlockKind,
     EventKind,
     LossClass,
+    LossRecord,
     LossReport,
     ModelInfo,
     OutcomeStatus,
+    PathSpace,
     Provenance,
     Role,
     ToolCall,
@@ -363,6 +365,119 @@ def test_loss_report_is_empty_only_as_a_claim():
     assert report.for_field("agent.agent_version")[0].loss_class is (
         LossClass.SYNTHESIZED
     )
+
+
+# ---------------------------------------------------------------------------
+# Path spaces
+# ---------------------------------------------------------------------------
+
+
+def test_the_three_path_spaces_are_the_documented_ones():
+    """Three spaces cover every direction; a new format must add none."""
+    assert {space.value for space in PathSpace} == {"hub", "source", "target"}
+
+
+def test_hub_is_the_default_so_older_records_keep_their_meaning():
+    """The field is additive: a record written without a space is a hub record."""
+    record = LossRecord(
+        field="events[0].tool_call.arguments",
+        loss_class=LossClass.UNSUPPORTED,
+        detail="no rawInput",
+    )
+    assert record.space is PathSpace.HUB
+    report = LossReport(direction="acp->ir")
+    report.add("agent.agent_version", LossClass.SYNTHESIZED, "ATIF requires it")
+    assert report.records[0].space is PathSpace.HUB
+
+
+def test_the_same_path_in_two_spaces_names_two_different_objects():
+    """`for_field` therefore takes the space, and does not default it away."""
+    report = LossReport(direction="ir->atif")
+    report.add("events[0]", LossClass.DROPPED, "hub event dropped")
+    report.add(
+        "events[0]", LossClass.SYNTHESIZED, "target step", space=PathSpace.TARGET
+    )
+
+    assert len(report.records) == 2
+    assert len(report.for_field("events[0]")) == 1
+    assert report.for_field("events[0]")[0].loss_class is LossClass.DROPPED
+    assert (
+        report.for_field("events[0]", PathSpace.TARGET)[0].loss_class
+        is LossClass.SYNTHESIZED
+    )
+    assert len(report.by_space(PathSpace.HUB)) == 1
+    assert len(report.by_space(PathSpace.TARGET)) == 1
+
+
+def test_only_hub_records_satisfy_the_declared_absence_invariant():
+    """The space is checked, never inferred from the string.
+
+    A `TARGET` record holding the identical path addresses another document, so
+    it declares nothing about this trace — and a `SOURCE` one likewise. If the
+    invariant sniffed the string, both would wrongly satisfy it.
+    """
+    for space in (PathSpace.SOURCE, PathSpace.TARGET):
+        losses = LossReport(direction="ir->atif")
+        losses.add(
+            "events[0].tool_call.arguments",
+            LossClass.SYNTHESIZED,
+            "same path, different document",
+            space=space,
+        )
+        trace = _trace(
+            _event(0, EventKind.TOOL_CALL, tool_call=ToolCall(arguments=None)),
+            losses=losses,
+        )
+        issues = validate_trace(trace)
+        assert any("absence must be declared" in issue for issue in issues), (
+            space,
+            issues,
+        )
+
+    hub = LossReport(direction="acp->ir")
+    hub.add("events[0].tool_call.arguments", LossClass.UNSUPPORTED, "no rawInput")
+    assert (
+        validate_trace(
+            _trace(
+                _event(0, EventKind.TOOL_CALL, tool_call=ToolCall(arguments=None)),
+                losses=hub,
+            )
+        )
+        == []
+    )
+
+
+def test_non_hub_records_are_not_read_as_ir_paths():
+    """A source or target path may be unresolvable in the IR without penalty.
+
+    Both of these address documents the IR does not contain, so the canonical
+    resolvability guard must not look at them at all.
+    """
+    losses = LossReport(direction="ir->atif")
+    losses.add("events[7]", LossClass.DROPPED, "input entry", space=PathSpace.SOURCE)
+    losses.add(
+        "final_metrics.total_steps",
+        LossClass.SYNTHESIZED,
+        "target-only value",
+        space=PathSpace.TARGET,
+    )
+    trace = _trace(_event(0, EventKind.AGENT_MESSAGE, text="hi"), losses=losses)
+
+    assert validate_trace(trace) == []
+
+    canonical = trace.model_dump(mode="json")
+    for record in trace.losses.records:
+        assert record.space is not PathSpace.HUB
+        # Unresolvable as an IR path, and that is precisely why it is not one.
+        assert not resolve_ir_path(canonical, record.field)[0]
+
+
+def test_the_space_survives_the_canonical_encoding():
+    report = LossReport(direction="ir->atif")
+    report.add("steps[0]", LossClass.SYNTHESIZED, "prompt step", space=PathSpace.TARGET)
+    document = report.model_dump(mode="json")
+    assert document["records"][0]["space"] == "target"
+    assert LossReport.model_validate(document).records[0].space is PathSpace.TARGET
 
 
 def test_every_loss_class_of_the_documented_taxonomy_exists():
@@ -676,7 +791,8 @@ def test_every_concrete_loss_path_resolves_in_the_canonical_encoding():
     concrete = [
         record.field
         for record in trace.losses.records
-        if record.field.startswith("events[")
+        if record.space is PathSpace.HUB
+        and record.field.startswith("events[")
         and not record.field.startswith("events[]")
     ]
     assert concrete, "the example must declare at least one concrete-path loss"

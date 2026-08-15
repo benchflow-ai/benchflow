@@ -563,6 +563,30 @@ Three design choices carry most of the weight:
    *This rule was written after the fact: §8.4 was first published with
    `exclude_none=True`, and a human end-to-end read of a converted rollout found
    the loss records pointing at keys the document did not contain.*
+5. **A loss record declares which document its path addresses.** Not every
+   record is about an IR node: an inbound edge can read an input element that
+   becomes no IR node at all, and an outbound edge can emit a value the IR never
+   held — one its target format requires, or one supplied by the conversion
+   context. `LossRecord.space` is `hub` · `source` · `target`, defaulting to
+   `hub`, and `field` is the path *inside* that space with no prefix repeating
+   it. Three spaces cover every direction, because **every edge has the IR on
+   exactly one side** and therefore exactly one non-hub space: OTel will add
+   none.
+
+   Only `hub` records compose across edges — the IR is the output of an inbound
+   conversion and the input of an outbound one, so `events[1].tool_call.arguments`
+   denotes the same field in both reports and the records join on it: `acp -> ir`
+   declares it `unsupported`, `ir -> atif` declares it `synthesized`, and read
+   together they are the whole history of that field along the pipeline.
+   `source` and `target` records are terminal by construction. There is no
+   unified report; composition happens at read time over
+   `(direction, field, space)`.
+
+   **Which side owns the report** follows from the same asymmetry. A trace is
+   built exactly once, so an inbound conversion may attach its report to the
+   trace (`CanonicalTrace.losses`). A trace may be converted to many targets, so
+   an outbound conversion returns its report alongside its document and leaves
+   `trace.losses` untouched.
 
 ### 8.3 Planned mapping
 
@@ -814,12 +838,14 @@ its source-specific fields in `extensions` rather than as four new IR fields.
     "records": [
       {
         "field": "events[1].tool_call.arguments",
+        "space": "hub",
         "loss_class": "unsupported",
         "detail": "ACPSession.handle_update reads five fields and rawInput is not one of them, so no ACP-derived tool call carries arguments.",
         "doc_ref": "\u00a75 loss #1"
       },
       {
         "field": "events[1].tool_call.started_at",
+        "space": "hub",
         "loss_class": "unsupported",
         "detail": "ToolCallRecord tracks started_at/finished_at in memory and _events_to_trajectory serializes neither.",
         "doc_ref": "\u00a75 loss #3"
