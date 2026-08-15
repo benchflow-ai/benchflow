@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
+import click
 import httpx
 import pytest
 from typer.testing import CliRunner
@@ -319,7 +320,7 @@ def test_broker_put_conflicts_are_cloud_neutral_skips(
 
 
 def test_help_exposes_only_the_planned_upload_command() -> None:
-    """The trajectory CLI surface remains a single clean command."""
+    """Guards PR #992 while ignoring Rich's environment-specific ANSI styling."""
     traj_group = next(group for group in app.registered_groups if group.name == "traj")
     assert {
         command.name for command in traj_group.typer_instance.registered_commands
@@ -331,24 +332,25 @@ def test_help_exposes_only_the_planned_upload_command() -> None:
 
     upload_help = runner.invoke(app, ["traj", "upload", "--help"])
     assert upload_help.exit_code == 0
-    assert "--github-id" in upload_help.output
-    assert "--email" in upload_help.output
+    upload_help_output = click.unstyle(upload_help.output)
+    assert "--github-id" in upload_help_output
+    assert "--email" in upload_help_output
 
 
 def test_upload_requires_github_id_and_email_parameters(tmp_path: Path) -> None:
-    """Every CLI upload names its contributor in the generated manifest."""
+    """Guards PR #992: every CLI upload must name its contributor."""
     trial = _trial(tmp_path)
     result = runner.invoke(app, ["traj", "upload", str(trial)])
 
     assert result.exit_code == 2
-    assert "--github-id" in result.output
+    assert "--github-id" in click.unstyle(result.output)
 
     result = runner.invoke(
         app,
         ["traj", "upload", str(trial), "--github-id", GITHUB_ID],
     )
     assert result.exit_code == 2
-    assert "--email" in result.output
+    assert "--email" in click.unstyle(result.output)
 
 
 @pytest.mark.parametrize(
