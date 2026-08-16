@@ -58,3 +58,12 @@ def test_trajectory_upload_deploy_uses_colocated_bicep() -> None:
     assert '"${task_service_root}/infra/main.bicep"' in deploy
     assert '"${task_service_root}/infra/production.bicepparam"' in deploy
     assert "infra/trajectory-upload" not in deploy
+
+
+def test_trajectory_upload_bicep_does_not_reconfigure_data_services() -> None:
+    """Guards the Azure queue-service deployment fix from PR #1008."""
+    bicep = (_SERVICE_ROOT / "infra" / "main.bicep").read_text()
+
+    assert "resource queueService" in bicep
+    assert "queueServices@2023-05-01' existing" in bicep
+    assert "tableServices@2023-05-01' existing" in bicep

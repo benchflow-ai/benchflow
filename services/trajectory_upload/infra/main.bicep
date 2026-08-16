@@ -89,21 +89,9 @@ resource gold 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05
   }
 }
 
-resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' existing = {
   parent: storage
   name: 'default'
-  // The storage API returns logging fields that the current Bicep type omits.
-  properties: any({
-    logging: {
-      delete: false
-      read: false
-      retentionPolicy: {
-        enabled: false
-      }
-      version: '1.0'
-      write: false
-    }
-  })
 }
 
 resource validationQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
@@ -111,7 +99,7 @@ resource validationQueue 'Microsoft.Storage/storageAccounts/queueServices/queues
   name: validationQueueName
 }
 
-resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' = {
+resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' existing = {
   parent: storage
   name: 'default'
 }
