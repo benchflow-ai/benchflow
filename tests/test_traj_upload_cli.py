@@ -813,7 +813,11 @@ def test_list_recent_sessions_scans_all_projects_most_recent_first(
     assert "prize session please" in hits[1].snippet
 
 
-REPO_LINE = "Repo: benchflow-ai/benchflow (use --no-repo to omit)"
+def _repo_line(session_cwd: Path) -> str:
+    return (
+        f"Repo: benchflow-ai/benchflow (from session cwd {session_cwd}; "
+        "use --no-repo to omit)"
+    )
 
 
 def _session_with_cwd(tmp_path: Path, event: dict) -> Path:
@@ -866,7 +870,9 @@ def test_upload_tags_source_id_with_the_session_repo(
 ) -> None:
     """Guards PR #1015 (repo tagging follow-up to PR #1013): by default the
     upload's source id becomes ``repo/<owner>/<name>``, resolved from the
-    session's recorded cwd git remote, and the CLI prints the repo line."""
+    session's recorded cwd git remote, and the CLI prints the repo line
+    naming the session cwd it came from (terminal output only — the local
+    path never enters the uploaded source id)."""
     workdir = tmp_path / "workdir"
     workdir.mkdir()
     session = _session_with_cwd(tmp_path, event_for_cwd(str(workdir)))
@@ -880,7 +886,7 @@ def test_upload_tags_source_id_with_the_session_repo(
 
     assert result.exit_code == 0, result.output
     assert captured["source_id"] == "repo/benchflow-ai/benchflow"
-    assert REPO_LINE in click.unstyle(result.output)
+    assert _repo_line(workdir) in click.unstyle(result.output)
     assert str(workdir) not in captured["source_id"]
 
 
@@ -938,6 +944,54 @@ def test_undetectable_repo_falls_back_silently(
     source id, no repo line, and no error."""
     session = _session_with_cwd(tmp_path, {"type": "message", "text": "demo"})
     monkeypatch.setattr("benchflow.cli.traj._command_stdout", lambda *_args: None)
+    captured: dict[str, str] = {}
+    _capture_broker_source_id(monkeypatch, captured)
+
+    result = runner.invoke(app, _upload_command(session))
+
+    assert result.exit_code == 0, result.output
+    assert captured["source_id"] == "session"
+    assert "Repo:" not in click.unstyle(result.output)
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"type": "message", "text": "demo"},
+        None,  # replaced with a cwd pointing at a non-repo directory below
+    ],
+    ids=["no-recorded-cwd", "cwd-is-not-a-repo"],
+)
+def test_session_without_usable_cwd_never_tags_from_invocation_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event: dict | None
+) -> None:
+    """Guards this PR's fix to PR #1015 against the invocation-directory
+    fallback the collector-side audit flagged: a session recorded outside any
+    git repo (e.g. /tmp/collector-walkthrough), uploaded from inside the
+    benchflow checkout, was mis-tagged ``repo/benchflow-ai/benchflow`` — two
+    community-dataset entries carry that mis-attribution. The repo tag must
+    derive ONLY from the trajectory's own recorded cwd, so even when the
+    upload invocation directory resolves to a GitHub remote, a session with
+    no usable cwd uploads untagged with the default source id."""
+    not_a_repo = tmp_path / "not-a-repo"
+    not_a_repo.mkdir()
+    if event is None:
+        event = {"type": "user", "cwd": str(not_a_repo), "message": {"content": "hi"}}
+    session = _session_with_cwd(tmp_path, event)
+
+    def invocation_dir_has_a_remote(*args: str) -> str | None:
+        # Answer every origin-remote lookup EXCEPT the session's recorded cwd:
+        # the invocation directory (and anything else) looks like a checkout
+        # of benchflow, exactly the audit's mis-attribution scenario.
+        if args[:2] == ("git", "-C") and args[2] == str(not_a_repo):
+            return None
+        if args[3:] == ("remote", "get-url", "origin"):
+            return "https://github.com/benchflow-ai/benchflow.git"
+        return None
+
+    monkeypatch.setattr(
+        "benchflow.cli.traj._command_stdout", invocation_dir_has_a_remote
+    )
     captured: dict[str, str] = {}
     _capture_broker_source_id(monkeypatch, captured)
 

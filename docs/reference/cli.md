@@ -919,7 +919,7 @@ bench traj upload path/to/trial --dry-run
 | `--github-id` | inferred, then prompted | Self-asserted GitHub username stored in `manifest.json`; inferred from `gh` / `git` / `BENCHFLOW_GITHUB_ID` |
 | `--email` | inferred, then prompted | Contributor email stored in `manifest.json`; inferred from `git` / `BENCHFLOW_EMAIL`; not repeated in success output |
 | `--source-id` | derived from `PATH` | Stable contributor/run label stored in the manifest |
-| `--repo` / `--no-repo` | on | Tag the upload with the repository the session was about: `repo/<owner>/<name>` from the session's recorded cwd git remote becomes the source id and the CLI prints `Repo: owner/name (use --no-repo to omit)`; explicit `--source-id` wins; undetectable repos fall back silently |
+| `--repo` / `--no-repo` | on | Tag the upload with the repository the session was about: `repo/<owner>/<name>` from the session's own recorded cwd git remote (never the invocation directory) becomes the source id and the CLI prints `Repo: owner/name (from session cwd <path>; use --no-repo to omit)` — the path is terminal-only, never uploaded; explicit `--source-id` wins; sessions without a usable recorded cwd fall back silently to the derived source id |
 | `--preview-steps` | `5` | Number of redacted trajectory steps to preview; accepts 0–20 |
 | `--dry-run` | `false` | Validate, redact, hash, and list staged files without network traffic |
 | `--direct` | `false` | Use local Azure credentials instead of the public broker; requires the `azure` extra |

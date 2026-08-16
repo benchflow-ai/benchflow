@@ -17,12 +17,33 @@
 - **Trajectory uploads are tagged with the session's repository by
   default.** Unless `--source-id` is given, `bench traj upload` reads the
   session's recorded working directory (Claude `cwd` events, Codex
-  `session_meta`), resolves its git `origin` remote (invocation directory as
-  fallback), and stores `repo/<owner>/<name>` as the manifest source id,
-  printing `Repo: owner/name (use --no-repo to omit)`. `--no-repo` opts out
+  `session_meta`), resolves its git `origin` remote, and stores
+  `repo/<owner>/<name>` as the manifest source id, printing
+  `Repo: owner/name (from session cwd /path; use --no-repo to omit)` (the
+  local path is terminal output only, never uploaded). `--no-repo` opts out
   — the `benchflow-traj-upload` skill now surfaces the detected tag during
   the confirm step so contributors can decline it for private repos — and
   undetectable repos fall back silently to the path-derived source id.
+
+### Fixed
+- **The repo tag derives only from the session's own recorded cwd.** The
+  initial repo-tagging implementation (#1015) fell back to the upload
+  invocation directory's git remote when the session cwd yielded nothing; a
+  collector-side audit showed this mis-attributes provenance — a session
+  recorded in a non-repo directory, uploaded from the benchflow checkout,
+  was tagged `repo/benchflow-ai/benchflow` (two community-dataset entries
+  carry the mis-tag). The fallback is removed: no session cwd, a missing
+  directory, or no GitHub remote now mean no repo tag, exactly like
+  `--no-repo`.
+- **The trajectory viewer header no longer shows `?` badges on real Claude
+  Code sessions.** `bench eval view` on a `~/.claude` session JSONL rendered
+  `model: ?`, `session: ?...`, `claude code: ?`, and `total cost: $0.0000`
+  because the header only read a `type: system` event that real session
+  files don't contain. The header now derives its metadata from what the
+  file actually carries (first assistant event's `message.model`, per-event
+  `version` / `sessionId`, the filename stem as a session fallback) and
+  hides any badge whose value is unknown — including the cost badge when no
+  event carries cost data. Presentation only.
 
 ### Changed
 - **Trajectory viewer tool calls are color-coded and backgrounds are light.**
