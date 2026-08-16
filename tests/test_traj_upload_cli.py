@@ -780,3 +780,138 @@ def test_list_recent_sessions_scans_all_projects_most_recent_first(
     assert all(hit.source == "claude" for hit in hits)
     assert "GC content" in hits[0].snippet
     assert "prize session please" in hits[1].snippet
+
+
+REPO_LINE = "Repo: benchflow-ai/benchflow (use --no-repo to omit)"
+
+
+def _session_with_cwd(tmp_path: Path, event: dict) -> Path:
+    session = tmp_path / "session.jsonl"
+    session.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    return session
+
+
+def _git_remote_stub(url: str | None, workdir: Path):
+    """A ``_command_stdout`` stub answering only the origin-remote lookup."""
+
+    def fake(*args: str) -> str | None:
+        if args == ("git", "-C", str(workdir), "remote", "get-url", "origin"):
+            return url
+        return None
+
+    return fake
+
+
+def _capture_broker_source_id(
+    monkeypatch: pytest.MonkeyPatch, captured: dict[str, str]
+) -> None:
+    def fake_upload(staged, *, broker_url, on_file_complete, on_bytes):
+        captured["source_id"] = staged.manifest["source_id"]
+        for staged_file in staged.files:
+            on_file_complete(staged_file)
+        return SimpleNamespace(url=broker_url, uploaded=("payload",), skipped=())
+
+    monkeypatch.setattr(
+        "benchflow.publish.broker.upload_capture_via_broker", fake_upload
+    )
+
+
+@pytest.mark.parametrize(
+    ("event_for_cwd", "remote"),
+    [
+        (
+            lambda cwd: {"type": "user", "cwd": cwd, "message": {"content": "hi"}},
+            "https://github.com/benchflow-ai/benchflow.git",
+        ),
+        (
+            lambda cwd: {"type": "session_meta", "payload": {"cwd": cwd}},
+            "git@github.com:benchflow-ai/benchflow.git",
+        ),
+    ],
+    ids=["claude-https", "codex-ssh"],
+)
+def test_upload_tags_source_id_with_the_session_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event_for_cwd, remote: str
+) -> None:
+    """Guards PR #1015 (repo tagging follow-up to PR #1013): by default the
+    upload's source id becomes ``repo/<owner>/<name>``, resolved from the
+    session's recorded cwd git remote, and the CLI prints the repo line."""
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    session = _session_with_cwd(tmp_path, event_for_cwd(str(workdir)))
+    monkeypatch.setattr(
+        "benchflow.cli.traj._command_stdout", _git_remote_stub(remote, workdir)
+    )
+    captured: dict[str, str] = {}
+    _capture_broker_source_id(monkeypatch, captured)
+
+    result = runner.invoke(app, _upload_command(session))
+
+    assert result.exit_code == 0, result.output
+    assert captured["source_id"] == "repo/benchflow-ai/benchflow"
+    assert REPO_LINE in click.unstyle(result.output)
+    assert str(workdir) not in captured["source_id"]
+
+
+def test_no_repo_keeps_the_default_source_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1015 (repo tagging follow-up to PR #1013): ``--no-repo``
+    opts out even when a repo is detectable, keeping the path-derived id."""
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    session = _session_with_cwd(
+        tmp_path, {"type": "user", "cwd": str(workdir), "message": {"content": "hi"}}
+    )
+    monkeypatch.setattr(
+        "benchflow.cli.traj._command_stdout",
+        _git_remote_stub("https://github.com/benchflow-ai/benchflow.git", workdir),
+    )
+    captured: dict[str, str] = {}
+    _capture_broker_source_id(monkeypatch, captured)
+
+    result = runner.invoke(app, _upload_command(session, "--no-repo"))
+
+    assert result.exit_code == 0, result.output
+    assert captured["source_id"] == "session"
+    assert "Repo:" not in click.unstyle(result.output)
+
+
+def test_explicit_source_id_wins_over_repo_tagging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1015 (repo tagging follow-up to PR #1013): an explicit
+    ``--source-id`` always wins and repo detection never runs."""
+
+    def fail_detection(path: Path) -> str | None:
+        raise AssertionError("repo detection ran despite explicit --source-id")
+
+    monkeypatch.setattr("benchflow.cli.traj._detect_repo_slug", fail_detection)
+    captured: dict[str, str] = {}
+    _capture_broker_source_id(monkeypatch, captured)
+
+    result = runner.invoke(
+        app, _upload_command(_trial(tmp_path), "--source-id", "my-project/run-42")
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["source_id"] == "my-project/run-42"
+    assert "Repo:" not in click.unstyle(result.output)
+
+
+def test_undetectable_repo_falls_back_silently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards PR #1015 (repo tagging follow-up to PR #1013): a session with
+    no recorded cwd and no reachable git remote uploads with the default
+    source id, no repo line, and no error."""
+    session = _session_with_cwd(tmp_path, {"type": "message", "text": "demo"})
+    monkeypatch.setattr("benchflow.cli.traj._command_stdout", lambda *_args: None)
+    captured: dict[str, str] = {}
+    _capture_broker_source_id(monkeypatch, captured)
+
+    result = runner.invoke(app, _upload_command(session))
+
+    assert result.exit_code == 0, result.output
+    assert captured["source_id"] == "session"
+    assert "Repo:" not in click.unstyle(result.output)

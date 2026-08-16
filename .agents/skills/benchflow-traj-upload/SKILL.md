@@ -91,6 +91,14 @@ finish reviewing. If the port is taken, try `--port 8889`.
 Ask them to look at the viewer. Do not upload until they say it looks good.
 If they want a different session, go back to pick.
 
+The upload is tagged with the repository the session was about: the CLI reads
+the session's recorded working directory, resolves its git `origin` remote,
+and stores `repo/<owner>/<name>` as the source id (it prints
+`Repo: owner/name (use --no-repo to omit)`; check the remote yourself or run
+`--dry-run` to see it beforehand). Mention the detected repo when you ask for
+confirmation — "This session will be tagged `repo/owner/name`; say the word
+if you want it omitted" — so they can opt out for private repos.
+
 Before upload, remind them not to submit secrets. The CLI masks detected
 secret values locally before anything leaves the machine, but redaction is a
 safety net, not a license to upload credentials.
@@ -105,6 +113,8 @@ the user to re-run a command.
 ```bash
 bench traj upload /path/to/session.jsonl
 ```
+
+If the user declined the repo tag in the confirm step, add `--no-repo`.
 
 If the first request times out, run the same upload again. Retries are safe
 because the digest is content-addressed. Report **Submitted** or **Already
