@@ -39,6 +39,52 @@ def test_banner_names_the_command() -> None:
     assert "subtitle copy" in output
 
 
+def test_tty_picker_arrow_burst_navigates_instead_of_cancelling(
+    monkeypatch,
+) -> None:
+    """Guards the PR #1026 picker against buffered-stdin arrow decoding: an
+    arrow key arrives as ``ESC [ B`` in one burst, and reading the buffered
+    text stream swallowed ``[ B`` after the ESC, so every arrow press
+    cancelled the picker and dumped the user at the manual path prompt."""
+    import os
+    import pty
+    import termios
+    import threading
+
+    master, slave = pty.openpty()
+    try:
+        # Nothing reads the master side in this test, so slave echo would make
+        # setcbreak's TCSADRAIN wait forever on undrained output.
+        attributes = termios.tcgetattr(slave)
+        attributes[3] &= ~termios.ECHO
+        termios.tcsetattr(slave, termios.TCSANOW, attributes)
+        # setcbreak flushes queued input (TCSAFLUSH), so the burst must land
+        # after the picker is reading, exactly like a real keypress.
+        writer = threading.Timer(
+            0.3, os.write, (master, b"\x1b[B\x1b[B\r")
+        )  # down, down, enter — one burst
+        writer.start()
+        with open(slave, closefd=False) as stream:
+            monkeypatch.setattr(tui.sys, "stdin", stream)
+            console, _buffer = _console()
+            choice = tui._select_tty(
+                console,
+                title="Pick a session to upload",
+                options=[
+                    tui.SelectOption(label="first"),
+                    tui.SelectOption(label="second"),
+                    tui.SelectOption(label="third"),
+                ],
+                initial=0,
+            )
+        writer.join()
+    finally:
+        os.close(master)
+        os.close(slave)
+
+    assert choice == 2
+
+
 def test_select_uses_numbered_fallback_without_tty(monkeypatch) -> None:
     """Off-TTY, the picker is a plain numbered prompt that retries bad input."""
     monkeypatch.setattr(tui, "interactive_terminal", lambda: False)

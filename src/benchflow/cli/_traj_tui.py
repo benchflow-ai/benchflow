@@ -198,10 +198,18 @@ def _select_tty(
 
 
 def _read_key(stream) -> str:
-    """Decode one keypress, folding escape sequences into named keys."""
+    """Decode one keypress, folding escape sequences into named keys.
+
+    Reads the raw descriptor, never the buffered text stream: an arrow key
+    arrives as ``ESC [ A`` in one burst, and a buffered ``read(1)`` would
+    swallow ``[ A`` into Python's buffer, making the descriptor look idle and
+    the ESC read as a bare cancel.
+    """
+    import os
     import select as selectors
 
-    char = stream.read(1)
+    descriptor = stream.fileno()
+    char = os.read(descriptor, 1).decode("utf-8", "replace")
     if char in {"\r", "\n"}:
         return "enter"
     if char == "\x03":
@@ -209,12 +217,12 @@ def _read_key(stream) -> str:
     if char != "\x1b":
         return char
     # Distinguish a bare Escape from a CSI arrow sequence.
-    if not selectors.select([stream], [], [], 0.05)[0]:
+    if not selectors.select([descriptor], [], [], 0.05)[0]:
         return "esc"
-    second = stream.read(1)
+    second = os.read(descriptor, 1).decode("utf-8", "replace")
     if second != "[":
         return "esc"
-    final = stream.read(1)
+    final = os.read(descriptor, 1).decode("utf-8", "replace")
     return {"A": "up", "B": "down"}.get(final, "esc")
 
 
