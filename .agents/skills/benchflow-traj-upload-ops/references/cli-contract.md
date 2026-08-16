@@ -28,6 +28,7 @@ bench traj upload [PATH]
   [--github-id TEXT]
   [--email TEXT]
   [--source-id TEXT]
+  [--repo | --no-repo]
   [--direct]
   [--container-url TEXT]
   [--dry-run]
@@ -40,6 +41,7 @@ bench traj upload [PATH]
 | `--github-id` | Contributor GitHub username without `@`; 1-39 characters, GitHub-compatible placement of hyphens, and no consecutive hyphens. |
 | `--email` | Bounded ASCII contributor email, stored in `manifest.json`. |
 | `--source-id` | Optional stable source identifier. If omitted, derive it from the selected file stem or directory name. Accept 1-128 letters, numbers, dots, underscores, hyphens, or single path separators; reject `.`/`..` segments and repeated separators. |
+| `--repo` / `--no-repo` | Repo tagging, on by default. When no `--source-id` is given, read the session's recorded working directory (Claude `cwd` events or the Codex `session_meta` payload), resolve its git `origin` remote (2 s timeout, silent failure; invocation directory as fallback), normalize https/ssh URLs to `owner/name`, and use `repo/<owner>/<name>` as the source id, printing `Repo: <owner>/<name> (use --no-repo to omit)`. Local-path remotes never produce a tag; undetectable repos fall back silently to the derived source id; an explicit `--source-id` always wins. |
 | `--preview-steps` | Number of meaningful redacted steps to show; range 0-20, default 5. Zero suppresses the preview table. |
 | `--dry-run` | Validate, redact, report, and finalize a temporary manifest without confirmation or network access. |
 | `--direct` | Use trusted local Azure credentials instead of the public contribution service. |

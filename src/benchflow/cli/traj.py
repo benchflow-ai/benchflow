@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -29,6 +30,7 @@ from benchflow.publish.traj_capture import (
     stage_trajectory_artifacts,
     validate_email,
     validate_github_id,
+    validate_source_id,
 )
 from benchflow.publish.traj_report import (
     DEFAULT_PREVIEW_STEPS,
@@ -127,6 +129,7 @@ class _UploadOptions:
     github_id: str | None
     email: str | None
     source_id: str | None
+    repo: bool
     direct: bool
     container_url: str | None
     dry_run: bool
@@ -223,6 +226,14 @@ def register_traj(app: typer.Typer) -> None:
             str | None,
             typer.Option("--source-id", help="Stable contributor source identifier"),
         ] = None,
+        repo: Annotated[
+            bool,
+            typer.Option(
+                "--repo/--no-repo",
+                help="Tag the upload with the session's repository "
+                "(owner/name from its git remote) as the source id",
+            ),
+        ] = True,
         direct: Annotated[
             bool,
             typer.Option("--direct", help="Upload with local Azure credentials"),
@@ -254,6 +265,7 @@ def register_traj(app: typer.Typer) -> None:
                     github_id=github_id,
                     email=email,
                     source_id=source_id,
+                    repo=repo,
                     direct=direct,
                     container_url=container_url,
                     dry_run=dry_run,
@@ -268,7 +280,17 @@ def register_traj(app: typer.Typer) -> None:
 def _run_upload(options: _UploadOptions) -> None:
     prompted = options.path is None
     path = options.path or _prompt_for_path()
-    source_id = options.source_id or default_source_id(path)
+    repo_slug: str | None = None
+    if options.source_id is not None:
+        source_id = options.source_id
+    else:
+        if options.repo:
+            repo_slug = _detect_repo_slug(path)
+        source_id = f"repo/{repo_slug}" if repo_slug else default_source_id(path)
+    if repo_slug:
+        # Contributor-visible metadata: surface the tag so private-repo
+        # sessions can opt out before anything leaves the machine.
+        console.print(f"Repo: {repo_slug} (use --no-repo to omit)")
     destination = _resolve_destination(options)
 
     with (
@@ -379,6 +401,92 @@ def _infer_email() -> str:
         except ValueError:
             continue
     return ""
+
+
+_SESSION_CWD_SCAN_LINES = 50
+
+
+def _detect_repo_slug(path: Path) -> str | None:
+    """Best-effort ``owner/name`` for the repository the session was about.
+
+    Reads the working directory the session recorded (Claude events carry a
+    ``cwd`` field; Codex ``session_meta`` payloads do too), asks that
+    directory's git for the ``origin`` remote, and falls back to the
+    invocation directory. Every failure is silent — repo tagging must never
+    break an upload — and local-path remotes never produce a tag, so no
+    local absolute path can leak into the manifest.
+    """
+    for candidate in (_session_cwd(path), Path.cwd()):
+        if candidate is None or not candidate.is_dir():
+            continue
+        remote = _command_stdout(
+            "git", "-C", str(candidate), "remote", "get-url", "origin"
+        )
+        slug = _repo_slug_from_remote(remote) if remote else None
+        if slug:
+            return slug
+    return None
+
+
+def _session_cwd(path: Path) -> Path | None:
+    """Working directory recorded by the first session event that has one."""
+    session = path.expanduser()
+    if not session.is_file():
+        return None
+    try:
+        with session.open(encoding="utf-8", errors="replace") as stream:
+            for line_number, line in enumerate(stream):
+                if line_number >= _SESSION_CWD_SCAN_LINES:
+                    break
+                body = line.strip()
+                if not body:
+                    continue
+                try:
+                    event = json.loads(body)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                cwd = event.get("cwd")
+                if isinstance(cwd, str) and cwd:
+                    return Path(cwd)
+                payload = event.get("payload")
+                if (
+                    event.get("type") == "session_meta"
+                    and isinstance(payload, dict)
+                    and isinstance(payload.get("cwd"), str)
+                    and payload["cwd"]
+                ):
+                    return Path(payload["cwd"])
+    except OSError:
+        return None
+    return None
+
+
+def _repo_slug_from_remote(remote: str) -> str | None:
+    """Normalize an https/ssh git remote URL to ``owner/name``.
+
+    Only URL-shaped remotes qualify; a filesystem-path remote returns
+    ``None`` so local paths never enter the uploaded source id.
+    """
+    value = remote.strip()
+    if "://" in value:
+        _, _, rest = value.partition("://")
+        _, _, repo_path = rest.partition("/")
+    elif ":" in value and "@" in value.partition(":")[0]:
+        repo_path = value.partition(":")[2]
+    else:
+        return None
+    repo_path = repo_path.strip("/").removesuffix(".git")
+    segments = [segment for segment in repo_path.split("/") if segment]
+    if len(segments) < 2:
+        return None
+    slug = f"{segments[-2]}/{segments[-1]}"
+    try:
+        validate_source_id(f"repo/{slug}")
+    except ValueError:
+        return None
+    return slug
 
 
 def _git_config(key: str) -> str | None:

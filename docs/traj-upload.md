@@ -70,6 +70,13 @@ first request can take a minute while the public broker wakes up; retries are
 safe. Use `--dry-run` to inspect the staged file list, digest, sizes, ignored
 siblings, and redaction count without making a network request.
 
+Uploads are tagged with the repository the session was about: unless you pass
+`--source-id`, the CLI reads the session's recorded working directory,
+resolves its git `origin` remote, and stores `repo/<owner>/<name>` as the
+manifest source id, printing `Repo: owner/name (use --no-repo to omit)`. Pass
+`--no-repo` to keep the tag out (for example for private repositories); when
+no repo is detectable the upload silently keeps the path-derived source id.
+
 ## Local trajectory report
 
 The report is generated only from the staged, redacted copy. It shows:
