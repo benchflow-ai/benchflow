@@ -71,10 +71,10 @@ non-finite numbers, but detected secret-like values do not make
 otherwise-valid JSONL ineligible: the local staging pass replaces them with
 `<XXX-benchflow-key-values-XXX>`. It applies the same structural redaction to
 manifest metadata, computes a content digest, and uploads a manifest last. The
-first request can take a minute while the public broker wakes up; retries are
-safe. Use `--dry-run` to inspect the staged file list, digest, sizes, ignored
-siblings, and redaction count without making a network request; its output ends
-with a plain `Masked for you: ...` line itemizing the masked secrets by kind,
+first request can take up to a minute; retries are safe. Use `--dry-run` to
+inspect the staged file list, digest, sizes, ignored siblings, and redaction
+count without making a network request; its output ends with a plain
+`Masked for you: ...` line itemizing the masked secrets by kind,
 which the contributor skill lifts into the viewer's confirm bar via
 `bench eval view --confirm --redaction-summary`.
 

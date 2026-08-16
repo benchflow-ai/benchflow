@@ -61,6 +61,14 @@
   `version` / `sessionId`, the filename stem as a session fallback) and
   hides any badge whose value is unknown — including the cost badge when no
   event carries cost data. Presentation only.
+- **Upload progress no longer claims the broker is waking up.** A warm
+  retry printed `Uploading… the first request can take a minute while the
+  service wakes up` even when the service was already up. The line is now
+  `Uploading… this can take up to a minute; retries are safe.`
+- **`bench traj setup --list` no longer wraps session paths mid-token.**
+  Each hit prints index/source/time, then the path on its own line, then
+  the snippet, via plain `print` so Rich does not split a long JSONL path
+  and break copy-paste.
 
 ### Changed
 - **Trajectory viewer tool calls are color-coded and backgrounds are light.**
