@@ -28,6 +28,7 @@ from benchflow.cli._traj_upload_ui import (
 from benchflow.publish.redact import format_redaction_breakdown
 from benchflow.publish.traj_capture import (
     StagedCapture,
+    attach_workspace_archive,
     default_source_id,
     finalize_trajectory_capture,
     stage_trajectory_artifacts,
@@ -173,6 +174,8 @@ class _UploadOptions:
     dry_run: bool
     preview_steps: int
     wait: bool = True
+    workspace: bool = True
+    workspace_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -281,6 +284,22 @@ def register_traj(app: typer.Typer) -> None:
                 "(owner/name from its git remote) as the source id",
             ),
         ] = True,
+        workspace: Annotated[
+            bool,
+            typer.Option(
+                "--workspace/--no-workspace",
+                help="Attach the session's workspace folder as a zip "
+                "(auto-detected from the session's recorded cwd; skipped "
+                "over 1 GiB)",
+            ),
+        ] = True,
+        workspace_dir: Annotated[
+            Path | None,
+            typer.Option(
+                "--workspace-dir",
+                help="Workspace folder to attach instead of auto-detection",
+            ),
+        ] = None,
         direct: Annotated[
             bool,
             typer.Option("--direct", help="Upload with local Azure credentials"),
@@ -321,6 +340,8 @@ def register_traj(app: typer.Typer) -> None:
                     email=email,
                     source_id=source_id,
                     repo=repo,
+                    workspace=workspace,
+                    workspace_dir=workspace_dir,
                     direct=direct,
                     container_url=container_url,
                     dry_run=dry_run,
@@ -375,6 +396,8 @@ def _run_upload(options: _UploadOptions) -> None:
             f"Repo: {detected.slug} "
             f"(from session cwd {detected.session_cwd}; use --no-repo to omit)"
         )
+    workspace_dir, workspace_prompted = _resolve_workspace_dir(options, path)
+    prompted = prompted or workspace_prompted
     destination = _resolve_destination(options)
 
     with (
@@ -391,6 +414,22 @@ def _run_upload(options: _UploadOptions) -> None:
         )
         status.stop()
         render_trajectory_report(report, console=console)
+
+        if workspace_dir is not None:
+            with console.status("[bold cyan]Archiving workspace folder…"):
+                attach = attach_workspace_archive(artifacts, workspace_dir)
+            artifacts = attach.artifacts
+            if attach.attached is not None:
+                # Plain print: one physical line per machine-readable fact.
+                print(
+                    f"Workspace attached: {attach.attached.relname} "
+                    f"({format_bytes(attach.attached.size_bytes)}, "
+                    f"{attach.file_count} files, {attach.excluded_count} "
+                    "excluded) — archived as-is; VCS internals and "
+                    "secret-like filenames stay local"
+                )
+            else:
+                print(f"Workspace skipped: {attach.skipped_reason}")
 
         github_id, email, identity_prompted = _resolve_contributor(
             options.github_id, options.email
@@ -527,6 +566,45 @@ def _detect_repo_slug(path: Path) -> _DetectedRepo | None:
     if slug:
         return _DetectedRepo(slug=slug, session_cwd=session_cwd)
     return None
+
+
+def _resolve_workspace_dir(
+    options: _UploadOptions, session_path: Path
+) -> tuple[Path | None, bool]:
+    """Pick the workspace folder to attach, mirroring identity resolution.
+
+    Auto-detection reads only the session's recorded cwd (Claude ``cwd``
+    events, Codex ``session_meta``) — the same provenance rule as repo
+    tagging. When detection fails on a real terminal, one optional prompt
+    lets the contributor point at a folder; Enter skips. Returns the folder
+    (or ``None``) and whether a human was prompted.
+    """
+    if not options.workspace:
+        return None, False
+    if options.workspace_dir is not None:
+        explicit = options.workspace_dir.expanduser()
+        if not explicit.is_dir():
+            raise ValueError(f"workspace folder not found: {explicit}")
+        print(f"Workspace: {explicit} (from --workspace-dir)")
+        return explicit, False
+    recorded = _session_cwd(session_path)
+    if recorded is not None and recorded.is_dir():
+        print(f"Workspace: {recorded} (from session cwd; use --no-workspace to omit)")
+        return recorded, False
+    if not sys.stdin.isatty():
+        return None, False
+    while True:
+        raw = typer.prompt(
+            tui.field_label("Workspace folder to attach (optional, Enter to skip)"),
+            default="",
+            show_default=False,
+        ).strip()
+        if not raw:
+            return None, True
+        candidate = Path(raw.strip("'\"")).expanduser()
+        if candidate.is_dir():
+            return candidate, True
+        print_error(f"not a folder: {candidate}")
 
 
 def _session_cwd(path: Path) -> Path | None:

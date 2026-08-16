@@ -10,6 +10,7 @@ from pathlib import Path
 from benchflow.publish.redact import redact_value
 from benchflow.publish.traj_capture import (
     MAX_JSONL_RECORD_BYTES,
+    WORKSPACE_ARTIFACT_PREFIX,
     strict_json_loads,
     validate_json_complexity,
 )
@@ -57,7 +58,12 @@ def validate_local_capture(
             raise CaptureRejected(f"size mismatch for {artifact.name}")
         if _sha256(path) != artifact.sha256:
             raise CaptureRejected(f"sha256 mismatch for {artifact.name}")
-        _validate_and_scan_jsonl(path, artifact.name)
+        if artifact.name.startswith(WORKSPACE_ARTIFACT_PREFIX):
+            # Workspace snapshots are opaque archives: integrity is the hash
+            # binding above; require only the zip container format.
+            _validate_zip_magic(path, artifact.name)
+        else:
+            _validate_and_scan_jsonl(path, artifact.name)
     _validate_trajectory_report(manifest, artifact_paths)
     return ValidatedCapture(
         manifest=manifest,
@@ -76,6 +82,8 @@ def _validate_trajectory_report(
     fallback_created_at = (
         declared.created_at if declared.created_at_source == "file timestamp" else None
     )
+    # The report describes the trajectory JSONL alone; a workspace archive is
+    # an opaque attachment and must not perturb the recompute-equality check.
     artifacts = tuple(
         _ReportArtifact(
             relname=item.name,
@@ -84,6 +92,7 @@ def _validate_trajectory_report(
             created_at=fallback_created_at,
         )
         for item in manifest.artifacts
+        if not item.name.startswith(WORKSPACE_ARTIFACT_PREFIX)
     )
     recomputed = build_trajectory_report(
         artifacts,
@@ -163,6 +172,13 @@ def _validate_and_scan_jsonl(path: Path, relname: str) -> None:
             records += 1
     if records == 0:
         raise CaptureRejected(f"{relname}: trajectory JSONL has no records")
+
+
+def _validate_zip_magic(path: Path, relname: str) -> None:
+    with path.open("rb") as stream:
+        magic = stream.read(4)
+    if magic[:2] != b"PK":
+        raise CaptureRejected(f"{relname}: workspace archive is not a zip file")
 
 
 def _reject_secrets(record: dict, relname: str, line_number: int) -> None:

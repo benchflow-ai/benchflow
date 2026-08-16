@@ -29,6 +29,8 @@ bench traj upload [PATH]
   [--email TEXT]
   [--source-id TEXT]
   [--repo | --no-repo]
+  [--workspace | --no-workspace]
+  [--workspace-dir PATH]
   [--direct]
   [--container-url TEXT]
   [--dry-run]
@@ -45,6 +47,8 @@ bench traj status [DIGEST]
 | `--email` | Bounded ASCII contributor email, stored in `manifest.json`. |
 | `--source-id` | Optional stable source identifier. If omitted, derive it from the selected file stem or directory name. Accept 1-128 letters, numbers, dots, underscores, hyphens, or single path separators; reject `.`/`..` segments and repeated separators. |
 | `--repo` / `--no-repo` | Repo tagging, on by default. When no `--source-id` is given, read the session's recorded working directory (Claude `cwd` events or the Codex `session_meta` payload), resolve its git `origin` remote (2 s timeout, silent failure), normalize https/ssh URLs to `owner/name`, and use `repo/<owner>/<name>` as the source id, printing `Repo: <owner>/<name> (from session cwd <path>; use --no-repo to omit)` (the local path is terminal output only, never uploaded). The session's own recorded cwd is the only provenance source — there is no fallback to the upload invocation directory. No recorded cwd, a missing directory, or no GitHub remote mean no tag: the upload silently keeps the derived source id, exactly like `--no-repo`. Local-path remotes never produce a tag; an explicit `--source-id` always wins. |
+| `--workspace` / `--no-workspace` | Workspace attachment, on by default. Reads the same session-recorded cwd as repo tagging; when it is an existing directory, the folder is zipped into the capture as `workspace/<name>.zip` and the CLI prints `Workspace: <path> (from session cwd; use --no-workspace to omit)` then `Workspace attached: workspace/<name>.zip (<size>, <n> files, <m> excluded)`. `.git`/VCS internals, dependency trees (`node_modules`, `.venv`, …), caches, symlinks, and secret-shaped filenames (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `.netrc`, …) are excluded; everything else is archived **as-is, without content redaction** — the CLI says so on the attach line. The workspace is skipped (with a printed reason, never an error) when the included files exceed 1 GiB before compression, exceed 50,000 files, the folder is missing or empty, or the resulting zip exceeds 1 GiB; the zip is created inside the staging temporary directory and is always deleted when staging exits. When detection fails on a real terminal, one optional `◇ Workspace folder to attach (optional, Enter to skip)` prompt accepts a folder or skips; off-TTY there is no prompt. |
+| `--workspace-dir` | Explicit workspace folder to attach instead of auto-detection; a missing folder is a hard error. Implies nothing about repo tagging. |
 | `--preview-steps` | Number of meaningful redacted steps to show; range 0-20, default 5. Zero suppresses the preview table. |
 | `--dry-run` | Validate, redact, report, and finalize a temporary manifest without confirmation or network access. |
 | `--direct` | Use trusted local Azure credentials instead of the public contribution service. |

@@ -20,6 +20,9 @@ from benchflow.publish.traj_capture import StagedCapture, StagedFile
 # the first SAS grant. Retries are safe; keep this under two minutes.
 HANDSHAKE_TIMEOUT_SEC = 90.0
 PUT_TIMEOUT_SEC = 300.0
+# Workspace archives can approach 1 GiB; give every PUT at least the base
+# budget plus a floor of ~1 MiB/s of transfer time so slow uplinks finish.
+PUT_TIMEOUT_BYTES_PER_SEC = 1024**2
 # The broker's token buckets answer 429 with an honest, usually-short
 # Retry-After. Waiting it out inline turns a crowd burst into a smooth queue;
 # anything longer than this cap is surfaced to the contributor instead.
@@ -152,7 +155,8 @@ def upload_capture_via_broker(
                         upload["put_url"],
                         headers=upload["headers"],
                         content=content,
-                        timeout=PUT_TIMEOUT_SEC,
+                        timeout=PUT_TIMEOUT_SEC
+                        + staged_file.size_bytes / PUT_TIMEOUT_BYTES_PER_SEC,
                     )
                 if _is_create_only_conflict(put_response):
                     skipped.append(object_name)

@@ -15,11 +15,15 @@ from benchflow.publish.traj_capture import (
 )
 from benchflow.publish.traj_capture import (
     MAX_ARTIFACTS,
+    MAX_ATTACHMENT_BYTES,
     MAX_CAPTURE_BYTES,
     MAX_EMAIL_LENGTH,
     MAX_FILE_BYTES,
     MAX_GITHUB_ID_LENGTH,
+    MAX_TOTAL_ARTIFACTS,
     MAX_UPLOADED_BY_LENGTH,
+    WORKSPACE_ARTIFACT_PREFIX,
+    max_artifact_bytes,
     validate_artifact_name,
     validate_email,
     validate_github_id,
@@ -40,7 +44,7 @@ class Artifact(BaseModel):
 
     name: str
     sha256: str
-    bytes: int = Field(ge=1, le=MAX_ARTIFACT_BYTES)
+    bytes: int = Field(ge=1, le=MAX_ATTACHMENT_BYTES)
 
     @field_validator("name")
     @classmethod
@@ -53,6 +57,13 @@ class Artifact(BaseModel):
         if not SHA256.fullmatch(value):
             raise ValueError("artifact sha256 must be 64 lowercase hex characters")
         return value
+
+    @model_validator(mode="after")
+    def validate_size_for_namespace(self) -> Self:
+        limit = max_artifact_bytes(self.name)
+        if self.bytes > limit:
+            raise ValueError(f"artifact exceeds {limit} bytes: {self.name}")
+        return self
 
 
 class ContributorInfo(BaseModel):
@@ -79,7 +90,7 @@ class CaptureDeclaration(BaseModel):
     source_id: str
     traj_digest: str
     uploaded_by: str | None = Field(default=None, max_length=MAX_UPLOADED_BY_LENGTH)
-    artifacts: list[Artifact] = Field(min_length=1, max_length=MAX_ARTIFACTS)
+    artifacts: list[Artifact] = Field(min_length=1, max_length=MAX_TOTAL_ARTIFACTS)
 
     @field_validator("source_id")
     @classmethod
@@ -99,6 +110,13 @@ class CaptureDeclaration(BaseModel):
         names = [artifact.name for artifact in self.artifacts]
         if len(names) != len(set(names)):
             raise ValueError("artifact names must be unique")
+        workspace_count = sum(
+            1 for name in names if name.startswith(WORKSPACE_ARTIFACT_PREFIX)
+        )
+        if workspace_count > 1:
+            raise ValueError("a capture may declare at most one workspace archive")
+        if workspace_count == len(names):
+            raise ValueError("a capture needs at least one trajectory artifact")
         if sum(artifact.bytes for artifact in self.artifacts) > MAX_CAPTURE_BYTES:
             raise ValueError(f"capture exceeds {MAX_CAPTURE_BYTES} bytes")
         if self.traj_digest != f"sha256:{trajectory_digest(self.artifacts)}":

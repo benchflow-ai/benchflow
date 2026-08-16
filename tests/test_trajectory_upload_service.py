@@ -1358,7 +1358,9 @@ def test_pending_oversized_artifact_event_is_rejected_and_cleaned(
     queue = FakeQueue(event)
     table = _pending_table(digest)
     container = FakeContainer(blobs)
-    monkeypatch.setattr("services.trajectory_upload.validator.MAX_ARTIFACT_BYTES", 1)
+    monkeypatch.setattr(
+        "services.trajectory_upload.validator.max_artifact_bytes", lambda _name: 1
+    )
 
     assert AzureCaptureValidator(
         container=container, queue=queue, table=table
@@ -1419,7 +1421,8 @@ def test_pending_artifact_event_enforces_legacy_aggregate_limit(
     container = FakeContainer(blobs)
     queue = FakeQueue(event)
     monkeypatch.setattr(
-        "services.trajectory_upload.validator.MAX_ARTIFACT_BYTES", len(content) + 1
+        "services.trajectory_upload.validator.max_artifact_bytes",
+        lambda _name: len(content) + 1,
     )
     monkeypatch.setattr(
         "services.trajectory_upload.validator.MAX_CAPTURE_BYTES", capture_limit
