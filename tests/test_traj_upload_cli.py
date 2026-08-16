@@ -717,9 +717,9 @@ def test_skip_update_check_env_var_never_fetches(
 def test_setup_prompt_prints_the_copy_paste_line() -> None:
     """The human path is one line to paste into an agent.
 
-    Also guards the version step added in this PR (follow-up to PRs #1013 and
-    #1014): the paste line itself tells the agent to upgrade BenchFlow, with
-    the upgrade command appearing before the skill URL.
+    Also guards the version step added in PR #1017 (follow-up to PRs #1013
+    and #1014): the paste line itself tells the agent to upgrade BenchFlow,
+    with the upgrade command appearing before the skill URL.
     """
     from benchflow.cli.traj import CONTRIBUTOR_PROMPT, SKILL_RAW_URL, UPGRADE_COMMAND
 
