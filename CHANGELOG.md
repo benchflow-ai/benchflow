@@ -17,6 +17,15 @@
   (`~/.local/share/opencode/opencode.db`, `opencode db path`) locations plus
   a prefer-recent-matching-sessions note. Follow-up to the version
   precondition from #1013/#1014.
+- **Trajectory viewer restyled to match www.benchflow.ai.** All three
+  `bench eval view` pages (stream-json/JSONL, ACP events, multi-turn trial)
+  now share one inline stylesheet with the site's design language: light
+  monochrome palette (`#fafafa` page, white cards, `#0a0a0a` ink, dark
+  `#141414` code blocks), Satoshi/Google Sans Code font stacks with
+  system-safe fallbacks, mono pill badges, and a small BenchFlow wordmark
+  header with the inline SVG logo. Pages remain fully offline (no external
+  font or CDN requests) and content/structure semantics are unchanged;
+  follows the contributor paste-line flow from #1013.
 
 ## 0.7.1 — 2026-08-16
 
