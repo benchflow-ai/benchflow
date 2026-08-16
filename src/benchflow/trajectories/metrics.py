@@ -8,6 +8,15 @@ from typing import Any
 
 _SKILL_TOOL_NAMES = frozenset({"invoke_skill", "activate_skill", "skill"})
 
+# ``skill`` is unambiguous as a tool *kind* or tool *name*, but a title is
+# display text — a file or command merely named "skill" can produce it. A title
+# therefore proves a skill invocation outright only under the explicit
+# spellings; the bare word is honored for unclassified kinds alone, behind the
+# same gate as content sniffing (see ``is_skill_invocation_event``). Deriving
+# the subset here keeps the two sets from drifting apart — the inline-literal
+# drift is how PR #597 lost the ``skill`` spelling in the first place.
+_EXPLICIT_SKILL_TOOL_NAMES = _SKILL_TOOL_NAMES - {"skill"}
+
 # OpenHands legacy ACP artifacts render an invoke-skill *result* as a text block
 # that begins with the tool header (``Tool: invoke_skill``) and carries a
 # ``[skill: <name>]`` result marker. Anchoring the header to the start of the
@@ -18,13 +27,21 @@ _SKILL_RESULT_HEADER_RE = re.compile(
 )
 _SKILL_RESULT_MARKER = "[skill:"
 
-# opencode renders a skill invocation as ``kind == "other"`` / ``title ==
-# "skill"`` and returns the skill body wrapped in a ``<skill_content>`` element
-# naming the skill. That envelope opens the tool result, so it is anchored with
-# ``\A`` for the same reason as the OpenHands header above: a tool whose output
-# merely quotes the tag mid-stream is not a skill invocation.
+# Harnesses that do not set the canonical kind open a skill *result* with a
+# recognizable envelope: the pinned opencode (1.17.x) renders a markdown
+# ``## Skill: <name>`` header, opencode 1.18.x a ``<skill_content name="...">``
+# element, and claude-agent-acp a ``Launching skill: <name>`` line. Each is
+# anchored with ``\A`` for the same reason as the OpenHands header above: a
+# tool whose output merely quotes such a marker mid-stream is not a skill
+# invocation. This content path is what keeps the counter honest when the
+# title mutates across exports — issue #998 records a trajectory export whose
+# title carries the serialized arguments (``skill {"name": ...}``), which the
+# bare-title branch cannot see.
 _SKILL_CONTENT_ENVELOPE_RE = re.compile(
-    r"\A\s*<skill_content\s+name\s*=\s*\"[^\"]+\"", re.IGNORECASE
+    r"\A\s*(?:<skill_content\s+name\s*=\s*\"[^\"]+\""
+    r"|#{1,6}\s*Skill:\s*\S"
+    r"|Launching\s+skill:\s*\S)",
+    re.IGNORECASE,
 )
 
 # Only these unclassified tool kinds are eligible for content sniffing. Any tool
@@ -90,13 +107,15 @@ def _event_tool_name(event: Mapping[str, Any]) -> str:
 def content_contains_skill_invocation_tool(content: Any) -> bool:
     """Return whether tool-call content is a skill-invocation tool result.
 
-    Two structured envelopes are recognized, both anchored to the start of a
-    tool-result text block:
+    Recognized envelopes, each anchored to the start of a tool-result text
+    block:
 
     * OpenHands legacy — a ``Tool: invoke_skill`` / ``Tool: activate_skill``
       header carrying a ``[skill: ...]`` marker.
-    * opencode — a ``<skill_content name="...">`` element wrapping the skill
-      body.
+    * opencode — the skill body behind a ``## Skill: <name>`` markdown header
+      (1.17.x, the pinned agent) or wrapped in a ``<skill_content name="...">``
+      element (1.18.x).
+    * claude-agent-acp — a ``Launching skill: <name>`` line.
 
     The anchoring is what distinguishes a genuine skill result from ordinary
     output that merely quotes such text. This is intentionally narrow; it is the
@@ -122,11 +141,12 @@ def is_skill_invocation_event(event: Mapping[str, Any]) -> bool:
     kind, tool name, or title naming ``invoke_skill`` / ``activate_skill``) are
     trusted outright. Harnesses that do not set the canonical kind are matched
     on their own structured shape -- OpenHands legacy emits ``invoke_skill`` as
-    ``kind == "other"`` with the tool result in ``content``, and opencode emits
-    ``kind == "other"`` / ``title == "skill"`` with a ``<skill_content>``
-    envelope. Both are recognized only when the tool kind is unclassified, so an
-    ordinary ``read`` / ``execute`` / ``search`` tool whose title or output
-    happens to mention a skill is never reclassified.
+    ``kind == "other"`` with the tool result in ``content``, opencode emits
+    ``kind == "other"`` / ``title == "skill"`` with a versioned result envelope,
+    and claude-agent-acp emits ``kind == "other"`` / ``title == "Skill"`` with a
+    ``Launching skill:`` line. All are recognized only when the tool kind is
+    unclassified, so an ordinary ``read`` / ``execute`` / ``search`` tool whose
+    title or output happens to mention a skill is never reclassified.
     """
     if event.get("type") != "tool_call":
         return False
@@ -139,16 +159,17 @@ def is_skill_invocation_event(event: Mapping[str, Any]) -> bool:
         return True
 
     title = _normalized_tool_name(event.get("title"))
-    if title in {"invoke_skill", "activate_skill"}:
+    if title in _EXPLICIT_SKILL_TOOL_NAMES:
         return True
 
     if kind not in _CONTENT_SNIFFABLE_KINDS:
         return False
 
-    # opencode labels the call simply ``skill``. That bare word is too generic
-    # to trust on a tool that already declares a real ACP kind, so unlike the
-    # explicit ``invoke_skill`` spellings above it is only honored for the
-    # unclassified kinds -- the same gate the content sniffing sits behind.
+    # opencode and claude-agent-acp label the call simply ``skill``. That bare
+    # word is too generic to trust on a tool that already declares a real ACP
+    # kind, so unlike the explicit ``invoke_skill`` spellings above it is only
+    # honored for the unclassified kinds -- the same gate the content sniffing
+    # sits behind.
     if title in _SKILL_TOOL_NAMES:
         return True
 
