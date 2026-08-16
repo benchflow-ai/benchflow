@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## 0.7.3 — 2026-08-16
+
+### Added
+- **`bench traj upload` waits out short rate-limit responses instead of
+  failing.** When the contribution service answers 429 with a short
+  `Retry-After`, the handshake now sleeps it out with jitter and retries up
+  to three times (two-minute cap per wait), so a crowd of simultaneous
+  contributors self-heals instead of surfacing errors. Longer waits still
+  fail fast with the actionable retry-after message. (#1027)
+
+### Changed
+- **The contribution service rate-limits per contributor, not per venue.**
+  Upload budgets are token buckets keyed on contributor identity with a
+  wide per-IP abuse backstop, refill continuously, and answer 429 with
+  seconds-until-next-token instead of the remainder of the clock hour, so
+  many contributors behind one NAT no longer starve each other. Contended
+  bucket updates back off with jitter rather than shedding simultaneous
+  crowds. (#1027, #1028)
+
 ## 0.7.2 — 2026-08-16
 
 ### Added
