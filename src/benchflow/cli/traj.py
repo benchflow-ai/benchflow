@@ -55,11 +55,14 @@ SKILL_RAW_URL = (
 UPGRADE_COMMAND = "uv tool install --python 3.12 --upgrade --force benchflow"
 
 CONTRIBUTOR_PROMPT = (
-    "Submit my best local Claude Code or Codex session to the BenchFlow eval "
-    "prize. First make sure the latest benchflow CLI is installed "
+    "Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session "
+    "on the re:Agent e2e agentic science / ai4bio hackathon in the last 72 "
+    "hours on laptop to the BenchFlow eval prize. First make sure the latest "
+    "benchflow CLI is installed "
     f"({UPGRADE_COMMAND}). Then read "
     f"{SKILL_RAW_URL} "
-    "and follow it: find a session, open the viewer, upload only after I review it."
+    "and follow it: find a session, open the viewer, upload only after I "
+    "(the human) review it."
 )
 
 

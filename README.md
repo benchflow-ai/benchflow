@@ -20,7 +20,7 @@ Codex, Cursor, or any coding agent. That is the $2,000 eval prize path. No
 BenchFlow account, API key, or Azure login.
 
 ```
-Submit my best local Claude Code or Codex session to the BenchFlow eval prize. First make sure the latest benchflow CLI is installed (uv tool install --python 3.12 --upgrade --force benchflow). Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I review it.
+Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session on the re:Agent e2e agentic science / ai4bio hackathon in the last 72 hours on laptop to the BenchFlow eval prize. First make sure the latest benchflow CLI is installed (uv tool install --python 3.12 --upgrade --force benchflow). Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I (the human) review it.
 ```
 
 The agent finds sessions on this machine, opens the viewer, and uploads after

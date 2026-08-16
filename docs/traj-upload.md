@@ -3,7 +3,7 @@
 Copy this line into your coding agent. You do not run a BenchFlow command.
 
 ```
-Submit my best local Claude Code or Codex session to the BenchFlow eval prize. First make sure the latest benchflow CLI is installed (uv tool install --python 3.12 --upgrade --force benchflow). Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I review it.
+Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session on the re:Agent e2e agentic science / ai4bio hackathon in the last 72 hours on laptop to the BenchFlow eval prize. First make sure the latest benchflow CLI is installed (uv tool install --python 3.12 --upgrade --force benchflow). Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I (the human) review it.
 ```
 
 The agent reads the skill, finds a local session, opens the viewer, and
@@ -34,7 +34,7 @@ bench traj setup
 hosts). `bench traj setup` copies the skill into
 `.agents/skills/benchflow-traj-upload/`, prints the same paste line, and can
 list sessions or open the viewer. After setup, a short ask is enough:
-**submit my best session to the eval prize**.
+**submit my relevant session to the eval prize**.
 
 `bench traj setup --prompt` prints only the copy-paste line.
 `bench traj setup --list` lists recent local sessions.

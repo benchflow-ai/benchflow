@@ -64,7 +64,15 @@ If that command is missing, search these locations and skip nested
 
 - Claude Code: `~/.claude/projects/**/*.jsonl`
 - Codex: `~/.codex/sessions/**/*.jsonl` and `~/.codex/archived_sessions/*.jsonl`
+- Cursor: agent transcripts at `~/.cursor/projects/*/agent-transcripts/**/*.jsonl`
+- OpenCode: newer versions keep sessions in a SQLite database at
+  `~/.local/share/opencode/opencode.db` (run `opencode db path` to confirm);
+  older versions used JSON files under `~/.local/share/opencode/storage/session/`
 - BenchFlow trials: `jobs/**/trajectory/` or a directory with `turn*.txt`
+
+If the user described a time window or topic (for example, sessions from the
+last 72 hours on a specific project), prefer sessions matching that
+description.
 
 Show the 8 most recent with mtime, path, and the first user-prompt snippet.
 Skip sessions that clearly contain private or proprietary work unless the

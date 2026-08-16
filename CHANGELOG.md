@@ -19,8 +19,12 @@
   `docs/traj-upload.md`, and the `benchflow-traj-upload` skill evals) says to
   run `uv tool install --python 3.12 --upgrade --force benchflow` before
   reading the skill, so agents that skim the skill or hit a stale copy still
-  install the latest CLI. Follow-up to the version precondition from
-  #1013/#1014.
+  install the latest CLI. The line also names OpenCode and Cursor sessions
+  and the re:Agent hackathon 72-hour window, and the skill's Discover step
+  gains best-effort Cursor (`~/.cursor/projects/*/agent-transcripts/`) and
+  OpenCode (`~/.local/share/opencode/opencode.db`, `opencode db path`)
+  locations plus a prefer-recent-matching-sessions note. Follow-up to the
+  version precondition from #1013/#1014.
 - **Trajectory contribution is a copy-paste line, plus optional setup.**
   Contributors paste one line into their agent; the agent reads
   `benchflow-traj-upload`, opens the viewer, then uploads. Optional setup is
