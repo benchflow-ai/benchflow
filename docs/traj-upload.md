@@ -35,8 +35,13 @@ The report is generated only from the staged, redacted copy. It shows:
 - the primary trajectory and detected format;
 - the earliest trajectory timestamp, falling back to the source file timestamp;
 - JSONL file count and total trajectory size;
-- total steps, thinking steps, tool-call steps, and human steps (user-authored
-  messages sent to the agent);
+- mutually exclusive step counts where total steps always equals thinking steps
+  plus tool-call steps plus human steps. Human steps are user-authored messages,
+  tool-call steps are agent tool invocations, and thinking steps are reasoning
+  or other agent-authored non-tool messages. Tool results and status/metadata
+  records are observations rather than separately counted steps. Records with
+  no extractable redacted text are skipped instead of producing placeholder
+  steps such as `Assistant response`;
 - the number of API-key or secret-like values replaced with
   `<XXX-benchflow-key-values-XXX>`; and
 - the first five meaningful steps as a preview containing up to the first 100

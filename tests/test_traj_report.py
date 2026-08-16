@@ -13,6 +13,7 @@ from benchflow.publish.redact import REDACTED
 from benchflow.publish.traj_capture import stage_trajectory_artifacts
 from benchflow.publish.traj_report import (
     TrajectoryFormat,
+    TrajectoryReport,
     build_trajectory_report,
 )
 
@@ -34,6 +35,12 @@ def _artifact(
         local_path=path,
         size_bytes=path.stat().st_size,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+def _assert_step_partition(report: TrajectoryReport) -> None:
+    assert report.total_steps == (
+        report.thinking_steps + report.tool_call_steps + report.human_steps
     )
 
 
@@ -72,9 +79,10 @@ def test_report_prefers_acp_events_and_previews_redacted_content(
     assert report.format is TrajectoryFormat.BENCHFLOW_ACP
     assert report.file_count == 2
     assert report.total_steps == 4
-    assert report.thinking_steps == 1
+    assert report.thinking_steps == 2
     assert report.tool_call_steps == 1
     assert report.human_steps == 1
+    _assert_step_partition(report)
     assert report.masked_values == 1
     assert len(report.preview) == 3
     assert REDACTED in report.preview[0].summary
@@ -122,9 +130,10 @@ def test_report_understands_claude_thinking_tools_and_tool_results(
     assert report.thinking_steps == 1
     assert report.tool_call_steps == 1
     assert report.human_steps == 1
+    _assert_step_partition(report)
     assert report.created_at == datetime(2026, 2, 3, 4, 5, 6, tzinfo=UTC)
-    assert report.preview[1].kind == "Thinking + tool"
-    assert report.preview[2].kind == "Tool result"
+    assert report.preview[1].kind == "Thinking"
+    assert report.preview[2].kind == "Tool call"
 
 
 def test_report_filters_codex_metadata_and_counts_response_items(
@@ -151,7 +160,10 @@ def test_report_filters_codex_metadata_and_counts_response_items(
                     "content": [{"type": "input_text", "text": "Review this"}],
                 },
             },
-            {"type": "response_item", "payload": {"type": "reasoning"}},
+            {
+                "type": "response_item",
+                "payload": {"type": "reasoning", "summary": "Consider approach"},
+            },
             {
                 "type": "response_item",
                 "payload": {"type": "function_call", "name": "exec_command"},
@@ -174,15 +186,16 @@ def test_report_filters_codex_metadata_and_counts_response_items(
     report = build_trajectory_report((artifact,), masked_values=0, preview_steps=4)
 
     assert report.format is TrajectoryFormat.CODEX
-    assert report.total_steps == 5
-    assert report.thinking_steps == 1
+    assert report.total_steps == 4
+    assert report.thinking_steps == 2
     assert report.tool_call_steps == 1
     assert report.human_steps == 1
+    _assert_step_partition(report)
     assert [step.kind for step in report.preview] == [
         "Human",
         "Thinking",
         "Tool call",
-        "Tool result",
+        "Assistant",
     ]
 
 
@@ -221,10 +234,11 @@ def test_report_counts_only_new_human_messages_in_llm_exchange_history(
     report = build_trajectory_report((artifact,), masked_values=0)
 
     assert report.format is TrajectoryFormat.LLM_EXCHANGE
-    assert report.total_steps == 2
+    assert report.total_steps == 5
     assert report.human_steps == 2
-    assert report.thinking_steps == 1
+    assert report.thinking_steps == 2
     assert report.tool_call_steps == 1
+    _assert_step_partition(report)
 
 
 def test_report_skips_claude_metadata_and_previews_first_100_words(
@@ -289,20 +303,21 @@ def test_report_skips_claude_metadata_and_previews_first_100_words(
     report = build_trajectory_report((artifact,), masked_values=0, preview_steps=4)
 
     assert report.format is TrajectoryFormat.CLAUDE_CODE
-    assert report.total_steps == 4
+    assert report.total_steps == 3
+    assert report.thinking_steps == 1
+    assert report.tool_call_steps == 1
     assert report.human_steps == 1
+    _assert_step_partition(report)
     assert [step.kind for step in report.preview] == [
         "Human",
         "Thinking",
         "Tool call",
-        "Tool result",
     ]
     assert report.preview[0].summary == " ".join(prompt_words[:100]) + "…"
     assert report.preview[1].summary == (
         "Inspect the repository before choosing a tool"
     )
     assert report.preview[2].summary == 'Read: {"file_path": "README.md"}'
-    assert report.preview[3].summary == "Repository contents"
     assert all("queue-operation" not in step.summary for step in report.preview)
     assert all("attachment" not in step.summary for step in report.preview)
 
@@ -348,10 +363,11 @@ def test_report_detects_claude_sessions_behind_leading_summary_metadata(
     assert report.thinking_steps == 1
     assert report.tool_call_steps == 1
     assert report.human_steps == 1
+    _assert_step_partition(report)
     assert [step.kind for step in report.preview] == [
         "Human",
-        "Thinking + tool",
-        "Tool result",
+        "Thinking",
+        "Tool call",
     ]
 
 
@@ -366,10 +382,55 @@ def test_report_preview_strips_terminal_control_sequences(tmp_path: Path) -> Non
 
     report = build_trajectory_report((artifact,), masked_values=0)
 
+    _assert_step_partition(report)
     summary = report.preview[0].summary
     assert "\x1b" not in summary
     assert "\x07" not in summary
     assert "PWNED" in summary
+
+
+def test_report_excludes_empty_records_instead_of_inventing_preview_steps(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #1008 against placeholder-only steps such as Assistant response."""
+    artifact = _artifact(
+        tmp_path / "claude-empty-records.jsonl",
+        [
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "Run the check"},
+            },
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": []},
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "   "}],
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "content": "observation"}],
+                },
+            },
+        ],
+    )
+
+    report = build_trajectory_report((artifact,), masked_values=0)
+
+    assert report.total_steps == 1
+    assert report.thinking_steps == 0
+    assert report.tool_call_steps == 0
+    assert report.human_steps == 1
+    _assert_step_partition(report)
+    assert [(step.kind, step.summary) for step in report.preview] == [
+        ("Human", "Run the check")
+    ]
 
 
 def test_report_rejects_preview_limits_outside_the_public_cli_contract(

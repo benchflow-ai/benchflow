@@ -27,6 +27,12 @@ class TrajectoryFormat(Enum):
     GENERIC = "Generic JSONL"
 
 
+class _StepCategory(Enum):
+    HUMAN = "human"
+    THINKING = "thinking"
+    TOOL_CALL = "tool_call"
+
+
 @dataclass(frozen=True)
 class TrajectoryPreviewStep:
     number: int
@@ -68,9 +74,7 @@ class TrajectoryArtifact(Protocol):
 class _Step:
     kind: str
     summary: str
-    thinking: bool = False
-    tool_call: bool = False
-    human_steps: int = 0
+    category: _StepCategory
 
 
 @dataclass
@@ -85,9 +89,9 @@ class _Analysis:
 
     def add(self, step: _Step) -> None:
         self.total_steps += 1
-        self.thinking_steps += int(step.thinking)
-        self.tool_call_steps += int(step.tool_call)
-        self.human_steps += step.human_steps
+        self.thinking_steps += int(step.category is _StepCategory.THINKING)
+        self.tool_call_steps += int(step.category is _StepCategory.TOOL_CALL)
+        self.human_steps += int(step.category is _StepCategory.HUMAN)
         if len(self.preview) < self.preview_limit:
             self.preview.append(
                 TrajectoryPreviewStep(
@@ -129,6 +133,12 @@ def build_trajectory_report(
                 earliest_timestamp = timestamp
             for step in _record_steps(trajectory_format, record, analysis):
                 analysis.add(step)
+
+    categorized_steps = (
+        analysis.thinking_steps + analysis.tool_call_steps + analysis.human_steps
+    )
+    if categorized_steps != analysis.total_steps:  # pragma: no cover - structural guard
+        raise AssertionError("trajectory step categories must partition total steps")
 
     created_at = earliest_timestamp or primary.created_at or datetime.now(UTC)
     created_at_source = (
@@ -241,7 +251,8 @@ def _record_steps(
         return _llm_exchange_steps(record, analysis)
     if trajectory_format is TrajectoryFormat.OPENTRACES:
         return _opentraces_steps(record)
-    return (_generic_step(record),)
+    generic = _generic_step(record)
+    return (generic,) if generic is not None else ()
 
 
 def _codex_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
@@ -255,21 +266,29 @@ def _codex_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
         role = _lower(payload.get("role"))
         if role not in {"user", "assistant"}:
             return ()
+        summary = _content_text(payload.get("content"))
+        if not summary:
+            return ()
         return (
             _Step(
                 kind="Human" if role == "user" else "Assistant",
-                summary=_content_text(payload.get("content")) or f"{role} message",
-                human_steps=int(role == "user"),
+                summary=summary,
+                category=(
+                    _StepCategory.HUMAN if role == "user" else _StepCategory.THINKING
+                ),
             ),
         )
     if payload_type == "reasoning":
+        summary = _content_text(payload.get("summary")) or _content_text(
+            payload.get("content")
+        )
+        if not summary:
+            return ()
         return (
             _Step(
                 kind="Thinking",
-                summary=_content_text(payload.get("summary"))
-                or _content_text(payload.get("content"))
-                or "Reasoning step",
-                thinking=True,
+                summary=summary,
+                category=_StepCategory.THINKING,
             ),
         )
     if payload_type.endswith("_call") or payload_type in {
@@ -278,14 +297,15 @@ def _codex_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
     }:
         name = str(payload.get("name") or payload_type.replace("_", " "))
         summary = _tool_text(name, payload.get("arguments") or payload.get("input"))
-        return (_Step(kind="Tool call", summary=summary, tool_call=True),)
-    if payload_type.endswith("_call_output"):
         return (
             _Step(
-                kind="Tool result",
-                summary=_content_text(payload.get("output")) or "Tool result returned",
+                kind="Tool call",
+                summary=summary,
+                category=_StepCategory.TOOL_CALL,
             ),
         )
+    if payload_type.endswith("_call_output"):
+        return ()
     return ()
 
 
@@ -300,60 +320,99 @@ def _claude_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
     block_types = _block_types(content)
     if record_type == "user":
         only_tool_results = bool(block_types) and block_types <= {"tool_result"}
+        if only_tool_results:
+            return ()
+        summary = _content_text(_without_block_types(content, {"tool_result"}))
+        if not summary:
+            return ()
         return (
             _Step(
-                kind="Tool result" if only_tool_results else "Human",
-                summary=_content_text(content)
-                or ("Tool result returned" if only_tool_results else "Human prompt"),
-                human_steps=int(not only_tool_results),
+                kind="Human",
+                summary=summary,
+                category=_StepCategory.HUMAN,
             ),
         )
     thinking = bool(block_types & {"thinking", "redacted_thinking"})
     tool_call = bool(block_types & {"tool_use", "server_tool_use"})
-    return (
-        _Step(
-            kind=_assistant_kind(thinking=thinking, tool_call=tool_call),
-            summary=_content_text(content)
-            or _first_tool_name(content)
-            or "Assistant response",
-            thinking=thinking,
-            tool_call=tool_call,
-        ),
+    steps: list[_Step] = []
+    non_tool_content = _without_block_types(
+        content,
+        {"tool_use", "server_tool_use"},
     )
+    non_tool_summary = _content_text(non_tool_content)
+    if non_tool_summary:
+        steps.append(
+            _Step(
+                kind="Thinking" if thinking else "Assistant",
+                summary=non_tool_summary,
+                category=_StepCategory.THINKING,
+            )
+        )
+    if tool_call:
+        tool_content = _only_block_types(content, {"tool_use", "server_tool_use"})
+        tool_summary = _content_text(tool_content) or _first_tool_name(content)
+        if not tool_summary:  # pragma: no cover - tool blocks always have a type
+            return tuple(steps)
+        steps.append(
+            _Step(
+                kind="Tool call",
+                summary=tool_summary,
+                category=_StepCategory.TOOL_CALL,
+            )
+        )
+    return tuple(steps)
 
 
 def _benchflow_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
     record_type = _lower(record.get("type"))
     if record_type == "user_message":
+        summary = _content_text(record.get("text"))
+        if not summary:
+            return ()
         return (
             _Step(
                 kind="Human",
-                summary=_content_text(record.get("text")) or "Human prompt",
-                human_steps=1,
+                summary=summary,
+                category=_StepCategory.HUMAN,
             ),
         )
     if record_type == "agent_thought":
+        summary = _content_text(record.get("text"))
+        if not summary:
+            return ()
         return (
             _Step(
                 kind="Thinking",
-                summary=_content_text(record.get("text")) or "Reasoning step",
-                thinking=True,
+                summary=summary,
+                category=_StepCategory.THINKING,
             ),
         )
     if record_type == "tool_call":
-        title = str(record.get("title") or record.get("kind") or "Tool call")
+        title = str(record.get("title") or record.get("kind") or "")
         content = _content_text(record.get("content"))
-        summary = f"{title}: {content}" if content else title
-        return (_Step(kind="Tool call", summary=summary, tool_call=True),)
+        summary = f"{title}: {content}" if title and content else title or content
+        if not summary:
+            return ()
+        return (
+            _Step(
+                kind="Tool call",
+                summary=summary,
+                category=_StepCategory.TOOL_CALL,
+            ),
+        )
     if record_type == "agent_message":
+        summary = _content_text(record.get("text"))
+        if not summary:
+            return ()
         return (
             _Step(
                 kind="Assistant",
-                summary=_content_text(record.get("text")) or "Assistant response",
+                summary=summary,
+                category=_StepCategory.THINKING,
             ),
         )
     if record_type == "agent_timeout":
-        return (_Step(kind="Status", summary="Agent timeout"),)
+        return ()
     return ()
 
 
@@ -375,33 +434,50 @@ def _llm_exchange_steps(
         else current_messages
     )
     analysis.previous_llm_messages = list(current_messages)
-    human_steps = sum(
-        1
-        for message in new_messages
-        if isinstance(message, dict) and _lower(message.get("role")) == "user"
-    )
+    steps = []
+    for message in new_messages:
+        if not isinstance(message, dict) or _lower(message.get("role")) != "user":
+            continue
+        if summary := _content_text(message.get("content")):
+            steps.append(
+                _Step(
+                    kind="Human",
+                    summary=summary,
+                    category=_StepCategory.HUMAN,
+                )
+            )
     thinking, tool_call = _response_signals(response_body)
-    summary = (
-        _response_text(response_body)
-        or _last_message_text(new_messages)
-        or "Model exchange"
-    )
-    return (
-        _Step(
-            kind=_assistant_kind(thinking=thinking, tool_call=tool_call),
-            summary=summary,
-            thinking=thinking,
-            tool_call=tool_call,
-            human_steps=human_steps,
-        ),
-    )
+    summary = _response_text(response_body)
+    if summary and (thinking or not tool_call):
+        steps.append(
+            _Step(
+                kind="Thinking" if thinking else "Assistant",
+                summary=summary,
+                category=_StepCategory.THINKING,
+            )
+        )
+    if tool_call:
+        steps.append(
+            _Step(
+                kind="Tool call",
+                summary="Model tool call",
+                category=_StepCategory.TOOL_CALL,
+            )
+        )
+    return tuple(steps)
 
 
 def _opentraces_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
     steps: list[_Step] = []
     task = record.get("task")
     if isinstance(task, dict) and (prompt := _content_text(task.get("input"))):
-        steps.append(_Step(kind="Human", summary=prompt, human_steps=1))
+        steps.append(
+            _Step(
+                kind="Human",
+                summary=prompt,
+                category=_StepCategory.HUMAN,
+            )
+        )
     for item in record.get("steps") or []:
         if not isinstance(item, dict):
             continue
@@ -413,18 +489,26 @@ def _opentraces_steps(record: dict[str, Any]) -> tuple[_Step, ...]:
         tool_name = str(tool.get("name") or "")
         thinking = bool(thought)
         tool_call = bool(tool)
-        steps.append(
-            _Step(
-                kind=_assistant_kind(thinking=thinking, tool_call=tool_call),
-                summary=thought or tool_name or "Trace step",
-                thinking=thinking,
-                tool_call=tool_call,
+        if thinking:
+            steps.append(
+                _Step(
+                    kind="Thinking",
+                    summary=thought,
+                    category=_StepCategory.THINKING,
+                )
             )
-        )
+        if tool_call:
+            steps.append(
+                _Step(
+                    kind="Tool call",
+                    summary=tool_name or "Tool call",
+                    category=_StepCategory.TOOL_CALL,
+                )
+            )
     return tuple(steps)
 
 
-def _generic_step(record: dict[str, Any]) -> _Step:
+def _generic_step(record: dict[str, Any]) -> _Step | None:
     record_type = _lower(record.get("type") or record.get("kind"))
     role = _lower(record.get("role"))
     human = role in {"user", "human"} or record_type in {"user", "human"}
@@ -444,26 +528,24 @@ def _generic_step(record: dict[str, Any]) -> _Step:
         or _content_text(record.get("content"))
         or _content_text(record.get("message"))
         or _content_text(record.get("payload"))
-        or str(record.get("title") or record_type or "JSONL event")
+        or _content_text(record.get("title"))
     )
-    kind = "Human" if human else _assistant_kind(thinking=thinking, tool_call=tool_call)
+    if not summary:
+        return None
+    if human:
+        kind = "Human"
+        category = _StepCategory.HUMAN
+    elif tool_call:
+        kind = "Tool call"
+        category = _StepCategory.TOOL_CALL
+    else:
+        kind = "Thinking" if thinking else "Assistant"
+        category = _StepCategory.THINKING
     return _Step(
         kind=kind,
         summary=summary,
-        thinking=thinking,
-        tool_call=tool_call,
-        human_steps=int(human),
+        category=category,
     )
-
-
-def _assistant_kind(*, thinking: bool, tool_call: bool) -> str:
-    if thinking and tool_call:
-        return "Thinking + tool"
-    if thinking:
-        return "Thinking"
-    if tool_call:
-        return "Tool call"
-    return "Assistant"
 
 
 def _record_timestamp(record: dict[str, Any]) -> datetime | None:
@@ -495,6 +577,26 @@ def _block_types(content: Any) -> set[str]:
         for block in content
         if isinstance(block, dict) and block.get("type")
     }
+
+
+def _only_block_types(content: Any, wanted: set[str]) -> list[Any]:
+    if not isinstance(content, list):
+        return []
+    return [
+        block
+        for block in content
+        if isinstance(block, dict) and _lower(block.get("type")) in wanted
+    ]
+
+
+def _without_block_types(content: Any, excluded: set[str]) -> Any:
+    if not isinstance(content, list):
+        return content
+    return [
+        block
+        for block in content
+        if not isinstance(block, dict) or _lower(block.get("type")) not in excluded
+    ]
 
 
 def _first_tool_name(content: Any) -> str:
@@ -560,15 +662,6 @@ def _response_text(response_body: dict[str, Any]) -> str:
             ):
                 return text
     return _content_text(response_body.get("content"))
-
-
-def _last_message_text(messages: list[Any]) -> str:
-    for message in reversed(messages):
-        if isinstance(message, dict) and (
-            text := _content_text(message.get("content"))
-        ):
-            return text
-    return ""
 
 
 def _content_text(value: Any) -> str:

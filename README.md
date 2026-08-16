@@ -35,7 +35,7 @@ file. Path and contributor details are required inputs; any that are omitted are
 prompted for interactively. Detected secret values are replaced locally with
 `<XXX-benchflow-key-values-XXX>` before upload. Contributor details are stored
 in `manifest.json`. After the path is entered, the CLI shows a redacted preview
-and a trajectory report with step counts, human steps, thinking/tool activity,
+and a trajectory report with partitioned human, thinking, and tool-call counts,
 creation time, file size, and the number of masked key values. Interactive users
 confirm the report before a byte-progress display starts the upload.
 See the concise [upload skill](./.agents/skills/benchflow-traj-upload/SKILL.md)
