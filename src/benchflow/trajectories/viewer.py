@@ -14,6 +14,78 @@ _ARGS_PREVIEW = 300  # max chars for tool args display
 _CONTENT_PREVIEW = 200  # max chars for write/agent content preview
 _RESULT_PREVIEW = 300  # max chars for result summary
 
+# Shared stylesheet for all viewer pages, matching the www.benchflow.ai design
+# language (light monochrome: near-white page, white cards, near-black ink,
+# pure-black accent, Satoshi/Google Sans Code with system-safe fallbacks, dark
+# code blocks). Kept inline so pages work fully offline with no external
+# requests; one constant so the three templates stop drifting apart.
+_VIEWER_CSS = """\
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --background: #fafafa; --card: #ffffff;
+  --ink: #0a0a0a; --ink-secondary: #404040; --muted: #737373; --faint: #a1a1a1;
+  --border: #e5e5e5; --rule-strong: #c7c7c7; --secondary: #f5f5f5;
+  --code-bg: #141414; --code-ink: #ececec;
+  --radius: 8px;
+  --font-sans: "Satoshi", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Google Sans Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+body { font-family: var(--font-sans); background: var(--background); color: var(--ink); padding: 28px 20px 48px; max-width: 960px; margin: 0 auto; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+::selection { background: var(--secondary); color: var(--ink); }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+.wordmark { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.wordmark svg { width: 18px; height: 18px; flex: none; color: var(--ink); }
+.wordmark .brand { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; color: var(--ink); }
+.wordmark .app { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; color: var(--ink-secondary); background: var(--secondary); border: 1px solid var(--border); border-radius: 9999px; padding: 3px 10px; }
+.header { border-bottom: 1px solid var(--border); padding-bottom: 18px; margin-bottom: 24px; }
+.header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; color: var(--ink); margin-bottom: 10px; overflow-wrap: anywhere; }
+.meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.meta span { font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--ink-secondary); background: var(--secondary); padding: 3px 9px; border-radius: 4px; border: 1px solid var(--border); }
+.step { margin-bottom: 8px; padding: 12px 16px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(10, 10, 10, 0.04); }
+.step.prompt { background: var(--secondary); border-color: var(--rule-strong); margin-bottom: 14px; }
+.step.output { background: var(--code-bg); border-color: var(--code-bg); padding: 10px 16px; }
+.step.output pre { color: var(--code-ink); font-family: var(--font-mono); font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.step.result { background: var(--ink); border-color: var(--ink); margin-top: 14px; }
+.step.result .msg { color: var(--background); }
+.step-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.label { display: inline-flex; align-items: center; font-family: var(--font-mono); padding: 2px 10px; border-radius: 9999px; font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+.label.prompt { background: var(--ink); color: var(--background); }
+.label.result { background: var(--background); color: var(--ink); }
+.meta-inline { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.step.result .meta-inline { color: var(--faint); }
+.msg { font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.thinking { font-size: 13px; color: var(--muted); font-style: italic; margin-bottom: 8px; padding: 8px 12px; background: var(--secondary); border-radius: 4px; border-left: 2px solid var(--rule-strong); white-space: pre-wrap; word-break: break-word; }
+.tool { margin-bottom: 6px; }
+.tool-name { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--ink); background: var(--secondary); border: 1px solid var(--border); padding: 2px 9px; border-radius: 4px; }
+.tool-args { margin-top: 6px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--code-ink); background: var(--code-bg); padding: 10px 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+.metrics { font-family: var(--font-mono); font-size: 11px; color: var(--faint); margin-top: 4px; }
+.turn-divider { border-top: 1px solid var(--border); margin: 24px 0; }
+"""
+
+# Small BenchFlow wordmark header (inline SVG logo from the site's icon set —
+# no external requests) shown above the page title on every viewer page.
+_WORDMARK_HTML = (
+    '<div class="wordmark">'
+    '<svg viewBox="0 0 514 512" fill="currentColor" aria-hidden="true">'
+    '<path fill-rule="evenodd" clip-rule="evenodd" d="M445.422 66.4597L511.882 0'
+    "L389.022 293.965L295.129 387.859L0 511.882L69.3042 442.577L81.0101 454.283"
+    "L89.0554 446.238L77.3493 434.532L130.65 381.232L162.469 413.051L170.514 40"
+    "5.006L138.695 373.187L191.995 319.887L203.701 331.593L211.746 323.547L200."
+    "04 311.841L253.34 258.541L285.16 290.36L293.205 282.315L261.386 250.496L31"
+    "4.686 197.196L326.392 208.902L334.437 200.856L322.731 189.15L376.031 135.8"
+    "5L407.851 167.669L415.896 159.624L384.077 127.805L437.377 74.5049L449.083 "
+    "86.2108L457.128 78.1656L445.422 66.4597ZM399.127 389.865V299.369L513.197 2"
+    "6.4333V503.935L399.127 389.865ZM391.061 397.931L505.132 512.001H29.1594L30"
+    '0.605 397.931H391.061Z"/>'
+    "</svg>"
+    '<span class="brand">BenchFlow</span>'
+    '<span class="app">trajectory viewer</span>'
+    "</div>"
+)
+
 
 def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
     """Render one turn's events as HTML blocks."""
@@ -260,33 +332,11 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
 <meta charset="utf-8">
 <title>benchflow — {rollout_dir.name}</title>
 <style>
-* {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; max-width: 960px; margin: 0 auto; }}
-.header {{ border-bottom: 1px solid #30363d; padding-bottom: 16px; margin-bottom: 24px; }}
-.header h1 {{ font-size: 20px; color: #f0f6fc; margin-bottom: 8px; }}
-.meta {{ display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; color: #8b949e; }}
-.meta span {{ background: #161b22; padding: 4px 10px; border-radius: 6px; border: 1px solid #30363d; }}
-.step {{ margin-bottom: 4px; padding: 10px 14px; border-radius: 6px; }}
-.step.prompt {{ background: #0d1f3c; border: 1px solid #1f3a5f; margin-bottom: 12px; }}
-.step.agent {{ background: #161b22; border: 1px solid #30363d; }}
-.step.output {{ background: #0d1117; border-left: 3px solid #238636; padding: 6px 14px; }}
-.step.output pre {{ color: #7ee787; font-size: 12px; white-space: pre-wrap; word-break: break-word; }}
-.step.result {{ background: #1a2f1a; border: 1px solid #238636; margin-top: 12px; }}
-.step-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }}
-.label {{ padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; text-transform: uppercase; }}
-.label.prompt {{ background: #1f3a5f; color: #58a6ff; }}
-.label.result {{ background: #1a2f1a; color: #3fb950; }}
-.meta-inline {{ font-size: 12px; color: #8b949e; }}
-.msg {{ font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }}
-.thinking {{ font-size: 13px; color: #8b949e; font-style: italic; margin-bottom: 6px; padding: 8px; background: #0d1117; border-radius: 4px; border-left: 3px solid #484f58; }}
-.tool {{ margin-bottom: 4px; }}
-.tool-name {{ background: #2d333b; color: #f0883e; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 13px; font-weight: 600; }}
-.tool-args {{ margin-top: 4px; font-size: 12px; color: #c9d1d9; background: #0d1117; padding: 8px; border-radius: 4px; white-space: pre-wrap; word-break: break-word; }}
-.turn-divider {{ border-top: 2px solid #30363d; margin: 20px 0; padding-top: 8px; }}
-</style>
+{_VIEWER_CSS}</style>
 </head>
 <body>
 <div class="header">
+{_WORDMARK_HTML}
 <h1>{html.escape(rollout_dir.name)}</h1>
 <div class="meta">
 <span>model: {html.escape(model)}</span>
@@ -392,25 +442,8 @@ def _render_acp_events(
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>benchflow — {html.escape(title)}</title>
 <style>
-* {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{ font-family: -apple-system, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; max-width: 960px; margin: 0 auto; }}
-.header {{ border-bottom: 1px solid #30363d; padding-bottom: 16px; margin-bottom: 24px; }}
-.header h1 {{ font-size: 20px; color: #f0f6fc; }}
-.step {{ margin-bottom: 4px; padding: 10px 14px; border-radius: 6px; }}
-.step.prompt {{ background: #0d1f3c; border: 1px solid #1f3a5f; margin-bottom: 12px; }}
-.step.agent {{ background: #161b22; border: 1px solid #30363d; }}
-.step.result {{ background: #1a2f1a; border: 1px solid #238636; margin-top: 12px; }}
-.step-header {{ margin-bottom: 6px; }}
-.label {{ padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; text-transform: uppercase; }}
-.label.prompt {{ background: #1f3a5f; color: #58a6ff; }}
-.label.result {{ background: #1a2f1a; color: #3fb950; }}
-.msg {{ font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }}
-.thinking {{ font-size: 13px; color: #8b949e; font-style: italic; padding: 8px; background: #0d1117; border-radius: 4px; border-left: 3px solid #484f58; }}
-.tool {{ margin-bottom: 4px; }}
-.tool-name {{ background: #2d333b; color: #f0883e; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 13px; font-weight: 600; }}
-.metrics {{ font-size: 11px; color: #484f58; margin-top: 4px; }}
-</style></head><body>
-<div class="header"><h1>{html.escape(title)}</h1></div>
+{_VIEWER_CSS}</style></head><body>
+<div class="header">{_WORDMARK_HTML}<h1>{html.escape(title)}</h1></div>
 {"".join(blocks)}
 </body></html>"""
 
@@ -526,33 +559,11 @@ def _stream_json_page(title: str, events: list[dict], turn_blocks: list[str]) ->
 <meta charset="utf-8">
 <title>benchflow — {html.escape(title)}</title>
 <style>
-* {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; max-width: 960px; margin: 0 auto; }}
-.header {{ border-bottom: 1px solid #30363d; padding-bottom: 16px; margin-bottom: 24px; }}
-.header h1 {{ font-size: 20px; color: #f0f6fc; margin-bottom: 8px; }}
-.meta {{ display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; color: #8b949e; }}
-.meta span {{ background: #161b22; padding: 4px 10px; border-radius: 6px; border: 1px solid #30363d; }}
-.step {{ margin-bottom: 4px; padding: 10px 14px; border-radius: 6px; }}
-.step.prompt {{ background: #0d1f3c; border: 1px solid #1f3a5f; margin-bottom: 12px; }}
-.step.agent {{ background: #161b22; border: 1px solid #30363d; }}
-.step.output {{ background: #0d1117; border-left: 3px solid #238636; padding: 6px 14px; }}
-.step.output pre {{ color: #7ee787; font-size: 12px; white-space: pre-wrap; word-break: break-word; }}
-.step.result {{ background: #1a2f1a; border: 1px solid #238636; margin-top: 12px; }}
-.step-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }}
-.label {{ padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; text-transform: uppercase; }}
-.label.prompt {{ background: #1f3a5f; color: #58a6ff; }}
-.label.result {{ background: #1a2f1a; color: #3fb950; }}
-.meta-inline {{ font-size: 12px; color: #8b949e; }}
-.msg {{ font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }}
-.thinking {{ font-size: 13px; color: #8b949e; font-style: italic; margin-bottom: 6px; padding: 8px; background: #0d1117; border-radius: 4px; border-left: 3px solid #484f58; }}
-.tool {{ margin-bottom: 4px; }}
-.tool-name {{ background: #2d333b; color: #f0883e; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 13px; font-weight: 600; }}
-.tool-args {{ margin-top: 4px; font-size: 12px; color: #c9d1d9; background: #0d1117; padding: 8px; border-radius: 4px; white-space: pre-wrap; word-break: break-word; }}
-.turn-divider {{ border-top: 2px solid #30363d; margin: 20px 0; padding-top: 8px; }}
-</style>
+{_VIEWER_CSS}</style>
 </head>
 <body>
 <div class="header">
+{_WORDMARK_HTML}
 <h1>{html.escape(title)}</h1>
 <div class="meta">
 <span>model: {html.escape(model)}</span>
