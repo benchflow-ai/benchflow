@@ -54,14 +54,26 @@ SKILL_RAW_URL = (
     "/.agents/skills/benchflow-traj-upload/SKILL.md"
 )
 
+UPGRADE_COMMAND = "uv tool install --python 3.12 --upgrade --force benchflow"
+
+# Three unwrapped lines separated by blank lines: each logical unit is one
+# full physical line (no hard wraps mid-sentence), so the URL and the upgrade
+# command stay selectable in agents and terminals.
 CONTRIBUTOR_PROMPT = (
-    "Submit my best local Claude Code or Codex session to the BenchFlow eval "
-    "prize. Read "
-    f"{SKILL_RAW_URL} "
-    "and follow it: find a session, open the viewer, upload only after I review it."
+    "Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session "
+    "from the re:Agent e2e agentic science / ai4bio hackathon (last 72 hours, "
+    "on this laptop) to the BenchFlow eval prize."
+    "\n\n"
+    f"1. First make sure the latest benchflow CLI is installed: {UPGRADE_COMMAND}"
+    "\n\n"
+    f"2. Then read {SKILL_RAW_URL} "
+    "and follow it: find a session, open the viewer, and upload only after "
+    "I (the human) review it."
 )
 
-UPGRADE_COMMAND = "uv tool install --python 3.12 --upgrade --force benchflow"
+CONTRIBUTOR_PROMPT_FRAMING = (
+    "Send this to your coding agent (it's a prompt for the agent, not steps for you):"
+)
 
 
 def _fetch_latest_version() -> str | None:
@@ -166,14 +178,14 @@ def register_traj(app: typer.Typer) -> None:
         ] = False,
         prompt_only: Annotated[
             bool,
-            typer.Option("--prompt", help="Print the copy-paste agent line and exit"),
+            typer.Option("--prompt", help="Print the copy-paste agent prompt and exit"),
         ] = False,
         list_sessions: Annotated[
             bool,
             typer.Option("--list", help="List recent local sessions and exit"),
         ] = False,
     ) -> None:
-        """Install the submit skill, or print the line to paste into an agent."""
+        """Install the submit skill, or print the prompt to send to an agent."""
         _maybe_print_update_hint()
         if prompt_only:
             _print_contributor_prompt()
@@ -194,7 +206,6 @@ def register_traj(app: typer.Typer) -> None:
                 _run_npx_skill_install()
         else:
             _install_project_skill(Path.cwd())
-        console.print("Paste this to your agent:")
         _print_contributor_prompt()
         if interactive and typer.confirm(
             "List recent sessions and open the viewer now?", default=False
@@ -625,7 +636,9 @@ def _print_dry_run(staged: StagedCapture) -> None:
 
 
 def _print_contributor_prompt() -> None:
-    # One physical line so people can copy it. Rich wrapping would break that.
+    # Plain print: Rich wrapping would break the unbroken URL line and make
+    # the block awkward to copy.
+    print(CONTRIBUTOR_PROMPT_FRAMING)
     print(CONTRIBUTOR_PROMPT)
 
 
@@ -671,7 +684,7 @@ def _run_npx_skill_install() -> None:
         check=False,
     )
     if completed.returncode != 0:
-        print_error("npx skills add failed; the copy-paste line below still works.")
+        print_error("npx skills add failed; the copy-paste prompt below still works.")
 
 
 def _print_session_hits() -> None:

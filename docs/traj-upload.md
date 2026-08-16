@@ -1,22 +1,27 @@
 # Contribute trajectory captures
 
-Copy this line into your coding agent. You do not run a BenchFlow command.
+**Don't follow these steps yourself — send them to your coding agent.** Copy
+the block below and paste it as a message to Claude Code, Codex, OpenCode, or
+Cursor. You do not run a BenchFlow command.
 
-```
-Submit my best local Claude Code or Codex session to the BenchFlow eval prize. Read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I review it.
-```
+> Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session from the re:Agent e2e agentic science / ai4bio hackathon (last 72 hours, on this laptop) to the BenchFlow eval prize.
+>
+> 1. First make sure the latest benchflow CLI is installed: uv tool install --python 3.12 --upgrade --force benchflow
+>
+> 2. Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, and upload only after I (the human) review it.
 
 The agent reads the skill, finds a local session, opens the viewer, and
 uploads after you say it looks good.
 
-Be on the latest BenchFlow first — `uv tool install --python 3.12 --upgrade
---force benchflow` — because `bench traj setup` and the session-JSONL viewer
-require 0.7.1+. When a newer release is available on PyPI, `bench traj setup`
-and `bench traj upload` print a one-line upgrade hint.
+The prompt has the agent install the latest BenchFlow first (`uv tool
+install --python 3.12 --upgrade --force benchflow`) because `bench traj setup`
+and the session-JSONL viewer require 0.7.1+. When a newer release is available
+on PyPI, `bench traj setup` and `bench traj upload` print a one-line upgrade
+hint.
 
 ## Optional: set the skill up once
 
-If you want later chats to know the workflow without pasting the long line:
+If you want later chats to know the workflow without pasting the long prompt:
 
 ```bash
 npx skills add benchflow-ai/benchflow --skill benchflow-traj-upload
@@ -31,11 +36,11 @@ bench traj setup
 `npx skills add` is interactive: it asks which agents to install for
 (Claude Code, Codex, Cursor, and other [Agent Skills](https://agentskills.io)
 hosts). `bench traj setup` copies the skill into
-`.agents/skills/benchflow-traj-upload/`, prints the same paste line, and can
+`.agents/skills/benchflow-traj-upload/`, prints the same agent prompt, and can
 list sessions or open the viewer. After setup, a short ask is enough:
-**submit my best session to the eval prize**.
+**submit my relevant session to the eval prize**.
 
-`bench traj setup --prompt` prints only the copy-paste line.
+`bench traj setup --prompt` prints only the copy-paste agent prompt.
 `bench traj setup --list` lists recent local sessions.
 
 ## Optional: interactive upload without an agent
