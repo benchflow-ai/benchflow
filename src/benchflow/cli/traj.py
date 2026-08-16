@@ -824,10 +824,11 @@ def _run_status(digest_argument: str | None) -> None:
     raw = digest_argument or typer.prompt(tui.field_label("Digest (sha256:…)"))
     traj_digest = _normalize_digest(raw)
     broker_url = _resolve_broker_url()
+    # Plain print, and before the fetch: the digest stays selectable and
+    # visible even when the check errors (stderr interleaves with stdout).
+    print(f"Digest: sha256:{traj_digest}")
     with console.status(f"[bold {tui.ACCENT}]Checking capture status…[/]"):
         snapshot = fetch_capture_status(broker_url=broker_url, traj_digest=traj_digest)
-    # Plain print keeps the digest selectable for retries and reports.
-    print(f"Digest: sha256:{traj_digest}")
     if snapshot.status == "ingested":
         _print_verified()
         return
