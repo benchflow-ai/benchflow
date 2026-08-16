@@ -3,7 +3,7 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "Submit my best local Claude Code or Codex session to the BenchFlow eval prize. Read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I review it.",
+      "prompt": "Submit my best local Claude Code or Codex session to the BenchFlow eval prize. First make sure the latest benchflow CLI is installed (uv tool install --python 3.12 --upgrade --force benchflow). Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I review it.",
       "expected_output": "Agent discovers local sessions, opens the viewer, waits for review, then uploads. Human is not told to run a CLI command.",
       "files": []
     },

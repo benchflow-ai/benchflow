@@ -715,8 +715,13 @@ def test_skip_update_check_env_var_never_fetches(
 
 
 def test_setup_prompt_prints_the_copy_paste_line() -> None:
-    """The human path is one line to paste into an agent."""
-    from benchflow.cli.traj import CONTRIBUTOR_PROMPT, SKILL_RAW_URL
+    """The human path is one line to paste into an agent.
+
+    Also guards the version step added in this PR (follow-up to PRs #1013 and
+    #1014): the paste line itself tells the agent to upgrade BenchFlow, with
+    the upgrade command appearing before the skill URL.
+    """
+    from benchflow.cli.traj import CONTRIBUTOR_PROMPT, SKILL_RAW_URL, UPGRADE_COMMAND
 
     result = runner.invoke(app, ["traj", "setup", "--prompt"])
     readme = Path(__file__).resolve().parents[1] / "README.md"
@@ -726,6 +731,11 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
     assert SKILL_RAW_URL in result.output
     assert "bench traj upload" not in result.output
     assert CONTRIBUTOR_PROMPT in readme.read_text(encoding="utf-8")
+    assert UPGRADE_COMMAND in CONTRIBUTOR_PROMPT
+    assert CONTRIBUTOR_PROMPT.index(UPGRADE_COMMAND) < CONTRIBUTOR_PROMPT.index(
+        SKILL_RAW_URL
+    )
+    assert "\n" not in CONTRIBUTOR_PROMPT
 
 
 def test_setup_yes_installs_the_skill(

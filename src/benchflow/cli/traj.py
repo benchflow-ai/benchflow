@@ -52,14 +52,15 @@ SKILL_RAW_URL = (
     "/.agents/skills/benchflow-traj-upload/SKILL.md"
 )
 
+UPGRADE_COMMAND = "uv tool install --python 3.12 --upgrade --force benchflow"
+
 CONTRIBUTOR_PROMPT = (
     "Submit my best local Claude Code or Codex session to the BenchFlow eval "
-    "prize. Read "
+    "prize. First make sure the latest benchflow CLI is installed "
+    f"({UPGRADE_COMMAND}). Then read "
     f"{SKILL_RAW_URL} "
     "and follow it: find a session, open the viewer, upload only after I review it."
 )
-
-UPGRADE_COMMAND = "uv tool install --python 3.12 --upgrade --force benchflow"
 
 
 def _fetch_latest_version() -> str | None:

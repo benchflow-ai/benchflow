@@ -20,15 +20,15 @@ Codex, Cursor, or any coding agent. That is the $2,000 eval prize path. No
 BenchFlow account, API key, or Azure login.
 
 ```
-Submit my best local Claude Code or Codex session to the BenchFlow eval prize. Read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I review it.
+Submit my best local Claude Code or Codex session to the BenchFlow eval prize. First make sure the latest benchflow CLI is installed (uv tool install --python 3.12 --upgrade --force benchflow). Then read https://raw.githubusercontent.com/benchflow-ai/benchflow/main/.agents/skills/benchflow-traj-upload/SKILL.md and follow it: find a session, open the viewer, upload only after I review it.
 ```
 
 The agent finds sessions on this machine, opens the viewer, and uploads after
 you like what you see.
 
-Be on the latest BenchFlow first — `uv tool install --python 3.12 --upgrade
---force benchflow`. The `bench traj` commands print a one-line upgrade hint
-when a newer release is available.
+The paste line has the agent install the latest BenchFlow first (`uv tool
+install --python 3.12 --upgrade --force benchflow`). The `bench traj` commands
+also print a one-line upgrade hint when a newer release is available.
 
 Prefer the terminal instead? The guided upload inspects before anything leaves
 your machine — it renders a redacted trajectory report (step counts, masked
