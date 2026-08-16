@@ -1194,11 +1194,18 @@ inbound edge refuses.
 
 #### Measured on the two real rollouts of §5.2
 
-**FACT — machine measurement, not a human E2E.** The rollouts themselves are
-real and were verified by hand when they were captured; the loop below was run
-over their `acp_trajectory.jsonl` by the harness. `with prompts` reproduces what
-a real export does, and its document is byte-identical to the `trainer/atif.json`
-each rollout actually wrote.
+**FACT — measured by the harness, and verified by hand.** The rollouts are real
+captures; the loop was run over their `acp_trajectory.jsonl`, and its output was
+then checked against the raw artifacts by a person: document parity, the
+conversion read step by step in both directions, each fabricated value confirmed
+present in `trainer/atif.json` and absent from the capture, each unrepresentable
+value confirmed absent from the document and present in the capture, and a
+negative control that corrupts a value and confirms the comparison notices.
+`with prompts` reproduces what a real export does, and its document is
+byte-identical to the `trainer/atif.json` each rollout actually wrote.
+
+The limits of that verification are in the closing paragraph of this section and
+are not narrowed by it.
 
 | | H1 fields | H2 fields | H1 values | H2 values |
 |---|---|---|---|---|
