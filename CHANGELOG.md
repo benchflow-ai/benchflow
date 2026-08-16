@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+- **Trajectory uploads are tagged with the session's repository by
+  default.** Unless `--source-id` is given, `bench traj upload` reads the
+  session's recorded working directory (Claude `cwd` events, Codex
+  `session_meta`), resolves its git `origin` remote (invocation directory as
+  fallback), and stores `repo/<owner>/<name>` as the manifest source id,
+  printing `Repo: owner/name (use --no-repo to omit)`. `--no-repo` opts out
+  — the `benchflow-traj-upload` skill now surfaces the detected tag during
+  the confirm step so contributors can decline it for private repos — and
+  undetectable repos fall back silently to the path-derived source id.
+
 ### Changed
 - **Trajectory viewer restyled to match www.benchflow.ai.** All three
   `bench eval view` pages (stream-json/JSONL, ACP events, multi-turn trial)
@@ -16,15 +27,6 @@
 ## 0.7.1 — 2026-08-16
 
 ### Added
-- **Trajectory uploads are tagged with the session's repository by
-  default.** Unless `--source-id` is given, `bench traj upload` reads the
-  session's recorded working directory (Claude `cwd` events, Codex
-  `session_meta`), resolves its git `origin` remote (invocation directory as
-  fallback), and stores `repo/<owner>/<name>` as the manifest source id,
-  printing `Repo: owner/name (use --no-repo to omit)`. `--no-repo` opts out
-  — the `benchflow-traj-upload` skill now surfaces the detected tag during
-  the confirm step so contributors can decline it for private repos — and
-  undetectable repos fall back silently to the path-derived source id.
 - **`bench traj setup` / `bench traj upload` print an upgrade hint when
   outdated.** Both commands start with a lightweight PyPI latest-version
   check (2 s timeout, completely silent on any network or parse failure) and
