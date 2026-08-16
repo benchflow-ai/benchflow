@@ -3,10 +3,10 @@
 ## [Unreleased]
 
 ### Added
-- **Uploads are confirmed all the way into Azure storage.** After the
+- **Uploads are confirmed all the way into cloud storage.** After the
   progress bar finishes, `bench traj upload` now polls the contribution
   service's new `GET /v1/uploads/{digest}` capture-status endpoint (the
-  validation ledger) until the validator's verdict: `✓ Verified in Azure
+  validation ledger) until the validator's verdict: `✓ Verified in cloud
   storage` once the capture is promoted to `sources/community/<digest>/`, a
   concise exit-1 error with the fixable detail if the validator rejects it,
   and a `bench traj status sha256:<digest>` handoff line if validation is
@@ -30,6 +30,30 @@
   and rounded panels. Every interactive affordance degrades to the exact
   previous prompt-driven flow off-TTY (agents, pipes, CI, Windows), and all
   machine-read lines (`Masked for you:`, `Digest:`, `Repo:`) stay plain.
+- **Uploads can carry the session's workspace folder as a zip attachment.**
+  `bench traj upload` reads the session's recorded working directory (the
+  same Claude `cwd` / Codex `session_meta` provenance as repo tagging) and
+  archives it into the capture as `workspace/<name>.zip`, printing
+  `Workspace: <path> (from session cwd; use --no-workspace to omit)` and a
+  `Workspace attached:` line with size, file count, and exclusion count.
+  VCS internals, dependency trees, caches, symlinks, and secret-shaped
+  filenames (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `.netrc`, …) never enter
+  the archive; everything else is archived as-is without content redaction,
+  and the attach line says so. Workspaces over 1 GiB (measured before
+  compression, so the zip is never created), over 50,000 files, missing, or
+  empty are skipped with a printed reason instead of failing the upload.
+  When detection fails on a real terminal, one optional prompt accepts a
+  folder or skips on Enter; `--workspace-dir` overrides detection and
+  `--no-workspace` opts out. The archive is staged in the upload's
+  temporary directory and always deleted afterwards. Server side, the
+  contribution service accepts the new `workspace/*.zip` namespace with a
+  1 GiB per-archive cap (trajectory JSONL keeps 128 MiB), allows at most
+  one archive per capture and never an archive alone, verifies the zip
+  container format instead of JSONL strictness, promotes it with an
+  `application/zip` content type, and scopes trajectory-report
+  cross-checks to trajectory artifacts so an attachment cannot fail
+  report equality.
+
 ## 0.7.3 — 2026-08-16
 
 ### Added

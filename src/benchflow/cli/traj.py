@@ -810,7 +810,7 @@ def _confirm_storage(
 
 def _print_verified() -> None:
     console.print(
-        f"[bold green]{tui.GLYPH_OK} Verified in Azure storage[/] "
+        f"[bold green]{tui.GLYPH_OK} Verified in cloud storage[/] "
         "[dim]— the validator accepted and promoted this capture.[/]"
     )
 

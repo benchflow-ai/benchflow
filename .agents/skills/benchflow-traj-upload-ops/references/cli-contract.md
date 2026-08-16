@@ -233,7 +233,7 @@ credentials, detected secrets, or contributor email.
 After a public upload, the CLI polls `GET /v1/uploads/<digest>` on the broker
 (the validation-ledger state) until one of these outcomes:
 
-- `ingested` → print `Verified in Azure storage`. The validator records
+- `ingested` → print `Verified in cloud storage`. The validator records
   `ingested` only after promoting every file to `sources/community/<digest>/`,
   so this line is proof the capture reached durable storage — a stronger claim
   than the transfer finishing.
@@ -325,7 +325,7 @@ Use precise claims:
 | Unit or CLI-runner tests | Local implementation behavior under mocks. |
 | `--dry-run` on a real capture | Real local parsing, masking, report, and manifest behavior; no network proof. |
 | Real public command returns success | Client and contribution-service upload path accepted the capture; promotion still needs checking. |
-| CLI prints `Verified in Azure storage` (or `traj status` reports `ingested`) against a deployed broker | The validation ledger recorded promotion for that digest; equivalent to promotion unless the ledger itself is suspect. |
+| CLI prints `Verified in cloud storage` (or `traj status` reports `ingested`) against a deployed broker | The validation ledger recorded promotion for that digest; equivalent to promotion unless the ledger itself is suspect. |
 | Trusted storage shows the exact digest under `sources/community/`, with validator-recomputed schema-1.2 manifest and no quarantine residue | Production public upload worked end to end for that exact build and capture. |
 
 Record the CLI version or Git SHA, digest, command mode, result, and storage

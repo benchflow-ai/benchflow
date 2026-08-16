@@ -1177,7 +1177,7 @@ def test_upload_waits_until_verified_in_storage(
     assert result.exit_code == 0, result.output
     output = click.unstyle(result.output)
     assert "Submitted" in output
-    assert "Verified in Azure storage" in output
+    assert "Verified in cloud storage" in output
     assert len(calls) == 3
 
 
@@ -1222,7 +1222,7 @@ def test_upload_wait_timeout_hands_off_to_traj_status(
     output = click.unstyle(result.output)
     assert "Still validating" in output
     assert "bench traj status sha256:" in output
-    assert "Verified in Azure storage" not in output
+    assert "Verified in cloud storage" not in output
 
 
 def test_upload_wait_missing_endpoint_keeps_legacy_behavior(
@@ -1242,7 +1242,7 @@ def test_upload_wait_missing_endpoint_keeps_legacy_behavior(
     assert result.exit_code == 0, result.output
     output = click.unstyle(result.output)
     assert "Submitted" in output
-    assert "Verified in Azure storage" not in output
+    assert "Verified in cloud storage" not in output
     assert "bench traj status" not in output
     assert len(calls) == 1
 
@@ -1316,13 +1316,13 @@ def test_already_ingested_conflict_prints_verified_without_polling(
     assert result.exit_code == 0, result.output
     output = click.unstyle(result.output)
     assert "Already submitted" in output
-    assert "Verified in Azure storage" in output
+    assert "Verified in cloud storage" in output
 
 
 @pytest.mark.parametrize(
     ("status", "exit_code", "copy"),
     [
-        ("ingested", 0, "Verified in Azure storage"),
+        ("ingested", 0, "Verified in cloud storage"),
         ("pending", 0, "Queued"),
         ("validating", 0, "Validating"),
         ("rejected", 1, "validator rejected"),
