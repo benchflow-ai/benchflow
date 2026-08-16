@@ -816,10 +816,10 @@ def test_list_recent_sessions_scans_all_projects_most_recent_first(
 def test_setup_list_prints_path_on_its_own_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Guards the collector-audit friction fix: ``bench traj setup --list``
-    used Rich wrapping on ``index. [source] when  /very/long/path``, which
-    split session paths mid-token and made them unselectable. The path must
-    sit on its own physical line after the index/source/time line."""
+    """Guards the collector-audit friction fix from PR #1024: ``bench traj
+    setup --list`` used Rich wrapping on ``index. [source] when  /very/long/path``,
+    which split session paths mid-token and made them unselectable. The path
+    must sit on its own physical line after the index/source/time line."""
     from benchflow.trajectories.sessions import SessionHit
 
     long_path = Path(
@@ -851,9 +851,10 @@ def test_setup_list_prints_path_on_its_own_line(
 def test_broker_upload_does_not_claim_the_service_is_waking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Guards the collector-audit friction fix: a warm rerun still printed
-    ``while the service wakes up``, which is stale once the broker is up.
-    The progress line must stay honest on both cold and warm runs."""
+    """Guards the collector-audit friction fix from PR #1024: a warm rerun
+    still printed ``while the service wakes up``, which is stale once the
+    broker is up. The progress line must stay honest on both cold and warm
+    runs."""
     captured: dict[str, str] = {}
     _capture_broker_source_id(monkeypatch, captured)
     monkeypatch.setenv("BENCHFLOW_TRAJ_BROKER_URL", "https://broker.test")
