@@ -81,9 +81,15 @@ which the contributor skill lifts into the viewer's confirm bar via
 Uploads are tagged with the repository the session was about: unless you pass
 `--source-id`, the CLI reads the session's recorded working directory,
 resolves its git `origin` remote, and stores `repo/<owner>/<name>` as the
-manifest source id, printing `Repo: owner/name (use --no-repo to omit)`. Pass
+manifest source id, printing
+`Repo: owner/name (from session cwd /path/to/project; use --no-repo to omit)`
+(the local path appears in terminal output only, never in the upload). The
+session's own recorded cwd is the only source for the tag — the directory you
+run the upload from is never consulted, so a session recorded outside a repo
+is never attributed to the checkout you happen to upload it from. Pass
 `--no-repo` to keep the tag out (for example for private repositories); when
-no repo is detectable the upload silently keeps the path-derived source id.
+the session has no recorded cwd, the directory no longer exists, or no GitHub
+remote resolves, the upload silently keeps the path-derived source id.
 
 ## Local trajectory report
 

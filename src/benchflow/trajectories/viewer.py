@@ -431,26 +431,18 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
     while len(prompts) < len(turn_files):
         prompts.append("")
 
-    first_events = _parse_jsonl(turn_files[0].read_text())
-    sys_event = next((e for e in first_events if e.get("type") == "system"), {})
-    total_cost = 0
-    total_turns_count = 0
-
+    all_events: list[dict] = []
     all_blocks = []
     for i, tf in enumerate(turn_files):
         events = _parse_jsonl(tf.read_text())
+        all_events.extend(events)
         all_blocks.append(render_turn(events, i + 1, prompts[i]))
-        for e in events:
-            if e.get("type") == "result":
-                total_cost += e.get("total_cost_usd", 0)
-                total_turns_count += e.get("num_turns", 0)
 
-    # `or "?"` (not just a .get default): a present-but-null value in the
-    # stream-json (e.g. "session_id": null) bypasses the default and would crash
-    # html.escape() / the [:16] slice below with a raw TypeError.
-    session_id = str(sys_event.get("session_id") or "?")
-    model = str(sys_event.get("model") or "?")
-    version = str(sys_event.get("claude_code_version") or "?")
+    badges = _stream_header_badges(all_events)
+    badges.append(("turns", str(len(turn_files))))
+    total_cost = _result_cost(all_events)
+    if total_cost is not None:
+        badges.append(("total cost", f"${total_cost:.4f}"))
 
     return f"""<!DOCTYPE html>
 <html>
@@ -464,14 +456,7 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
 <div class="header">
 {_WORDMARK_HTML}
 <h1>{html.escape(rollout_dir.name)}</h1>
-<div class="meta">
-<span>model: {html.escape(model)}</span>
-<span>session: {html.escape(session_id[:16])}...</span>
-<span>claude code: {html.escape(version)}</span>
-<span>turns: {len(turn_files)}</span>
-<span>total cost: ${total_cost:.4f}</span>
-</div>
-</div>
+{_meta_badges_html(badges)}</div>
 {_join_with_divider(all_blocks)}
 </body>
 </html>"""
@@ -672,18 +657,89 @@ def render_jsonl_file(path: Path) -> str:
     body = render_turn(events, 1, "")
     if not body.strip():
         return _NO_TRAJECTORIES_HTML
-    return _stream_json_page(path.name, events, [body])
+    return _stream_json_page(path.name, events, [body], session_fallback=path.stem)
 
 
-def _stream_json_page(title: str, events: list[dict], turn_blocks: list[str]) -> str:
+def _stream_header_badges(
+    events: list[dict], *, session_fallback: str | None = None
+) -> list[tuple[str, str]]:
+    """Header badges derivable from what the stream actually contains.
+
+    ``claude -p`` stream-json carries a ``type: system`` init event
+    (``session_id`` / ``model`` / ``claude_code_version``); real ``~/.claude``
+    session files don't — their metadata lives per event (``sessionId``,
+    ``version``) and on assistant events (``message.model``). Pull from
+    whichever is present and omit anything unknown: a header of ``?`` badges
+    at the approve moment reads as a broken viewer, not as missing data.
+    Truthiness (not ``.get`` defaults) also swallows present-but-null values
+    like ``"session_id": null``, which previously needed an explicit guard to
+    avoid a TypeError.
+    """
     sys_event = next((e for e in events if e.get("type") == "system"), {})
-    total_cost = 0.0
+
+    def _first(values) -> object | None:
+        return next((value for value in values if value), None)
+
+    model = sys_event.get("model") or _first(
+        event["message"].get("model")
+        for event in events
+        if event.get("type") == "assistant" and isinstance(event.get("message"), dict)
+    )
+    session_id = (
+        sys_event.get("session_id")
+        or _first(event.get("sessionId") for event in events)
+        or session_fallback
+    )
+    version = sys_event.get("claude_code_version") or _first(
+        event.get("version") for event in events
+    )
+
+    badges: list[tuple[str, str]] = []
+    if model:
+        badges.append(("model", str(model)))
+    if session_id:
+        sid = str(session_id)
+        badges.append(("session", sid[:16] + ("..." if len(sid) > 16 else "")))
+    if version:
+        badges.append(("claude code", str(version)))
+    return badges
+
+
+def _result_cost(events: list[dict]) -> float | None:
+    """Total cost summed from result events, or ``None`` when no event
+    carries cost data — so the header can hide the badge instead of
+    asserting a fictional ``$0.0000``."""
+    total = 0.0
+    seen = False
     for event in events:
-        if event.get("type") == "result":
-            total_cost += float(event.get("total_cost_usd") or 0)
-    session_id = str(sys_event.get("session_id") or "?")
-    model = str(sys_event.get("model") or "?")
-    version = str(sys_event.get("claude_code_version") or "?")
+        if event.get("type") == "result" and event.get("total_cost_usd") is not None:
+            total += float(event.get("total_cost_usd") or 0)
+            seen = True
+    return total if seen else None
+
+
+def _meta_badges_html(badges: list[tuple[str, str]]) -> str:
+    """The header's ``.meta`` badge row; empty string when nothing is known."""
+    if not badges:
+        return ""
+    spans = "\n".join(
+        f"<span>{html.escape(label)}: {html.escape(value)}</span>"
+        for label, value in badges
+    )
+    return f'<div class="meta">\n{spans}\n</div>\n'
+
+
+def _stream_json_page(
+    title: str,
+    events: list[dict],
+    turn_blocks: list[str],
+    *,
+    session_fallback: str | None = None,
+) -> str:
+    badges = _stream_header_badges(events, session_fallback=session_fallback)
+    total_cost = _result_cost(events)
+    if total_cost is not None:
+        badges.append(("total cost", f"${total_cost:.4f}"))
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -696,13 +752,7 @@ def _stream_json_page(title: str, events: list[dict], turn_blocks: list[str]) ->
 <div class="header">
 {_WORDMARK_HTML}
 <h1>{html.escape(title)}</h1>
-<div class="meta">
-<span>model: {html.escape(model)}</span>
-<span>session: {html.escape(session_id[:16])}...</span>
-<span>claude code: {html.escape(version)}</span>
-<span>total cost: ${total_cost:.4f}</span>
-</div>
-</div>
+{_meta_badges_html(badges)}</div>
 {_join_with_divider(turn_blocks)}
 </body>
 </html>"""

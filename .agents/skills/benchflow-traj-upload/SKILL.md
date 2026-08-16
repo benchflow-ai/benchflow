@@ -138,12 +138,15 @@ Ask them to review the page and click a button in the viewer:
 Do not upload until one of those signals says the session is right.
 
 The upload is tagged with the repository the session was about: the CLI reads
-the session's recorded working directory, resolves its git `origin` remote,
-and stores `repo/<owner>/<name>` as the source id (it prints
-`Repo: owner/name (use --no-repo to omit)`; check the remote yourself or run
-`--dry-run` to see it beforehand). Mention the detected repo when you ask for
-confirmation — "This session will be tagged `repo/owner/name`; say the word
-if you want it omitted" — so they can opt out for private repos.
+the session's recorded working directory (only the session's own cwd — never
+the directory you run the upload from), resolves its git `origin` remote, and
+stores `repo/<owner>/<name>` as the source id (it prints
+`Repo: owner/name (from session cwd /path; use --no-repo to omit)` — the
+local path is terminal output only; run `--dry-run` to see the tag
+beforehand). Sessions recorded outside a git repo upload untagged. Mention
+the detected repo when you ask for confirmation — "This session will be
+tagged `repo/owner/name`; say the word if you want it omitted" — so they can
+opt out for private repos.
 
 Before upload, remind them not to submit secrets, and repeat the masking
 summary from the Step 4 dry run when asking for approval — "Before upload,
