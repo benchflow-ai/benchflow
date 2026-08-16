@@ -642,7 +642,7 @@ def _enable_update_check(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_outdated_install_prints_the_upgrade_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Guards this PR (the version-check follow-up to PR #1013): an install
+    """Guards PR #1014 (the version-check follow-up to PR #1013): an install
     older than the PyPI latest gets one hint line on setup and upload."""
     _enable_update_check(monkeypatch)
     monkeypatch.setattr("benchflow.cli.traj._installed_version", lambda: "0.7.0")
@@ -664,7 +664,7 @@ def test_outdated_install_prints_the_upgrade_hint(
 def test_update_check_network_failure_is_silent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Guards this PR (the version-check follow-up to PR #1013): a PyPI
+    """Guards PR #1014 (the version-check follow-up to PR #1013): a PyPI
     failure prints nothing and leaves the exit code untouched."""
     from benchflow.cli.traj import CONTRIBUTOR_PROMPT
 
@@ -687,7 +687,7 @@ def test_update_check_network_failure_is_silent(
 def test_current_or_newer_dev_install_prints_no_hint(
     installed: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Guards this PR (the version-check follow-up to PR #1013): up-to-date
+    """Guards PR #1014 (the version-check follow-up to PR #1013): up-to-date
     installs and dev/prereleases of a newer-or-equal base are not outdated."""
     _enable_update_check(monkeypatch)
     monkeypatch.setattr("benchflow.cli.traj._installed_version", lambda: installed)
@@ -701,7 +701,7 @@ def test_current_or_newer_dev_install_prints_no_hint(
 def test_skip_update_check_env_var_never_fetches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Guards this PR (the version-check follow-up to PR #1013): the conftest
+    """Guards PR #1014 (the version-check follow-up to PR #1013): the conftest
     hermeticity guard BENCHFLOW_SKIP_UPDATE_CHECK short-circuits the fetch."""
 
     def fail_fetch() -> str | None:
