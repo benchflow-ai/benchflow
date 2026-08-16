@@ -3,6 +3,17 @@
 ## [Unreleased]
 
 ### Added
+- **The trajectory viewer can collect the eval-prize confirmation in the
+  browser.** `bench eval view PATH --confirm` renders the normal page plus a
+  sticky site-styled bottom bar ("Submit this trajectory to the BenchFlow
+  eval prize?") with **Approve & submit** / **Not this one** buttons. A click
+  POSTs to `/decision`; the server prints a machine-readable
+  `DECISION: approved` or `DECISION: rejected` line to stdout, shuts down,
+  and the CLI exits `0` on approve and `3` on reject (non-1/2 so rejection
+  never collides with error or usage exits). Without the flag, behavior is
+  unchanged (no bar, no endpoint, Ctrl+C to stop). The
+  `benchflow-traj-upload` skill now prefers the button flow and falls back
+  to chat confirmation on CLIs older than 0.7.2.
 - **Trajectory uploads are tagged with the session's repository by
   default.** Unless `--source-id` is given, `bench traj upload` reads the
   session's recorded working directory (Claude `cwd` events, Codex
