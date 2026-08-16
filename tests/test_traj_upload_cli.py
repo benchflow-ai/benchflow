@@ -856,6 +856,44 @@ def test_list_recent_sessions_scans_all_projects_most_recent_first(
     assert "prize session please" in hits[1].snippet
 
 
+def test_list_recent_sessions_windows_seven_days_across_sources(
+    tmp_path: Path,
+) -> None:
+    """The picker browses the past week of Claude AND Codex sessions in one
+    time-ordered list; older sessions drop out when recent ones exist."""
+    import os
+    import time
+
+    from benchflow.trajectories.sessions import list_recent_sessions
+
+    now = time.time()
+    home = tmp_path / "home"
+    claude_dir = home / ".claude" / "projects" / "-work"
+    claude_dir.mkdir(parents=True)
+    claude_recent = claude_dir / "recent.jsonl"
+    claude_recent.write_text(
+        '{"type":"user","message":{"content":"claude work"}}\n', encoding="utf-8"
+    )
+    os.utime(claude_recent, (now - 3600, now - 3600))
+    claude_stale = claude_dir / "stale.jsonl"
+    claude_stale.write_text(
+        '{"type":"user","message":{"content":"last month"}}\n', encoding="utf-8"
+    )
+    os.utime(claude_stale, (now - 30 * 86400, now - 30 * 86400))
+    codex_dir = home / ".codex" / "sessions" / "2026" / "08" / "16"
+    codex_dir.mkdir(parents=True)
+    codex_recent = codex_dir / "rollout.jsonl"
+    codex_recent.write_text(
+        '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n', encoding="utf-8"
+    )
+    os.utime(codex_recent, (now - 60, now - 60))
+
+    hits = list_recent_sessions(cwd=tmp_path, home=home)
+
+    assert [hit.path for hit in hits] == [codex_recent, claude_recent]
+    assert [hit.source for hit in hits] == ["codex", "claude"]
+
+
 def test_setup_list_prints_path_on_its_own_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

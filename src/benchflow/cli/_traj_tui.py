@@ -52,6 +52,18 @@ KIND_STYLES = {
 }
 
 _PICKER_HELP = "↑/↓ move · enter select · 1-9 jump · esc cancel"
+# Rows visible at once in the arrow-key picker. The cursor scrolls the list
+# through this viewport (the same feel as Claude Code's session-resume
+# picker), so a week of sessions stays browsable without flooding the screen.
+_PICKER_VIEWPORT_ROWS = 10
+
+
+def _visible_window(index: int, total: int, height: int) -> tuple[int, int]:
+    """First/last-plus-one visible option, keeping the cursor centered."""
+    if total <= height:
+        return 0, total
+    start = max(0, min(index - height // 2, total - height))
+    return start, start + height
 
 
 def banner(console: Console, command: str, subtitle: str = "") -> None:
@@ -169,8 +181,18 @@ def _select_tty(
         lines: list[Text | Rule] = []
         if title:
             lines.append(Text(f"{GLYPH_STEP} {title}", style=f"bold {ACCENT}"))
-        lines.extend(row(position, option) for position, option in enumerate(options))
-        lines.append(Text(_PICKER_HELP, style="dim"))
+        start, end = _visible_window(index, len(options), _PICKER_VIEWPORT_ROWS)
+        if start > 0:
+            lines.append(Text(f"   ↑ {start} more", style="dim"))
+        lines.extend(row(position, options[position]) for position in range(start, end))
+        if end < len(options):
+            lines.append(Text(f"   ↓ {len(options) - end} more", style="dim"))
+        lines.append(
+            Text(
+                f"{_PICKER_HELP} · {index + 1}/{len(options)}",
+                style="dim",
+            )
+        )
         return Group(*lines)
 
     stream = sys.stdin

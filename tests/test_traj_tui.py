@@ -85,6 +85,47 @@ def test_tty_picker_arrow_burst_navigates_instead_of_cancelling(
     assert choice == 2
 
 
+def test_visible_window_scrolls_around_the_cursor() -> None:
+    """Short lists show whole; long lists keep the cursor centered, clamped."""
+    assert tui._visible_window(0, 5, 10) == (0, 5)
+    assert tui._visible_window(0, 30, 10) == (0, 10)
+    assert tui._visible_window(15, 30, 10) == (10, 20)
+    assert tui._visible_window(29, 30, 10) == (20, 30)
+
+
+def test_tty_picker_scrolls_through_a_week_of_sessions(monkeypatch) -> None:
+    """Arrow keys browse past the viewport (Claude-resume-style scrolling)."""
+    import os
+    import pty
+    import termios
+    import threading
+
+    master, slave = pty.openpty()
+    try:
+        attributes = termios.tcgetattr(slave)
+        attributes[3] &= ~termios.ECHO
+        termios.tcsetattr(slave, termios.TCSANOW, attributes)
+        writer = threading.Timer(
+            0.3, os.write, (master, b"\x1b[B" * 15 + b"\r")
+        )  # down x15, enter — well past the 10-row viewport
+        writer.start()
+        with open(slave, closefd=False) as stream:
+            monkeypatch.setattr(tui.sys, "stdin", stream)
+            console, _buffer = _console()
+            choice = tui._select_tty(
+                console,
+                title="Pick a session to upload",
+                options=[tui.SelectOption(label=f"session-{n}") for n in range(30)],
+                initial=0,
+            )
+        writer.join()
+    finally:
+        os.close(master)
+        os.close(slave)
+
+    assert choice == 15
+
+
 def test_select_uses_numbered_fallback_without_tty(monkeypatch) -> None:
     """Off-TTY, the picker is a plain numbered prompt that retries bad input."""
     monkeypatch.setattr(tui, "interactive_terminal", lambda: False)
